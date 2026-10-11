@@ -1,0 +1,46 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `ci-test` profile [optimized + debuginfo] target(s) in 4m 07s
+     Running unittests src/lib.rs (target/ci-test/deps/systemless-ab8d3978307603c0)
+
+running 38 tests
+test systems::macintosh::loader::ppc::tests::text_edit::is_metric_matches_roman_numeric_format ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::preserve_glyph_preference_round_trips ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::font_to_script_defaults_to_enabled_roman_script ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::hle_import_runner_sets_textedit_click_loop_procedure ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::native_textedit_line_starts_follow_shared_word_boundaries ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::hle_import_runner_creates_and_disposes_native_styled_textedit_records ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::te_get_height_accepts_zero_for_the_first_line ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::native_styled_textedit_styles_runs_and_reports_real_measurements ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::te_update_clips_partial_glyphs_at_the_view_bottom ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::te_text_box_replaces_contents_and_erases_empty_text ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::te_scroll_erases_the_previous_text_position ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::styled_mixed_line_heights_match_guest_points_and_shared_geometry ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::te_use_style_scrap_applies_the_first_scrap_style_to_the_requested_range ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::te_sel_view_respects_auto_scroll_and_reveals_selection ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::native_textedit_key_and_click_update_the_public_edit_record ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::te_update_clips_text_to_the_view_rect ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::text_edit_activation_repaints_selection_without_update_or_idle ... ok
+test systems::macintosh::process_context::tests::attached_text_edit_managers_share_immediately_while_clones_detach ... ok
+test systems::macintosh::text_edit::drawing::tests::disposal_and_handle_reuse_require_fresh_drawing ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::textedit_and_te_text_box_use_explicit_foreground_index ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::te_update_skips_text_lines_below_the_view_rectangle ... ok
+test systems::macintosh::text_edit::drawing::tests::monochrome_neighbours_do_not_invalidate_the_view ... ok
+test systems::macintosh::text_edit::drawing::tests::records_pixels_without_optional_outline_surface_at_every_depth ... ok
+test systems::macintosh::text_edit::drawing::tests::retained_coverage_uses_the_clip_at_draw_time ... ok
+test systems::macintosh::text_edit::drawing::tests::solid_caret_evidence_checks_full_fragment_and_packed_view_edges ... ok
+test systems::macintosh::text_edit::drawing::tests::unchanged_regions_preserve_every_unmodified_native_pixel ... ok
+test systems::macintosh::text_edit::drawing::tests::unlimited_clip_is_intersected_before_translating_port_origin ... ok
+test systems::macintosh::text_edit::tests::alignment_is_shared_for_every_guest_adapter ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::visible_length_excludes_trailing_roman_whitespace ... ok
+test systems::macintosh::text_edit::tests::edit_handle_generation_changes_only_after_disposal ... ok
+test systems::macintosh::text_edit::tests::paint_spacing_eligibility_uses_guest_cpu_units ... ok
+test systems::macintosh::text_edit::tests::key_editing_handles_backspace_and_caret_arrows ... ok
+test systems::macintosh::text_edit::tests::replace_and_delete_share_selection_semantics ... ok
+test systems::macintosh::text_edit::tests::selection_is_clamped_and_normalized_once ... ok
+test systems::macintosh::text_edit::tests::styled_edits_keep_insertion_anchor_and_following_attributes ... ok
+test systems::macintosh::text_edit::tests::styled_snapshot_preserves_runs_colors_line_metrics_and_rejects_bad_indices ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::text_edit_snapshot_follows_guest_idle_blink_phase ... ok
+test systems::macintosh::loader::ppc::tests::text_edit::styled_snapshot_advances_match_ppc_quickdraw_widths ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 6658 filtered out; finished in 0.54s
+

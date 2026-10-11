@@ -4767,7 +4767,7 @@ mod desktop {
             if prefer_powerpc {
                 let first = selected.guest_styled_selection_rect(0).unwrap().unwrap();
                 let second = selected.guest_styled_selection_rect(1).unwrap().unwrap();
-                assert!(first.0 < second.2 && second.0 < first.2, "overlapping PPC highlights");
+                assert_eq!(first.2, second.0, "PPC highlights follow cumulative styled line heights");
             }
             record = selected;
         }

@@ -1,0 +1,26 @@
+{
+  "base": "51a48762c7f07db8d7675858997fe6609eec5eee",
+  "scope": "Actual guest Return and multiline drag-selection through shared Demo compositor; PPC8/mono68k/colour68k scale1, PPC16 scale1.5. Imported synthetic variable-size PPC point/caret regression. 38 TextEdit library tests pass.",
+  "limitations": "Not physical input/IME, scrolling qualification, independent native Macintosh oracle, performance, or complete production gates. Custom application text remains guest-rendered.",
+  "sha256": {
+    "styled-cumulative-ppc8-scale1.json": "3c34332cde8bd0f25fbb86a1939bb9bc661bfe5539920c27ba270496190ca873",
+    "styled-cumulative-ppc16-scale1_5.log": "096b792cad52cd460c228aa6cead1ca8ed66e9788abddbf407d922d88e0095b5",
+    "styled-cumulative-ppc8-scale1.log": "fe865682c90754798167585b0e95a49f7ca63771e31ef5aed67b31ac06b2f9ac",
+    "source.patch": "aee158c84f0896ab59684ea9d8c4864cc5cd75b7b031db051cf54fd2c11d45c3",
+    "styled-cumulative-mono68k-scale1.png": "1bbc0ad33d2629637685f5ccd4184ea6b38993a8fd57a081e674a2825a0945f6",
+    "styled-cumulative-compositor-build.log": "92d4533aa3ef384886748cf67936b15b84321876fb2e6eaaf97c727268cb5569",
+    "styled-cumulative-final-integration.log": "fe806505aea344188c194945e1747eb0b6cef1aec73e2592fb2f7c626c82c4ed",
+    "styled-cumulative-colour68k-scale1.log": "cc0a3d393032ca1ccbe580389296b61be3f1147052a5e6cd11e6603a4f8a3617",
+    "styled-cumulative-mono68k-scale1.guest.png": "a823a20eada974158197000362c39210890a6c97eda677e8d8d350e6348b829e",
+    "styled-cumulative-mono68k-scale1.log": "457d82d37557de2fb03bc92ddb36cd3f38f17e852c9df5b63248da7da6cc6072",
+    "styled-cumulative-mono68k-scale1.json": "9a3b0f3d44106a0e8e21d1d80b345db065dfa81e191afad4da0746d0409840b3",
+    "styled-cumulative-ppc16-scale1_5.guest.png": "c39d0e867814d91714509511835d5f2732fb1ab1d27b6535289734b8da6b88f2",
+    "styled-cumulative-colour68k-scale1.png": "bf43ed51240c4bcffdf9f75ee7b1181668830eedd0ff0805b6243a5b090fbe14",
+    "styled-cumulative-colour68k-scale1.json": "8efef19c0761efb77dd6b3287a63e7903e28a63f5b5aeeabc9e00c5a6732eacd",
+    "styled-cumulative-ppc8-scale1.guest.png": "97c02df5b52c5ff37228126bf6a5747aae012ea0d71feba9a3e696b82a100ec7",
+    "styled-cumulative-ppc16-scale1_5.png": "b29c84b1cd770f78dfb242bbcec4fd7f040164bc57e7ca32667dcc6ed5bef963",
+    "styled-cumulative-ppc16-scale1_5.json": "ea3586728a3a6584578746083404235faca7313b47564bbdba5d8f9618f6f7d9",
+    "styled-cumulative-colour68k-scale1.guest.png": "b5a548660cd7852e0b857421a70f7055c2c9be6be79d5ad9f655209a667c124e",
+    "styled-cumulative-ppc8-scale1.png": "114fe2e2f390f67142b85d40a46c043ccfd48be7811b7af3629ddaa72cbc0c82"
+  }
+}

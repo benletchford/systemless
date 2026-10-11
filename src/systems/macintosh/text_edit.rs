@@ -481,12 +481,16 @@ mod tests {
         layout.justification = -1;
         assert_eq!(layout.line_geometry(1, 80).unwrap().left, 120);
         layout.line_layout_policy = super::TextEditLineLayoutPolicy::PpcRunMetrics;
-        // Native drawing resolves its run metrics instead of reading LHTable.
+        // Native drawing stacks resolved run metrics instead of reading LHTable.
         layout.line_metrics = Some(vec![(42, 40), (60, 59)]);
         assert_eq!(layout.line_geometry(1, 80), Some(super::TextEditLineGeometry {
-            top: 28, left: 120, height: 18, ascent: 13,
+            top: 24, left: 120, height: 18, ascent: 13,
         }));
         layout.active = true;
+        layout.selection = (0, 4);
+        let first = layout.guest_styled_selection_rect(0).unwrap().unwrap();
+        let second = layout.guest_styled_selection_rect(1).unwrap().unwrap();
+        assert_eq!(first.2, second.0, "mixed-height PPC selection follows glyph origins");
         layout.selection = (2, 2);
         layout.clips_line_offsets_to_visible_text = true;
         assert_eq!(layout.caret_line(), Some((0, 1)), "styled native wrap caret trims CR");
@@ -798,8 +802,7 @@ impl TextEditSnapshot {
             TextEditLineLayoutPolicy::CumulativeGuestMetrics =>
                 (geometry.left.checked_add(left_width)?, geometry.left.checked_add(right_width)?, geometry.top),
             TextEditLineLayoutPolicy::PpcRunMetrics => {
-                let baseline = self.dest_rect.0.saturating_add(geometry.ascent)
-                    .saturating_add(i16::try_from(index).ok()?.saturating_mul(geometry.height));
+                let baseline = geometry.top.saturating_add(geometry.ascent);
                 (geometry.left.saturating_add(left_width), geometry.left.saturating_add(right_width),
                     baseline.saturating_sub(geometry.ascent))
             }
@@ -877,7 +880,7 @@ impl TextEditSnapshot {
         let (height, ascent) = self.metrics_for_line(index)?;
         let mut top = self.dest_rect.0;
         match self.line_layout_policy {
-            TextEditLineLayoutPolicy::CumulativeGuestMetrics if self.styled => {
+            _ if self.styled => {
                 for previous in 0..index {
                     top = top.saturating_add(self.metrics_for_line(previous)?.0);
                 }
