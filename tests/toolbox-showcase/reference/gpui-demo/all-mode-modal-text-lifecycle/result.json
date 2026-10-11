@@ -1,0 +1,28 @@
+{
+  "base_source_commit": "e32b0ce9e074b3b4d6b4af42736dce216a928513",
+  "test_source_state": "New integration test uncommitted at execution; exact SHA recorded below. Existing runner sources unchanged.",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--no-default-features",
+    "--test",
+    "macintosh_modal_text",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "outcome": "passed",
+  "duration_seconds": 10.58,
+  "sha256": {
+    "tests/macintosh_modal_text.rs": "dd6f94a3dbb2cc79732780e656f210ac8776324484de8469e87603df7cecd6f6",
+    "src/systems/macintosh/session.rs": "3cc1b620b7eb6a343f009f676c5960d36592b91bdf6c2e548f0fe402ab802122",
+    "src/systems/macintosh/dialog_manager.rs": "49de9a1312a23b7efcb44afe59a3734449659b774878517705077ab7e301fcc7",
+    "src/systems/macintosh/runner/mod.rs": "cbe90b515c07e17922544471f8c6bb21efdacd7e6c62cba409e028dc0f297015",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8",
+    "target/debug/deps/macintosh_modal_text-869bda4a08b834c4": "f27a0b3b994ac0dfd05a5516eb94953994dce34be508bb77979cfd2b41fbb1a5"
+  },
+  "log_sha256": "6936959886f805b0ad5a8b035a02b9acc8771309dfdbe7d685dc81965eecb6fe",
+  "hash_timing": "After successful execution; no source edits or rebuild before hashing.",
+  "scope": "Guest modal keyboard isolation, dismissal, modeless text/focus and generation preservation, modal pointer reuse with a new generation across mono68k/colour68k/PPC8/PPC16. Runtime CPU and depth asserted. No GPUI semantic callback, physical host focus, composition or accessibility qualification."
+}

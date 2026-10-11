@@ -1,0 +1,138 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6187:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6187 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.00s
+     Running tests/macintosh_modal_text.rs (target/debug/deps/macintosh_modal_text-869bda4a08b834c4)
+
+running 1 test
+test nested_modal_text_isolation_and_focus_restore_across_cpu_depths ... [INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A0 bkLim=$0044A1A0 zcbFree=2400608 (2.3MB)
+[INIT] Set MainDevice=$0022603C, TheGDevice=$0022603C (ptr=$00226008)
+[INIT] GDevice chain: $8A4→$0022603C→$00226008 gdPMap→$00226004→$00225FD0
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226098 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226994 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226994 pixmap=$002056A0 bounds=(50,40,420,600) goAway=true
+[TRAP] GetNewDialog(131)
+[TRAP] GetNewDialog(131) bounds=(90,120,260,430) raw_bounds=(90,120,260,430) position=$0000 len=40 procID=4 items=4 title="Modeless Settings"
+[TRAP]   item 1: type=button(4) rect=(125,220,145,290) text="Close"
+[TRAP]   item 2: type=checkbox(5) rect=(60,20,80,280) text="Enable modeless option"
+[TRAP]   item 3: type=statText(136) rect=(20,20,40,280) text="Edit this field, then switch windows."
+[TRAP]   item 4: type=editText(16) rect=(90,20,110,280) text="Pilot"
+[WINDOW-INIT] init_cgraf_window: window=$0023CD00 bounds=(90,120,260,430) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023CD00 pixmap=$0023CDAC bounds=(90,120,260,430) goAway=true
+[TRAP] GetNewDialog(129)
+[TRAP] GetNewDialog(129) bounds=(100,130,315,470) raw_bounds=(100,130,315,470) position=$0000 len=40 procID=1 items=10 title="Game Preferences"
+[TRAP]   item 1: type=button(4) rect=(175,240,195,310) text="OK"
+[TRAP]   item 2: type=button(4) rect=(175,150,195,220) text="Cancel"
+[TRAP]   item 3: type=statText(136) rect=(15,20,35,320) text="Game Engine Configuration"
+[TRAP]   item 4: type=checkbox(5) rect=(45,20,65,320) text="Enable 3D Hardware Acceleration"
+[TRAP]   item 5: type=checkbox(5) rect=(70,20,90,320) text="High-Resolution Texture Filtering"
+[TRAP]   item 6: type=statText(136) rect=(100,20,120,100) text="Pilot name:"
+[TRAP]   item 7: type=editText(16) rect=(100,105,120,300) text="Cade Connelly"
+[TRAP]   item 8: type=statText(136) rect=(125,20,145,100) text="Nickname:"
+[TRAP]   item 9: type=editText(16) rect=(125,105,145,300) text="Maverick"
+[TRAP]   item 10: type=editText(144) rect=(300,105,320,300) text="Hidden Edit Text"
+[WINDOW-INIT] init_cgraf_window: window=$0023D400 bounds=(100,130,315,470) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023D400 pixmap=$0023D4AC bounds=(100,130,315,470) goAway=false
+[TRAP] DisposDialog($0023D400)
+[TRAP] GetNewDialog(129)
+[TRAP] GetNewDialog(129) bounds=(100,130,315,470) raw_bounds=(100,130,315,470) position=$0000 len=40 procID=1 items=10 title="Game Preferences"
+[TRAP]   item 1: type=button(4) rect=(175,240,195,310) text="OK"
+[TRAP]   item 2: type=button(4) rect=(175,150,195,220) text="Cancel"
+[TRAP]   item 3: type=statText(136) rect=(15,20,35,320) text="Game Engine Configuration"
+[TRAP]   item 4: type=checkbox(5) rect=(45,20,65,320) text="Enable 3D Hardware Acceleration"
+[TRAP]   item 5: type=checkbox(5) rect=(70,20,90,320) text="High-Resolution Texture Filtering"
+[TRAP]   item 6: type=statText(136) rect=(100,20,120,100) text="Pilot name:"
+[TRAP]   item 7: type=editText(16) rect=(100,105,120,300) text="Cade Connelly"
+[TRAP]   item 8: type=statText(136) rect=(125,20,145,100) text="Nickname:"
+[TRAP]   item 9: type=editText(16) rect=(125,105,145,300) text="Maverick"
+[TRAP]   item 10: type=editText(144) rect=(300,105,320,300) text="Hidden Edit Text"
+[WINDOW-INIT] init_cgraf_window: window=$0023D400 bounds=(100,130,315,470) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023D400 pixmap=$0023D56C bounds=(100,130,315,470) goAway=false
+[TRAP] DisposDialog($0023D400)
+PPC=false depth=1: modal lifetimes 3 -> 4; pointer reused=true
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1A0 bkLim=$0044A1A0 zcbFree=2400608 (2.3MB)
+[INIT] Set MainDevice=$0022682C, TheGDevice=$0022682C (ptr=$002267F8)
+[INIT] GDevice chain: $8A4→$0022682C→$002267F8 gdPMap→$002267F4→$002267C0
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAF0A randSeed_addr=$003FAE8C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226888 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00227184 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00227184 pixmap=$002056A0 bounds=(50,40,420,600) goAway=true
+[TRAP] GetNewDialog(131)
+[TRAP] GetNewDialog(131) bounds=(90,120,260,430) raw_bounds=(90,120,260,430) position=$0000 len=40 procID=4 items=4 title="Modeless Settings"
+[TRAP]   item 1: type=button(4) rect=(125,220,145,290) text="Close"
+[TRAP]   item 2: type=checkbox(5) rect=(60,20,80,280) text="Enable modeless option"
+[TRAP]   item 3: type=statText(136) rect=(20,20,40,280) text="Edit this field, then switch windows."
+[TRAP]   item 4: type=editText(16) rect=(90,20,110,280) text="Pilot"
+[WINDOW-INIT] init_cgraf_window: window=$0023D500 bounds=(90,120,260,430) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023D500 pixmap=$0023D5AC bounds=(90,120,260,430) goAway=true
+[TRAP] GetNewDialog(129)
+[TRAP] GetNewDialog(129) bounds=(100,130,315,470) raw_bounds=(100,130,315,470) position=$0000 len=40 procID=1 items=10 title="Game Preferences"
+[TRAP]   item 1: type=button(4) rect=(175,240,195,310) text="OK"
+[TRAP]   item 2: type=button(4) rect=(175,150,195,220) text="Cancel"
+[TRAP]   item 3: type=statText(136) rect=(15,20,35,320) text="Game Engine Configuration"
+[TRAP]   item 4: type=checkbox(5) rect=(45,20,65,320) text="Enable 3D Hardware Acceleration"
+[TRAP]   item 5: type=checkbox(5) rect=(70,20,90,320) text="High-Resolution Texture Filtering"
+[TRAP]   item 6: type=statText(136) rect=(100,20,120,100) text="Pilot name:"
+[TRAP]   item 7: type=editText(16) rect=(100,105,120,300) text="Cade Connelly"
+[TRAP]   item 8: type=statText(136) rect=(125,20,145,100) text="Nickname:"
+[TRAP]   item 9: type=editText(16) rect=(125,105,145,300) text="Maverick"
+[TRAP]   item 10: type=editText(144) rect=(300,105,320,300) text="Hidden Edit Text"
+[WINDOW-INIT] init_cgraf_window: window=$0023DC00 bounds=(100,130,315,470) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023DC00 pixmap=$0023DCAC bounds=(100,130,315,470) goAway=false
+[TRAP] DisposDialog($0023DC00)
+[TRAP] GetNewDialog(129)
+[TRAP] GetNewDialog(129) bounds=(100,130,315,470) raw_bounds=(100,130,315,470) position=$0000 len=40 procID=1 items=10 title="Game Preferences"
+[TRAP]   item 1: type=button(4) rect=(175,240,195,310) text="OK"
+[TRAP]   item 2: type=button(4) rect=(175,150,195,220) text="Cancel"
+[TRAP]   item 3: type=statText(136) rect=(15,20,35,320) text="Game Engine Configuration"
+[TRAP]   item 4: type=checkbox(5) rect=(45,20,65,320) text="Enable 3D Hardware Acceleration"
+[TRAP]   item 5: type=checkbox(5) rect=(70,20,90,320) text="High-Resolution Texture Filtering"
+[TRAP]   item 6: type=statText(136) rect=(100,20,120,100) text="Pilot name:"
+[TRAP]   item 7: type=editText(16) rect=(100,105,120,300) text="Cade Connelly"
+[TRAP]   item 8: type=statText(136) rect=(125,20,145,100) text="Nickname:"
+[TRAP]   item 9: type=editText(16) rect=(125,105,145,300) text="Maverick"
+[TRAP]   item 10: type=editText(144) rect=(300,105,320,300) text="Hidden Edit Text"
+[WINDOW-INIT] init_cgraf_window: window=$0023DC00 bounds=(100,130,315,470) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023DC00 pixmap=$0023DD6C bounds=(100,130,315,470) goAway=false
+[TRAP] DisposDialog($0023DC00)
+PPC=false depth=8: modal lifetimes 7 -> 8; pointer reused=true
+PPC=true depth=8: modal lifetimes 11 -> 12; pointer reused=true
+PPC=true depth=16: modal lifetimes 15 -> 16; pointer reused=true
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.58s
+
