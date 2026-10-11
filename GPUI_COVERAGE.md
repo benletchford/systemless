@@ -4741,3 +4741,17 @@ Evidence is archived in `reference/gpui-demo/cross-stage-range`, including the
 pre-fix failure. Prefix partitioning has unit evidence; the composed crossing
 assertion covers stage/suffix. Arbitrary guest replacement, physical IME, other
 scales and independent native qualification remain open.
+
+
+### Guarded document text selection for replacement requests
+
+Both Toolbox gateways share their existing TESetSelect operations. The runner
+now exposes a guarded document selection request that pins identity, owner,
+text, styles and prior selection, validates the requested range, and rejects
+modal/tracking, queued events and held input. Four-mode public-fixture evidence
+checks stale and invalid rejection, unchanged text/styles/line starts during
+selection, then actual guest key replacement and preserved surrounding styles.
+The regression passes (4.35s), archived in
+`tests/toolbox-showcase/reference/gpui-demo/frontend-text-selection`. This
+qualifies the guest operation, not native text-service replacement wiring;
+dialog/Standard File request paths, composed and physical input remain open.
