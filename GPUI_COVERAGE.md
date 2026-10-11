@@ -258,3 +258,18 @@ not specific to List Manager, nor explained by an omitted value refresh.
 Its cause remains unqualified; do not infer a required HLE thumb-position change
 from these native captures alone. Logical paging and visual thumb positioning
 must continue to be evaluated separately.
+
+The native Mac OS 8.1 PowerPC cross-check resolves the expected thumb direction:
+ordinary paging reaches `10/0/10` with the thumb at the end, matching Systemless.
+Compact list paging likewise matches Systemless's values, visible extents and
+thumb positions: down is `6..13` / `6/0/6`, up is `0..7` / `0/0/6`.
+The anomalous fixed thumb is confined to the tested 68K oracle environment;
+its cause remains open, and these PPC results do not qualify that environment.
+
+A deterministic native PPC list-thumb replay now demonstrates down/up dragging
+and cancellation outside the drag allowance. The list stays stationary while
+a separate thumb outline follows the pointer, then scrolls on release. A
+cancelled drag preserves the original origin. Systemless's same downward replay
+remains at row zero instead of native row six, confirming that LClick thumb
+tracking is still missing. Completing it must include retained tracking,
+release-time commit, cancellation and visible drag feedback on both CPUs.
