@@ -109,11 +109,17 @@ and [PowerPC checked](tests/toolbox-showcase/reference/gpui-demo/07-modal-checke
 On both CPUs the composed image differs from its unchecked capture only
 inside the checkbox's 28-by-28-pixel rendered area.
 
-Document TextEdit fields still use guest pixels. The GPUI runner forwards
-ordinary ASCII keys and arrows to the guest, preserving its TERec text and
-selection changes. The single-line dialog presentation is read-only: the
-guest owns typing and focus. Mac Roman non-ASCII input, composition, host
-modifier state, multiline layout, and caret blink need separate qualification.
+Standard unstyled document TextEdit now uses a read-only GPUI overlay with
+guest-defined line breaks, scroll origin, selection, and insertion point.
+Styled and justified records, dialog TextEdit with multiline layouts, and
+records overlapping custom controls retain guest pixels. The runner forwards
+ordinary ASCII keys and arrows to the guest; the guest owns typing, focus,
+and selection. Use `--capture-text-edit` to inspect the composed showcase on
+[68K colour](tests/toolbox-showcase/reference/gpui-demo/16-text-edit-68k.png),
+[PowerPC](tests/toolbox-showcase/reference/gpui-demo/16-text-edit-ppc.png), or
+[68K monochrome](tests/toolbox-showcase/reference/gpui-demo/16-text-edit-mono-68k.png).
+Font metrics, caret blink, Mac Roman non-ASCII input, composition, host
+modifier state, and broader TextEdit layouts need separate qualification.
 
 The Open and Save overlays are limited to modern standard entry points on both
 CPUs. Legacy and custom panels retain guest pixels. The Save filename field now

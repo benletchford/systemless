@@ -1,6 +1,6 @@
 //! Rectangular guest-frame overlays. Content pixels and input remain guest-owned.
 
-use systemless::runner::{ControlSnapshot, ListManagerSnapshot, WindowFrameSnapshot};
+use systemless::runner::{ControlSnapshot, DialogSnapshot, ListManagerSnapshot, TextEditSnapshot, WindowFrameSnapshot};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rect {
@@ -104,6 +104,76 @@ pub struct ListPiece {
     pub list: usize,
     pub source: Rect,
     pub clip: Rect,
+}
+
+pub struct TextEditPiece {
+    pub record: usize,
+    pub source: Rect,
+    pub clip: Rect,
+}
+
+/// Present only ordinary unstyled TextEdit records in standard document
+/// windows. The TERec owns line layout; other windows and controls retain
+/// their guest pixels. Inside Macintosh: Text (1993), pp. 2-64--2-69.
+pub fn text_edit_pieces(
+    records: &[TextEditSnapshot],
+    dialogs: &[DialogSnapshot],
+    controls: &[ControlSnapshot],
+    windows: &[WindowFrameSnapshot],
+    viewport: Rect,
+) -> Vec<TextEditPiece> {
+    let mut pieces = Vec::new();
+    let mut covers = Vec::new();
+    for frame in windows {
+        let window = &frame.window;
+        if !window.visible {
+            continue;
+        }
+        let Some(structure) = window.structure_bounds.map(Rect::from) else {
+            continue;
+        };
+        if !matches!(frame.definition_id, Some(0 | 4 | 8 | 12 | 16))
+            || dialogs.iter().any(|dialog| dialog.guest_id == frame.guest_id)
+        {
+            covers.push(structure);
+            continue;
+        }
+        for (index, record) in records.iter().enumerate() {
+            if record.owner_port != frame.guest_id
+                || record.styled
+                || record.face != 0
+                || record.justification != 0
+                || record.line_height <= 0
+                || record.display_lines().is_none()
+            {
+                continue;
+            }
+            let Some(source) = record.global_view_rect.map(Rect::from) else {
+                continue;
+            };
+            if controls.iter().any(|control| {
+                control.owner_id == frame.guest_id
+                    && control.visible
+                    && Rect::from(control.bounds).intersection(source).is_some()
+            }) {
+                continue;
+            }
+            let mut clips: Vec<_> = source
+                .intersection(Rect::from(window.bounds))
+                .and_then(|rect| rect.intersection(viewport))
+                .into_iter()
+                .collect();
+            if let Some(visible) = window.visible_region.map(Rect::from) {
+                clips = clips.into_iter().filter_map(|clip| clip.intersection(visible)).collect();
+            }
+            for cover in &covers {
+                clips = clips.into_iter().flat_map(|clip| clip.subtract(*cover)).collect();
+            }
+            pieces.extend(clips.into_iter().map(|clip| TextEditPiece { record: index, source, clip }));
+        }
+        covers.push(structure);
+    }
+    pieces
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -418,8 +488,8 @@ pub fn frame_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<Fram
 
 #[cfg(test)]
 mod tests {
-    use super::{control_pieces, frame_pieces, gutter_pieces, list_pieces, scrollbar_drag_outline, scrollbar_geometry, GutterKind, Rect};
-    use systemless::runner::{ControlSnapshot, ListManagerSnapshot, WindowFrameSnapshot, WindowSnapshot};
+    use super::{control_pieces, frame_pieces, gutter_pieces, list_pieces, scrollbar_drag_outline, scrollbar_geometry, text_edit_pieces, GutterKind, Rect};
+    use systemless::runner::{ControlSnapshot, ListManagerSnapshot, TextEditSnapshot, WindowFrameSnapshot, WindowSnapshot};
 
     fn window(
         bounds: (i16, i16, i16, i16),
@@ -516,6 +586,43 @@ mod tests {
         list.definition_id = 0;
         list.draw_enabled = false;
         assert!(list_pieces(&[list], &[], &[back], viewport).is_empty());
+    }
+
+    #[test]
+    fn text_edit_clips_to_owner_and_front_window_with_custom_fallback() {
+        let front = window((40, 60, 90, 140), true, 0);
+        let mut back = window((65, 10, 150, 170), true, 0);
+        back.guest_id = 2;
+        let record = TextEditSnapshot {
+            guest_id: 10,
+            generation: 1,
+            owner_port: 2,
+            global_dest_rect: Some((70, 20, 130, 160)),
+            global_view_rect: Some((70, 20, 130, 160)),
+            dest_rect: (5, 10, 65, 150),
+            view_rect: (5, 10, 65, 150),
+            text: b"hello".to_vec(),
+            selection: (0, 0),
+            active: true,
+            justification: 0,
+            line_count: 1,
+            line_starts: Some(vec![0, 5]),
+            line_height: 14,
+            font: 0,
+            face: 0,
+            size: 12,
+            styled: false,
+        };
+        let viewport = Rect::from((20, 0, 160, 180));
+        let pieces = text_edit_pieces(&[record.clone()], &[], &[], &[front.clone(), back.clone()], viewport);
+        assert!(!pieces.is_empty());
+        assert!(pieces.iter().all(|piece| piece.clip.intersection(Rect::from((40, 60, 92, 142))).is_none()));
+        let mut custom = back.clone();
+        custom.definition_id = Some(128);
+        assert!(text_edit_pieces(&[record.clone()], &[], &[], &[front, custom], viewport).is_empty());
+        let mut styled = record;
+        styled.styled = true;
+        assert!(text_edit_pieces(&[styled], &[], &[], &[back], viewport).is_empty());
     }
 
     #[test]
