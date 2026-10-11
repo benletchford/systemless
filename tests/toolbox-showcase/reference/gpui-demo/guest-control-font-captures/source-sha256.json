@@ -1,0 +1,7 @@
+{
+  "src/bin/gpui_demo.rs": "0d074a01879e5307afb790b5be9b3fd44bbb8e42b70cc30825d69dad8f7347f3",
+  "tests/toolbox-showcase/showcase.c": "b3a7038cc43d090ae016ba9fcfd5022e58a7fb085b1e0283d1068e433135b9cf",
+  "tests/toolbox-showcase/build.mpw": "ef3805d0ac2fe1a22391efa5595c7c82f24ee84bf982efcf4c1467bdc3411a33",
+  "tests/toolbox-showcase/build/toolbox-showcase.sit": "97440125530b880fbb962bfcd36ff5943406a0cc34669ce1e711a2cbbcd8a76a",
+  "target/debug/examples/gpui-menu-demo": "861c978365881d2cc9c66df877f49e40988f39a3a6c47de78c2729f08cd61c6a"
+}
