@@ -1314,6 +1314,7 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("native exception imports return through dispatch_native_exception_import")
         }
         PpcImportDispatcherTarget::RegisterAppearanceClient
+        | PpcImportDispatcherTarget::IsThemeInColor
         | PpcImportDispatcherTarget::ActivateControl
         | PpcImportDispatcherTarget::DeactivateControl
         | PpcImportDispatcherTarget::IsControlActive

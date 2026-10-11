@@ -21,6 +21,19 @@ pub(super) fn dispatch_appearance_import(
             // Registration does not change this policy.
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
+        PpcImportDispatcherTarget::IsThemeInColor => {
+            // Appearance Manager Reference: the current theme and both supplied
+            // device arguments determine whether custom content draws in color.
+            // SInt16 and Boolean occupy the low 16 and 8 bits of their registers.
+            let depth = cpu.gpr[3] as i16;
+            let color_device = cpu.gpr[4] as u8 != 0;
+            let palette = ppc_ui_theme(gworlds).provider().palette();
+            // Desktop colour does not determine the colour of theme elements.
+            let chromatic = [palette.window_background, palette.frame_dark,
+                palette.frame_light, palette.selection, palette.accent]
+                .iter().any(|color| color.r != color.g || color.g != color.b);
+            Some(PpcImportAction::Return(u32::from(depth > 1 && color_device && chromatic)))
+        }
         PpcImportDispatcherTarget::SetControlFontStyle => {
             let control = cpu.gpr[3];
             let style = cpu.gpr[4];
