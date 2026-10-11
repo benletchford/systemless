@@ -1,0 +1,34 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 34.70s
+     Running unittests src/lib.rs (target/debug/deps/systemless-257ba83b63f6679f)
+
+running 16 tests
+test systems::macintosh::runner::notification::tests::notification_snapshot_preserves_guest_bytes_and_rejects_unmapped_text ... ok
+test systems::macintosh::runner::tests::trap_dispatch::notification_delivery_restores_full_guest_registers_and_condition_codes ... ok
+
+thread 'systems::macintosh::loader::ppc::tests::file_manager::notification_direct_m68k_response_parks_then_restores_native_foreground' (1803330) panicked at src/systems/macintosh/loader/ppc/tests/file_manager.rs:24:83:
+called `Option::unwrap()` on a `None` value
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test systems::macintosh::trap::memory::tests::nminstall_arms_pascal_response_with_notification_record_argument ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_response_executes_guest_descriptor_and_restores_return_state ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_queue_imports_preserve_links_errors_and_auto_removal ... ok
+test systems::macintosh::loader::ppc::tests::file_manager::notification_direct_m68k_response_parks_then_restores_native_foreground ... FAILED
+test systems::macintosh::loader::ppc::tests::process_services::notification_queue_is_shared_across_classic_and_native_install_remove ... ok
+test systems::macintosh::trap::memory::tests::nmremove_returns_noerr_for_nominal_notification_request ... ok
+test systems::macintosh::trap::memory::tests::nminstall_returns_noerr_for_nominal_notification_request ... ok
+test systems::macintosh::trap::memory::tests::notification_completion_rejects_duplicate_and_reinstalled_record_identity ... ok
+test systems::macintosh::trap::memory::tests::notification_delivery_defer_response_and_auto_removal ... ok
+test systems::macintosh::trap::memory::tests::notification_queue_links_requests_and_nmremove_unlinks_them ... ok
+test systems::macintosh::trap::memory::tests::notification_response_executes_and_can_be_explicitly_removed ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_response_executes_m68k_descriptor_through_guest_gateway ... ok
+test systems::macintosh::loader::ppc::tests::process_services::notification_delivery_defer_native_response_and_auto_removal ... ok
+test systems::macintosh::loader::ppc::tests::file_manager::notification_native_response_resumes_slices_and_restores_foreground_context ... ok
+
+failures:
+
+failures:
+    systems::macintosh::loader::ppc::tests::file_manager::notification_direct_m68k_response_parks_then_restores_native_foreground
+
+test result: FAILED. 15 passed; 1 failed; 0 ignored; 0 measured; 6714 filtered out; finished in 0.17s
+
+error: test failed, to rerun pass `--lib`

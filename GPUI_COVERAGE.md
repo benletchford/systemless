@@ -5743,3 +5743,20 @@ helper, not frontend delivery: the runner still declines PPC acknowledgment.
 Direct 68k response entry from PPC, parked Mixed Mode qualification, runner
 scheduling, visible rendering/acknowledgment and sound completion remain open.
 No original fonts or guest drawing ownership are changed; no gate closes.
+
+### Direct Mixed Mode notification response (2026-10-11)
+
+The PPC response helper now resolves the original routine descriptor across
+ISAs. A direct 68k callee receives NMRecPtr through existing Pascal Mixed Mode
+storage and guest-call execution; native foreground context stays parked until
+that call returns. Allocation/ownership checks precede CPU entry. The regression
+executes real 68k instructions, verifies the guest memory argument write, permits
+task-level interrupts and restores the exact native architectural context.
+Its initial standalone fixture lacked the native application-task binding that
+production initialization establishes; that failure is retained. The corrected
+fixture binds the same task ownership before entry. Final16 notification tests
+pass (0.21s), and the current GPUI capture-feature compile check passes (18.66s).
+Evidence: `reference/gpui-demo/notification-direct-mixed`. This verifies the
+backend helper, not a frontend acknowledgment or runner scheduling integration.
+Nested interrupts, visible notifications, sound completion and shared-compositor
+dismissal across modes remain open. No production gate closes.
