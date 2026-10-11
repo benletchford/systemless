@@ -667,6 +667,9 @@ pub enum DialogItemKind {
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DialogItemSnapshot {
+    /// Live ControlHandle and lifetime, when the item is backed by a known control.
+    /// SetDialogItem may replace this independently of the DialogPtr lifetime.
+    pub control_identity: Option<(u32, u64)>,
     /// Current guest-owned button tracking highlight.
     pub pressed: bool,
     pub number: i16,

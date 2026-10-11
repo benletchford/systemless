@@ -65,6 +65,13 @@ impl PpcLoadedApp {
                     })
                     .flatten();
                     crate::dialog_manager::DialogItemSnapshot {
+                        control_identity: self.controls.with_ref(|state| {
+                            state.iter().find(|record| record.handle == item.handle
+                                && record.pointer != 0
+                                && self.memory.read_u32_be(item.handle) == Some(record.pointer)
+                                && self.memory.read_u32_be(record.pointer + PPC_CONTROL_OWNER_OFFSET) == Some(dialog))
+                                .map(|record| (record.handle, record.generation))
+                        }),
                         pressed: matches!(kind, crate::dialog_manager::DialogItemKind::Button
                             | crate::dialog_manager::DialogItemKind::Checkbox
                             | crate::dialog_manager::DialogItemKind::RadioButton)

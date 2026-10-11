@@ -267,6 +267,7 @@ mod desktop {
         Input(MacintoshInput),
         Wheel(super::scroll::WheelRequest),
         ActivateControl(u32, u64),
+        ActivateDialog(u32, u64, i16, Option<(u32, u64)>),
         CancelWheel,
         Shutdown,
     }
@@ -416,6 +417,11 @@ mod desktop {
                         Ok(Command::ActivateControl(id, generation)) => {
                             if !pointer_down {
                                 activation = super::activation::ControlActivation::begin(&mut session, id, generation);
+                            }
+                        }
+                        Ok(Command::ActivateDialog(id, generation, number, identity)) => {
+                            if !pointer_down {
+                                activation = super::activation::ControlActivation::begin_dialog(&mut session, id, generation, number, identity);
                             }
                         }
                         Ok(Command::Input(input)) => {
@@ -1752,7 +1758,17 @@ mod desktop {
                             .left(guest_px((item_rect.left - source.left) as f32))
                             .top(guest_px((item_rect.top - source.top) as f32))
                             .w(guest_px(item_rect.width() as f32))
-                            .h(guest_px(item_rect.height() as f32)),
+                            .h(guest_px(item_rect.height() as f32))
+                            .on_click({
+                                let sender = self.commands.clone();
+                                let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
+                                let identity = item.control_identity;
+                                move |event, _, _| {
+                                    if matches!(event, ClickEvent::Keyboard(_)) {
+                                        let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
+                                    }
+                                }
+                            }),
                         ),
                         DialogItemKind::StaticText => overlay
                             .text_size(guest_px(13.))
@@ -1818,14 +1834,46 @@ mod desktop {
                                 format!("guest-dialog-checkbox-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
                                 item.text.clone(), item.value.unwrap() != 0, item.enabled,
                                 dialog.active && item.pressed, scene_scale, cx,
-                            ),
+                            ).on_change({
+                                let sender = self.commands.clone();
+                                let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
+                                let identity = item.control_identity;
+                                move |_, event, _, _| {
+                                    if matches!(event, ClickEvent::Keyboard(_)) {
+                                        let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
+                                    }
+                                }
+                            }).when(dialog.active && item.enabled, |choice| {
+                                let sender = self.commands.clone();
+                                let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
+                                let identity = item.control_identity;
+                                choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                                    let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
+                                })
+                            }),
                         ),
                         DialogItemKind::RadioButton => overlay.child(
                             super::choices::guest_radio(
                                 format!("guest-dialog-radio-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
                                 item.text.clone(), item.value.unwrap() != 0, item.enabled,
                                 dialog.active && item.pressed, scene_scale, cx,
-                            ),
+                            ).on_change({
+                                let sender = self.commands.clone();
+                                let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
+                                let identity = item.control_identity;
+                                move |_, event, _, _| {
+                                    if matches!(event, ClickEvent::Keyboard(_)) {
+                                        let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
+                                    }
+                                }
+                            }).when(dialog.active && item.enabled, |choice| {
+                                let sender = self.commands.clone();
+                                let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
+                                let identity = item.control_identity;
+                                choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
+                                    let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
+                                })
+                            }),
                         ),
                         _ => unreachable!(),
                     };
@@ -4021,6 +4069,7 @@ mod desktop {
                     cancel_item: None,
                     edit_field: None,
                     items: vec![DialogItemSnapshot {
+                        control_identity: None,
                         pressed: false,
                         number: 1,
                         kind: DialogItemKind::StaticText,
@@ -6761,6 +6810,7 @@ mod desktop {
                 mixed.items[1].kind = DialogItemKind::Checkbox;
                 mixed.items[1].value = Some(1);
                 mixed.items.push(systemless::runner::DialogItemSnapshot {
+                    control_identity: None,
                     pressed: false,
                     number: 3,
                     kind: DialogItemKind::EditText,
@@ -6793,6 +6843,83 @@ mod desktop {
                     session.runner_mut().dialog_snapshot().is_empty()
                 });
                 assert!(dismissed, "guest should dismiss the About alert after its button click");
+            }
+        }
+
+        #[test]
+        fn semantic_dialog_activation_tracks_guest_checkbox_across_modes() {
+            use systemless::memory::MemoryBus;
+            use systemless::runner::DialogItemKind;
+
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 6, false);
+                assert!(session.runner_mut().select_guest_menu_item(129, 6));
+                wait_for_menu(&mut session, 129, 6, true);
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: 367,
+                    horizontal: 170,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: 367,
+                    horizontal: 170,
+                });
+                let dialog = (0..300)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        let dialogs = session.runner_mut().dialog_snapshot();
+                        dialogs.into_iter().find(|dialog| {
+                            dialog.visible
+                                && dialog.active
+                                && dialog.items.iter().any(|item| {
+                                    item.kind == DialogItemKind::Checkbox && item.value == Some(0)
+                                })
+                        })
+                    })
+                    .expect("preferences dialog should expose unchecked guest controls");
+                let item = dialog.items.iter().find(|item| item.kind == DialogItemKind::Checkbox).unwrap();
+                let control_identity = item.control_identity.expect("dialog controls require a guest lifetime");
+                assert_ne!(control_identity.0, 0);
+                assert_ne!(control_identity.1, 0);
+                let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
+                let identity = item.control_identity;
+                if !powerpc {
+                    let pointer = session.runner().bus().read_long(control_identity.0);
+                    session.runner_mut().bus_mut().write_long(control_identity.0, 0);
+                    let invalid = session.runner_mut().dialog_snapshot();
+                    assert_eq!(invalid.iter().find(|d| d.guest_id == id).unwrap().items.iter()
+                        .find(|i| i.number == number).unwrap().control_identity, None);
+                    assert!(super::super::activation::ControlActivation::begin_dialog(&mut session, id, generation, number, identity).is_none());
+                    session.runner_mut().bus_mut().write_long(control_identity.0, pointer);
+                }
+                let before = session.runner().dispatcher().mouse_position();
+                assert!(super::super::activation::ControlActivation::begin_dialog(&mut session, id, generation, number, None).is_none());
+                assert!(super::super::activation::ControlActivation::begin_dialog(&mut session, id, generation, number, Some((control_identity.0, control_identity.1 + 1))).is_none());
+                assert_eq!(session.runner().dispatcher().mouse_position(), before);
+                assert!(super::super::activation::ControlActivation::begin_dialog(&mut session, id, generation + 1, number, identity).is_none());
+                let click = super::super::activation::ControlActivation::begin_dialog(&mut session, id, generation, number, identity).unwrap();
+                settle(&mut session);
+                let held = session.runner_mut().dialog_snapshot();
+                let item = held.iter().find(|d| d.guest_id == id).unwrap().items.iter().find(|i| i.number == number).unwrap();
+                assert_eq!(item.value, Some(0));
+                assert!(item.pressed);
+                let click = click.advance(&mut session).unwrap();
+                settle(&mut session);
+                assert!(click.advance(&mut session).is_none());
+                let updated = session.runner_mut().dialog_snapshot();
+                let item = updated.iter().find(|d| d.guest_id == id).unwrap().items.iter().find(|i| i.number == number).unwrap();
+                assert_eq!(item.value, Some(1));
+                assert_eq!(item.control_identity, identity);
+                assert!(!item.pressed);
             }
         }
 
@@ -7719,7 +7846,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
-                    super::Command::ActivateControl(..) => panic!("pointer click duplicated as semantic activation"),
+                    super::Command::ActivateControl(..) | super::Command::ActivateDialog(..) => panic!("pointer click duplicated as semantic activation"),
                     _ => None,
                 })
                 .collect();
@@ -7789,7 +7916,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
-                    super::Command::ActivateControl(..) => panic!("pointer click duplicated as semantic activation"),
+                    super::Command::ActivateControl(..) | super::Command::ActivateDialog(..) => panic!("pointer click duplicated as semantic activation"),
                     _ => None,
                 })
                 .collect();
@@ -7914,6 +8041,7 @@ mod desktop {
                         cancel_item: None,
                         edit_field: None,
                         items: vec![DialogItemSnapshot {
+                            control_identity: None,
                             pressed: false,
                             number: 1,
                             kind: super::DialogItemKind::Button,
@@ -7940,7 +8068,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
-                    super::Command::ActivateControl(..) => panic!("pointer click duplicated as semantic activation"),
+                    super::Command::ActivateControl(..) | super::Command::ActivateDialog(..) => panic!("pointer click duplicated as semantic activation"),
                     _ => None,
                 })
                 .collect();
@@ -8020,6 +8148,7 @@ mod desktop {
                         edit_field: Some(2),
                         items: vec![
                             DialogItemSnapshot {
+                                control_identity: None,
                                 pressed: false,
                                 number: 1,
                                 kind: super::DialogItemKind::Checkbox,
@@ -8032,6 +8161,7 @@ mod desktop {
                                 caret_visible: Some(true),
                             },
                             DialogItemSnapshot {
+                                control_identity: None,
                                 pressed: false,
                                 number: 2,
                                 kind: super::DialogItemKind::EditText,
@@ -8339,7 +8469,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
-                    super::Command::ActivateControl(..) => panic!("pointer click duplicated as semantic activation"),
+                    super::Command::ActivateControl(..) | super::Command::ActivateDialog(..) => panic!("pointer click duplicated as semantic activation"),
                     _ => None,
                 })
                 .collect();
@@ -8449,7 +8579,7 @@ mod desktop {
                 .try_iter()
                 .filter_map(|command| match command {
                     super::Command::Input(input) => Some(input),
-                    super::Command::ActivateControl(..) => panic!("pointer click duplicated as semantic activation"),
+                    super::Command::ActivateControl(..) | super::Command::ActivateDialog(..) => panic!("pointer click duplicated as semantic activation"),
                     _ => None,
                 })
                 .collect();
