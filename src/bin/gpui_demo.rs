@@ -1081,6 +1081,31 @@ mod desktop {
             Self::read_host_clipboard_with_stamp(cx, stamp)
         }
 
+        fn queue_control_action(&self, id: u32, generation: u64) {
+            if self.host_active == Some(false) || self.notification_alert.is_some()
+                || self.standard_file.is_some()
+                || !self.controls.iter().any(|control| control.guest_id == id && control.generation == generation
+                    && control.visible && control.owner_visible && control.enabled
+                    && matches!(control.proc_id, 0 | 1 | 2)
+                    && self.windows.iter().any(|frame| frame.guest_id == control.owner_id
+                        && frame.window.visible && frame.window.active)) { return; }
+            let _ = self.commands.send(Command::ActivateControl(id, generation));
+        }
+
+        fn queue_dialog_action(&self, id: u32, generation: u64, number: i16,
+            identity: Option<(u32, u64)>) {
+            if self.host_active == Some(false) || self.notification_alert.is_some()
+                || self.standard_file.is_some() || !self.dialogs.iter().any(|dialog|
+                    dialog.guest_id == id && dialog.generation == generation
+                        && dialog.visible && dialog.active
+                        && dialog.items.iter().any(|item| item.number == number
+                            && item.visible && item.enabled && item.control_identity == identity
+                            && matches!(item.kind, DialogItemKind::Button | DialogItemKind::Checkbox | DialogItemKind::RadioButton))) {
+                return;
+            }
+            let _ = self.commands.send(Command::ActivateDialog(id, generation, number, identity));
+        }
+
         fn queue_standard_file_action(&self, id: u32, generation: u64, action: super::activation::FileAction) {
             if self.host_active == Some(false) || self.notification_alert.is_some()
                 || !self.standard_file.as_ref().is_some_and(|panel|
@@ -2262,7 +2287,7 @@ mod desktop {
                 // Macintosh Toolbox Essentials (1992), pp. 5-58--5-64.
                 for piece in super::frames::control_pieces(&self.controls, &self.menus, &self.windows, viewport) {
                     let control = &self.controls[piece.control];
-                    let semantic_enabled = self.standard_file.is_none() && control.enabled && self.windows.iter().any(|frame| {
+                    let semantic_enabled = self.host_active != Some(false) && self.standard_file.is_none() && control.enabled && self.windows.iter().any(|frame| {
                         frame.guest_id == control.owner_id && frame.window.visible && frame.window.active
                     });
                     if (1008..=1023).contains(&control.proc_id)
@@ -2341,19 +2366,19 @@ mod desktop {
                                     .w_full()
                                     .h_full()
                                     .on_click({
-                                        let sender = self.commands.clone();
+                                        let view = cx.entity().downgrade();
                                         let (id, generation) = (control.guest_id, control.generation);
-                                        move |event, _, _| {
+                                        move |event, _, cx| {
                                             if matches!(event, ClickEvent::Keyboard(_)) {
-                                                let _ = sender.send(Command::ActivateControl(id, generation));
+                                                let _ = view.update(cx, |this, _| this.queue_control_action(id, generation));
                                             }
                                         }
                                     })
                                     .when(semantic_enabled, |button| {
-                                        let sender = self.commands.clone();
+                                        let view = cx.entity().downgrade();
                                         let (id, generation) = (control.guest_id, control.generation);
-                                        button.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
-                                            let _ = sender.send(Command::ActivateControl(id, generation));
+                                        button.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                                            let _ = view.update(cx, |this, _| this.queue_control_action(id, generation));
                                         })
                                     }), !semantic_enabled),
                             );
@@ -2365,18 +2390,18 @@ mod desktop {
                                     control.title.clone(), control.value != 0, control.enabled,
                                     control.hilite == 11, scene_scale, title_font, cx,
                                 ).disabled(!semantic_enabled).on_change({
-                                    let sender = self.commands.clone();
+                                    let view = cx.entity().downgrade();
                                     let (id, generation) = (control.guest_id, control.generation);
-                                    move |_, event, _, _| {
+                                    move |_, event, _, cx| {
                                         if matches!(event, ClickEvent::Keyboard(_)) {
-                                            let _ = sender.send(Command::ActivateControl(id, generation));
+                                            let _ = view.update(cx, |this, _| this.queue_control_action(id, generation));
                                         }
                                     }
                                 }).when(semantic_enabled, |choice| {
-                                    let sender = self.commands.clone();
+                                    let view = cx.entity().downgrade();
                                     let (id, generation) = (control.guest_id, control.generation);
-                                    choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
-                                        let _ = sender.send(Command::ActivateControl(id, generation));
+                                    choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                                        let _ = view.update(cx, |this, _| this.queue_control_action(id, generation));
                                     })
                                 }), !semantic_enabled),
                             );
@@ -2388,18 +2413,18 @@ mod desktop {
                                     control.title.clone(), control.value != 0, control.enabled,
                                     control.hilite == 11, scene_scale, title_font, cx,
                                 ).disabled(!semantic_enabled).on_change({
-                                    let sender = self.commands.clone();
+                                    let view = cx.entity().downgrade();
                                     let (id, generation) = (control.guest_id, control.generation);
-                                    move |_, event, _, _| {
+                                    move |_, event, _, cx| {
                                         if matches!(event, ClickEvent::Keyboard(_)) {
-                                            let _ = sender.send(Command::ActivateControl(id, generation));
+                                            let _ = view.update(cx, |this, _| this.queue_control_action(id, generation));
                                         }
                                     }
                                 }).when(semantic_enabled, |choice| {
-                                    let sender = self.commands.clone();
+                                    let view = cx.entity().downgrade();
                                     let (id, generation) = (control.guest_id, control.generation);
-                                    choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
-                                        let _ = sender.send(Command::ActivateControl(id, generation));
+                                    choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                                        let _ = view.update(cx, |this, _| this.queue_control_action(id, generation));
                                     })
                                 }), !semantic_enabled),
                             );
@@ -2543,7 +2568,7 @@ mod desktop {
                     super::frames::dialog_item_pieces(&self.dialogs, &self.windows, viewport)
                 {
                     let dialog = &self.dialogs[piece.dialog];
-                    let semantic_active = dialog.active && self.standard_file.is_none();
+                    let semantic_active = dialog.active && self.standard_file.is_none() && self.host_active != Some(false);
                     let item = &dialog.items[piece.item];
                     let item_rect = super::frames::Rect::from(item.bounds);
                     let source = piece.source;
@@ -2569,21 +2594,21 @@ mod desktop {
                             .w(guest_px(item_rect.width() as f32))
                             .h(guest_px(item_rect.height() as f32))
                             .on_click({
-                                let sender = self.commands.clone();
+                                let view = cx.entity().downgrade();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
-                                move |event, _, _| {
+                                move |event, _, cx| {
                                     if matches!(event, ClickEvent::Keyboard(_)) {
-                                        let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
+                                        let _ = view.update(cx, |this, _| this.queue_dialog_action(id, generation, number, identity));
                                     }
                                 }
                             })
                             .when(item.enabled && semantic_active, |button| {
-                                let sender = self.commands.clone();
+                                let view = cx.entity().downgrade();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
-                                button.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
-                                    let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
+                                button.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                                    let _ = view.update(cx, |this, _| this.queue_dialog_action(id, generation, number, identity));
                                 })
                             }), !item.enabled || !semantic_active),
                         ),
@@ -2660,20 +2685,20 @@ mod desktop {
                                 item.text.clone(), item.value.unwrap() != 0, item.enabled,
                                 semantic_active && item.pressed, scene_scale, cx,
                             ).disabled(!item.enabled || !semantic_active).on_change({
-                                let sender = self.commands.clone();
+                                let view = cx.entity().downgrade();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
-                                move |_, event, _, _| {
+                                move |_, event, _, cx| {
                                     if matches!(event, ClickEvent::Keyboard(_)) {
-                                        let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
+                                        let _ = view.update(cx, |this, _| this.queue_dialog_action(id, generation, number, identity));
                                     }
                                 }
                             }).when(semantic_active && item.enabled, |choice| {
-                                let sender = self.commands.clone();
+                                let view = cx.entity().downgrade();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
-                                choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
-                                    let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
+                                choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                                    let _ = view.update(cx, |this, _| this.queue_dialog_action(id, generation, number, identity));
                                 })
                             }), !item.enabled || !semantic_active),
                         ),
@@ -2683,20 +2708,20 @@ mod desktop {
                                 item.text.clone(), item.value.unwrap() != 0, item.enabled,
                                 semantic_active && item.pressed, scene_scale, cx,
                             ).disabled(!item.enabled || !semantic_active).on_change({
-                                let sender = self.commands.clone();
+                                let view = cx.entity().downgrade();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
-                                move |_, event, _, _| {
+                                move |_, event, _, cx| {
                                     if matches!(event, ClickEvent::Keyboard(_)) {
-                                        let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
+                                        let _ = view.update(cx, |this, _| this.queue_dialog_action(id, generation, number, identity));
                                     }
                                 }
                             }).when(semantic_active && item.enabled, |choice| {
-                                let sender = self.commands.clone();
+                                let view = cx.entity().downgrade();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
-                                choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
-                                    let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
+                                choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                                    let _ = view.update(cx, |this, _| this.queue_dialog_action(id, generation, number, identity));
                                 })
                             }), !item.enabled || !semantic_active),
                         ),
@@ -16929,6 +16954,26 @@ mod desktop {
                     cx.notify();
                 });
             });
+            cx.update_window(window.into(), |_, _, cx| {
+                view.update(cx, |demo, _| {
+                    for kind in [super::DialogItemKind::Button, super::DialogItemKind::Checkbox, super::DialogItemKind::RadioButton] {
+                        demo.dialogs[0].items[0].kind = kind;
+                        demo.host_active = Some(false);
+                        demo.queue_dialog_action(7, 1, 1, None);
+                        demo.host_active = Some(true);
+                        demo.queue_dialog_action(7, 2, 1, None);
+                        demo.queue_dialog_action(7, 1, 1, Some((99, 1)));
+                        demo.dialogs[0].items[0].enabled = false;
+                        demo.queue_dialog_action(7, 1, 1, None);
+                        demo.dialogs[0].items[0].enabled = true;
+                        demo.queue_dialog_action(7, 1, 1, None);
+                    }
+                    demo.dialogs[0].items[0].kind = super::DialogItemKind::Button;
+                });
+            }).unwrap();
+            let semantic: Vec<_> = receiver.try_iter().filter(|command|
+                matches!(command, super::Command::ActivateDialog(..))).collect();
+            assert_eq!(semantic.len(), 3, "only current active enabled dialog actions may dispatch");
             cx.update_window(window.into(), |_, window, cx| {
                 window.click("guest-dialog-button-7-1-1", cx);
             })
@@ -16958,6 +17003,7 @@ mod desktop {
             for (active, enabled) in [(false, true), (true, false), (true, true)] {
                 cx.update_window(window.into(), |_, window, cx| {
                     view.update(cx, |demo, cx| {
+                        demo.host_active = Some(true);
                         demo.windows[0].window.active = active;
                         demo.dialogs[0].active = active;
                         demo.dialogs[0].items[0].enabled = enabled;
@@ -17822,6 +17868,27 @@ mod desktop {
                     cx.notify();
                 });
             });
+            cx.update_window(window.into(), |_, _, cx| {
+                view.update(cx, |demo, _| {
+                    for proc_id in [0, 1, 2] {
+                        demo.controls[0].proc_id = proc_id;
+                        demo.host_active = Some(false);
+                        demo.queue_control_action(22, 1);
+                        demo.host_active = Some(true);
+                        demo.queue_control_action(22, 2);
+                        demo.controls[0].enabled = false;
+                        demo.queue_control_action(22, 1);
+                        demo.controls[0].enabled = true;
+                        demo.controls[0].visible = false;
+                        demo.queue_control_action(22, 1);
+                        demo.controls[0].visible = true;
+                        demo.queue_control_action(22, 1);
+                    }
+                    demo.controls[0].proc_id = 0;
+                });
+            }).unwrap();
+            assert_eq!(receiver.try_iter().filter(|command|
+                matches!(command, super::Command::ActivateControl(..))).count(), 3);
             cx.update_window(window.into(), |_, window, cx| {
                 window.click("guest-control-button-22-1", cx);
             })
@@ -18008,6 +18075,7 @@ mod desktop {
             for enabled in [true, false, true] {
                 cx.update_window(window.into(), |_, window, cx| {
                     view.update(cx, |demo, cx| {
+                        demo.host_active = Some(true);
                         demo.windows[0].window.active = true;
                         demo.controls[0].enabled = enabled;
                         cx.notify();

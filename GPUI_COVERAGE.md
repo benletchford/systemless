@@ -24,6 +24,10 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Current-state dialog and window-control dispatch
+
+Keyboard/accessibility callbacks for buttons, checkboxes and radio buttons now revalidate host activity and current guest ownership/state at invocation. Weak Demo callbacks reject stale generations, disabled or hidden items and changed dialog control identities. Eight themed frontend regressions pass (20.85s), including direct no-rerender rejection checks for all three dialog kinds and window-control definitions, plus existing exactly-once guest pointer delivery. Evidence: `control-inactive-dispatch`. Physical activation, native accessibility delivery and comprehensive lifecycle qualification remain open; all eight broad production gates remain open.
+
 ### Standard File host-activity matrix
 
 The shared Demo Open-panel run completes16 scenarios across four CPU/depth modes

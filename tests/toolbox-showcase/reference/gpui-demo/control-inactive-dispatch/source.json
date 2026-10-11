@@ -1,0 +1,6 @@
+{
+  "base": "7e8bbe98",
+  "source": "src/bin/gpui_demo.rs",
+  "sha256": "aead0a2e9e1a4634d547b22613b0a31506b515cba90e588a0f3df8e12dbde2a2",
+  "command": "cargo test --locked --offline --example gpui-menu-demo --features gpui-demo-test themed_ -- --test-threads=1"
+}
