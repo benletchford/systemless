@@ -20,8 +20,10 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--selected', action='store_true', help='capture selected state instead of transitions')
     parser.add_argument('--lifecycle', action='store_true', help='capture guest row mutation and resizing')
+    parser.add_argument('--smooth-review', action='store_true', help='retain native source and collect smooth appearance evidence without binary pixel qualification')
     args = parser.parse_args()
     assert not (args.selected and args.lifecycle), 'choose one matrix'
+    assert not args.smooth_review or args.selected, 'retained-source smooth review currently supports selected captures only'
     root = Path(__file__).resolve().parents[2]
     assert not subprocess.check_output(['git', 'status', '--porcelain'], cwd=root), 'commit source before capturing'
     output = args.output.resolve()
@@ -40,6 +42,8 @@ def main():
         'source_dirty': False, 'source_sha256': {p: digest(root / p) for p in paths},
         'capture_binary_sha256': digest(binary), 'fixture_sha256': digest(fixture),
         'cases': [], 'complete': False,
+        'presentation': 'smooth retained-source appearance review' if args.smooth_review else 'binary erased-source qualification',
+        'pixel_qualification': not args.smooth_review,
         'scope': 'Standard list fixture owned paint and guest-button states; no general lifecycle, GPUI pointer or native host observer qualification',
     }
     progress = output / 'progress.json'
@@ -57,12 +61,16 @@ def main():
                 rendered = output / f'{mode}-{state}-{scale}.png'
                 flag = '--capture-lists-selected' if state == 'selected' else '--capture-lists-transition'
                 command = [str(binary), str(fixture), flag, str(rendered), '--capture-scale', str(scale)]
+                if args.smooth_review: command += ['--capture-lists-retain-native-source']
                 if state != 'selected': command += ['--capture-list-transition', state]
                 if depth != 16: command += ['--screen-depth', str(depth)]
                 if ppc: command += ['--prefer-powerpc']
                 with rendered.with_suffix('.log').open('w') as log:
                     subprocess.run(command, cwd=root, stdout=log, stderr=log, check=True)
-                subprocess.run(['python3', str(root / 'tests/toolbox-showcase/verify-gpui-list-text.py'), str(rendered)], check=True)
+                if not args.smooth_review:
+                    subprocess.run(['python3', str(root / 'tests/toolbox-showcase/verify-gpui-list-text.py'), str(rendered)], check=True)
+                capture = rendered.with_suffix('.capture.json')
+                assert capture.is_file(), 'missing shared compositor provenance'
                 manifest['cases'].append({
                     'mode': mode, 'depth': depth, 'scale': scale,
                     **({'state': state} if state != 'selected' else {}),
@@ -70,11 +78,13 @@ def main():
                     'rendered_sha256': digest(rendered),
                     'guest_sha256': digest(rendered.with_suffix('.guest.png')),
                     'evidence_sha256': digest(rendered.with_suffix('.json')),
+                    'compositor_evidence_sha256': digest(capture),
                 })
                 save()
     manifest['complete'] = True
     save()
-    subprocess.run(['python3', str(root / 'tests/toolbox-showcase/verify-gpui-list-matrix.py'), str(progress)], check=True)
+    if not args.smooth_review:
+        subprocess.run(['python3', str(root / 'tests/toolbox-showcase/verify-gpui-list-matrix.py'), str(progress)], check=True)
 
 
 if __name__ == '__main__':
