@@ -6,6 +6,62 @@
 use super::*;
 
 impl PpcLoadedApp {
+    /// Native notification responses retain foreground CPU state between
+    /// bounded slices. Direct 68k responses still require a Mixed Mode entry.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_notification_response_with_process_services(
+        &mut self, request: u32, instance: u64, completion: u32,
+        max_cycles: u64, trace_imports: bool, trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager, cfm: &mut PpcCfmState,
+    ) -> Option<PpcHleRunProbe> {
+        self.assert_cfm_execution_owner(Some(cfm));
+        if self.parked_interrupt_callback.is_some() { return None; }
+        if let Some((r, i, c, _, _)) = self.notification_response_context.as_ref() {
+            // A response may NMRemove its own record before it returns. Its
+            // in-flight execution still owns this continuation afterward.
+            if (*r, *i, *c) != (request, instance, completion) { return None; }
+        } else if self.toolbox_startup.notification_requests.instance_id(request) != Some(instance)
+            || self.toolbox_startup.notification_requests.response_started(request, instance) {
+            return None;
+        }
+        let saved = self.cpu.capture_execution_context();
+        let rtoc = if self.cpu.gpr[2] != 0 { self.cpu.gpr[2] } else { self.rtoc };
+        let interrupt = self.interrupt_entry();
+        let callback_sp;
+        if let Some((_, _, _, context, sp)) = self.notification_response_context.take() {
+            callback_sp = sp;
+            self.cpu.install_execution_context(context);
+        } else {
+            let target = ppc_resolve_callback_target(&mut self.memory, completion, rtoc, None)?;
+            callback_sp = self.prepare_interrupt_callback_frame(rtoc)?;
+            self.cpu.invalidate_reservation();
+            self.cpu.pc = target.entry;
+            self.cpu.lr = self.halt_pc;
+            self.cpu.gpr[1] = callback_sp;
+            self.cpu.gpr[2] = target.rtoc;
+            if install_powerpc_call_arguments(&mut self.cpu, &mut self.memory, &[request]).is_none() {
+                self.cpu.install_execution_context(saved);
+                return None;
+            }
+            if !self.toolbox_startup.notification_requests.begin_response(request, instance) {
+                self.cpu.install_execution_context(saved);
+                return None;
+            }
+        }
+        let probe = self.run_with_hle_imports_with_trace(max_cycles, trace_imports,
+            trace_fetches, Some(memory_manager), Some(cfm));
+        let parked = self.park_interrupt_callback_if_awaiting_m68k(PpcCallbackLevel::Task,
+            interrupt, Some(callback_sp), &probe, &saved, None, PpcInterruptReturnWork::None);
+        if !parked {
+            if matches!(probe.result, PpcRunResult::CycleLimit { .. }) {
+                self.notification_response_context = Some((request, instance, completion,
+                    self.cpu.capture_execution_context(), callback_sp));
+            }
+            self.cpu.install_execution_context(saved);
+        }
+        Some(probe)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_sound_completion_callback_with_process_services(
         &mut self,

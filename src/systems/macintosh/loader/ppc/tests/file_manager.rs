@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+fn notification_native_response_resumes_slices_and_restores_foreground_context() {
+    for remove_queue in [false, true] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
+        let request = PPC_DATA_BASE + 0x1000;
+        let callback = PPC_DATA_BASE + 0x2000;
+        let descriptor = PPC_DATA_BASE + 0x3000;
+        loaded.memory.add_region(request, vec![0; 128]);
+        loaded.memory.add_region(callback, vec![0; 128]);
+        loaded.memory.add_region(descriptor, vec![0; 8]);
+        loaded.memory.write_u16_be(request + 4, 8).unwrap();
+        loaded.memory.write_u32_be(request + 24, request + 64).unwrap();
+        loaded.memory.write_u32_be(request + 28, descriptor).unwrap();
+        loaded.memory.write_u32_be(request + 32, u32::MAX).unwrap();
+        loaded.memory.write_u32_be(descriptor, callback).unwrap();
+        loaded.memory.write_u32_be(descriptor + 4, loaded.rtoc).unwrap();
+        for (index, instruction) in [0x3c80_0002u32, 0x3884_ffff, 0x2c04_0000,
+            0x4082_fff8, 0x9083_0020, 0x9023_0024, 0x9061_0020, 0x4e80_0020].into_iter().enumerate() {
+            loaded.memory.write_u32_be(callback + index as u32 * 4, instruction).unwrap();
+        }
+        loaded.cpu.gpr[3] = request;
+        loaded.run_with_hle_imports(64);
+        let instance = loaded.toolbox_startup.notification_requests.instance_id(request).unwrap();
+        let foreground = loaded.cpu.capture_execution_context();
+        let mut cfm = loaded.cfm.take().unwrap();
+        let mut manager = ProcessMemoryManager::default();
+        assert!(loaded.run_notification_response_with_process_services(request, instance + 1,
+            descriptor, 250_000, false, false, &mut manager, &mut cfm).is_none());
+        let first = loaded.run_notification_response_with_process_services(request, instance,
+            descriptor, 250_000, false, false, &mut manager, &mut cfm).unwrap();
+        assert!(matches!(first.result, PpcRunResult::CycleLimit { .. }));
+        assert!(loaded.notification_response_context.is_some());
+        assert_eq!(loaded.cpu.capture_execution_context().architectural(), foreground.architectural());
+        assert_eq!(loaded.memory.read_u32_be(request + 32), Some(u32::MAX));
+        // Queue removal cannot strand a response that already owns a continuation.
+        if remove_queue { loaded.toolbox_startup.notification_requests.remove(0); }
+        let second = loaded.run_notification_response_with_process_services(request, instance,
+            descriptor, 250_000, false, false, &mut manager, &mut cfm).unwrap();
+        assert!(matches!(second.result, PpcRunResult::Halted { .. }));
+        assert!(loaded.notification_response_context.is_none());
+        assert_eq!(loaded.cpu.capture_execution_context().architectural(), foreground.architectural());
+        assert_eq!(loaded.memory.read_u32_be(request + 32), Some(0));
+        assert!(loaded.run_notification_response_with_process_services(request, instance,
+            descriptor, 250_000, false, false, &mut manager, &mut cfm).is_none());
+        let private_sp = loaded.memory.read_u32_be(request + 36).unwrap();
+        assert_eq!(loaded.memory.read_u32_be(private_sp + 32), Some(request),
+            "duplicate completion must not overwrite the prior callback frame");
+    }
+}
+
+#[test]
 fn long_file_completion_resumes_without_changing_foreground_context() {
     let pef = synthetic_pef_with_import(b"PBReadAsync");
     let mut loaded = load_pef_application(&pef).unwrap();

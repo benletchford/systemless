@@ -5727,3 +5727,19 @@ under `reference/gpui-demo/notification-runner-context`. This remains a backend
 harness check: actual GPUI acknowledgment, nested interrupt coverage, PPC and
 Mixed Mode post-delivery continuation, rendering and sound completion stay open.
 No production gate closes.
+
+### Native PPC notification response continuation (2026-10-11)
+
+A native response helper now retains its callback execution context across
+bounded slices while restoring foreground CPU state between calls. An already
+entered response can finish after its request is removed; stale initial IDs and
+mismatched continuations decline. Duplicate completion declines before callback
+frame preparation, preserving guest scratch memory. Shared snapshots expose
+response-started state. Final15 notification tests pass (0.21s), covering both
+retained and removed queues and scratch-frame preservation; the current GPUI
+capture-feature compile check passes (31.44s). Evidence is under
+`reference/gpui-demo/notification-native-continuation`. This is a native backend
+helper, not frontend delivery: the runner still declines PPC acknowledgment.
+Direct 68k response entry from PPC, parked Mixed Mode qualification, runner
+scheduling, visible rendering/acknowledgment and sound completion remain open.
+No original fonts or guest drawing ownership are changed; no gate closes.

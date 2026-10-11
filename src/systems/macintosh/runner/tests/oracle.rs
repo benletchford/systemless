@@ -37,6 +37,7 @@ fn ppc_imports_are_recorded_in_oracle_events_when_enabled() {
         collection_callback_stack: Vec::new(),
         pending_file_completions: VecDeque::new(),
         file_completion_context: None,
+        notification_response_context: None,
         parked_interrupt_callback: None,
         interrupt_callback_parks: 0,
         application_size: Default::default(),

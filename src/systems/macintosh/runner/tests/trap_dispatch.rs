@@ -29,7 +29,9 @@ fn notification_delivery_restores_full_guest_registers_and_condition_codes() {
     runner.m68k.cpu.write_reg(Register::A4, 0x12345678);
     runner.m68k.cpu.core.set_sr_noint_nosp(0x2015);
     let notice = runner.notification_snapshot().pop().unwrap();
+    assert!(!notice.response_started);
     assert!(runner.complete_notification_delivery(&notice));
+    assert!(runner.notification_snapshot().pop().unwrap().response_started);
     assert!(!runner.callback_suspends_guest_clock());
     assert!(!runner.complete_notification_delivery(&notice));
     let (_, running) = runner.run_steps(24, None);
