@@ -153,6 +153,18 @@ pub fn pack_game_sources_for_web(
             payload_from_disk_image(image, 1)?
         } else if is_zip_archive(source) {
             collect_zip_payload(source)?
+        } else if crate::binhex::looks_like_binhex(source) {
+            let file = crate::binhex::decode(source)?
+                .ok_or_else(|| "Not a BinHex file".to_string())?;
+            payload_from_forks(
+                &file.name,
+                file.data,
+                file.rsrc,
+                file.file_type,
+                file.creator,
+                file.finder_flags,
+                1,
+            )?
         } else if looks_like_macbinary(source) {
             let file = parse_macbinary_payload(source, "", 1)?;
             payload_from_forks(
@@ -166,7 +178,7 @@ pub fn pack_game_sources_for_web(
             )?
         } else {
             return Err(
-                "Game source is not a StuffIt archive, ZIP archive, HFS disk image, or MacBinary file".to_string(),
+                "Game source is not a StuffIt archive, ZIP archive, HFS disk image, BinHex file, or MacBinary file".to_string(),
             );
         };
         merge_payload(&mut payload, source_payload);
@@ -5930,6 +5942,55 @@ mod tests {
         let err = collect_zip_payload(b"PK\x03\x04not a zip")
             .expect_err("malformed ZIP should be rejected");
         assert!(err.contains("Failed to parse ZIP archive"), "{err}");
+    }
+
+    #[test]
+    fn web_pack_sources_preserve_binhex_forks_companions_and_metadata() {
+        let data = b"original data fork";
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let original = crate::binhex::make_test_binhex(
+            "Original Game", *b"APPL", *b"TEST", 0x20, data, &rsrc,
+        );
+        let companion = make_zip(&[("README", b"retain original terms")]);
+        let packed = pack_game_sources_for_web(&[&original, &companion], &[]).unwrap();
+        let mut runner = new_runner();
+        load_web_pack(&mut runner, &packed).unwrap();
+        assert_eq!(runner.dispatcher().vfs.get("Original Game"), Some(&data.to_vec()));
+        assert_eq!(runner.dispatcher().vfs_rsrc.get("Original Game"), Some(&rsrc));
+        assert_eq!(runner.dispatcher().vfs.get("README"), Some(&b"retain original terms".to_vec()));
+        let metadata = runner.dispatcher_mut().vfs_file_metadata("Original Game").unwrap();
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"APPL"));
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"TEST"));
+        assert_eq!(metadata.finder_flags, 0x20);
+    }
+
+    #[test]
+    fn web_pack_sources_expand_binhex_installer_and_apply_prefixes() {
+        let data = b"unchanged installed application";
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let installer = crate::game::vise::make_test_archive("Installed Game", data, &rsrc);
+        let original = crate::binhex::make_test_binhex(
+            "Original Installer", *b"APPL", *b"TEST", 0, &installer, &rsrc,
+        );
+        let companion = make_zip(&[("omit.txt", b"outside selected prefix")]);
+        let packed = pack_game_sources_for_web(&[&original, &companion], &["Original Installer"]).unwrap();
+        let mut runner = new_runner();
+        load_web_pack(&mut runner, &packed).unwrap();
+        assert_eq!(runner.dispatcher().vfs.get("Original Installer/Installed Game"), Some(&data.to_vec()));
+        assert_eq!(runner.dispatcher().vfs_rsrc.get("Original Installer/Installed Game"), Some(&rsrc));
+        assert!(!runner.dispatcher().vfs.contains_key("Original Installer"));
+        assert!(!runner.dispatcher().vfs.contains_key("omit.txt"));
+    }
+
+    #[test]
+    fn web_pack_sources_reject_corrupt_binhex_crc_and_truncated_stream() {
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let original = crate::binhex::make_test_binhex("Original Game", *b"APPL", *b"TEST", 0, b"data", &rsrc);
+        let mut corrupt = original.clone();
+        let start = corrupt.iter().position(|byte| *byte == b':').unwrap() + 1;
+        corrupt[start + 2] = if corrupt[start + 2] == b'!' { b'"' } else { b'!' };
+        assert!(pack_game_sources_for_web(&[&corrupt], &[]).is_err());
+        assert!(pack_game_sources_for_web(&[&original[..original.len() - 4]], &[]).is_err());
     }
 
     #[test]
