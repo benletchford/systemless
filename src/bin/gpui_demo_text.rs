@@ -25,7 +25,10 @@ mod tests {
     #[test]
     fn smooth_label_sources_preserve_guest_advances_and_have_fractional_coverage() {
         for (font, size) in [(0, 12), (1, 9), (3, 12)] {
-            let line = super::ClassicLine::plain(b"Systemless", font, size);
+            // Guest bytes include accented letters and symbols whose Unicode
+            // code points differ from their Macintosh Roman byte values.
+            let bytes = b"Systemless \x8e\xae\xbe";
+            let line = super::ClassicLine::plain(bytes, font, size);
             assert_eq!(line.smooth_sources.len() + 1, line.positions.len());
             for raster in [1, 2, 3, 4] {
                 let mut fractional = false;
@@ -40,7 +43,11 @@ mod tests {
                 }
                 assert!(fractional, "outline edges must be antialiased: {font}/{size}/{raster}");
             }
-            assert_eq!(super::ClassicLine::styled(b"Systemless", font, size, 0).positions, line.positions);
+            let decoded = systemless::systems::macintosh::mac_roman::decode_mac_roman(bytes);
+            let unicode = super::ClassicLine::unicode(&decoded, font, size);
+            assert_eq!(unicode.positions, line.positions);
+            assert_eq!(unicode.ink, line.ink);
+            assert_eq!(super::ClassicLine::styled(bytes, font, size, 0).positions, line.positions);
         }
         assert!(systemless::quickdraw::text::smooth_unicode_glyph(0, 12, 'A', 0).is_none());
         assert!(systemless::quickdraw::text::smooth_unicode_glyph(0, 12, 'A', 9).is_none());
@@ -356,17 +363,20 @@ pub(crate) fn single_line(
                     selection_color,
                 ));
             }
-            for &(x, y, width) in &line.ink {
-                window.paint_quad(fill(
-                    Bounds::new(
-                        point(
-                            origin.x + px(x as f32 * scale),
-                            origin.y + px((y + 12) as f32 * scale),
+            if !paint_smooth_label(&line, origin.x, origin.y + px(12.0 * scale),
+                scale, foreground, window) {
+                for &(x, y, width) in &line.ink {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(
+                                origin.x + px(x as f32 * scale),
+                                origin.y + px((y + 12) as f32 * scale),
+                            ),
+                            size(px(width as f32 * scale), px(scale)),
                         ),
-                        size(px(width as f32 * scale), px(scale)),
-                    ),
-                    foreground,
-                ));
+                        foreground,
+                    ));
+                }
             }
             if start == end && caret_visible {
                 window.paint_quad(fill(
@@ -639,7 +649,9 @@ pub(crate) fn classic_line(
             // Keep guest bitmap titles in one GPUI path. Small quad batches
             // can disappear in fractional-scale composed frames; device-edge
             // snapping below preserves their original bitmap rasterization.
-            if matches!(geometry, ClassicLineGeometry::Title) {
+            let smooth_ink = paint_smooth_label(&line, origin.x + px(geometry.ink_x(0) as f32 * scale),
+                origin.y + px(f32::from(ascent) * scale), scale, foreground, window);
+            if !smooth_ink && matches!(geometry, ClassicLineGeometry::Title) {
                 let mut path = PathBuilder::fill();
                 let device_scale = window.scale_factor();
                 // Match GPUI quad snapping: nearest device pixel, half ties
@@ -663,7 +675,7 @@ pub(crate) fn classic_line(
                     path.close();
                 }
                 window.paint_path(path.build().expect("guest title ink rectangles"), foreground);
-            } else {
+            } else if !smooth_ink {
                 for &(x, y, width) in &line.ink {
                     window.paint_quad(fill(
                         Bounds::new(
@@ -1257,11 +1269,13 @@ fn paint_smooth_label(
 ) -> bool {
     use gpui_kit::*;
     if line.smooth_sources.is_empty() || line.smooth_sources.len() + 1 != line.positions.len() { return false; }
+    if line.smooth_sources.iter().enumerate().any(|(index, source)| source.0 != line.positions[index]) { return false; }
     let raster = (scale * window.scale_factor()).ceil().max(1.) as u32;
     let Some(glyphs) = line.smooth_sources.iter().map(|&(pen, glyph, data)| {
         systemless::quickdraw::text::smooth_resolved_glyph(glyph, data, raster).map(|mask| (pen, mask))
     }).collect::<Option<Vec<_>>>() else { return false; };
     let unit = scale / raster as f32;
+    let mut paths = std::collections::BTreeMap::new();
     for (pen, glyph) in glyphs {
         for y in 0..glyph.height {
             let mut x = 0;
@@ -1271,14 +1285,23 @@ fn paint_smooth_label(
                 x += 1;
                 while x < glyph.width && glyph.pixels[(y * glyph.width + x) as usize] == alpha { x += 1; }
                 if alpha == 0 { continue; }
-                let mut ink = foreground;
-                ink.a *= f32::from(alpha) / 255.;
-                window.paint_quad(fill(Bounds::new(point(
-                    left + px(pen as f32 * scale + (glyph.left + start) as f32 * unit),
-                    baseline + px((glyph.top + y) as f32 * unit)),
-                    size(px((x - start) as f32 * unit), px(unit))), ink));
+                let x0 = left + px(pen as f32 * scale + (glyph.left + start) as f32 * unit);
+                let y0 = baseline + px((glyph.top + y) as f32 * unit);
+                let x1 = x0 + px((x - start) as f32 * unit);
+                let y1 = y0 + px(unit);
+                let path = paths.entry(alpha).or_insert_with(PathBuilder::fill);
+                path.move_to(point(x0, y0));
+                path.line_to(point(x1, y0));
+                path.line_to(point(x1, y1));
+                path.line_to(point(x0, y1));
+                path.close();
             }
         }
+    }
+    for (alpha, path) in paths {
+        let mut ink = foreground;
+        ink.a *= f32::from(alpha) / 255.;
+        window.paint_path(path.build().expect("resolved outline coverage spans"), ink);
     }
     true
 }
@@ -1459,11 +1482,15 @@ pub(crate) fn classic_dialog_edit_text(
         if let Some(selection) = geometry.selection {
             window.paint_quad(fill(rect(selection), selection_color));
         }
-        for &(x, y, width) in &line.ink {
-            window.paint_quad(fill(Bounds::new(
-                point(bounds.left() + px((x + 1) as f32 * scale),
-                    bounds.top() + px((y + i32::from(layout.baseline)) as f32 * scale)),
-                size(px(width as f32 * scale), px(scale))), foreground));
+        if !paint_smooth_label(&line, bounds.left() + px(scale),
+            bounds.top() + px(f32::from(layout.baseline) * scale),
+            scale, foreground, window) {
+            for &(x, y, width) in &line.ink {
+                window.paint_quad(fill(Bounds::new(
+                    point(bounds.left() + px((x + 1) as f32 * scale),
+                        bounds.top() + px((y + i32::from(layout.baseline)) as f32 * scale)),
+                    size(px(width as f32 * scale), px(scale))), foreground));
+            }
         }
         if let Some(caret) = geometry.caret {
             window.paint_quad(fill(rect(caret), foreground));
@@ -1653,17 +1680,20 @@ pub(crate) fn classic_save_name(
                 bytes.len()
             };
             let painted = ClassicLine::plain(&bytes[..visible_end], layout.font.0, layout.font.1);
-            for &(x, y, width) in &painted.ink {
-                window.paint_quad(fill(
-                    Bounds::new(
-                        point(
-                            bounds.left() + px((x + i32::from(layout.origin.0)) as f32 * scale),
-                            bounds.top() + px((y + i32::from(layout.origin.1)) as f32 * scale),
+            if !paint_smooth_label(&painted, bounds.left() + px(f32::from(layout.origin.0) * scale),
+                bounds.top() + px(f32::from(layout.origin.1) * scale), scale, foreground, window) {
+                for &(x, y, width) in &painted.ink {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(
+                                bounds.left() + px((x + i32::from(layout.origin.0)) as f32 * scale),
+                                bounds.top() + px((y + i32::from(layout.origin.1)) as f32 * scale),
+                            ),
+                            size(px(width as f32 * scale), px(scale)),
                         ),
-                        size(px(width as f32 * scale), px(scale)),
-                    ),
-                    foreground,
-                ));
+                        foreground,
+                    ));
+                }
             }
             if focused && caret_visible && start == end && position(start) >= 0. && position(start) < width - 1. {
                 window.paint_quad(fill(
