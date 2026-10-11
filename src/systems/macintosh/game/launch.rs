@@ -75,7 +75,8 @@ pub fn new_runner_with_screen_depth(screen_depth: u16) -> FixtureRunner {
 }
 
 /// Create a standard runner with explicit addressing and one indexed display
-/// depth applied to both 68K and native PowerPC launches.
+/// depth applied to both launches. A 16-bit request selects native PowerPC
+/// colour and retains the supported 8-bit indexed configuration for 68K.
 pub fn new_runner_with_configuration(addressing_32_bit: bool, screen_depth: u16) -> FixtureRunner {
     let config = FixtureRunnerConfig {
         load_address: 0x10000,
@@ -83,7 +84,7 @@ pub fn new_runner_with_configuration(addressing_32_bit: bool, screen_depth: u16)
         addressing_32_bit,
         ..FixtureRunnerConfig::default()
     }
-    .with_screen_depth(screen_depth)
+    .with_screen_depth(if screen_depth == 16 { 8 } else { screen_depth })
     .expect("frontend selected an unsupported screen depth");
     let mut runner = FixtureRunner::new(
         crate::machine_profile::reference_machine_profile().ram_size_bytes as usize,
@@ -4329,9 +4330,9 @@ mod tests {
         assert_eq!(addressed_default.configured_powerpc_screen_depth(), 16);
         assert!(!addressed_default.bus().addressing_32_bit());
 
-        for depth in [1, 2, 4, 8] {
+        for depth in [1, 2, 4, 8, 16] {
             let runner = new_runner_with_screen_depth(depth);
-            assert_eq!(runner.configured_screen_depth(), depth);
+            assert_eq!(runner.configured_screen_depth(), if depth == 16 { 8 } else { depth });
             assert_eq!(runner.configured_powerpc_screen_depth(), u32::from(depth));
         }
     }

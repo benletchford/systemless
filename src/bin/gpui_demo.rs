@@ -481,7 +481,8 @@ mod desktop {
             "2" => Ok(2),
             "4" => Ok(4),
             "8" => Ok(8),
-            _ => Err("expected 1, 2, 4 or 8".into()),
+            "16" => Ok(16),
+            _ => Err("expected 1, 2, 4, 8 or 16".into()),
         }
     }
 
@@ -9081,10 +9082,9 @@ mod desktop {
                 let mut arguments = vec!["gpui-menu-demo".to_string(),
                     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                         .join("tests/toolbox-showcase/toolbox-showcase.sit").to_string_lossy().into_owned(),
-                    "--screen-depth".into(), depth.min(8).to_string()];
+                    "--screen-depth".into(), depth.to_string()];
                 if powerpc { arguments.push("--prefer-powerpc".into()); }
-                let mut args = Args::try_parse_from(arguments).unwrap();
-                args.screen_depth = if depth == 16 { None } else { Some(depth) };
+                let args = Args::try_parse_from(arguments).unwrap();
                 let (sender, receiver) = mpsc::channel();
                 let updates = Arc::new(Mutex::new(None)); let output = updates.clone();
                 let worker = Worker(sender, Some(std::thread::spawn(move ||
