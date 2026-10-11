@@ -87,7 +87,7 @@ pub(super) fn dispatch_font_import(context: PpcFontDispatchContext<'_>) -> Optio
         PpcImportDispatcherTarget::FontToScript => {
             // FontToScript maps a font family ID to an enabled script.
             // Inside Macintosh: Text (1993), pp. 6-22 to 6-24, 6-82 to 6-83.
-            let script = crate::text_utils::font_id_to_script(cpu.gpr[3] as i16);
+            let script = crate::text_utils::font_id_to_enabled_script(cpu.gpr[3] as i16);
             Some(PpcImportAction::Return(script as u32))
         }
         PpcImportDispatcherTarget::VisibleLength => {

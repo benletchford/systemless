@@ -3719,7 +3719,7 @@ impl super::TrapDispatcher {
     }
 
     fn scriptutil_font_script(&self) -> u8 {
-        crate::text_utils::font_id_to_script(self.tx_font as i16)
+        crate::text_utils::font_id_to_enabled_script(self.tx_font as i16)
     }
 
     fn write_offset_table(bus: &mut MacMemoryBus, offsets_ptr: u32, table: [(i16, i16); 3]) {

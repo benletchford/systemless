@@ -1073,6 +1073,28 @@ pub fn font_id_to_script(font_id: i16) -> u8 {
     }
 }
 
+/// Returns true if the given script code is enabled.
+///
+/// In the current Macintosh runtime, only the Roman script system (`smRoman` = 0) is enabled.
+#[inline]
+pub fn is_script_enabled(script: u8) -> bool {
+    script == SM_ROMAN
+}
+
+/// Maps a font family ID to the script code of an enabled script system.
+/// If the script system for that font is not enabled, returns the system script (`smRoman` = 0).
+///
+/// Inside Macintosh: Text (1993), pp. 6-82 to 6-83 (`FontToScript`).
+#[inline]
+pub fn font_id_to_enabled_script(font_id: i16) -> u8 {
+    let script = font_id_to_script(font_id);
+    if is_script_enabled(script) {
+        script
+    } else {
+        SM_ROMAN
+    }
+}
+
 /// Returns true if the script system uses multibyte character encodings.
 #[inline]
 pub fn script_is_multibyte(script: u8) -> bool {
@@ -1954,6 +1976,21 @@ mod tests {
         assert_eq!(font_id_to_script(0x7000), 25); // SM_SIMP_CHINESE
         assert_eq!(font_id_to_script(-1), SM_ROMAN);
         assert_eq!(font_id_to_script(0x7FFF), 32);
+    }
+
+    #[test]
+    fn test_font_id_to_enabled_script() {
+        assert!(is_script_enabled(SM_ROMAN));
+        assert!(!is_script_enabled(SM_JAPANESE));
+        assert!(!is_script_enabled(SM_TRAD_CHINESE));
+        assert_eq!(font_id_to_enabled_script(0), SM_ROMAN);
+        assert_eq!(font_id_to_enabled_script(1), SM_ROMAN);
+        assert_eq!(font_id_to_enabled_script(3), SM_ROMAN);
+        assert_eq!(font_id_to_enabled_script(0x3FFF), SM_ROMAN);
+        // Non-enabled scripts fallback to SM_ROMAN
+        assert_eq!(font_id_to_enabled_script(0x4000), SM_ROMAN);
+        assert_eq!(font_id_to_enabled_script(0x4200), SM_ROMAN);
+        assert_eq!(font_id_to_enabled_script(0x4400), SM_ROMAN);
     }
 
     #[test]
