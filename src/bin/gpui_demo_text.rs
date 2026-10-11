@@ -25,6 +25,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shared_styled_glyph_plain_face_matches_gpui_binary_ink() {
+        use std::collections::BTreeSet;
+        for (font, size) in [(0, 12), (3, 9), (3, 12)] {
+            for byte in [b'A', b'i', b'W', 0x8e, 0xa3] {
+                let line = ClassicLine::plain(&[byte], font, size);
+                let (advance, ink) = systemless::quickdraw::text::classic_styled_glyph(
+                    font, size, byte, 0,
+                );
+                assert_eq!(line.positions, [0, advance]);
+                let painted: BTreeSet<_> = line.ink.iter().flat_map(|&(x, y, width)| {
+                    (x..x + width).map(move |px| (px as i16, y as i16))
+                }).collect();
+                assert_eq!(painted, ink.into_iter().collect());
+            }
+        }
+    }
+
+    #[test]
     fn file_name_abbreviation_preserves_guest_character_boundary() {
         assert_eq!(file_row_name("é£πAB", Some(3)), "é£π...");
         assert_eq!(file_row_name("é£π", Some(3)), "é£π");
