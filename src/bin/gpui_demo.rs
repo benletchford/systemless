@@ -9512,6 +9512,40 @@ mod desktop {
         }
 
         #[test]
+        fn guest_quit_removes_list_presentation_on_all_display_modes() {
+            for (powerpc, depth) in [(false, 1), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(depth) });
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 9));
+                wait_for_menu(&mut session, 129, 9, true);
+                settle(&mut session);
+                let lists = session.runner_mut().list_manager_snapshot();
+                assert_eq!(lists.len(), 1);
+                assert!(lists[0].draw_enabled);
+                assert!(!lists[0].standard_cell_paint.is_empty());
+                let controls: Vec<_> = session.runner_mut().control_snapshot().into_iter()
+                    .filter(|control| control.proc_id == 16 && control.visible && control.owner_id == lists[0].owner_port)
+                    .collect();
+                assert!(!controls.is_empty());
+                assert!(session.runner_mut().select_guest_menu_item(131, 4));
+                let removed = (0..300).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().list_manager_snapshot().is_empty()
+                });
+                assert!(removed, "guest Quit removes lists: PPC={powerpc}, depth={depth}");
+                let remaining = session.runner_mut().control_snapshot();
+                assert!(remaining.iter().all(|current| controls.iter().all(|old|
+                    current.guest_id != old.guest_id || current.generation != old.generation)),
+                    "disposed list controls cannot remain in presentation snapshots");
+            }
+        }
+
+        #[test]
         fn dialog_items_have_shared_geometry_and_identity_across_guest_modes() {
             use systemless::runner::DialogItemKind;
 
