@@ -3989,3 +3989,26 @@ qualifies the native field before composition. Its sidecar marks `multiline`.
 The setup follows the passing four-mode native multiline regression. This new
 command has not yet been rendered or archived; the running older matrix is
 independent and must finish before rebuilding its pinned example executable.
+
+### Remaining standard list typography gap
+
+The current GPUI list row path still uses host text layout (`text_size(13)`,
+host centering and padding). `ListManagerSnapshot` includes cells and geometry
+but lacks resolved guest font/size, native baseline/inset, physical foreground
+and background, and intact per-cell drawing evidence. Standard LDEF identity
+alone does not establish faithful replacement. This remains a release gap.
+
+The native implementations cannot be treated as one shared metric recipe:
+classic `draw_list_cell_fallback` uses the current guest font, size at least 9,
+face zero, a 3-pixel horizontal inset and a guest ascent/descent-centered
+baseline. It resolves selected highlight colour and foreground contrast, with
+cell/port clipping. PPC `ppc_list_draw` uses the owning port font/size, a 1-pixel
+inset, baseline at cell top plus guest ascent, and black/white selected paint,
+clipped to the cell and view. Guest LDEF callbacks also need independent
+ownership evidence. The next list implementation must capture these CPU-owned
+recipes and physical colours at drawing time, qualify pixels, then feed bitmap
+glyphs to the shared compositor without changing guest cell hit-testing.
+
+The original corrected styled matrix has independently verified 142 completed
+cases; this remains incomplete qualification and does not prove list rendering
+or the newer whole-field canvas.
