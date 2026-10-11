@@ -10061,7 +10061,7 @@ fn front_non_floating_window_uses_classes_visibility_and_live_window_order() {
             dispatcher_target_for_import(library, "frontnonfloatingwindow"),
             target
         );
-        run_test_import(&mut loaded, target);
+        run_test_import(&mut loaded, target.clone());
         assert_eq!(loaded.cpu.gpr[3], 0);
         let scratch = PPC_DATA_BASE + 0x1400;
         loaded.memory.add_region(scratch, vec![0; 0x100]);
@@ -10077,27 +10077,27 @@ fn front_non_floating_window_uses_classes_visibility_and_live_window_order() {
             u32::MAX,
         );
         assert_eq!(loaded.window_list.window_class(legacy_float), Some(5));
-        run_test_import(&mut loaded, target);
+        run_test_import(&mut loaded, target.clone());
         assert_eq!(loaded.cpu.gpr[3], front);
         // A negative application windowKind is unrelated to the Carbon class.
         loaded
             .memory
             .write_u16_be(front + PPC_CWINDOW_WINDOW_KIND_OFFSET, 0xFFFF)
             .unwrap();
-        run_test_import(&mut loaded, target);
+        run_test_import(&mut loaded, target.clone());
         assert_eq!(loaded.cpu.gpr[3], front);
         loaded
             .memory
             .write_u8(front + PPC_CWINDOW_VISIBLE_OFFSET, 0)
             .unwrap();
-        run_test_import(&mut loaded, target);
+        run_test_import(&mut loaded, target.clone());
         assert_eq!(loaded.cpu.gpr[3], back);
         loaded
             .memory
             .write_u8(front + PPC_CWINDOW_VISIBLE_OFFSET, 0xFF)
             .unwrap();
         loaded.window_list.bring_to_front(back);
-        run_test_import(&mut loaded, target);
+        run_test_import(&mut loaded, target.clone());
         assert_eq!(loaded.cpu.gpr[3], back);
         // CreateNewWindow records the actual class independently of windowKind.
         loaded.cpu.gpr[3] = 5;
@@ -10117,7 +10117,7 @@ fn front_non_floating_window_uses_classes_visibility_and_live_window_order() {
             .write_u8(carbon_float + PPC_CWINDOW_VISIBLE_OFFSET, 1)
             .unwrap();
         loaded.window_list.bring_to_front(carbon_float);
-        run_test_import(&mut loaded, target);
+        run_test_import(&mut loaded, target.clone());
         assert_eq!(loaded.cpu.gpr[3], back);
         for window in [back, front] {
             loaded.cpu.gpr[3] = window;
@@ -10127,7 +10127,7 @@ fn front_non_floating_window_uses_classes_visibility_and_live_window_order() {
             );
             assert_eq!(loaded.window_list.window_class(window), None);
         }
-        run_test_import(&mut loaded, target);
+        run_test_import(&mut loaded, target.clone());
         assert_eq!(loaded.cpu.gpr[3], 0);
     }
 }
