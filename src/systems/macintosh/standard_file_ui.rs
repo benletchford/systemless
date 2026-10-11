@@ -75,6 +75,9 @@ pub struct StandardFileSnapshot {
     /// Changes for each retained Standard File invocation and modal transition.
     pub generation: u64,
     pub kind: StandardFileKind,
+    /// Horizontal inset and baseline relative to each guest list row.
+    pub list_text_origin: (i16, i16),
+    pub directory_marker: &'static str,
     pub confirming_replace: bool,
     pub new_folder: Option<StandardFileNewFolderSnapshot>,
     /// True only for the modern standard entry points. This alone does not

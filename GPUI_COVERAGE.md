@@ -2360,3 +2360,20 @@ prompt remains occluded by the child where their guest bounds overlap.
 `text-classic-prompts-review.json` records commands, hashes and limitations.
 One viewport and one error do not qualify all scales, states or errors. General
 dialog fonts/styles, menus, list labels and Save-field editing remain open.
+
+### Guest glyphs in Standard File lists
+
+Open/Save row labels now use guest system-font Unicode glyph resolution.
+Snapshots retain CPU-specific row text origins and directory markers: 68k
+uses inset 4/baseline 11 relative to the row and the triangle, PPC uses
+inset 3/baseline 13 and `>`. The list border is decorative so it cannot
+inset row coordinates. Unicode and raw Mac Roman glyph parity is tested.
+The Standard File GPUI action regression passes (2.94 seconds).
+
+Three Save composed captures and paired guest frames were reviewed and saved
+in `text-classic-file-list-review.json`. Rows are clipped inside the list;
+PPC's marker is visible. The current resolved 68k strike supplies no triangle
+ink, so the painter retains the guest missing-glyph behavior rather than
+substituting a host font. Authentic Apple font fidelity, exact panel pixel
+geometry, Open captures, selected/scrolled rows and scale/state qualification
+remain open, along with the other unfinished text surfaces.

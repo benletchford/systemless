@@ -2224,8 +2224,7 @@ mod desktop {
                             .aria_label("Files")
                             .overflow_hidden()
                             .bg(cx.theme().background)
-                            .border_1()
-                            .border_color(cx.theme().border);
+                            .child(div().absolute().size_full().border_1().border_color(cx.theme().border));
                         for (row, (index, entry)) in entries
                             .iter()
                             .enumerate()
@@ -2252,17 +2251,15 @@ mod desktop {
                                     .overflow_hidden()
                                     .flex()
                                     .items_center()
-                                    .px_1()
                                     .bg(if selected {
                                         cx.theme().accent
                                     } else {
                                         cx.theme().background
                                     })
-                                    .child(if entry.is_directory {
-                                        format!("{} ▸", entry.name)
-                                    } else {
-                                        entry.name.clone()
-                                    }),
+                                    .child(super::text::classic_file_row(&if entry.is_directory {
+                                        format!("{} {}", entry.name, panel.directory_marker)
+                                    } else { entry.name.clone() }, panel.list_text_origin, scene_scale,
+                                    cx.theme().foreground)),
                             );
                         }
                         overlay = overlay.child(list);
@@ -2412,8 +2409,7 @@ mod desktop {
                             .aria_label("Files")
                             .overflow_hidden()
                             .bg(cx.theme().background)
-                            .border_1()
-                            .border_color(cx.theme().border);
+                            .child(div().absolute().size_full().border_1().border_color(cx.theme().border));
                         for (row, (index, entry)) in entries
                             .iter()
                             .enumerate()
@@ -2440,17 +2436,15 @@ mod desktop {
                                     .overflow_hidden()
                                     .flex()
                                     .items_center()
-                                    .px_1()
                                     .bg(if selected {
                                         cx.theme().accent
                                     } else {
                                         cx.theme().background
                                     })
-                                    .child(if entry.is_directory {
-                                        format!("{} ▸", entry.name)
-                                    } else {
-                                        entry.name.clone()
-                                    }),
+                                    .child(super::text::classic_file_row(&if entry.is_directory {
+                                        format!("{} {}", entry.name, panel.directory_marker)
+                                    } else { entry.name.clone() }, panel.list_text_origin, scene_scale,
+                                    cx.theme().foreground)),
                             );
                         }
                         overlay = overlay.child(list);
@@ -10016,6 +10010,8 @@ mod desktop {
                         guest_id: 7,
                         generation: 1,
                         kind: StandardFileKind::Get,
+                list_text_origin: (4, 11),
+                directory_marker: "▸",
                         confirming_replace: false,
                         new_folder: None,
                         standard_entry_point: true,
@@ -10101,6 +10097,8 @@ mod desktop {
                         guest_id: 8,
                         generation: 2,
                         kind: StandardFileKind::Put,
+                list_text_origin: (4, 11),
+                directory_marker: "▸",
                         confirming_replace: false,
                         new_folder: None,
                         standard_entry_point: true,
