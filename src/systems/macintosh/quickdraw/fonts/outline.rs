@@ -168,20 +168,7 @@ pub(super) fn rasterize(
             result.origin_x = i8::try_from(placement.left).ok()?;
             result.origin_y = i8::try_from(-placement.top).ok()?;
             #[cfg(target_os = "macos")]
-            {
-                // A rejected outline must not reject the entire face and make
-                // font resolution select another family. Retain the same
-                // source mask and metrics when conversion is unavailable.
-                let pixels = mono
-                    .as_ref()
-                    .and_then(|raster| raster.render(&path, &placement))
-                    .unwrap_or_else(|| {
-                        coverage.iter().map(|&alpha| {
-                            if alpha >= MONO_COVERAGE_THRESHOLD { 255 } else { 0 }
-                        }).collect()
-                    });
-                data.extend(pixels);
-            }
+            data.extend(monochrome::pixels(mono.as_ref(), &path, &placement, &coverage));
             #[cfg(not(target_os = "macos"))]
             data.extend(coverage.iter().map(|&alpha| {
                 if alpha >= MONO_COVERAGE_THRESHOLD {
@@ -386,6 +373,12 @@ pub(crate) fn unicode_glyph(font_id: i16, size: i16, ch: char) -> Option<Unicode
         .origin(zeno::Origin::BottomLeft)
         .inspect(|format, w, h| pixels.resize(format.buffer_size(w, h), 0))
         .render_into(&mut pixels, None);
+    #[cfg(target_os = "macos")]
+    {
+        let raster = monochrome::Rasterizer::new();
+        pixels = monochrome::pixels(raster.as_ref(), &path, &placement, &pixels);
+    }
+    #[cfg(not(target_os = "macos"))]
     pixels.iter_mut().for_each(|p| {
         *p = if *p >= MONO_COVERAGE_THRESHOLD {
             255
@@ -646,6 +639,23 @@ mod tests {
                 .all(|pair| pair[0].advance == pair[1].advance),
             "a guest sfnt registered as Geneva 9 must retain its monospaced metrics"
         );
+    }
+
+    #[test]
+    fn unicode_and_roman_paths_preserve_identical_source_glyphs() {
+        let (face, _) = super::rasterize(
+            FONT_MONACO, 9, super::bytes(FONT_MONACO).unwrap(), None, None,
+        ).unwrap();
+        for ch in ['A', 'M', '4', 'S'] {
+            let roman = &face.glyphs[ch as usize - usize::from(b' ')];
+            let (unicode, pixels) = unicode_glyph(FONT_MONACO, 9, ch).unwrap();
+            assert_eq!((roman.width, roman.height, roman.origin_x, roman.origin_y, roman.advance),
+                (unicode.width, unicode.height, unicode.origin_x, unicode.origin_y, unicode.advance),
+                "source layout for {ch}");
+            assert_eq!(&face.data[roman.data_offset..roman.data_offset
+                + usize::from(roman.width) * usize::from(roman.height)], pixels,
+                "source pixels for {ch}");
+        }
     }
 
     #[test]

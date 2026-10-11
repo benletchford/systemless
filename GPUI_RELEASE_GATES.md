@@ -23,6 +23,12 @@ GPUI TextEdit geometry/interaction regression passes twelve CPU/depth/alignment
 cases (31.24s) after temporary tracing removal.
 Per-glyph SCANCTRL/SCANTYPE propagation, other host platforms, physical input,
 performance and full font fidelity remain unqualified. No broad gate closes.
+Unicode/menu-symbol glyphs now share this converter and same-source fallback.
+All 27 font tests pass (2.03s), including complete Roman/Unicode pixel and metric
+equality. The example build passes (55.35s); four active checked-menu captures
+were reviewed at mono68k/0.75, colour68k/1, PPC8/1.5 and PPC16/2. Labels and
+checkmark fit the popup. These selected pairs do not qualify all CPU/scale/state
+combinations, native activation, physical tracking or original Apple fonts.
 Evidence: `tests/toolbox-showcase/reference/gpui-demo/source-monochrome-raster/review.json`.
 
 

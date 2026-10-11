@@ -27,6 +27,30 @@ extern "C" {
 
 pub(super) struct Rasterizer(*mut c_void);
 
+pub(super) fn pixels(
+    raster: Option<&Rasterizer>,
+    path: &OutlinePath,
+    placement: &zeno::Placement,
+    coverage: &[u8],
+) -> Vec<u8> {
+    // Conversion failure retains the same source and metrics; it must not
+    // reject the face and authorize selecting a different font family.
+    raster
+        .and_then(|raster| raster.render(path, placement))
+        .unwrap_or_else(|| {
+            coverage
+                .iter()
+                .map(|&alpha| {
+                    if alpha >= super::MONO_COVERAGE_THRESHOLD {
+                        255
+                    } else {
+                        0
+                    }
+                })
+                .collect()
+        })
+}
+
 impl Rasterizer {
     pub(super) fn new() -> Option<Self> {
         // SAFETY: The adapter allocates an independently owned raster context.
