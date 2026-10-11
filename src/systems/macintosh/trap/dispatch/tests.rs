@@ -2469,6 +2469,7 @@
 
     fn install_control_tracking(disp: &mut TrapDispatcher) {
         disp.control_tracking = Some(ControlTrackingState {
+            simple_generation: None,
             ctrl_handle: 0,
             ctrl_ptr: 0,
             popup_tracking: true,

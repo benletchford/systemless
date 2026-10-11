@@ -861,6 +861,7 @@ pub(crate) struct PersistentDialogSnapshot {
 /// TrackControl blocks until mouse-up, so HLE keeps the trap active across
 /// refires in the same style as MenuSelect and ModalDialog.
 pub(crate) struct ControlTrackingState {
+    pub simple_generation: Option<u64>,
     pub ctrl_handle: u32,
     pub ctrl_ptr: u32,
     pub popup_tracking: bool,
