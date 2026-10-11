@@ -4027,3 +4027,12 @@ The recipe therefore takes the owning painter's actual bytes, rather than the
 snapshot's independently decoded label. Preserving accented Mac Roman text
 on the classic fallback requires a separately tested native correction, with
 font mapping, pen advance and callback-owned cells accounted for.
+
+The classic standard-list fallback now retains high Mac Roman character codes
+instead of replacing them with spaces. `draw_char` consumes guest byte-valued
+characters through `get_glyph`; decoding those codes to Unicode before this
+call would select different glyphs. ASCII control-to-space conversion, NUL
+termination and trailing-space trimming retain their prior behavior. The
+focused regression compares accented guest glyphs and advances against the
+Unicode-to-guest resolver and checks the unchanged ASCII policy. Full native
+list frame/callback qualification and GPUI paint ownership remain unfinished.
