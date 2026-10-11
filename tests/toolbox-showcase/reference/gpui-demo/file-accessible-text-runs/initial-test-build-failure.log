@@ -1,0 +1,65 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6210:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6210 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+error[E0308]: mismatched types
+   --> src/bin/gpui_demo_a11y.rs:175:48
+    |
+175 |         assert_eq!(node.character_positions(), &[-3., 5., 12., 18.]);
+    |                                                ^^^^^^^^^^^^^^^^^^^^ expected `Option<&[f32]>`, found `&[{float}; 4]`
+    |
+    = note:   expected enum `std::option::Option<&[f32]>`
+            found reference `&[{float}; 4]`
+help: try wrapping the expression in `Some`
+    |
+175 |         assert_eq!(node.character_positions(), Some(&[-3., 5., 12., 18.]));
+    |                                                +++++                    +
+
+error[E0308]: mismatched types
+   --> src/bin/gpui_demo_a11y.rs:176:45
+    |
+176 |         assert_eq!(node.character_widths(), &[8., 7., 6., 6.]);
+    |                                             ^^^^^^^^^^^^^^^^^ expected `Option<&[f32]>`, found `&[{float}; 4]`
+    |
+    = note:   expected enum `std::option::Option<&[f32]>`
+            found reference `&[{float}; 4]`
+help: try wrapping the expression in `Some`
+    |
+176 |         assert_eq!(node.character_widths(), Some(&[8., 7., 6., 6.]));
+    |                                             +++++                 +
+
+warning: unused variable: `window`
+    --> src/bin/gpui_demo.rs:4889:53
+     |
+4889 |             visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+     |                                                     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_window`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `cx`
+     --> src/bin/gpui_demo.rs:11451:65
+      |
+11451 |                     cx.update_window(window.into(), |_, window, cx| window.remove_window()).unwrap();
+      |                                                                 ^^ help: if this is intentional, prefix it with an underscore: `_cx`
+
+For more information about this error, try `rustc --explain E0308`.
+warning: `systemless` (example "gpui-menu-demo" test) generated 2 warnings
+error: could not compile `systemless` (example "gpui-menu-demo" test) due to 2 previous errors; 2 warnings emitted

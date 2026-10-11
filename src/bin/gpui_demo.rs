@@ -2884,7 +2884,13 @@ mod desktop {
                             })
                         });
                         overlay = overlay.child(super::a11y::AccessibleState::new(name_field, false)
-                            .text_value(name.to_owned(), false));
+                            .hidden(panel.new_folder.is_some() || panel.confirming_replace)
+                            .text_value(name.to_owned(), false)
+                            .single_line_positions(super::text::ClassicLine::plain(
+                                &panel.name.as_deref().unwrap_or_default().chars().filter_map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char).collect::<Vec<_>>(),
+                                panel.name_text_layout.as_ref().unwrap().font.0, panel.name_text_layout.as_ref().unwrap().font.1).positions.into_iter()
+                                .map(|x| (x + i32::from(panel.name_text_layout.as_ref().unwrap().origin.0)) as f32 * scene_scale).collect())
+                            .single_line_selection(panel.name_selection.unwrap_or((0, 0)).0..panel.name_selection.unwrap_or((0, 0)).1));
                         for (label, rect) in [
                             ("Desktop", layout.desktop),
                             ("New", layout.new_folder),
@@ -2964,7 +2970,15 @@ mod desktop {
                             })
                         });
                         overlay = overlay.child(super::a11y::AccessibleState::new(name, false)
-                            .text_value(folder.name.clone(), false));
+                            .text_value(folder.name.clone(), false)
+                            .single_line_painted_positions({
+                                let map = self.text_pointer_map.clone();
+                                let identity = (panel.guest_id, panel.generation);
+                                let text = folder.name.clone();
+                                move |bounds| map.borrow().as_ref().and_then(|map|
+                                    map.accessible_positions(identity, &text, f32::from(bounds.left())))
+                            })
+                            .single_line_selection(folder.selection.0..folder.selection.1));
                     }
                     let actions = if is_error {
                         vec![(layout.create, "OK", super::activation::FileAction::DismissFolderError)]
