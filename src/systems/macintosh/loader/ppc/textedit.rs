@@ -823,6 +823,7 @@ pub(super) fn ppc_te_recalculate_layout(
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, i16::MAX));
     let max_width = right.saturating_sub(left).max(1);
     let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
+    let face = memory.read_u8(te_ptr + PPC_TE_TX_FACE_OFFSET).unwrap_or(0);
     let style_runs = if styled {
         ppc_te_style_runs(memory, handles, te_handle, text.len())
     } else {
@@ -834,7 +835,7 @@ pub(super) fn ppc_te_recalculate_layout(
             let style = ppc_te_style_at_offset(&style_runs, index);
             ppc_text_width_bytes(style.font, style.size, style.face, &[byte])
         } else {
-            ppc_text_byte_advance_for_font(byte, font, size)
+            ppc_text_width_bytes(font, size, face, &[byte])
         }
     });
     let starts = lines
@@ -1579,6 +1580,7 @@ pub(super) fn ppc_te_point_to_offset(
     let (top, left, _, right) =
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, 0));
     let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
+    let face = memory.read_u8(te_ptr + PPC_TE_TX_FACE_OFFSET).unwrap_or(0);
     let style_runs = if styled {
         ppc_te_style_runs(memory, handles, te_handle, text.len())
     } else {
@@ -1618,7 +1620,7 @@ pub(super) fn ppc_te_point_to_offset(
     let width = if styled {
         ppc_te_measure_text_width_styled(&style_runs, &text, start, visible_end)
     } else {
-        ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size)
+        ppc_text_width_bytes(font, size, face, &text[start..visible_end])
     };
     let alignment = memory.read_u16_be(te_ptr + PPC_TE_JUST_OFFSET).unwrap_or(0) as i16;
     let line_left = crate::text_edit::aligned_line_left(left, right, width, alignment, 1);
@@ -1630,7 +1632,7 @@ pub(super) fn ppc_te_point_to_offset(
             let style = ppc_te_style_at_offset(&style_runs, start + index);
             ppc_text_width_bytes(style.font, style.size, style.face, &[byte])
         } else {
-            ppc_text_byte_advance_for_font(byte, font, size)
+            ppc_text_width_bytes(font, size, face, &[byte])
         };
         if target_x < advance.saturating_add(char_width / 2) {
             offset = start + index;
@@ -1863,6 +1865,7 @@ pub(super) fn ppc_te_get_point(
     let (top, left, _, right) =
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, 0));
     let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
+    let face = memory.read_u8(te_ptr + PPC_TE_TX_FACE_OFFSET).unwrap_or(0);
     let style_runs = if styled {
         ppc_te_style_runs(memory, handles, te_handle, text.len())
     } else {
@@ -1883,7 +1886,7 @@ pub(super) fn ppc_te_get_point(
     let line_width = if styled {
         ppc_te_measure_text_width_styled(&style_runs, &text, start, visible_end)
     } else {
-        ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size)
+        ppc_text_width_bytes(font, size, face, &text[start..visible_end])
     };
     let alignment = memory.read_u16_be(te_ptr + PPC_TE_JUST_OFFSET).unwrap_or(0) as i16;
     let line_left = crate::text_edit::aligned_line_left(left, right, line_width, alignment, 1);
@@ -1891,7 +1894,7 @@ pub(super) fn ppc_te_get_point(
     let prefix_width = if styled {
         ppc_te_measure_text_width_styled(&style_runs, &text, start, prefix_end)
     } else {
-        ppc_text_bytes_advance_for_font(&text[start..prefix_end], font, size)
+        ppc_text_width_bytes(font, size, face, &text[start..prefix_end])
     };
     let h = line_left.saturating_add(prefix_width);
     let mut v = top;
@@ -2162,6 +2165,7 @@ pub(super) fn ppc_te_draw(
     let (top, left, _, right) =
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, 0));
     let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
+    let face = memory.read_u8(te_ptr + PPC_TE_TX_FACE_OFFSET).unwrap_or(0);
     let (font, size, fallback_line_height, fallback_ascent) = ppc_te_metrics(memory, te_ptr);
     let style_runs = if styled {
         ppc_te_style_runs(memory, handles, te_handle, text.len())
@@ -2234,7 +2238,7 @@ pub(super) fn ppc_te_draw(
             ppc_text_width_bytes(
                 font,
                 size,
-                ppc_current_text_style(memory, port),
+                face,
                 &text[start..visible_end],
             )
         };
@@ -2278,7 +2282,7 @@ pub(super) fn ppc_te_draw(
                 offset = run_end;
             }
         } else {
-            let _ = ppc_draw_text_bytes_clipped(
+            let _ = ppc_draw_text_bytes_styled_clipped(
                 memory,
                 gworlds,
                 port,
@@ -2288,6 +2292,7 @@ pub(super) fn ppc_te_draw(
                 mode,
                 fallback_color,
                 explicit_index,
+                face,
                 view_clip,
                 &text[start..visible_end],
             );
@@ -2301,7 +2306,7 @@ pub(super) fn ppc_te_draw(
                     if styled {
                         ppc_te_measure_text_width_styled(&style_runs, &text, start, end)
                     } else {
-                        ppc_text_bytes_advance_for_font(&text[start..end], font, size)
+                        ppc_text_width_bytes(font, size, face, &text[start..end])
                     }
                 };
                 let selection_left = if selected_start == start && matches!(alignment, 0 | -2) {
@@ -2372,7 +2377,7 @@ pub(super) fn ppc_te_draw(
                     ppc_text_width_bytes(
                         font,
                         size,
-                        ppc_current_text_style(memory, port),
+                        face,
                         &text[start..visible_end],
                     )
                 };
@@ -2386,7 +2391,7 @@ pub(super) fn ppc_te_draw(
                     ppc_text_width_bytes(
                         font,
                         size,
-                        ppc_current_text_style(memory, port),
+                        face,
                         &text[start..caret_offset],
                     )
                 };

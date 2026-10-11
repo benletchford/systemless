@@ -1528,3 +1528,79 @@ fn styled_mixed_line_heights_match_guest_points_and_shared_geometry() {
         (i32::from(point as u16 as i16) - 1, i32::from((point >> 16) as i16) + 1)), black,
         "native caret ink must use the same cumulative line origin");
 }
+
+#[test]
+fn plain_textedit_uses_record_face_for_paint_layout_and_hit_testing() {
+    for depth in [8, 16] {
+        let mut loaded = load_pef_application_with_config(&synthetic_pef_with_import(b"TENew"),
+            PpcLoadConfig { screen_depth: depth, ..PpcLoadConfig::default() }).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 128]);
+        ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 150, 80).unwrap();
+        loaded.cpu.gpr[3] = scratch;
+        loaded.cpu.gpr[4] = scratch;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+        let handle = loaded.cpu.gpr[3];
+        let text = b"HELLO WORLD HELLO WORLD";
+        loaded.memory.write_bytes(scratch + 16, text).unwrap();
+        loaded.cpu.gpr[3] = scratch + 16;
+        loaded.cpu.gpr[4] = text.len() as u32;
+        loaded.cpu.gpr[5] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+        let ptr = ppc_te_record_ptr(&mut loaded.memory, handle).unwrap();
+        loaded.memory.write_u16_be(ptr + PPC_TE_TX_FONT_OFFSET, 4).unwrap();
+        loaded.memory.write_u16_be(ptr + PPC_TE_TX_SIZE_OFFSET, 10).unwrap();
+        loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        ppc_paint_rect_bounds(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD,
+            (160, 200, 161, 201), loaded.quickdraw_fore_color, Some(103));
+        let ink = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (200, 160));
+        let mut plain_pixels = None;
+        let mut bold_pixels = None;
+        for face in [0, 1, 2, 4, 8, 16, 32, 64, 31] {
+            loaded.memory.write_u8(ptr + PPC_TE_TX_FACE_OFFSET, face).unwrap();
+            for alignment in [0i16, 1, -1] {
+                loaded.memory.write_u16_be(ptr + PPC_TE_JUST_OFFSET, alignment as u16).unwrap();
+                let mut expected = None;
+                for caller_face in [0, 1, 31, 64] {
+                    loaded.memory.write_u8(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FACE_OFFSET,
+                        caller_face).unwrap();
+                    loaded.cpu.gpr[3] = handle;
+                    run_test_import(&mut loaded, PpcImportDispatcherTarget::TECalText);
+                    let snapshot = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+                        &mut |address| loaded.memory.read_u8(address));
+                    let starts = snapshot.records[0].line_starts.clone();
+                    let points = (0..=text.len()).map(|offset| ppc_te_get_point(
+                        &mut loaded.memory, test_handles!(loaded), handle, offset as u16)).collect::<Vec<_>>();
+                    let point = points[1];
+                    assert_eq!(ppc_te_point_to_offset(&mut loaded.memory, test_handles!(loaded),
+                        handle, (point >> 16) as i16, point as u16 as i16), Some(1));
+                    ppc_paint_rect_bounds(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD,
+                        (10, 20, 150, 80), PpcRgbColor { red: 0xffff, green: 0xffff, blue: 0xffff },
+                        Some(0));
+                    ppc_te_draw(&mut loaded.memory, test_handles!(loaded), &loaded.gworlds,
+                        handle, PPC_MAIN_GWORLD, loaded.quickdraw_fore_color,
+                        &loaded.quickdraw_fore_indices);
+                    let mut pixels = Vec::new();
+                    for y in 10..150 {
+                        for x in 20..80 {
+                            pixels.push(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)));
+                        }
+                    }
+                    assert!(pixels.iter().any(|pixel| *pixel == ink), "must paint actual ink");
+                    if caller_face == 0 && alignment == 0 {
+                        if face == 0 { plain_pixels = Some(pixels.clone()); }
+                        if face == 1 { bold_pixels = Some(pixels.clone()); }
+                    }
+                    let actual = (starts, points, pixels);
+                    if let Some(expected) = &expected {
+                        assert_eq!(&actual, expected, "face {face}, alignment {alignment}, caller {caller_face}");
+                    } else { expected = Some(actual); }
+                    assert_eq!(loaded.memory.read_u8(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FACE_OFFSET),
+                        Some(caller_face), "TextEdit must preserve the caller's style");
+                }
+            }
+        }
+        assert_ne!(plain_pixels, bold_pixels, "canonical bold must change painted glyphs");
+    }
+}

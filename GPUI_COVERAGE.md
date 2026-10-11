@@ -1,5 +1,25 @@
 # GPUI Kit system-interface coverage
 
+### Canonical PPC plain TextEdit font style (2026-10-12)
+
+PPC plain TextEdit now uses TERec.txFace for wrapping, insertion/selection/caret
+measurement, alignment and glyph painting. Previously layout ignored the face,
+alignment used the caller port's face, and glyph painting used plain ink.
+The existing PPC QuickDraw style and scaling implementation supplies the glyphs
+and advances; caller port attributes and generic TETextBox behavior are retained.
+
+All 25 PPC TextEdit regressions pass (3.75s). The new functional regression
+compares wrap starts, insertion points and actual painted pixels under four
+conflicting caller faces, nine record faces and three alignments on both8-bit
+and16-bit surfaces. Inverse hit testing is checked at the first boundary;
+canonical bold must change actual ink, and caller style must remain unchanged.
+This is native runtime functional coverage with root optimization level0,
+not a Macintosh font oracle, a GPUI visual matrix or performance measurement.
+Nonzero plain-face GPUI eligibility still requires faithful paint/geometry
+qualification. Active nonzero-face selection/caret, non-unit font ratios and
+independent Macintosh font fidelity remain open; no release gate closes.
+The fresh locked/offline default desktop build check passes (33.06s).
+
 ### Canonical classic TextEdit face measurement (2026-10-12)
 
 Plain classic TextEdit wrapping, TEGetPoint and TEGetOffset now measure with
@@ -16,13 +36,17 @@ testing without mutating caller style. All 431 classic dialog tests pass
 (0.43s) on the final cleaned source; 42 related TextEdit tests also pass
 (4.24s), including shared/PPC snapshot and geometry regressions. These are functional tests using root
 optimization level 0 and incremental CI compilation, not performance results.
-Nonzero-face GPUI ownership remains guarded. PPC plain-face behavior,
-complete paint/style qualification, actual styled scenes across scales and
+Nonzero-face GPUI ownership remains guarded. Complete paint/style
+qualification, actual styled scenes across scales and
 independent Macintosh font fidelity remain unfinished. This is a measurement
 prerequisite for wider faithful GPUI text rendering, not completion of it.
 
 The fresh locked/offline default desktop check passes on this measurement
 source at `a9296e38` (35.97s). The earlier `96db9621` check is separate evidence.
+The subsequent active multiline shared-compositor interaction check passes
+all four CPU/display modes at scales0.75/1/1.5/2 on `874fde40` (18.31s).
+This preserves the existing field eligibility and does not qualify nonzero
+faces or physical/native interaction.
 
 ### Current optimized EV and multiline checks (2026-10-12)
 
