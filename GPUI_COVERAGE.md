@@ -5933,3 +5933,20 @@ This is explicit classic worker delivery with host services disabled. PPC guest
 installation, response procedures in this worker workflow, automatic acquisition,
 shared composed captures, physical input and native fidelity remain unfinished.
 All eight production gates remain open.
+
+### Classic leaf notification response correction (2026-10-11)
+
+The actual-worker procedure regression reproduced a silent completion defect:
+classic response entry required LINK/MOVEM/JMP prologues, so a valid leaf
+procedure beginning MOVEA was skipped while response_started became true.
+Notification entry now checks address alignment/range instead of a prologue
+whitelist and marks completion only after successful entry. A rejected address
+retains alert ownership and leaves response unstarted. The stronger worker test
+passes four cases: automatic removal and a Pascal leaf procedure at mono/colour
+68k depths (4.12s). Guest code increments nmRefCon; duplicate acknowledgment
+followed by actual TextEdit menu progress leaves the counter at one. All22 runner
+notification tests pass (0.16s). Evidence/failure log:
+`reference/gpui-demo/notification-leaf-response`.
+This qualifies the selected classic worker response path, not PPC worker delivery,
+shared visual fidelity, physical input or complete ordered notification stages.
+All eight production gates remain open.

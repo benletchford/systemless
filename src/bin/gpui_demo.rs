@@ -9029,17 +9029,20 @@ mod desktop {
                     if let Some(handle) = self.1.take() { let _ = handle.join(); }
                 }
             }
-            fn wait(updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
+            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
                 let start = Instant::now();
+                let mut last = String::new();
                 loop {
                     if let Some(update) = updates.lock().unwrap().take() {
                         if ready(&update) { return update; }
+                        last = format!("status={} notices={:?} alert={:?}", update.status,
+                            update.notifications, update.notification_alert);
                     }
-                    assert!(start.elapsed() < Duration::from_secs(20), "notification worker timeout");
+                    assert!(start.elapsed() < Duration::from_secs(20), "notification worker timeout at {stage}: {last}");
                     std::thread::sleep(Duration::from_millis(10));
                 }
             }
-            for depth in [1u16, 8] {
+            for (depth, procedure) in [(1u16, false), (8, false), (1, true), (8, true)] {
                 let args = Args::try_parse_from(["gpui-menu-demo".to_string(),
                     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                         .join("tests/toolbox-showcase/toolbox-showcase.sit").to_string_lossy().into_owned(),
@@ -9047,7 +9050,7 @@ mod desktop {
                 let (sender, receiver) = mpsc::channel();
                 let updates = Arc::new(Mutex::new(None)); let output = updates.clone();
                 let worker = Worker(sender, Some(std::thread::spawn(move ||
-                    super::run_guest_with_setup(args, receiver, output, false, |session| {
+                    super::run_guest_with_setup(args, receiver, output, false, move |session| {
                         let runner = session.runner_mut();
                         let registers = [Register::D0, Register::D1, Register::D2, Register::D3,
                             Register::D4, Register::D5, Register::D6, Register::D7,
@@ -9059,7 +9062,16 @@ mod desktop {
                         runner.bus_mut().fill_bytes(request, 128, 0);
                         runner.bus_mut().write_word(request + 4, 8);
                         runner.bus_mut().write_long(request + 24, request + 64);
-                        runner.bus_mut().write_long(request + 28, u32::MAX);
+                        let response = if procedure {
+                            let callback = runner.bus_mut().alloc(16);
+                            // Pascal NMRecPtr argument, increment nmRefCon, RTD4.
+                            for (index, word) in [0x206fu16, 4, 0x52a8, 32, 0x4e74, 4]
+                                .into_iter().enumerate() {
+                                runner.bus_mut().write_word(callback + index as u32 * 2, word);
+                            }
+                            callback
+                        } else { u32::MAX };
+                        runner.bus_mut().write_long(request + 28, response);
                         runner.bus_mut().write_byte(request + 64, 4);
                         for (index, byte) in b"Caf\x8e".iter().enumerate() {
                             runner.bus_mut().write_byte(request + 65 + index as u32, *byte);
@@ -9078,19 +9090,32 @@ mod desktop {
                         }
                         runner.cpu_mut().core.set_sr_noint_nosp(sr);
                     }))));
-                let mut initial = wait(&updates, |update| update.notifications.len() == 1
+                let mut initial = wait("install", &updates, |update| update.notifications.len() == 1
                     && update.menus.menus.iter().any(|menu| menu.id == 129));
                 let menu = initial.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
                 let blocked_menu = Command::Menu(129, 7, menu.guest_id, menu.generation);
                 let notice = initial.notifications.pop().unwrap();
                 assert_eq!(notice.text.as_deref(), Some(b"Caf\x8e".as_slice()));
                 worker.0.send(Command::BeginNotificationAlert(notice.clone())).unwrap();
-                let owned = wait(&updates, |update| update.notification_alert.as_ref() == Some(&notice));
+                let owned = wait("acquire", &updates, |update| update.notification_alert.as_ref() == Some(&notice));
                 assert!(!owned.notifications[0].response_started);
                 worker.0.send(blocked_menu).unwrap();
-                worker.0.send(Command::DismissNotificationAlert(notice)).unwrap();
-                let completed = wait(&updates, |update| update.notification_alert.is_none()
-                    && update.notifications.is_empty());
+                worker.0.send(Command::DismissNotificationAlert(notice.clone())).unwrap();
+                let completed = wait("response", &updates, |update| update.notification_alert.is_none()
+                    && if procedure {
+                        update.notifications.len() == 1 && update.notifications[0].response_started
+                            && update.notifications[0].ref_con == 1
+                    } else { update.notifications.is_empty() });
+                if procedure {
+                    worker.0.send(Command::DismissNotificationAlert(notice)).unwrap();
+                    let menu = completed.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+                    worker.0.send(Command::Menu(129, 7, menu.guest_id, menu.generation)).unwrap();
+                    let unchanged = wait("post-response menu", &updates, |update| update.menus.menus.iter()
+                        .any(|menu| menu.id == 129 && menu.items.iter()
+                            .any(|item| item.number == 7 && item.checked)));
+                    assert_eq!(unchanged.notifications[0].ref_con, 1,
+                        "duplicate acknowledgment must not re-enter the guest procedure");
+                }
                 assert!(!completed.status.contains("Guest stopped"));
                 assert!(!completed.menus.menus.iter().find(|menu| menu.id == 129).unwrap()
                     .items.iter().find(|item| item.number == 7).unwrap().checked,
