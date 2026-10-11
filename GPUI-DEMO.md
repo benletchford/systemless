@@ -122,6 +122,15 @@ captures show the re-exposed window stack.
 The restored capture also asserts that a point newly exposed in the main
 window has its guest-painted white background rather than stale auxiliary
 pixels.
+The guest showcase gives its stacked inspector an application-defined
+`WStateData.stdState` rectangle. `--capture-windows-custom-zoomed` checks that
+the guest chooses its 600×420 bounds and records the composed
+[68K](tests/toolbox-showcase/reference/gpui-demo/28-windows-custom-zoomed-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/28-windows-custom-zoomed-ppc.png)
+frames. `--capture-windows-custom-zoom-restored` checks its original bounds
+and shows the re-exposed stack on
+[68K](tests/toolbox-showcase/reference/gpui-demo/29-windows-custom-zoom-restored-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/29-windows-custom-zoom-restored-ppc.png).
 `--capture-windows-promoted` closes the inspector, leaving the auxiliary window
 frontmost on [68K](tests/toolbox-showcase/reference/gpui-demo/24-windows-promoted-68k.png)
 and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/24-windows-promoted-ppc.png).

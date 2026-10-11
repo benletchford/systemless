@@ -4266,6 +4266,13 @@ static void SetPage(short page)
         SetRect(&bounds, 330, 250, 575, 495);
         gStackWindow = NewCWindow(nil, &bounds, "\pStacked Inspector", true,
                                   zoomDocProc, (WindowPtr)-1, true, 2);
+        if (gStackWindow != nil) {
+            WStateDataHandle zoomState =
+                (WStateDataHandle)((WindowPeek)gStackWindow)->dataHandle;
+            if (zoomState != nil && *zoomState != nil) {
+                SetRect(&(*zoomState)->stdState, 100, 100, 700, 520);
+            }
+        }
         CheckItem(StateMenu(), iWindowState,
                   gAuxWindow != nil && gStackWindow != nil);
         DrawAuxWindow(gAuxWindow);
