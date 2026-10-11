@@ -706,3 +706,13 @@ CPU/depth/scale cases. Build and commit clean source before starting the driver,
 and keep its pinned source, executable and fixture unchanged until it exits.
 Spacing metadata must agree across the request, sidecar and guest style runs.
 These smooth captures require visual review and do not use a binary ink oracle.
+
+The styled matrix driver also accepts `--binary PATH` for an explicitly built
+capture executable. Its default remains `target/debug/examples/gpui-menu-demo`.
+For the repository's optimized test profile, build with
+`cargo build --locked --profile ci-test --example gpui-menu-demo --features gpui-demo-test`
+and pass `--binary target/ci-test/examples/gpui-menu-demo`. The driver retains
+its clean-source requirement and pins that exact executable, fixture and
+renderer sources throughout the run. The profile retains debug assertions and
+overflow checks; using it does not establish production performance. Omitting
+`--multiline` requests the complete192-case single-line state matrix.
