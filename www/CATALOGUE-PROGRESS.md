@@ -514,7 +514,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 472 | Earth Command | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 473 | FastGun | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 474 | Grid Warrior | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 475 | Halma | [Original GPL-2.0-or-later grant and matching source](CATALOGUE-SOURCES.md#halma-12--target-663) | Original game/source receipts match upstream; production fork parity pending | Pending | N/A: original resource-only 68K game, five CODE/no cfrg | Pending | Pending | Pending |
+| 475 | Halma | [Original GPL-2.0-or-later grant and matching source](CATALOGUE-SOURCES.md#halma-12--target-663) | [Original receipts; both files/all four forks and Finder metadata match](https://github.com/benletchford/systemless/issues/4553#issuecomment-6107023397) | [Legal step, move count 0→1; four assertions](https://github.com/benletchford/systemless/issues/4553#issuecomment-6107023397) | N/A: original resource-only 68K game, five CODE/no cfrg | Pending | Pending | Pending |
 | 476 | iConcentration | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 477 | Jetpack | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 478 | Kablooey | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
