@@ -1236,9 +1236,7 @@ pub enum PpcImportDispatcherTarget {
     NewEventLoopTimerUPP,
     DisposeEventLoopTimerUPP,
     NewGrowZoneUPP,
-    NewObjectSupportUPP {
-        proc_info: u32,
-    },
+    NewObjectSupportUPP { proc_info: u32 },
     DisposeGrowZoneUPP,
     NewModalFilterUPP,
     DisposeModalFilterUPP,
@@ -1335,16 +1333,8 @@ pub(crate) fn dispatcher_target_for_import(
         // below so other weak imports retain their unresolved state.
         (
             "Apple;Carbon;Multimedia",
-            "GetMovieBox"
-            | "DisposeMovie"
-            | "SetMovieBox"
-            | "EnterMovies"
-            | "SetMovieGWorld"
-            | "StopMovie"
-            | "GetMoviesError"
-            | "MoviesTask"
-            | "StartMovie"
-            | "IsMovieDone",
+            "GetMovieBox" | "DisposeMovie" | "SetMovieBox" | "EnterMovies" | "SetMovieGWorld"
+            | "StopMovie" | "GetMoviesError" | "MoviesTask" | "StartMovie" | "IsMovieDone",
         ) => "QuickTimeLib",
         // CarbonLib exports these C math symbols with the same PowerPC
         // floating-point ABI as MathLib. Inside Macintosh: PowerPC Numerics
@@ -1354,9 +1344,12 @@ pub(crate) fn dispatcher_target_for_import(
         // These classic port-buffering routines are Carbon-only exports.
         (
             "CarbonLib",
-            "QDIsPortBuffered" | "qdisportbuffered"
-            | "QDIsPortBufferDirty" | "qdisportbufferdirty"
-            | "QDFlushPortBuffer" | "qdflushportbuffer",
+            "QDIsPortBuffered"
+            | "qdisportbuffered"
+            | "QDIsPortBufferDirty"
+            | "qdisportbufferdirty"
+            | "QDFlushPortBuffer"
+            | "qdflushportbuffer",
         ) => "CarbonLib",
         ("CarbonLib", _) => "InterfaceLib",
         // Director's CFM runtime exports these ISO C entry points with the
@@ -1364,28 +1357,9 @@ pub(crate) fn dispatcher_target_for_import(
         // unresolved until they have their own implementations.
         (
             "MacromediaRuntimeLib",
-            "fclose"
-            | "fopen"
-            | "fread"
-            | "fseek"
-            | "ftell"
-            | "getenv"
-            | "memcmp"
-            | "memcpy"
-            | "memmove"
-            | "memset"
-            | "qsort"
-            | "sprintf"
-            | "sscanf"
-            | "strcat"
-            | "strchr"
-            | "strcmp"
-            | "strcpy"
-            | "strlen"
-            | "strncmp"
-            | "strncpy"
-            | "strpbrk"
-            | "time"
+            "fclose" | "fopen" | "fread" | "fseek" | "ftell" | "getenv" | "memcmp" | "memcpy"
+            | "memmove" | "memset" | "qsort" | "sprintf" | "sscanf" | "strcat" | "strchr"
+            | "strcmp" | "strcpy" | "strlen" | "strncmp" | "strncpy" | "strpbrk" | "time"
             | "vsprintf",
         ) => "StdCLib",
         _ => library_name,
@@ -2351,9 +2325,10 @@ pub(crate) fn dispatcher_target_for_import(
         // The emulated process has no external input method to initialize.
         ("InterfaceLib", "InitTSMAwareApplication")
         | ("InterfaceLib", "CloseTSMAwareApplication") => PpcImportDispatcherTarget::ReturnNoErr,
-        ("InterfaceLib", "SetScriptManagerVariable" | "SetEnvirons" | "SetScript" | "SetScriptVariable") => {
-            PpcImportDispatcherTarget::ReturnNoErr
-        }
+        (
+            "InterfaceLib",
+            "SetScriptManagerVariable" | "SetEnvirons" | "SetScript" | "SetScriptVariable",
+        ) => PpcImportDispatcherTarget::ReturnNoErr,
         // No input method is active in the emulated process, so Text Services
         // Manager leaves each EventRecord for the application to handle.
         ("InterfaceLib", "TSMEvent") | ("InterfaceLib", "TSMMenuSelect") => {
@@ -2631,8 +2606,12 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "NewHandle") => PpcImportDispatcherTarget::NewHandle { clear: false },
         ("InterfaceLib", "NewString") => PpcImportDispatcherTarget::NewString,
         ("InterfaceLib", "NewHandleClear") => PpcImportDispatcherTarget::NewHandle { clear: true },
-        ("InterfaceLib", "NewHandleSys") => PpcImportDispatcherTarget::NewHandleSys { clear: false },
-        ("InterfaceLib", "NewHandleSysClear") => PpcImportDispatcherTarget::NewHandleSys { clear: true },
+        ("InterfaceLib", "NewHandleSys") => {
+            PpcImportDispatcherTarget::NewHandleSys { clear: false }
+        }
+        ("InterfaceLib", "NewHandleSysClear") => {
+            PpcImportDispatcherTarget::NewHandleSys { clear: true }
+        }
         ("InterfaceLib", "TempNewHandle") => PpcImportDispatcherTarget::TempNewHandle,
         ("InterfaceLib", "TempDisposeHandle") => PpcImportDispatcherTarget::TempDisposeHandle,
         ("InterfaceLib", "TempHLock") => PpcImportDispatcherTarget::TempHLock,
@@ -2646,9 +2625,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "BlockMove")
         | ("InterfaceLib", "BlockMoveData")
         | ("InterfaceLib", "BlockMoveUncached")
-        | ("InterfaceLib", "BlockMoveDataUncached") => {
-            PpcImportDispatcherTarget::BlockMove
-        }
+        | ("InterfaceLib", "BlockMoveDataUncached") => PpcImportDispatcherTarget::BlockMove,
         ("InterfaceLib", "BlockZero") => PpcImportDispatcherTarget::BlockZero,
         ("InterfaceLib", "PtrToHand") => PpcImportDispatcherTarget::PtrToHand,
         ("InterfaceLib", "PtrToXHand") => PpcImportDispatcherTarget::PtrToXHand,
@@ -2678,8 +2655,9 @@ pub(crate) fn dispatcher_target_for_import(
         | ("InterfaceLib", "FlushCodeCache")
         | ("InterfaceLib", "FlushCodeCacheRange")
         | ("InterfaceLib", "FlushInstructionCache") => PpcImportDispatcherTarget::FlushCodeCache,
-        ("InterfaceLib", "MoreMasters")
-        | ("InterfaceLib", "MoreMasterPointers") => PpcImportDispatcherTarget::MoreMasters,
+        ("InterfaceLib", "MoreMasters") | ("InterfaceLib", "MoreMasterPointers") => {
+            PpcImportDispatcherTarget::MoreMasters
+        }
         ("InterfaceLib", "GetApplLimit") => PpcImportDispatcherTarget::GetApplLimit,
         ("InterfaceLib", "SetApplLimit") => PpcImportDispatcherTarget::SetApplLimit,
         ("InterfaceLib", "CompactMem")
@@ -2768,22 +2746,27 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetDiskFragment") => PpcImportDispatcherTarget::GetDiskFragment,
         ("InterfaceLib", "InitCursor") => PpcImportDispatcherTarget::InitCursor,
         ("InterfaceLib", "GetQDGlobalsArrow") => PpcImportDispatcherTarget::GetQDGlobalsArrow,
-        ("InterfaceLib" | "CarbonLib", "GetQDGlobalsScreenBits" | "getqdglobalsscreenbits") =>
-            PpcImportDispatcherTarget::GetQDGlobalsScreenBits,
-        ("InterfaceLib" | "CarbonLib", "GetQDGlobalsWhite" | "getqdglobalswhite") =>
-            PpcImportDispatcherTarget::GetQDGlobalsWhite,
-        ("CarbonLib", "QDIsPortBuffered" | "qdisportbuffered") =>
+        ("InterfaceLib" | "CarbonLib", "GetQDGlobalsScreenBits" | "getqdglobalsscreenbits") => {
+            PpcImportDispatcherTarget::GetQDGlobalsScreenBits
+        }
+        ("InterfaceLib" | "CarbonLib", "GetQDGlobalsWhite" | "getqdglobalswhite") => {
+            PpcImportDispatcherTarget::GetQDGlobalsWhite
+        }
+        ("CarbonLib", "QDIsPortBuffered" | "qdisportbuffered") => {
             PpcImportDispatcherTarget::QuickDrawCompatibility(
                 PpcQuickDrawCompatibilityOperation::IsPortBuffered,
-            ),
-        ("CarbonLib", "QDIsPortBufferDirty" | "qdisportbufferdirty") =>
+            )
+        }
+        ("CarbonLib", "QDIsPortBufferDirty" | "qdisportbufferdirty") => {
             PpcImportDispatcherTarget::QuickDrawCompatibility(
                 PpcQuickDrawCompatibilityOperation::IsPortBufferDirty,
-            ),
-        ("CarbonLib", "QDFlushPortBuffer" | "qdflushportbuffer") =>
+            )
+        }
+        ("CarbonLib", "QDFlushPortBuffer" | "qdflushportbuffer") => {
             PpcImportDispatcherTarget::QuickDrawCompatibility(
                 PpcQuickDrawCompatibilityOperation::FlushPortBuffer,
-            ),
+            )
+        }
         ("InterfaceLib", "HideCursor") => PpcImportDispatcherTarget::HideCursor,
         ("InterfaceLib", "ShowCursor") => PpcImportDispatcherTarget::ShowCursor,
         ("InterfaceLib", "ShieldCursor") => PpcImportDispatcherTarget::ShieldCursor,
@@ -2840,18 +2823,16 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "WideWideDivide") => PpcImportDispatcherTarget::WideWideDivide,
         ("InterfaceLib", "WideSquareRoot") => PpcImportDispatcherTarget::WideSquareRoot,
         ("InterfaceLib", "WideCompare") => PpcImportDispatcherTarget::WideCompare,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "NewMenu" | "newmenu",
-        ) => PpcImportDispatcherTarget::NewMenu,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "NewMenu" | "newmenu") => {
+            PpcImportDispatcherTarget::NewMenu
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DisposeMenu" | "disposemenu" | "DisposMenu" | "disposmenu",
         ) => PpcImportDispatcherTarget::DisposeMenu,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetMenu" | "getmenu",
-        ) => PpcImportDispatcherTarget::GetMenu,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetMenu" | "getmenu") => {
+            PpcImportDispatcherTarget::GetMenu
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetItemCmd" | "getitemcmd" | "GetMenuItemCmd" | "getmenuitemcmd",
@@ -2872,14 +2853,18 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetMenuItemText" | "getmenuitemtext" | "GetItem" | "getitem",
         ) => PpcImportDispatcherTarget::GetMenuItemText,
-        ("InterfaceLib" | "AppearanceLib", "SetMenuItemCommandID") =>
-            PpcImportDispatcherTarget::SetMenuItemCommandID,
-        ("InterfaceLib" | "AppearanceLib", "GetMenuItemCommandID") =>
-            PpcImportDispatcherTarget::GetMenuItemCommandID,
-        ("InterfaceLib" | "AppearanceLib", "SetMenuItemRefCon") =>
-            PpcImportDispatcherTarget::SetMenuItemRefCon,
-        ("InterfaceLib" | "AppearanceLib", "GetMenuItemRefCon") =>
-            PpcImportDispatcherTarget::GetMenuItemRefCon,
+        ("InterfaceLib" | "AppearanceLib", "SetMenuItemCommandID") => {
+            PpcImportDispatcherTarget::SetMenuItemCommandID
+        }
+        ("InterfaceLib" | "AppearanceLib", "GetMenuItemCommandID") => {
+            PpcImportDispatcherTarget::GetMenuItemCommandID
+        }
+        ("InterfaceLib" | "AppearanceLib", "SetMenuItemRefCon") => {
+            PpcImportDispatcherTarget::SetMenuItemRefCon
+        }
+        ("InterfaceLib" | "AppearanceLib", "GetMenuItemRefCon") => {
+            PpcImportDispatcherTarget::GetMenuItemRefCon
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetMenuItemText" | "setmenuitemtext" | "SetItem" | "setitem",
@@ -2888,26 +2873,22 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DeleteMenuItem" | "deletemenuitem" | "DelMenuItem" | "delmenuitem",
         ) => PpcImportDispatcherTarget::DeleteMenuItem,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "CalcMenuSize" | "calcmenusize",
-        ) => PpcImportDispatcherTarget::CalcMenuSize,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "PopUpMenuSelect" | "popupmenuselect",
-        ) => PpcImportDispatcherTarget::PopUpMenuSelect,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "InsertMenu" | "insertmenu",
-        ) => PpcImportDispatcherTarget::InsertMenu,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "CalcMenuSize" | "calcmenusize") => {
+            PpcImportDispatcherTarget::CalcMenuSize
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "PopUpMenuSelect" | "popupmenuselect") => {
+            PpcImportDispatcherTarget::PopUpMenuSelect
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "InsertMenu" | "insertmenu") => {
+            PpcImportDispatcherTarget::InsertMenu
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DeleteMenu" | "deletemenu" | "DelMenu" | "delmenu",
         ) => PpcImportDispatcherTarget::DeleteMenu,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "AppendMenu" | "appendmenu",
-        ) => PpcImportDispatcherTarget::AppendMenu,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "AppendMenu" | "appendmenu") => {
+            PpcImportDispatcherTarget::AppendMenu
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "InsertMenuItem" | "insertmenuitem" | "InsMenuItem" | "insmenuitem",
@@ -2916,10 +2897,9 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "AppendResMenu" | "appendresmenu" | "AddResMenu" | "addresmenu",
         ) => PpcImportDispatcherTarget::AppendResMenu,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "InsertResMenu" | "insertresmenu",
-        ) => PpcImportDispatcherTarget::InsertResMenu,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "InsertResMenu" | "insertresmenu") => {
+            PpcImportDispatcherTarget::InsertResMenu
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "EnableItem" | "enableitem" | "EnableMenuItem" | "enablemenuitem",
@@ -2928,8 +2908,9 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DisableItem" | "disableitem" | "DisableMenuItem" | "disablemenuitem",
         ) => PpcImportDispatcherTarget::DisableMenuItem,
-        ("InterfaceLib" | "AppearanceLib" | "MenusLib", "IsMenuItemEnabled") =>
-            PpcImportDispatcherTarget::IsMenuItemEnabled,
+        ("InterfaceLib" | "AppearanceLib" | "MenusLib", "IsMenuItemEnabled") => {
+            PpcImportDispatcherTarget::IsMenuItemEnabled
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetItemMark" | "setitemmark" | "SetMenuItemMark" | "setmenuitemmark",
@@ -2938,36 +2919,39 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "CheckItem" | "checkitem" | "CheckMenuItem" | "checkmenuitem",
         ) => PpcImportDispatcherTarget::CheckItem,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetMenuBar" | "getmenubar",
-        ) => PpcImportDispatcherTarget::GetMenuBar,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetNewMBar" | "getnewmbar",
-        ) => PpcImportDispatcherTarget::GetNewMBar,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "LMGetMenuList" | "lmgetmenulist",
-        ) => PpcImportDispatcherTarget::LMGetMenuList,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "LMSetMenuHook" | "lmsetmenuhook",
-        ) => PpcImportDispatcherTarget::LMSetMenuHook,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "LMGetMenuFlash" | "lmgetmenuflash",
-        ) => PpcImportDispatcherTarget::LMGetMenuFlash,
-        ("InterfaceLib" | "CarbonLib", "LMGetKeyThresh") => PpcImportDispatcherTarget::LMGetKeyThresh,
-        ("InterfaceLib" | "CarbonLib", "LMSetKeyThresh") => PpcImportDispatcherTarget::LMSetKeyThresh,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetMenuBar" | "getmenubar") => {
+            PpcImportDispatcherTarget::GetMenuBar
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetNewMBar" | "getnewmbar") => {
+            PpcImportDispatcherTarget::GetNewMBar
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "LMGetMenuList" | "lmgetmenulist") => {
+            PpcImportDispatcherTarget::LMGetMenuList
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "LMSetMenuHook" | "lmsetmenuhook") => {
+            PpcImportDispatcherTarget::LMSetMenuHook
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "LMGetMenuFlash" | "lmgetmenuflash") => {
+            PpcImportDispatcherTarget::LMGetMenuFlash
+        }
+        ("InterfaceLib" | "CarbonLib", "LMGetKeyThresh") => {
+            PpcImportDispatcherTarget::LMGetKeyThresh
+        }
+        ("InterfaceLib" | "CarbonLib", "LMSetKeyThresh") => {
+            PpcImportDispatcherTarget::LMSetKeyThresh
+        }
         ("InterfaceLib" | "CarbonLib", "LMGetKeyRepThresh") => {
             PpcImportDispatcherTarget::LMGetKeyRepThresh
         }
         ("InterfaceLib" | "CarbonLib", "LMSetKeyRepThresh") => {
             PpcImportDispatcherTarget::LMSetKeyRepThresh
         }
-        ("InterfaceLib" | "CarbonLib", "LMGetHiliteRGB") => PpcImportDispatcherTarget::LMGetHiliteRGB,
-        ("InterfaceLib" | "CarbonLib", "LMSetHiliteRGB") => PpcImportDispatcherTarget::LMSetHiliteRGB,
+        ("InterfaceLib" | "CarbonLib", "LMGetHiliteRGB") => {
+            PpcImportDispatcherTarget::LMGetHiliteRGB
+        }
+        ("InterfaceLib" | "CarbonLib", "LMSetHiliteRGB") => {
+            PpcImportDispatcherTarget::LMSetHiliteRGB
+        }
         ("InterfaceLib", "LMGetPaintWhite") => PpcImportDispatcherTarget::LMGetPaintWhite,
         ("InterfaceLib", "LMGetHWCfgFlags") => PpcImportDispatcherTarget::LMGetHWCfgFlags,
         ("InterfaceLib", "LMSetROMMapInsert") => PpcImportDispatcherTarget::LMSetROMMapInsert,
@@ -3028,60 +3012,50 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "LMSetMenuFlash" | "lmsetmenuflash" | "SetMenuFlash" | "setmenuflash",
         ) => PpcImportDispatcherTarget::SetMenuFlash,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "ErrorSound",
-        ) => PpcImportDispatcherTarget::ErrorSound,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "ClearMenuBar" | "clearmenubar",
-        ) => PpcImportDispatcherTarget::ClearMenuBar,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SetMenuBar" | "setmenubar",
-        ) => PpcImportDispatcherTarget::SetMenuBar,
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "ErrorSound") => {
+            PpcImportDispatcherTarget::ErrorSound
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ClearMenuBar" | "clearmenubar") => {
+            PpcImportDispatcherTarget::ClearMenuBar
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "SetMenuBar" | "setmenubar") => {
+            PpcImportDispatcherTarget::SetMenuBar
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetMenuHandle" | "getmenuhandle" | "GetMHandle" | "getmhandle",
         ) => PpcImportDispatcherTarget::GetMenuHandle,
-        ("InterfaceLib" | "CarbonLib", "SetMenuID" | "setmenuid") =>
-            PpcImportDispatcherTarget::SetMenuID,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "DrawMenuBar" | "drawmenubar",
-        ) => PpcImportDispatcherTarget::DrawMenuBar,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "FlashMenuBar" | "flashmenubar",
-        ) => PpcImportDispatcherTarget::FlashMenuBar,
+        ("InterfaceLib" | "CarbonLib", "SetMenuID" | "setmenuid") => {
+            PpcImportDispatcherTarget::SetMenuID
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "DrawMenuBar" | "drawmenubar") => {
+            PpcImportDispatcherTarget::DrawMenuBar
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "FlashMenuBar" | "flashmenubar") => {
+            PpcImportDispatcherTarget::FlashMenuBar
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "HMGetHelpMenuHandle" | "hmgethelpmenuhandle",
         ) => PpcImportDispatcherTarget::HMGetHelpMenuHandle,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "HMGetBalloons" | "hmgetballoons",
-        ) => PpcImportDispatcherTarget::HMGetBalloons,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "HMIsBalloon" | "hmisballoon",
-        ) => PpcImportDispatcherTarget::HMIsBalloon,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "HMSetBalloons" | "hmsetballoons",
-        ) => PpcImportDispatcherTarget::HMSetBalloons,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "HiliteMenu" | "hilitemenu",
-        ) => PpcImportDispatcherTarget::HiliteMenu,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "InvalMenuBar" | "invalmenubar",
-        ) => PpcImportDispatcherTarget::InvalMenuBar,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "DrawGrowIcon" | "drawgrowicon",
-        ) => PpcImportDispatcherTarget::DrawGrowIcon,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HMGetBalloons" | "hmgetballoons") => {
+            PpcImportDispatcherTarget::HMGetBalloons
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HMIsBalloon" | "hmisballoon") => {
+            PpcImportDispatcherTarget::HMIsBalloon
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HMSetBalloons" | "hmsetballoons") => {
+            PpcImportDispatcherTarget::HMSetBalloons
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HiliteMenu" | "hilitemenu") => {
+            PpcImportDispatcherTarget::HiliteMenu
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "InvalMenuBar" | "invalmenubar") => {
+            PpcImportDispatcherTarget::InvalMenuBar
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "DrawGrowIcon" | "drawgrowicon") => {
+            PpcImportDispatcherTarget::DrawGrowIcon
+        }
         ("InterfaceLib", "OpenCPicture") | ("InterfaceLib", "DebugStr") => {
             PpcImportDispatcherTarget::MenuNoop
         }
@@ -3089,22 +3063,18 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GlobalToLocal") => PpcImportDispatcherTarget::GlobalToLocal,
         ("InterfaceLib", "AddPt") => PpcImportDispatcherTarget::AddPt,
         ("InterfaceLib", "SubPt") => PpcImportDispatcherTarget::SubPt,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "MenuKey" | "menukey",
-        ) => PpcImportDispatcherTarget::MenuKey,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "MenuEvent" | "menuevent",
-        ) => PpcImportDispatcherTarget::MenuEvent,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "MenuChoice" | "menuchoice",
-        ) => PpcImportDispatcherTarget::MenuChoice,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "MenuSelect" | "menuselect",
-        ) => PpcImportDispatcherTarget::MenuSelect,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "MenuKey" | "menukey") => {
+            PpcImportDispatcherTarget::MenuKey
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "MenuEvent" | "menuevent") => {
+            PpcImportDispatcherTarget::MenuEvent
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "MenuChoice" | "menuchoice") => {
+            PpcImportDispatcherTarget::MenuChoice
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "MenuSelect" | "menuselect") => {
+            PpcImportDispatcherTarget::MenuSelect
+        }
         ("InterfaceLib", "MoveTo") => PpcImportDispatcherTarget::MoveTo,
         ("InterfaceLib", "MovePortTo") => PpcImportDispatcherTarget::MovePortTo,
         ("InterfaceLib", "PortSize") => PpcImportDispatcherTarget::PortSize,
@@ -3137,34 +3107,29 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "PaintRoundRect") => PpcImportDispatcherTarget::PaintRoundRect,
         ("InterfaceLib", "EraseRoundRect") => PpcImportDispatcherTarget::EraseRoundRect,
         ("InterfaceLib", "FillRoundRect") => PpcImportDispatcherTarget::FillRoundRect,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "InvalRect" | "invalrect",
-        ) => PpcImportDispatcherTarget::InvalRect,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "InvalRgn" | "invalrgn",
-        ) => PpcImportDispatcherTarget::InvalRgn,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "ValidRect" | "validrect",
-        ) => PpcImportDispatcherTarget::ValidRect,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "ValidRgn" | "validrgn",
-        ) => PpcImportDispatcherTarget::ValidRgn,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "BeginUpdate" | "beginupdate",
-        ) => PpcImportDispatcherTarget::BeginUpdate,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "EndUpdate" | "endupdate",
-        ) => PpcImportDispatcherTarget::EndUpdate,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "InvalRect" | "invalrect") => {
+            PpcImportDispatcherTarget::InvalRect
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "InvalRgn" | "invalrgn") => {
+            PpcImportDispatcherTarget::InvalRgn
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ValidRect" | "validrect") => {
+            PpcImportDispatcherTarget::ValidRect
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ValidRgn" | "validrgn") => {
+            PpcImportDispatcherTarget::ValidRgn
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "BeginUpdate" | "beginupdate") => {
+            PpcImportDispatcherTarget::BeginUpdate
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "EndUpdate" | "endupdate") => {
+            PpcImportDispatcherTarget::EndUpdate
+        }
         ("InterfaceLib", "ClipRect") => PpcImportDispatcherTarget::ClipRect,
         ("InterfaceLib", "GetClip") => PpcImportDispatcherTarget::GetClip,
-        ("InterfaceLib" | "CarbonLib", "GetPortVisibleRegion" | "getportvisibleregion") =>
-            PpcImportDispatcherTarget::GetPortVisibleRegion,
+        ("InterfaceLib" | "CarbonLib", "GetPortVisibleRegion" | "getportvisibleregion") => {
+            PpcImportDispatcherTarget::GetPortVisibleRegion
+        }
         ("InterfaceLib", "SetClip") => PpcImportDispatcherTarget::SetClip,
         ("InterfaceLib", "GetPen") => PpcImportDispatcherTarget::GetPen,
         ("InterfaceLib", "HidePen") => PpcImportDispatcherTarget::HidePen,
@@ -3204,14 +3169,12 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FramePoly") => PpcImportDispatcherTarget::FramePoly,
         ("InterfaceLib", "FillPoly") => PpcImportDispatcherTarget::FillPoly,
         ("InterfaceLib", "ErasePoly") => PpcImportDispatcherTarget::ErasePoly,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "NewCWindow" | "newcwindow",
-        ) => PpcImportDispatcherTarget::NewCWindow,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetNewCWindow" | "getnewcwindow",
-        ) => PpcImportDispatcherTarget::GetNewCWindow,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "NewCWindow" | "newcwindow") => {
+            PpcImportDispatcherTarget::NewCWindow
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetNewCWindow" | "getnewcwindow") => {
+            PpcImportDispatcherTarget::GetNewCWindow
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWRefCon" | "getwrefcon" | "GetWindowRefCon" | "getwindowrefcon",
@@ -3220,86 +3183,67 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetWRefCon" | "setwrefcon" | "SetWindowRefCon" | "setwindowrefcon",
         ) => PpcImportDispatcherTarget::SetWRefCon,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetWindowPic" | "getwindowpic",
-        ) => PpcImportDispatcherTarget::GetWindowPic,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SetWindowPic" | "setwindowpic",
-        ) => PpcImportDispatcherTarget::SetWindowPic,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetAuxWin" | "getauxwin",
-        ) => PpcImportDispatcherTarget::GetAuxWin,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "LMGetWindowList" | "lmgetwindowlist",
-        ) => PpcImportDispatcherTarget::LMGetWindowList,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetWindowPic" | "getwindowpic") => {
+            PpcImportDispatcherTarget::GetWindowPic
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "SetWindowPic" | "setwindowpic") => {
+            PpcImportDispatcherTarget::SetWindowPic
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetAuxWin" | "getauxwin") => {
+            PpcImportDispatcherTarget::GetAuxWin
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "LMGetWindowList" | "lmgetwindowlist") => {
+            PpcImportDispatcherTarget::LMGetWindowList
+        }
         ("InterfaceLib", "LMGetGhostWindow") => PpcImportDispatcherTarget::LMGetGhostWindow,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "LMSetWindowList" | "lmsetwindowlist",
-        ) => PpcImportDispatcherTarget::LMSetWindowList,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "LMSetWindowList" | "lmsetwindowlist") => {
+            PpcImportDispatcherTarget::LMSetWindowList
+        }
         ("InterfaceLib", "LMSetCurActivate") => PpcImportDispatcherTarget::LMSetCurActivate,
         ("InterfaceLib", "LMGetCurDeactive") => PpcImportDispatcherTarget::LMGetCurDeactive,
         ("InterfaceLib", "LMSetCurDeactive") => PpcImportDispatcherTarget::LMSetCurDeactive,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "LMGetAuxWinHead" | "lmgetauxwinhead",
-        ) => PpcImportDispatcherTarget::LMGetAuxWinHead,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "LMSetAuxWinHead" | "lmsetauxwinhead",
-        ) => PpcImportDispatcherTarget::LMSetAuxWinHead,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SizeWindow" | "sizewindow",
-        ) => PpcImportDispatcherTarget::SizeWindow,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "MoveWindow" | "movewindow",
-        ) => PpcImportDispatcherTarget::MoveWindow,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "ShowWindow" | "showwindow",
-        ) => PpcImportDispatcherTarget::ShowWindow,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "HideWindow" | "hidewindow",
-        ) => PpcImportDispatcherTarget::HideWindow,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "ShowHide" | "showhide",
-        ) => PpcImportDispatcherTarget::ShowHide,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "CloseWindow" | "closewindow",
-        ) => PpcImportDispatcherTarget::CloseWindow,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SelectWindow" | "selectwindow",
-        ) => PpcImportDispatcherTarget::SelectWindow,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "FrontWindow" | "frontwindow",
-        ) => PpcImportDispatcherTarget::FrontWindow,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SetWinColor" | "setwincolor",
-        ) => PpcImportDispatcherTarget::SetWinColor,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "PaintOne" | "paintone",
-        ) => PpcImportDispatcherTarget::PaintOne,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "PaintBehind" | "paintbehind",
-        ) => PpcImportDispatcherTarget::PaintBehind,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "CalcVisBehind" | "calcvisbehind",
-        ) => PpcImportDispatcherTarget::CalcVisBehind,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "LMGetAuxWinHead" | "lmgetauxwinhead") => {
+            PpcImportDispatcherTarget::LMGetAuxWinHead
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "LMSetAuxWinHead" | "lmsetauxwinhead") => {
+            PpcImportDispatcherTarget::LMSetAuxWinHead
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "SizeWindow" | "sizewindow") => {
+            PpcImportDispatcherTarget::SizeWindow
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "MoveWindow" | "movewindow") => {
+            PpcImportDispatcherTarget::MoveWindow
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ShowWindow" | "showwindow") => {
+            PpcImportDispatcherTarget::ShowWindow
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HideWindow" | "hidewindow") => {
+            PpcImportDispatcherTarget::HideWindow
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ShowHide" | "showhide") => {
+            PpcImportDispatcherTarget::ShowHide
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "CloseWindow" | "closewindow") => {
+            PpcImportDispatcherTarget::CloseWindow
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "SelectWindow" | "selectwindow") => {
+            PpcImportDispatcherTarget::SelectWindow
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "FrontWindow" | "frontwindow") => {
+            PpcImportDispatcherTarget::FrontWindow
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "SetWinColor" | "setwincolor") => {
+            PpcImportDispatcherTarget::SetWinColor
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "PaintOne" | "paintone") => {
+            PpcImportDispatcherTarget::PaintOne
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "PaintBehind" | "paintbehind") => {
+            PpcImportDispatcherTarget::PaintBehind
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "CalcVisBehind" | "calcvisbehind") => {
+            PpcImportDispatcherTarget::CalcVisBehind
+        }
         ("InterfaceLib", "GetMouse") => PpcImportDispatcherTarget::GetMouse,
         ("InterfaceLib", "GetCurrentKeyModifiers") => {
             PpcImportDispatcherTarget::GetCurrentKeyModifiers
@@ -3312,8 +3256,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetPalette") => PpcImportDispatcherTarget::GetPalette,
         ("InterfaceLib", "GetPort") => PpcImportDispatcherTarget::GetPort,
         ("InterfaceLib", "GetPortBounds") => PpcImportDispatcherTarget::GetPortBounds,
-        ("InterfaceLib" | "CarbonLib", "GetPortBitMapForCopyBits" | "getportbitmapforcopybits") =>
-            PpcImportDispatcherTarget::GetPortBitMapForCopyBits,
+        ("InterfaceLib" | "CarbonLib", "GetPortBitMapForCopyBits" | "getportbitmapforcopybits") => {
+            PpcImportDispatcherTarget::GetPortBitMapForCopyBits
+        }
         ("InterfaceLib", "GetWMgrPort") | ("InterfaceLib", "GetCWMgrPort") => {
             PpcImportDispatcherTarget::GetWMgrPort
         }
@@ -3406,10 +3351,9 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "GetGWorld") => PpcImportDispatcherTarget::GetGWorld,
         ("InterfaceLib", "SetGWorld") => PpcImportDispatcherTarget::SetGWorld,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetWindowPort" | "getwindowport",
-        ) => PpcImportDispatcherTarget::GetWindowPort,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetWindowPort" | "getwindowport") => {
+            PpcImportDispatcherTarget::GetWindowPort
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetPortWindowPort" | "setportwindowport",
@@ -3445,30 +3389,25 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "MapRect") => PpcImportDispatcherTarget::MapRect,
         ("InterfaceLib", "MapPt") => PpcImportDispatcherTarget::MapPt,
         ("InterfaceLib", "InsetRect") => PpcImportDispatcherTarget::InsetRect,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "FindWindow" | "findwindow",
-        ) => PpcImportDispatcherTarget::FindWindow,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "PinRect" | "pinrect",
-        ) => PpcImportDispatcherTarget::PinRect,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "FindWindow" | "findwindow") => {
+            PpcImportDispatcherTarget::FindWindow
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "PinRect" | "pinrect") => {
+            PpcImportDispatcherTarget::PinRect
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWVariant" | "getwvariant" | "GetWindowVariant" | "getwindowvariant",
         ) => PpcImportDispatcherTarget::GetWVariant,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "ClipAbove" | "clipabove",
-        ) => PpcImportDispatcherTarget::ClipAbove,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SaveOld" | "saveold",
-        ) => PpcImportDispatcherTarget::SaveOld,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "DrawNew" | "drawnew",
-        ) => PpcImportDispatcherTarget::DrawNew,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ClipAbove" | "clipabove") => {
+            PpcImportDispatcherTarget::ClipAbove
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "SaveOld" | "saveold") => {
+            PpcImportDispatcherTarget::SaveOld
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "DrawNew" | "drawnew") => {
+            PpcImportDispatcherTarget::DrawNew
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DragGrayRgn" | "draggrayrgn" | "DragTheRgn" | "dragthergn",
@@ -3638,10 +3577,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "PBHRenameSync") => PpcImportDispatcherTarget::PBHRenameSync,
         ("InterfaceLib", "PBRenameSync") => PpcImportDispatcherTarget::PBRenameSync,
         ("InterfaceLib", "Create") => PpcImportDispatcherTarget::Create,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "GetNewDialog",
-        ) => PpcImportDispatcherTarget::GetNewDialog,
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "GetNewDialog") => {
+            PpcImportDispatcherTarget::GetNewDialog
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "NewDialog" | "NewColorDialog" | "NewCDialog",
@@ -3655,18 +3593,16 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib", "UnregisterAppearanceClient") => {
             PpcImportDispatcherTarget::UnregisterAppearanceClient
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "ActivateControl" | "activatecontrol",
-        ) => PpcImportDispatcherTarget::ActivateControl,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ActivateControl" | "activatecontrol") => {
+            PpcImportDispatcherTarget::ActivateControl
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DeactivateControl" | "deactivatecontrol",
         ) => PpcImportDispatcherTarget::DeactivateControl,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "IsControlActive" | "iscontrolactive",
-        ) => PpcImportDispatcherTarget::IsControlActive,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "IsControlActive" | "iscontrolactive") => {
+            PpcImportDispatcherTarget::IsControlActive
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlFontStyle" | "setcontrolfontstyle",
@@ -3679,14 +3615,12 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "IsControlEnabled" | "iscontrolenabled",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsControlEnabled),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "EnableControl" | "enablecontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::EnableControl),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "DisableControl" | "disablecontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisableControl),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "EnableControl" | "enablecontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::EnableControl)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "DisableControl" | "disablecontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DisableControl)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "IsControlHilited" | "iscontrolhilited",
@@ -3701,7 +3635,9 @@ pub(crate) fn dispatcher_target_for_import(
             | "isvalidcontrolhandle"
             | "IsValidControlRef"
             | "isvalidcontrolref",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsValidControlHandle),
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::IsValidControlHandle,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlBounds" | "getcontrolbounds",
@@ -3710,78 +3646,91 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlBounds" | "setcontrolbounds",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlBounds),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "IdleControls" | "idlecontrols",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IdleControls),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "DragControl" | "dragcontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DragControl),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetControlData" | "getcontroldata",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlData),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SetControlData" | "setcontroldata",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlData),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "IdleControls" | "idlecontrols") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IdleControls)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "DragControl" | "dragcontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DragControl)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetControlData" | "getcontroldata") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlData)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "SetControlData" | "setcontroldata") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlData)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlDataSize" | "getcontroldatasize",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlDataSize),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlDataSize)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlFeatures" | "getcontrolfeatures",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlFeatures),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlFeatures)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetBestControlRect" | "getbestcontrolrect",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetBestControlRect),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetBestControlRect)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlVisibility" | "setcontrolvisibility",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlVisibility),
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::SetControlVisibility,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlColorProc" | "setcontrolcolorproc",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlColorProc),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlColorProc)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlColorProc" | "getcontrolcolorproc",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlColorProc),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlColorProc)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DrawControlInCurrentPort" | "drawcontrolincurrentport",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawControlInCurrentPort),
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::DrawControlInCurrentPort,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetUpControlBackground" | "setupcontrolbackground",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetUpControlBackground),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetControlOwner" | "getcontrolowner",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlOwner),
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::SetUpControlBackground,
+        ),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetControlOwner" | "getcontrolowner") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlOwner)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlRegion" | "getcontrolregion",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlRegion),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SetControlID" | "setcontrolid",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlID),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetControlID" | "getcontrolid",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlID),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "SetControlID" | "setcontrolid") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlID)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetControlID" | "getcontrolid") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlID)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlCommandID" | "setcontrolcommandid",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlCommandID),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlCommandID)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlCommandID" | "getcontrolcommandid",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlCommandID),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlCommandID)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetKeyboardFocus" | "setkeyboardfocus",
@@ -3793,27 +3742,36 @@ pub(crate) fn dispatcher_target_for_import(
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "AdvanceKeyboardFocus" | "advancekeyboardfocus",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::AdvanceKeyboardFocus),
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::AdvanceKeyboardFocus,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ReverseKeyboardFocus" | "reversekeyboardfocus",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ReverseKeyboardFocus),
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::ReverseKeyboardFocus,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ClearKeyboardFocus" | "clearkeyboardfocus",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ClearKeyboardFocus),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetControlByID" | "getcontrolbyid",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlByID),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ClearKeyboardFocus)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetControlByID" | "getcontrolbyid") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlByID)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "FindControlUnderMouse" | "findcontrolundermouse",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControlUnderMouse),
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::FindControlUnderMouse,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "HandleControlClick" | "handlecontrolclick",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::HandleControlClick),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::HandleControlClick)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "HandleControlKey" | "handlecontrolkey",
@@ -3821,47 +3779,56 @@ pub(crate) fn dispatcher_target_for_import(
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlClickActivation" | "getcontrolclickactivation",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlClickActivation),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetControlKind" | "getcontrolkind",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlKind),
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::GetControlClickActivation,
+        ),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetControlKind" | "getcontrolkind") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlKind)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlFocusPart" | "setcontrolfocuspart",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlFocusPart),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlFocusPart)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlFocusPart" | "getcontrolfocuspart",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlFocusPart),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlFocusPart)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SendControlMessage" | "sendcontrolmessage",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SendControlMessage),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SendControlMessage)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ScrollControlValues" | "scrollcontrolvalues",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ScrollControlValues),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ScrollControlValues)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "IsControlDragTrackingEnabled" | "iscontroldragtrackingenabled",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::IsControlDragTrackingEnabled),
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::IsControlDragTrackingEnabled,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlDragTrackingEnabled" | "setcontroldragtrackingenabled",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlDragTrackingEnabled),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "CollapseWindow" | "collapsewindow",
-        ) => PpcImportDispatcherTarget::CollapseWindow,
+        ) => PpcImportDispatcherTarget::LegacyControl(
+            PpcLegacyControlOperation::SetControlDragTrackingEnabled,
+        ),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "CollapseWindow" | "collapsewindow") => {
+            PpcImportDispatcherTarget::CollapseWindow
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "IsWindowCollapsed" | "iswindowcollapsed",
         ) => PpcImportDispatcherTarget::IsWindowCollapsed,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "NewFeaturesDialog",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "NewFeaturesDialog") => {
             PpcImportDispatcherTarget::NewFeaturesDialog
         }
         (
@@ -3918,42 +3885,31 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "AutoSizeDialog") => {
             PpcImportDispatcherTarget::AutoSizeDialog
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "CouldDialog",
-        ) => PpcImportDispatcherTarget::CouldDialog,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "FreeDialog",
-        ) => PpcImportDispatcherTarget::FreeDialog,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "CouldAlert",
-        ) => PpcImportDispatcherTarget::CouldAlert,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "FreeAlert",
-        ) => PpcImportDispatcherTarget::FreeAlert,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "StdFilterProc",
-        ) => PpcImportDispatcherTarget::StdFilterProc,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "GetStdFilterProc",
-        ) => PpcImportDispatcherTarget::GetStdFilterProc,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "GetAlertStage",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "CouldDialog") => {
+            PpcImportDispatcherTarget::CouldDialog
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "FreeDialog") => {
+            PpcImportDispatcherTarget::FreeDialog
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "CouldAlert") => {
+            PpcImportDispatcherTarget::CouldAlert
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "FreeAlert") => {
+            PpcImportDispatcherTarget::FreeAlert
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "StdFilterProc") => {
+            PpcImportDispatcherTarget::StdFilterProc
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "GetStdFilterProc") => {
+            PpcImportDispatcherTarget::GetStdFilterProc
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "GetAlertStage") => {
             PpcImportDispatcherTarget::GetAlertStage
         }
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "SetDialogFont" | "SetDAFont",
-        ) => {
-            PpcImportDispatcherTarget::SetDialogFont
-        }
+        ) => PpcImportDispatcherTarget::SetDialogFont,
         ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "GetDialogPort") => {
             PpcImportDispatcherTarget::GetDialogPort
         }
@@ -3966,22 +3922,18 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "SetPortDialogPort") => {
             PpcImportDispatcherTarget::SetPortDialogPort
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "DrawDialog",
-        ) => PpcImportDispatcherTarget::DrawDialog,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "DrawControls" | "drawcontrols",
-        ) => PpcImportDispatcherTarget::DrawControls,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "UpdateControls" | "updatecontrols",
-        ) => PpcImportDispatcherTarget::UpdateControls,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "ModalDialog",
-        ) => PpcImportDispatcherTarget::ModalDialog,
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "DrawDialog") => {
+            PpcImportDispatcherTarget::DrawDialog
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "DrawControls" | "drawcontrols") => {
+            PpcImportDispatcherTarget::DrawControls
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "UpdateControls" | "updatecontrols") => {
+            PpcImportDispatcherTarget::UpdateControls
+        }
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "ModalDialog") => {
+            PpcImportDispatcherTarget::ModalDialog
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlTitle" | "setcontroltitle" | "SetCTitle" | "setctitle",
@@ -3990,20 +3942,17 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlValue" | "setcontrolvalue" | "SetCtlValue" | "setctlvalue",
         ) => PpcImportDispatcherTarget::SetControlValue,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "HiliteControl" | "hilitecontrol",
-        ) => PpcImportDispatcherTarget::HiliteControl,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HiliteControl" | "hilitecontrol") => {
+            PpcImportDispatcherTarget::HiliteControl
+        }
         ("InterfaceLib", "InitGraf") => PpcImportDispatcherTarget::InitGraf,
         ("InterfaceLib", "InitFonts") => PpcImportDispatcherTarget::InitFonts,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "InitWindows" | "initwindows",
-        ) => PpcImportDispatcherTarget::InitWindows,
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "InitMenus" | "initmenus",
-        ) => PpcImportDispatcherTarget::InitMenus,
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "InitWindows" | "initwindows") => {
+            PpcImportDispatcherTarget::InitWindows
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "InitMenus" | "initmenus") => {
+            PpcImportDispatcherTarget::InitMenus
+        }
         ("InterfaceLib", "TEInit") => PpcImportDispatcherTarget::TEInit,
         ("InterfaceLib", "TENew") => PpcImportDispatcherTarget::TENew,
         ("InterfaceLib", "TEStyleNew") => PpcImportDispatcherTarget::TEStyleNew,
@@ -4049,12 +3998,13 @@ pub(crate) fn dispatcher_target_for_import(
             cut: true,
             dialog: false,
         },
-        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "DialogCopy" | "DlgCopy") => {
-            PpcImportDispatcherTarget::TECopy {
-                cut: false,
-                dialog: true,
-            }
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "DialogCopy" | "DlgCopy",
+        ) => PpcImportDispatcherTarget::TECopy {
+            cut: false,
+            dialog: true,
+        },
         ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "DialogCut" | "DlgCut") => {
             PpcImportDispatcherTarget::TECopy {
                 cut: true,
@@ -4064,12 +4014,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "TEPaste" | "TEStylePaste") => {
             PpcImportDispatcherTarget::TEPaste { dialog: false }
         }
-        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "DialogPaste" | "DlgPaste") => {
-            PpcImportDispatcherTarget::TEPaste { dialog: true }
-        }
-        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "DialogDelete" | "DlgDelete") => {
-            PpcImportDispatcherTarget::TEDelete { dialog: true }
-        }
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "DialogPaste" | "DlgPaste",
+        ) => PpcImportDispatcherTarget::TEPaste { dialog: true },
+        (
+            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
+            "DialogDelete" | "DlgDelete",
+        ) => PpcImportDispatcherTarget::TEDelete { dialog: true },
         ("InterfaceLib", "TEToScrap") => PpcImportDispatcherTarget::TETransferScrap {
             from_desktop: false,
         },
@@ -4087,10 +4039,9 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "SelectDialogItemText" | "SelIText" | "selectdialogitemtext" | "selitext",
         ) => PpcImportDispatcherTarget::SelectDialogItemText,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "InitDialogs",
-        ) => PpcImportDispatcherTarget::InitDialogs,
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "InitDialogs") => {
+            PpcImportDispatcherTarget::InitDialogs
+        }
         ("InterfaceLib", "SystemTask") => PpcImportDispatcherTarget::SystemTask,
         ("InterfaceLib", "SystemClick") => PpcImportDispatcherTarget::SystemClick,
         ("InterfaceLib", "OpenDeskAcc") => PpcImportDispatcherTarget::OpenDeskAcc,
@@ -4141,28 +4092,45 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "CarbonLib", "GetEventClass") => PpcImportDispatcherTarget::GetEventClass,
         ("InterfaceLib" | "CarbonLib", "GetEventKind") => PpcImportDispatcherTarget::GetEventKind,
         ("InterfaceLib" | "CarbonLib", "GetEventTime") => PpcImportDispatcherTarget::GetEventTime,
-        ("InterfaceLib" | "CarbonLib", "SetEventParameter") => PpcImportDispatcherTarget::SetEventParameter,
-        ("InterfaceLib" | "CarbonLib", "GetEventParameter") => PpcImportDispatcherTarget::GetEventParameter,
-        ("InterfaceLib" | "CarbonLib", "PostEventToQueue") => PpcImportDispatcherTarget::PostEventToQueue,
-        ("InterfaceLib" | "CarbonLib", "ReceiveNextEvent") => PpcImportDispatcherTarget::ReceiveNextEvent,
-        ("InterfaceLib" | "CarbonLib", "SendEventToEventTarget") => PpcImportDispatcherTarget::SendEventToEventTarget,
-        ("InterfaceLib" | "CarbonLib", "CallNextEventHandler") => PpcImportDispatcherTarget::CallNextEventHandler,
-        ("InterfaceLib" | "CarbonLib", "RunApplicationEventLoop") => PpcImportDispatcherTarget::RunApplicationEventLoop,
-        ("InterfaceLib" | "CarbonLib", "QuitApplicationEventLoop") => PpcImportDispatcherTarget::QuitApplicationEventLoop,
-        ("InterfaceLib" | "CarbonLib", "InstallStandardEventHandler") => PpcImportDispatcherTarget::InstallStandardEventHandler,
-        ("InterfaceLib" | "CarbonLib", "GetCurrentEventTime") => PpcImportDispatcherTarget::GetCurrentEventTime,
+        ("InterfaceLib" | "CarbonLib", "SetEventParameter") => {
+            PpcImportDispatcherTarget::SetEventParameter
+        }
+        ("InterfaceLib" | "CarbonLib", "GetEventParameter") => {
+            PpcImportDispatcherTarget::GetEventParameter
+        }
+        ("InterfaceLib" | "CarbonLib", "PostEventToQueue") => {
+            PpcImportDispatcherTarget::PostEventToQueue
+        }
+        ("InterfaceLib" | "CarbonLib", "ReceiveNextEvent") => {
+            PpcImportDispatcherTarget::ReceiveNextEvent
+        }
+        ("InterfaceLib" | "CarbonLib", "SendEventToEventTarget") => {
+            PpcImportDispatcherTarget::SendEventToEventTarget
+        }
+        ("InterfaceLib" | "CarbonLib", "CallNextEventHandler") => {
+            PpcImportDispatcherTarget::CallNextEventHandler
+        }
+        ("InterfaceLib" | "CarbonLib", "RunApplicationEventLoop") => {
+            PpcImportDispatcherTarget::RunApplicationEventLoop
+        }
+        ("InterfaceLib" | "CarbonLib", "QuitApplicationEventLoop") => {
+            PpcImportDispatcherTarget::QuitApplicationEventLoop
+        }
+        ("InterfaceLib" | "CarbonLib", "InstallStandardEventHandler") => {
+            PpcImportDispatcherTarget::InstallStandardEventHandler
+        }
+        ("InterfaceLib" | "CarbonLib", "GetCurrentEventTime") => {
+            PpcImportDispatcherTarget::GetCurrentEventTime
+        }
         ("InterfaceLib", "FlushEventQueue") => PpcImportDispatcherTarget::FlushEventQueue,
         ("InterfaceLib", "SetEventMask") => PpcImportDispatcherTarget::SetEventMask,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "CloseDialog",
-        ) => PpcImportDispatcherTarget::CloseDialog,
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "CloseDialog") => {
+            PpcImportDispatcherTarget::CloseDialog
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "DisposeDialog" | "DisposDialog",
-        ) => {
-            PpcImportDispatcherTarget::DisposeDialog
-        }
+        ) => PpcImportDispatcherTarget::DisposeDialog,
         ("InterfaceLib" | "CarbonLib", "GetNextEvent") => {
             PpcImportDispatcherTarget::GetNextEvent(PpcEventPollOperation::GetNextEvent)
         }
@@ -4186,7 +4154,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetTime") => PpcImportDispatcherTarget::GetTime,
         ("InterfaceLib", "Delay") => PpcImportDispatcherTarget::Delay,
         ("InterfaceLib", "GetDblTime") => PpcImportDispatcherTarget::GetDblTime,
-        ("InterfaceLib", "GetCaretTime" | "getcarettime") => PpcImportDispatcherTarget::GetCaretTime,
+        ("InterfaceLib", "GetCaretTime" | "getcarettime") => {
+            PpcImportDispatcherTarget::GetCaretTime
+        }
         ("InterfaceLib", "LMGetTime") => PpcImportDispatcherTarget::LMGetTime,
         ("InterfaceLib", "LMGetUTableBase") => PpcImportDispatcherTarget::LMGetUTableBase,
         ("InterfaceLib", "LMGetCurDirStore") => PpcImportDispatcherTarget::LMGetCurDirStore,
@@ -4204,9 +4174,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "Microseconds") => PpcImportDispatcherTarget::Microseconds,
         // AbsoluteTime is hardware-relative. Use the virtual microsecond
         // clock as its unit so this struct-returning call stays deterministic.
-        ("InterfaceLib" | "DriverServicesLib", "UpTime") => {
-            PpcImportDispatcherTarget::Microseconds
-        }
+        ("InterfaceLib" | "DriverServicesLib", "UpTime") => PpcImportDispatcherTarget::Microseconds,
         ("InterfaceLib" | "DriverServicesLib", "AbsoluteToNanoseconds") => {
             PpcImportDispatcherTarget::AbsoluteToNanoseconds
         }
@@ -4234,24 +4202,23 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "AEGetInteractionAllowed") => {
             PpcImportDispatcherTarget::AEGetInteractionAllowed
         }
-        ("InterfaceLib", "AEInteractWithUser") => {
-            PpcImportDispatcherTarget::AEInteractWithUser
-        }
+        ("InterfaceLib", "AEInteractWithUser") => PpcImportDispatcherTarget::AEInteractWithUser,
         ("InterfaceLib", "AEManagerInfo") => PpcImportDispatcherTarget::AEManagerInfo,
         ("InterfaceLib", "SVersion") => PpcImportDispatcherTarget::SVersion,
         ("InterfaceLib", "EqualString") => PpcImportDispatcherTarget::EqualString,
         ("InterfaceLib", "RelString") => PpcImportDispatcherTarget::RelString,
-        ("InterfaceLib", "InitEditionPackVersion") => PpcImportDispatcherTarget::InitEditionPackVersion,
+        ("InterfaceLib", "InitEditionPackVersion") => {
+            PpcImportDispatcherTarget::InitEditionPackVersion
+        }
         ("InterfaceLib", "StuffHex") => PpcImportDispatcherTarget::StuffHex,
         ("InterfaceLib", "IUEqualPString") => PpcImportDispatcherTarget::IUEqualPString,
-        ("InterfaceLib", "GetIntlResourceTable") => {
-            PpcImportDispatcherTarget::GetIntlResourceTable
-        }
+        ("InterfaceLib", "GetIntlResourceTable") => PpcImportDispatcherTarget::GetIntlResourceTable,
         ("InterfaceLib", "NumToString") => PpcImportDispatcherTarget::NumToString,
         ("InterfaceLib", "StringToNum") => PpcImportDispatcherTarget::StringToNum,
         ("InterfaceLib", "Random") => PpcImportDispatcherTarget::Random,
-        ("InterfaceLib" | "CarbonLib", "SetQDGlobalsRandomSeed" | "setqdglobalsrandomseed") =>
-            PpcImportDispatcherTarget::SetQDGlobalsRandomSeed,
+        ("InterfaceLib" | "CarbonLib", "SetQDGlobalsRandomSeed" | "setqdglobalsrandomseed") => {
+            PpcImportDispatcherTarget::SetQDGlobalsRandomSeed
+        }
         ("InterfaceLib", "BitAnd") => PpcImportDispatcherTarget::BitAnd,
         ("InterfaceLib", "BitOr") => PpcImportDispatcherTarget::BitOr,
         ("InterfaceLib", "BitTst") => PpcImportDispatcherTarget::BitTst,
@@ -4424,7 +4391,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("SoundLib" | "InterfaceLib", "SndGetInfo") => PpcImportDispatcherTarget::SndGetInfo,
         ("SoundLib" | "InterfaceLib", "SndSetInfo") => PpcImportDispatcherTarget::SndSetInfo,
         ("SoundLib", "ParseSndHeader") => PpcImportDispatcherTarget::ParseSndHeader,
-        ("SoundLib" | "InterfaceLib", "ParseAIFFHeader") => PpcImportDispatcherTarget::ParseAIFFHeader,
+        ("SoundLib" | "InterfaceLib", "ParseAIFFHeader") => {
+            PpcImportDispatcherTarget::ParseAIFFHeader
+        }
         ("InterfaceLib", "SndDoImmediate") => PpcImportDispatcherTarget::SndDoImmediate,
         ("InterfaceLib", "SndDoCommand") => PpcImportDispatcherTarget::SndDoCommand,
         ("InterfaceLib", "SndPlayDoubleBuffer") => PpcImportDispatcherTarget::SndPlayDoubleBuffer,
@@ -4481,38 +4450,21 @@ pub(crate) fn dispatcher_target_for_import(
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "ParamText" | "paramtext",
-        ) => {
-            PpcImportDispatcherTarget::ParamText
-        }
+        ) => PpcImportDispatcherTarget::ParamText,
         ("InterfaceLib", "X2Fix") => PpcImportDispatcherTarget::X2Fix,
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "Alert",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "Alert") => {
             PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Alert)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "StopAlert",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "StopAlert") => {
             PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Stop)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "NoteAlert",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "NoteAlert") => {
             PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Note)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "CautionAlert",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "CautionAlert") => {
             PpcImportDispatcherTarget::AlertReturnDefault(crate::dialog_manager::AlertKind::Caution)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "StandardAlert",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "StandardAlert") => {
             PpcImportDispatcherTarget::StandardAlert
         }
         ("InterfaceLib", "PurgeMem") => PpcImportDispatcherTarget::PurgeMem,
@@ -4541,15 +4493,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DisposeAEEventHandlerUPP") => {
             PpcImportDispatcherTarget::DisposeAEEventHandlerUPP
         }
-        ("InterfaceLib", "NewEventHandlerUPP") => {
-            PpcImportDispatcherTarget::NewEventHandlerUPP
-        }
+        ("InterfaceLib", "NewEventHandlerUPP") => PpcImportDispatcherTarget::NewEventHandlerUPP,
         ("InterfaceLib", "DisposeEventHandlerUPP") => {
             PpcImportDispatcherTarget::DisposeEventHandlerUPP
         }
-        ("InterfaceLib", "NewEventLoopTimerUPP") => {
-            PpcImportDispatcherTarget::NewEventLoopTimerUPP
-        }
+        ("InterfaceLib", "NewEventLoopTimerUPP") => PpcImportDispatcherTarget::NewEventLoopTimerUPP,
         ("InterfaceLib", "DisposeEventLoopTimerUPP") => {
             PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
         }
@@ -4609,9 +4557,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DisposeUserItemUPP" | "disposeuseritemupp") => {
             PpcImportDispatcherTarget::DisposeUserItemUPP
         }
-        ("InterfaceLib", "NewControlActionUPP") => {
-            PpcImportDispatcherTarget::NewControlActionUPP
-        }
+        ("InterfaceLib", "NewControlActionUPP") => PpcImportDispatcherTarget::NewControlActionUPP,
         ("InterfaceLib", "DisposeControlActionUPP") => {
             PpcImportDispatcherTarget::DisposeControlActionUPP
         }
@@ -4724,22 +4670,16 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "Draw1Control" | "draw1control" | "DrawOneControl" | "drawonecontrol",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "EmbedControl" | "embedcontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::EmbedControl)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "FindControl" | "findcontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControl)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "EmbedControl" | "embedcontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::EmbedControl),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "FindControl" | "findcontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::FindControl),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetControlMaximum"
-                | "getcontrolmaximum"
-                | "GetCtlMax"
-                | "getctlmax"
-                | "GetControlMax"
-                | "getcontrolmax",
+            "GetControlMaximum" | "getcontrolmaximum" | "GetCtlMax" | "getctlmax" | "GetControlMax"
+            | "getcontrolmax",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMaximum),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
@@ -4748,15 +4688,13 @@ pub(crate) fn dispatcher_target_for_import(
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlReference" | "getcontrolreference" | "GetCRefCon" | "getcrefcon",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlReference),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlReference)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetControlMinimum"
-                | "getcontrolminimum"
-                | "GetCtlMin"
-                | "getctlmin"
-                | "GetControlMin"
-                | "getcontrolmin",
+            "GetControlMinimum" | "getcontrolminimum" | "GetCtlMin" | "getctlmin" | "GetControlMin"
+            | "getcontrolmin",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlMinimum),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
@@ -4768,15 +4706,14 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlValue),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetControlVariant"
-                | "getcontrolvariant"
-                | "GetCVariant"
-                | "getcvariant",
+            "GetControlVariant" | "getcontrolvariant" | "GetCVariant" | "getcvariant",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlVariant),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlProperty" | "getcontrolproperty",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlProperty),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetControlProperty)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetControlPropertyAttributes" | "getcontrolpropertyattributes",
@@ -4795,34 +4732,27 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::GetIndexedSubControl,
         ),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetNewControl" | "getnewcontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetNewControl),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetRootControl" | "getrootcontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetRootControl),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetSuperControl" | "getsupercontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetSuperControl),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "HideControl" | "hidecontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::HideControl),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "KillControls" | "killcontrols",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::KillControls),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "MoveControl" | "movecontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::MoveControl),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "NewControl" | "newcontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetNewControl" | "getnewcontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetNewControl)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetRootControl" | "getrootcontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetRootControl)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetSuperControl" | "getsupercontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::GetSuperControl)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "HideControl" | "hidecontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::HideControl)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "KillControls" | "killcontrols") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::KillControls)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "MoveControl" | "movecontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::MoveControl)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "NewControl" | "newcontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::NewControl)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "RemoveControlProperty" | "removecontrolproperty",
@@ -4831,12 +4761,8 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SetControlMaximum"
-                | "setcontrolmaximum"
-                | "SetCtlMax"
-                | "setctlmax"
-                | "SetControlMax"
-                | "setcontrolmax",
+            "SetControlMaximum" | "setcontrolmaximum" | "SetCtlMax" | "setctlmax" | "SetControlMax"
+            | "setcontrolmax",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMaximum),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
@@ -4845,42 +4771,38 @@ pub(crate) fn dispatcher_target_for_import(
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlReference" | "setcontrolreference" | "SetCRefCon" | "setcrefcon",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlReference),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlReference)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SetControlMinimum"
-                | "setcontrolminimum"
-                | "SetCtlMin"
-                | "setctlmin"
-                | "SetControlMin"
-                | "setcontrolmin",
+            "SetControlMinimum" | "setcontrolminimum" | "SetCtlMin" | "setctlmin" | "SetControlMin"
+            | "setcontrolmin",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlMinimum),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlProperty" | "setcontrolproperty",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlProperty),
+        ) => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SetControlProperty)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetControlSupervisor" | "setcontrolsupervisor",
         ) => PpcImportDispatcherTarget::LegacyControl(
             PpcLegacyControlOperation::SetControlSupervisor,
         ),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "ShowControl" | "showcontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ShowControl),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SizeControl" | "sizecontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SizeControl),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "TestControl" | "testcontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TestControl),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "TrackControl" | "trackcontrol",
-        ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ShowControl" | "showcontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::ShowControl)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "SizeControl" | "sizecontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::SizeControl)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "TestControl" | "testcontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TestControl)
+        }
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "TrackControl" | "trackcontrol") => {
+            PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl)
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "FrontNonFloatingWindow" | "frontnonfloatingwindow",
@@ -4890,105 +4812,66 @@ pub(crate) fn dispatcher_target_for_import(
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ActiveNonFloatingWindow" | "activenonfloatingwindow",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::ActiveNonFloatingWindow,
-            )
-        }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "BringToFront" | "bringtofront",
-        ) => {
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::ActiveNonFloatingWindow,
+        ),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "BringToFront" | "bringtofront") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::BringToFront)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "CalcVis" | "calcvis",
-        ) => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::CalculateVisibleRegion,
-        ),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "CalcVis" | "calcvis") => {
+            PpcImportDispatcherTarget::LegacyWindow(
+                PpcLegacyWindowOperation::CalculateVisibleRegion,
+            )
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ChangeWindowAttributes" | "changewindowattributes",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::ChangeWindowAttributes,
-            )
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::ChangeWindowAttributes,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ChangeWindowPropertyAttributes" | "changewindowpropertyattributes",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::ChangeWindowPropertyAttributes,
-            )
-        }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "CheckUpdate" | "checkupdate",
-        ) => {
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::ChangeWindowPropertyAttributes,
+        ),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "CheckUpdate" | "checkupdate") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CheckUpdate)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "CreateNewWindow" | "createnewwindow",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "CreateNewWindow" | "createnewwindow") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::CreateNewWindow)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DisposeWindow" | "disposewindow" | "DisposWindow" | "disposwindow",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DisposeWindow)
-        }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "DragWindow" | "dragwindow",
-        ) => {
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DisposeWindow),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "DragWindow" | "dragwindow") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DragWindow)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetNewWindow" | "getnewwindow",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetNewWindow" | "getnewwindow") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetNewWindow)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetNextWindow" | "getnextwindow",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetNextWindow" | "getnextwindow") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetNextWindow)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetPreviousWindow" | "getpreviouswindow",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetPreviousWindow)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetPreviousWindow),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetUserFocusWindow" | "getuserfocuswindow",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetUserFocusWindow)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetUserFocusWindow),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowAttributes" | "getwindowattributes",
-        ) => {
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowAttributes),
+        ("InterfaceLib" | "CarbonLib", "ConstrainWindowToScreen" | "constrainwindowtoscreen") => {
             PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::GetWindowAttributes,
+                PpcLegacyWindowOperation::ConstrainWindowToScreen,
             )
         }
-        (
-            "InterfaceLib" | "CarbonLib",
-            "ConstrainWindowToScreen" | "constrainwindowtoscreen",
-        ) => PpcImportDispatcherTarget::LegacyWindow(
-            PpcLegacyWindowOperation::ConstrainWindowToScreen,
-        ),
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetWindowBounds" | "getwindowbounds",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetWindowBounds" | "getwindowbounds") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowBounds)
         }
         (
@@ -5000,267 +4883,176 @@ pub(crate) fn dispatcher_target_for_import(
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowContentRgn" | "getwindowcontentrgn",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowContentRgn)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowContentRgn),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowDefProc" | "getwindowdefproc",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowDefProc)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowDefProc),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowDefaultButton" | "getwindowdefaultbutton",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowDefaultButton)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::GetWindowDefaultButton,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowFeatures" | "getwindowfeatures",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowFeatures)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowFeatures),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowFromPort" | "getwindowfromport",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowFromPort)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowFromPort),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowGoAwayFlag" | "getwindowgoawayflag",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowGoAwayFlag)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowGoAwayFlag),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowGreatestArea" | "getwindowgreatestarea",
         ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::GetWindowGreatestArea,
-            )
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowGreatestArea)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowIdealUserState" | "getwindowidealuserstate",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowIdealUserState)
-        }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetWindowKind" | "getwindowkind",
-        ) => {
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::GetWindowIdealUserState,
+        ),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetWindowKind" | "getwindowkind") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowKind)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowModality" | "getwindowmodality",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowModality)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowModality),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowPortBounds" | "getwindowportbounds",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::GetWindowPortBounds,
-            )
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowPortBounds),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowProperty" | "getwindowproperty",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowProperty)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowProperty),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowPropertyAttributes" | "getwindowpropertyattributes",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::GetWindowPropertyAttributes,
-            )
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::GetWindowPropertyAttributes,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowPropertySize" | "getwindowpropertysize",
         ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::GetWindowPropertySize,
-            )
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowPropertySize)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowProxyIcon" | "getwindowproxyicon",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowProxyIcon)
-        }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GetWindowRegion" | "getwindowregion",
-        ) => {
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowProxyIcon),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GetWindowRegion" | "getwindowregion") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowRegion)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowSpareFlag" | "getwindowspareflag",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowSpareFlag)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowSpareFlag),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowStandardState" | "getwindowstandardstate",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowStandardState)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::GetWindowStandardState,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowStructureRgn" | "getwindowstructurergn",
         ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::GetWindowStructureRgn,
-            )
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowStructureRgn)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowStructureWidths" | "getwindowstructurewidths",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowStructureWidths)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::GetWindowStructureWidths,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWTitle" | "getwtitle" | "GetWindowTitle" | "getwindowtitle",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowTitle),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowUpdateRgn" | "getwindowupdatergn",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowUpdateRgn)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowUpdateRgn),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetWindowUserState" | "getwindowuserstate",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowUserState)
-        }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "GrowWindow" | "growwindow",
-        ) => {
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GetWindowUserState),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "GrowWindow" | "growwindow") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::GrowWindow)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "HiliteWindow" | "hilitewindow" | "HighlightWindow" | "highlightwindow",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::HighlightWindow)
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::HighlightWindow),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "InvalWindowRect" | "invalwindowrect") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::InvalWindowRect)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "InvalWindowRect" | "invalwindowrect",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::InvalWindowRect,
-            )
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "InvalWindowRgn" | "invalwindowrgn") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::InvalWindowRgn)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "InvalWindowRgn" | "invalwindowrgn",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::InvalWindowRgn,
-            )
-        }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "IsWindowActive" | "iswindowactive",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "IsWindowActive" | "iswindowactive") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowActive)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "IsWindowHilited" | "iswindowhilited",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "IsWindowHilited" | "iswindowhilited") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowHilited)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "IsWindowModified" | "iswindowmodified",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowModified)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowModified),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "IsWindowPathSelectClick" | "iswindowpathselectclick",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowPathSelectClick)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::IsWindowPathSelectClick,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "IsWindowUpdatePending" | "iswindowupdatepending",
         ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::IsWindowUpdatePending,
-            )
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowUpdatePending)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "IsWindowVisible" | "iswindowvisible",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "IsWindowVisible" | "iswindowvisible") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::IsWindowVisible)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "NewWindow" | "newwindow",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "NewWindow" | "newwindow") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::NewWindow)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "RemoveWindowProperty" | "removewindowproperty",
         ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::RemoveWindowProperty,
-            )
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RemoveWindowProperty)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "RemoveWindowProxy" | "removewindowproxy",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RemoveWindowProxy)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RemoveWindowProxy),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ReshapeCustomWindow" | "reshapecustomwindow",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::ReshapeCustomWindow,
-            )
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ReshapeCustomWindow),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "RepositionWindow" | "repositionwindow",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RepositionWindow)
-        }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SendBehind" | "sendbehind",
-        ) => {
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::RepositionWindow),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "SendBehind" | "sendbehind") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SendBehind)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetUserFocusWindow" | "setuserfocuswindow",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetUserFocusWindow)
-        }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SetWindowBounds" | "setwindowbounds",
-        ) => {
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetUserFocusWindow),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "SetWindowBounds" | "setwindowbounds") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowBounds)
         }
         (
@@ -5272,95 +5064,61 @@ pub(crate) fn dispatcher_target_for_import(
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetWindowDefaultButton" | "setwindowdefaultbutton",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowDefaultButton)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::SetWindowDefaultButton,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetWindowIdealUserState" | "setwindowidealuserstate",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowIdealUserState)
-        }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "SetWindowKind" | "setwindowkind",
-        ) => {
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::SetWindowIdealUserState,
+        ),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "SetWindowKind" | "setwindowkind") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowKind)
         }
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetWindowModality" | "setwindowmodality",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowModality)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowModality),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetWindowModified" | "setwindowmodified",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowModified)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowModified),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetWindowProperty" | "setwindowproperty",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowProperty)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowProperty),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetWindowProxyIcon" | "setwindowproxyicon",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowProxyIcon)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowProxyIcon),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetWindowStandardState" | "setwindowstandardstate",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowStandardState)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::SetWindowStandardState,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetWTitle" | "setwtitle" | "SetWindowTitle" | "setwindowtitle",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle)
-        }
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowTitle),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetWindowUserState" | "setwindowuserstate",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowUserState)
-        }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "TrackBox" | "trackbox",
-        ) => {
+        ) => PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::SetWindowUserState),
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "TrackBox" | "trackbox") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackBox)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "TrackGoAway" | "trackgoaway",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "TrackGoAway" | "trackgoaway") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::TrackGoAway)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "ValidWindowRect" | "validwindowrect",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::ValidWindowRect,
-            )
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ValidWindowRect" | "validwindowrect") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ValidWindowRect)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "ValidWindowRgn" | "validwindowrgn",
-        ) => {
-            PpcImportDispatcherTarget::LegacyWindow(
-                PpcLegacyWindowOperation::ValidWindowRgn,
-            )
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ValidWindowRgn" | "validwindowrgn") => {
+            PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ValidWindowRgn)
         }
-        (
-            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
-            "ZoomWindow" | "zoomwindow",
-        ) => {
+        ("InterfaceLib" | "AppearanceLib" | "CarbonLib", "ZoomWindow" | "zoomwindow") => {
             PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::ZoomWindow)
         }
         ("InterfaceLib", "AECountItems") => PpcImportDispatcherTarget::AppleEventCompatibility(
@@ -5417,10 +5175,7 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "AutoPositionDialog"
-                | "autopositiondialog"
-                | "PositionDialog"
-                | "positiondialog",
+            "AutoPositionDialog" | "autopositiondialog" | "PositionDialog" | "positiondialog",
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::AutoPositionDialog,
         ),
@@ -5448,12 +5203,11 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::CreateStandardSheet,
         ),
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "DialogSelect",
-        ) => PpcImportDispatcherTarget::DialogCompatibility(
-            PpcDialogCompatibilityOperation::DialogSelect,
-        ),
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "DialogSelect") => {
+            PpcImportDispatcherTarget::DialogCompatibility(
+                PpcDialogCompatibilityOperation::DialogSelect,
+            )
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "FindDialogItem" | "FindDItem",
@@ -5544,12 +5298,11 @@ pub(crate) fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::DialogCompatibility(
             PpcDialogCompatibilityOperation::InsertDialogItem,
         ),
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "IsDialogEvent",
-        ) => PpcImportDispatcherTarget::DialogCompatibility(
-            PpcDialogCompatibilityOperation::IsDialogEvent,
-        ),
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "IsDialogEvent") => {
+            PpcImportDispatcherTarget::DialogCompatibility(
+                PpcDialogCompatibilityOperation::IsDialogEvent,
+            )
+        }
         (
             "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
             "IsDialogTracksCursor" | "isdialogtrackscursor",
@@ -5693,9 +5446,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "NewPalette") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::NewPalette,
         ),
-        ("InterfaceLib" | "CarbonLib", "CopyPixPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(
-            PpcQuickDrawCompatibilityOperation::CopyPixPat,
-        ),
+        ("InterfaceLib" | "CarbonLib", "CopyPixPat") => {
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::CopyPixPat,
+            )
+        }
         ("InterfaceLib", "NewPixPat") => PpcImportDispatcherTarget::QuickDrawCompatibility(
             PpcQuickDrawCompatibilityOperation::NewPixPat,
         ),
@@ -5768,6 +5523,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DIZero") => {
             PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiZero)
         }
+        ("InterfaceLib", "DrawJust") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::DrawJust,
+        ),
         ("InterfaceLib", "Debugger") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::Debugger,
         ),
@@ -5798,6 +5556,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetNextProcess") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetNextProcess,
         ),
+        ("InterfaceLib" | "CarbonLib", "GetFormatOrder") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::GetFormatOrder,
+            )
+        }
         ("InterfaceLib", "GetScript") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetScript,
         ),
@@ -5836,6 +5599,9 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "IUEqualString") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::IuEqualString,
+        ),
+        ("InterfaceLib", "Char2Pixel") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::Char2Pixel,
         ),
         ("InterfaceLib", "CharByte") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::CharByte,
@@ -5894,6 +5660,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "NFindWord") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::NFindWord,
         ),
+        ("InterfaceLib", "MeasureJust") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::MeasureJust,
+        ),
         ("InterfaceLib", "NMInstall") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::NmInstall,
         ),
@@ -5912,15 +5681,17 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "PortionText") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::PortionText,
         ),
+        ("InterfaceLib", "Pixel2Char") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::Pixel2Char,
+        ),
         ("InterfaceLib", "ReplaceText") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::ReplaceText,
         ),
-        (
-            "InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib",
-            "ResetAlertStage",
-        ) => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::ResetAlertStage,
-        ),
+        ("InterfaceLib" | "AppearanceLib" | "DialogsLib" | "CarbonLib", "ResetAlertStage") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::ResetAlertStage,
+            )
+        }
         ("InterfaceLib", "SetFrontProcess") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::SetFrontProcess,
         ),
@@ -5929,6 +5700,9 @@ pub(crate) fn dispatcher_target_for_import(
         ),
         ("InterfaceLib", "SystemEdit") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::SystemEdit,
+        ),
+        ("InterfaceLib", "Transliterate") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::Transliterate,
         ),
         ("InterfaceLib", "TruncText") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::TruncText,
@@ -6147,15 +5921,21 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "GetMovieTimeScale") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieTimeScale,
         ),
-        ("QuickTimeLib", "GetMoviePreferredRate") => PpcImportDispatcherTarget::QuickTimeCompatibility(
-            PpcQuickTimeCompatibilityOperation::GetMoviePreferredRate,
-        ),
-        ("QuickTimeLib", "GetMoviePreferredVolume") => PpcImportDispatcherTarget::QuickTimeCompatibility(
-            PpcQuickTimeCompatibilityOperation::GetMoviePreferredVolume,
-        ),
-        ("QuickTimeLib", "GetMovieIndTrackType") => PpcImportDispatcherTarget::QuickTimeCompatibility(
-            PpcQuickTimeCompatibilityOperation::GetMovieIndTrackType,
-        ),
+        ("QuickTimeLib", "GetMoviePreferredRate") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::GetMoviePreferredRate,
+            )
+        }
+        ("QuickTimeLib", "GetMoviePreferredVolume") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::GetMoviePreferredVolume,
+            )
+        }
+        ("QuickTimeLib", "GetMovieIndTrackType") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::GetMovieIndTrackType,
+            )
+        }
         ("QuickTimeLib", "GetMovieUserData") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetMovieUserData,
         ),
@@ -6165,30 +5945,42 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "GetTrackMedia") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::GetTrackMedia,
         ),
-        ("QuickTimeLib", "GetMediaSampleDescription") => PpcImportDispatcherTarget::QuickTimeCompatibility(
-            PpcQuickTimeCompatibilityOperation::GetMediaSampleDescription,
-        ),
+        ("QuickTimeLib", "GetMediaSampleDescription") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::GetMediaSampleDescription,
+            )
+        }
         ("QuickTimeLib", "MCDoAction") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::MCDoAction,
         ),
-        ("QuickTimeLib", "NewMovieController") => PpcImportDispatcherTarget::QuickTimeCompatibility(
-            PpcQuickTimeCompatibilityOperation::NewMovieController,
-        ),
-        ("QuickTimeLib", "DisposeMovieController") => PpcImportDispatcherTarget::QuickTimeCompatibility(
-            PpcQuickTimeCompatibilityOperation::DisposeMovieController,
-        ),
+        ("QuickTimeLib", "NewMovieController") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::NewMovieController,
+            )
+        }
+        ("QuickTimeLib", "DisposeMovieController") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::DisposeMovieController,
+            )
+        }
         ("QuickTimeLib", "MCSetMovie") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::MCSetMovie,
         ),
-        ("QuickTimeLib", "MCGetControllerBoundsRect") => PpcImportDispatcherTarget::QuickTimeCompatibility(
-            PpcQuickTimeCompatibilityOperation::MCGetControllerBoundsRect,
-        ),
-        ("QuickTimeLib", "MCSetActionFilterWithRefCon") => PpcImportDispatcherTarget::QuickTimeCompatibility(
-            PpcQuickTimeCompatibilityOperation::MCSetActionFilterWithRefCon,
-        ),
-        ("QuickTimeLib", "MCSetControllerBoundsRect") => PpcImportDispatcherTarget::QuickTimeCompatibility(
-            PpcQuickTimeCompatibilityOperation::MCSetControllerBoundsRect,
-        ),
+        ("QuickTimeLib", "MCGetControllerBoundsRect") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::MCGetControllerBoundsRect,
+            )
+        }
+        ("QuickTimeLib", "MCSetActionFilterWithRefCon") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::MCSetActionFilterWithRefCon,
+            )
+        }
+        ("QuickTimeLib", "MCSetControllerBoundsRect") => {
+            PpcImportDispatcherTarget::QuickTimeCompatibility(
+                PpcQuickTimeCompatibilityOperation::MCSetControllerBoundsRect,
+            )
+        }
         ("QuickTimeLib", "MCIdle") => PpcImportDispatcherTarget::QuickTimeCompatibility(
             PpcQuickTimeCompatibilityOperation::MCIdle,
         ),

@@ -1416,7 +1416,8 @@ impl super::TrapDispatcher {
         event_desc: u32,
         keyword: u32,
     ) -> Option<AeDescriptor> {
-        self.ae_descriptor_state.events
+        self.ae_descriptor_state
+            .events
             .get(&event_desc)
             .and_then(|event| event.params.get(&keyword).cloned())
             .or_else(|| {
@@ -3767,12 +3768,8 @@ impl super::TrapDispatcher {
         let base = bus.read_bytes(base_ptr, base_size as usize);
         let substitution = bus.read_bytes(substitution_ptr, substitution_size as usize);
         let script = crate::text_utils::font_id_to_script(self.tx_font as i16);
-        let (substitutions, new_data) = crate::text_utils::evaluate_replace_text(
-            &base,
-            &substitution,
-            &key,
-            script,
-        );
+        let (substitutions, new_data) =
+            crate::text_utils::evaluate_replace_text(&base, &substitution, &key, script);
         if substitutions == 0 {
             return 0;
         }
@@ -3784,6 +3781,37 @@ impl super::TrapDispatcher {
             return crate::text_utils::MEM_FULL_ERR;
         }
         substitutions
+    }
+
+    fn scriptutil_transliterate(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        src_handle: u32,
+        dst_handle: u32,
+        target: i16,
+        src_mask: u32,
+    ) -> i16 {
+        if src_handle == 0 || dst_handle == 0 {
+            return crate::text_utils::NIL_HANDLE_ERR;
+        }
+
+        let src_ptr = bus.read_long(src_handle);
+        let dst_ptr = bus.read_long(dst_handle);
+        if src_ptr == 0 || dst_ptr == 0 {
+            return crate::text_utils::MEM_WZ_ERR;
+        }
+
+        let Some(src_size) = bus.get_alloc_size(src_ptr) else {
+            return crate::text_utils::MEM_WZ_ERR;
+        };
+        let src_bytes = bus.read_bytes(src_ptr, src_size as usize);
+        let (transliterated, _code) =
+            crate::text_utils::evaluate_transliterate(&src_bytes, target, src_mask);
+        let updated_ptr = self.write_bytes_to_handle(bus, dst_handle, &transliterated);
+        if !transliterated.is_empty() && updated_ptr == 0 {
+            return crate::text_utils::MEM_FULL_ERR;
+        }
+        0
     }
 
     fn sync_scrap_handle(&mut self, bus: &mut MacMemoryBus) -> u32 {
@@ -5335,7 +5363,8 @@ impl super::TrapDispatcher {
             return -50;
         }
         let compressed = bus.read_bytes(data_ptr, data_size as usize);
-        let Ok(decoded) = image::load_from_memory_with_format(&compressed, image::ImageFormat::Jpeg)
+        let Ok(decoded) =
+            image::load_from_memory_with_format(&compressed, image::ImageFormat::Jpeg)
         else {
             return -8966; // codecSpoolErr
         };
@@ -5600,9 +5629,7 @@ impl super::TrapDispatcher {
                 // of the slot, so TRUE is 0x0100; see GetNextEvent).
                 bus.write_word(sp + 14, if has_event { 0x0100 } else { 0 });
                 cpu.write_reg(Register::A7, sp + 14);
-                if self.system_task_wne_stub != 0
-                    && trap_pc == self.system_task_wne_stub + 2
-                {
+                if self.system_task_wne_stub != 0 && trap_pc == self.system_task_wne_stub + 2 {
                     if let Some(return_pc) = self.system_task_wne_returns.pop() {
                         cpu.write_reg(Register::PC, return_pc);
                         if let Some(pending) = self.pending_wait_next_event_return.as_mut() {
@@ -6925,11 +6952,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let refnum = bus.read_word(sp);
                 let cur_apref_num = bus.read_word(crate::memory::globals::addr::CUR_APREF_NUM);
-                let target_refnum = if refnum == cur_apref_num {
-                    0
-                } else {
-                    refnum
-                };
+                let target_refnum = if refnum == cur_apref_num { 0 } else { refnum };
                 if trace_sound_enabled() || super::dispatch::trace_resfile_enabled() {
                     eprintln!(
                         "[RSRC] UseResFile refnum={} (target={}) name={:?}",
@@ -8862,12 +8885,7 @@ impl super::TrapDispatcher {
                             write_null_aedesc(bus, reply_desc);
                         }
                     }
-                    if let Some(event) = self
-                        .ae_descriptor_state
-                        .events
-                        .get(&event_desc)
-                        .cloned()
-                    {
+                    if let Some(event) = self.ae_descriptor_state.events.get(&event_desc).cloned() {
                         if let Some(handler) =
                             self.apple_event_handler_for(event.event_class, event.event_id)
                         {
@@ -9377,7 +9395,7 @@ impl super::TrapDispatcher {
                 bus.write_long(ptr, evaluated.scrap_size); // scrapSize
                 bus.write_long(ptr + 4, evaluated.scrap_handle); // scrapHandle (live in-memory desk scrap)
                 bus.write_word(ptr + 8, evaluated.scrap_count); // scrapCount
-                // IM:I I-457: scrapState is positive when the scrap is in memory.
+                                                                // IM:I I-457: scrapState is positive when the scrap is in memory.
                 bus.write_word(ptr + 10, evaluated.scrap_state as u16);
                 bus.write_long(ptr + 12, evaluated.scrap_name); // scrapName (NIL)
                 bus.write_long(sp, ptr); // return value
@@ -9421,7 +9439,8 @@ impl super::TrapDispatcher {
                     Ok(Some(handle)) => {
                         let _ = self.write_bytes_to_handle(bus, handle, &[]);
                         bus.free(handle);
-                        bus.write_long(sp, crate::scrap_manager::NO_ERR as u32); // noErr (Systemless HLE: no scrap-file IO)
+                        bus.write_long(sp, crate::scrap_manager::NO_ERR as u32);
+                        // noErr (Systemless HLE: no scrap-file IO)
                     }
                     Ok(None) => bus.write_long(sp, crate::scrap_manager::NO_ERR as u32), // already on disk; noErr
                 }
@@ -9514,7 +9533,11 @@ impl super::TrapDispatcher {
                         }
                         // If hDest is not NIL, copy data into it
                         if !params.is_query_only()
-                            && self.write_bytes_to_handle(bus, params.destination_handle, &flavor.data) == 0
+                            && self.write_bytes_to_handle(
+                                bus,
+                                params.destination_handle,
+                                &flavor.data,
+                            ) == 0
                             && data_len != 0
                         {
                             bus.write_long(
@@ -9529,10 +9552,7 @@ impl super::TrapDispatcher {
                     }
                     None => {
                         // noTypeErr = -102
-                        bus.write_long(
-                            sp + 12,
-                            (crate::scrap_manager::NO_TYPE_ERR as i32) as u32,
-                        );
+                        bus.write_long(sp + 12, (crate::scrap_manager::NO_TYPE_ERR as i32) as u32);
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 12);
@@ -9555,9 +9575,8 @@ impl super::TrapDispatcher {
                 let source = bus.read_long(sp); // source: Ptr
                 let the_type = bus.read_long(sp + 4).to_be_bytes(); // theType: ResType
                 let length = bus.read_long(sp + 8) as i32; // length: LONGINT
-                let params = crate::scrap_manager::evaluate_put_scrap_parameters(
-                    length, the_type, source,
-                );
+                let params =
+                    crate::scrap_manager::evaluate_put_scrap_parameters(length, the_type, source);
 
                 if params.is_valid() {
                     let mut data = vec![0u8; params.data_length()];
@@ -9609,10 +9628,7 @@ impl super::TrapDispatcher {
                 // reading the whole word turns SetResLoad(FALSE) into TRUE.
                 let load = (bus.read_word(sp) >> 8) != 0;
                 self.policy.set_res_load(load);
-                bus.write_word(
-                    crate::memory::globals::addr::RES_LOAD,
-                    u16::from(load) << 8,
-                );
+                bus.write_word(crate::memory::globals::addr::RES_LOAD, u16::from(load) << 8);
                 // Clear ResErr on success — real ROM does, and callers
                 // that probe ResError after a successful SetResLoad
                 // otherwise see stale values from boot-time auto-loads.
@@ -9767,9 +9783,10 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A7, sp + 8);
                 } else {
                     eprintln!("[TRAP] GetNamedResource -> NULL (not found)");
-                    let has_type = self.resource_search_order().into_iter().any(|refnum| {
-                        self.resource_file_contains_type(refnum, res_type)
-                    });
+                    let has_type = self
+                        .resource_search_order()
+                        .into_iter()
+                        .any(|refnum| self.resource_file_contains_type(refnum, res_type));
                     bus.write_word(0x0A60, if has_type { -192i16 as u16 } else { 0 });
                     cpu.write_reg(Register::A0, 0);
                     cpu.write_reg(Register::D0, 0);
@@ -12267,28 +12284,29 @@ impl super::TrapDispatcher {
                         let should_draw = self
                             .list_states
                             .with_record_mut(list_handle, |state| {
-                            state.active = act;
-                            if list_ptr != 0 {
-                                bus.write_byte(
-                                    list_ptr + Self::LIST_ACTIVE_OFFSET,
-                                    if act { 1 } else { 0 },
-                                );
-                                for offset in [Self::LIST_VSCROLL_OFFSET, Self::LIST_HSCROLL_OFFSET]
-                                {
-                                    let control_handle = bus.read_long(list_ptr + offset);
-                                    let control = if control_handle != 0 {
-                                        bus.read_long(control_handle)
-                                    } else {
-                                        0
-                                    };
-                                    if control != 0 {
-                                        // LActivate: IM IV-276 describes hiding the bars.
-                                        // Mac OS 8.1 instead keeps contrlVis and sets
-                                        // contrlHilite=255 (BasiliskII/SheepShaver probe).
-                                        bus.write_byte(control + 17, if act { 0 } else { 255 });
+                                state.active = act;
+                                if list_ptr != 0 {
+                                    bus.write_byte(
+                                        list_ptr + Self::LIST_ACTIVE_OFFSET,
+                                        if act { 1 } else { 0 },
+                                    );
+                                    for offset in
+                                        [Self::LIST_VSCROLL_OFFSET, Self::LIST_HSCROLL_OFFSET]
+                                    {
+                                        let control_handle = bus.read_long(list_ptr + offset);
+                                        let control = if control_handle != 0 {
+                                            bus.read_long(control_handle)
+                                        } else {
+                                            0
+                                        };
+                                        if control != 0 {
+                                            // LActivate: IM IV-276 describes hiding the bars.
+                                            // Mac OS 8.1 instead keeps contrlVis and sets
+                                            // contrlHilite=255 (BasiliskII/SheepShaver probe).
+                                            bus.write_byte(control + 17, if act { 0 } else { 255 });
+                                        }
                                     }
                                 }
-                            }
                                 state.draw_enabled
                             })
                             .unwrap_or(false);
@@ -13243,9 +13261,13 @@ impl super::TrapDispatcher {
                         let form = bus.read_word(sp + 6) as i16;
                         let date_time = bus.read_long(sp + 8);
                         let resource =
-                            super::TrapDispatcher::system_intl_default_body(if form == 0 { 0 } else { 1 });
-                        if let Some(bytes) =
-                            resource.and_then(|r| crate::date_format::format_date(date_time, form, &r))
+                            super::TrapDispatcher::system_intl_default_body(if form == 0 {
+                                0
+                            } else {
+                                1
+                            });
+                        if let Some(bytes) = resource
+                            .and_then(|r| crate::date_format::format_date(date_time, form, &r))
                         {
                             if result_ptr != 0 {
                                 bus.write_pstring(result_ptr, &bytes);
@@ -13265,9 +13287,9 @@ impl super::TrapDispatcher {
                         let want_seconds = bus.read_word(sp + 6) != 0;
                         let date_time = bus.read_long(sp + 8);
                         let resource = super::TrapDispatcher::system_intl_default_body(0);
-                        if let Some(bytes) = resource
-                            .and_then(|r| crate::date_format::format_time(date_time, want_seconds, &r))
-                        {
+                        if let Some(bytes) = resource.and_then(|r| {
+                            crate::date_format::format_time(date_time, want_seconds, &r)
+                        }) {
                             if result_ptr != 0 {
                                 bus.write_pstring(result_ptr, &bytes);
                             }
@@ -13387,8 +13409,8 @@ impl super::TrapDispatcher {
                             if form == 0 { 0 } else { 1 },
                             if form == 0 { 10 } else { 332 },
                         );
-                        if let Some(bytes) =
-                            resource.and_then(|r| crate::date_format::format_date(date_time, form, &r))
+                        if let Some(bytes) = resource
+                            .and_then(|r| crate::date_format::format_date(date_time, form, &r))
                         {
                             if result_ptr != 0 {
                                 bus.write_pstring(result_ptr, &bytes);
@@ -13411,9 +13433,9 @@ impl super::TrapDispatcher {
                         let want_seconds = bus.read_word(sp + 10) != 0;
                         let date_time = bus.read_long(sp + 12);
                         let resource = resolve_68k_intl_resource(bus, intl_handle, 0, 32);
-                        if let Some(bytes) = resource
-                            .and_then(|r| crate::date_format::format_time(date_time, want_seconds, &r))
-                        {
+                        if let Some(bytes) = resource.and_then(|r| {
+                            crate::date_format::format_time(date_time, want_seconds, &r)
+                        }) {
                             if result_ptr != 0 {
                                 bus.write_pstring(result_ptr, &bytes);
                             }
@@ -13445,8 +13467,8 @@ impl super::TrapDispatcher {
                             if form == 0 { 0 } else { 1 },
                             if form == 0 { 10 } else { 332 },
                         );
-                        if let Some(bytes) =
-                            resource.and_then(|r| crate::date_format::format_date(seconds, form, &r))
+                        if let Some(bytes) = resource
+                            .and_then(|r| crate::date_format::format_date(seconds, form, &r))
                         {
                             if result_ptr != 0 {
                                 bus.write_pstring(result_ptr, &bytes);
@@ -13474,9 +13496,9 @@ impl super::TrapDispatcher {
                             0
                         };
                         let resource = resolve_68k_intl_resource(bus, intl_handle, 0, 32);
-                        if let Some(bytes) = resource
-                            .and_then(|r| crate::date_format::format_time(seconds, want_seconds, &r))
-                        {
+                        if let Some(bytes) = resource.and_then(|r| {
+                            crate::date_format::format_time(seconds, want_seconds, &r)
+                        }) {
                             if result_ptr != 0 {
                                 bus.write_pstring(result_ptr, &bytes);
                             }
@@ -14472,12 +14494,7 @@ impl super::TrapDispatcher {
                             );
                             return Some(Err(Error::Halted));
                         }
-                        self.align_window_to_eight_bit_grid(
-                            bus,
-                            window,
-                            front,
-                            alignment_rect,
-                        );
+                        self.align_window_to_eight_bit_grid(bus, window, front, alignment_rect);
                         cpu.write_reg(Register::A7, sp + 14);
                         cpu.write_reg(Register::D0, 0);
                     }
@@ -15860,10 +15877,8 @@ impl super::TrapDispatcher {
                         } else {
                             Vec::new()
                         };
-                        let table = crate::text_utils::evaluate_find_word(
-                            &bytes,
-                            offset.max(0) as usize,
-                        );
+                        let table =
+                            crate::text_utils::evaluate_find_word(&bytes, offset.max(0) as usize);
                         Self::write_offset_table(bus, offsets_ptr, table);
                         cpu.write_reg(Register::A7, sp + 22);
                         return Some(Ok(()));
@@ -15948,6 +15963,32 @@ impl super::TrapDispatcher {
                             offset.max(0) as usize,
                         );
                         Self::write_offset_table(bus, offsets_ptr, table);
+                        cpu.write_reg(Register::A7, sp + 22);
+                        return Some(Ok(()));
+                    }
+                    // GetFormatOrder ($8012FFFC): PROCEDURE GetFormatOrder(
+                    //   ordering: FormatOrderPtr; firstFormat, lastFormat: INTEGER;
+                    //   lineRight: BOOLEAN; rlDirProc: DoRLDirProcPtr; dirParam: Ptr)
+                    // Stack: selector(4), dirParam(4), rlDirProc(4), lineRight(2),
+                    //   lastFormat(2), firstFormat(2), ordering(4). Pop 22 bytes.
+                    // Inside Macintosh: Text 1993, pp. 5-64..5-68.
+                    crate::text_utils::GET_FORMAT_ORDER_SELECTOR => {
+                        let _dir_param = bus.read_long(sp + 4);
+                        let _rl_dir_proc = bus.read_long(sp + 8);
+                        let line_right = bus.read_word(sp + 12) != 0;
+                        let last_format = bus.read_word(sp + 14) as i16;
+                        let first_format = bus.read_word(sp + 16) as i16;
+                        let ordering_ptr = bus.read_long(sp + 18);
+                        let order = crate::text_utils::evaluate_get_format_order(
+                            first_format,
+                            last_format,
+                            line_right,
+                        );
+                        if ordering_ptr != 0 {
+                            for (i, &val) in order.iter().enumerate() {
+                                bus.write_word(ordering_ptr + (i * 2) as u32, val as u16);
+                            }
+                        }
                         cpu.write_reg(Register::A7, sp + 22);
                         return Some(Ok(()));
                     }
@@ -16052,41 +16093,65 @@ impl super::TrapDispatcher {
                     }
                     // Char2Pixel (22): FUNCTION Char2Pixel(textBuf: Ptr; textLen: INTEGER;
                     //   slop: INTEGER; offset: INTEGER; direction: INTEGER): INTEGER
-                    // Stack: selector(4), textBuf(4), textLen(2), slop(2), offset(2),
-                    //        direction(2), result(2)
-                    22 => {
-                        bus.write_word(sp + 16, 0); // return 0 pixel offset
+                    // Stack: selector(4), direction(2), offset(2), slop(2),
+                    //   textLen(2), textBuf(4), result(2). Pop 16 bytes.
+                    crate::text_utils::CHAR2PIXEL_SELECTOR => {
+                        let direction = bus.read_word(sp + 4) as i16;
+                        let offset = bus.read_word(sp + 6) as i16;
+                        let slop = bus.read_word(sp + 8) as i16;
+                        let text_len = (bus.read_word(sp + 10) as i16).max(0) as usize;
+                        let text_buf = bus.read_long(sp + 12);
+                        let bytes = if text_buf != 0 && text_len > 0 {
+                            bus.read_bytes(text_buf, text_len)
+                        } else {
+                            Vec::new()
+                        };
+                        let pixels =
+                            crate::text_utils::evaluate_char2pixel(&bytes, slop, offset, direction);
+                        bus.write_word(sp + 16, pixels as u16);
+                        cpu.write_reg(Register::D0, pixels as i32 as u32);
                         cpu.write_reg(Register::A7, sp + 16);
                     }
                     // Pixel2Char (20): FUNCTION Pixel2Char(textBuf: Ptr; textLen: INTEGER;
                     //   slop: INTEGER; pixelWidth: INTEGER; VAR leadingEdge: BOOLEAN): INTEGER
-                    // Pascal pushes args left-to-right (first arg deepest), so the
-                    // VAR leadingEdge pointer is the LAST arg pushed and lives at
-                    // sp+4 (just past the selector long). Layout post-trap-entry:
-                    //   sp+0  selector long
-                    //   sp+4  leadingEdge_ptr (last arg, 4 bytes)
-                    //   sp+8  pixelWidth (2 bytes)
-                    //   sp+10 slop (2 bytes)
-                    //   sp+12 textLen (2 bytes)
-                    //   sp+14 textBuf (first arg, 4 bytes)
-                    //   sp+18 INTEGER result slot
-                    // Pop 18 bytes (selector + 14 arg bytes), leave 2-byte result.
+                    // Stack: selector(4), leadingEdge_ptr(4), pixelWidth(2), slop(2),
+                    //   textLen(2), textBuf(4), result(2). Pop 18 bytes.
                     // Inside Macintosh Volume V, V-310
-                    20 => {
+                    crate::text_utils::PIXEL2CHAR_SELECTOR => {
                         let leading_edge_ptr = bus.read_long(sp + 4);
+                        let pixel_width = bus.read_word(sp + 8) as i16;
+                        let slop = bus.read_word(sp + 10) as i16;
+                        let text_len = (bus.read_word(sp + 12) as i16).max(0) as usize;
+                        let text_buf = bus.read_long(sp + 14);
+                        let bytes = if text_buf != 0 && text_len > 0 {
+                            bus.read_bytes(text_buf, text_len)
+                        } else {
+                            Vec::new()
+                        };
+                        let (offset, leading_edge) =
+                            crate::text_utils::evaluate_pixel2char(&bytes, slop, pixel_width);
                         if leading_edge_ptr != 0 {
-                            bus.write_byte(leading_edge_ptr, 0);
+                            bus.write_byte(leading_edge_ptr, if leading_edge { 1 } else { 0 });
                         }
-                        bus.write_word(sp + 18, 0); // return offset 0
+                        bus.write_word(sp + 18, offset as u16);
+                        cpu.write_reg(Register::D0, offset as i32 as u32);
                         cpu.write_reg(Register::A7, sp + 18);
                     }
                     // Transliterate (24): FUNCTION Transliterate(srcHandle, dstHandle: Handle;
                     //   target: INTEGER; srcMask: LongInt): OSErr
-                    // Stack: selector(4), srcHandle(4), dstHandle(4), target(2),
-                    //        srcMask(4), result(2). Pop 14 bytes of args, leave result.
+                    // Stack: selector(4), srcMask(4), target(2), dstHandle(4),
+                    //   srcHandle(4), result(2). Pop 18 bytes.
                     // Inside Macintosh Volume V, V-312
-                    24 => {
-                        bus.write_word(sp + 18, 0); // noErr
+                    crate::text_utils::TRANSLITERATE_SELECTOR => {
+                        let src_mask = bus.read_long(sp + 4);
+                        let target = bus.read_word(sp + 8) as i16;
+                        let dst_handle = bus.read_long(sp + 10);
+                        let src_handle = bus.read_long(sp + 14);
+                        let result = self.scriptutil_transliterate(
+                            bus, src_handle, dst_handle, target, src_mask,
+                        );
+                        bus.write_word(sp + 18, result as u16);
+                        cpu.write_reg(Register::D0, result as i32 as u32);
                         cpu.write_reg(Register::A7, sp + 18);
                     }
                     // FindWord (26): PROCEDURE FindWord(textPtr: Ptr; textLength, offset: INTEGER;
@@ -16135,10 +16200,8 @@ impl super::TrapDispatcher {
                         } else {
                             Vec::new()
                         };
-                        let table = crate::text_utils::evaluate_find_word(
-                            &bytes,
-                            offset.max(0) as usize,
-                        );
+                        let table =
+                            crate::text_utils::evaluate_find_word(&bytes, offset.max(0) as usize);
                         Self::write_offset_table(bus, offsets_ptr, table);
                         cpu.write_reg(Register::A7, sp + 22);
                     }
@@ -16170,17 +16233,31 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 18);
                     }
                     // DrawJust (30): PROCEDURE DrawJust(textPtr: Ptr; textLength, slop: INTEGER)
-                    // No return, no output. Systemless does not implement justified text drawing
-                    // here. Stack: selector(4) + 8 bytes of args; pop 12.
+                    // Stack: selector(4), slop(2), textLength(2), textPtr(4). Pop 12 bytes.
                     // Inside Macintosh Volume V, V-315
-                    30 => {
+                    crate::text_utils::DRAW_JUST_SELECTOR => {
                         cpu.write_reg(Register::A7, sp + 12);
                     }
                     // MeasureJust (32): PROCEDURE MeasureJust(textPtr: Ptr; textLength,
                     //   slop: INTEGER; charLocs: Ptr)
-                    // No return. Stack: selector(4) + 12 bytes of args; pop 16.
+                    // Stack: selector(4), charLocs(4), slop(2), textLength(2), textPtr(4). Pop 16 bytes.
                     // Inside Macintosh Volume V, V-315
-                    32 => {
+                    crate::text_utils::MEASURE_JUST_SELECTOR => {
+                        let char_locs = bus.read_long(sp + 4);
+                        let slop = bus.read_word(sp + 8) as i16;
+                        let text_len = (bus.read_word(sp + 10) as i16).max(0) as usize;
+                        let text_ptr = bus.read_long(sp + 12);
+                        let bytes = if text_ptr != 0 && text_len > 0 {
+                            bus.read_bytes(text_ptr, text_len)
+                        } else {
+                            Vec::new()
+                        };
+                        let locs = crate::text_utils::evaluate_measure_just(&bytes, slop);
+                        if char_locs != 0 {
+                            for (i, &loc) in locs.iter().enumerate() {
+                                bus.write_word(char_locs + (i * 2) as u32, loc as u16);
+                            }
+                        }
                         cpu.write_reg(Register::A7, sp + 16);
                     }
                     _ => {
@@ -17365,14 +17442,12 @@ impl super::TrapDispatcher {
                     0xFFFE => {
                         let task = self.guest_calls.current_task();
                         let result = cpu.read_reg(Register::A0);
-                        let retirement = self.guest_calls.retire_classic_thread(
-                            task,
-                            false,
-                            |saved| {
-                                saved.result_destination == 0
-                                    || bus.try_write_long(saved.result_destination, result)
-                            },
-                        );
+                        let retirement =
+                            self.guest_calls
+                                .retire_classic_thread(task, false, |saved| {
+                                    saved.result_destination == 0
+                                        || bus.try_write_long(saved.result_destination, result)
+                                });
                         if let Ok(retirement) = retirement {
                             self.apply_classic_retirement(cpu, bus, false, retirement);
                             return Some(Ok(()));
@@ -17451,7 +17526,13 @@ impl super::TrapDispatcher {
                                 trampoline: 0,
                             };
                             ThreadManager::new(&execution)
-                                .create_thread(GuestIsa::M68k, thread_style, stack_size, options, &mut edge)
+                                .create_thread(
+                                    GuestIsa::M68k,
+                                    thread_style,
+                                    stack_size,
+                                    options,
+                                    &mut edge,
+                                )
                                 .map(|_| ())
                         });
                         match result {
@@ -17589,10 +17670,8 @@ impl super::TrapDispatcher {
                         );
                         match retirement {
                             Ok(retirement) => {
-                                let switched = matches!(
-                                    retirement,
-                                    ClassicRetirement::Switched { .. }
-                                );
+                                let switched =
+                                    matches!(retirement, ClassicRetirement::Switched { .. });
                                 self.apply_classic_retirement(cpu, bus, recycle, retirement);
                                 if switched {
                                     return Some(Ok(()));

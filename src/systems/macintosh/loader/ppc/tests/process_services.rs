@@ -100,9 +100,7 @@ fn attached_event_launch_state_shares_native_first_and_classic_first_oapp_once()
 
     // Native-first: the classic gateway must observe the same claimed
     // OAPP after native GetNextEvent consumes it.
-    classic
-        .apple_event_launch_state
-        .reset_for_launch(true);
+    classic.apple_event_launch_state.reset_for_launch(true);
     native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
     native.cpu.gpr[4] = native_event;
     run_test_import(
@@ -129,9 +127,7 @@ fn attached_event_launch_state_shares_native_first_and_classic_first_oapp_once()
 
     // Classic-first: reset only the process launch state, then make the
     // native gateway poll after classic GetNextEvent consumed OAPP.
-    classic
-        .apple_event_launch_state
-        .reset_for_launch(true);
+    classic.apple_event_launch_state.reset_for_launch(true);
     classic_cpu.write_reg(Register::A7, TEST_SP);
     classic_bus.write_long(TEST_SP, classic_event);
     classic_bus.write_word(TEST_SP + 4, u32::from(PPC_HIGH_LEVEL_EVENT_MASK) as u16);
@@ -174,9 +170,7 @@ fn attached_event_launch_state_shares_eventavail_peek_without_duplicate_oapp() {
     let native_event = PPC_DATA_BASE + 0x3100;
     native.memory.add_region(native_event, vec![0; 16]);
     let classic_event = 0x0020_0000;
-    classic
-        .apple_event_launch_state
-        .reset_for_launch(true);
+    classic.apple_event_launch_state.reset_for_launch(true);
 
     native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
     native.cpu.gpr[4] = native_event;
@@ -225,9 +219,7 @@ fn attached_event_launch_state_requires_awareness_and_high_level_mask() {
     native.memory.add_region(native_event, vec![0; 16]);
     let classic_event = 0x0020_0000;
 
-    classic
-        .apple_event_launch_state
-        .reset_for_launch(false);
+    classic.apple_event_launch_state.reset_for_launch(false);
     native.cpu.gpr[3] = u32::from(PPC_HIGH_LEVEL_EVENT_MASK);
     native.cpu.gpr[4] = native_event;
     run_test_import(
@@ -241,9 +233,7 @@ fn attached_event_launch_state_requires_awareness_and_high_level_mask() {
         .is_open_application_event_sent());
     assert!(context.event_queue().is_empty());
 
-    classic
-        .apple_event_launch_state
-        .reset_for_launch(true);
+    classic.apple_event_launch_state.reset_for_launch(true);
     native.cpu.gpr[3] = 0x0008;
     native.cpu.gpr[4] = native_event;
     run_test_import(
@@ -313,7 +303,10 @@ fn attached_68k_and_powerpc_adapters_share_live_input_without_runner_copy() {
     assert!(!classic.input_state.mouse_button_pressed());
     assert_eq!(classic.input_state.key_map_snapshot()[1], 0x08);
     assert!(!native.process_input.ptr_eq(&detached.process_input));
-    assert_eq!(detached.current_input_snapshot(), PpcInputSnapshot::default());
+    assert_eq!(
+        detached.current_input_snapshot(),
+        PpcInputSnapshot::default()
+    );
 }
 
 #[test]
@@ -328,7 +321,9 @@ fn attached_68k_and_powerpc_adapters_share_display_color_state_without_runner_co
     let detached = native.clone();
 
     native.screen_clut.set_entry(7, [0x1111, 0x2222, 0x3333]);
-    native.color_manager_clut.set_entry(9, [0x4444, 0x5555, 0x6666]);
+    native
+        .color_manager_clut
+        .set_entry(9, [0x4444, 0x5555, 0x6666]);
     let mut native_gamma = native.display_gamma.table();
     native_gamma[1][42] = 0x7f;
     native.display_gamma.install(native_gamma);
@@ -375,9 +370,7 @@ fn attached_68k_and_powerpc_adapters_share_quickdraw_selection_without_runner_co
     let detached = native.clone();
 
     assert!(classic.current_port.ptr_eq(&native.current_gworld));
-    assert!(classic
-        .current_gdevice
-        .ptr_eq(&native.current_gdevice));
+    assert!(classic.current_gdevice.ptr_eq(&native.current_gdevice));
     assert_eq!(*classic.current_port, PPC_MAIN_GWORLD);
     assert_eq!(*classic.current_gdevice, PPC_MAIN_GDEVICE);
 
@@ -413,8 +406,7 @@ fn attached_68k_and_powerpc_adapters_share_quickdraw_selection_without_runner_co
 #[test]
 fn attached_quickdraw_port_draw_state_crosses_isa_immediately() {
     let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
-    let mut native =
-        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
     let mut context = ProcessContext::default();
     classic.attach_unconverted_process_services(&mut context);
     native.attach_unconverted_process_services(&mut context);
@@ -507,7 +499,10 @@ fn attached_quickdraw_port_draw_state_crosses_isa_immediately() {
         .unwrap()
         .is_ok());
     assert_eq!(classic_bus.read_word(classic_output), native_color.red);
-    assert_eq!(classic_bus.read_word(classic_output + 2), native_color.green);
+    assert_eq!(
+        classic_bus.read_word(classic_output + 2),
+        native_color.green
+    );
     assert_eq!(classic_bus.read_word(classic_output + 4), native_color.blue);
     assert_eq!(classic.tx_mode, 4);
 }
@@ -515,8 +510,7 @@ fn attached_quickdraw_port_draw_state_crosses_isa_immediately() {
 #[test]
 fn attached_quickdraw_port_state_is_per_port_and_detaches_with_clone() {
     let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
-    let mut native =
-        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
     let mut context = ProcessContext::default();
     classic.attach_unconverted_process_services(&mut context);
     native.attach_unconverted_process_services(&mut context);
@@ -590,8 +584,7 @@ fn attached_quickdraw_pixel_states_cross_isa_and_detach_with_clone() {
     // the PixMapHandle state word is process-visible independently of
     // which CPU gateway performs LockPixels or SetPixelsState.
     let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
-    let mut native =
-        load_pef_application(&synthetic_pef_with_import(b"GetPixelsState")).unwrap();
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"GetPixelsState")).unwrap();
     let mut context = ProcessContext::default();
     classic.attach_unconverted_process_services(&mut context);
     native.attach_unconverted_process_services(&mut context);
@@ -645,8 +638,7 @@ fn attached_quickdraw_pixel_states_cross_isa_and_detach_with_clone() {
 #[test]
 fn attached_quickdraw_error_crosses_isa_and_detaches_with_clone() {
     let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
-    let mut native =
-        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
     let mut context = ProcessContext::default();
     classic.attach_unconverted_process_services(&mut context);
     native.attach_unconverted_process_services(&mut context);
@@ -835,10 +827,7 @@ fn process_file_records_remain_canonical_during_native_execution_panic_cross_isa
         Some("Shared/Native.bin")
     );
     assert_eq!(
-        classic
-            .vfs
-            .get("Shared/Native.bin")
-            .map(Vec::as_slice),
+        classic.vfs.get("Shared/Native.bin").map(Vec::as_slice),
         Some(b"native".as_slice())
     );
 
@@ -863,19 +852,17 @@ fn process_file_records_remain_canonical_during_native_execution_panic_cross_isa
     .into_ppc_import_action()
     .expect("native test request should adapt to the PPC ABI");
     assert!(matches!(
-        native.toolbox_startup.execution.calls()
+        native
+            .toolbox_startup
+            .execution
+            .calls()
             .externalize_powerpc_action(&mut native.cpu, action),
         PpcImportAction::Continue
     ));
     native.cpu.pc = PPC_GUEST_CALL_RETURN_PC;
     let mut empty_memory_manager = ProcessMemoryManager::default();
     let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        native.run_with_process_memory_manager(
-            64,
-            false,
-            false,
-            &mut empty_memory_manager,
-        );
+        native.run_with_process_memory_manager(64, false, false, &mut empty_memory_manager);
     }));
     assert!(panic_result.is_err());
 
@@ -1061,7 +1048,10 @@ fn process_resource_records_remain_canonical_during_native_execution_panic_cross
     .into_ppc_import_action()
     .expect("native test request should adapt to the PPC ABI");
     assert!(matches!(
-        native.toolbox_startup.execution.calls()
+        native
+            .toolbox_startup
+            .execution
+            .calls()
             .externalize_powerpc_action(&mut native.cpu, action),
         PpcImportAction::Continue
     ));
@@ -1087,12 +1077,7 @@ fn process_resource_records_remain_canonical_during_native_execution_panic_cross
             classic: &classic,
             observed: &observed_during_unwind,
         };
-        native.run_with_process_memory_manager(
-            64,
-            false,
-            false,
-            &mut empty_memory_manager,
-        );
+        native.run_with_process_memory_manager(64, false, false, &mut empty_memory_manager);
     }));
     assert!(panic_result.is_err());
     assert!(
@@ -1164,9 +1149,7 @@ fn open_file_sessions_cross_cpu_adapters_and_detach_with_clone() {
         .with_test_open_file_mut(0, |file| file.position = 12)
         .expect("seeded native open file");
     assert_eq!(
-        classic
-            .file_positions
-            .get(&(PPC_FIRST_FILE_REF_NUM as u16)),
+        classic.file_positions.get(&(PPC_FIRST_FILE_REF_NUM as u16)),
         Some(&12)
     );
 
@@ -1206,14 +1189,12 @@ fn catalogue_mutations_cross_cpu_adapters_without_runner_sync() {
     native.attach_unconverted_process_services(&mut context);
     let executing_directories = native.vfs_directories.shared_handle();
     let executing_volumes = native.vfs_volumes.shared_handle();
-    let executing_next_volume_ref_num =
-        native.next_vfs_volume_ref_num.shared_handle();
+    let executing_next_volume_ref_num = native.next_vfs_volume_ref_num.shared_handle();
     let executing_next_dir_id = native.next_vfs_dir_id.shared_handle();
     let executing_default_dir_id = native.default_dir_id.shared_handle();
     let executing_working_directories = native.working_directories.shared_handle();
-    let executing_application_wd_ref_num = native
-        .application_working_directory_ref_num
-        .shared_handle();
+    let executing_application_wd_ref_num =
+        native.application_working_directory_ref_num.shared_handle();
     let detached = native.clone();
     let mut classic = TrapDispatcher::new();
     classic.attach_unconverted_process_services(&mut context);
@@ -1278,7 +1259,9 @@ fn catalogue_mutations_cross_cpu_adapters_without_runner_sync() {
     // Volume records are canonical process state, so the classic adapter
     // observes this native mutation before any catalogue publication pass.
     assert_eq!(
-        classic.vfs_volume_for_ref_num(-2).map(|volume| volume.name.as_str()),
+        classic
+            .vfs_volume_for_ref_num(-2)
+            .map(|volume| volume.name.as_str()),
         Some("Read Only")
     );
     native.publish_test_native_vfs_catalogue();
@@ -1295,7 +1278,10 @@ fn catalogue_mutations_cross_cpu_adapters_without_runner_sync() {
     assert_eq!(metadata.file_type, u32::from_be_bytes(*b"DATA"));
     assert_eq!(metadata.finder_flags, 0x0200);
     assert_eq!(*classic.default_dir_id, PPC_FIRST_DYNAMIC_DIR_ID);
-    assert_eq!(classic.vfs_volume_for_ref_num(-2).unwrap().name, "Read Only");
+    assert_eq!(
+        classic.vfs_volume_for_ref_num(-2).unwrap().name,
+        "Read Only"
+    );
 
     let classic_dir_id = classic.ensure_vfs_directory("Classic Folder");
     let classic_directory = native
@@ -1333,15 +1319,11 @@ fn catalogue_mutations_cross_cpu_adapters_without_runner_sync() {
             .map(|volume| volume.name.as_str()),
         Some("Classic Disk")
     );
-    classic
-        .vfs
-        .insert("Classic Folder/Classic Data".to_string(), b"classic".to_vec());
-    classic.set_vfs_entry_metadata(
-        "Classic Folder/Classic Data",
-        *b"TEXT",
-        *b"ttxt",
-        0x0100,
+    classic.vfs.insert(
+        "Classic Folder/Classic Data".to_string(),
+        b"classic".to_vec(),
     );
+    classic.set_vfs_entry_metadata("Classic Folder/Classic Data", *b"TEXT", *b"ttxt", 0x0100);
     classic.set_launched_app_path("Classic Folder/Classic Data");
     let classic_wd_ref_num = *classic.app_wd_refnum;
     assert!(classic
@@ -1374,7 +1356,10 @@ fn catalogue_mutations_cross_cpu_adapters_without_runner_sync() {
         native.memory.read_u16_be(wd_vref_ptr),
         Some(PPC_BOOT_VOLUME_REF_NUM as u16)
     );
-    assert_eq!(native.memory.read_u32_be(wd_dir_id_ptr), Some(classic_dir_id));
+    assert_eq!(
+        native.memory.read_u32_be(wd_dir_id_ptr),
+        Some(classic_dir_id)
+    );
     assert_eq!(native.memory.read_u32_be(wd_proc_id_ptr), Some(0));
     assert!(native.vfs_directories.iter().any(|directory| {
         directory.dir_id == classic_dir_id && directory.path == "Classic Folder"
@@ -1382,9 +1367,9 @@ fn catalogue_mutations_cross_cpu_adapters_without_runner_sync() {
     assert!(executing_directories.iter().any(|directory| {
         directory.dir_id == classic_dir_id && directory.path == "Classic Folder"
     }));
-    assert!(executing_volumes.iter().any(|volume| {
-        volume.ref_num == classic_volume_ref && volume.name == "Classic Disk"
-    }));
+    assert!(executing_volumes
+        .iter()
+        .any(|volume| { volume.ref_num == classic_volume_ref && volume.name == "Classic Disk" }));
     assert_eq!(*executing_next_volume_ref_num, classic_volume_ref - 1);
     assert_eq!(*executing_next_dir_id, *classic.next_vfs_dir_id);
     assert_eq!(*executing_default_dir_id, classic_dir_id);
@@ -1458,16 +1443,16 @@ fn catalogue_mutations_cross_cpu_adapters_without_runner_sync() {
         .insert("Shared Folder/Native Data".to_string());
     // Native Delete removes the canonical record before queueing its notice.
     native.process_file_system.with_mut(|file_system| {
-        file_system.vfs_files.retain(|file| file.path != "Shared Folder/Native Data");
+        file_system
+            .vfs_files
+            .retain(|file| file.path != "Shared Folder/Native Data");
     });
     native.push_test_deleted_vfs_file_path("Shared Folder/Native Data".to_string());
     native.publish_test_native_vfs_catalogue();
     assert!(!classic
         .vfs_metadata
         .contains_key("Shared Folder/Native Data"));
-    assert!(!classic
-        .locked_files
-        .contains("Shared Folder/Native Data"));
+    assert!(!classic.locked_files.contains("Shared Folder/Native Data"));
 
     assert!(classic.remove_vfs_path("Classic Folder/Classic Data"));
     assert!(!native
@@ -1535,12 +1520,15 @@ fn detached_native_app_clones_keep_independent_file_systems() {
     assert_eq!(detached.vfs_files[0].data, b"before");
     assert_eq!(original.vfs_resources[0].data, b"changed!");
     assert_eq!(detached.vfs_resources[0].data, b"resource");
-    assert_eq!(original.vfs_directories.last().unwrap().path, "Changed Folder");
-    assert_eq!(detached.vfs_directories.last().unwrap().path, "Detached Folder");
     assert_eq!(
-        *original.next_vfs_dir_id,
-        *detached.next_vfs_dir_id + 1
+        original.vfs_directories.last().unwrap().path,
+        "Changed Folder"
     );
+    assert_eq!(
+        detached.vfs_directories.last().unwrap().path,
+        "Detached Folder"
+    );
+    assert_eq!(*original.next_vfs_dir_id, *detached.next_vfs_dir_id + 1);
 }
 
 #[test]
@@ -1635,14 +1623,15 @@ fn adopted_ppc_execution_pair_remains_shared_through_panic() {
 
 #[test]
 fn attached_resource_policy_mutations_cross_isa_immediately() {
-    let mut native =
-        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
     let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
     let mut context = ProcessContext::default();
     classic.attach_unconverted_process_services(&mut context);
     native.attach_unconverted_process_services(&mut context);
     assert_eq!(
-        native.memory.read_u16_be(crate::memory::globals::addr::RES_LOAD),
+        native
+            .memory
+            .read_u16_be(crate::memory::globals::addr::RES_LOAD),
         Some(0x0100),
     );
 
@@ -1657,14 +1646,18 @@ fn attached_resource_policy_mutations_cross_isa_immediately() {
     native.cpu.gpr[3] = 0;
     run_test_import(&mut native, PpcImportDispatcherTarget::SetResLoad);
     assert_eq!(
-        native.memory.read_u16_be(crate::memory::globals::addr::RES_LOAD),
+        native
+            .memory
+            .read_u16_be(crate::memory::globals::addr::RES_LOAD),
         Some(0),
     );
     native.cpu.gpr[3] = 1;
     run_test_import(&mut native, PpcImportDispatcherTarget::SetResLoad);
     assert!(classic.policy.res_load());
     assert_eq!(
-        native.memory.read_u16_be(crate::memory::globals::addr::RES_LOAD),
+        native
+            .memory
+            .read_u16_be(crate::memory::globals::addr::RES_LOAD),
         Some(0x0100),
     );
 
@@ -1682,8 +1675,7 @@ fn attached_application_limit_mutations_cross_isa_immediately() {
     // Inside Macintosh: Memory (1992), pp. 2-83--2-85: SetApplLimit
     // changes the guest-visible application boundary without changing
     // the allocator's physical heap ceiling.
-    let mut native =
-        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
     let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
     let mut context = ProcessContext::default();
     classic.attach_unconverted_process_services(&mut context);
@@ -1712,10 +1704,7 @@ fn attached_application_limit_mutations_cross_isa_immediately() {
 
     let classic_requested = requested + 0x1000;
     classic_bus.write_long(crate::memory::globals::addr::HEAP_END, native.heap_cursor());
-    classic_bus.write_long(
-        crate::memory::globals::addr::APPL_LIMIT,
-        requested,
-    );
+    classic_bus.write_long(crate::memory::globals::addr::APPL_LIMIT, requested);
     classic_cpu.write_reg(Register::A0, classic_requested);
     assert!(classic
         .dispatch_memory(false, 0x2D, &mut classic_cpu, &mut classic_bus)
@@ -1734,8 +1723,7 @@ fn attached_application_limit_mutations_cross_isa_immediately() {
 
 #[test]
 fn attached_resource_errors_use_canonical_low_memory_cross_isa() {
-    let mut native =
-        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
     let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
     let mut context = ProcessContext::default();
     classic.attach_unconverted_process_services(&mut context);
@@ -1769,8 +1757,7 @@ fn attached_resource_errors_use_canonical_low_memory_cross_isa() {
 
 #[test]
 fn cloned_native_adapter_detaches_resource_policy_and_error_state() {
-    let mut original =
-        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let mut original = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
     original.policy.set_res_load(false);
     original.policy.set_res_purge(true);
     original.set_test_resource_error(PPC_RES_NOT_FOUND_ERR);
@@ -1785,16 +1772,12 @@ fn cloned_native_adapter_detaches_resource_policy_and_error_state() {
     assert_eq!(original.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
     assert!(detached.policy.res_load());
     assert!(!detached.policy.res_purge());
-    assert_eq!(
-        detached.test_resource_error(),
-        PPC_RES_F_NOT_FOUND_ERR
-    );
+    assert_eq!(detached.test_resource_error(), PPC_RES_F_NOT_FOUND_ERR);
 }
 
 #[test]
 fn attached_control_manager_metadata_crosses_isa_immediately() {
-    let mut native =
-        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
     let (mut classic, _classic_cpu, mut classic_bus) = setup_with_port();
     let mut context = ProcessContext::default();
     classic.attach_unconverted_process_services(&mut context);
@@ -1835,17 +1818,12 @@ fn attached_control_manager_metadata_crosses_isa_immediately() {
 
 #[test]
 fn cloned_native_adapter_detaches_control_manager_metadata() {
-    let original =
-        load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
-    original
-        .controls
-        .register(0x0031_1000, 0x0031_2000, 1, 0);
+    let original = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+    original.controls.register(0x0031_1000, 0x0031_2000, 1, 0);
     let detached = original.clone();
 
     detached.controls.set_proc_id(0x0031_2000, 2);
-    detached
-        .controls
-        .register(0x0031_3000, 0x0031_4000, 16, 0);
+    detached.controls.register(0x0031_3000, 0x0031_4000, 16, 0);
 
     assert_eq!(original.controls.proc_id(0x0031_2000), 1);
     assert_eq!(detached.controls.proc_id(0x0031_2000), 2);
@@ -1856,8 +1834,14 @@ fn cloned_native_adapter_detaches_control_manager_metadata() {
 fn system_compatibility_imports_pre_resolve_to_typed_operations() {
     for (symbol, operation) in [
         ("BuildDDPwds", PpcSystemCompatibilityOperation::BuildDdPwds),
-        ("CTBGetCTBVersion", PpcSystemCompatibilityOperation::CtbGetCtbVersion),
-        ("CallComponentUPP", PpcSystemCompatibilityOperation::CallComponentUpp),
+        (
+            "CTBGetCTBVersion",
+            PpcSystemCompatibilityOperation::CtbGetCtbVersion,
+        ),
+        (
+            "CallComponentUPP",
+            PpcSystemCompatibilityOperation::CallComponentUpp,
+        ),
         ("CharByte", PpcSystemCompatibilityOperation::CharByte),
         ("CharType", PpcSystemCompatibilityOperation::CharType),
         ("DIBadMount", PpcSystemCompatibilityOperation::DiBadMount),
@@ -1869,49 +1853,127 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("Debugger", PpcSystemCompatibilityOperation::Debugger),
         ("Dequeue", PpcSystemCompatibilityOperation::Dequeue),
         ("Enqueue", PpcSystemCompatibilityOperation::Enqueue),
-        ("FindNextComponent", PpcSystemCompatibilityOperation::FindNextComponent),
+        (
+            "FindNextComponent",
+            PpcSystemCompatibilityOperation::FindNextComponent,
+        ),
         ("FindWord", PpcSystemCompatibilityOperation::FindWord),
         ("Font2Script", PpcSystemCompatibilityOperation::Font2Script),
         ("FontScript", PpcSystemCompatibilityOperation::FontScript),
-        ("GetNextProcess", PpcSystemCompatibilityOperation::GetNextProcess),
+        (
+            "GetNextProcess",
+            PpcSystemCompatibilityOperation::GetNextProcess,
+        ),
         ("GetEvQHdr", PpcSystemCompatibilityOperation::GetEvQHdr),
         ("GetScript", PpcSystemCompatibilityOperation::GetScript),
-        ("GetScriptManagerVariable", PpcSystemCompatibilityOperation::GetScriptManagerVariable),
-        ("GetScriptVariable", PpcSystemCompatibilityOperation::GetScriptVariable),
-        ("GetSysBeepVolume", PpcSystemCompatibilityOperation::GetSysBeepVolume),
-        ("GetSysDirection", PpcSystemCompatibilityOperation::GetSysDirection),
+        (
+            "GetScriptManagerVariable",
+            PpcSystemCompatibilityOperation::GetScriptManagerVariable,
+        ),
+        (
+            "GetScriptVariable",
+            PpcSystemCompatibilityOperation::GetScriptVariable,
+        ),
+        (
+            "GetSysBeepVolume",
+            PpcSystemCompatibilityOperation::GetSysBeepVolume,
+        ),
+        (
+            "GetSysDirection",
+            PpcSystemCompatibilityOperation::GetSysDirection,
+        ),
         ("HiliteText", PpcSystemCompatibilityOperation::HiliteText),
-        ("IUCompString", PpcSystemCompatibilityOperation::IuCompString),
-        ("IUDateString", PpcSystemCompatibilityOperation::IuDateString),
-        ("IUDatePString", PpcSystemCompatibilityOperation::IuDatePString),
+        (
+            "IUCompString",
+            PpcSystemCompatibilityOperation::IuCompString,
+        ),
+        (
+            "IUDateString",
+            PpcSystemCompatibilityOperation::IuDateString,
+        ),
+        (
+            "IUDatePString",
+            PpcSystemCompatibilityOperation::IuDatePString,
+        ),
         ("DateString", PpcSystemCompatibilityOperation::IuDatePString),
-        ("IUTimeString", PpcSystemCompatibilityOperation::IuTimeString),
-        ("IUTimePString", PpcSystemCompatibilityOperation::IuTimePString),
+        (
+            "IUTimeString",
+            PpcSystemCompatibilityOperation::IuTimeString,
+        ),
+        (
+            "IUTimePString",
+            PpcSystemCompatibilityOperation::IuTimePString,
+        ),
         ("TimeString", PpcSystemCompatibilityOperation::IuTimePString),
-        ("IUEqualString", PpcSystemCompatibilityOperation::IuEqualString),
+        (
+            "IUEqualString",
+            PpcSystemCompatibilityOperation::IuEqualString,
+        ),
         ("InitCRM", PpcSystemCompatibilityOperation::InitCrm),
-        ("InitCTBUtilities", PpcSystemCompatibilityOperation::InitCtbUtilities),
+        (
+            "InitCTBUtilities",
+            PpcSystemCompatibilityOperation::InitCtbUtilities,
+        ),
         ("IntlScript", PpcSystemCompatibilityOperation::IntlScript),
-        ("KeyTranslate", PpcSystemCompatibilityOperation::KeyTranslate),
-        ("LaunchApplication", PpcSystemCompatibilityOperation::LaunchApplication),
-        ("LMGetCurApName", PpcSystemCompatibilityOperation::LmGetCurApName),
-        ("LMGetSysFontFam", PpcSystemCompatibilityOperation::LmGetSysFontFam),
-        ("LMGetSysFontSize", PpcSystemCompatibilityOperation::LmGetSysFontSize),
+        (
+            "KeyTranslate",
+            PpcSystemCompatibilityOperation::KeyTranslate,
+        ),
+        (
+            "LaunchApplication",
+            PpcSystemCompatibilityOperation::LaunchApplication,
+        ),
+        (
+            "LMGetCurApName",
+            PpcSystemCompatibilityOperation::LmGetCurApName,
+        ),
+        (
+            "LMGetSysFontFam",
+            PpcSystemCompatibilityOperation::LmGetSysFontFam,
+        ),
+        (
+            "LMGetSysFontSize",
+            PpcSystemCompatibilityOperation::LmGetSysFontSize,
+        ),
         ("MIDIAddPort", PpcSystemCompatibilityOperation::MidiAddPort),
-        ("MIDIRemovePort", PpcSystemCompatibilityOperation::MidiRemovePort),
+        (
+            "MIDIRemovePort",
+            PpcSystemCompatibilityOperation::MidiRemovePort,
+        ),
         ("MIDISignOut", PpcSystemCompatibilityOperation::MidiSignOut),
-        ("MIDIWritePacket", PpcSystemCompatibilityOperation::MidiWritePacket),
+        (
+            "MIDIWritePacket",
+            PpcSystemCompatibilityOperation::MidiWritePacket,
+        ),
         ("Munger", PpcSystemCompatibilityOperation::Munger),
         ("NFindWord", PpcSystemCompatibilityOperation::NFindWord),
         ("NMInstall", PpcSystemCompatibilityOperation::NmInstall),
         ("NMRemove", PpcSystemCompatibilityOperation::NmRemove),
-        ("ObscureCursor", PpcSystemCompatibilityOperation::ObscureCursor),
-        ("OpenDefaultComponent", PpcSystemCompatibilityOperation::OpenDefaultComponent),
+        (
+            "ObscureCursor",
+            PpcSystemCompatibilityOperation::ObscureCursor,
+        ),
+        (
+            "OpenDefaultComponent",
+            PpcSystemCompatibilityOperation::OpenDefaultComponent,
+        ),
         ("ReplaceText", PpcSystemCompatibilityOperation::ReplaceText),
-        ("ResetAlertStage", PpcSystemCompatibilityOperation::ResetAlertStage),
-        ("SetFrontProcess", PpcSystemCompatibilityOperation::SetFrontProcess),
-        ("SetSysDirection", PpcSystemCompatibilityOperation::SetSysDirection),
-        ("StyledLineBreak", PpcSystemCompatibilityOperation::StyledLineBreak),
+        (
+            "ResetAlertStage",
+            PpcSystemCompatibilityOperation::ResetAlertStage,
+        ),
+        (
+            "SetFrontProcess",
+            PpcSystemCompatibilityOperation::SetFrontProcess,
+        ),
+        (
+            "SetSysDirection",
+            PpcSystemCompatibilityOperation::SetSysDirection,
+        ),
+        (
+            "StyledLineBreak",
+            PpcSystemCompatibilityOperation::StyledLineBreak,
+        ),
         ("SystemEdit", PpcSystemCompatibilityOperation::SystemEdit),
         ("TruncText", PpcSystemCompatibilityOperation::TruncText),
         ("UpperString", PpcSystemCompatibilityOperation::UpperString),
@@ -2044,9 +2106,7 @@ fn ppc_nminstall_and_nmremove_validate_record() {
     loaded.cpu.gpr[3] = nm_rec;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::NmInstall,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::NmInstall),
     );
     assert_eq!(loaded.cpu.gpr[3] as i32 as i16, -299);
 
@@ -2056,9 +2116,7 @@ fn ppc_nminstall_and_nmremove_validate_record() {
     loaded.cpu.gpr[3] = nm_rec;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::NmInstall,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::NmInstall),
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(loaded.memory.read_u32_be(nm_rec).unwrap(), 0);
@@ -2067,9 +2125,7 @@ fn ppc_nminstall_and_nmremove_validate_record() {
     loaded.cpu.gpr[3] = nm_rec;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::NmRemove,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::NmRemove),
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
 
@@ -2077,9 +2133,7 @@ fn ppc_nminstall_and_nmremove_validate_record() {
     loaded.cpu.gpr[3] = 0;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::NmRemove,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::NmRemove),
     );
     assert_eq!(loaded.cpu.gpr[3] as i32 as i16, -299);
 }
@@ -2093,9 +2147,7 @@ fn ppc_disk_init_operations_return_expected_results() {
     loaded.cpu.gpr[4] = 0x1234_5678;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::DiBadMount,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiBadMount),
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
 
@@ -2103,9 +2155,7 @@ fn ppc_disk_init_operations_return_expected_results() {
     loaded.cpu.gpr[3] = 1;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::DiFormat,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiFormat),
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
 
@@ -2113,9 +2163,7 @@ fn ppc_disk_init_operations_return_expected_results() {
     loaded.cpu.gpr[3] = 1;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::DiVerify,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiVerify),
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
 
@@ -2124,9 +2172,7 @@ fn ppc_disk_init_operations_return_expected_results() {
     loaded.cpu.gpr[4] = 0;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::DiZero,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiZero),
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
 
@@ -2134,17 +2180,13 @@ fn ppc_disk_init_operations_return_expected_results() {
     loaded.cpu.gpr[3] = 0xDEAD_BEEF;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::DiLoad,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiLoad),
     );
     assert_eq!(loaded.cpu.gpr[3], 0xDEAD_BEEF);
 
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::DiUnload,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiUnload),
     );
     assert_eq!(loaded.cpu.gpr[3], 0xDEAD_BEEF);
 }
@@ -2322,9 +2364,7 @@ fn ppc_trunc_text_truncates_and_updates_length() {
     loaded.cpu.gpr[6] = 0;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::TruncText,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::TruncText),
     );
     assert_eq!(loaded.cpu.gpr[3] as i32 as i16, 1);
     assert_eq!(loaded.memory.read_u16_be(length_ptr), Some(6));
@@ -2478,9 +2518,7 @@ fn ppc_chartype_compatibility_identifies_ascii_and_european_bytes() {
     loaded.cpu.gpr[4] = 0;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::CharType,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::CharType),
     );
     assert_eq!(loaded.cpu.gpr[3] as i32 as i16, 0);
 
@@ -2489,9 +2527,7 @@ fn ppc_chartype_compatibility_identifies_ascii_and_european_bytes() {
     loaded.cpu.gpr[4] = 1;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::CharType,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::CharType),
     );
     assert_eq!(loaded.cpu.gpr[3] as i32 as i16, 0x0700);
 }
@@ -2510,9 +2546,7 @@ fn ppc_hilitetext_compatibility_writes_offset_table() {
 
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::HiliteText,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::HiliteText),
     );
 
     assert_eq!(loaded.memory.read_u16_be(offsets_ptr), Some(5));
@@ -2542,9 +2576,7 @@ fn ppc_findword_compatibility_finds_word_boundaries() {
 
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::FindWord,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::FindWord),
     );
 
     assert_eq!(loaded.memory.read_u16_be(offsets_ptr), Some(0));
@@ -2554,9 +2586,7 @@ fn ppc_findword_compatibility_finds_word_boundaries() {
     loaded.cpu.gpr[5] = 6;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::FindWord,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::FindWord),
     );
 
     assert_eq!(loaded.memory.read_u16_be(offsets_ptr), Some(5));
@@ -2649,9 +2679,7 @@ fn ppc_script_manager_and_script_variable_compatibility() {
     loaded.cpu.gpr[4] = crate::text_utils::SM_SCRIPT_ENABLED as u32;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::GetScript,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::GetScript),
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
 }
@@ -2666,16 +2694,16 @@ fn ppc_parse_table_and_portion_text_compatibility() {
     loaded.cpu.gpr[3] = table_ptr;
     run_test_import(
         &mut loaded,
-        PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::ParseTable,
-        ),
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::ParseTable),
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert!((0..256).all(|i| loaded.memory.read_u8(table_ptr + i).unwrap() == 0));
 
     // PortionText: "Hello world from PPC" (3 spaces) -> 3.0 Fixed ($00030000)
     let text_ptr = PPC_DATA_BASE + 0x2000;
-    loaded.memory.add_region(text_ptr, b"Hello world from PPC".to_vec());
+    loaded
+        .memory
+        .add_region(text_ptr, b"Hello world from PPC".to_vec());
     loaded.cpu.gpr[3] = text_ptr;
     loaded.cpu.gpr[4] = 20;
     run_test_import(
@@ -2692,7 +2720,9 @@ fn ppc_find_script_run_and_find_word_breaks_compatibility() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FindScriptRun")).unwrap();
     let text_ptr = PPC_DATA_BASE + 0x3000;
     let run_len_ptr = PPC_DATA_BASE + 0x3100;
-    loaded.memory.add_region(text_ptr, b"Sample Text Run".to_vec());
+    loaded
+        .memory
+        .add_region(text_ptr, b"Sample Text Run".to_vec());
     loaded.memory.add_region(run_len_ptr, vec![0; 4]);
 
     // FindScriptRun: returns 0 (smRoman), writes run length
@@ -2712,7 +2742,9 @@ fn ppc_find_script_run_and_find_word_breaks_compatibility() {
     let offsets_ptr = PPC_DATA_BASE + 0x3200;
     loaded.memory.add_region(offsets_ptr, vec![0xFF; 12]);
     let text2_ptr = PPC_DATA_BASE + 0x3300;
-    loaded.memory.add_region(text2_ptr, b"Alpha   Beta".to_vec());
+    loaded
+        .memory
+        .add_region(text2_ptr, b"Alpha   Beta".to_vec());
 
     loaded.cpu.gpr[3] = text2_ptr;
     loaded.cpu.gpr[4] = 12; // textLength
@@ -2730,4 +2762,115 @@ fn ppc_find_script_run_and_find_word_breaks_compatibility() {
     );
     assert_eq!(loaded.memory.read_u16_be(offsets_ptr), Some(5));
     assert_eq!(loaded.memory.read_u16_be(offsets_ptr + 2), Some(8));
+}
+
+#[test]
+fn ppc_get_format_order_char2pixel_and_pixel2char_compatibility() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"GetFormatOrder")).unwrap();
+    let ordering_ptr = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(ordering_ptr, vec![0xFF; 8]);
+
+    // GetFormatOrder: firstFormat = 0, lastFormat = 3, lineRight = false -> [0, 1, 2, 3]
+    loaded.cpu.gpr[3] = ordering_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 3;
+    loaded.cpu.gpr[6] = 0; // lineRight = false
+    loaded.cpu.gpr[7] = 0; // rlDirProc
+    loaded.cpu.gpr[8] = 0; // dirParam
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::GetFormatOrder,
+        ),
+    );
+    assert_eq!(loaded.memory.read_u16_be(ordering_ptr), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(ordering_ptr + 2), Some(1));
+    assert_eq!(loaded.memory.read_u16_be(ordering_ptr + 4), Some(2));
+    assert_eq!(loaded.memory.read_u16_be(ordering_ptr + 6), Some(3));
+
+    // Char2Pixel: "Sample Text", offset 6 -> 36 px
+    let text_ptr = PPC_DATA_BASE + 0x4100;
+    loaded.memory.add_region(text_ptr, b"Sample Text".to_vec());
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = 11;
+    loaded.cpu.gpr[5] = 0; // slop
+    loaded.cpu.gpr[6] = 6; // offset
+    loaded.cpu.gpr[7] = 0; // direction
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Char2Pixel),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 36);
+
+    // Pixel2Char: pixelWidth 38 -> offset 6, leadingEdge = 1 (true)
+    let leading_edge_ptr = PPC_DATA_BASE + 0x4200;
+    loaded.memory.add_region(leading_edge_ptr, vec![0; 4]);
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = 11;
+    loaded.cpu.gpr[5] = 0; // slop
+    loaded.cpu.gpr[6] = 38; // pixelWidth
+    loaded.cpu.gpr[7] = leading_edge_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::Pixel2Char),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 6);
+    assert_eq!(loaded.memory.read_u8(leading_edge_ptr), Some(1));
+}
+
+#[test]
+fn ppc_measure_just_and_transliterate_compatibility() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"MeasureJust")).unwrap();
+    let text_ptr = PPC_DATA_BASE + 0x5000;
+    let char_locs_ptr = PPC_DATA_BASE + 0x5100;
+    loaded.memory.add_region(text_ptr, b"ABC".to_vec());
+    loaded.memory.add_region(char_locs_ptr, vec![0; 8]); // 4 words
+
+    // MeasureJust: "ABC" -> [0, 6, 12, 18]
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = 3;
+    loaded.cpu.gpr[5] = 0; // slop
+    loaded.cpu.gpr[6] = char_locs_ptr;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::MeasureJust,
+        ),
+    );
+    assert_eq!(loaded.memory.read_u16_be(char_locs_ptr), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(char_locs_ptr + 2), Some(6));
+    assert_eq!(loaded.memory.read_u16_be(char_locs_ptr + 4), Some(12));
+    assert_eq!(loaded.memory.read_u16_be(char_locs_ptr + 6), Some(18));
+
+    // Transliterate: case conversion
+    let src_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        b"Hello World",
+    );
+    let dst_handle = ppc_alloc_handle_with_bytes(
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        test_handles!(loaded),
+        &[0; 16],
+    );
+
+    loaded.cpu.gpr[3] = src_handle;
+    loaded.cpu.gpr[4] = dst_handle;
+    loaded.cpu.gpr[5] = 0x40FE; // SM_TRANS_CASE | SM_TRANS_LOWER
+    loaded.cpu.gpr[6] = 0xFFFF_FFFF; // SM_MASK_ALL
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::Transliterate,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], 0); // noErr
+
+    let handles = loaded.handles();
+    let updated_dst = ppc_handle_bytes(&mut loaded.memory, &handles, dst_handle).unwrap();
+    assert_eq!(updated_dst, b"hello world");
 }

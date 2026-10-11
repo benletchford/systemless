@@ -1005,8 +1005,47 @@ pub const FIND_SCRIPT_RUN_SELECTOR: u32 = 0x820C_0026;
 /// FindWordBreaks ($C012001A) encoded selector.
 pub const FIND_WORD_BREAKS_SELECTOR: u32 = 0xC012_001A;
 
+/// GetFormatOrder ($8012FFFC) encoded selector.
+pub const GET_FORMAT_ORDER_SELECTOR: u32 = 0x8012_FFFC;
+
+/// Pixel2Char legacy selector (20).
+pub const PIXEL2CHAR_SELECTOR: i32 = 20;
+
+/// Char2Pixel legacy selector (22).
+pub const CHAR2PIXEL_SELECTOR: i32 = 22;
+
+/// Transliterate legacy selector (24).
+pub const TRANSLITERATE_SELECTOR: i32 = 24;
+
 /// FindWord legacy selector (26).
 pub const FIND_WORD_SELECTOR: i32 = 26;
+
+/// DrawJust legacy selector (30).
+pub const DRAW_JUST_SELECTOR: i32 = 30;
+
+/// MeasureJust legacy selector (32).
+pub const MEASURE_JUST_SELECTOR: i32 = 32;
+
+/// Transliterate target: convert to ASCII (`smTransAscii = 0`).
+pub const SM_TRANS_ASCII: i16 = 0;
+
+/// Transliterate target: convert to native font script (`smTransNative = 1`).
+pub const SM_TRANS_NATIVE: i16 = 1;
+
+/// Transliterate target: convert case (`smTransCase = 0x00FE`).
+pub const SM_TRANS_CASE: i16 = 0x00FE;
+
+/// Transliterate target: convert to system script (`smTransSystem = 0x00FF`).
+pub const SM_TRANS_SYSTEM: i16 = 0x00FF;
+
+/// Transliterate target flag: lowercase (`smTransLower = 0x4000`).
+pub const SM_TRANS_LOWER: i16 = 0x4000;
+
+/// Transliterate mask: all characters (`smMaskAll = 0xFFFFFFFF`).
+pub const SM_MASK_ALL: u32 = 0xFFFF_FFFF;
+
+/// Transliterate mask: ASCII characters (`smMaskAscii = 0x00000001`).
+pub const SM_MASK_ASCII: u32 = 0x0000_0001;
 
 /// FontScript selector (0).
 pub const FONT_SCRIPT_SELECTOR: i32 = 0;
@@ -1492,6 +1531,145 @@ pub fn evaluate_find_script_run(text_len: usize, script: u8) -> (u8, usize) {
 #[inline]
 pub fn evaluate_find_word_breaks(text: &[u8], offset: usize) -> [(i16, i16); 3] {
     evaluate_find_word(text, offset)
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `GetFormatOrder`.
+///
+/// Determines the visual display ordering of style runs on a line.
+/// When `line_right` is false, runs order left-to-right (`first_format..=last_format`).
+/// When `line_right` is true, runs order right-to-left (`last_format..=first_format`).
+///
+/// References:
+/// - Inside Macintosh: Text (1993), Chapter 5 "Text Utilities", pp. 5-64 to 5-68.
+pub fn evaluate_get_format_order(
+    first_format: i16,
+    last_format: i16,
+    line_right: bool,
+) -> Vec<i16> {
+    if first_format > last_format {
+        return Vec::new();
+    }
+    let count = (last_format - first_format + 1) as usize;
+    let mut ordering = Vec::with_capacity(count);
+    if line_right {
+        for i in 0..count {
+            ordering.push(last_format - i as i16);
+        }
+    } else {
+        for i in 0..count {
+            ordering.push(first_format + i as i16);
+        }
+    }
+    ordering
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `Char2Pixel`.
+///
+/// Computes the horizontal pixel offset from the boundary of `text` to `offset`.
+///
+/// References:
+/// - Inside Macintosh: Text (1993), Chapter 5 "Text Utilities", pp. 5-54 to 5-56.
+pub fn evaluate_char2pixel(text: &[u8], slop: i16, offset: i16, direction: i16) -> i16 {
+    if text.is_empty() || offset <= 0 {
+        return 0;
+    }
+    let clamped_offset = (offset as usize).min(text.len());
+    let mut base_px: i32 = text[..clamped_offset]
+        .iter()
+        .map(|&b| default_char_advance_measure(b))
+        .sum();
+
+    if slop != 0 {
+        let space_count = text.iter().filter(|&&b| b == 0x20).count();
+        let extra_slop: i32 = if space_count > 0 {
+            let spaces_sub = text[..clamped_offset]
+                .iter()
+                .filter(|&&b| b == 0x20)
+                .count();
+            (slop as i32 * spaces_sub as i32) / space_count as i32
+        } else {
+            (slop as i32 * clamped_offset as i32) / text.len() as i32
+        };
+        base_px += extra_slop;
+    }
+
+    if direction == -1 {
+        let total_base: i32 = text
+            .iter()
+            .map(|&b| default_char_advance_measure(b))
+            .sum::<i32>()
+            + slop as i32;
+        let dist = (total_base - base_px).max(0);
+        dist.clamp(0, i16::MAX as i32) as i16
+    } else {
+        base_px.clamp(0, i16::MAX as i32) as i16
+    }
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `Pixel2Char`.
+///
+/// Determines the character byte offset corresponding to `pixel_width` within `text`,
+/// and whether `pixel_width` falls on the leading half (leading edge) of the character.
+///
+/// References:
+/// - Inside Macintosh: Text (1993), Chapter 5 "Text Utilities", pp. 5-56 to 5-60.
+pub fn evaluate_pixel2char(text: &[u8], slop: i16, pixel_width: i16) -> (i16, bool) {
+    if text.is_empty() || pixel_width <= 0 {
+        return (0, false);
+    }
+    let total_width = evaluate_char2pixel(text, slop, text.len() as i16, 0) as i32;
+    if pixel_width as i32 >= total_width {
+        return (text.len() as i16, false);
+    }
+
+    for i in 0..text.len() {
+        let left = evaluate_char2pixel(text, slop, i as i16, 0) as i32;
+        let right = evaluate_char2pixel(text, slop, (i + 1) as i16, 0) as i32;
+        if (pixel_width as i32) < right {
+            let mid = (left + right) / 2;
+            let leading_edge = (pixel_width as i32) <= mid;
+            return (i as i16, leading_edge);
+        }
+    }
+    (text.len() as i16, false)
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `MeasureJust`.
+///
+/// Measures character positions across `text` with distributed `slop`.
+/// Returns a vector of `text.len() + 1` character horizontal pixel locations.
+///
+/// References:
+/// - Inside Macintosh: Text (1993), Chapter 5 "Text Utilities", pp. 5-54 to 5-56.
+pub fn evaluate_measure_just(text: &[u8], slop: i16) -> Vec<i16> {
+    let mut locs = Vec::with_capacity(text.len() + 1);
+    locs.push(0);
+    for i in 1..=text.len() {
+        locs.push(evaluate_char2pixel(text, slop, i as i16, 0));
+    }
+    locs
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `Transliterate`.
+///
+/// Transforms characters in `src` based on `target` code and returns the transformed bytes and OSErr.
+///
+/// References:
+/// - Inside Macintosh: Text (1993), Chapter 5 "Text Utilities", pp. 5-60 to 5-64.
+pub fn evaluate_transliterate(src: &[u8], target: i16, _src_mask: u32) -> (Vec<u8>, i16) {
+    let base_target = target & 0x00FF;
+    let is_case = base_target == SM_TRANS_CASE;
+    if is_case {
+        let mut out = src.to_vec();
+        if (target & SM_TRANS_LOWER) != 0 {
+            evaluate_transform_text(&mut out, TextTransformOperation::Lower);
+        } else {
+            evaluate_transform_text(&mut out, TextTransformOperation::Upper);
+        }
+        (out, 0)
+    } else {
+        (src.to_vec(), 0)
+    }
 }
 
 /// Canonical architecture-neutral evaluation of classic Macintosh `CharType`.
@@ -2585,5 +2763,61 @@ mod tests {
         let text = b"The quick brown fox";
         let breaks = evaluate_find_word_breaks(text, 5); // inside "quick"
         assert_eq!(breaks[0], (4, 9));
+    }
+
+    #[test]
+    fn test_get_format_order() {
+        assert_eq!(evaluate_get_format_order(0, 3, false), vec![0, 1, 2, 3]);
+        assert_eq!(evaluate_get_format_order(0, 3, true), vec![3, 2, 1, 0]);
+        assert_eq!(evaluate_get_format_order(2, 4, false), vec![2, 3, 4]);
+        assert_eq!(evaluate_get_format_order(4, 2, false), Vec::<i16>::new());
+    }
+
+    #[test]
+    fn test_char2pixel_and_pixel2char() {
+        let text = b"Hello World";
+        // Each char is 6 px
+        assert_eq!(evaluate_char2pixel(b"", 0, 0, 0), 0);
+        assert_eq!(evaluate_char2pixel(text, 0, 0, 0), 0);
+        assert_eq!(evaluate_char2pixel(text, 0, 2, 0), 12);
+        assert_eq!(evaluate_char2pixel(text, 0, 5, 0), 30);
+        assert_eq!(evaluate_char2pixel(text, 0, 11, 0), 66);
+
+        // Right-to-left direction (-1): measured from right
+        assert_eq!(evaluate_char2pixel(text, 0, 11, -1), 0);
+        assert_eq!(evaluate_char2pixel(text, 0, 5, -1), 36);
+
+        // Pixel2Char:
+        assert_eq!(evaluate_pixel2char(b"", 0, 10), (0, false));
+        assert_eq!(evaluate_pixel2char(text, 0, 0), (0, false));
+        // Char 2 is 'l' [12..18], mid is 15. At 13 -> (2, true). At 16 -> (2, false).
+        assert_eq!(evaluate_pixel2char(text, 0, 13), (2, true));
+        assert_eq!(evaluate_pixel2char(text, 0, 16), (2, false));
+        // Beyond end:
+        assert_eq!(evaluate_pixel2char(text, 0, 100), (11, false));
+    }
+
+    #[test]
+    fn test_measure_just() {
+        let text = b"Hi";
+        let locs = evaluate_measure_just(text, 0);
+        assert_eq!(locs, vec![0, 6, 12]);
+    }
+
+    #[test]
+    fn test_transliterate() {
+        let text = b"Hello World";
+        let (lower, err) =
+            evaluate_transliterate(text, SM_TRANS_CASE | SM_TRANS_LOWER, SM_MASK_ALL);
+        assert_eq!(err, 0);
+        assert_eq!(lower, b"hello world");
+
+        let (upper, err) = evaluate_transliterate(b"hello world", SM_TRANS_CASE, SM_MASK_ALL);
+        assert_eq!(err, 0);
+        assert_eq!(upper, b"HELLO WORLD");
+
+        let (ascii, err) = evaluate_transliterate(text, SM_TRANS_ASCII, SM_MASK_ALL);
+        assert_eq!(err, 0);
+        assert_eq!(ascii, b"Hello World");
     }
 }
