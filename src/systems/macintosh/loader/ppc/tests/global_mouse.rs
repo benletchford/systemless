@@ -53,8 +53,13 @@ fn global_mouse_weak_binding_and_destination_bounds_are_preserved() {
     assert_ne!(bindings[0].address, 0);
     let pef = synthetic_pef_with_library_import(b"CarbonLib", b"GetGlobalMouse");
     let mut loaded = load_pef_application(&pef).unwrap();
-    let short = 0x60000;
+    let short = 0x70000000;
     loaded.memory.add_region(short, vec![0xaa; 2]);
+    assert_eq!(
+        loaded.memory.read_u8(short + 2),
+        None,
+        "fixture must end before the second Point field"
+    );
     loaded.set_input_snapshot(PpcInputSnapshot {
         mouse_v: 123,
         mouse_h: 456,
