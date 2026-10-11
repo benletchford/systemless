@@ -1702,6 +1702,26 @@ trace changed the execution path and was stopped; it is excluded from gameplay
 evidence. Rights, native gameplay, browser approval and public delivery remain
 held. Only a human may trigger a release.
 
+
+[Alternate-buffer invalidation fix #4655](https://github.com/benletchford/systemless/pull/4655)
+merged as `cdc7ab13318688816770977c1041445c2e683d5b` after all nine CI/CLA
+checks passed. All 70 focused DrawSprocket tests pass, including underlay pixels,
+disjoint-region gap preservation, presentation before sprite restoration and
+atomic invalid-input rejection. Fresh immutable native
+`392e612c55387756ec217577f085b387948da491`, same unchanged 4.1 original and
+explicit PPC/depth 8 selector, advances beyond the prior tick-348 optional-import
+halt to the original registration dialog. The diagnostic completes 1,080
+frontend/guest ticks with no exhaustion; zero assertions prove only completion
+of its requested actions. Inspected captures show a blank central registration
+text area with controls and scrollbar rendered. The trace still reports PC-zero /
+LR-zero callback halts with r12 `01E003D8` / `01E003F0`; these are not fixed by
+this scoped invalidation repair. A separate fresh ordinary OK dismissal (v423,
+h242; down, two ticks, up) completes at 842 frontend / 910 guest ticks with no
+exhaustion and zero assertions. The dialog closes, but a blank subsequent framed
+view remains. Gameplay, registration/callback rendering, rights and browser
+qualification stay unresolved. The archive remains unhosted and does not count
+as a qualified live game.
+
 ## Brickles Plus 3.0 original package and bounded probes
 
 Primary target 106; [intake #4635](https://github.com/benletchford/systemless/issues/4635).
@@ -1799,9 +1819,55 @@ of draining it. The first 100-frame diagnostic ended before the highlight and
 must not be interpreted as proof that the original never called HiliteControl.
 [Compatibility defect #4649](https://github.com/benletchford/systemless/issues/4649)
 tracks note playback, Boolean decoding and scheduler-based draining disposal.
-The local repair is under test; no successful repaired-game outcome is claimed.
+Repaired native build `1df6ea6dc2b5deab2f3466134b123ac308f13a70` now holds the
+first flash across eight frontend captures. A diagnostic measured 2,761 non-silent
+PCM samples during that note interval; its deliberately unreachable assertion was
+measurement only. A fresh bounded two-round scenario passes 16 measured pixel/audio
+checks across 530 frontend / 1,102 guest ticks with no exhaustion. Ordinary matching
+input reproduces the first 5, then the next sequence 5 and 7, advancing score 0→1→3.
+Captures were inspected before assertions were added. This is bounded native gameplay,
+not independent audio fidelity or exhaustive difficulty qualification. [Repair #4657](https://github.com/benletchford/systemless/pull/4657)
+merged as `d5b3864bc4f1f9d59e2493fd41f8489041a004ec` after all nine ordinary CI/CLA
+checks passed, including normal/debug library and desktop tests, structured headless
+play, 68K/PPC showcase assertions and packaging. The sound/runner implementation
+matches the replayed binary; later default-branch utilities are being replayed in
+the integrated browser preview.
 
-Visible/audible sequence playback, further matching/error interactions, browser
-qualification, asset promotion, launch approval, human release and independent
-public replay remain pending. The archive is unhosted and there is no qualified
-live-count increment.
+A disabled catalogue intake now records the exact publisher archive and a content-only
+score-3 gameplay screenshot. [Intake #4656](https://github.com/benletchford/systemless/pull/4656) promoted the
+unchanged archive and content-only screenshot to immutable Systemless assets.
+Production validation passes all 213 proposed entries. A fresh hosted archive
+fetch is 73,613 bytes with the original SHA-256 and byte-identical to the publisher
+file. Screenshot SHA-256 is `9f126808b4d5b80c37741d72ee20bfd06d335491b5d8d0f3c68174062c6561ac`
+(6,040 bytes). Bounded browser preview is verified below. Integrated-runtime replay, launch approval, human release
+and independent public replay remain pending; there is no qualified live-count
+increment.
+
+
+Browser preview `052693c3` combines the promoted entry with the rebased sound
+repair and uses a local-only launch override. Actual Chrome 151.0.7922.174 loads
+an untouched hosted archive request: HTTP 200, 73,613 bytes, SHA-256 matching the
+publisher original; browser Network.getResponseBody verifies these actual bytes.
+Only frontend files are substituted at the production origin. WebGL, runtime
+worker, cross-origin isolation, 800×600 canvas and default 25 MHz are verified.
+A separate diagnostic captures the first button-5 highlight golden, then cleared.
+Ordinary retained-menu drag and held matching clicks complete two rounds and
+advance score 0→1→3. All 12 measured score-pixel checks pass in a fresh replay;
+captures inspected, pacing probe passes and there are no console errors. The
+initial localhost fetch does not qualify (production-origin CORS is required),
+quick-click input never started the game, and a server-reset attempt ended before
+assertions; those attempts are excluded. Difficulty coverage and browser audio
+fidelity remain unverified. Integrated-runtime replay, launch approval, human release
+and independent public replay remain pending. No qualified-live increment yet.
+
+
+Integrated browser source `4a861808896b4a6af6706ac1b64a652d6520afea` has an
+identical runtime src tree to merged sound/text-utility head `d5b3864b`.
+Fresh optimized production preview replays the unchanged 12 expected score-pixel
+checks successfully through two rounds, score 0→1→3; actual browser archive GET
+again verifies HTTP 200, 73,613 bytes and the publisher SHA-256 without interception.
+The score-3 capture is inspected and the pacing probe passes with no console
+errors. Newer default-branch changes are confined to PPC DrawSprocket and do not
+change this 68K runtime path. Launch is approved for the bounded native/browser
+memory rounds and the entry is enabled. Final catalogue CI/merge, human release
+and independent public replay remain pending; no qualified-live increment yet.
