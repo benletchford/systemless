@@ -13231,8 +13231,15 @@ impl super::TrapDispatcher {
                         // dialog afterwards — Civilization's demo notice text
                         // sits in the dialog body, outside any DITL item — is
                         // still on screen, and repainting here would erase it.
+                        // GetNewDialog also paints visible standard dialogs before
+                        // returning. Its refreshed snapshot includes later app text,
+                        // even when the app never calls DrawDialog explicitly.
                         // Inside Macintosh Volume I, I-415.
-                        if !game_managed && !is_reentry && !app_painted {
+                        if !game_managed
+                            && !is_reentry
+                            && !app_painted
+                            && !restored_visible_snapshot
+                        {
                             // First entry: draw the dialog chrome and controls.
                             // Before draw_dialog fills the dialog area white, save the
                             // pixel content of every userItem rect when those pixels
