@@ -6910,6 +6910,16 @@ impl TrapDispatcher {
             return Some(ptr);
         }
 
+        let body = Self::system_intl_default_body(res_id)?;
+
+        let ptr = bus.alloc(body.len() as u32);
+        bus.write_bytes(ptr, &body);
+        self.system_intl_cache.insert(res_id, ptr);
+        Some(ptr)
+    }
+
+    /// Standard Roman international resource bytes shared by both CPU adapters.
+    pub(crate) fn system_intl_default_body(res_id: i16) -> Option<Vec<u8>> {
         let body = match res_id {
             0 => vec![
                 b'.', b',', b';', // decimalPt, thousSep, listSep
@@ -6978,10 +6988,7 @@ impl TrapDispatcher {
             _ => return None,
         };
 
-        let ptr = bus.alloc(body.len() as u32);
-        bus.write_bytes(ptr, &body);
-        self.system_intl_cache.insert(res_id, ptr);
-        Some(ptr)
+        Some(body)
     }
 
     /// Allocate (and cache) the standard System-file `'PAT#'` ID 0 resource.

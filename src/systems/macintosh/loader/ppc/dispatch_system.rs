@@ -25,6 +25,7 @@ pub enum PpcSystemCompatibilityOperation {
     GetSysDirection,
     IuCompString,
     IuDateString,
+    IuDatePString,
     IuEqualString,
     InitCrm,
     InitCtbUtilities,
@@ -372,8 +373,20 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             };
             PpcImportAction::Return(ppc_i16_result(result))
         }
-        PpcSystemCompatibilityOperation::IuDateString => {
-            let _ = ppc_write_pstring_bytes(memory, cpu.gpr[5], b"");
+        PpcSystemCompatibilityOperation::IuDateString
+        | PpcSystemCompatibilityOperation::IuDatePString => {
+            let intl_handle = if operation == PpcSystemCompatibilityOperation::IuDatePString {
+                cpu.gpr[6]
+            } else {
+                0
+            };
+            date_format::write_date_string(
+                memory,
+                cpu.gpr[3],
+                cpu.gpr[4] as i16,
+                cpu.gpr[5],
+                intl_handle,
+            );
             PpcImportAction::ReturnPreserve
         }
         PpcSystemCompatibilityOperation::SystemEdit => {
