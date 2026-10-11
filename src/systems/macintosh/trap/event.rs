@@ -15,10 +15,6 @@ impl super::TrapDispatcher {
     const AUTO_KEY_EVENT: u16 = 5;
     const OS_EVENT: u16 = 15;
     const MOUSE_MOVED_MESSAGE: u32 = 0xFA00_0000;
-    const QHDR_HEAD_OFFSET: u32 = 2;
-    const QHDR_TAIL_OFFSET: u32 = 6;
-    const QELEM_LINK_OFFSET: u32 = 0;
-    const QERR: u32 = (-1i32) as u32;
     const EVT_NOT_ENB: u32 = 1;
     const EVQEL_QTYPE: u16 = 4; // ORD(evType)
     const EVQEL_WHAT_OFFSET: u32 = 6;
@@ -316,7 +312,7 @@ impl super::TrapDispatcher {
             return 0;
         }
 
-        bus.write_long(ptr + Self::QELEM_LINK_OFFSET, 0);
+        bus.write_long(ptr + crate::queue_utilities::Q_LINK_OFFSET, 0);
         bus.write_word(ptr + 4, Self::EVQEL_QTYPE);
         bus.write_word(ptr + Self::EVQEL_WHAT_OFFSET, event.what);
         bus.write_long(ptr + Self::EVQEL_MESSAGE_OFFSET, event.message);
@@ -893,58 +889,31 @@ impl super::TrapDispatcher {
     }
 
     fn enqueue_qelem(&self, bus: &mut MacMemoryBus, q_entry: u32, q_header: u32) {
-        let head = bus.read_long(q_header + Self::QHDR_HEAD_OFFSET);
-        let tail = bus.read_long(q_header + Self::QHDR_TAIL_OFFSET);
+        let head = bus.read_long(q_header + crate::queue_utilities::Q_HEAD_OFFSET);
+        let tail = bus.read_long(q_header + crate::queue_utilities::Q_TAIL_OFFSET);
 
-        bus.write_long(q_entry + Self::QELEM_LINK_OFFSET, 0);
+        let eval = crate::queue_utilities::evaluate_enqueue(q_entry, q_header, head, tail, |ptr| {
+            bus.read_long(ptr + crate::queue_utilities::Q_LINK_OFFSET)
+        });
 
-        if head == 0 {
-            bus.write_long(q_header + Self::QHDR_HEAD_OFFSET, q_entry);
-            bus.write_long(q_header + Self::QHDR_TAIL_OFFSET, q_entry);
-            return;
+        for (addr, val) in eval.writes {
+            bus.write_long(addr, val);
         }
-
-        let current_tail = if tail != 0 {
-            tail
-        } else {
-            let mut cursor = head;
-            loop {
-                let next = bus.read_long(cursor + Self::QELEM_LINK_OFFSET);
-                if next == 0 {
-                    break cursor;
-                }
-                cursor = next;
-            }
-        };
-
-        bus.write_long(current_tail + Self::QELEM_LINK_OFFSET, q_entry);
-        bus.write_long(q_header + Self::QHDR_TAIL_OFFSET, q_entry);
     }
 
     fn dequeue_qelem(&self, bus: &mut MacMemoryBus, q_entry: u32, q_header: u32) -> u32 {
-        let mut prev = 0;
-        let mut current = bus.read_long(q_header + Self::QHDR_HEAD_OFFSET);
+        let head = bus.read_long(q_header + crate::queue_utilities::Q_HEAD_OFFSET);
+        let tail = bus.read_long(q_header + crate::queue_utilities::Q_TAIL_OFFSET);
 
-        while current != 0 {
-            let next = bus.read_long(current + Self::QELEM_LINK_OFFSET);
-            if current == q_entry {
-                if prev == 0 {
-                    bus.write_long(q_header + Self::QHDR_HEAD_OFFSET, next);
-                } else {
-                    bus.write_long(prev + Self::QELEM_LINK_OFFSET, next);
-                }
+        let eval = crate::queue_utilities::evaluate_dequeue(q_entry, q_header, head, tail, |ptr| {
+            bus.read_long(ptr + crate::queue_utilities::Q_LINK_OFFSET)
+        });
 
-                if bus.read_long(q_header + Self::QHDR_TAIL_OFFSET) == current {
-                    bus.write_long(q_header + Self::QHDR_TAIL_OFFSET, prev);
-                }
-                return 0;
-            }
-
-            prev = current;
-            current = next;
+        for (addr, val) in eval.writes {
+            bus.write_long(addr, val);
         }
 
-        Self::QERR
+        (eval.result as i32) as u32
     }
 
     pub(crate) fn dispatch_event<C: CpuOps>(
@@ -1070,7 +1039,7 @@ impl super::TrapDispatcher {
             //   enqueue_on_empty_queue_sets_qhead_qtail_and_terminal_link
             //   enqueue_appends_after_existing_tail_and_preserves_qflags
             //   enqueue_dequeue_dispatcher_convention_preserves_register_only_abi
-            (true, 0x16F) => {
+            (true, crate::queue_utilities::ENQUEUE_TRAP_OFFSET) => {
                 let q_entry = cpu.read_reg(Register::A0);
                 let q_header = cpu.read_reg(Register::A1);
                 self.enqueue_qelem(bus, q_entry, q_header);
@@ -1114,7 +1083,7 @@ impl super::TrapDispatcher {
             //   dequeue_present_entry_unlinks_element_and_returns_noerr
             //   dequeue_missing_entry_returns_qerr_and_preserves_queue
             //   enqueue_dequeue_dispatcher_convention_preserves_register_only_abi
-            (true, 0x16E) => {
+            (true, crate::queue_utilities::DEQUEUE_TRAP_OFFSET) => {
                 let q_entry = cpu.read_reg(Register::A0);
                 let q_header = cpu.read_reg(Register::A1);
                 cpu.write_reg(Register::D0, self.dequeue_qelem(bus, q_entry, q_header));

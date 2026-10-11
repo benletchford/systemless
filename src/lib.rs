@@ -134,6 +134,7 @@ pub(crate) use systems::macintosh::notification_manager;
 pub(crate) use systems::macintosh::process_context;
 pub(crate) use systems::macintosh::process_manager;
 pub(crate) use systems::macintosh::printing_manager;
+pub(crate) use systems::macintosh::queue_utilities;
 #[deprecated(note = "use `systemless::systems::macintosh::quickdraw`")]
 pub mod quickdraw {
     pub use crate::systems::macintosh::quickdraw::*;
