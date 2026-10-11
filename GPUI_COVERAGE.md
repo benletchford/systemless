@@ -5426,3 +5426,25 @@ application-drawn headings retain guest ink. Captures and failed CLI/service
 attempts are archived in `current-styled-control-redraw`. These selected cases
 verify the new paint-state recovery path; full font/state/scale coverage,
 physical integration and independent native fidelity remain open.
+
+## Modal guest execution progress (2026-10-11)
+
+Rapid PPC16 dialog composition reproduced lost input: command validation consumed
+the worker's CPU deadline before guest execution, so a queued key never progressed
+while the next predicted text owner was retried. Waiting on queue consumption alone
+prevented rejection but still failed to deliver text within 15 seconds. Reserving
+the 12ms guest execution slice after validation resolves this starvation. Retry
+settling begins after queued events drain; shutdown can interrupt pending retries.
+
+The production-worker modal regression passes all six CPU/depth/wrapped cases
+in 59.15s, including rapid commits, stale rejection, retained/disjoint/merged
+replacement and existing accessibility actions. Evidence and exact source hashes
+are in `reference/gpui-demo/modal-event-progress`. This is not physical IME,
+shutdown-preemption, performance or Standard File qualification.
+
+After removing temporary worker diagnostics, the same modal regression passes
+again in 52.45s. Save/New Folder passes all four modes in 107.46s; an earlier
+monochrome New Folder accessibility replacement timed out, retained alongside
+the passing rerun. This remains a timing/performance qualification concern,
+not a closed release gate. The default application check passes in 11.13s.
+Final source hashes and all outcomes are archived in the same evidence folder.

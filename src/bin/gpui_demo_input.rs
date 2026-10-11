@@ -1137,6 +1137,22 @@ pub(crate) struct DialogTextOwner {
     pub selection: std::ops::Range<usize>,
 }
 
+/// A pending guest event may temporarily invalidate layout/paint evidence.
+/// Check only the pinned modal lifetime and focus when deciding whether to wait;
+/// this never authorizes an edit without the full commit guards afterwards.
+pub(crate) fn dialog_field_is_current(owner: &TextInputOwner,
+    dialogs: &[systemless::runner::DialogSnapshot], windows: &[systemless::runner::WindowFrameSnapshot]) -> bool {
+    let TextInputTarget::Dialog { item, content_revision } = owner.target else { return false; };
+    let mut active = dialogs.iter().filter(|dialog| dialog.visible && dialog.active);
+    let Some(dialog) = active.next() else { return false; };
+    active.next().is_none() && (dialog.guest_id, dialog.generation) == owner.identity
+        && dialog.content_revision == content_revision && dialog.edit_field == Some(item)
+        && windows.iter().any(|window| (window.guest_id, window.generation) == owner.identity
+            && window.presentation_definition_id() == Some(1))
+        && dialog.items.iter().any(|field| field.number == item
+            && field.kind == systemless::runner::DialogItemKind::EditText && field.enabled && field.visible)
+}
+
 pub(crate) fn dialog_text_owner(
     dialogs: &[systemless::runner::DialogSnapshot],
     windows: &[systemless::runner::WindowFrameSnapshot],

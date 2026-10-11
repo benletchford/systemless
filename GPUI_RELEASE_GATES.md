@@ -100,3 +100,14 @@ Do not expand already passing micro-style matrices without a concrete uncovered
 behavior or regression. Prefer a reproduced missing end-to-end behavior and the
 implementation necessary to fix it. Narrow tests remain useful regression
 checks, with their scope stated explicitly.
+
+## Guest worker progress correction (2026-10-11)
+
+Current worker validation could exhaust the execution deadline before queued
+PPC16 dialog input ran. Guest execution now receives its bounded slice after
+validation; text retry settling starts after queued events drain. Final modal
+regression passes six cases (52.45s), Save/New Folder four modes (107.46s), and
+the default application check passes (11.13s). Evidence is archived under
+`reference/gpui-demo/modal-event-progress`. An earlier monochrome New Folder
+accessibility replacement timeout is retained; performance/timing and deferred
+retry shutdown qualification remain open. All eight release gates remain open.
