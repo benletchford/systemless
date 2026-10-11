@@ -1371,4 +1371,43 @@ Original Read Me & Instructions provides an explicit conditional distribution gr
 
 Independent unar extraction and production packing match all ten original files, twenty forks and supported Finder type/creator/flags. Preserve six preset files, original colour resource file, documentation and Finder icon (including its original carriage-return filename). The game has empty data and a 678,528-byte resource fork, SHA-256 `aafd197244b402e4932874328ded3121f117fce377e7cb3893b8f3edb8ee72e7`, with twelve CODE resources and no cfrg. This is a real 68K game with no native PPC slice. `Color Frontiers` is a COLR asset, not a second executable. Production pack: 780,664 bytes, SHA-256 `8b803d76ccacc8f75d6a18898b4d32a74f9ff545d7bc7b51323d81f84d07cf31`; original bytes are unchanged.
 
-Fresh native source `7aaf7028b58ca5573c8ae15c9303e926efef6a1f`, original archive, explicit selector Galactic Frontiers, 68K/depth 8: bounded 600 frontend / 1,200 guest ticks complete with zero exhausted frames and zero gameplay assertions. The inspected capture displays the original Macintosh Plus requirement alert. This is a startup blocker, not qualified gameplay. Diagnose the original environment query; do not bypass its guard or patch the package. The existing SysEnvirons machine type does not establish the cause. Gameplay, browser approval, screenshot qualification, asset promotion, launch, human release and public replay remain pending. No new catalogue entry or qualified-live increment.
+Before the ROM fix documented below, fresh native source `7aaf7028b58ca5573c8ae15c9303e926efef6a1f`, original archive, explicit selector Galactic Frontiers, 68K/depth 8: bounded 600 frontend / 1,200 guest ticks complete with zero exhausted frames and zero gameplay assertions. The inspected capture displays the original Macintosh Plus requirement alert. This is a startup blocker, not qualified gameplay. Diagnose the original environment query; do not bypass its guard or patch the package. The existing SysEnvirons machine type does not establish the cause. Gameplay, browser approval, screenshot qualification, asset promotion, launch, human release and public replay remain pending. No new catalogue entry or qualified-live increment.
+
+
+### Galactic Frontiers ROM fix and catalogue submission
+
+Original CODE decoding and direct guest-memory checks establish unset ROMBase,
+not the SysEnvirons machine type, as the Macintosh Plus rejection's cause.
+[ROM fix #4605](https://github.com/benletchford/systemless/pull/4605) is merged
+with all nine checks passing; launch/relaunch and read-only bus regressions pass
+in ordinary and debugger library suites. Exact native source
+`fbd12e1e33941e1da82b9ceb61ed28966571ed81`, unchanged original archive, selector
+Galactic Frontiers, explicit 68K/depth 8, reaches the title, ordinary Game Setup
+and Turn 1 star map. Command-E advances to Turn 2. Eleven assertions pass at
+2,006 frontend / 2,605 guest ticks with zero exhaustion: three ROM metadata
+checks and eight measured before/after title pixels. Captures inspected.
+[Measured turn evidence](https://github.com/benletchford/systemless/issues/4594#issuecomment-6109381625).
+
+[Catalogue draft #4609](https://github.com/benletchford/systemless/pull/4609)
+has promoted the complete original archive and actual Turn 2 map screenshot.
+A fresh hosted archive download independently matches 333,691 bytes and original
+SHA-256 `46728fdb8c1676c386586ee38c0de9d54c0993f208e781ba189bd2cc6bfccf50`.
+Content-only screenshot is 3,943 bytes, SHA-256
+`18ac2bafb988be654c628c950d8822034d017849a7f8af5476f865c5a07ff3a5`.
+[Hosted receipts](https://github.com/benletchford/systemless/issues/4594#issuecomment-6109418875).
+Original no-profit distribution and CD-ROM conditions remain applicable. Ship
+movement, combat, saving, audio, browser qualification, launch approval, human
+release and public replay remain pending. Launch is disabled; no qualified-live
+increment.
+
+
+Galactic Frontiers browser qualification: optimized Chrome preview with promoted
+original record and current merged emulator source passes ordinary new-game
+startup and Command-E advancement from Turn 1 to Turn 2. Eight measured
+before/after title pixel checks pass; captures inspected. Actual managed archive
+response is untouched, HTTP 200, original 333,691 bytes and SHA-256 match.
+Cross-origin isolation and 800x600 canvas are verified.
+[Browser approval](https://github.com/benletchford/systemless/issues/4594#issuecomment-6109539488).
+Launch approved in PR #4609; final CI/merge, human release and public replay are
+pending. Ship movement, combat, saving and audio remain unverified. No live-game
+increment until public replay.
