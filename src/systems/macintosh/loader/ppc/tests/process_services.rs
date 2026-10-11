@@ -1897,6 +1897,14 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ),
         ("DateString", PpcSystemCompatibilityOperation::IuDatePString),
         (
+            "IULDateString",
+            PpcSystemCompatibilityOperation::IuLDateString,
+        ),
+        (
+            "LongDateString",
+            PpcSystemCompatibilityOperation::IuLDateString,
+        ),
+        (
             "IUTimeString",
             PpcSystemCompatibilityOperation::IuTimeString,
         ),
@@ -1905,6 +1913,23 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
             PpcSystemCompatibilityOperation::IuTimePString,
         ),
         ("TimeString", PpcSystemCompatibilityOperation::IuTimePString),
+        (
+            "IULTimeString",
+            PpcSystemCompatibilityOperation::IuLTimeString,
+        ),
+        (
+            "LongTimeString",
+            PpcSystemCompatibilityOperation::IuLTimeString,
+        ),
+        (
+            "SetIntlResource",
+            PpcSystemCompatibilityOperation::SetIntlResource,
+        ),
+        (
+            "IUSetIntl",
+            PpcSystemCompatibilityOperation::SetIntlResource,
+        ),
+        ("SetIntl", PpcSystemCompatibilityOperation::SetIntlResource),
         (
             "IUEqualString",
             PpcSystemCompatibilityOperation::IuEqualString,
@@ -2345,6 +2370,94 @@ fn ppc_time_string_imports_use_abi_handle_and_preserve_registers_and_output_boun
     );
     assert_eq!(loaded.memory.read_u8(small_result), Some(0x5A));
     assert_eq!(loaded.memory.read_u8(small_result + 1), Some(0x5A));
+}
+
+#[test]
+fn ppc_long_date_and_time_string_imports_format_and_preserve_registers() {
+    let pef = synthetic_pef_with_import(b"LongDateString");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let region = PPC_DATA_BASE + 0x3200;
+    let long_date_time = region;
+    let result = region + 0x20;
+    let handle = region + 0x200;
+    let resource_ptr = region + 0x220;
+    loaded.memory.add_region(region, vec![0xA5; 0x300]);
+
+    let mut resource = TrapDispatcher::system_intl_default_body(0).unwrap();
+    resource[7] = 1;
+    resource[8] = 0xE0;
+    resource[9] = b'.';
+    resource[10] = 0; // 24-hour cycle
+    resource[11] = 0x60; // min and sec leading zeros
+    resource[20] = b':';
+    loaded.memory.write_u32_be(handle, resource_ptr).unwrap();
+    for (offset, byte) in resource.iter().copied().enumerate() {
+        loaded
+            .memory
+            .write_u8(resource_ptr + offset as u32, byte)
+            .unwrap();
+    }
+
+    let timestamp =
+        crate::time_manager::evaluate_date_to_seconds(&crate::time_manager::DateTimeRecord {
+            year: 2024,
+            month: 2,
+            day: 9,
+            hour: 13,
+            minute: 5,
+            second: 9,
+            ..Default::default()
+        });
+    loaded.memory.write_u32_be(long_date_time, 0).unwrap();
+    loaded
+        .memory
+        .write_u32_be(long_date_time + 4, timestamp)
+        .unwrap();
+
+    for symbol in ["LongDateString", "IULDateString"] {
+        loaded.cpu.gpr[3] = long_date_time;
+        loaded.cpu.gpr[4] = 0; // short form
+        loaded.cpu.gpr[5] = result;
+        loaded.cpu.gpr[6] = handle;
+        let before = loaded.cpu.gpr;
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", symbol),
+        );
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, result).unwrap(),
+            b"09.02.2024"
+        );
+        assert_eq!(loaded.cpu.gpr[3..7], before[3..7]);
+    }
+
+    for symbol in ["LongTimeString", "IULTimeString"] {
+        loaded.cpu.gpr[3] = long_date_time;
+        loaded.cpu.gpr[4] = 1; // wantSeconds = true
+        loaded.cpu.gpr[5] = result;
+        loaded.cpu.gpr[6] = handle;
+        let before = loaded.cpu.gpr;
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", symbol),
+        );
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, result).unwrap(),
+            b"13:05:09"
+        );
+        assert_eq!(loaded.cpu.gpr[3..7], before[3..7]);
+    }
+
+    // SetIntlResource compatibility call preserves registers
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = handle;
+    let before = loaded.cpu.gpr;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "SetIntlResource"),
+    );
+    assert_eq!(loaded.cpu.gpr, before);
 }
 
 #[test]

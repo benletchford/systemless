@@ -667,6 +667,72 @@ fn hle_import_runner_upper_text_converts_only_the_requested_bytes() {
 }
 
 #[test]
+fn hle_import_runner_lower_text_converts_only_the_requested_bytes() {
+    let pef = synthetic_pef_with_import(b"LowerText");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let text_ptr = PPC_DATA_BASE + 0x1000;
+    loaded
+        .memory
+        .add_region(text_ptr, vec![b'A', b'Z', 0x83, b'!', b'q']);
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = 3;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], text_ptr);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, text_ptr, 5),
+        Some(vec![b'a', b'z', 0x8e, b'!', b'q'])
+    );
+}
+
+#[test]
+fn hle_import_runner_strip_text_converts_only_the_requested_bytes() {
+    let pef = synthetic_pef_with_import(b"StripText");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let text_ptr = PPC_DATA_BASE + 0x1000;
+    loaded
+        .memory
+        .add_region(text_ptr, vec![b'a', b'z', 0x8e, b'!', b'q']);
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = 3;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], text_ptr);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, text_ptr, 5),
+        Some(vec![b'a', b'z', b'e', b'!', b'q'])
+    );
+}
+
+#[test]
+fn hle_import_runner_strip_upper_text_converts_only_the_requested_bytes() {
+    let pef = synthetic_pef_with_import(b"StripUpperText");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let text_ptr = PPC_DATA_BASE + 0x1000;
+    loaded
+        .memory
+        .add_region(text_ptr, vec![b'a', b'z', 0x8e, b'!', b'q']);
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = 3;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], text_ptr);
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, text_ptr, 5),
+        Some(vec![b'A', b'Z', b'E', b'!', b'q'])
+    );
+}
+
+#[test]
 fn import_bindings_classify_toolbox_init_and_dialog_lifecycle_imports() {
     for (symbol, target) in [
         ("InitGraf", PpcImportDispatcherTarget::InitGraf),
@@ -908,6 +974,87 @@ fn import_bindings_classify_text_and_conversion_imports() {
             crate::loader::ppc::PpcSystemCompatibilityOperation::IuClearCache,
         )
     );
+    for (symbol, target) in [
+        ("LowerText", PpcImportDispatcherTarget::LowerText),
+        ("StripText", PpcImportDispatcherTarget::StripText),
+        ("UpperText", PpcImportDispatcherTarget::UpperText),
+        ("StripUpperText", PpcImportDispatcherTarget::StripUpperText),
+        (
+            "GetIntlResource",
+            PpcImportDispatcherTarget::GetIntlResource,
+        ),
+        ("IUGetIntl", PpcImportDispatcherTarget::GetIntlResource),
+        ("GetIntl", PpcImportDispatcherTarget::GetIntlResource),
+        (
+            "GetIntlResourceTable",
+            PpcImportDispatcherTarget::GetIntlResourceTable,
+        ),
+        (
+            "IUGetIntlTable",
+            PpcImportDispatcherTarget::GetIntlResourceTable,
+        ),
+        (
+            "IUGetItlTable",
+            PpcImportDispatcherTarget::GetIntlResourceTable,
+        ),
+        (
+            "GetItlTable",
+            PpcImportDispatcherTarget::GetIntlResourceTable,
+        ),
+        (
+            "SetIntlResource",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::SetIntlResource,
+            ),
+        ),
+        (
+            "IUSetIntl",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::SetIntlResource,
+            ),
+        ),
+        (
+            "SetIntl",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::SetIntlResource,
+            ),
+        ),
+        (
+            "LongDateString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuLDateString,
+            ),
+        ),
+        (
+            "IULDateString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuLDateString,
+            ),
+        ),
+        (
+            "LongTimeString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuLTimeString,
+            ),
+        ),
+        (
+            "IULTimeString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuLTimeString,
+            ),
+        ),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            target,
+            "{symbol} in InterfaceLib"
+        );
+        assert_eq!(
+            dispatcher_target_for_import("CarbonLib", symbol),
+            target,
+            "{symbol} in CarbonLib"
+        );
+    }
 }
 
 #[test]
