@@ -60,6 +60,9 @@ mod desktop {
         capture_modal_dialog: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_modal_dialog_checked: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_controls: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -1644,6 +1647,7 @@ mod desktop {
     enum CaptureCase {
         Alert,
         ModalDialog,
+        ModalDialogChecked,
         Controls,
         ControlsChanged,
         ControlsDragged,
@@ -1706,7 +1710,7 @@ mod desktop {
         }
         let (menu_id, item) = if standard_file_page {
             (129, 12)
-        } else if matches!(capture, CaptureCase::ModalDialog) {
+        } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked) {
             (129, 6)
         } else if lists_page {
             (129, 9)
@@ -1716,7 +1720,7 @@ mod desktop {
             (128, 1)
         };
         assert!(session.runner_mut().select_guest_menu_item(menu_id, item));
-        let dialogs = if matches!(capture, CaptureCase::ModalDialog) {
+        let dialogs = if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked) {
             assert!((0..300).any(|_| {
                 session.runner_mut().run_steps(100_000, None);
                 session.runner_mut().guest_menu_snapshot().menus.iter().any(|menu| {
@@ -1731,7 +1735,7 @@ mod desktop {
                 session.deliver_input(input);
                 session.runner_mut().run_steps(100_000, None);
             }
-            (0..300)
+            let mut dialogs = (0..300)
                 .find_map(|_| {
                     session.runner_mut().run_steps(100_000, None);
                     let dialogs = session.runner_mut().dialog_snapshot();
@@ -1743,7 +1747,28 @@ mod desktop {
                             })
                     }).then_some(dialogs)
                 })
-                .expect("modal preferences dialog should expose a live checkbox")
+                .expect("modal preferences dialog should expose a live checkbox");
+            if matches!(capture, CaptureCase::ModalDialogChecked) {
+                for input in [
+                    MacintoshInput::MouseDown { vertical: 155, horizontal: 300 },
+                    MacintoshInput::MouseUp { vertical: 155, horizontal: 300 },
+                ] {
+                    session.deliver_input(input);
+                    session.runner_mut().run_steps(100_000, None);
+                }
+                dialogs = (0..300)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        let current = session.runner_mut().dialog_snapshot();
+                        current.iter().any(|dialog| {
+                            dialog.visible && dialog.items.iter().any(|item| {
+                                item.number == 4 && item.value == Some(1)
+                            })
+                        }).then_some(current)
+                    })
+                    .expect("guest should check the modal dialog control");
+            }
+            dialogs
         } else if standard_file_page {
             for _ in 0..300 {
                 session.runner_mut().run_steps(100_000, None);
@@ -2065,6 +2090,17 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_modal_dialog_checked.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::ModalDialogChecked,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_controls.as_ref() {
             capture_fixture_screen(
                 &args.game,
@@ -2264,6 +2300,7 @@ mod desktop {
                         screen_depth: Some(8),
                         capture_about_alert: None,
                         capture_modal_dialog: None,
+                        capture_modal_dialog_checked: None,
                         capture_controls: None,
                         capture_controls_changed: None,
                         capture_controls_dragged: None,
@@ -3345,6 +3382,123 @@ mod desktop {
                     .count(),
                 1
             );
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn themed_dialog_checkbox_forwards_one_guest_press_and_release(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+            use systemless::runner::{
+                DialogItemSnapshot, DialogSnapshot, WindowFrameSnapshot, WindowSnapshot,
+            };
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(740.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    let bounds = (100, 130, 315, 470);
+                    demo.windows = vec![WindowFrameSnapshot {
+                        guest_id: 7,
+                        generation: 1,
+                        window: WindowSnapshot {
+                            title: "Preferences".into(),
+                            bounds,
+                            structure_bounds: Some((92, 122, 323, 478)),
+                            visible_region: None,
+                            update_region: None,
+                            visible: true,
+                            active: true,
+                        },
+                        definition_id: Some(1),
+                        close_box: false,
+                    }];
+                    demo.dialogs = vec![DialogSnapshot {
+                        guest_id: 7,
+                        generation: 1,
+                        bounds,
+                        visible: true,
+                        active: true,
+                        default_item: None,
+                        cancel_item: None,
+                        edit_field: Some(1),
+                        items: vec![
+                            DialogItemSnapshot {
+                                number: 1,
+                                kind: super::DialogItemKind::Checkbox,
+                                bounds: (145, 150, 165, 450),
+                                text: "Enable 3D".into(),
+                                enabled: true,
+                                visible: true,
+                                value: Some(0),
+                                selection: None,
+                            },
+                            DialogItemSnapshot {
+                                number: 2,
+                                kind: super::DialogItemKind::EditText,
+                                bounds: (200, 235, 220, 430),
+                                text: "Pilot".into(),
+                                enabled: true,
+                                visible: true,
+                                value: None,
+                                selection: None,
+                            },
+                        ],
+                    }];
+                    demo.width = 800;
+                    demo.height = 580;
+                    demo.crop_top = 20;
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.click("guest-dialog-checkbox-7-1-1", cx);
+            })
+            .unwrap();
+            let inputs: Vec<_> = receiver
+                .try_iter()
+                .filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input),
+                    _ => None,
+                })
+                .filter(|input| {
+                    matches!(
+                        input,
+                        MacintoshInput::MouseDown { .. } | MacintoshInput::MouseUp { .. }
+                    )
+                })
+                .collect();
+            assert_eq!(inputs.len(), 2, "{inputs:?}");
+            assert!(matches!(
+                inputs.as_slice(),
+                [
+                    MacintoshInput::MouseDown {
+                        vertical: 145..=164,
+                        horizontal: 150..=449,
+                    },
+                    MacintoshInput::MouseUp {
+                        vertical: 145..=164,
+                        horizontal: 150..=449,
+                    },
+                ]
+            ));
         }
 
         #[cfg(feature = "gpui-demo-test")]
