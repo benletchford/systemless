@@ -1,0 +1,11 @@
+{
+  "source_resource": "tests/toolbox-showcase/build/showcase.rsrc",
+  "source_sha256": "affcfec3c84f1dc776bd5d01a54cfdd9d5ad32af23949590d2e8e25e82d69fba",
+  "variant_sha256": "8e4607f3750d71192f8e6cd14b18e7cc3856e030ded4b831a1943166f251221c",
+  "resource_type": "DLOG",
+  "resource_id": 131,
+  "proc_offset": 1618,
+  "old_proc": 4,
+  "new_proc": 5,
+  "data_sha256": "d06496816994d972d1ea335664465c5fc7e44c421c22643f2290afcfe5f80f16"
+}

@@ -1,0 +1,97 @@
+{
+  "definition": 5,
+  "identity": [
+    50409088,
+    2
+  ],
+  "window": {
+    "title": "Modeless Settings",
+    "bounds": [
+      90,
+      120,
+      260,
+      430
+    ],
+    "structure_bounds": [
+      71,
+      119,
+      262,
+      432
+    ],
+    "visible_region": [
+      90,
+      120,
+      260,
+      430
+    ],
+    "update_region": null,
+    "visible": true,
+    "active": false
+  },
+  "dialog_active": false,
+  "suspended": true,
+  "actual_depth": 16,
+  "title_position": [
+    222,
+    85
+  ],
+  "title_clip": [
+    71,
+    119,
+    87,
+    431
+  ],
+  "items": [
+    {
+      "number": 1,
+      "text": "Close",
+      "bounds": [
+        215,
+        340,
+        235,
+        410
+      ],
+      "selection": null,
+      "value": null
+    },
+    {
+      "number": 2,
+      "text": "Enable modeless option",
+      "bounds": [
+        150,
+        140,
+        170,
+        400
+      ],
+      "selection": null,
+      "value": 0
+    },
+    {
+      "number": 3,
+      "text": "Edit this field, then switch windows.",
+      "bounds": [
+        110,
+        140,
+        130,
+        400
+      ],
+      "selection": null,
+      "value": null
+    },
+    {
+      "number": 4,
+      "text": "Pilot",
+      "bounds": [
+        180,
+        140,
+        200,
+        400
+      ],
+      "selection": [
+        0,
+        0
+      ],
+      "value": null
+    }
+  ]
+}

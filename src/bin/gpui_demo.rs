@@ -184,6 +184,9 @@ mod desktop {
         #[arg(long, hide = true)]
         capture_modeless_dialog: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_modeless_dialog")]
+        capture_modeless_dialog_suspended: bool,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_nested_modal_dialog: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -3382,7 +3385,7 @@ mod desktop {
         ModalDialogCheckboxHeld,
         ModalDialogCheckboxCheckedHeld,
         ModalDialogCheckboxOutside,
-        ModelessDialog,
+        ModelessDialog { suspended: bool },
         NestedModalDialog,
         Controls,
         ControlFonts,
@@ -3652,7 +3655,7 @@ mod desktop {
             (129, 3)
         } else if matches!(
             capture,
-            CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
+            CaptureCase::ModelessDialog { .. } | CaptureCase::NestedModalDialog
         ) {
             (132, 7)
         } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogMultiline | CaptureCase::ModalDialogChecked | CaptureCase::ModalDialogSelection | CaptureCase::ModalDialogSelectionInactive | CaptureCase::ModalDialogCaretVisible | CaptureCase::ModalDialogCaretHidden | CaptureCase::ModalDialogButtonHeld | CaptureCase::ModalDialogButtonOutside | CaptureCase::ModalDialogCheckboxHeld | CaptureCase::ModalDialogCheckboxCheckedHeld | CaptureCase::ModalDialogCheckboxOutside) {
@@ -3952,7 +3955,7 @@ mod desktop {
             Vec::new()
         } else if matches!(
             capture,
-            CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
+            CaptureCase::ModelessDialog { .. } | CaptureCase::NestedModalDialog
         ) {
             let modeless = (0..300)
                 .find_map(|_| {
@@ -4420,7 +4423,7 @@ mod desktop {
         let windows = session.runner_mut().window_frame_snapshot();
         if matches!(
             capture,
-            CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
+            CaptureCase::ModelessDialog { .. } | CaptureCase::NestedModalDialog
         ) {
             assert!(!super::frames::dialog_item_pieces(
                 &dialogs,
@@ -4864,6 +4867,27 @@ mod desktop {
                 && control.popup_menu_id == Some(143) && control.value == 4));
             assert!(session.runner_mut().guest_popup_snapshot().is_none());
         }
+        let modeless_host_suspended = matches!(capture, CaptureCase::ModelessDialog { suspended: true });
+        if modeless_host_suspended {
+            let original = dialogs.iter().find(|dialog| dialog.visible && dialog.items.len() == 4)
+                .expect("capture must have a visible dialog").clone();
+            session.request_foreground(false);
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                session.runner_mut().window_frame_snapshot().iter().any(|frame|
+                    frame.guest_id == original.guest_id && frame.window.visible && !frame.window.active)
+            }), "guest suspend must deactivate the dialog owner");
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0)
+            }), "guest must finish its dialog suspend event");
+            let current = session.runner_mut().dialog_snapshot().into_iter()
+                .find(|dialog| dialog.guest_id == original.guest_id).unwrap();
+            assert_eq!((current.generation, current.bounds), (original.generation, original.bounds));
+            let contents = |dialog: &DialogSnapshot| dialog.items.iter().map(|item|
+                (item.number, item.bounds, item.text.clone(), item.value, item.selection)).collect::<Vec<_>>();
+            assert_eq!(contents(&current), contents(&original), "suspend must preserve dialog contents");
+        }
         let controls_host_suspended = matches!(capture, CaptureCase::ControlFontsInactive);
         if controls_host_suspended {
             let owner = controls.iter().find(|control| control.visible && control.title == "Checkbox")
@@ -4886,10 +4910,27 @@ mod desktop {
             }
             eprintln!("styled control owner suspended with font, bounds, value and identity preserved");
         }
-        let controls = if controls_host_suspended { session.runner_mut().control_snapshot() } else { controls };
-        let activation_capture = activation_capture || host_activation_capture || popup_host_suspended || controls_host_suspended;
+        let controls = if controls_host_suspended || modeless_host_suspended { session.runner_mut().control_snapshot() } else { controls };
+        let activation_capture = activation_capture || host_activation_capture || popup_host_suspended || controls_host_suspended || modeless_host_suspended;
         let windows = if activation_capture { session.runner_mut().window_frame_snapshot() } else { windows };
         let dialogs = if activation_capture { session.runner_mut().dialog_snapshot() } else { dialogs };
+        if matches!(capture, CaptureCase::ModelessDialog { .. }) {
+            let dialog = dialogs.iter().find(|dialog| dialog.visible && dialog.items.len() == 4).unwrap();
+            let owner = windows.iter().find(|frame| frame.guest_id == dialog.guest_id).unwrap();
+            assert_eq!(owner.window.active, !modeless_host_suspended);
+            let title = owner.title_layout(session.runner().bus().read_word(MBAR_HEIGHT) as i16)
+                .expect("recognized dialog title must reach the GPUI painter");
+            std::fs::write(output.with_extension("dialog-state.json"), serde_json::to_vec_pretty(&serde_json::json!({
+                "definition": owner.definition_id, "identity": [owner.guest_id as u64, owner.generation],
+                "window": owner.window, "dialog_active": dialog.active, "suspended": modeless_host_suspended,
+                "actual_depth": session.runner().presented_screen_depth(),
+                "title_position": [title.horizontal, title.baseline], "title_clip": title.clip,
+                "items": dialog.items.iter().map(|item| serde_json::json!({
+                    "number": item.number, "text": item.text, "bounds": item.bounds,
+                    "selection": item.selection, "value": item.value
+                })).collect::<Vec<_>>()
+            })).unwrap()).unwrap();
+        }
         if popup_host_suspended {
             for frame in &windows {
                 eprintln!("suspended popup owner: id={:#x}, title={:?}, active={}, bounds={:?}, title_layout={:?}",
@@ -5061,7 +5102,7 @@ mod desktop {
         let view = view.unwrap();
         visual.update(|cx| {
             view.update(cx, |demo, cx| {
-                if controls_host_suspended { demo.host_active = Some(false); }
+                if controls_host_suspended || modeless_host_suspended { demo.host_active = Some(false); }
                 demo.menus = menus;
                 demo.guest_menu_tracking = guest_menu_tracking;
                 demo.guest_popup = guest_popup;
@@ -6367,7 +6408,7 @@ mod desktop {
                 output,
                 args.prefer_powerpc,
                 args.screen_depth,
-                CaptureCase::ModelessDialog,
+                CaptureCase::ModelessDialog { suspended: args.capture_modeless_dialog_suspended },
                 args.capture_scale,
             );
             return;
@@ -7279,6 +7320,7 @@ mod desktop {
                         capture_modal_dialog_checkbox_checked_held: None,
                         capture_modal_dialog_checkbox_outside: None,
                         capture_modeless_dialog: None,
+                        capture_modeless_dialog_suspended: false,
                         capture_nested_modal_dialog: None,
                         capture_controls: None,
                         capture_control_fonts: None,
