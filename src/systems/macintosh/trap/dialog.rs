@@ -7342,6 +7342,32 @@ impl super::TrapDispatcher {
         }
     }
 
+    // Use only during an existing standard Toolbox field repaint. The live
+    // editField and view bounds must still identify this item; a port match
+    // alone cannot establish ownership after dialog focus changes.
+    fn redraw_wrapped_dialog_editor(
+        &mut self, cpu: &mut impl CpuOps, bus: &mut MacMemoryBus,
+        dialog_ptr: u32, bounds: (i16, i16, i16, i16), items: &[DialogItem],
+        edit_item: i16, only_item: Option<i16>,
+    ) {
+        if edit_item <= 0 || only_item.is_some_and(|item| item != edit_item)
+            || bus.read_word(dialog_ptr + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET) as i16 != edit_item - 1
+        { return; }
+        let Some(item) = items.get((edit_item - 1) as usize) else { return; };
+        if !item.is_edit_text() || !item.is_enabled()
+            || !crate::dialog_manager::dialog_item_intersects_bounds(bounds, item.rect)
+        { return; }
+        let handle = bus.read_long(dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+        let ptr = Self::te_record_ptr(bus, handle);
+        if ptr != 0 && bus.read_long(ptr + Self::TE_IN_PORT_OFFSET) == dialog_ptr
+            && bus.read_word(ptr + Self::TE_ACTIVE_OFFSET) != 0
+            && bus.read_word(ptr + Self::TE_N_LINES_OFFSET) > 1
+            && Self::te_read_rect(bus, ptr + Self::TE_VIEW_RECT_OFFSET) == item.rect
+        {
+            self.draw_te_contents(cpu, bus, handle, true);
+        }
+    }
+
     fn refresh_dialog_tracking_snapshot(&mut self, cpu: &mut impl CpuOps, bus: &mut MacMemoryBus, only_item: Option<i16>) {
         let Some(tracking) = self.dialog_tracking.as_ref() else {
             return;
@@ -7373,23 +7399,7 @@ impl super::TrapDispatcher {
             dialog_ptr,
             only_item,
         );
-        // Standard dialog repaint must retain the active editor's
-        // wrapping, rather than leaving the single-line fallback
-        // painted over a wrapped TERec. This runs only where the
-        // Toolbox already owns the standard field repaint, before
-        // caching its image; custom/game-managed draws stay intact.
-        let text_handle = bus.read_long(
-            dialog_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET,
-        );
-        let text_ptr = Self::te_record_ptr(bus, text_handle);
-        if only_item.is_none_or(|item| item == edit_item)
-            && text_ptr != 0
-            && bus.read_long(text_ptr + Self::TE_IN_PORT_OFFSET) == dialog_ptr
-            && bus.read_word(text_ptr + Self::TE_ACTIVE_OFFSET) != 0
-            && bus.read_word(text_ptr + Self::TE_N_LINES_OFFSET) > 1
-        {
-            self.draw_te_contents(cpu, bus, text_handle, true);
-        }
+        self.redraw_wrapped_dialog_editor(cpu, bus, dialog_ptr, bounds, &items, edit_item, only_item);
         self.redraw_dialog_popup_controls(bus, &popup_draws);
         let rendered = self.save_dialog_pixels(bus, bounds);
         if let Some(tracking) = self.dialog_tracking.as_mut() {
@@ -11755,6 +11765,9 @@ impl super::TrapDispatcher {
                                         dialog_ptr,
                                         Some(edit_item),
                                     );
+                                    self.redraw_wrapped_dialog_editor(
+                                        cpu, bus, dialog_ptr, bounds, &items, active_edit, Some(edit_item),
+                                    );
                                 }
                                 result = true;
                             }
@@ -12480,6 +12493,9 @@ impl super::TrapDispatcher {
                                 dialog_ptr,
                                 None,
                             );
+                            self.redraw_wrapped_dialog_editor(
+                                cpu, bus, dialog_ptr, bounds, &items, edit_item, None,
+                            );
                         }
                         self.redraw_dialog_popup_controls(bus, &popup_draws);
                         let rendered = self.save_dialog_pixels(bus, bounds);
@@ -12913,7 +12929,13 @@ impl super::TrapDispatcher {
                                             None,
                                         );
                                     }
+                                    let editor = (!t.game_managed).then(|| (t.items.clone(), t.edit_item));
                                     let popup_draws = t.popup_draws.clone();
+                                    if let Some((items, edit_item)) = editor {
+                                        self.redraw_wrapped_dialog_editor(
+                                            cpu, bus, dialog_ptr, bounds, &items, edit_item, None,
+                                        );
+                                    }
                                     self.redraw_dialog_popup_controls(bus, &popup_draws);
                                 }
                                 let rendered = self.save_dialog_pixels(bus, bounds);

@@ -6636,3 +6636,26 @@ variation remains; this change corrects clock mismatch, not a verified cure for
 native stutter. Host audio and persistence are disabled in the captures, and
 no window is opened by the native delivery probe. Physical input, display
 presentation/audio continuity and all broad release gates remain open.
+
+### Wrapped standard dialog lifecycle repaint (2026-10-12)
+
+The same validated wrapped-TERec paint now runs after standard DialogSelect key
+redraws, modal post-filter resnapshots and modal update-event redraws, as well as
+the previously qualified cache refresh. Its live editField, item kind/enabled
+state, visible intersection, owner port and exact view rectangle must match
+before repainting. Game-managed dialogs and pending custom-control snapshots
+retain their existing paths. Strict drawing ownership checks stay unchanged.
+
+A new classic regression preserves actual wrapped glyphs and selection through
+both standard modal resnapshot and queued updateEvt, followed by chrome redraw;
+retained TextEdit ownership remains intact. All 429 classic dialog regressions
+pass (0.81 seconds). The actual GPUI wrapped-dialog editing/hit-testing test
+passes mono68k, colour68k, PPC8/PPC16 at scales0.75/1/1.5/2 (23.03 seconds).
+Source/binary/log hashes are in
+`target/gpui-qualification/classic-wrapped-dialog/modal-update-review.json`.
+The first synthetic fixture disagreed about port text settings and mono versus
+8-bit framebuffer mode; it failed and was corrected before these passing runs.
+These are functional-profile checks, not new image/native activation/accessibility
+or partial-update/custom-filter lifecycle qualification. Earlier visual and
+optimized EV evidence stays pinned to its producing revision. All broad release
+gates remain open.

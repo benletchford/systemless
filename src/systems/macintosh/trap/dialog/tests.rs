@@ -16359,6 +16359,65 @@
     }
 
     #[test]
+    fn modal_wrapped_editor_survives_update_and_standard_resnapshot() {
+        for update_event in [false, true] {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            let screen_base = bus.read_long(0x0824);
+            disp.set_screen_mode_for_test(screen_base, 64, 512, 342, 1);
+            bus.write_word(0x0828, 64);
+            let text = b"First wrapped line\rSecond wrapped line";
+            let handle = make_te_with_text(&mut disp, &mut bus, text);
+            let ptr = bus.read_long(handle);
+            let dialog = bus.read_long(ptr + TrapDispatcher::TE_IN_PORT_OFFSET);
+            // Modal dispatch reloads authoritative port text state. Keep the
+            // direct baseline paint consistent with that same guest state.
+            bus.write_word(dialog + 68, 4);
+            bus.write_word(dialog + 72, 0);
+            bus.write_word(dialog + 74, 10);
+            let view = TrapDispatcher::te_read_rect(&bus, ptr + TrapDispatcher::TE_VIEW_RECT_OFFSET);
+            bus.write_long(dialog + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET, handle);
+            bus.write_word(dialog + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET, 0);
+            bus.write_word(ptr + TrapDispatcher::TE_ACTIVE_OFFSET, 1);
+            bus.write_word(ptr + TrapDispatcher::TE_SEL_START_OFFSET, 3);
+            bus.write_word(ptr + TrapDispatcher::TE_SEL_END_OFFSET, 8);
+            disp.front_window = dialog;
+            disp.window_bounds = (0, 0, 80, 180);
+            let item = DialogItem { item_type: 16, rect: view,
+                text: decode_mac_roman(text), ..DialogItem::default() };
+            disp.dialog_items.insert(dialog, vec![item.clone()]);
+            disp.draw_te_contents(&mut cpu, &mut bus, handle, true);
+            let (base, stride, _, _, _) = disp.screen_mode;
+            let field_pixels = |bus: &MacMemoryBus| (0..60u32).flat_map(|y|
+                (0..20u32).map(move |x| bus.read_byte(base + y * stride + x)))
+                .collect::<Vec<_>>();
+            let expected = field_pixels(&bus);
+            assert!(!bus.text_edit_drawing_regions(handle, dialog, view, base).is_empty());
+            let mut tracking = dialog_tracking_state_for_test(dialog);
+            tracking.bounds = disp.window_bounds;
+            tracking.proc_id = 2;
+            tracking.default_item = 0;
+            tracking.cancel_item = 0;
+            tracking.items = vec![item];
+            tracking.edit_text = decode_mac_roman(text);
+            tracking.edit_item = 1;
+            tracking.rendered_pixels = disp.save_dialog_pixels(&bus, tracking.bounds);
+            tracking.rendered_pixels_final = update_event;
+            disp.dialog_tracking = Some(tracking);
+            if update_event {
+                disp.event_queue.push_back(crate::trap::dispatch::QueuedEvent {
+                    what: 6, message: dialog, when: 100, where_v: 0, where_h: 0, modifiers: 0,
+                });
+            }
+            disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus).unwrap().unwrap();
+            assert_eq!(field_pixels(&bus), expected,
+                "standard resnapshot/update must retain real wrapped TextEdit paint: update={update_event}");
+            assert!(!bus.text_edit_drawing_regions(handle, dialog, view, base).is_empty());
+            disp.redraw_chrome(&mut bus);
+            assert_eq!(field_pixels(&bus), expected, "chrome must retain the new editor snapshot");
+        }
+    }
+
+    #[test]
     fn modal_dialog_update_event_restores_existing_snapshot_before_resnapshot() {
         let (mut disp, mut cpu, mut bus) = setup();
         let screen_base = bus.alloc((32 * 32) as u32);
