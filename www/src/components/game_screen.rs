@@ -1623,6 +1623,7 @@ mod tests {
         let mut state = super::WorkerFrameState {
             save_error: None,
             output_scale: 1,
+            cursor_css: "none".into(),
             frame: None,
             js_frame: None,
             gpu_frame: None,
@@ -1664,6 +1665,7 @@ mod tests {
         let mut state = super::WorkerFrameState {
             save_error: None,
             output_scale: 1,
+            cursor_css: "none".into(),
             frame: None,
             js_frame: None,
             gpu_frame: None,
@@ -1712,6 +1714,7 @@ mod tests {
         let mut state = super::WorkerFrameState {
             save_error: None,
             output_scale: 1,
+            cursor_css: "none".into(),
             frame: Some((640, 480, vec![1, 2, 3, 4])),
             js_frame: None,
             gpu_frame: None,
@@ -1979,6 +1982,8 @@ fn start_render_loop(
         let run_start_ms = if timing_enabled { perf_now_ms() } else { 0.0 };
         let output_scale = canvas_output_scale(&canvas, m.screen_size());
         m.set_output_scale(output_scale);
+        let cursor_scale = canvas_cursor_scale(&canvas, m.screen_size());
+        m.set_cursor_scale(cursor_scale);
         let frame_result = m.run_frame();
         let save_error = m.take_save_error();
         let current_save_files_version = m.save_files_version();
@@ -2009,6 +2014,7 @@ fn start_render_loop(
             should_paint_frame(frame_result, size_changed, painted_once, force_debug_paint);
         if painted_frame {
             let render_start_ms = if timing_enabled { perf_now_ms() } else { 0.0 };
+            frame.set_cursor_css(&canvas, m.cursor_css());
             let ((pixel_w, pixel_h), rgba) =
                 m.render_rgba(debug_enabled.then(|| perf.frame_stats()));
             if canvas.width() != pixel_w {
@@ -2081,6 +2087,7 @@ fn start_render_loop(
 struct WorkerFrameState {
     save_error: Option<String>,
     output_scale: u32,
+    cursor_css: String,
     frame: Option<(u32, u32, Vec<u8>)>,
     // Keep transferred RGBA buffers as JS views so WebGL can upload them
     // without copying through Wasm memory first.
@@ -2480,7 +2487,7 @@ async fn boot_catalogue_worker(
         "generation",
         &JsValue::from_f64(generation as f64),
     );
-    set_js_property(&message, "protocolVersion", &JsValue::from_f64(7.0));
+    set_js_property(&message, "protocolVersion", &JsValue::from_f64(8.0));
     set_js_property(&message, "moduleUrl", &JsValue::from_str(&module_url));
     set_js_property(&message, "wasmUrl", &JsValue::from_str(&wasm_url));
     set_js_property(&message, "gameBytes", bytes.buffer().as_ref());
@@ -2544,6 +2551,7 @@ async fn boot_catalogue_worker(
     let state = Rc::new(RefCell::new(WorkerFrameState {
         save_error: None,
         output_scale: 1,
+        cursor_css: "none".into(),
         frame: None,
         js_frame: None,
         gpu_frame: None,
@@ -2698,6 +2706,21 @@ async fn boot_catalogue_worker(
                 replace_worker_visual_frame(&mut state, WorkerVisualFrame::Direct);
             }
         }
+        if [
+            "frame",
+            "gpuFrame",
+            "indexedFrame",
+            "compactFrame",
+            "directFrame",
+        ]
+        .iter()
+        .any(|key| Reflect::get(&data, &JsValue::from_str(key)).is_ok_and(|v| !v.is_undefined()))
+        {
+            state.cursor_css = Reflect::get(&data, &JsValue::from_str("cursorCss"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "none".into());
+        }
         let running = state.running;
         let next = state.requests.complete(running);
         drop(state);
@@ -2825,6 +2848,12 @@ fn start_worker_render_loop(
             let mut state = runtime.state.borrow_mut();
             take_worker_visual_frame(&mut state)
         };
+        if visual_frame
+            .as_ref()
+            .is_some_and(|frame| !matches!(frame, WorkerVisualFrame::Direct))
+        {
+            renderer.set_cursor_css(&canvas, &runtime.state.borrow().cursor_css);
+        }
         match visual_frame {
             Some(WorkerVisualFrame::Direct) => {
                 // The renderer's submitted notice applies coherent display and
@@ -2930,6 +2959,11 @@ fn start_worker_render_loop(
             set_js_property(&message, "directRender", &JsValue::from_bool(direct_render));
             let scale = canvas_backing_scale(&canvas);
             let logical = (canvas.width() / scale, canvas.height() / scale);
+            set_js_property(
+                &message,
+                "cursorScale",
+                &JsValue::from_f64(canvas_cursor_scale(&canvas, logical)),
+            );
             set_js_property(
                 &message,
                 "outputScale",
@@ -3375,6 +3409,7 @@ fn attach_pointer_input(
         let m = &machine_pd;
         m.resume_audio();
         if let Some((v, h)) = pointer_coords(&canvas_el, &ev) {
+            let _ = canvas_el.set_attribute("data-cursor-pointer", &ev.pointer_type());
             active_pd.set(Some(ev.pointer_id()));
             last_pd.set(Some((v, h)));
             down_ms_pd.set(perf_now_ms());
@@ -3412,6 +3447,7 @@ fn attach_pointer_input(
             if active == Some(ev.pointer_id()) {
                 last_pm.set(Some((v, h)));
             }
+            let _ = canvas_el.set_attribute("data-cursor-pointer", &pointer_type);
             machine_pm.mouse_move(v, h);
         }
     }) as Box<dyn FnMut(PointerEvent)>);
@@ -3544,6 +3580,7 @@ fn attach_touch_input(
         let m = &machine_ts;
         m.resume_audio();
         if let Some((v, h)) = touch_coords(&canvas_el, &touch) {
+            let _ = canvas_el.set_attribute("data-cursor-pointer", "touch");
             active_ts.set(Some(touch.identifier()));
             last_ts.set(Some((v, h)));
             down_ms_ts.set(perf_now_ms());
@@ -3699,6 +3736,7 @@ fn attach_mouse_input(
         let m = &machine_md;
         m.resume_audio();
         if let Some((v, h)) = canvas_coords(&canvas_el, &ev) {
+            let _ = canvas_el.set_attribute("data-cursor-pointer", "mouse");
             down_md.set(Some((v, h)));
             m.mouse_down(v, h);
         }
@@ -3740,6 +3778,7 @@ fn attach_mouse_input(
             if down_mm.get().is_some() {
                 down_mm.set(Some((v, h)));
             }
+            let _ = canvas_el.set_attribute("data-cursor-pointer", "mouse");
             machine_mm.mouse_move(v, h);
         }
     }) as Box<dyn FnMut(MouseEvent)>);
@@ -4461,6 +4500,29 @@ fn canvas_backing_scale(canvas: &HtmlCanvasElement) -> u32 {
         .and_then(|value| value.parse().ok())
         .unwrap_or(1)
         .max(1)
+}
+
+fn canvas_cursor_scale(canvas: &HtmlCanvasElement, logical: (u32, u32)) -> f64 {
+    let fine_pointer = web_sys::window()
+        .and_then(|window| window.match_media("(any-pointer: fine)").ok().flatten())
+        .is_some_and(|query| query.matches());
+    let navigator = web_sys::window().map(|window| window.navigator());
+    let ua = navigator
+        .as_ref()
+        .and_then(|n| n.user_agent().ok())
+        .unwrap_or_default();
+    let touch_points = navigator.as_ref().map_or(0, |n| n.max_touch_points());
+    let pointer = canvas.get_attribute("data-cursor-pointer");
+    if !crate::host_cursor::native_pointer_supported(
+        &ua,
+        touch_points,
+        fine_pointer,
+        pointer.as_deref(),
+    ) || logical.0 == 0
+    {
+        return 0.0;
+    }
+    canvas.get_bounding_client_rect().width() / logical.0 as f64
 }
 
 fn canvas_output_scale(canvas: &HtmlCanvasElement, logical: (u32, u32)) -> u32 {

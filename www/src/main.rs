@@ -7,6 +7,7 @@ mod catalogue;
 mod compact_vectors;
 mod components;
 mod emulator;
+mod host_cursor;
 mod indexed_frame;
 mod paths;
 mod presentation;

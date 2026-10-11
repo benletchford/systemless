@@ -1,6 +1,6 @@
 import { RendererTransport } from "./renderer-transport.js";
 
-export const DIRECT_RENDERER_PROTOCOL = 1;
+export const DIRECT_RENDERER_PROTOCOL = 2;
 
 // Runs on the execution owner. Only completed owned images cross this port;
 // guest execution, display demand and ordered input are unchanged.
@@ -46,7 +46,7 @@ export class RendererOwner {
     delete result.indexedFrame;
     delete result.compactFrame;
     result.directFrame = { width: frame.width, height: frame.height, sequence, rendererGeneration: this.identity.rendererGeneration, kind: frame.kind, bytes };
-    this.transport.submit({ ...frame, outputScale: result.outputScale ?? 1, sequence, displayGeneration: this.displayGeneration });
+    this.transport.submit({ ...frame, cursorCss: result.cursorCss, outputScale: result.outputScale ?? 1, sequence, displayGeneration: this.displayGeneration });
     return true;
   }
 
