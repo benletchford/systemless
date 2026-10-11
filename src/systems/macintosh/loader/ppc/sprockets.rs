@@ -85,6 +85,11 @@ pub struct PpcDrawSprocketState {
     pub dirty_grid_size: (u32, u32),
     pub front_buffer_gworld: u32,
     pub back_buffer_gworld: u32,
+    pub(crate) alt_buffer_invalid_rects: HashMap<u32, Vec<(i16, i16, i16, i16)>>,
+    pub(crate) underlay_alt_buffer: u32,
+    pub(crate) underlay_full_update: bool,
+    pub(crate) back_invalid_rects: Vec<(i16, i16, i16, i16)>,
+    pub(crate) back_restore_rects: Vec<(i16, i16, i16, i16)>,
     pub last_fade_context: Option<u32>,
     pub last_fade_kind: Option<PpcDspGammaFadeKind>,
     pub last_fade_percent: Option<i32>,
@@ -125,6 +130,11 @@ impl Default for PpcDrawSprocketState {
             dirty_grid_size: (32, 32),
             front_buffer_gworld: PPC_MAIN_GWORLD,
             back_buffer_gworld: PPC_DSP_BACK_GWORLD,
+            alt_buffer_invalid_rects: HashMap::new(),
+            underlay_alt_buffer: 0,
+            underlay_full_update: false,
+            back_invalid_rects: Vec::new(),
+            back_restore_rects: Vec::new(),
             last_fade_context: None,
             last_fade_kind: None,
             last_fade_percent: None,
@@ -967,7 +977,8 @@ pub(crate) fn ppc_dsp_context_state_from_raw(state: u32) -> Option<PpcDspContext
 pub(crate) fn ppc_dsp_context_get_back_buffer(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
-    draw_sprocket: &PpcDrawSprocketState,
+    draw_sprocket: &mut PpcDrawSprocketState,
+    gworlds: &[PpcGWorldRecord],
 ) -> i16 {
     if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
         return error;
@@ -975,6 +986,12 @@ pub(crate) fn ppc_dsp_context_get_back_buffer(
     let buffer_kind = cpu.gpr[4];
     let buffer_out_ptr = cpu.gpr[5];
     if buffer_kind != PPC_DSP_BUFFER_KIND_NORMAL {
+        return PPC_PARAM_ERR;
+    }
+    if buffer_out_ptr == 0 || !ppc_memory_can_write_bytes(memory, buffer_out_ptr, 4) {
+        return PPC_PARAM_ERR;
+    }
+    if !ppc_dsp_restore_underlay(memory, draw_sprocket, gworlds) {
         return PPC_PARAM_ERR;
     }
     ppc_dsp_context_get_buffer(
@@ -1282,7 +1299,7 @@ pub(crate) fn ppc_dsp_alt_buffer_new(
     gworlds: &mut Vec<PpcGWorldRecord>,
     gworld_allocations: &mut HashMap<u32, PpcGWorldAllocationRecord>,
     current_gdevice: u32,
-    draw_sprocket: &PpcDrawSprocketState,
+    draw_sprocket: &mut PpcDrawSprocketState,
 ) -> i16 {
     if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
         return error;
@@ -1326,7 +1343,7 @@ pub(crate) fn ppc_dsp_alt_buffer_new(
     world_cpu.gpr[6] = 0;
     world_cpu.gpr[7] = current_gdevice;
     world_cpu.gpr[8] = 0;
-    ppc_new_gworld(
+    let result = ppc_new_gworld(
         &mut world_cpu,
         process_memory_manager,
         memory,
@@ -1337,7 +1354,193 @@ pub(crate) fn ppc_dsp_alt_buffer_new(
         gworlds,
         gworld_allocations,
         current_gdevice,
-    )
+    );
+    if result == PPC_NO_ERR {
+        if let Some(port) = memory.read_u32_be(out_alt_buffer) {
+            draw_sprocket.alt_buffer_invalid_rects.insert(port, Vec::new());
+        }
+    }
+    result
+}
+
+
+fn ppc_dsp_clipped_rect(
+    rect: (i16, i16, i16, i16),
+    world: PpcGWorldRecord,
+) -> Option<(i16, i16, i16, i16)> {
+    let clipped = (
+        rect.0.max(0),
+        rect.1.max(0),
+        rect.2.min(world.height as i16),
+        rect.3.min(world.width as i16),
+    );
+    (clipped.0 < clipped.2 && clipped.1 < clipped.3).then_some(clipped)
+}
+
+pub(crate) fn ppc_dsp_alt_buffer_inval_rect(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    state: &mut PpcDrawSprocketState,
+    gworlds: &[PpcGWorldRecord],
+) -> i16 {
+    let port = cpu.gpr[3];
+    if !state.alt_buffer_invalid_rects.contains_key(&port)
+        || cpu.gpr[4] == 0
+        || !ppc_memory_can_read_bytes(memory, cpu.gpr[4], 8)
+    {
+        return PPC_PARAM_ERR;
+    }
+    let Some(world) = gworlds.iter().find(|world| world.port == port).copied() else {
+        return PPC_PARAM_ERR;
+    };
+    let Some(rect) = ppc_read_rect(memory, cpu.gpr[4]) else {
+        return PPC_PARAM_ERR;
+    };
+    if let Some(rect) = ppc_dsp_clipped_rect(rect, world) {
+        let invalid = state.alt_buffer_invalid_rects.get_mut(&port).unwrap();
+        if !invalid.contains(&rect) {
+            invalid.push(rect);
+        }
+    }
+    if state.underlay_alt_buffer == port {
+        state.underlay_full_update = false;
+    }
+    PPC_NO_ERR
+}
+
+pub(crate) fn ppc_dsp_context_set_underlay(
+    cpu: &PpcCpu,
+    state: &mut PpcDrawSprocketState,
+    gworlds: &[PpcGWorldRecord],
+) -> i16 {
+    if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+        return error;
+    }
+    let port = cpu.gpr[4];
+    if port != 0
+        && (!state.alt_buffer_invalid_rects.contains_key(&port)
+            || !gworlds.iter().any(|world| world.port == port))
+    {
+        return PPC_PARAM_ERR;
+    }
+    state.underlay_alt_buffer = port;
+    state.underlay_full_update = port != 0;
+    if port == 0 {
+        state.back_restore_rects.clear();
+    }
+    PPC_NO_ERR
+}
+
+pub(crate) fn ppc_dsp_context_inval_back_rect(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    state: &mut PpcDrawSprocketState,
+    gworlds: &[PpcGWorldRecord],
+) -> i16 {
+    if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+        return error;
+    }
+    if cpu.gpr[4] == 0 {
+        state.back_invalid_rects.clear();
+        return PPC_NO_ERR;
+    }
+    if !ppc_memory_can_read_bytes(memory, cpu.gpr[4], 8) {
+        return PPC_PARAM_ERR;
+    }
+    let Some(world) = gworlds
+        .iter()
+        .find(|world| world.port == state.back_buffer_gworld)
+        .copied()
+    else {
+        return PPC_PARAM_ERR;
+    };
+    let Some(rect) = ppc_read_rect(memory, cpu.gpr[4]) else {
+        return PPC_PARAM_ERR;
+    };
+    if let Some(rect) = ppc_dsp_clipped_rect(rect, world) {
+        if !state.back_invalid_rects.contains(&rect) {
+            state.back_invalid_rects.push(rect);
+        }
+    }
+    PPC_NO_ERR
+}
+
+fn ppc_dsp_restore_underlay(
+    memory: &mut PpcSectionMem,
+    state: &mut PpcDrawSprocketState,
+    gworlds: &[PpcGWorldRecord],
+) -> bool {
+    let port = state.underlay_alt_buffer;
+    if port == 0 {
+        return true;
+    }
+    let Some(source) = gworlds.iter().find(|world| world.port == port).copied() else {
+        return false;
+    };
+    let Some(back) = gworlds
+        .iter()
+        .find(|world| world.port == state.back_buffer_gworld)
+        .copied()
+    else {
+        return false;
+    };
+    if source.depth != back.depth
+        || !matches!(back.depth, 8 | 16)
+        || source.width != back.width
+        || source.height != back.height
+    {
+        return false;
+    }
+    let mut rects = state.back_restore_rects.clone();
+    if let Some(invalid) = state.alt_buffer_invalid_rects.get(&port) {
+        rects.extend(invalid.iter().copied());
+    }
+    if state.underlay_full_update {
+        rects = vec![(0, 0, back.height as i16, back.width as i16)];
+    }
+    if rects.is_empty() {
+        return true;
+    }
+    let bytes_per_pixel = back.depth / 8;
+    let mut rows = Vec::new();
+    for rect in rects {
+        let count = ((rect.3 - rect.1) as u32 * bytes_per_pixel) as usize;
+        for row in rect.0..rect.2 {
+            let Some(src) = source
+                .base_addr
+                .checked_add(row as u32 * source.row_bytes)
+                .and_then(|p| p.checked_add(rect.1 as u32 * bytes_per_pixel))
+            else {
+                return false;
+            };
+            let Some(dst) = back
+                .base_addr
+                .checked_add(row as u32 * back.row_bytes)
+                .and_then(|p| p.checked_add(rect.1 as u32 * bytes_per_pixel))
+            else {
+                return false;
+            };
+            if !ppc_memory_can_read_bytes(memory, src, count)
+                || !ppc_memory_can_write_bytes(memory, dst, count)
+            {
+                return false;
+            }
+            let mut bytes = vec![0; count];
+            if memory.read_bytes_into(src, &mut bytes).is_none() {
+                return false;
+            }
+            rows.push((dst, bytes));
+        }
+    }
+    for (dst, bytes) in rows {
+        if memory.write_bytes(dst, &bytes).is_none() {
+            return false;
+        }
+    }
+    state.back_restore_rects.clear();
+    state.underlay_full_update = false;
+    state.alt_buffer_invalid_rects.insert(port, Vec::new());
+    true
 }
 
 pub(crate) fn ppc_dsp_alt_buffer_get_cgraf_ptr(
@@ -1624,6 +1827,10 @@ pub(crate) fn ppc_dsp_context_release(
     if !ppc_dsp_restore_desktop(memory, gworlds, screen_clut, draw_sprocket) {
         return PPC_PARAM_ERR;
     }
+    draw_sprocket.underlay_alt_buffer = 0;
+    draw_sprocket.underlay_full_update = false;
+    draw_sprocket.back_invalid_rects.clear();
+    draw_sprocket.back_restore_rects.clear();
     draw_sprocket.reserved_context = None;
     draw_sprocket.active_context = None;
     draw_sprocket.context_state = PpcDspContextPlayState::Inactive;
@@ -1790,6 +1997,14 @@ pub(crate) fn ppc_dsp_context_swap_buffers(
     };
     if !ppc_dsp_present_back_buffer(memory, back, front) {
         return PPC_PARAM_ERR;
+    }
+    // Restore the previous frame's altered pixels only after it has been
+    // presented, on the next GetBackBuffer before the game draws its sprites.
+    draw_sprocket.back_restore_rects = std::mem::take(&mut draw_sprocket.back_invalid_rects);
+    if draw_sprocket.back_restore_rects.is_empty() {
+        draw_sprocket
+            .back_restore_rects
+            .push((0, 0, back.height as i16, back.width as i16));
     }
     draw_sprocket.last_swap_context = Some(context);
     draw_sprocket.swap_count = draw_sprocket.swap_count.saturating_add(1);
@@ -1967,6 +2182,7 @@ pub(crate) fn ppc_draw_sprocket_action_name(
         PpcImportDispatcherTarget::DSpSetBlankingColor => Some("set_blanking_color"),
         PpcImportDispatcherTarget::DSpAltBufferNew => Some("alt_buffer_new"),
         PpcImportDispatcherTarget::DSpAltBufferGetCGrafPtr => Some("alt_buffer_get_cgraf_ptr"),
+        PpcImportDispatcherTarget::DSpAltBufferInvalRect => Some("alt_buffer_inval_rect"),
         PpcImportDispatcherTarget::DSpContextReserve => Some("context_reserve"),
         PpcImportDispatcherTarget::DSpContextRelease => Some("context_release"),
         PpcImportDispatcherTarget::DSpContextSetState => Some("context_set_state"),

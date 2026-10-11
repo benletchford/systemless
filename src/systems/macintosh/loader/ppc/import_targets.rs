@@ -596,6 +596,7 @@ pub enum PpcImportDispatcherTarget {
     DSpSetBlankingColor,
     DSpAltBufferNew,
     DSpAltBufferGetCGrafPtr,
+    DSpAltBufferInvalRect,
     DSpContextReserve,
     DSpContextRelease,
     DSpContextSetState,
@@ -2500,6 +2501,7 @@ pub(crate) fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::DSpSetBlankingColor
         }
         ("DrawSprocketLib", "DSpAltBuffer_New") => PpcImportDispatcherTarget::DSpAltBufferNew,
+        ("DrawSprocketLib", "DSpAltBuffer_InvalRect") => PpcImportDispatcherTarget::DSpAltBufferInvalRect,
         ("DrawSprocketLib", "DSpAltBuffer_GetCGrafPtr") => {
             PpcImportDispatcherTarget::DSpAltBufferGetCGrafPtr
         }

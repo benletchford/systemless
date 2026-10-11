@@ -153,6 +153,9 @@ pub(super) fn dispatch_drawsprocket_import(
                 draw_sprocket,
             )),
         )),
+        PpcImportDispatcherTarget::DSpAltBufferInvalRect => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_alt_buffer_inval_rect(cpu, memory, draw_sprocket, gworlds)),
+        )),
         PpcImportDispatcherTarget::DSpAltBufferGetCGrafPtr => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_alt_buffer_get_cgraf_ptr(cpu, memory, gworlds)),
         )),
@@ -314,7 +317,7 @@ pub(super) fn dispatch_drawsprocket_import(
             )))
         }
         PpcImportDispatcherTarget::DSpContextGetBackBuffer => Some(PpcImportAction::Return(
-            ppc_i16_result(ppc_dsp_context_get_back_buffer(cpu, memory, draw_sprocket)),
+            ppc_i16_result(ppc_dsp_context_get_back_buffer(cpu, memory, draw_sprocket, gworlds)),
         )),
         PpcImportDispatcherTarget::DSpContextSwapBuffers => {
             Some(PpcImportAction::Return(ppc_i16_result(
@@ -404,6 +407,12 @@ pub(super) fn dispatch_drawsprocket_import(
         }
         PpcImportDispatcherTarget::DSpAltBufferDispose => {
             let alt_buffer = cpu.gpr[3];
+            draw_sprocket.alt_buffer_invalid_rects.remove(&alt_buffer);
+            if alt_buffer != 0 && draw_sprocket.underlay_alt_buffer == alt_buffer {
+                draw_sprocket.underlay_alt_buffer = 0;
+                draw_sprocket.underlay_full_update = false;
+                draw_sprocket.back_restore_rects.clear();
+            }
             let error = if alt_buffer == 0 {
                 PPC_PARAM_ERR
             } else {
@@ -411,22 +420,12 @@ pub(super) fn dispatch_drawsprocket_import(
             };
             Some(PpcImportAction::Return(ppc_i16_result(error)))
         }
-        PpcImportDispatcherTarget::DSpContextInvalBackBufferRect => {
-            let error = if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
-                error
-            } else {
-                PPC_NO_ERR
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(error)))
-        }
-        PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer => {
-            let error = if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
-                error
-            } else {
-                PPC_NO_ERR
-            };
-            Some(PpcImportAction::Return(ppc_i16_result(error)))
-        }
+        PpcImportDispatcherTarget::DSpContextInvalBackBufferRect => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_context_inval_back_rect(cpu, memory, draw_sprocket, gworlds)),
+        )),
+        PpcImportDispatcherTarget::DSpContextSetUnderlayAltBuffer => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_context_set_underlay(cpu, draw_sprocket, gworlds)),
+        )),
         _ => None,
     }
 }

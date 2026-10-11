@@ -1512,6 +1512,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DSpSetBlankingColor
         | PpcImportDispatcherTarget::DSpAltBufferNew
         | PpcImportDispatcherTarget::DSpAltBufferGetCGrafPtr
+        | PpcImportDispatcherTarget::DSpAltBufferInvalRect
         | PpcImportDispatcherTarget::DSpContextReserve
         | PpcImportDispatcherTarget::DSpContextRelease
         | PpcImportDispatcherTarget::DSpContextSetState
