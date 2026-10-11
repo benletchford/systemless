@@ -257,6 +257,7 @@ pub(crate) use menu_manager::*;
 mod window_manager;
 mod mixed_mode;
 mod core_foundation;
+mod internet_config;
 mod icon_services;
 pub(crate) use mixed_mode::*;
 mod quicktime;

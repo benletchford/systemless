@@ -2309,6 +2309,19 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CfBundleLoadExecutable => {
             unreachable!("Core Foundation imports return through typed dispatch")
         }
+        PpcImportDispatcherTarget::ICStart
+        | PpcImportDispatcherTarget::ICStop
+        | PpcImportDispatcherTarget::ICGetSeed => {
+            dispatch_internet_config::dispatch_internet_config_import(
+                binding,
+                cpu,
+                memory,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                toolbox_startup,
+            )
+        }
         PpcImportDispatcherTarget::GetCurrentProcess
         | PpcImportDispatcherTarget::WakeUpProcess
         | PpcImportDispatcherTarget::SameProcess
