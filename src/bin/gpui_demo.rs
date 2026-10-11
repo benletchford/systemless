@@ -3378,6 +3378,7 @@ mod desktop {
                         },
                         definition_id: Some(0),
                         rectangular_regions: true,
+                        visible_content_rects: Some(vec![(90, 90, 150, 160)]),
                         close_box: true,
                         grow_icon_drawn: false,
                     },
@@ -3395,6 +3396,7 @@ mod desktop {
                         },
                         definition_id: Some(4),
                         rectangular_regions: true,
+                        visible_content_rects: Some(vec![(50, 50, 180, 240)]),
                         close_box: false,
                         grow_icon_drawn: false,
                     },
@@ -3590,6 +3592,7 @@ mod desktop {
                     },
                     definition_id: Some(0),
                     rectangular_regions: true,
+                    visible_content_rects: Some(vec![(35, 5, 55, 55)]),
                     close_box: true,
                     grow_icon_drawn: false,
                 }];
@@ -5910,6 +5913,7 @@ mod desktop {
                         },
                         definition_id: Some(8),
                         rectangular_regions: true,
+                        visible_content_rects: Some(vec![(50, 40, 420, 600)]),
                         close_box: true,
                         grow_icon_drawn: false,
                     }];
@@ -6189,6 +6193,7 @@ mod desktop {
                         },
                         definition_id: Some(1),
                         rectangular_regions: true,
+                        visible_content_rects: Some(vec![bounds]),
                         close_box: false,
                         grow_icon_drawn: false,
                     }];
@@ -6290,6 +6295,7 @@ mod desktop {
                         },
                         definition_id: Some(1),
                         rectangular_regions: true,
+                        visible_content_rects: Some(vec![bounds]),
                         close_box: false,
                         grow_icon_drawn: false,
                     }];
@@ -6582,6 +6588,7 @@ mod desktop {
                         },
                         definition_id: Some(0),
                         rectangular_regions: true,
+                        visible_content_rects: Some(vec![(50, 40, 420, 600)]),
                         close_box: false,
                         grow_icon_drawn: false,
                     }];
@@ -6687,6 +6694,7 @@ mod desktop {
                         },
                         definition_id: Some(0),
                         rectangular_regions: true,
+                        visible_content_rects: Some(vec![bounds]),
                         close_box: false,
                         grow_icon_drawn: false,
                     }];
