@@ -1,0 +1,19 @@
+{
+  "source_commit": "e8d762e7afdd6bf8b10a10144e447cb71675affa",
+  "binary_sha256": "cec6319792f8010e3f6f9a07c6cfa6523a37daeeef61fc68d3317ef8da0dfbcd",
+  "observations": "Reviewed PPC8 open guest popup at scene scale0.75, density2: smooth long selected row, normal labels and disabled gray row visible. Guest closed-control bitmap labels and application text retain guest raster. Exact pointer parity, all CPU/scales/states and performance remain unqualified.",
+  "files": {
+    "systemless-smooth-popup-ppc8-0.75.png": {
+      "original_sha256": "dca338754c68cf46647ce552d5ffcadfd985caf63924063177f5d2f35938aea0",
+      "archive_sha256": "984864b3df292c9663ae0f230824b8061fae9f0ca9f382e0184712d42041a524"
+    },
+    "systemless-smooth-popup-ppc8-0.75.guest.png": {
+      "original_sha256": "740a81eb9ebb8da07bf3e620ea92cc569307eb82ddbe20d39a99f900aa545caf",
+      "archive_sha256": "ea4e15e721c9ff1cca2aabf6fbf81c5fdfb1cffd9f3d4ea178a3166c630c13bd"
+    },
+    "systemless-smooth-popup-ppc8-0.75.capture.json": {
+      "original_sha256": "0076a6e9fc674d40eb0b7cc4cff37634dba9355ce7ccca35adf7bd2fa1accca2",
+      "archive_sha256": "0076a6e9fc674d40eb0b7cc4cff37634dba9355ce7ccca35adf7bd2fa1accca2"
+    }
+  }
+}
