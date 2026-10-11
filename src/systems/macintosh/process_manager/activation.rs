@@ -51,6 +51,7 @@ pub(crate) struct ProcessActivation {
     foreground: bool,
     requested_foreground: bool,
     clipboard_changed: bool,
+    clipboard_resume_pending: bool,
     transition: Option<Transition>,
     os_event: Option<crate::event_queue::QueuedEvent>,
 }
@@ -61,6 +62,7 @@ impl Default for ProcessActivation {
             foreground: true,
             requested_foreground: true,
             clipboard_changed: false,
+            clipboard_resume_pending: false,
             transition: None,
             os_event: None,
         }
@@ -69,7 +71,9 @@ impl Default for ProcessActivation {
 
 impl ProcessActivation {
     pub(crate) fn needs_event_service(&self) -> bool {
-        self.transition.is_some() || self.requested_foreground != self.foreground
+        self.transition.is_some()
+            || self.requested_foreground != self.foreground
+            || (self.clipboard_resume_pending && self.foreground && self.requested_foreground)
     }
     pub(crate) fn reset_for_launch(&mut self, policy: Option<ApplicationSizeResource>) {
         *self = Self::default();
@@ -89,6 +93,19 @@ impl ProcessActivation {
 
     pub(crate) fn clipboard_changed(&mut self) {
         self.clipboard_changed = true;
+        self.clipboard_resume_pending = true;
+        // A not-yet-delivered resume can convert the latest imported global
+        // scrap. Preserve its original time, pointer and modifier snapshot.
+        if let Some(transition) = self.transition.as_mut() {
+            if transition.foreground && transition.operating_system_pending {
+                transition.convert_clipboard = true;
+                if let Some(event) = self.os_event.as_mut() {
+                    event.message |= 2;
+                }
+                self.clipboard_changed = false;
+                self.clipboard_resume_pending = false;
+            }
+        }
     }
 
     pub(crate) fn is_foreground(&self) -> bool {
@@ -150,12 +167,30 @@ impl ProcessActivation {
         if policy.is_some_and(ApplicationSizeResource::is_background_only) {
             self.foreground = false;
             self.requested_foreground = false;
-            return;
-        }
-        if self.requested_foreground == self.foreground {
+            self.clipboard_resume_pending = false;
             return;
         }
         let accepts = policy.is_some_and(ApplicationSizeResource::accepts_suspend_resume);
+        if self.requested_foreground == self.foreground {
+            // The first active host window can import TEXT without a process
+            // switch. Let the guest perform its private-scrap conversion using
+            // the same resume notification, without suspend or window events.
+            if self.clipboard_resume_pending {
+                self.clipboard_resume_pending = false;
+                if self.foreground && accepts && self.clipboard_changed {
+                    self.clipboard_changed = false;
+                    self.transition = Some(Transition {
+                        foreground: true,
+                        operating_system_pending: true,
+                        activation_pending: false,
+                        primary_delivered: false,
+                        yielded: true,
+                        convert_clipboard: true,
+                    });
+                }
+            }
+            return;
+        }
         let needs_activation =
             policy.is_none_or(ApplicationSizeResource::needs_foreground_activation_events);
         let foreground = self.requested_foreground;
@@ -175,6 +210,7 @@ impl ProcessActivation {
         });
         if foreground {
             self.clipboard_changed = false;
+            self.clipboard_resume_pending = false;
         }
     }
 
@@ -351,5 +387,65 @@ mod tests {
         state.request(true);
         state.begin_event_call(policy(0x4800), true, true);
         assert_eq!(state.consume().unwrap().os_message(), Some(0x0100_0001));
+    }
+
+    #[test]
+    fn active_clipboard_conversion_defers_and_delivers_once_without_activation() {
+        let mut state = ProcessActivation::default();
+        state.clipboard_changed();
+        assert!(state.needs_event_service());
+        for (yields, allowed) in [(false, true), (true, false)] {
+            state.begin_event_call(policy(0x4000), yields, allowed);
+            assert_eq!(state.peek(), None);
+            assert!(state.is_foreground());
+            assert!(state.needs_event_service());
+        }
+        state.begin_event_call(policy(0x4000), true, true);
+        assert!(state.is_foreground());
+        assert_eq!(state.consume().unwrap().os_message(), Some(0x0100_0003));
+        assert_eq!(state.consume(), None);
+        state.begin_event_call(policy(0x4000), true, true);
+        assert!(!state.needs_event_service());
+        assert!(state.is_foreground());
+    }
+
+    #[test]
+    fn clipboard_import_upgrades_pending_resume_without_reposting() {
+        let mut state = ProcessActivation::default();
+        state.request(false);
+        state.begin_event_call(policy(0x4800), true, true);
+        state.consume();
+        state.begin_event_call(policy(0x4800), true, true);
+        assert!(!state.needs_event_service());
+        state.request(true);
+        state.begin_event_call(policy(0x4800), true, true);
+        state.prepare_os_event(123, (17, 29), 0x100);
+        let original = state.peek_os_event(0x8000).unwrap();
+        assert_eq!(original.message, 0x0100_0001);
+        for _ in 0..2 {
+            state.clipboard_changed();
+            state.prepare_os_event(456, (31, 43), 0);
+        }
+        let upgraded = state.peek_os_event(0x8000).unwrap();
+        assert_eq!(upgraded.message, 0x0100_0003);
+        assert_eq!(upgraded.when, original.when);
+        assert_eq!(upgraded.where_v, original.where_v);
+        assert_eq!(upgraded.where_h, original.where_h);
+        assert_eq!(upgraded.modifiers, original.modifiers);
+        state.consume();
+        state.begin_event_call(policy(0x4800), true, true);
+        assert!(!state.needs_event_service());
+    }
+
+    #[test]
+    fn unsupported_clipboard_notifications_do_not_keep_event_service_busy() {
+        for flags in [0, 0x0800, 0x0400, 0x4400] {
+            let mut state = ProcessActivation::default();
+            state.clipboard_changed();
+            state.begin_event_call(policy(flags), true, true);
+            assert_eq!(state.peek(), None);
+            assert!(!state.needs_event_service(), "SIZE flags {flags:#06x}");
+            assert_eq!(state.is_foreground(), flags & 0x0400 == 0);
+        }
     }
 }

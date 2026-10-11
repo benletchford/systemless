@@ -75,45 +75,50 @@ fn assert_documents_unchanged(
     }
 }
 
+fn textedit_session(powerpc: bool, depth: u16) -> MacintoshSession {
+    let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+    if powerpc {
+        session
+            .runner_mut()
+            .set_powerpc_screen_depth(depth)
+            .unwrap();
+    }
+    session.runner_mut().set_prefer_powerpc_executables(powerpc);
+    let app = session
+        .load_path(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+        )
+        .unwrap();
+    session.initialize(&app);
+    await_guest(&mut session, |s| {
+        s.runner_mut()
+            .guest_menu_snapshot()
+            .menus
+            .iter()
+            .any(|m| m.id == 129 && m.items.iter().any(|i| i.number == 1 && i.checked))
+    });
+    assert_eq!(session.runner().is_powerpc_app(), powerpc);
+    assert_eq!(
+        session.runner().presented_screen_depth(),
+        Some(u32::from(depth))
+    );
+    assert!(session.runner_mut().select_guest_menu_item(129, 7));
+    await_guest(&mut session, |s| {
+        s.runner_mut()
+            .guest_menu_snapshot()
+            .menus
+            .iter()
+            .any(|m| m.id == 129 && m.items.iter().any(|i| i.number == 7 && i.checked))
+    });
+    settle(&mut session);
+    session
+}
+
 #[test]
 fn guest_copy_resume_conversion_and_paste_across_cpu_depths() {
     for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
-        let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
-        if powerpc {
-            session
-                .runner_mut()
-                .set_powerpc_screen_depth(depth)
-                .unwrap();
-        }
-        session.runner_mut().set_prefer_powerpc_executables(powerpc);
-        let app = session
-            .load_path(
-                &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/toolbox-showcase/toolbox-showcase.sit"),
-            )
-            .unwrap();
-        session.initialize(&app);
-        await_guest(&mut session, |s| {
-            s.runner_mut()
-                .guest_menu_snapshot()
-                .menus
-                .iter()
-                .any(|m| m.id == 129 && m.items.iter().any(|i| i.number == 1 && i.checked))
-        });
-        assert_eq!(session.runner().is_powerpc_app(), powerpc);
-        assert_eq!(
-            session.runner().presented_screen_depth(),
-            Some(u32::from(depth))
-        );
-        assert!(session.runner_mut().select_guest_menu_item(129, 7));
-        await_guest(&mut session, |s| {
-            s.runner_mut()
-                .guest_menu_snapshot()
-                .menus
-                .iter()
-                .any(|m| m.id == 129 && m.items.iter().any(|i| i.number == 7 && i.checked))
-        });
-        settle(&mut session);
+        let mut session = textedit_session(powerpc, depth);
         click(&mut session, "Reset");
         click(&mut session, "Copy");
         let before = session.runner_mut().text_edit_snapshot();
@@ -238,5 +243,39 @@ fn guest_copy_resume_conversion_and_paste_across_cpu_depths() {
         let insertion = original.selection.0 + payload.len();
         assert_eq!(pasted.selection, (insertion, insertion));
         println!("PASS clipboard Copy/export/import/resume/Paste: powerpc={powerpc} depth={depth}");
+    }
+}
+
+#[test]
+fn initial_foreground_host_clipboard_import_reaches_guest_private_scrap() {
+    for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+        let mut session = textedit_session(powerpc, depth);
+        click(&mut session, "Reset");
+        click(&mut session, "Copy");
+        let before = session.runner_mut().text_edit_snapshot();
+        assert_eq!(before.private_scrap.len(), 14);
+        let payload = b"initial caf\x8e\rclipboard".to_vec();
+        session.import_clipboard_text(payload.clone());
+        assert_eq!(
+            session.runner_mut().text_edit_snapshot().private_scrap,
+            before.private_scrap,
+            "import must leave private conversion to the guest handler"
+        );
+        let mut saw_conversion = false;
+        await_guest(&mut session, |s| {
+            if let Some(event) = s.runner().event_manager_snapshot().last_record {
+                assert_ne!(
+                    event.message, 0x0100_0000,
+                    "initial handoff must not suspend"
+                );
+                saw_conversion |= event.what == 15 && event.message == 0x0100_0003;
+            }
+            let state = s.runner_mut().text_edit_snapshot();
+            saw_conversion
+                && state.private_scrap == payload
+                && state.records.iter().any(|r| r.active)
+        });
+        assert_documents_unchanged(&mut session, &before);
+        println!("PASS initial active clipboard handoff: powerpc={powerpc} depth={depth}");
     }
 }
