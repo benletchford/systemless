@@ -1,0 +1,8 @@
+{
+  "sources": {
+    "src/bin/gpui_demo.rs": "bb6bee74f719befbfdab3f5e0177eb794c00cae7654f3533f63238accb517298",
+    "src/bin/gpui_demo_a11y.rs": "545b318c2bc6c52b6cd115e1c69029badf922b938dd39e62658a346cc6a30ae7"
+  },
+  "scope": "Guest line-boundary text runs and SetTextSelection model; actual document4 cross-line selection preserving text/styles/port/view and rejecting stale owners; no native AX delivery or per-run clipped geometry",
+  "worker_result": "1 passed19.82s"
+}

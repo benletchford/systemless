@@ -30,6 +30,8 @@ pub struct AccessibleState<E> {
     hidden: bool,
     text: Option<(String, bool)>,
     selection: Option<std::ops::Range<usize>>,
+    lines: Option<Vec<(usize, String)>>,
+    line_ids: Option<std::rc::Rc<std::cell::RefCell<Vec<(usize, usize, accesskit::NodeId)>>>>,
     run_id: Option<std::rc::Rc<std::cell::Cell<Option<accesskit::NodeId>>>>,
     positions: Option<Vec<f32>>,
     painted_positions: Option<Box<dyn Fn(Bounds<Pixels>) -> Option<Vec<f32>>>>,
@@ -37,7 +39,7 @@ pub struct AccessibleState<E> {
 
 impl<E: Element> AccessibleState<E> {
     pub fn new(inner: E, disabled: bool) -> Self {
-        Self { inner, disabled, hidden: false, text: None, selection: None, run_id: None, positions: None, painted_positions: None }
+        Self { inner, disabled, hidden: false, text: None, selection: None, lines: None, line_ids: None, run_id: None, positions: None, painted_positions: None }
     }
 
     /// Keep the element painted while excluding its modal-background subtree
@@ -51,6 +53,30 @@ impl<E: Element> AccessibleState<E> {
     /// Geometry remains optional until exact per-character guest bounds exist.
     pub fn single_line_selection(mut self, range: std::ops::Range<usize>) -> Self {
         self.selection = Some(range);
+        self
+    }
+
+    pub fn guest_text_lines(mut self, bytes: &[u8], starts: &[usize], selection: std::ops::Range<usize>) -> Self {
+        if starts.first() == Some(&0) && starts.last() == Some(&bytes.len())
+            && starts.windows(2).all(|pair| pair[0] <= pair[1] && pair[1] <= bytes.len())
+            && selection.start <= selection.end && selection.end <= bytes.len() {
+            self.lines = Some(starts.windows(2).map(|pair| (pair[0],
+                systemless::systems::macintosh::mac_roman::decode_mac_roman(&bytes[pair[0]..pair[1]]).replace('\r', "\n"))).collect());
+            if self.lines.as_ref().is_some_and(Vec::is_empty) {
+                self.lines = Some(vec![(0, String::new())]);
+            }
+            if let Some(lines) = self.lines.as_mut() {
+                if lines.last().is_some_and(|(_, value)| value.ends_with('\n')) {
+                    lines.push((bytes.len(), String::new()));
+                }
+            }
+            self.selection = Some(selection);
+        }
+        self
+    }
+
+    pub fn guest_line_ids(mut self, ids: std::rc::Rc<std::cell::RefCell<Vec<(usize, usize, accesskit::NodeId)>>>) -> Self {
+        self.line_ids = Some(ids);
         self
     }
 
@@ -114,7 +140,25 @@ impl<E: Element> Element for AccessibleState<E> {
     ) {
         self.inner.a11y_synthetic_children(prepaint, builder);
         if let Some(id) = &self.run_id { id.set(None); }
+        if let Some(ids) = &self.line_ids { ids.borrow_mut().clear(); }
         if self.hidden { return; }
+        if let (Some(lines), Some(range)) = (&self.lines, &self.selection) {
+            let mut positions = Vec::new();
+            for (index, (start, value)) in lines.iter().enumerate() {
+                let id = builder.synthetic_node_id(("guest-text-line", index));
+                let mut node = accesskit::Node::new(Role::TextRun);
+                node.set_value(value.clone());
+                node.set_character_lengths(value.chars().map(|ch| ch.len_utf8() as u8).collect::<Vec<_>>());
+                node.set_text_direction(accesskit::TextDirection::LeftToRight);
+                if builder.push_child(id, node) { positions.push((*start, value.chars().count(), id)); }
+            }
+            if let Some(ids) = &self.line_ids { *ids.borrow_mut() = positions.clone(); }
+            if let Some(selection) = guest_multiline_selection(&positions, range.clone()) {
+                builder.parent_node().set_text_selection(selection);
+            }
+            return;
+        }
+
         if let (Some((value, false)), Some(range)) = (&self.text, &self.selection) {
             let id = builder.synthetic_node_id("guest-single-line-text");
             if let Some((mut run, selection)) = guest_single_line_run(value, range.clone(), id) {
@@ -155,6 +199,24 @@ impl<E: Element> Element for AccessibleState<E> {
     }
 }
 
+pub(crate) fn guest_multiline_range(selection: &accesskit::TextSelection,
+    lines: &[(usize, usize, accesskit::NodeId)], length: usize) -> Option<std::ops::Range<usize>> {
+    let offset = |position: accesskit::TextPosition| {
+        let (start, len, _) = lines.iter().find(|(_, _, node)| *node == position.node)?;
+        if position.character_index > *len { return None; }
+        start.checked_add(position.character_index).filter(|offset| *offset <= length)
+    };
+    let anchor = offset(selection.anchor)?; let focus = offset(selection.focus)?;
+    Some(anchor.min(focus)..anchor.max(focus))
+}
+
+fn guest_multiline_selection(lines: &[(usize, usize, accesskit::NodeId)], range: std::ops::Range<usize>) -> Option<accesskit::TextSelection> {
+    let position = |offset: usize| lines.iter().rev().find(|(start, len, _)|
+        offset >= *start && offset <= start.checked_add(*len).unwrap_or(0)).map(|(start, _, node)|
+            accesskit::TextPosition { node: *node, character_index: offset - start });
+    Some(accesskit::TextSelection { anchor: position(range.start)?, focus: position(range.end)? })
+}
+
 pub(crate) fn guest_selection_range(selection: &accesskit::TextSelection, id: Option<accesskit::NodeId>, length: usize)
     -> Option<std::ops::Range<usize>> {
     let id = id?;
@@ -190,6 +252,27 @@ fn guest_single_line_run(value: &str, range: std::ops::Range<usize>, id: accessk
 mod tests {
     use super::AccessibleState;
     use gpui_kit::{accesskit, div, Element, InteractiveElement, Role, StatefulInteractiveElement, Toggled};
+
+    #[test]
+    fn multiline_guest_offsets_keep_wrap_and_break_boundaries() {
+        let empty = AccessibleState::new(div().id("empty"), false).guest_text_lines(&[], &[0], 0..0);
+        assert_eq!(empty.lines.unwrap(), vec![(0, String::new())]);
+        let terminated = AccessibleState::new(div().id("terminated"), false).guest_text_lines(b"A\r", &[0, 2], 2..2);
+        assert_eq!(terminated.lines.unwrap(), vec![(0, "A\n".into()), (2, String::new())]);
+
+        let lines = [(0, 3, accesskit::NodeId(1)), (3, 2, accesskit::NodeId(2))];
+        let selection = super::guest_multiline_selection(&lines, 2..4).unwrap();
+        assert_eq!(selection.anchor.node, accesskit::NodeId(1));
+        assert_eq!(selection.anchor.character_index, 2);
+        assert_eq!(selection.focus.node, accesskit::NodeId(2));
+        assert_eq!(selection.focus.character_index, 1);
+        assert_eq!(super::guest_multiline_range(&selection, &lines, 5), Some(2..4));
+        assert!(super::guest_multiline_range(&selection, &lines[..1], 5).is_none());
+        assert!(super::guest_multiline_range(&selection, &lines, 3).is_none());
+
+        assert_eq!(super::guest_multiline_selection(&lines, 3..3).unwrap().focus.node, accesskit::NodeId(2));
+        assert!(super::guest_multiline_selection(&lines, 0..6).is_none());
+    }
 
     #[test]
     fn single_line_guest_selection_keeps_roman_character_boundaries() {
