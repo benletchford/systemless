@@ -654,6 +654,32 @@ mod tests {
     }
 
     #[test]
+    fn large_styled_labels_preserve_the_guest_unscaled_strike_recipe() {
+        let bytes = b"Ag";
+        let plain = ClassicLine::plain(bytes, 3, 192);
+        let label = ClassicLine::styled(bytes, 3, 192, 0);
+        assert_eq!(plain.smooth_strike_scale, 2);
+        assert_eq!(label.smooth_strike_scale, 1);
+        assert_ne!(label.positions, plain.positions);
+        let mut pen = 0;
+        for (index, byte) in bytes.iter().enumerate() {
+            let (advance, _) = systemless::quickdraw::text::classic_styled_glyph(3, 192, *byte, 0);
+            pen += advance;
+            assert_eq!(label.positions[index + 1], pen);
+        }
+        for raster in [1, 2, 4] {
+            let masks = resolve_smooth_run(&label, raster).unwrap();
+            for ((pen, mask), &(source_pen, glyph, data)) in masks.iter().zip(&label.smooth_sources) {
+                let original = systemless::quickdraw::text::smooth_resolved_glyph(glyph, data, raster).unwrap();
+                assert_eq!(*pen, source_pen);
+                assert_eq!((mask.width, mask.height, mask.left, mask.top, mask.guest_advance),
+                    (original.width, original.height, original.left, original.top, original.guest_advance));
+                assert_eq!(mask.pixels, original.pixels);
+            }
+        }
+    }
+
+    #[test]
     fn scaled_classic_outline_preserves_guest_metrics_and_resolves_source_at_display_density() {
         use std::collections::BTreeSet;
         let bytes = b"Ag";

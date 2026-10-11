@@ -119,3 +119,10 @@ and named pasteboard hidden-format preservation (1.09s, macOS service access).
 The older full run terminated with 180 passed, two failed and one ignored after
 9449.76s; it is not current-candidate evidence. Rechecks are archived alongside
 the worker correction. The earlier file timeout cause remains unproven.
+
+The long full-suite parent remains alive at the recorded earlier checkpoint.
+Subsequent targeted example builds replaced its executable path; any tests
+that launch `current_exe` children can use newer artifacts. Its eventual result
+must therefore be treated as mixed-checkpoint regression evidence, not a full
+final-candidate qualification. Preserve that run rather than restarting on an
+observation timeout; a stable final candidate needs a separate pinned artifact.

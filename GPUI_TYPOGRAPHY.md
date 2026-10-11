@@ -124,3 +124,21 @@ Full qualification still requires broader fonts/styles and state matrices,
 editing/scrolling and lifecycle behavior, native font references where
 available, host composition/accessibility, and production performance. GPUI
 being the default frontend does not establish that release gate.
+
+## Enlarged styled-label recipe audit (2026-10-11)
+
+The current classic styled DrawString/control-label path and plain glyph path
+do not share enlargement semantics. For bundled font3 at requested size192,
+plain rendering resolves strike96 with scale2; styled label drawing currently
+uses the unscaled strike's advances and ink. `ClassicLine::styled` therefore
+keeps scale1 to match `classic_styled_glyph` and the guest framebuffer painter.
+Scaling only its smooth ink would make GPUI diverge from guest text and hit
+regions. An attempted presentation-only scaling change failed the metric
+comparison and was reverted. The retained regression passes original-outline
+ink/offset/advance comparisons at raster densities1/2/4 (0.04s).
+
+This is consistency with current guest drawing, not historical Macintosh
+large-font fidelity. Changing the styled recipe requires coordinated guest
+drawing and measurement plus actual scene/editing qualification. Evidence is
+in `reference/gpui-demo/large-label-guest-recipe`; this audit adds no production
+font substitution or rendering change.

@@ -1,0 +1,7 @@
+{
+  "result": "PASS large styled-label guest recipe regression 0.04s",
+  "finding": "Font3 size192 resolves strike96 scale2 for plain rendering, but current styled DrawString recipe uses unscaled source advances and ink. GPUI styled-label smoothing must follow that guest path. Presentation-only scaling proposal failed metrics comparison and was reverted.",
+  "production_change": "None; regression and fidelity policy only.",
+  "source_sha256": "c2d51a65b19d8d22692cd9eb700765027b412543bb553232525aaf908eb74369",
+  "limitations": "Not a guest/composed large-font scene or independent Macintosh oracle. A coordinated guest drawing/measurement/interaction qualification is needed before changing that recipe."
+}
