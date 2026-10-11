@@ -4254,30 +4254,6 @@ mod desktop {
             "suspended" => &[false][..], "resumed" => &[false, true][..],
             "visible" | "blink-off" => &[][..], _ => panic!("unknown caret capture state"),
         } } else { activation };
-        struct Preview {
-            image: Arc<RenderImage>,
-            record: systemless::runner::TextEditSnapshot,
-            scale: f32,
-            plan: super::text::StyledTextEditPaintPlan,
-        }
-        impl Render for Preview {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                let record = &self.record;
-                let view = record.global_view_rect.unwrap();
-                let dest = record.global_dest_rect.unwrap();
-                let origin = ((dest.1 - record.dest_rect.1) as f32 * self.scale,
-                    (dest.0 - record.dest_rect.0) as f32 * self.scale);
-                let ink = super::text::classic_styled_text_edit_field(
-                    self.plan.clone(), self.scale, origin,
-                ).expect("qualified whole-field canvas transform");
-                div().relative().size_full()
-                    .child(img(self.image.clone()).absolute().size_full())
-                    .child(div().absolute().overflow_hidden()
-                        .left(px(f32::from(view.1) * self.scale)).top(px(f32::from(view.0) * self.scale))
-                        .w(px(f32::from(view.3 - view.1) * self.scale)).h(px(f32::from(view.2 - view.0) * self.scale))
-                        .child(ink))
-            }
-        }
         let mut session = MacintoshSession::new(true, if prefer_powerpc { Some(8) } else { depth });
         session.runner_mut().set_prefer_powerpc_executables(prefer_powerpc);
         if prefer_powerpc { session.runner_mut().set_powerpc_screen_depth(depth.unwrap_or(16)).unwrap(); }
@@ -4402,6 +4378,7 @@ mod desktop {
         let evidence = serde_json::json!({
             "caret_state": if caret { caret_state } else { "not-requested" },
             "insertion_offset": caret_offset, "multiline": multiline, "selection": record.selection,
+            "compositor": "shared Demo renderer",
             "active": record.active, "caret_visible": record.caret_visible,
             "drawing_intact": record.drawing_intact, "generation": record.generation,
             "guest_tick": session.runner().guest_tick(), "view": record.global_view_rect,
@@ -4426,9 +4403,31 @@ mod desktop {
         let mut visual = HeadlessAppContext::with_platform(platform::current_platform(true).text_system(),
             Arc::new(gpui_kit::assets::Assets), platform::current_headless_renderer);
         visual.update(gpui_kit::init);
+        let windows = session.runner_mut().window_frame_snapshot();
+        let dialogs = session.runner_mut().dialog_snapshot();
+        let controls = session.runner_mut().control_snapshot();
+        let viewport = super::frames::Rect { top: 0, left: 0,
+            bottom: frame.height as i32, right: frame.width as i32 };
+        assert!(!super::frames::styled_text_edit_candidates(std::slice::from_ref(&record),
+            &dialogs, &controls, &windows, viewport).is_empty(), "standard styled field visibility");
+        let (sender, _receiver) = mpsc::channel();
         let window = visual.open_window(size(px(frame.width as f32 * scale), px(frame.height as f32 * scale)), |_, cx| {
-            cx.new(|_| Preview { image: Arc::new(RenderImage::new(vec![image::Frame::new(
-                image::RgbaImage::from_raw(frame.width, frame.height, gpui_pixels(frame.pixels)).unwrap())])), record, scale, plan })
+            cx.new(|cx| {
+                let mut demo = Demo::new(sender, Default::default(), cx);
+                demo.width = frame.width;
+                demo.height = frame.height;
+                demo.menu_presented = session.runner().guest_menu_bar_presented();
+                demo.menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
+                demo.menus = session.runner_mut().guest_menu_snapshot();
+                demo.windows = windows;
+                demo.dialogs = dialogs;
+                demo.controls = controls;
+                demo.text_edits = vec![record];
+                demo.styled_text_plans = vec![Some(plan)];
+                demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
+                    image::RgbaImage::from_raw(frame.width, frame.height, gpui_pixels(frame.pixels)).unwrap())])));
+                demo
+            })
         }).unwrap();
         visual.run_until_parked();
         visual.capture_screenshot(window.into()).unwrap().save(output).unwrap();
@@ -8464,6 +8463,111 @@ mod desktop {
                                 let position = view.update(cx, |demo, _| {
                                     assert!((demo.display_scale - scale).abs() < 0.01,
                                         "expected scale {scale}, got {}, viewport {:?}", demo.display_scale, window.viewport_size());
+                                    gpui_kit::point(
+                                        gpui_kit::px(demo.display_origin.0 + (guest_x as f32 + 0.25) * scale),
+                                        gpui_kit::px(demo.display_origin.1 + (guest_y as f32 + 0.25) * scale))
+                                });
+                                let event = match phase {
+                                    0 => MouseDownEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input(),
+                                    1 => MouseMoveEvent { position, pressed_button: Some(MouseButton::Left), ..Default::default() }.to_platform_input(),
+                                    _ => MouseUpEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input(),
+                                };
+                                window.dispatch_event(event, cx);
+                            }).unwrap();
+                            let mut delivered = 0;
+                            for command in receiver.try_iter() {
+                                if let super::Command::Input(input) = command {
+                                    session.deliver_input(input);
+                                    delivered += 1;
+                                }
+                            }
+                            assert_eq!(delivered, 1);
+                            for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+                        }
+                        settle(&mut session);
+                        let clicked = session.runner_mut().text_edit_snapshot().records.into_iter()
+                            .find(|next| next.guest_id == record.guest_id).unwrap();
+                        let expected = starts[line_index] + offset;
+                        let expected_end = starts[line_index] + drag_end.unwrap_or(offset);
+                        assert_eq!(clicked.selection, (expected, expected_end),
+                            "PPC={powerpc}, depth={depth:?}, scale={scale}, line={line_index}, drag_end={drag_end:?}");
+                    }
+                }
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn styled_document_glyph_clicks_reach_guest_at_centered_scene_scales(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
+            cx.update(gpui_kit::init);
+            for (powerpc, depth, ppc_depth) in [(false, Some(1), None), (false, Some(8), None), (true, None, Some(16)), (true, None, Some(8))] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if let Some(depth) = ppc_depth { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 11));
+                wait_for_menu(&mut session, 129, 11, true);
+                settle(&mut session);
+                for scale in [0.75, 1., 1.5, 2.] {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let (window, view) = cx.update(|cx| {
+                        gpui_kit::open_window(gpui_kit::WindowOptions {
+                            // Explicit test bounds: Bounds::centered clamps to
+                            // the mock display and would silently reduce 2x.
+                            window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::new(
+                                gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+                                gpui_kit::size(gpui_kit::px(880. * scale), gpui_kit::px(600. * scale))))),
+                            ..Default::default()
+                        }, cx, |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap()
+                    });
+                    for (line_index, offset, drag_end) in [(0, 3, None), (0, 20, None), (0, 9, Some(26))] {
+                        let records = session.runner_mut().text_edit_snapshot().records;
+                        let record = records.iter().find(|record| record.styled).unwrap();
+                        let starts = record.line_starts.as_ref().unwrap();
+                        let (geometry, runs) = record.guest_styled_line_geometry(line_index).unwrap();
+                        let dest = record.global_dest_rect.unwrap();
+                        let guest_y = i32::from(dest.0) - i32::from(record.dest_rect.0)
+                            + i32::from(geometry.top) + i32::from(geometry.ascent);
+                        let mut events = vec![(0, offset)];
+                        if let Some(end) = drag_end { events.push((1, end)); }
+                        events.push((2, drag_end.unwrap_or(offset)));
+                        for (phase, pointer_offset) in events {
+                            let local_x = runs.iter().find_map(|(range, positions)|
+                                (range.start <= pointer_offset && pointer_offset <= range.end)
+                                    .then(|| positions[pointer_offset - range.start])).unwrap();
+                            let guest_x = i32::from(dest.1) - i32::from(record.dest_rect.1) + i32::from(local_x);
+                            let current_records = session.runner_mut().text_edit_snapshot().records;
+                            let frame = session.video_frame().unwrap();
+                            let plans = super::qualify_styled_text_fields(&current_records, &frame.pixels, frame.width, frame.height);
+                            if phase == 0 { assert!(plans.iter().any(Option::is_some), "styled paint must qualify before pointer interaction: PPC={powerpc}, depth={depth:?}, override={ppc_depth:?}, scale={scale}, offset={offset}, active={}, intact={}", record.active, record.drawing_intact); }
+                            cx.update_window(window.into(), |_, window, cx| {
+                                view.update(cx, |demo, cx| {
+                                    demo.width = 800;
+                                    demo.height = 600;
+                                    demo.windows = session.runner_mut().window_frame_snapshot();
+                                    demo.controls = session.runner_mut().control_snapshot();
+                                    demo.text_edits = current_records.clone();
+                                    demo.styled_text_plans = plans.clone();
+                                    if phase == 0 {
+                                        assert!(!super::super::frames::styled_text_edit_candidates(
+                                            &demo.text_edits, &demo.dialogs, &demo.controls, &demo.windows,
+                                            super::super::frames::Rect { top: 0, left: 0, bottom: 600, right: 800 },
+                                        ).is_empty(), "pointer test requires a GPUI-owned visible field");
+                                    }
+                                    demo.image = Some(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![
+                                        image::Frame::new(image::RgbaImage::from_raw(frame.width, frame.height, super::gpui_pixels(frame.pixels.clone())).unwrap())
+                                    ])));
+                                    cx.notify();
+                                });
+                                window.render_frame(cx);
+                                let position = view.update(cx, |demo, _| {
+                                    assert!((demo.display_scale - scale).abs() < 0.01,
+                                        "expected scale {scale}, got {}, viewport {:?}", demo.display_scale, window.viewport_size());
+                                    assert!(demo.display_origin.0 > 0., "exercise centered scene origin");
                                     gpui_kit::point(
                                         gpui_kit::px(demo.display_origin.0 + (guest_x as f32 + 0.25) * scale),
                                         gpui_kit::px(demo.display_origin.1 + (guest_y as f32 + 0.25) * scale))

@@ -9,6 +9,7 @@ qualification. It is not a native Macintosh oracle or production ownership test.
 import argparse,hashlib,importlib.util,json,pathlib,subprocess
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('output',type=pathlib.Path)
+parser.add_argument('--multiline', action='store_true', help='capture the 16-case selected two-line matrix')
 args=parser.parse_args()
 root=pathlib.Path(__file__).resolve().parents[2];out=args.output.resolve()
 if out.exists() and any(out.iterdir()):parser.error('use a fresh output directory; do not restart a live capture job')
@@ -16,10 +17,13 @@ out.mkdir(parents=True,exist_ok=True)
 binary=root/'target/debug/examples/gpui-menu-demo'
 sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
 source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
+assert not subprocess.check_output(['git','status','--porcelain'],cwd=root,text=True).strip(), 'capture from committed clean source'
 binary_hash=sha(binary)
 s=importlib.util.spec_from_file_location('verify',root/'tests/toolbox-showcase/verify-gpui-styled-text-ink.py');v=importlib.util.module_from_spec(s);s.loader.exec_module(v)
-manifest={'source_commit':source,'capture_binary_sha256':binary_hash,'fixture':'tests/toolbox-showcase/toolbox-showcase.sit','fixture_sha256':sha(root/'tests/toolbox-showcase/toolbox-showcase.sit'),'field_bounds':[126,74,164,561],'scope':'Public mixed-style field raster only; no production ownership, general themes/backgrounds, GPUI pointer mapping or native host observer qualification','cases':[],'complete':False}
+manifest={'source_commit':source,'capture_binary_sha256':binary_hash,'fixture':'tests/toolbox-showcase/toolbox-showcase.sit','fixture_sha256':sha(root/'tests/toolbox-showcase/toolbox-showcase.sit'),'field_bounds':[126,74,164,561],'scope':'Public mixed-style field raster only; no production ownership, general themes/backgrounds, GPUI pointer mapping or native host observer qualification','cases':[],'complete':False,'matrix_kind':'multiline' if args.multiline else 'single-line','compositor':'shared Demo renderer'}
 configs=[('inactive','inactive',None,'--capture-styled-text-edit-ink'),*[( 'selection',state,None,flag) for state,flag in [('selected','--capture-styled-text-edit-selected'),('suspended','--capture-styled-text-edit-selected-suspended'),('resumed','--capture-styled-text-edit-selected-resumed')]],*[( 'caret',state,offset,'--capture-styled-text-edit-caret') for offset in [0,26] for state in ['visible','blink-off','suspended','resumed']]]
+if args.multiline: configs=[('multiline','selected',None,'--capture-styled-text-edit-multiline')]
+total=16 if args.multiline else 192
 for mode,depth,flags in [('ppc16',16,['--prefer-powerpc']),('ppc8',8,['--prefer-powerpc','--screen-depth','8']),('mono',1,['--screen-depth','1']),('colour',8,['--screen-depth','8'])]:
  for kind,state,offset,flag in configs:
   for scale in [0.75,1,1.5,2]:
@@ -34,7 +38,9 @@ for mode,depth,flags in [('ppc16',16,['--prefer-powerpc']),('ppc8',8,['--prefer-
    evidence=json.loads(path.with_suffix('.json').read_text())
    assert evidence['depth']==depth,(name,evidence)
    assert evidence['drawing_intact'] and evidence['active']==(state not in ['inactive','suspended']),(name,evidence)
-   expected=[0,26] if kind=='selection' else [offset or 0,offset or 0]
+   assert evidence.get('compositor')=='shared Demo renderer'
+   assert bool(evidence.get('multiline',False))==(kind=='multiline')
+   expected=[0,31] if kind=='multiline' else [0,26] if kind=='selection' else [offset or 0,offset or 0]
    assert evidence['selection']==expected,(name,evidence)
    if kind=='caret':
     assert evidence['caret_state']==state and evidence['insertion_offset']==offset
@@ -43,7 +49,7 @@ for mode,depth,flags in [('ppc16',16,['--prefer-powerpc']),('ppc8',8,['--prefer-
    v.verify_case(out,case,manifest['field_bounds'])
    manifest['cases'].append(case)
    (out/'progress.json').write_text(json.dumps(manifest,indent=2)+'\n')
-   print(f'{len(manifest["cases"])}/192 PASS {name} depth={depth}',flush=True)
-assert len(manifest['cases'])==192
+   print(f'{len(manifest["cases"])}/{total} PASS {name} depth={depth}',flush=True)
+assert len(manifest['cases'])==total
 manifest['complete']=True;(out/'progress.json').write_text(json.dumps(manifest,indent=2)+'\n')
-print('All 192 corrected styled field captures passed',flush=True)
+print(f'All {total} shared Demo styled field captures passed',flush=True)
