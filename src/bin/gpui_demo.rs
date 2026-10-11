@@ -1678,6 +1678,63 @@ mod desktop {
         }
 
         #[test]
+        fn list_snapshots_preserve_identity_and_guest_visibility_on_both_cpus() {
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 9));
+                wait_for_menu(&mut session, 129, 9, true);
+                let initial = (0..100)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session.runner_mut().list_manager_snapshot().into_iter().next()
+                    })
+                    .expect("Lists page should create a guest ListHandle");
+                assert_ne!(initial.guest_id, 0);
+                assert_ne!(initial.generation, 0);
+                assert_ne!(initial.owner_port, 0);
+                assert_eq!(initial.view_rect, (78, 24, 228, 528));
+                assert_eq!(initial.cells.len(), 12);
+                settle(&mut session);
+                let updated = session.runner_mut().list_manager_snapshot().remove(0);
+                assert_eq!(
+                    (updated.guest_id, updated.generation, updated.owner_port),
+                    (initial.guest_id, initial.generation, initial.owner_port),
+                    "list identity must survive presentation updates: {powerpc:?}"
+                );
+                assert!(session.runner_mut().select_guest_menu_item(129, 1));
+                wait_for_menu(&mut session, 129, 1, true);
+                let off_page = session.runner_mut().list_manager_snapshot().remove(0);
+                assert_eq!(off_page.guest_id, initial.guest_id);
+                assert_eq!(off_page.generation, initial.generation);
+                assert!(!off_page.draw_enabled && !off_page.active);
+                assert_eq!(off_page.vertical_scrollbar, Some((false, 254)));
+                assert!(session.runner_mut().select_guest_menu_item(129, 9));
+                wait_for_menu(&mut session, 129, 9, true);
+                let restored = (0..100)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session
+                            .runner_mut()
+                            .list_manager_snapshot()
+                            .into_iter()
+                            .find(|list| list.draw_enabled && list.active)
+                    })
+                    .expect("Lists page should show the retained guest list");
+                assert_eq!(restored.guest_id, initial.guest_id);
+                assert_eq!(restored.generation, initial.generation);
+            }
+        }
+
+        #[test]
         fn dialog_items_have_shared_geometry_and_identity_across_guest_modes() {
             use systemless::runner::DialogItemKind;
 

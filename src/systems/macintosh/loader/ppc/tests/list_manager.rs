@@ -484,6 +484,7 @@ fn cloned_native_adapter_detaches_list_manager_state() {
         0x0032_1000,
         PpcListRecord {
             handle: 0x0032_1000,
+            generation: crate::list_manager::new_list_generation(),
             cells_handle: 0x0032_2000,
             view_rect: (0, 0, 40, 100),
             data_bounds: (0, 0, 2, 1),
@@ -510,6 +511,7 @@ fn cloned_native_adapter_detaches_list_manager_state() {
         0x0032_3000,
         PpcListRecord {
             handle: 0x0032_3000,
+            generation: crate::list_manager::new_list_generation(),
             cells_handle: 0x0032_4000,
             view_rect: (0, 0, 20, 100),
             data_bounds: (0, 0, 1, 1),

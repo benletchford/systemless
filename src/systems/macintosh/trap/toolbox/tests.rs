@@ -7611,6 +7611,7 @@ fn pack0_lnextcell_advances_across_rows() {
     disp.list_states.insert_record(
         handle,
         super::super::dispatch::ListState {
+            generation: crate::list_manager::new_list_generation(),
             handle,
             cells_handle: 0,
             view_rect: (0, 0, 20, 20),

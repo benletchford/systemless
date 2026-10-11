@@ -11537,6 +11537,7 @@ impl super::TrapDispatcher {
 
                         let state = super::dispatch::ListState {
                             handle: list_handle,
+                            generation: crate::list_manager::new_list_generation(),
                             cells_handle,
                             view_rect,
                             data_bounds,
@@ -12707,6 +12708,7 @@ impl super::TrapDispatcher {
 
                         let state = super::dispatch::ListState {
                             handle: list_handle,
+                            generation: crate::list_manager::new_list_generation(),
                             cells_handle,
                             view_rect,
                             data_bounds,
