@@ -390,8 +390,7 @@ impl GuestComposition {
     pub fn commit_range(&mut self, range: std::ops::Range<usize>, text: &str)
         -> Option<(TextInputOwner, TextInputOwner, Vec<u8>)> {
         let expected = self.owner.as_ref()?.clone();
-        if self.preedit.is_some() || !matches!(expected.target, TextInputTarget::Document { .. } | TextInputTarget::StandardFile { .. })
-            || range.start > range.end || range.end > expected.text.len() || range.end > i16::MAX as usize {
+        if self.preedit.is_some() || range.start > range.end || range.end > expected.text.len() || range.end > i16::MAX as usize {
             return None;
         }
         let mut selected = expected.clone(); selected.selection = range;

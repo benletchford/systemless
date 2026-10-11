@@ -4854,3 +4854,18 @@ rejection, unchanged text/sibling/content revision and restoration before the
 existing composition checks. Evidence is archived in
 `reference/gpui-demo/guarded-dialog-selection`. Frontend replacement wiring,
 pointer/callback boundaries and visual/physical/native qualification remain open.
+
+
+### Explicit dialog replacement through guest editing
+
+Dialog targets now support explicit and overlapping staged replacement ranges
+through the GPUI handler and production worker, using guarded dialog selection
+and existing guest character events. Same-selection retained fragments request
+caret restoration without an unnecessary selection operation. Classic selection
+rejects retained click/button/popup/user-item and flashing activity. Final worker
+checks pass (29.46s) in all four CPU/depth modes plus wrapped PPC8/PPC16, covering
+text replacement, caret, stale rejection and sibling preservation. Existing
+GPUI modal composition checks pass (9.87s). Evidence is archived in
+`reference/gpui-demo/explicit-dialog-replacement`. Disjoint staged replacement,
+physical IME, visual/native fidelity and broader tracking qualification remain
+open; these tests do not close a production gate.

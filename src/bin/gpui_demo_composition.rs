@@ -470,13 +470,14 @@ impl EntityInputHandler for Demo {
     }
     fn replace_text_in_range(&mut self, range: Option<Range<usize>>, text: &str,
         _: &mut Window, cx: &mut Context<Self>) {
-        if self.composition.preedit.is_some() && self.composition.owner().is_some_and(|owner|
-            matches!(owner.target, super::super::input::TextInputTarget::Document { .. }
-                | super::super::input::TextInputTarget::StandardFile { .. })) {
+        if self.composition.preedit.is_some() && self.composition.owner().is_some() {
             if let Some(range) = range.clone() {
                 if let Some((expected, request, bytes, caret)) = self.composition.commit_overlapping_range(range, text) {
-                    if request.selection == expected.selection && caret == request.selection.start + bytes.len() {
-                        let _ = self.commands.send(Command::CommitText(expected, bytes));
+                    if request.selection == expected.selection {
+                        let command = if caret == request.selection.start + bytes.len() {
+                            Command::CommitText(expected, bytes)
+                        } else { Command::CommitTextCaret(expected, bytes, caret) };
+                        let _ = self.commands.send(command);
                     } else {
                         let _ = self.commands.send(Command::ReplaceText(expected, request.selection, bytes, Some(caret)));
                     }
