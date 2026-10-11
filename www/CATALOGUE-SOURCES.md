@@ -1521,3 +1521,69 @@ Ordinary Black selection reaches Black to move status and the checkerboard shell
 but no pieces appear in the inspected capture. No legal move or computer reply is
 qualified. Saves, browser, promotion and public replay remain unverified.
 [Original comparison and startup evidence](https://github.com/benletchford/systemless/issues/4618#issuecomment-6109947535).
+
+
+## Kalah 1.0 — primary slot 424
+
+[Intake #4621](https://github.com/benletchford/systemless/issues/4621).
+Leo/Lev Possajennikov’s Kalah is distinct from Joachim Kulla’s qualified Kalaha
+1.1; similar mancala rules do not make these the same application.
+Original-format [game archive](https://www.gryphel.com/d/sw/games/kalah/c/Kalah.sit.hqx)
+is 14,825 bytes, SHA-256
+`727898fb535d5fed055d3f58225ff8187c5462adcfe48b454746a63dce2296fe`.
+Original-format [source archive](https://www.gryphel.com/d/sw/games/kalah/c/KalahSources.sit.hqx)
+is 34,616 bytes, SHA-256
+`fedcabe2dacbcf9f7357f5e951c01cafba1aff7d6d45e87e0cee3994de3c647f`.
+Their MD5s match the [preservation receipt](https://www.gryphel.com/c/sw/games/kalah/index.html);
+its signature is unverified. Repackaged HFS ZIPs are not used.
+
+Original About Kalah Sources credits Steve Garland, Scot Drysdale and Leo
+Possajennikov, states that the program is free, and permits source use in any
+program without limitations. Preserve the custom permission text and all sources.
+Applicability to public redistribution of the bundled executable/resource artwork
+remains under assessment; no hosting approval is inferred solely from freeware.
+
+The source archive retains seven original files: both About documents, game,
+both Pascal sources, resource file and THINK Pascal project. Independent unar
+matches all fourteen forks and Finder type/creator/flags against production
+packing (54,735 bytes). Game/source executables have empty data forks and two
+CODE resources, no cfrg. Whole resource-fork hashes differ, but all parsed
+resource identities and payloads match; retain the original metadata rather than
+normalize the forks. The source-package fork remains SHA-256
+`381a1ebff704cd5ca6a5ed09e4128aa4ea69369f8537520b9f351f8f5b371bbb`.
+
+On native `fbd12e1e33941e1da82b9ceb61ed28966571ed81`, selector Kalah, explicit
+68K/depth 8, ordinary Game → Start and a lower-row pit click produce a human move,
+computer response and return to Your move. Both stores change 0→1; eight measured
+checks pass at 786 frontend / 1,364 guest ticks with zero exhaustion. Original
+source confirms the lower-row hit area despite the About diagram’s upper-row user
+label. Captures inspected.
+[Bounded gameplay](https://github.com/benletchford/systemless/issues/4621#issuecomment-6110050761),
+[complete preservation comparison](https://github.com/benletchford/systemless/issues/4621#issuecomment-6110067754).
+Full match, levels, saves, audio and browser remain unverified; unhosted, no live
+increment.
+
+## MacPatience 2.01 — additional reserve discovery
+
+[Intake #4620](https://github.com/benletchford/systemless/issues/4620).
+Five solitaire modes are one game. The
+[original-format archive](https://www.gryphel.com/d/sw/games/patience/c/mac_patience_2.01.sit)
+is 78,652 bytes, SHA-256
+`f6edb79dee7476ef0cc86dde0a80c432adffcfd5daf69287029f77d32b466ddf`;
+MD5 matches the [preservation receipt](https://www.gryphel.com/c/sw/games/patience/index.html),
+signature unverified. Two original files/four forks and supported Finder metadata
+match production packing (184,364 bytes). The app has four CODE resources and no
+cfrg. Its comment about fixing display on PowerMacs does not establish native PPC.
+
+Niklas Frykholm’s original About TEXT permits copying and giving it to friends,
+with registration requested if used and liked. Preserve that scope; public
+Systemless hosting permission remains unresolved. The author-linked HTTPS page
+fails certificate hostname verification; the non-www alternative does not
+resolve. No verification bypass or publisher receipt is claimed.
+
+Unchanged native `fbd12e1e33941e1da82b9ceb61ed28966571ed81`, MacPatience 2.01,
+68K/depth 8, reaches Klondyke. Ordinary ace-of-clubs drag moves it to its foundation,
+exposes the next card back and changes score 0000→0001. Eight measured assertions
+pass at 664 frontend / 1,260 guest ticks with zero exhaustion; captures inspected.
+Other modes, broader play, saving, audio and browser remain unverified. Unhosted;
+no launch approval, contact request or live increment.
