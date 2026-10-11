@@ -12991,7 +12991,7 @@ impl super::TrapDispatcher {
                                             }
                                             // EditText click: set as active
                                             16 => {
-                                                let (dlg_ptr, edit_item, edit_text, items) = {
+                                                let (dlg_ptr, edit_item, edit_text, mut items) = {
                                                     let tracking =
                                                         self.dialog_tracking.as_mut().unwrap();
                                                     Self::sync_tracking_active_edit_item(tracking);
@@ -13011,13 +13011,36 @@ impl super::TrapDispatcher {
                                                 };
                                                 // IM:I I-415: mouseDown in an enabled editText
                                                 // item is TextEdit-handled and ModalDialog
-                                                // returns that item. TEClick's pixel-to-caret
-                                                // mapping remains the documented HLE compromise,
-                                                // but the active editField/TERecord mirror is
-                                                // still guest-visible Dialog Manager state.
+                                                // returns that item. Resolve the click with the
+                                                // active TERec's guest glyph metrics before
+                                                // persisting the field's insertion point.
                                                 self.activate_dialog_edit_item(
                                                     bus, cpu, dlg_ptr, &items, edit_item,
                                                 );
+                                                let te_handle = bus.read_long(dlg_ptr + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                                                let te_ptr = Self::te_record_ptr(bus, te_handle);
+                                                if te_ptr != 0 {
+                                                    let bounds = self.dialog_tracking.as_ref().unwrap().bounds;
+                                                    let offset = self.te_point_to_char(bus, te_handle,
+                                                        (e.where_v.saturating_sub(bounds.0), e.where_h.saturating_sub(bounds.1))).max(0) as u16;
+                                                    let anchor = if e.modifiers & 0x0200 != 0 {
+                                                        let start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET);
+                                                        let end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET);
+                                                        if offset < start { end } else { start }
+                                                    } else { offset };
+                                                    let (start, end) = (anchor.min(offset), anchor.max(offset));
+                                                    bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, start);
+                                                    bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, end);
+                                                    items[(edit_item - 1) as usize].sel_start = start as i16;
+                                                    items[(edit_item - 1) as usize].sel_end = end as i16;
+                                                    if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                                        if let Some(item) = tracking.items.get_mut((edit_item - 1) as usize) {
+                                                            item.sel_start = start as i16;
+                                                            item.sel_end = end as i16;
+                                                        }
+                                                    }
+                                                    self.draw_te_contents(cpu, bus, te_handle, true);
+                                                }
                                                 self.flush_dialog_edit_item_texts(
                                                     bus, dlg_ptr, &items, edit_item, &edit_text,
                                                 );
