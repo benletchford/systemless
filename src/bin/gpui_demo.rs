@@ -5978,6 +5978,7 @@ mod desktop {
                 assert_eq!(dialog.items[6].selection, Some((0, 0)));
                 assert!(dialog.items[6].caret_visible.is_some(), "active dialog TERec must expose its blink phase");
                 let initial_phase = dialog.items[6].caret_visible;
+                let before_blink = session.video_frame().unwrap();
                 assert!((0..65).any(|_| {
                     session.runner_mut().force_advance_guest_tick();
                     session.runner_mut().run_steps(1_000, None);
@@ -5987,6 +5988,32 @@ mod desktop {
                     assert_eq!(current.items[6].text, dialog.items[6].text);
                     current.items[6].caret_visible != initial_phase
                 }), "dialog caret did not blink: PPC={powerpc}, depth={depth:?}");
+                let after_blink = session.video_frame().unwrap();
+                assert_eq!((before_blink.width, before_blink.height), (after_blink.width, after_blink.height));
+                let (top, left, bottom, right) = dialog.items[6].bounds;
+                let mut changed = 0;
+                for (index, (before, after)) in before_blink.pixels.chunks_exact(4)
+                    .zip(after_blink.pixels.chunks_exact(4)).enumerate() {
+                    if before != after {
+                        changed += 1;
+                        let y = (index as u32 / before_blink.width) as i16;
+                        let x = (index as u32 % before_blink.width) as i16;
+                        assert!(y >= top && y < bottom && x >= left && x < right,
+                            "blink changed unrelated pixel ({x},{y}): PPC={powerpc}, depth={depth:?}");
+                    }
+                }
+                assert!(changed > 0, "caret phase changed without pixels: PPC={powerpc}, depth={depth:?}");
+                assert!((0..65).any(|_| {
+                    session.runner_mut().force_advance_guest_tick();
+                    session.runner_mut().run_steps(1_000, None);
+                    session.runner_mut().dialog_snapshot().into_iter()
+                        .find(|current| current.guest_id == dialog.guest_id).unwrap()
+                        .items[6].caret_visible == initial_phase
+                }), "dialog caret failed to return to its original phase");
+                assert!(session.video_frame().unwrap().pixels == before_blink.pixels,
+                    "blink cycle did not restore original pixels: PPC={powerpc}, depth={depth:?}");
+
+
                 session.deliver_input(MacintoshInput::KeyDown {
                     mac_key: 0x07,
                     character: b'X',

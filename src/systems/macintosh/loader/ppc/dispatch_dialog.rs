@@ -4618,61 +4618,25 @@ pub(super) fn ppc_draw_dialog_selected(
                         1,
                     );
                 }
-                let selected = if base_type == DIALOG_ITEM_EDIT_TEXT
-                    && memory
-                        .read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
+                if base_type == DIALOG_ITEM_EDIT_TEXT
+                    && memory.read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET)
                         .is_some_and(|field| usize::from(field) == index)
                 {
-                    memory
-                        .read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
-                        .and_then(|handle| ppc_te_record_ptr(memory, handle))
-                        .is_some_and(|te_ptr| {
-                            memory
-                                .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
-                                .unwrap_or(0)
-                                != 0
-                                && memory
-                                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-                                    .unwrap_or(0)
-                                    < memory
-                                        .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-                                        .unwrap_or(0)
-                        })
-                } else {
-                    false
-                };
-                if selected {
-                    let interior = (
-                        rect.0,
-                        rect.1,
-                        rect.0.saturating_add(16).min(rect.2),
-                        rect.3,
-                    );
-                    if !ppc_draw_themed_selection(memory, gworlds, PPC_MAIN_GWORLD, interior) {
-                        let _ = ppc_fill_front_rect(
-                            memory,
-                            front,
-                            interior,
-                            ppc_theme_rgb(palette.frame_dark),
-                        );
+                    if let Some(handle) = memory.read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET)
+                        .filter(|handle| ppc_te_record_ptr(memory, *handle).is_some())
+                    {
+                        ppc_te_draw(memory, handles, gworlds, handle, dialog,
+                            ppc_theme_rgb(palette.frame_dark), &HashMap::new());
+                        continue;
                     }
                 }
-                let text_rect =
-                    if matches!(base_type, DIALOG_ITEM_STATIC_TEXT | DIALOG_ITEM_EDIT_TEXT) {
-                        dialog_text_rect(rect)
-                    } else {
-                        rect
-                    };
+                let text_rect = dialog_text_rect(rect);
                 ppc_draw_dialog_text(
                     memory,
                     gworlds,
                     text_rect,
                     &text,
-                    if selected && ppc_ui_theme(gworlds) == UiThemeId::ClassicSystem7 {
-                        ppc_theme_rgb(palette.window_background)
-                    } else {
-                        ppc_theme_rgb(palette.frame_dark)
-                    },
+                    ppc_theme_rgb(palette.frame_dark),
                 );
             }
             DIALOG_ITEM_PICTURE => {
@@ -5178,7 +5142,15 @@ fn ppc_modal_dialog(
     if event.is_none() && filter_proc == 0 {
         let handle = memory.read_u32_be(dialog + DIALOG_TEXT_HANDLE_OFFSET).unwrap_or(0);
         if ppc_te_idle(memory, handle, tick_count) {
-            ppc_te_draw(memory, handles, gworlds, handle, dialog, fore_color, fore_indices);
+            // Repaint only the active edit item, including its background,
+            // so the hidden phase removes the previously drawn caret.
+            if let Some(field) = memory.read_u16_be(dialog + DIALOG_EDIT_FIELD_OFFSET) {
+                let _ = ppc_draw_dialog_selected(
+                    memory, handles, controls, gworlds, screen_clut,
+                    vfs_resources, current_resource_refnum, dialog,
+                    Some((field as i16).saturating_add(1)),
+                );
+            }
         }
     }
 
