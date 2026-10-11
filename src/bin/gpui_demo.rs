@@ -1327,7 +1327,7 @@ mod desktop {
         // Live windows and application captures consume the same BGRA update,
         // including identity, composition rejection and unchanged-image reuse.
         // Offscreen captures do not export clipboard or alter the native icon.
-        fn apply_guest_update(&mut self, update: Update, host_services: bool, cx: &mut Context<Self>) {
+        fn apply_guest_update(&mut self, update: Update, host_services: bool, window: Option<&mut Window>, cx: &mut Context<Self>) {
             if let Some((generation, text)) = update.clipboard_export {
                 if host_services { self.export_host_clipboard(generation, &text, cx); }
             }
@@ -1380,7 +1380,9 @@ mod desktop {
                             image::Frame::new(buffer),
                         ])))
                     {
-                        cx.drop_image(old, None);
+                        // During update_window the active window is removed
+                        // from App.windows, so include it in atlas retirement.
+                        cx.drop_image(old, window);
                     }
                 }
             }
@@ -1396,7 +1398,7 @@ mod desktop {
                 while let Some(update) = updates.next().await {
                     if this
                         .update(cx, |this, cx| {
-                            this.apply_guest_update(update, true, cx);
+                            this.apply_guest_update(update, true, None, cx);
                             // Retry after guest tracking ends or host ownership returns.
                             // The worker validates the exact record before pausing guest work.
                             this.request_notification_alert();
@@ -2058,7 +2060,7 @@ mod desktop {
                 let color = cx.theme().background.to_rgb();
                 let background = [color.b, color.g, color.r, color.a].map(|channel| (channel * 255.).round() as u8);
                 let image = if clips.is_empty() {
-                    if let Some(old) = self.prepared_buttons.take() { cx.drop_image(old.image, None); }
+                    if let Some(old) = self.prepared_buttons.take() { cx.drop_image(old.image, Some(window)); }
                     source
                 } else {
                     let current = self.prepared_buttons.as_ref().is_some_and(|prepared| {
@@ -2078,7 +2080,7 @@ mod desktop {
                             source, clips, background, control_backdrops,
                             image: Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])),
                         };
-                        if let Some(old) = self.prepared_buttons.replace(prepared) { cx.drop_image(old.image, None); }
+                        if let Some(old) = self.prepared_buttons.replace(prepared) { cx.drop_image(old.image, Some(window)); }
                     }
                     self.prepared_buttons.as_ref().unwrap().image.clone()
                 };
@@ -6798,9 +6800,9 @@ mod desktop {
                     // scripted inputs. Exclude that copy from renderer timing.
                     let render_update = update.clone();
                     let render_start = Instant::now();
-                    visual.update_window((*window).into(), |_, _, cx| view.update(cx, |demo, cx| {
+                    visual.update_window((*window).into(), |_, window, cx| view.update(cx, |demo, cx| {
                         demo.host_active = Some(true);
-                        demo.apply_guest_update(render_update, false, cx);
+                        demo.apply_guest_update(render_update, false, Some(window), cx);
                     })).unwrap();
                     visual.run_until_parked();
                     rendered_updates.push(serde_json::json!({ "observed_worker_update": observations,
@@ -6958,7 +6960,7 @@ mod desktop {
             new_compositor(worker.0.clone(), width, height, scale));
         visual.update(|cx| view.update(cx, |demo, cx| {
             demo.host_active = Some(true);
-            demo.apply_guest_update(update, false, cx);
+            demo.apply_guest_update(update, false, None, cx);
         }));
         visual.run_until_parked();
         let screenshot = visual.capture_screenshot(window.into()).unwrap(); screenshot.save(&output).unwrap();
@@ -8164,6 +8166,32 @@ mod desktop {
     #[cfg(all(test, feature = "gpui-demo-test"))]
     mod tests {
         use super::{MacintoshInput, MacintoshSession, PathBuf, Updates};
+
+        #[gpui_kit::test]
+        fn replacing_guest_frame_retires_image_from_current_window(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::AppContext;
+            use std::sync::mpsc;
+            cx.update(gpui_kit::init);
+            let (commands, _receiver) = mpsc::channel();
+            let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                |_, cx| cx.new(|cx| super::Demo::new(commands, Default::default(), cx))).unwrap());
+            let mut previous: Option<std::sync::Arc<gpui_kit::RenderImage>> = None;
+            for value in [32u8, 64, 96] {
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| demo.apply_guest_update(super::Update {
+                        frame: Some((64, 64, vec![value; 64 * 64 * 4])),
+                        ..Default::default()
+                    }, false, Some(window), cx));
+                    if let Some(old) = previous.as_ref() {
+                        assert!(!window.has_image_atlas_entry(old), "replaced frame remains in current window atlas");
+                    }
+                    window.draw(cx).clear(cx);
+                    let current = view.read(cx).image.clone().unwrap();
+                    assert!(window.has_image_atlas_entry(&current), "frame must be painted before retirement is tested");
+                    previous = Some(current);
+                }).unwrap();
+            }
+        }
 
         #[gpui_kit::test]
         fn published_snapshots_reach_live_demo_without_advancing_the_poll_clock(cx: &mut gpui_kit::TestAppContext) {

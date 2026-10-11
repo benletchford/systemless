@@ -1,5 +1,21 @@
 # GPUI Kit system-interface coverage
 
+### Current-window GPU image retirement (2026-10-12)
+
+GPUI temporarily removes the current window from `App.windows` during its
+update/render callback. `App::drop_image(image, None)` therefore cannot retire
+that window's atlas entry. The shared update consumer now accepts the current
+window explicitly: captures pass it during `update_window`, while the live
+entity update and final capture update run outside window callbacks. Button
+backdrop preparation also supplies the rendering window when retiring images.
+
+`replacing_guest_frame_retires_image_from_current_window` paints three distinct
+guest frames into the actual window atlas, checks each new entry exists, and
+checks each replaced entry is removed while the window is being updated.
+It passes (one test, zero failures). This closes a demonstrated retirement gap;
+it does not establish native gameplay frame pacing or a measured EV memory
+improvement. Those require a fresh controlled run.
+
 ### Native guest window title accessibility (2026-10-12)
 
 Recognized standard window titles expose a Label node with the guest title.
