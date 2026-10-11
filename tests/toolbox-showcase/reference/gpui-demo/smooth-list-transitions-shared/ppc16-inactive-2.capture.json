@@ -1,0 +1,27 @@
+{
+  "compositor": "shared Demo renderer",
+  "case": "ListsInactiveNativeSource",
+  "prefer_powerpc": true,
+  "requested_depth": null,
+  "actual_depth": 16,
+  "requested_scale": 2.0,
+  "scene_scale": 2.0,
+  "scene_origin": [
+    0.0,
+    0.0
+  ],
+  "guest_dimensions": [
+    800,
+    600
+  ],
+  "viewport_dimensions": [
+    1600.0,
+    1200.0
+  ],
+  "composed_dimensions": [
+    3200,
+    2400
+  ],
+  "typography": "resolved outline coverage for supported plain system text and qualified standard list cells; binary fallback for unsupported sources and styled recipes",
+  "scope": "Capture provenance only; no automatic smooth visual, font fidelity or performance qualification"
+}

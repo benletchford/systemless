@@ -1,0 +1,123 @@
+{
+  "source_commit": "c9ce45597b9294aeede30422b64024770a1555b7",
+  "scope": "Explicit samples visually reviewed; retained source cannot prove complete replacement; no general lifecycle/font fidelity/performance qualification",
+  "cases": [
+    {
+      "rendered": "mono-scrolled-0.75.png",
+      "rendered_sha256": "24674552d95a045b60e9188efdc9c15f2abe99581561075ed4e4a0ce49e27b5c",
+      "observations": "Selected row text remains smooth and moves upward after guest scroll; native black panel and bottom empty strip retained",
+      "archived_rendered_sha256": "72747be56b6428b246bf887eb6ddc8643e41830a116e4f7570d02cfe2d86ecc1"
+    },
+    {
+      "rendered": "mono-inactive-0.75.png",
+      "rendered_sha256": "e91e4c9bf35f66f5bdc747a420b96592fa980b8f63baffb5844f130ffc91904c",
+      "observations": "Selected white text disappears in inactive native black panel; smooth menus/title/buttons remain",
+      "archived_rendered_sha256": "4c1eee0f4efbfb80af75b5ff799c6500926b3ce1d1c51f4c02148eff40d8714f"
+    },
+    {
+      "rendered": "mono-reactivated-0.75.png",
+      "rendered_sha256": "ad4d87622a6d925fd72f29771dab827bf764f3df6d8b67388046756b6c9b3ebf",
+      "observations": "Reactivated selected white text returns smooth at original row7 position; system chrome remains smooth; native black panel retained",
+      "archived_rendered_sha256": "19a020741a9e8b7b9741148b73c2af3d5bcd8bb316e7b2dbb1e97364929508a8"
+    },
+    {
+      "rendered": "colour-inactive-0.75.png",
+      "rendered_sha256": "74f24402736344de109f1de4a9401249933c28e2da71ce5e9b2505284b16bb8f",
+      "observations": "Smooth normal row text, selection highlight hidden while guest selection retained; native partial lower-row clipping remains",
+      "archived_rendered_sha256": "9e21560b5da9c59ae6d8b4f02a91b9727909ffdac5f2235a4443088cd1684fd6"
+    },
+    {
+      "rendered": "colour-scrolled-2.png",
+      "rendered_sha256": "239f2b184a737ae0369b54cf270a27d40bcda801aa59c3d2b4ff3e16eb8410a9",
+      "observations": "Smooth normal and white-on-green selected text moves upward with four-row guest scroll; no visible change to guest row spacing; displayed review resized from3200x2400",
+      "archived_rendered_sha256": "a42819856f7e6927f72fbe7a967edb2440b76b1492a971ba877c48a233be25bd"
+    },
+    {
+      "rendered": "colour-reactivated-0.75.png",
+      "rendered_sha256": "0e14be729dc185360132088c8ef223cbbd7f22bfbabac7625bcee68a47f7279d",
+      "observations": "Smooth selected white-on-green label returns at guest row7; normal rows and partial lower-row clipping remain",
+      "archived_rendered_sha256": "a02c1ec2d139bc48c07074686c48d2a5f88b8732fbbc98122454bd4e9fdad119"
+    },
+    {
+      "rendered": "ppc8-scrolled-0.75.png",
+      "rendered_sha256": "7d18b1c08a690e8634c1c56c36ea0110495ecccd26569da9d8012136477aaa79",
+      "observations": "Smooth normal and white-on-black selected labels after four-row scroll; native empty lower strip and scrollbar position retained",
+      "archived_rendered_sha256": "caf6a4dbef3bf9219ad238d1a04426b775472fd598c5b9bc8fa00dcfe8be208c"
+    },
+    {
+      "rendered": "ppc8-inactive-0.75.png",
+      "rendered_sha256": "ab9fc0c3c10a585d76952c478d59bb57ccad7efc229569ff1a3d63745d027e36",
+      "observations": "Smooth normal labels remain while selection highlight hides on guest list deactivation; lower partial row still clipped",
+      "archived_rendered_sha256": "7fedf84690dfdaf3cbcd80b638909200512a754ef2be2e8350b39e94aa0a300a"
+    },
+    {
+      "rendered": "ppc8-reactivated-0.75.png",
+      "rendered_sha256": "99a55d43cfeddc44140d63497246242793a9df90b2eaf40530e8f9e5fea024ca",
+      "observations": "Smooth selected white-on-black text returns at original row7 after guest reactivation; normal row positions and lower clipping retained",
+      "archived_rendered_sha256": "2c59c72b4ddcb1b9f7195ed8083fbcf96df629e3850bd75dd0caeb3f8cfb693e"
+    },
+    {
+      "rendered": "ppc16-scrolled-0.75.png",
+      "rendered_sha256": "d6dfa6fb8283ff9c9e38e87cd8fd1572af167aaaa739a490bccbcd4a77bfd839",
+      "observations": "Smooth normal and white-on-black selected text after four-row scroll; native empty lower strip and scrollbar retained",
+      "archived_rendered_sha256": "25eca1f986bb7a27bebec6791ebf155d45fd1759ac01acb37908896ce13063e7"
+    },
+    {
+      "rendered": "ppc16-inactive-0.75.png",
+      "rendered_sha256": "2ff9ae798536977cc350eea344c6eedca8205c53ab65817efd9bdcb5bd6040ea",
+      "observations": "Smooth normal text remains after selection highlight hides on guest deactivation; native lower partial-row clipping retained",
+      "archived_rendered_sha256": "a6f06c7ea38264a4185ebae7ae5d5082b4b6e2049ceaa30e67b3d4404f98053b"
+    },
+    {
+      "rendered": "ppc16-reactivated-0.75.png",
+      "rendered_sha256": "3f42562dc031219b1e95cb7f8b9c634a3333390f9896b03fa59b31e32360c3a2",
+      "observations": "Smooth selected white-on-black label returns at guest row7; normal text and native lower partial-row clipping retained",
+      "archived_rendered_sha256": "89e1121fb636c8db7bcd885efecb017461dd775c44ac5bc0ac0477ec6860e0da"
+    }
+  ],
+  "comparisons": [
+    {
+      "scope": "Compare owned unchanged rows in colour68k0.75 active selected sample and inactive transition sample; no global visual qualification",
+      "active_path": "tests/toolbox-showcase/reference/gpui-demo/smooth-list-selected-shared/colour-selected-0.75.png",
+      "active_sha256": "e8496e3eb8850b88a3f5716cde2a107a52afa262f9ada842e42fe5b43d53b436",
+      "inactive_path": "colour-inactive-0.75.png",
+      "inactive_sha256": "74f24402736344de109f1de4a9401249933c28e2da71ce5e9b2505284b16bb8f",
+      "owned_pieces_checked": 32,
+      "cells_checked": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          3,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          5,
+          0
+        ],
+        [
+          6,
+          0
+        ],
+        [
+          8,
+          0
+        ]
+      ],
+      "all_unchanged_rgba": true
+    }
+  ]
+}

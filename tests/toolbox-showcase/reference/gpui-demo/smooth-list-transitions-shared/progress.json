@@ -1,0 +1,1375 @@
+{
+  "source_commit": "c9ce45597b9294aeede30422b64024770a1555b7",
+  "source_dirty": false,
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "841cb2aba583197648fba4e066e6ec110cb9a79fcbd45c64028b64d443d46dff",
+    "src/bin/gpui_demo_text.rs": "96208a4b063ca9797715f8f649279d0deef8200839ba5b192bba982669b45d46",
+    "src/bin/gpui_demo_frames.rs": "b293ad66102ebdbc69a697b2bdc8d1ba01349a36a20c6a994b7e280eb14d814b",
+    "src/systems/macintosh/list_manager.rs": "c623f78af684fbacff3d8fd5e0520ac489f3c59d8ddefbeb5a7c810e8ea783c3",
+    "src/systems/macintosh/text_edit/drawing.rs": "05666572811738cc1890c3462140ed71519b7a5eeb682d3146fae1417f11a300",
+    "src/systems/macintosh/runner/mod.rs": "cbe90b515c07e17922544471f8c6bb21efdacd7e6c62cba409e028dc0f297015",
+    "src/systems/macintosh/trap/toolbox.rs": "d2ef946c1a014f53dfb8e1f4a7e066b39adc6f9dc2435e654e8c2fe73e8fe35c",
+    "src/systems/macintosh/loader/ppc/dispatch_list.rs": "920c00e43c3b3d2138225168937650c935364c5e47f96a127de8758b535a27b6",
+    "tests/toolbox-showcase/verify-gpui-list-text.py": "c77fc9b15175288733797faeaa07fa1192dc0a935cfd2d0ecda4e39c9c8f0eec",
+    "tests/toolbox-showcase/verify-gpui-list-matrix.py": "a11584b39011f7e9e147a54a0234091d391e6e0a1ff897368ce535869e9d1d15",
+    "tests/toolbox-showcase/capture-gpui-list-matrix.py": "281696c9b5bae5a034406ef86b206fa97f0d81d931f9afca9bd2e3ac227790c0"
+  },
+  "capture_binary_sha256": "45b41ab71077d800bf76ba5d7b1c60a01bf7556a3e6191858dafed63f3b72226",
+  "fixture_sha256": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8",
+  "cases": [
+    {
+      "mode": "mono",
+      "depth": 1,
+      "scale": 0.75,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/mono-scrolled-0.75.png",
+        "--capture-scale",
+        "0.75",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--screen-depth",
+        "1"
+      ],
+      "rendered": "mono-scrolled-0.75.png",
+      "rendered_sha256": "72747be56b6428b246bf887eb6ddc8643e41830a116e4f7570d02cfe2d86ecc1",
+      "guest_sha256": "2d1e55cde9aefff92acd5091cb2233cdea86c2c14808e71259f4c45dcbbc937c",
+      "evidence_sha256": "8aa64c14a342e368ffac752b92ca59425172cdc4c97c061d617bf893a05311a2",
+      "compositor_evidence_sha256": "abdbb561694893365a16349976e2226e0472761a018e128205c54155123216cd",
+      "original_png_sha256": {
+        "rendered_sha256": "24674552d95a045b60e9188efdc9c15f2abe99581561075ed4e4a0ce49e27b5c",
+        "guest_sha256": "ae9229dea5ded42231dccd9996776bfd8b67bcd482fe82bad65bfa4e26cb1af4"
+      }
+    },
+    {
+      "mode": "mono",
+      "depth": 1,
+      "scale": 1,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/mono-scrolled-1.png",
+        "--capture-scale",
+        "1",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--screen-depth",
+        "1"
+      ],
+      "rendered": "mono-scrolled-1.png",
+      "rendered_sha256": "4e36b3c37c23312e50b20d316703fc096e11fe457d4fcd6a48ea34f63d0256ad",
+      "guest_sha256": "2d1e55cde9aefff92acd5091cb2233cdea86c2c14808e71259f4c45dcbbc937c",
+      "evidence_sha256": "2d60dfc91c6a58713699cac15b2e4c6ae0dc3eb7c9ac4cc252d536d2532c96c0",
+      "compositor_evidence_sha256": "e73917df01f4742bf7ee157bd51a34a95c95611f6c9edab8f5d5cf221dbf2c34",
+      "original_png_sha256": {
+        "rendered_sha256": "3e0429563d818ab3ad45550dbceb6d862f142fe1a317783d1f65fc99dc866998",
+        "guest_sha256": "ae9229dea5ded42231dccd9996776bfd8b67bcd482fe82bad65bfa4e26cb1af4"
+      }
+    },
+    {
+      "mode": "mono",
+      "depth": 1,
+      "scale": 1.5,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/mono-scrolled-1.5.png",
+        "--capture-scale",
+        "1.5",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--screen-depth",
+        "1"
+      ],
+      "rendered": "mono-scrolled-1.5.png",
+      "rendered_sha256": "46596df0c0191dc894d618d7aaf4b6558ba72f0264a5786112be473b0f65f8ce",
+      "guest_sha256": "2d1e55cde9aefff92acd5091cb2233cdea86c2c14808e71259f4c45dcbbc937c",
+      "evidence_sha256": "b6a5294bea1ca5c6644afc4086d9bb22f6e58a68139a45f4c6c8f21852f93870",
+      "compositor_evidence_sha256": "70b20dc2160ffb7fefc7e37e1bfa2824d07e19dca22c790332cc60f00f8c0b48",
+      "original_png_sha256": {
+        "rendered_sha256": "2f9ff72d3e976886b6ca36cc0d6d52653decd2b1cd3392f6809a5f838bd94bef",
+        "guest_sha256": "ae9229dea5ded42231dccd9996776bfd8b67bcd482fe82bad65bfa4e26cb1af4"
+      }
+    },
+    {
+      "mode": "mono",
+      "depth": 1,
+      "scale": 2,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/mono-scrolled-2.png",
+        "--capture-scale",
+        "2",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--screen-depth",
+        "1"
+      ],
+      "rendered": "mono-scrolled-2.png",
+      "rendered_sha256": "5344b47086ad9ec474aac9c35320f8d2ccd18e3ad5a1482d33564a5af9ca00c9",
+      "guest_sha256": "2d1e55cde9aefff92acd5091cb2233cdea86c2c14808e71259f4c45dcbbc937c",
+      "evidence_sha256": "b2f0f7725fd14dde1056bf6c11323b8ef0d0382fbc4fece7c9d46b664129fe81",
+      "compositor_evidence_sha256": "98a38f73a4f7b6f73af28358fe17a23b96e7a0c5561e75eb9947e0390da41368",
+      "original_png_sha256": {
+        "rendered_sha256": "5044002edadc66a93b41a22448c31a36c841ee09874a4ba4f1d618d57a8deb5b",
+        "guest_sha256": "ae9229dea5ded42231dccd9996776bfd8b67bcd482fe82bad65bfa4e26cb1af4"
+      }
+    },
+    {
+      "mode": "mono",
+      "depth": 1,
+      "scale": 0.75,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/mono-inactive-0.75.png",
+        "--capture-scale",
+        "0.75",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--screen-depth",
+        "1"
+      ],
+      "rendered": "mono-inactive-0.75.png",
+      "rendered_sha256": "4c1eee0f4efbfb80af75b5ff799c6500926b3ce1d1c51f4c02148eff40d8714f",
+      "guest_sha256": "4e5533cf2c0226c7faab319755f839453c828d782e7089661caf963ff9ce53be",
+      "evidence_sha256": "f6bdff970bdcaa4edca9905144d0a56ed4af5ca88674d383dd696f32a60360de",
+      "compositor_evidence_sha256": "cb643ac8e01cd8748cf36e3869df592ef65c26672deebe3bbe7827d5d2a037f4",
+      "original_png_sha256": {
+        "rendered_sha256": "e91e4c9bf35f66f5bdc747a420b96592fa980b8f63baffb5844f130ffc91904c",
+        "guest_sha256": "08d2e305c82ed99159a8a32be86344f2484310cf11d56168cd43c47714728972"
+      }
+    },
+    {
+      "mode": "mono",
+      "depth": 1,
+      "scale": 1,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/mono-inactive-1.png",
+        "--capture-scale",
+        "1",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--screen-depth",
+        "1"
+      ],
+      "rendered": "mono-inactive-1.png",
+      "rendered_sha256": "d66e8c85002db2a5d889426fbbfcb492f269f35bd6b21251d40cc34395d80708",
+      "guest_sha256": "4e5533cf2c0226c7faab319755f839453c828d782e7089661caf963ff9ce53be",
+      "evidence_sha256": "b2939f99604bb7b9fe201cb542fa5f353dfb9c138ae97525b4ca604e0437161b",
+      "compositor_evidence_sha256": "c2bd1fbc793b23edfd8da287b65d3f64afa38c146ab4250c41080dbd883b3485",
+      "original_png_sha256": {
+        "rendered_sha256": "a8a930c22abb319b71e742d94ca14efe842b4da2be0e2202702b17971a4ceb07",
+        "guest_sha256": "08d2e305c82ed99159a8a32be86344f2484310cf11d56168cd43c47714728972"
+      }
+    },
+    {
+      "mode": "mono",
+      "depth": 1,
+      "scale": 1.5,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/mono-inactive-1.5.png",
+        "--capture-scale",
+        "1.5",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--screen-depth",
+        "1"
+      ],
+      "rendered": "mono-inactive-1.5.png",
+      "rendered_sha256": "88252ed78265db16e8762df3dd1cec2dc168bf60eae31db58fe0adf30bcd2d7d",
+      "guest_sha256": "4e5533cf2c0226c7faab319755f839453c828d782e7089661caf963ff9ce53be",
+      "evidence_sha256": "608cc85aba960094e7eb91f76c03f21cbfd83d45e35c91fe376a8616099a2c76",
+      "compositor_evidence_sha256": "14f54b478fdeb1acc9915d775c5c918ce77049977abdb00c41ee69dd998fcda2",
+      "original_png_sha256": {
+        "rendered_sha256": "ecacf0af725b4de35583875ce63a0a1dcc720299e1db376190bf92c73339a22e",
+        "guest_sha256": "08d2e305c82ed99159a8a32be86344f2484310cf11d56168cd43c47714728972"
+      }
+    },
+    {
+      "mode": "mono",
+      "depth": 1,
+      "scale": 2,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/mono-inactive-2.png",
+        "--capture-scale",
+        "2",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--screen-depth",
+        "1"
+      ],
+      "rendered": "mono-inactive-2.png",
+      "rendered_sha256": "e7e7fd6e72c0ebb6c4ecb532559c96d6594e9735289fdaf526cc015e34e7f412",
+      "guest_sha256": "4e5533cf2c0226c7faab319755f839453c828d782e7089661caf963ff9ce53be",
+      "evidence_sha256": "9d5c3e6fa3976627336f3d098d151e32df8197d6d6c569de68c8ea914f5121ce",
+      "compositor_evidence_sha256": "de372ffee8b8a00abad800ea2a246b400e7b248fe77132e058dbfc548da4ae9c",
+      "original_png_sha256": {
+        "rendered_sha256": "ab9a8eeda4a8bf5e1fdf6ef1e4dfc4c64bde23ead276f90b13e1cdbe048d5303",
+        "guest_sha256": "08d2e305c82ed99159a8a32be86344f2484310cf11d56168cd43c47714728972"
+      }
+    },
+    {
+      "mode": "mono",
+      "depth": 1,
+      "scale": 0.75,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/mono-reactivated-0.75.png",
+        "--capture-scale",
+        "0.75",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--screen-depth",
+        "1"
+      ],
+      "rendered": "mono-reactivated-0.75.png",
+      "rendered_sha256": "19a020741a9e8b7b9741148b73c2af3d5bcd8bb316e7b2dbb1e97364929508a8",
+      "guest_sha256": "a093adb6eedef97fb8d7b4ad8baabe54b4aaa29613395ab9db69ae62ab2dd881",
+      "evidence_sha256": "5a16959a3e6f6d0f34051efa0805f672c4ec367162f7db5b4a04a900649fe48f",
+      "compositor_evidence_sha256": "5e0d1ec8419f7005420a877d0a9fcf115f1f1924cb7b6ea2a64c8e1cd39a7234",
+      "original_png_sha256": {
+        "rendered_sha256": "ad4d87622a6d925fd72f29771dab827bf764f3df6d8b67388046756b6c9b3ebf",
+        "guest_sha256": "3881844bb4b4d9bd8fc50cb4ca9bf633281cb058dac27f6f3f56caffaff0af8a"
+      }
+    },
+    {
+      "mode": "mono",
+      "depth": 1,
+      "scale": 1,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/mono-reactivated-1.png",
+        "--capture-scale",
+        "1",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--screen-depth",
+        "1"
+      ],
+      "rendered": "mono-reactivated-1.png",
+      "rendered_sha256": "f35993cc4568c6fd1d36c70ce28b1a540e7a8cc2fb5b3f7b35efcce474228c40",
+      "guest_sha256": "a093adb6eedef97fb8d7b4ad8baabe54b4aaa29613395ab9db69ae62ab2dd881",
+      "evidence_sha256": "7260e000f5011eefa850e99745ab00ce29efb2d933173e406c1d33d3d1f861cf",
+      "compositor_evidence_sha256": "cccced4172e738fe122ef0d253be686350bb2e13ab8846c1420700dd0e671fd3",
+      "original_png_sha256": {
+        "rendered_sha256": "1c3b8588095f9f7771687856d94553cc8abeea86b464eb6da3348ba286698989",
+        "guest_sha256": "3881844bb4b4d9bd8fc50cb4ca9bf633281cb058dac27f6f3f56caffaff0af8a"
+      }
+    },
+    {
+      "mode": "mono",
+      "depth": 1,
+      "scale": 1.5,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/mono-reactivated-1.5.png",
+        "--capture-scale",
+        "1.5",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--screen-depth",
+        "1"
+      ],
+      "rendered": "mono-reactivated-1.5.png",
+      "rendered_sha256": "876067d8b9282a0f14056a5c6dfc3827791edce4b663ab28cf77224faae9e9d4",
+      "guest_sha256": "a093adb6eedef97fb8d7b4ad8baabe54b4aaa29613395ab9db69ae62ab2dd881",
+      "evidence_sha256": "9100b2a9d112b1e5478ef3e9ab713ca9132320eae2e4c01a9f4d022c1495ee77",
+      "compositor_evidence_sha256": "fb2212a723410ec608948d5142da4b6d04b43530013c1a814b71bfee7615189c",
+      "original_png_sha256": {
+        "rendered_sha256": "4d6860e46568c6044b4ca014a144bc0a6438e05825bd3cd8ed49251be8894c57",
+        "guest_sha256": "3881844bb4b4d9bd8fc50cb4ca9bf633281cb058dac27f6f3f56caffaff0af8a"
+      }
+    },
+    {
+      "mode": "mono",
+      "depth": 1,
+      "scale": 2,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/mono-reactivated-2.png",
+        "--capture-scale",
+        "2",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--screen-depth",
+        "1"
+      ],
+      "rendered": "mono-reactivated-2.png",
+      "rendered_sha256": "74100e68544f9ebef243fe17451718740e12ce4139733463fab0382504045901",
+      "guest_sha256": "a093adb6eedef97fb8d7b4ad8baabe54b4aaa29613395ab9db69ae62ab2dd881",
+      "evidence_sha256": "d1af20deef53da7859be3e414de127dd91fd88e4565f4cd09fa84e4f19c38df1",
+      "compositor_evidence_sha256": "0433d22541abb3f6f8964e288ce3c13ff366644ed4f885797ac641b743ccf098",
+      "original_png_sha256": {
+        "rendered_sha256": "f4c4cf0b3ac66a734482b56c705781e5b0b94754ecb488a184cdfb103a2ca3dd",
+        "guest_sha256": "3881844bb4b4d9bd8fc50cb4ca9bf633281cb058dac27f6f3f56caffaff0af8a"
+      }
+    },
+    {
+      "mode": "colour",
+      "depth": 8,
+      "scale": 0.75,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/colour-scrolled-0.75.png",
+        "--capture-scale",
+        "0.75",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--screen-depth",
+        "8"
+      ],
+      "rendered": "colour-scrolled-0.75.png",
+      "rendered_sha256": "59719eb6270999ce782df67dc14124dd38aa685c586fe091e5c0eb3730ac845f",
+      "guest_sha256": "75e230b049ea408d3660a4c86c804747260be6588b5d3c9c67fedbed8777a170",
+      "evidence_sha256": "d1035f6cca4a20e1fdfbbc170f1e054bf0f806e3e4c50a53d32a4ec9ecd3919e",
+      "compositor_evidence_sha256": "0db63cb95171ff4ee9200dfeec07adb65a721053e0817bf2400293a75a6a084a",
+      "original_png_sha256": {
+        "rendered_sha256": "56fa7e6038bdb76f5a3eba210d73cff8f35510089f41e6da64e698e02cb89bf1",
+        "guest_sha256": "2be80c81b658d0427613098e9749673cbf198732c5824f76537fba8c3859d778"
+      }
+    },
+    {
+      "mode": "colour",
+      "depth": 8,
+      "scale": 1,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/colour-scrolled-1.png",
+        "--capture-scale",
+        "1",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--screen-depth",
+        "8"
+      ],
+      "rendered": "colour-scrolled-1.png",
+      "rendered_sha256": "9003c5a18d7768bea37721e718c31866c94442e4f9f9a96379eb0583ca1cca35",
+      "guest_sha256": "75e230b049ea408d3660a4c86c804747260be6588b5d3c9c67fedbed8777a170",
+      "evidence_sha256": "da26bd6752dcf4ecdc12bf1258885aba52da0be64f98e855cd405880466dd71b",
+      "compositor_evidence_sha256": "ee4629fbf0c60f9b3ee47f76f9506a48c5bf684f39b3e00d6832f303d8d803f0",
+      "original_png_sha256": {
+        "rendered_sha256": "cab128e320b2c324fc2e55dcfc9e945e47de185d004208cb32c4341c3c7cb49c",
+        "guest_sha256": "2be80c81b658d0427613098e9749673cbf198732c5824f76537fba8c3859d778"
+      }
+    },
+    {
+      "mode": "colour",
+      "depth": 8,
+      "scale": 1.5,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/colour-scrolled-1.5.png",
+        "--capture-scale",
+        "1.5",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--screen-depth",
+        "8"
+      ],
+      "rendered": "colour-scrolled-1.5.png",
+      "rendered_sha256": "ee1ed3dd1df3304acb4e276464febfdfd27c68b2833e38472764b44a8dcdfdda",
+      "guest_sha256": "75e230b049ea408d3660a4c86c804747260be6588b5d3c9c67fedbed8777a170",
+      "evidence_sha256": "cf2888f334b3369bdcf4a287d3d9187e24376acf6ed09b8a783a3e225f41394f",
+      "compositor_evidence_sha256": "30c4b1304feaae2e77ca90cc8c893afc096c695d05ba065394663455d1537eaf",
+      "original_png_sha256": {
+        "rendered_sha256": "0b8fb0d4f3b3716b46c5eb1bf7038a301647da76d98553d6ac2f6c9585c5fd7c",
+        "guest_sha256": "2be80c81b658d0427613098e9749673cbf198732c5824f76537fba8c3859d778"
+      }
+    },
+    {
+      "mode": "colour",
+      "depth": 8,
+      "scale": 2,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/colour-scrolled-2.png",
+        "--capture-scale",
+        "2",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--screen-depth",
+        "8"
+      ],
+      "rendered": "colour-scrolled-2.png",
+      "rendered_sha256": "a42819856f7e6927f72fbe7a967edb2440b76b1492a971ba877c48a233be25bd",
+      "guest_sha256": "75e230b049ea408d3660a4c86c804747260be6588b5d3c9c67fedbed8777a170",
+      "evidence_sha256": "ff5324d0f9a163bac3100988eabe38866baacffed57c64483cce2f29c291113d",
+      "compositor_evidence_sha256": "08b0c0f3df81e8f8590bb33df725fa33991026c7074733cb660c7512e7c4b429",
+      "original_png_sha256": {
+        "rendered_sha256": "239f2b184a737ae0369b54cf270a27d40bcda801aa59c3d2b4ff3e16eb8410a9",
+        "guest_sha256": "2be80c81b658d0427613098e9749673cbf198732c5824f76537fba8c3859d778"
+      }
+    },
+    {
+      "mode": "colour",
+      "depth": 8,
+      "scale": 0.75,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/colour-inactive-0.75.png",
+        "--capture-scale",
+        "0.75",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--screen-depth",
+        "8"
+      ],
+      "rendered": "colour-inactive-0.75.png",
+      "rendered_sha256": "9e21560b5da9c59ae6d8b4f02a91b9727909ffdac5f2235a4443088cd1684fd6",
+      "guest_sha256": "a6880faab7753556a33c1c71b63602151e8541b29bd42bda6c2ef6ff0a7bda3b",
+      "evidence_sha256": "f5d0d7c13dd55181581736db1acbb95120e8b2661616348ec843cde5d11fef03",
+      "compositor_evidence_sha256": "4bf3fe577b6c89dbbbe608c0fc6aa4c3433fdb58e454e51b464cf3e828c80f71",
+      "original_png_sha256": {
+        "rendered_sha256": "74f24402736344de109f1de4a9401249933c28e2da71ce5e9b2505284b16bb8f",
+        "guest_sha256": "06a02fa18d421223693843bc2f37cedc4b7ae522df2d513df1154ff720d7ee77"
+      }
+    },
+    {
+      "mode": "colour",
+      "depth": 8,
+      "scale": 1,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/colour-inactive-1.png",
+        "--capture-scale",
+        "1",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--screen-depth",
+        "8"
+      ],
+      "rendered": "colour-inactive-1.png",
+      "rendered_sha256": "4e819ec7e24715547ec5f2518f04778b7e6f88be7ecac5c3b65a2938b318b3b7",
+      "guest_sha256": "a6880faab7753556a33c1c71b63602151e8541b29bd42bda6c2ef6ff0a7bda3b",
+      "evidence_sha256": "d2a523382c94f3835659865aa11014dc93daf0db4a37ff4751773065d6b99450",
+      "compositor_evidence_sha256": "7231beed23920aaf5932e8aaa075b26810b70f9930ebeb370465b613c0f2489c",
+      "original_png_sha256": {
+        "rendered_sha256": "96e19fa59fc535594ba5a20e462fd55f83a7521784bb4b5ffe8f769a7581f191",
+        "guest_sha256": "06a02fa18d421223693843bc2f37cedc4b7ae522df2d513df1154ff720d7ee77"
+      }
+    },
+    {
+      "mode": "colour",
+      "depth": 8,
+      "scale": 1.5,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/colour-inactive-1.5.png",
+        "--capture-scale",
+        "1.5",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--screen-depth",
+        "8"
+      ],
+      "rendered": "colour-inactive-1.5.png",
+      "rendered_sha256": "e15d330dc1041eb944c9c5c0e27146c09d2bb343953710f835607cd6bac22fd1",
+      "guest_sha256": "a6880faab7753556a33c1c71b63602151e8541b29bd42bda6c2ef6ff0a7bda3b",
+      "evidence_sha256": "d23bb20bea6d0b940a1b38b251d558b2d83254b07dee61c52078d022f26ab5af",
+      "compositor_evidence_sha256": "8f7ce3ce9b23c8109e3c9b11a122ef88c0f0548fcc12d6a21bc6d61e8ac6719b",
+      "original_png_sha256": {
+        "rendered_sha256": "b21e1331a7bcda97648344f0f3529b57cb99228d1ae6769f7530a836e20c26bd",
+        "guest_sha256": "06a02fa18d421223693843bc2f37cedc4b7ae522df2d513df1154ff720d7ee77"
+      }
+    },
+    {
+      "mode": "colour",
+      "depth": 8,
+      "scale": 2,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/colour-inactive-2.png",
+        "--capture-scale",
+        "2",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--screen-depth",
+        "8"
+      ],
+      "rendered": "colour-inactive-2.png",
+      "rendered_sha256": "e916316ec9b88e7d553d81c6a6114b4b8f3ecf3dec9a5786306ba64c37bfd678",
+      "guest_sha256": "a6880faab7753556a33c1c71b63602151e8541b29bd42bda6c2ef6ff0a7bda3b",
+      "evidence_sha256": "063bde747a3d4a361603699653daa11f39ab4edd045b1ed3467f15cfe4ceb774",
+      "compositor_evidence_sha256": "de67259463655f318d1e0a1b273eb4deef7e6b7c577679f38bd2e3d6dc554e0d",
+      "original_png_sha256": {
+        "rendered_sha256": "1434159322fe20ed1280491795746369f35338b63c813842c00417d414679d80",
+        "guest_sha256": "06a02fa18d421223693843bc2f37cedc4b7ae522df2d513df1154ff720d7ee77"
+      }
+    },
+    {
+      "mode": "colour",
+      "depth": 8,
+      "scale": 0.75,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/colour-reactivated-0.75.png",
+        "--capture-scale",
+        "0.75",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--screen-depth",
+        "8"
+      ],
+      "rendered": "colour-reactivated-0.75.png",
+      "rendered_sha256": "a02c1ec2d139bc48c07074686c48d2a5f88b8732fbbc98122454bd4e9fdad119",
+      "guest_sha256": "6f3f46adbd2be82c053f93c0341e7ec03fe495aa263db506781e4762f2ef5cb8",
+      "evidence_sha256": "11dbe5d154a54ad717fd06ad1eb076843c2fcd31fb43ea35c884093a0f3217aa",
+      "compositor_evidence_sha256": "1cbd0af521c1cd2214ec631a163b02ab89c3602e52940f5122329622632d2263",
+      "original_png_sha256": {
+        "rendered_sha256": "0e14be729dc185360132088c8ef223cbbd7f22bfbabac7625bcee68a47f7279d",
+        "guest_sha256": "9caa373d7179400d8b87a56cfeaeb0a992626ac2152ac9769603bfd2e09bb69e"
+      }
+    },
+    {
+      "mode": "colour",
+      "depth": 8,
+      "scale": 1,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/colour-reactivated-1.png",
+        "--capture-scale",
+        "1",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--screen-depth",
+        "8"
+      ],
+      "rendered": "colour-reactivated-1.png",
+      "rendered_sha256": "c6f72f84d034146baed1e43de64501643adf8577126ab94df39f129500255a7d",
+      "guest_sha256": "6f3f46adbd2be82c053f93c0341e7ec03fe495aa263db506781e4762f2ef5cb8",
+      "evidence_sha256": "34754dd73d25f5970399f4878c33f446f0a569ada35ac9a555dd0f15e27fb0c9",
+      "compositor_evidence_sha256": "6f64664ff915c32430aca333b78fa09ccd5318fbb5ebdad9e8dad237e4d54eb4",
+      "original_png_sha256": {
+        "rendered_sha256": "72d7e2aadffc17e6627db35e4e1e91cba8f1cd027653802f225bae4d759426d3",
+        "guest_sha256": "9caa373d7179400d8b87a56cfeaeb0a992626ac2152ac9769603bfd2e09bb69e"
+      }
+    },
+    {
+      "mode": "colour",
+      "depth": 8,
+      "scale": 1.5,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/colour-reactivated-1.5.png",
+        "--capture-scale",
+        "1.5",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--screen-depth",
+        "8"
+      ],
+      "rendered": "colour-reactivated-1.5.png",
+      "rendered_sha256": "924e9ec8c2ccb64a1e3a777e534aa60725a3711208043ff3bb3413f76b824e35",
+      "guest_sha256": "6f3f46adbd2be82c053f93c0341e7ec03fe495aa263db506781e4762f2ef5cb8",
+      "evidence_sha256": "c055b2e3222e10b3cb5c47f0f07d846fb98666355cdafccf5e857ddba62b46d7",
+      "compositor_evidence_sha256": "b855f819a53563fc976569632a7c8fc04f008e60f134a3775c23e90adac91dab",
+      "original_png_sha256": {
+        "rendered_sha256": "46af59cd171944ec50990e8924c2bf02df57dfdde372456a07483bded7f2f558",
+        "guest_sha256": "9caa373d7179400d8b87a56cfeaeb0a992626ac2152ac9769603bfd2e09bb69e"
+      }
+    },
+    {
+      "mode": "colour",
+      "depth": 8,
+      "scale": 2,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/colour-reactivated-2.png",
+        "--capture-scale",
+        "2",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--screen-depth",
+        "8"
+      ],
+      "rendered": "colour-reactivated-2.png",
+      "rendered_sha256": "a05e9cd5a10c20911b0d62aa9e952f350c0160d64b4c5dfd68a5970b67899467",
+      "guest_sha256": "6f3f46adbd2be82c053f93c0341e7ec03fe495aa263db506781e4762f2ef5cb8",
+      "evidence_sha256": "7dd4f968bbe36faa4d7a27bdf4d11de08343f0948e6dc7d5bd0b5d3a22c73815",
+      "compositor_evidence_sha256": "5f070de076e951f46f88b727be96f8f5ecc1e0adcce2eedd80b2ec2f04a63592",
+      "original_png_sha256": {
+        "rendered_sha256": "e97181fe1c3d103aa49b344b524b73088c0636f4428c86a6688fc28581af974d",
+        "guest_sha256": "9caa373d7179400d8b87a56cfeaeb0a992626ac2152ac9769603bfd2e09bb69e"
+      }
+    },
+    {
+      "mode": "ppc8",
+      "depth": 8,
+      "scale": 0.75,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc8-scrolled-0.75.png",
+        "--capture-scale",
+        "0.75",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--screen-depth",
+        "8",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc8-scrolled-0.75.png",
+      "rendered_sha256": "caf6a4dbef3bf9219ad238d1a04426b775472fd598c5b9bc8fa00dcfe8be208c",
+      "guest_sha256": "b6aa91f1d74ddd24009cde791b8f487fb7e979899fbe2082fcdd9d727a0219e5",
+      "evidence_sha256": "5f2cf51f4ce9a107f0fa677a7eb379792fa43a76595933cd197acbfb71402a18",
+      "compositor_evidence_sha256": "2ce441e5142009e753a359c3fcac8cf87f91c1307775b30a6c54d0bff489173a",
+      "original_png_sha256": {
+        "rendered_sha256": "7d18b1c08a690e8634c1c56c36ea0110495ecccd26569da9d8012136477aaa79",
+        "guest_sha256": "3a4b9faaf076bd9f438fd9880ae89ee1c3984e0ddb776a1aff2eedf54ed9ed24"
+      }
+    },
+    {
+      "mode": "ppc8",
+      "depth": 8,
+      "scale": 1,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc8-scrolled-1.png",
+        "--capture-scale",
+        "1",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--screen-depth",
+        "8",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc8-scrolled-1.png",
+      "rendered_sha256": "6490015e5c2109d539760b2971cfcbdec5843304f143cbac2ee70e8baf7a5350",
+      "guest_sha256": "b6aa91f1d74ddd24009cde791b8f487fb7e979899fbe2082fcdd9d727a0219e5",
+      "evidence_sha256": "74598bd04cc7ba483d939bcb1c705ca2895608522e8c5f64be88676b4d750e23",
+      "compositor_evidence_sha256": "9b2fb5d28917e9669045e74b2e97932924c8fbce1102f052b969f4b96447720c",
+      "original_png_sha256": {
+        "rendered_sha256": "d4a7c3ba84af1687b83aabdd510263d200ee552df78b1c1ed6a8f4ca367fc416",
+        "guest_sha256": "3a4b9faaf076bd9f438fd9880ae89ee1c3984e0ddb776a1aff2eedf54ed9ed24"
+      }
+    },
+    {
+      "mode": "ppc8",
+      "depth": 8,
+      "scale": 1.5,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc8-scrolled-1.5.png",
+        "--capture-scale",
+        "1.5",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--screen-depth",
+        "8",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc8-scrolled-1.5.png",
+      "rendered_sha256": "9c23216151b1472258d06b4451f14e458770d5277f162ba0f5914400805f7765",
+      "guest_sha256": "b6aa91f1d74ddd24009cde791b8f487fb7e979899fbe2082fcdd9d727a0219e5",
+      "evidence_sha256": "1c5bd4d47b762d605b85a783bd8b7ccd99674efb059e132dd9f51a1c0c4bed69",
+      "compositor_evidence_sha256": "1b260268e8b173757e4c65f5cdbc505e9326af993b7b0eb00ad4d7dff946b4f0",
+      "original_png_sha256": {
+        "rendered_sha256": "16d962f7bd4bb00199d5a0be888ae3a692dab2f2e4231c603d611ca9cee69fd2",
+        "guest_sha256": "3a4b9faaf076bd9f438fd9880ae89ee1c3984e0ddb776a1aff2eedf54ed9ed24"
+      }
+    },
+    {
+      "mode": "ppc8",
+      "depth": 8,
+      "scale": 2,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc8-scrolled-2.png",
+        "--capture-scale",
+        "2",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--screen-depth",
+        "8",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc8-scrolled-2.png",
+      "rendered_sha256": "27699e876bed0200e64e2b3b7cbcae4cedfeb29fe30d893e42dad1b02dd3acd8",
+      "guest_sha256": "b6aa91f1d74ddd24009cde791b8f487fb7e979899fbe2082fcdd9d727a0219e5",
+      "evidence_sha256": "e342ba02c9f386c872c75070d447a64439d1388476928122bd4d41218bdaf57e",
+      "compositor_evidence_sha256": "e6731090e6342bd67e28ceb823283d716beb365b198f3c7197a65d5f5cf94cc0",
+      "original_png_sha256": {
+        "rendered_sha256": "06e75098e6582b34ac88b63c9bd69809f62855a64220ec2539b7c53a4ed16091",
+        "guest_sha256": "3a4b9faaf076bd9f438fd9880ae89ee1c3984e0ddb776a1aff2eedf54ed9ed24"
+      }
+    },
+    {
+      "mode": "ppc8",
+      "depth": 8,
+      "scale": 0.75,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc8-inactive-0.75.png",
+        "--capture-scale",
+        "0.75",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--screen-depth",
+        "8",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc8-inactive-0.75.png",
+      "rendered_sha256": "7fedf84690dfdaf3cbcd80b638909200512a754ef2be2e8350b39e94aa0a300a",
+      "guest_sha256": "febb79d5daa54e292560cbf5e0281d96825853351fe1a2468eb82bbf25b9230a",
+      "evidence_sha256": "833741095dc648e5f0f6f3ee008ad8c86e854dff3a6da16eea4257ce98dff77f",
+      "compositor_evidence_sha256": "644ccd95950ee3eb5274abe670036d1e6a98d2191085a89af472668816b691a5",
+      "original_png_sha256": {
+        "rendered_sha256": "ab9fc0c3c10a585d76952c478d59bb57ccad7efc229569ff1a3d63745d027e36",
+        "guest_sha256": "929c839065879fc79feb915eaf2fd57abfb6ea958aaa62c0ba1f0c04a018c31b"
+      }
+    },
+    {
+      "mode": "ppc8",
+      "depth": 8,
+      "scale": 1,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc8-inactive-1.png",
+        "--capture-scale",
+        "1",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--screen-depth",
+        "8",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc8-inactive-1.png",
+      "rendered_sha256": "f6471862338df9933ffa0f4a77d4e47a2358fa81f9f7698844302aca5fde95b8",
+      "guest_sha256": "febb79d5daa54e292560cbf5e0281d96825853351fe1a2468eb82bbf25b9230a",
+      "evidence_sha256": "7bae84697b565b24ceb138398990f237a6db132c97d1659a1e320cadf666695d",
+      "compositor_evidence_sha256": "590f9ec3beae40147cc9f5e38de29a4448f815b6f3725ac34a4dec44e3353aa3",
+      "original_png_sha256": {
+        "rendered_sha256": "03cb2ac7435ee03ece25fd0744954e2b66bc9833f3928bb18764af79dbb98c23",
+        "guest_sha256": "929c839065879fc79feb915eaf2fd57abfb6ea958aaa62c0ba1f0c04a018c31b"
+      }
+    },
+    {
+      "mode": "ppc8",
+      "depth": 8,
+      "scale": 1.5,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc8-inactive-1.5.png",
+        "--capture-scale",
+        "1.5",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--screen-depth",
+        "8",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc8-inactive-1.5.png",
+      "rendered_sha256": "90acb046564db68349aa36438b26e20efd6b20e01749c6bd7756fb5e8d87a6f9",
+      "guest_sha256": "febb79d5daa54e292560cbf5e0281d96825853351fe1a2468eb82bbf25b9230a",
+      "evidence_sha256": "b47fef28f36a0d47b7d35dbcc3562292ea93aa7c04639935ce1e4c6b8f68fc12",
+      "compositor_evidence_sha256": "6a708fb77e3f60a9efca9e4923592ba6d9ddacc89371a075d79c8d5930dae3f3",
+      "original_png_sha256": {
+        "rendered_sha256": "bd422f43f9d70766f35bee7946ba24326c60376350955f598ebd69e1cbcf68c0",
+        "guest_sha256": "929c839065879fc79feb915eaf2fd57abfb6ea958aaa62c0ba1f0c04a018c31b"
+      }
+    },
+    {
+      "mode": "ppc8",
+      "depth": 8,
+      "scale": 2,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc8-inactive-2.png",
+        "--capture-scale",
+        "2",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--screen-depth",
+        "8",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc8-inactive-2.png",
+      "rendered_sha256": "b30f5792908b3accd716c445cd1c54434bb09ffdf9a957b1ab55ed46b0a7e0b3",
+      "guest_sha256": "febb79d5daa54e292560cbf5e0281d96825853351fe1a2468eb82bbf25b9230a",
+      "evidence_sha256": "c9e0e1914a53ea098e4bbebae976b9e7dd7f70ef8b2df81e43d55f7fe596838e",
+      "compositor_evidence_sha256": "05236f647445a66f09d0f8f69fa4b715a131c44b73d4187c900582d663af391e",
+      "original_png_sha256": {
+        "rendered_sha256": "8b9d1af129dafc8dd02049fb12e56553f8f93e812b5dd3e4f8ef5a68a52c5289",
+        "guest_sha256": "929c839065879fc79feb915eaf2fd57abfb6ea958aaa62c0ba1f0c04a018c31b"
+      }
+    },
+    {
+      "mode": "ppc8",
+      "depth": 8,
+      "scale": 0.75,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc8-reactivated-0.75.png",
+        "--capture-scale",
+        "0.75",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--screen-depth",
+        "8",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc8-reactivated-0.75.png",
+      "rendered_sha256": "2c59c72b4ddcb1b9f7195ed8083fbcf96df629e3850bd75dd0caeb3f8cfb693e",
+      "guest_sha256": "63ccf5f19f0ab089c781c91a934ee4dfd404cebcccda21b430a15ae2241b2f10",
+      "evidence_sha256": "deb83c0473b56d509a31d8d07401862d7c747e1c7b5b710cc9ac1b5de21922d8",
+      "compositor_evidence_sha256": "5710448aaa75e12e4442b8f568d36b69f3b58957405a899aa5b0ec804732992b",
+      "original_png_sha256": {
+        "rendered_sha256": "99a55d43cfeddc44140d63497246242793a9df90b2eaf40530e8f9e5fea024ca",
+        "guest_sha256": "52ea040d4b59245e2640ec1e8eb72d901bbd3b424cec9bc30a0427eb30fbacd7"
+      }
+    },
+    {
+      "mode": "ppc8",
+      "depth": 8,
+      "scale": 1,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc8-reactivated-1.png",
+        "--capture-scale",
+        "1",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--screen-depth",
+        "8",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc8-reactivated-1.png",
+      "rendered_sha256": "0dd5bfa3b5855c20ddff1a1f47529cd891fb031595d8a4db46ddeb348735bf60",
+      "guest_sha256": "63ccf5f19f0ab089c781c91a934ee4dfd404cebcccda21b430a15ae2241b2f10",
+      "evidence_sha256": "e8cbdb851ab14de456267422ea0b8bd5f007af5c52a0ce562d883be30b094a74",
+      "compositor_evidence_sha256": "72b1e9453fe3ed7d69e78e0f55efb41cbb90354fd59a5822fadf1d4ed7a1735c",
+      "original_png_sha256": {
+        "rendered_sha256": "17802dbbd3c69bbea6aa4b36e3904c66437d377e8f6f6881f2b81457e40899b0",
+        "guest_sha256": "52ea040d4b59245e2640ec1e8eb72d901bbd3b424cec9bc30a0427eb30fbacd7"
+      }
+    },
+    {
+      "mode": "ppc8",
+      "depth": 8,
+      "scale": 1.5,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc8-reactivated-1.5.png",
+        "--capture-scale",
+        "1.5",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--screen-depth",
+        "8",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc8-reactivated-1.5.png",
+      "rendered_sha256": "6921fe32803860355a309e72e1288c99616ab41e866112ec308e23dcf3168a9e",
+      "guest_sha256": "63ccf5f19f0ab089c781c91a934ee4dfd404cebcccda21b430a15ae2241b2f10",
+      "evidence_sha256": "7d56d3846a90b961a5647abdaf78634a94fa13d4cc08da47f8736121b0832d34",
+      "compositor_evidence_sha256": "16ddb3ff27a886f87aa9cbd5e12dfeb3aa7db4f78c4314beb994115c22b215ce",
+      "original_png_sha256": {
+        "rendered_sha256": "dff82fbf8408b6a744e84b17dc22befd113bc2d1f86acf1e2e141de0677ef03b",
+        "guest_sha256": "52ea040d4b59245e2640ec1e8eb72d901bbd3b424cec9bc30a0427eb30fbacd7"
+      }
+    },
+    {
+      "mode": "ppc8",
+      "depth": 8,
+      "scale": 2,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc8-reactivated-2.png",
+        "--capture-scale",
+        "2",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--screen-depth",
+        "8",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc8-reactivated-2.png",
+      "rendered_sha256": "ad7c6046fe338c3443af8dcc177b7f04da8a2b66faf792323d00d27ffc604136",
+      "guest_sha256": "63ccf5f19f0ab089c781c91a934ee4dfd404cebcccda21b430a15ae2241b2f10",
+      "evidence_sha256": "34119248766f7120e8289212f442864992f6f8f29e5e305319e3efcb83c806b3",
+      "compositor_evidence_sha256": "eb3a76cb518d9ca225021340104ddbbc876f374f71133e761e14a2e5d6085f99",
+      "original_png_sha256": {
+        "rendered_sha256": "1907c55ddc3bb61e519f4384f078d13178d3ec23305e7604264e4fd3ba843298",
+        "guest_sha256": "52ea040d4b59245e2640ec1e8eb72d901bbd3b424cec9bc30a0427eb30fbacd7"
+      }
+    },
+    {
+      "mode": "ppc16",
+      "depth": 16,
+      "scale": 0.75,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc16-scrolled-0.75.png",
+        "--capture-scale",
+        "0.75",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc16-scrolled-0.75.png",
+      "rendered_sha256": "25eca1f986bb7a27bebec6791ebf155d45fd1759ac01acb37908896ce13063e7",
+      "guest_sha256": "f09c710b3bcda1eaa901263ea0108824e347fa49e189e0de473a35f382781913",
+      "evidence_sha256": "573d769fb94fe892ed783caafda6018da17f304c0a01cc7499d5cd501fac3389",
+      "compositor_evidence_sha256": "ac2a2353bdfa84f7c28b158118b9809f1453901f665788271076427399fb9b47",
+      "original_png_sha256": {
+        "rendered_sha256": "d6dfa6fb8283ff9c9e38e87cd8fd1572af167aaaa739a490bccbcd4a77bfd839",
+        "guest_sha256": "ab529c98d88f464b177962a944810803cb552db22cebe83a47cbcff44db2c661"
+      }
+    },
+    {
+      "mode": "ppc16",
+      "depth": 16,
+      "scale": 1,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc16-scrolled-1.png",
+        "--capture-scale",
+        "1",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc16-scrolled-1.png",
+      "rendered_sha256": "fe13cbb87dbb7f6d5b9871f4bd6f2a30dd2fba32b21924c1baa39d1e82974f8e",
+      "guest_sha256": "f09c710b3bcda1eaa901263ea0108824e347fa49e189e0de473a35f382781913",
+      "evidence_sha256": "4edf08aa95c8144a83f74003113d33fbf61069c17b5b7ce717a67127b0afd629",
+      "compositor_evidence_sha256": "19a3c2e166760a01020e231e6cfa79891ebb0f77b4a3a1acefe66bfb5e465e62",
+      "original_png_sha256": {
+        "rendered_sha256": "35144c63fe8d4016badffebfe44ad3f87ea3c4c523e10550a8b9fd4bb9ca9337",
+        "guest_sha256": "ab529c98d88f464b177962a944810803cb552db22cebe83a47cbcff44db2c661"
+      }
+    },
+    {
+      "mode": "ppc16",
+      "depth": 16,
+      "scale": 1.5,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc16-scrolled-1.5.png",
+        "--capture-scale",
+        "1.5",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc16-scrolled-1.5.png",
+      "rendered_sha256": "926cb5be48d56744de3478088f4013a96125abdc57e421e0f4225f7919de9ca6",
+      "guest_sha256": "f09c710b3bcda1eaa901263ea0108824e347fa49e189e0de473a35f382781913",
+      "evidence_sha256": "b75054b0e0546166e86da99d5be3f4116250386577bc3999f5103918c22945e8",
+      "compositor_evidence_sha256": "d68490059f09995cd5a406e7a33a09a52f3fe840181b2cd18345d6f3cfcb76e3",
+      "original_png_sha256": {
+        "rendered_sha256": "245d963bcdf7c096c285651952f4b5b372c32b355f7bcf9a86ce4183e8c0396b",
+        "guest_sha256": "ab529c98d88f464b177962a944810803cb552db22cebe83a47cbcff44db2c661"
+      }
+    },
+    {
+      "mode": "ppc16",
+      "depth": 16,
+      "scale": 2,
+      "state": "scrolled",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc16-scrolled-2.png",
+        "--capture-scale",
+        "2",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "scrolled",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc16-scrolled-2.png",
+      "rendered_sha256": "69a63f9fd0b6a8eedadd4d0cc5bfdcf57b02ae2b3a1f6eed737a7eddfceeef15",
+      "guest_sha256": "f09c710b3bcda1eaa901263ea0108824e347fa49e189e0de473a35f382781913",
+      "evidence_sha256": "f057b66f5e27cb971b651eacdb5f871c2cddfa5fdc80f629c050f97a443d8e72",
+      "compositor_evidence_sha256": "7e118d689631116197e7be0faa41c779251b57a0fc0d9dfcfed38ac589d7d74f",
+      "original_png_sha256": {
+        "rendered_sha256": "2fbd5aa4434ac3d3847e34dd908ab0751f7c45a31d85278e4bdee3844945ea2d",
+        "guest_sha256": "ab529c98d88f464b177962a944810803cb552db22cebe83a47cbcff44db2c661"
+      }
+    },
+    {
+      "mode": "ppc16",
+      "depth": 16,
+      "scale": 0.75,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc16-inactive-0.75.png",
+        "--capture-scale",
+        "0.75",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc16-inactive-0.75.png",
+      "rendered_sha256": "a6f06c7ea38264a4185ebae7ae5d5082b4b6e2049ceaa30e67b3d4404f98053b",
+      "guest_sha256": "79c63897dd527755c18b533deb8e05973e084465ee65466e49619796340ddddc",
+      "evidence_sha256": "928f1071fa5df81af16defc70d3952130e4a78b978a7ce45ea2a8ac4e5e8050c",
+      "compositor_evidence_sha256": "24887762246deb47bc04c3fd94da8d0d24ffa413beab0498f7487182d0ac542f",
+      "original_png_sha256": {
+        "rendered_sha256": "2ff9ae798536977cc350eea344c6eedca8205c53ab65817efd9bdcb5bd6040ea",
+        "guest_sha256": "c810716532fd7fe63736b8dfe6eeb94cdb9b7fb91c64dcfd9de4930e7668a3ea"
+      }
+    },
+    {
+      "mode": "ppc16",
+      "depth": 16,
+      "scale": 1,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc16-inactive-1.png",
+        "--capture-scale",
+        "1",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc16-inactive-1.png",
+      "rendered_sha256": "dc0c63e012edf5c193fb592e1aa809f06ef9b974342115974063043c9604c67b",
+      "guest_sha256": "79c63897dd527755c18b533deb8e05973e084465ee65466e49619796340ddddc",
+      "evidence_sha256": "bdf1bf36730de5346cb9666264ca175e749ad346022fcc479a0d3bf0c61bc764",
+      "compositor_evidence_sha256": "3dee149167198f30b7d28958e831b195be426b39b79c2cb096c70149ed4e4753",
+      "original_png_sha256": {
+        "rendered_sha256": "54b26fae0e23671b77af213e966870a818877678dcb2933e555c9fb224079cee",
+        "guest_sha256": "c810716532fd7fe63736b8dfe6eeb94cdb9b7fb91c64dcfd9de4930e7668a3ea"
+      }
+    },
+    {
+      "mode": "ppc16",
+      "depth": 16,
+      "scale": 1.5,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc16-inactive-1.5.png",
+        "--capture-scale",
+        "1.5",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc16-inactive-1.5.png",
+      "rendered_sha256": "ccc2c4e9386d8602ebc37d7e127f906d7adbb5e0ecd5f14a949d6b41e8f7421d",
+      "guest_sha256": "79c63897dd527755c18b533deb8e05973e084465ee65466e49619796340ddddc",
+      "evidence_sha256": "c3471f7f7d432f9a648ed6727ddb3ad15f40560c740e5bcffe798d4d5b39e6a3",
+      "compositor_evidence_sha256": "e1f3caa00d5e3e44963d0c56d09a119d991dedfb611e164a5175d21f91b73067",
+      "original_png_sha256": {
+        "rendered_sha256": "0309ab17c1cb394165c27d5473ef8a6a4cee54587e534b6cb2b261437bd85feb",
+        "guest_sha256": "c810716532fd7fe63736b8dfe6eeb94cdb9b7fb91c64dcfd9de4930e7668a3ea"
+      }
+    },
+    {
+      "mode": "ppc16",
+      "depth": 16,
+      "scale": 2,
+      "state": "inactive",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc16-inactive-2.png",
+        "--capture-scale",
+        "2",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "inactive",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc16-inactive-2.png",
+      "rendered_sha256": "81849591d8a515c61bc692810f98997783932ea5bb62e018a98a4266acc8728f",
+      "guest_sha256": "79c63897dd527755c18b533deb8e05973e084465ee65466e49619796340ddddc",
+      "evidence_sha256": "a17a353f1439ee773654ed6281d5b5ee3c6a7c3fde1fec6d1fea31f3fe7d5eef",
+      "compositor_evidence_sha256": "684f4539536e190863e994cf79b404c15c60b3811176eb08891cbe44f960841f",
+      "original_png_sha256": {
+        "rendered_sha256": "ae7c735cc35f9a9fdab8477b25c7a9001cb4107856b30d905d33c513d5c7d8cc",
+        "guest_sha256": "c810716532fd7fe63736b8dfe6eeb94cdb9b7fb91c64dcfd9de4930e7668a3ea"
+      }
+    },
+    {
+      "mode": "ppc16",
+      "depth": 16,
+      "scale": 0.75,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc16-reactivated-0.75.png",
+        "--capture-scale",
+        "0.75",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc16-reactivated-0.75.png",
+      "rendered_sha256": "89e1121fb636c8db7bcd885efecb017461dd775c44ac5bc0ac0477ec6860e0da",
+      "guest_sha256": "ee827fa2d54f523b458c9ef00897ed8fe84f27dfaec23e67ace24fb153e44d54",
+      "evidence_sha256": "5d50469a93c2c54f78dac1ae58631712c3e10312d88cbf8b8f123f42b17e85f0",
+      "compositor_evidence_sha256": "05590254fe2a241fa414e3ecc2c1de70532271407640eefbffe8b5c5d22c03ea",
+      "original_png_sha256": {
+        "rendered_sha256": "3f42562dc031219b1e95cb7f8b9c634a3333390f9896b03fa59b31e32360c3a2",
+        "guest_sha256": "8a5510b78468d0c7f846888c0d89ce6d2160ab66479aed7c6662e17d88ec7cf5"
+      }
+    },
+    {
+      "mode": "ppc16",
+      "depth": 16,
+      "scale": 1,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc16-reactivated-1.png",
+        "--capture-scale",
+        "1",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc16-reactivated-1.png",
+      "rendered_sha256": "4bdcdde1be8bc2a085502b4e6604ae915d6e62fe21403ee093415540d45abb08",
+      "guest_sha256": "ee827fa2d54f523b458c9ef00897ed8fe84f27dfaec23e67ace24fb153e44d54",
+      "evidence_sha256": "bd7c9f1ba4da741db75575890465276ce33943f82a5cf79a3939886ba44f26ca",
+      "compositor_evidence_sha256": "28246cd2d607920b5019a29e9cd621dbf357d524492780e08bf3b900aa7685be",
+      "original_png_sha256": {
+        "rendered_sha256": "0bc11622d23bc0319ffad7c1e242355027f2d3ac39c80ce27b7904943cebe399",
+        "guest_sha256": "8a5510b78468d0c7f846888c0d89ce6d2160ab66479aed7c6662e17d88ec7cf5"
+      }
+    },
+    {
+      "mode": "ppc16",
+      "depth": 16,
+      "scale": 1.5,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc16-reactivated-1.5.png",
+        "--capture-scale",
+        "1.5",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc16-reactivated-1.5.png",
+      "rendered_sha256": "cddf1b09a7d010ee974140f27a630188135dbed722c5ec03b3c1febe0aadb40e",
+      "guest_sha256": "ee827fa2d54f523b458c9ef00897ed8fe84f27dfaec23e67ace24fb153e44d54",
+      "evidence_sha256": "54ed8eba45a6e0f0a277feb9dd3f0f6263b560e6156ea43da88381b014e5dbc0",
+      "compositor_evidence_sha256": "6b03b83f1129dcbce9f6920cc01a383308a3319dbf2c9441eadeb07ce95fd5c8",
+      "original_png_sha256": {
+        "rendered_sha256": "9b534509112293be3ece50bb3d7d6d279daef2669cfe434d0f19925df86cfbbb",
+        "guest_sha256": "8a5510b78468d0c7f846888c0d89ce6d2160ab66479aed7c6662e17d88ec7cf5"
+      }
+    },
+    {
+      "mode": "ppc16",
+      "depth": 16,
+      "scale": 2,
+      "state": "reactivated",
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--capture-lists-transition",
+        "/private/tmp/systemless-smooth-transitions-c9ce4559/ppc16-reactivated-2.png",
+        "--capture-scale",
+        "2",
+        "--capture-lists-retain-native-source",
+        "--capture-list-transition",
+        "reactivated",
+        "--prefer-powerpc"
+      ],
+      "rendered": "ppc16-reactivated-2.png",
+      "rendered_sha256": "8cafa206c99a27bfa371327046e7dcf861447f159d4f2dee88fbac5dda1a49d7",
+      "guest_sha256": "ee827fa2d54f523b458c9ef00897ed8fe84f27dfaec23e67ace24fb153e44d54",
+      "evidence_sha256": "9c07797c91abfaf134e47c3dcfcc966d0b2c35c2231d1dc45523e52684a3df14",
+      "compositor_evidence_sha256": "06200c0960c383da3ea74c71b8fd4ade353b8c94445e3a5eb50a7c573cfb10a6",
+      "original_png_sha256": {
+        "rendered_sha256": "6b25e391ccd9977d3a0da31d0ebe130d27ddaffe61c74602f909af7c1d05e790",
+        "guest_sha256": "8a5510b78468d0c7f846888c0d89ce6d2160ab66479aed7c6662e17d88ec7cf5"
+      }
+    }
+  ],
+  "complete": true,
+  "presentation": "smooth retained-source appearance review",
+  "pixel_qualification": false,
+  "scope": "Standard list fixture owned paint and guest-button states; no general lifecycle, GPUI pointer or native host observer qualification",
+  "states": [
+    "scrolled",
+    "inactive",
+    "reactivated"
+  ],
+  "archive": "PNG compression only; decoded RGBA unchanged; visual review is explicitly scoped"
+}
