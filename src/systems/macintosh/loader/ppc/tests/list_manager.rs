@@ -299,7 +299,7 @@ fn native_list_manager_draws_cell_backgrounds_in_port_coordinates() {
     let view_ptr = scratch;
     let bounds_ptr = scratch + 8;
     loaded.memory.add_region(scratch, vec![0; 24]);
-    ppc_write_rect(&mut loaded.memory, view_ptr, 10, 20, 50, 120).unwrap();
+    ppc_write_rect(&mut loaded.memory, view_ptr, 10, 20, 55, 120).unwrap();
     ppc_write_rect(&mut loaded.memory, bounds_ptr, 0, 0, 3, 1).unwrap();
     loaded.cpu.gpr[3] = view_ptr;
     loaded.cpu.gpr[4] = bounds_ptr;
@@ -324,6 +324,7 @@ fn native_list_manager_draws_cell_backgrounds_in_port_coordinates() {
         .list_manager
         .with_record_mut(list, |record| {
             record.selected.insert((0, 0));
+            record.cells.insert((2, 0), b"MMMMMMMMMMMM".to_vec());
         })
         .unwrap();
 
@@ -360,6 +361,15 @@ fn native_list_manager_draws_cell_backgrounds_in_port_coordinates() {
         Some(white),
         "selected list background must not remain at port-local screen coordinates"
     );
+    for y in 95..105 {
+        for x in 170..270 {
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                Some(white),
+                "text in a partially visible final row must stay inside rView"
+            );
+        }
+    }
 }
 
 #[test]
@@ -485,6 +495,7 @@ fn cloned_native_adapter_detaches_list_manager_state() {
         PpcListRecord {
             handle: 0x0032_1000,
             generation: crate::list_manager::new_list_generation(),
+            definition_id: 0,
             cells_handle: 0x0032_2000,
             view_rect: (0, 0, 40, 100),
             data_bounds: (0, 0, 2, 1),
@@ -512,6 +523,7 @@ fn cloned_native_adapter_detaches_list_manager_state() {
         PpcListRecord {
             handle: 0x0032_3000,
             generation: crate::list_manager::new_list_generation(),
+            definition_id: 0,
             cells_handle: 0x0032_4000,
             view_rect: (0, 0, 20, 100),
             data_bounds: (0, 0, 1, 1),

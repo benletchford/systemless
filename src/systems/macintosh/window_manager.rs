@@ -108,7 +108,10 @@ fn snapshot_region_bounds(
     (bounds.2 > bounds.0 && bounds.3 > bounds.1).then_some(bounds)
 }
 
-fn snapshot_port_bounds_origin(read_byte: &mut impl FnMut(u32) -> u8, window: u32) -> (i16, i16) {
+pub(crate) fn snapshot_port_bounds_origin(
+    read_byte: &mut impl FnMut(u32) -> u8,
+    window: u32,
+) -> (i16, i16) {
     let port_version = snapshot_read_word(read_byte, window.wrapping_add(6));
     if port_version & 0xC000 == 0 {
         return (
@@ -131,7 +134,10 @@ fn snapshot_port_bounds_origin(read_byte: &mut impl FnMut(u32) -> u8, window: u3
     )
 }
 
-fn snapshot_local_rect_to_global(rect: WindowRect, origin: (i16, i16)) -> WindowRect {
+pub(crate) fn snapshot_local_rect_to_global(
+    rect: WindowRect,
+    origin: (i16, i16),
+) -> WindowRect {
     (
         rect.0.wrapping_sub(origin.0),
         rect.1.wrapping_sub(origin.1),

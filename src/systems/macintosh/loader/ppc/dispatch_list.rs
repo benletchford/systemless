@@ -1118,6 +1118,7 @@ fn ppc_list_new(
     let record = PpcListRecord {
         handle: list_handle,
         generation: crate::list_manager::new_list_generation(),
+        definition_id: cpu.gpr[6] as u16 as i16,
         cells_handle,
         view_rect: view,
         data_bounds,
@@ -1313,7 +1314,9 @@ pub(super) fn ppc_list_draw(
                 PPC_RGB_BLACK
             };
             let _ = ppc_fill_front_rect(memory, front, rect, background);
-            let _ = ppc_draw_text_bytes(
+            // LDraw clips each LDEF draw to its cell (More Macintosh Toolbox,
+            // 1993, p. 4-88); the final cell is also bounded by rView.
+            let _ = ppc_draw_text_bytes_clipped(
                 memory,
                 gworlds,
                 port,
@@ -1323,6 +1326,12 @@ pub(super) fn ppc_list_draw(
                 PPC_QD_TEXT_MODE_SRC_OR,
                 foreground,
                 None,
+                Some((
+                    top,
+                    left,
+                    top.saturating_add(cell_v).min(view_bottom),
+                    left.saturating_add(cell_h).min(view_right),
+                )),
                 record
                     .cells
                     .get(&(row, column))

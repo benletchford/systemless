@@ -49,6 +49,8 @@ zoom hit region; resizing still uses the guest's original lower-right hit region
 - Standard document-window buttons, checkboxes, and radio buttons use GPUI Kit
   controls over live Control Manager rectangles. A Systemless GPUI scrollbar
   draws its arrows and thumb from the guest value and range.
+- Standard LDEF 0 lists use themed GPUI rows with guest-owned text, selection,
+  and pointer events; custom list definitions retain their guest pixels.
 - GPUI-drawn standard title bars, frame edges, close and zoom glyphs, with
   active/inactive colours and close-button press feedback.
 - The Systemless logo in the menu bar, and GPUI-drawn document gutters and
@@ -144,3 +146,9 @@ Use `--capture-controls-held` to capture the composed surface before release.
 The guest value is asserted unchanged while the Systemless GPUI thumb outline
 tracks the held pointer: [68K](tests/toolbox-showcase/reference/gpui-demo/02-controls-held-68k.png)
 and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/02-controls-held-ppc.png).
+
+Use `--capture-lists` and `--capture-lists-selected` for standard list rows
+before and after a guest selection: [68K initial](tests/toolbox-showcase/reference/gpui-demo/15-lists-68k.png),
+[68K selected](tests/toolbox-showcase/reference/gpui-demo/15-lists-selected-68k.png),
+[PowerPC initial](tests/toolbox-showcase/reference/gpui-demo/15-lists-ppc.png), and
+[PowerPC selected](tests/toolbox-showcase/reference/gpui-demo/15-lists-selected-ppc.png).
