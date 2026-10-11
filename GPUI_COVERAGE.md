@@ -1,5 +1,29 @@
 # GPUI Kit system-interface coverage
 
+### Canonical classic TextEdit face measurement (2026-10-12)
+
+Plain classic TextEdit wrapping, TEGetPoint and TEGetOffset now measure with
+the TERec's face explicitly. Previously their glyph advances inherited the
+caller's cached TextFace, even though drawing installs the record's own face.
+This could change wrapping and insertion geometry when unrelated drawing
+changed the caller style. Measurement preserves that caller state. Generic
+dialog text still measures with its selected current-port style, and the
+existing guest-font scaling and style-advance policy is retained.
+
+The new regression passes seven record faces, three alignments and four
+caller faces, checking wrap starts, insertion-point stability and inverse hit
+testing without mutating caller style. All 431 classic dialog tests pass
+(0.43s) on the final cleaned source; 42 related TextEdit tests also pass
+(4.24s), including shared/PPC snapshot and geometry regressions. These are functional tests using root
+optimization level 0 and incremental CI compilation, not performance results.
+Nonzero-face GPUI ownership remains guarded. PPC plain-face behavior,
+complete paint/style qualification, actual styled scenes across scales and
+independent Macintosh font fidelity remain unfinished. This is a measurement
+prerequisite for wider faithful GPUI text rendering, not completion of it.
+
+The earlier default desktop check passes at `96db9621` (1m17s), before this
+measurement change; it is not a current-source build claim for this fix.
+
 ### Current optimized EV and multiline checks (2026-10-12)
 
 Default optimized CI build of `ae2cd138` passes (2m49s, one job, locked/offline,

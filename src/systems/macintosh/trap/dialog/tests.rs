@@ -17559,6 +17559,36 @@
         te_handle
     }
 
+    #[test]
+    fn plain_textedit_layout_and_points_use_record_face_without_changing_caller_style() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let text = b"HELLO WORLD HELLO WORLD";
+        let handle = make_te_with_text(&mut disp, &mut bus, text);
+        for face in [0u8, 1, 8, 16, 32, 64, 31] {
+            for just in [0i16, 1, -1] {
+                let ptr = bus.read_long(handle);
+                bus.write_byte(ptr + TrapDispatcher::TE_TX_FACE_OFFSET, face);
+                bus.write_word(ptr + TrapDispatcher::TE_DEST_RECT_OFFSET + 6, 50);
+                bus.write_word(ptr + TrapDispatcher::TE_JUST_OFFSET, just as u16);
+                let mut reference = None;
+                for caller_face in [0i16, 1, 31, 64] {
+                    disp.tx_face = caller_face;
+                    disp.te_recalculate_layout(&mut bus, handle);
+                    let starts = TrapDispatcher::te_line_starts(&bus, handle);
+                    let points: Vec<_> = (0..text.len()).map(|offset|
+                        disp.te_char_to_point(&bus, handle, offset)).collect();
+                    let hit = disp.te_point_to_char(&bus, handle, points[1]);
+                    assert_eq!(hit, 1, "face={face} just={just} caller={caller_face}");
+                    if let Some((expected_starts, expected_points)) = &reference {
+                        assert_eq!(&starts, expected_starts, "wrapping depends on caller face");
+                        assert_eq!(&points, expected_points, "insertion points depend on caller face");
+                    } else { reference = Some((starts, points)); }
+                    assert_eq!(disp.tx_face, caller_face, "measuring must not mutate caller style");
+                }
+            }
+        }
+    }
+
     // ---- TENew ----
 
     #[test]

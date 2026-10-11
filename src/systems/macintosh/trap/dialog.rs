@@ -1230,7 +1230,7 @@ impl super::TrapDispatcher {
             Vec::new()
         };
         let uses_styled_runs = !styled_runs.is_empty() && Self::te_is_styled_record(bus, te_ptr);
-        let (font, _, size, _, _, _) = self.te_primary_style(bus, te_handle);
+        let (font, face, size, _, _, _) = self.te_primary_style(bus, te_handle);
         let rect_width = dest_rect.3.saturating_sub(dest_rect.1);
         // Per Inside Macintosh: Text 1993, lines 7320-7323:
         //   teJustLeft   =  0 (flush left — system default for LTR)
@@ -1250,9 +1250,10 @@ impl super::TrapDispatcher {
                             line_end,
                         )
                     } else {
-                        self.te_measure_text_width(
+                        self.te_measure_text_width_for_face(
                             font,
                             Self::font_lookup_size(size),
+                            face,
                             &text_bytes,
                             line_start,
                             line_end,
@@ -1282,9 +1283,10 @@ impl super::TrapDispatcher {
                         clamped,
                     )
                 } else {
-                    self.te_measure_text_width(
+                    self.te_measure_text_width_for_face(
                         font,
                         Self::font_lookup_size(size),
+                        face,
                         &text_bytes,
                         line_start,
                         clamped,
@@ -1423,7 +1425,7 @@ impl super::TrapDispatcher {
             Vec::new()
         };
         let uses_styled_runs = !styled_runs.is_empty() && Self::te_is_styled_record(bus, te_ptr);
-        let (font, _, size, _, _, _) = self.te_primary_style(bus, te_handle);
+        let (font, face, size, _, _, _) = self.te_primary_style(bus, te_handle);
         let rect_width = dest_rect.3.saturating_sub(dest_rect.1);
         let left_offset = match just {
             1 | -1 => {
@@ -1435,9 +1437,10 @@ impl super::TrapDispatcher {
                         line_end,
                     )
                 } else {
-                    self.te_measure_text_width(
+                    self.te_measure_text_width_for_face(
                         font,
                         Self::font_lookup_size(size),
+                        face,
                         &text_bytes,
                         line_start,
                         line_end,
@@ -1463,7 +1466,7 @@ impl super::TrapDispatcher {
                 let style = Self::te_style_at_offset(&styled_runs, index);
                 Self::te_styled_char_width(style, *byte)
             } else {
-                self.te_char_width(font, Self::font_lookup_size(size), *byte)
+                self.te_char_width_for_face(font, Self::font_lookup_size(size), face, *byte)
             };
             // Hit-test against the glyph midpoint so a click on the right
             // half of a character lands on the next offset, matching the
@@ -2878,14 +2881,17 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn te_char_width(&self, font: i16, size: i16, byte: u8) -> i16 {
+    // TERec measurement must not inherit the caller's cached TextFace.
+    // Generic dialog text callers still select the current port's face.
+    fn te_char_width_for_face(&self, font: i16, size: i16, face: i16, byte: u8) -> i16 {
         let size = Self::font_lookup_size(size);
         let (_face, scale) = get_font_face_scaled(font, size);
+        let extra = crate::quickdraw::text::QuickDrawTextStyle::from_bits(face as u8).advance_extra() as i16;
         let ch = byte as char;
         if let Some((glyph, _)) = crate::quickdraw::text::get_glyph(font, size, ch) {
-            self.glyph_advance(glyph) * scale
+            (glyph.advance as i16 + extra) * scale
         } else {
-            self.missing_glyph_advance() * scale
+            (6 + extra) * scale
         }
     }
 
@@ -2897,9 +2903,15 @@ impl super::TrapDispatcher {
         start: usize,
         end: usize,
     ) -> i16 {
+        self.te_measure_text_width_for_face(font, size, self.tx_face, text_bytes, start, end)
+    }
+
+    fn te_measure_text_width_for_face(
+        &self, font: i16, size: i16, face: i16, text_bytes: &[u8], start: usize, end: usize,
+    ) -> i16 {
         let mut width = 0i16;
         for &b in &text_bytes[start..end] {
-            width += self.te_char_width(font, size, b);
+            width += self.te_char_width_for_face(font, size, face, b);
         }
         width
     }
@@ -2915,8 +2927,14 @@ impl super::TrapDispatcher {
         text_bytes: &[u8],
         box_width: i16,
     ) -> Vec<(usize, usize)> {
+        self.te_wrap_lines_for_face(font, size, self.tx_face, text_bytes, box_width)
+    }
+
+    fn te_wrap_lines_for_face(
+        &self, font: i16, size: i16, face: i16, text_bytes: &[u8], box_width: i16,
+    ) -> Vec<(usize, usize)> {
         crate::quickdraw::text::wrap_classic_text(text_bytes, box_width, |_, byte| {
-            self.te_char_width(font, size, byte)
+            self.te_char_width_for_face(font, size, face, byte)
         })
         .into_iter()
         .map(|line| (line.start, line.next))
@@ -2932,7 +2950,7 @@ impl super::TrapDispatcher {
         let text_bytes = Self::te_text_bytes(bus, te_handle);
         let text_len = text_bytes.len();
         let dest_rect = Self::te_read_rect(bus, te_ptr + Self::TE_DEST_RECT_OFFSET);
-        let (font, _, size, _, line_height, font_ascent) = self.te_primary_style(bus, te_handle);
+        let (font, face, size, _, line_height, font_ascent) = self.te_primary_style(bus, te_handle);
         let styled = Self::te_is_styled_record(bus, te_ptr);
         let style_runs = if styled {
             self.te_style_runs(bus, te_handle, text_len)
@@ -2945,7 +2963,7 @@ impl super::TrapDispatcher {
         } else if uses_styled_runs {
             self.te_wrap_lines_styled(&style_runs, &text_bytes, (dest_rect.3 - dest_rect.1).max(0))
         } else {
-            self.te_wrap_lines(font, size, &text_bytes, (dest_rect.3 - dest_rect.1).max(0))
+            self.te_wrap_lines_for_face(font, size, face, &text_bytes, (dest_rect.3 - dest_rect.1).max(0))
         };
         let line_count = lines.len();
         let te_ptr = Self::ensure_te_record_line_capacity(bus, te_handle, line_count);
