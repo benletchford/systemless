@@ -10327,7 +10327,7 @@ fn menu_id_setter_import_updates_live_lookup_and_preserves_menu_contents() {
             let menu = install_test_menu(&mut loaded, scratch, 128, b"Game", b"Play/P;Quit/Q");
             let other = install_test_menu(&mut loaded, scratch + 0x400, 129, b"Help", b"About");
             let record = loaded.memory.read_u32_be(menu).unwrap();
-            let handles = test_handle_records!(loaded);
+            let handles = test_handle_records!(loaded).to_vec();
             let before = ppc_menu_handle_bytes(&mut loaded.memory, &handles, menu).unwrap();
             let mut old_id = 128;
             for id in [0x1234_007f_u32, 0xffff_8000, 0xabcd_ffff] {
