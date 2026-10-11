@@ -5760,3 +5760,15 @@ Evidence: `reference/gpui-demo/notification-direct-mixed`. This verifies the
 backend helper, not a frontend acknowledgment or runner scheduling integration.
 Nested interrupts, visible notifications, sound completion and shared-compositor
 dismissal across modes remain open. No production gate closes.
+
+### PPC delivery completion without a response procedure (2026-10-11)
+
+The public runner delivery entry now accepts native notifications with a null
+response or automatic removal sentinel. It checks the displayed snapshot and
+current request identity, marks completion once, and uses the native NMRemove
+queue-link path for automatic removal. Guest CPU state is unchanged; stale
+identities and duplicate completion decline. Checked field addresses prevent
+wrapping invalid guest records. Final17 notification regressions pass. The
+runner test initializes a native application and injects the queue record;
+it does not establish visible frontend delivery. Native procedure scheduling,
+notification rendering/input, marks/icons and sound completion remain open.

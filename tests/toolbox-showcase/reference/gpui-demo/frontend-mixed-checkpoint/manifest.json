@@ -1,0 +1,10 @@
+{
+  "parent_checkpoint": "e0d709d8",
+  "result": {
+    "passed": 189,
+    "failed": 0,
+    "ignored": 1,
+    "seconds": 8401.92
+  },
+  "scope": "Mixed-checkpoint regression only: later builds replaced current_exe used by child tests. Does not qualify a final release candidate."
+}

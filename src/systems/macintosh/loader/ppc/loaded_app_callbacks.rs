@@ -6,6 +6,25 @@
 use super::*;
 
 impl PpcLoadedApp {
+    pub(crate) fn complete_notification_without_procedure(
+        &mut self, request: u32, instance: u64, response: u32,
+    ) -> bool {
+        let Some(type_address) = request.checked_add(4) else { return false; };
+        let Some(response_address) = request.checked_add(28) else { return false; };
+        if !matches!(response, 0 | u32::MAX)
+            || self.toolbox_startup.notification_requests.instance_id(request) != Some(instance)
+            || self.memory.read_u16_be(type_address) != Some(8)
+            || self.memory.read_u32_be(response_address) != Some(response)
+            || !self.toolbox_startup.notification_requests.begin_response(request, instance) {
+            return false;
+        }
+        if response == u32::MAX {
+            return super::dispatch_system::ppc_remove_notification(&mut self.memory,
+                &mut self.toolbox_startup.notification_requests, request) == 0;
+        }
+        true
+    }
+
     /// Notification responses retain foreground CPU state between bounded
     /// native slices or while a direct Mixed Mode callee owns execution.
     #[allow(clippy::too_many_arguments)]
