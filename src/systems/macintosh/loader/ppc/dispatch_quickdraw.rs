@@ -782,7 +782,39 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::FillRect | PpcImportDispatcherTarget::FillCRect => {
+        PpcImportDispatcherTarget::FillRect => {
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                let fore = (
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                );
+                let mut pattern = [0u8; 8];
+                if memory.read_bytes_into(cpu.gpr[4], &mut pattern).is_some() {
+                    let back = (
+                        *quickdraw_back_color,
+                        toolbox_startup
+                            .quickdraw_back_indices
+                            .get(&current_gworld)
+                            .copied(),
+                    );
+                    let _ =
+                        ppc_fill_rect(memory, gworlds, current_gworld, rect, pattern, fore, back);
+                } else {
+                    let _ = ppc_paint_rect_bounds(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        rect,
+                        fore.0,
+                        fore.1,
+                    );
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        // FillCRect keeps the solid fill until the PowerPC path can decode
+        // a PixPat.
+        PpcImportDispatcherTarget::FillCRect => {
             if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
                 let _ = ppc_paint_rect_bounds(
                     memory,
