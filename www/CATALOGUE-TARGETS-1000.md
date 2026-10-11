@@ -144,7 +144,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 99 | 287 | Battleship | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
 | 100 | 288 | Yahtzee! | 68K (original 3.2.0) | U | [Original 3.2.0 archive](https://www.vintageapplemac.com/files/games/Yahtzee%21%20v3.2.0.sit); [intake evidence](CATALOGUE-SOURCES.md#yahtzee-320--target-100-original-package-intake) |
 | 101 | 289 | Shanghai Dynasty | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shanghai-dynasty) |
-| 102 | 290 | Mahjong | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 102 | 290 | Mahjong | Original 1.0.5 International CODE-only 68K | P | [Original noncommercial grant; native and browser discard/replies verified](CATALOGUE-SOURCES.md#mahjong-105--primary-102-original-sti3-installer-intake); [#4672](https://github.com/benletchford/systemless/issues/4672) |
 | 103 | 291 | MacTaipei | Original CODE-only 68K; pair removal verified | U | [Exact original intake; scoped archival request, broader hosting held](CATALOGUE-SOURCES.md#mactaipei-10--primary-103-original-package-intake); [#4670](https://github.com/benletchford/systemless/issues/4670) |
 | 104 | 292 | Pegged | 68K verified; native PPC absent | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 105 | 293 | Powerball | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
