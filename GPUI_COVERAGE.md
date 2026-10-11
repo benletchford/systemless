@@ -1,5 +1,29 @@
 # GPUI Kit system-interface coverage
 
+### Standard File selector image lifetime (2026-10-12)
+
+Open-panel volume indicators retain one prepared image keyed by guest identity,
+generation, height and RGBA pixels. Identical pixels reuse it even when a fresh
+snapshot allocation arrives. Changed pixels or owner lifetime retire the old
+image from the current window atlas. Popup presentation, clipping, invalid
+chrome and dismissal retire unused prepared indicators at the end of rendering.
+Guest pixels, conversion, geometry and event routing are unchanged.
+
+The extended `themed_standard_file_actions_forward_guest_clicks` regression
+passes (one test, zero failures, 2.87s). It checks actual atlas insertion,
+equal-content reuse, generation replacement, pixel mutation and fallback
+retirement alongside existing pointer/keyboard dispatch assertions. This does
+not independently qualify CPU/display appearance or native performance.
+
+The first unoptimized EV image-retirement comparison baseline failed after
+300 seconds: 7,602 observed updates but only 2/14 actions, with the reviewed
+timeout image still at the main menu and no pilot loaded. Maximum resident
+size was 209,108,992 bytes and peak footprint 3,969,030,384 bytes; those are
+failed-workflow resource observations, not gameplay measurements. Its paired
+after run was not launched. Revised matching runs use 30-update minimum held
+inputs; results remain pending. Optimized/native gameplay qualification remains
+open.
+
 ### Current-window GPU image retirement (2026-10-12)
 
 GPUI temporarily removes the current window from `App.windows` during its

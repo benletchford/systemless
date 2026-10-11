@@ -565,6 +565,13 @@ mod desktop {
         image: Arc<RenderImage>,
     }
 
+    struct PreparedVolumeIndicator {
+        owner: (u32, u64),
+        height: u32,
+        pixels: Arc<[u8]>,
+        image: Arc<RenderImage>,
+    }
+
     #[derive(Clone, Default)]
     struct Update {
         identity: Option<Arc<game::ApplicationIdentity>>,
@@ -1138,6 +1145,7 @@ mod desktop {
         text_pointer_capture: Option<(u32, u64)>,
         image: Option<Arc<RenderImage>>,
         prepared_buttons: Option<PreparedButtonImage>,
+        prepared_volume_indicator: Option<PreparedVolumeIndicator>,
         logo: Arc<Image>,
         width: u32,
         height: u32,
@@ -1436,6 +1444,7 @@ mod desktop {
                 host_cursor: Default::default(),
                 image: None,
                 prepared_buttons: None,
+                prepared_volume_indicator: None,
                 logo: Arc::new(Image::from_bytes(
                     ImageFormat::Svg,
                     include_bytes!("assets/systemless-logo.svg").to_vec(),
@@ -1721,6 +1730,7 @@ mod desktop {
 
     impl Render for Demo {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let mut volume_indicator_used = false;
             if self._modal_keys.is_none() {
                 let view = cx.entity().downgrade();
                 let owner = window.window_handle();
@@ -2990,10 +3000,24 @@ mod desktop {
                         }
                         if let Some(pixels) = panel.volume_indicator_rgba.as_ref().filter(|_| panel.volume_popup.is_none()) {
                             let height = (layout.volume.2 - layout.volume.0) as u32;
-                            if let Some(rgba) = image::RgbaImage::from_raw(19, height, gpui_pixels(pixels.to_vec())) {
-                                let source = Arc::new(RenderImage::new(vec![image::Frame::new(rgba)]));
+                            let owner = (panel.guest_id, panel.generation);
+                            let current = self.prepared_volume_indicator.as_ref().is_some_and(|prepared|
+                                prepared.owner == owner && prepared.height == height && prepared.pixels == *pixels);
+                            if !current {
+                                if let Some(old) = self.prepared_volume_indicator.take() {
+                                    cx.drop_image(old.image, Some(window));
+                                }
+                                if let Some(rgba) = image::RgbaImage::from_raw(19, height, gpui_pixels(pixels.to_vec())) {
+                                    self.prepared_volume_indicator = Some(PreparedVolumeIndicator {
+                                        owner, height, pixels: pixels.clone(),
+                                        image: Arc::new(RenderImage::new(vec![image::Frame::new(rgba)])),
+                                    });
+                                }
+                            }
+                            if let Some(prepared) = self.prepared_volume_indicator.as_ref() {
+                                volume_indicator_used = true;
                                 overlay = overlay.child(at((layout.volume.0, layout.volume.3 - 19, layout.volume.2, layout.volume.3))
-                                    .overflow_hidden().child(img(source).size_full()));
+                                    .overflow_hidden().child(img(prepared.image.clone()).size_full()));
                             }
                         }
                         overlay = overlay.child(
@@ -3656,6 +3680,11 @@ mod desktop {
             } else { None };
             let menu_hovered = (self.menu_hovered || !self.open_menus.is_empty())
                 && !self.menu_presented;
+            if !volume_indicator_used {
+                if let Some(old) = self.prepared_volume_indicator.take() {
+                    cx.drop_image(old.image, Some(window));
+                }
+            }
             div()
                 .flex()
                 .flex_col()
@@ -18161,6 +18190,42 @@ mod desktop {
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
                 assert_eq!(window.find("guest-control-button-22-1").focused(), None, "Standard File must remove background controls from keyboard focus");
+                window.draw(cx).clear(cx);
+                let original = view.read(cx).prepared_volume_indicator.as_ref().unwrap().image.clone();
+                assert!(window.has_image_atlas_entry(&original));
+                // Snapshot storage may be replaced without changing pixels.
+                view.update(cx, |demo, cx| {
+                    let panel = demo.standard_file.as_mut().unwrap();
+                    panel.volume_indicator_rgba = Some(panel.volume_indicator_rgba.as_ref().unwrap().to_vec().into());
+                    cx.notify();
+                });
+                window.draw(cx).clear(cx);
+                assert!(std::sync::Arc::ptr_eq(&original, &view.read(cx).prepared_volume_indicator.as_ref().unwrap().image));
+                view.update(cx, |demo, cx| {
+                    demo.standard_file.as_mut().unwrap().generation = 2;
+                    cx.notify();
+                });
+                window.draw(cx).clear(cx);
+                let replaced = view.read(cx).prepared_volume_indicator.as_ref().unwrap().image.clone();
+                assert!(!window.has_image_atlas_entry(&original), "disposed owner must retire selector image");
+                assert!(window.has_image_atlas_entry(&replaced));
+                view.update(cx, |demo, cx| {
+                    demo.standard_file.as_mut().unwrap().generation = 1;
+                    cx.notify();
+                });
+                window.draw(cx).clear(cx);
+                assert!(!window.has_image_atlas_entry(&replaced));
+                let unchanged_owner = view.read(cx).prepared_volume_indicator.as_ref().unwrap().image.clone();
+                view.update(cx, |demo, cx| {
+                    let panel = demo.standard_file.as_mut().unwrap();
+                    let mut pixels = panel.volume_indicator_rgba.as_ref().unwrap().to_vec();
+                    pixels[0] ^= 255;
+                    panel.volume_indicator_rgba = Some(pixels.into());
+                    cx.notify();
+                });
+                window.draw(cx).clear(cx);
+                assert!(!window.has_image_atlas_entry(&unchanged_owner), "changed selector pixels must retire old image");
+                assert!(window.has_image_atlas_entry(&view.read(cx).prepared_volume_indicator.as_ref().unwrap().image));
                 assert_eq!(window.find("guest-standard-open-list-7-1").role(), Some(gpui_kit::Role::ListBox));
                 let row = window.find("guest-standard-open-entry-7-1-0");
                 assert_eq!(row.role(), Some(gpui_kit::Role::ListBoxOption));
@@ -18330,6 +18395,7 @@ mod desktop {
                     window.render_frame(cx);
                     assert!(window.try_find("guest-standard-open-list-7-1").is_none(),
                         "missing or malformed selector chrome must retain the entire guest Open panel");
+                    assert!(view.read(cx).prepared_volume_indicator.is_none(), "fallback must retire selector cache");
                 }
             }).unwrap();
 
