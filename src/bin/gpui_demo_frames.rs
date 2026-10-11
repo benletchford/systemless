@@ -838,6 +838,7 @@ mod tests {
     fn dialog_activation_rejects_stale_disabled_obscured_and_inactive_items() {
         let mut windows = vec![window((50, 50, 180, 220), true, 1)];
         let mut dialogs = vec![DialogSnapshot {
+                    content_revision: 0,
             guest_id: 1, generation: 1, bounds: (50, 50, 180, 220),
             visible: true, active: true, default_item: Some(1),
             cancel_item: None, edit_field: None,
@@ -899,6 +900,7 @@ mod tests {
         back.window.active = false;
         let windows = [front, back];
         let mut dialog = DialogSnapshot {
+                    content_revision: 0,
             guest_id: 1,
             generation: 1,
             bounds: (50, 50, 180, 220),

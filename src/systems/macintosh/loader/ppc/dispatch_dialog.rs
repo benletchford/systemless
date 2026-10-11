@@ -484,7 +484,7 @@ pub(super) fn dispatch_dialog_import(
             })))
         }
         PpcImportDispatcherTarget::SetDialogItem => {
-            ppc_set_dialog_item(cpu, memory, handles);
+            ppc_set_dialog_item(cpu, memory, handles, window_list);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetDialogItemText => {
@@ -2090,6 +2090,7 @@ fn ppc_dispatch_dialog_compatibility(
             if result == PPC_NO_ERR {
                 if let Some(ptr) = memory.read_u32_be(handle) {
                     let _ = memory.write_bytes(ptr, &combined);
+                    window_list.invalidate_dialog_content(dialog);
                 }
             }
             PpcImportAction::ReturnPreserve
@@ -2130,6 +2131,7 @@ fn ppc_dispatch_dialog_compatibility(
             if result == PPC_NO_ERR {
                 if let Some(ptr) = memory.read_u32_be(handle) {
                     let _ = memory.write_bytes(ptr, &bytes);
+                    window_list.invalidate_dialog_content(dialog);
                 }
             }
             PpcImportAction::ReturnPreserve
@@ -2743,6 +2745,7 @@ fn ppc_dispatch_dialog_compatibility(
                 if result == PPC_NO_ERR {
                     if let Some(target_ptr) = memory.read_u32_be(handle) {
                         let _ = memory.write_bytes(target_ptr, &new_bytes);
+                        window_list.invalidate_dialog_content(dialog);
                     }
                 }
             }
@@ -2797,6 +2800,7 @@ fn ppc_dispatch_dialog_compatibility(
                     if result == PPC_NO_ERR {
                         if let Some(target_ptr) = memory.read_u32_be(handle) {
                             let _ = memory.write_bytes(target_ptr, &new_bytes);
+                            window_list.invalidate_dialog_content(dialog);
                         }
                     }
                 }
@@ -3985,7 +3989,7 @@ fn ppc_get_dialog_item(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, handles: &[
     }
 }
 
-fn ppc_set_dialog_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) {
+fn ppc_set_dialog_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord], window_list: &SharedProcessWindowList) {
     let dialog = cpu.gpr[3];
     let item_number = cpu.gpr[4] as u16 as usize;
     let item_type = cpu.gpr[5] as u16;
@@ -4017,6 +4021,7 @@ fn ppc_set_dialog_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcH
     else {
         return;
     };
+    window_list.invalidate_dialog_content(dialog);
     let item_addr = items_ptr.wrapping_add(item.item_offset as u32);
     // Macintosh Toolbox Essentials (1992), pp. 6-120--6-123: mutate the
     // live DITL item's handle, Rect, and type in place without drawing it.

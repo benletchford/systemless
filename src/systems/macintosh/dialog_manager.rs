@@ -720,6 +720,8 @@ pub struct DialogEditTextLayout {
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DialogSnapshot {
+    /// Advances when SetDialogItem replaces content, even with identical values.
+    pub content_revision: u64,
     pub guest_id: u32,
     /// Matches the owning WindowRecord lifetime, even when its pointer is reused.
     pub generation: u64,

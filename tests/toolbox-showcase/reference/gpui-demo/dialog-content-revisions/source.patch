@@ -1,0 +1,311 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index ddf0ddc9..9133ecaa 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -5654,6 +5654,7 @@ mod desktop {
+                     },
+                 ];
+                 demo.dialogs = vec![DialogSnapshot {
++                    content_revision: 0,
+                     guest_id: 1,
+                     generation: 1,
+                     bounds: (50, 50, 180, 240),
+@@ -11106,10 +11107,10 @@ mod desktop {
+                 let dialogs = session.runner_mut().dialog_snapshot();
+                 let windows = session.runner_mut().window_frame_snapshot();
+                 let owner = dialog_text_owner(&dialogs, &windows).expect("standard active modal item");
+-                for mutation in 0..4 {
++                for mutation in 0..5 {
+                     let mut stale = owner.clone();
+                     match mutation { 0 => stale.identity.1 += 1, 1 => stale.item = 7,
+-                        2 => stale.text.push(b'x'), _ => stale.selection = 0..1 }
++                        2 => stale.text.push(b'x'), 3 => stale.selection = 0..1, _ => stale.content_revision += 1 }
+                     assert!(guest_dialog_commit_inputs(&mut session, &stale, b"x").is_none());
+                 }
+                 for bytes in [&b"\r"[..], &b"\t"[..], &b"\x1b"[..]] {
+@@ -12595,6 +12596,7 @@ mod desktop {
+                         grow_icon_drawn: false,
+                     }];
+                     demo.dialogs = vec![DialogSnapshot {
++                    content_revision: 0,
+                         guest_id: 7,
+                         generation: 1,
+                         bounds,
+@@ -12726,6 +12728,7 @@ mod desktop {
+                         grow_icon_drawn: false,
+                     }];
+                     demo.dialogs = vec![DialogSnapshot {
++                    content_revision: 0,
+                         guest_id: 7,
+                         generation: 1,
+                         bounds,
+diff --git a/src/bin/gpui_demo_frames.rs b/src/bin/gpui_demo_frames.rs
+index 92b39439..159a14af 100644
+--- a/src/bin/gpui_demo_frames.rs
++++ b/src/bin/gpui_demo_frames.rs
+@@ -838,6 +838,7 @@ mod tests {
+     fn dialog_activation_rejects_stale_disabled_obscured_and_inactive_items() {
+         let mut windows = vec![window((50, 50, 180, 220), true, 1)];
+         let mut dialogs = vec![DialogSnapshot {
++                    content_revision: 0,
+             guest_id: 1, generation: 1, bounds: (50, 50, 180, 220),
+             visible: true, active: true, default_item: Some(1),
+             cancel_item: None, edit_field: None,
+@@ -899,6 +900,7 @@ mod tests {
+         back.window.active = false;
+         let windows = [front, back];
+         let mut dialog = DialogSnapshot {
++                    content_revision: 0,
+             guest_id: 1,
+             generation: 1,
+             bounds: (50, 50, 180, 220),
+diff --git a/src/bin/gpui_demo_input.rs b/src/bin/gpui_demo_input.rs
+index a770bb83..1d1e652a 100644
+--- a/src/bin/gpui_demo_input.rs
++++ b/src/bin/gpui_demo_input.rs
+@@ -411,6 +411,7 @@ pub(crate) fn guest_commit_inputs(
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub(crate) struct DialogTextOwner {
+     pub identity: (u32, u64),
++    pub content_revision: u64,
+     pub item: i16,
+     pub text: Vec<u8>,
+     pub selection: std::ops::Range<usize>,
+@@ -433,7 +434,7 @@ pub(crate) fn dialog_text_owner(
+     let (start, end) = item.selection?;
+     let selection = usize::try_from(start).ok()?..usize::try_from(end).ok()?;
+     if selection.start > selection.end || selection.end > text.len() { return None; }
+-    Some(DialogTextOwner { identity: (dialog.guest_id, dialog.generation), item: item.number, text, selection })
++    Some(DialogTextOwner { content_revision: dialog.content_revision, identity: (dialog.guest_id, dialog.generation), item: item.number, text, selection })
+ }
+ 
+ pub(crate) fn guest_dialog_commit_inputs(
+diff --git a/src/systems/macintosh/dialog_manager.rs b/src/systems/macintosh/dialog_manager.rs
+index f5f6e6ed..7c836eb7 100644
+--- a/src/systems/macintosh/dialog_manager.rs
++++ b/src/systems/macintosh/dialog_manager.rs
+@@ -720,6 +720,8 @@ pub struct DialogEditTextLayout {
+ #[doc(hidden)]
+ #[derive(Clone, Debug, Eq, PartialEq)]
+ pub struct DialogSnapshot {
++    /// Advances when SetDialogItem replaces content, even with identical values.
++    pub content_revision: u64,
+     pub guest_id: u32,
+     /// Matches the owning WindowRecord lifetime, even when its pointer is reused.
+     pub generation: u64,
+diff --git a/src/systems/macintosh/loader/ppc/dispatch_dialog.rs b/src/systems/macintosh/loader/ppc/dispatch_dialog.rs
+index 93e0f77b..e29506ce 100644
+--- a/src/systems/macintosh/loader/ppc/dispatch_dialog.rs
++++ b/src/systems/macintosh/loader/ppc/dispatch_dialog.rs
+@@ -484,7 +484,7 @@ pub(super) fn dispatch_dialog_import(
+             })))
+         }
+         PpcImportDispatcherTarget::SetDialogItem => {
+-            ppc_set_dialog_item(cpu, memory, handles);
++            ppc_set_dialog_item(cpu, memory, handles, window_list);
+             Some(PpcImportAction::ReturnPreserve)
+         }
+         PpcImportDispatcherTarget::GetDialogItemText => {
+@@ -2090,6 +2090,7 @@ fn ppc_dispatch_dialog_compatibility(
+             if result == PPC_NO_ERR {
+                 if let Some(ptr) = memory.read_u32_be(handle) {
+                     let _ = memory.write_bytes(ptr, &combined);
++                    window_list.invalidate_dialog_content(dialog);
+                 }
+             }
+             PpcImportAction::ReturnPreserve
+@@ -2130,6 +2131,7 @@ fn ppc_dispatch_dialog_compatibility(
+             if result == PPC_NO_ERR {
+                 if let Some(ptr) = memory.read_u32_be(handle) {
+                     let _ = memory.write_bytes(ptr, &bytes);
++                    window_list.invalidate_dialog_content(dialog);
+                 }
+             }
+             PpcImportAction::ReturnPreserve
+@@ -2743,6 +2745,7 @@ fn ppc_dispatch_dialog_compatibility(
+                 if result == PPC_NO_ERR {
+                     if let Some(target_ptr) = memory.read_u32_be(handle) {
+                         let _ = memory.write_bytes(target_ptr, &new_bytes);
++                        window_list.invalidate_dialog_content(dialog);
+                     }
+                 }
+             }
+@@ -2797,6 +2800,7 @@ fn ppc_dispatch_dialog_compatibility(
+                     if result == PPC_NO_ERR {
+                         if let Some(target_ptr) = memory.read_u32_be(handle) {
+                             let _ = memory.write_bytes(target_ptr, &new_bytes);
++                            window_list.invalidate_dialog_content(dialog);
+                         }
+                     }
+                 }
+@@ -3985,7 +3989,7 @@ fn ppc_get_dialog_item(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, handles: &[
+     }
+ }
+ 
+-fn ppc_set_dialog_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) {
++fn ppc_set_dialog_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord], window_list: &SharedProcessWindowList) {
+     let dialog = cpu.gpr[3];
+     let item_number = cpu.gpr[4] as u16 as usize;
+     let item_type = cpu.gpr[5] as u16;
+@@ -4017,6 +4021,7 @@ fn ppc_set_dialog_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcH
+     else {
+         return;
+     };
++    window_list.invalidate_dialog_content(dialog);
+     let item_addr = items_ptr.wrapping_add(item.item_offset as u32);
+     // Macintosh Toolbox Essentials (1992), pp. 6-120--6-123: mutate the
+     // live DITL item's handle, Rect, and type in place without drawing it.
+diff --git a/src/systems/macintosh/process_context.rs b/src/systems/macintosh/process_context.rs
+index d1dd94eb..6ec069a7 100644
+--- a/src/systems/macintosh/process_context.rs
++++ b/src/systems/macintosh/process_context.rs
+@@ -1928,6 +1928,7 @@ pub(crate) struct SharedProcessWindowList(
+     SharedProcessValue<Vec<u32>>,
+     SharedProcessValue<HashMap<u32, u64>>,
+     SharedProcessValue<HashMap<u32, (u64, crate::window_manager::WindowRect)>>,
++    SharedProcessValue<HashMap<u32, u64>>,
+ );
+ pub(crate) struct SharedProcessInputState(SharedProcessValue<ProcessInputState>);
+ /// Detached-by-default attachment handle for Time Manager tasks.
+@@ -4529,6 +4530,7 @@ impl SharedProcessWindowList {
+             SharedProcessValue::from_value(windows),
+             Default::default(),
+             Default::default(),
++            Default::default(),
+         )
+     }
+ 
+@@ -4537,17 +4539,19 @@ impl SharedProcessWindowList {
+             self.0.shared_handle(),
+             self.1.shared_handle(),
+             self.2.shared_handle(),
++            self.3.shared_handle(),
+         )
+     }
+ 
+     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+-        self.0.ptr_eq(&other.0) && self.1.ptr_eq(&other.1) && self.2.ptr_eq(&other.2)
++        self.0.ptr_eq(&other.0) && self.1.ptr_eq(&other.1) && self.2.ptr_eq(&other.2) && self.3.ptr_eq(&other.3)
+     }
+ 
+     pub(crate) fn attach_to(&mut self, process_state: &Self) {
+         self.0.attach_to(&process_state.0, Vec::is_empty);
+         self.1.attach_to(&process_state.1, HashMap::is_empty);
+         self.2.attach_to(&process_state.2, HashMap::is_empty);
++        self.3.attach_to(&process_state.3, HashMap::is_empty);
+     }
+ 
+     /// Register a newly created WindowRecord, including caller-supplied
+@@ -4557,6 +4561,7 @@ impl SharedProcessWindowList {
+         let generation = new_window_generation();
+         self.1.with_mut(|lifetimes| lifetimes.insert(window, generation));
+         self.2.with_mut(|icons| icons.remove(&window));
++        self.3.with_mut(|revisions| revisions.remove(&window));
+         generation
+     }
+ 
+@@ -4598,12 +4603,21 @@ impl SharedProcessWindowList {
+         })
+     }
+ 
++    pub(crate) fn dialog_content_revision(&self, window: u32) -> u64 {
++        self.3.with_ref(|revisions| revisions.get(&window).copied().unwrap_or(0))
++    }
++
++    pub(crate) fn invalidate_dialog_content(&self, window: u32) {
++        self.3.with_mut(|revisions| { revisions.insert(window, new_window_generation()); });
++    }
++
+     fn prune_window_generations(&self) {
+         let windows = self.windows();
+         self.1
+             .with_mut(|lifetimes| lifetimes.retain(|window, _| windows.contains(window)));
+         self.2
+             .with_mut(|icons| icons.retain(|window, _| windows.contains(window)));
++        self.3.with_mut(|revisions| revisions.retain(|window, _| windows.contains(window)));
+     }
+ 
+     pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&[u32]) -> R) -> R {
+@@ -4702,6 +4716,7 @@ impl SharedProcessWindowList {
+         if removed {
+             self.1.with_mut(|lifetimes| lifetimes.remove(&window));
+             self.2.with_mut(|icons| icons.remove(&window));
++            self.3.with_mut(|revisions| revisions.remove(&window));
+         }
+         removed
+     }
+@@ -14215,6 +14230,34 @@ mod tests {
+         assert_eq!(detached.menu().as_ref().unwrap().menu_handle, 0x1234);
+     }
+ 
++    #[test]
++    fn dialog_content_revisions_share_across_gateways_and_reset_on_window_reuse() {
++        let context = ProcessContext::default();
++        let mut classic = SharedProcessWindowList::from_value(vec![0x1000]);
++        let mut native = SharedProcessWindowList::default();
++        context.attach_window_list(&mut classic);
++        context.attach_window_list(&mut native);
++        let lifetime = classic.generation_for_window(0x1000);
++        classic.invalidate_dialog_content(0x1000);
++        let revision = native.dialog_content_revision(0x1000);
++        assert_ne!(revision, 0);
++        assert_eq!(native.generation_for_window(0x1000), lifetime);
++        let detached = native.clone();
++        native.invalidate_dialog_content(0x1000);
++        assert_ne!(classic.dialog_content_revision(0x1000), revision);
++        assert_eq!(detached.dialog_content_revision(0x1000), revision);
++        native.register_new_window(0x1000);
++        assert_eq!(classic.dialog_content_revision(0x1000), 0);
++        assert_ne!(classic.generation_for_window(0x1000), lifetime);
++        classic.invalidate_dialog_content(0x1000);
++        assert!(native.remove_window(0x1000));
++        assert_eq!(classic.dialog_content_revision(0x1000), 0);
++        classic.push(0x1000);
++        let fresh = classic.generation_for_window(0x1000);
++        assert_ne!(fresh, lifetime);
++        assert_eq!(native.dialog_content_revision(0x1000), 0);
++    }
++
+     #[test]
+     fn attached_window_lists_share_order_immediately_while_clones_detach() {
+         let context = ProcessContext::default();
+diff --git a/src/systems/macintosh/runner/mod.rs b/src/systems/macintosh/runner/mod.rs
+index 62c4c62a..f25004d9 100644
+--- a/src/systems/macintosh/runner/mod.rs
++++ b/src/systems/macintosh/runner/mod.rs
+@@ -2644,6 +2644,7 @@ impl FixtureRunner {
+                     .filter(|index| *index >= 0 && (*index as usize) < items.len())
+                     .map(|index| index + 1);
+                 Some(DialogSnapshot {
++                    content_revision: self.dispatcher.window_list.dialog_content_revision(guest_id),
+                     guest_id,
+                     generation: frame.generation,
+                     bounds,
+diff --git a/src/systems/macintosh/trap/dialog.rs b/src/systems/macintosh/trap/dialog.rs
+index efbcd340..0b4bc076 100644
+--- a/src/systems/macintosh/trap/dialog.rs
++++ b/src/systems/macintosh/trap/dialog.rs
+@@ -3916,6 +3916,7 @@ impl super::TrapDispatcher {
+         bus.write_word(new_ptr, max_index);
+         bus.write_long(items_handle, new_ptr);
+ 
++        self.window_list.invalidate_dialog_content(dialog_ptr);
+         self.dialog_items.insert(dialog_ptr, all_items.clone());
+         self.initialize_dialog_item_handles_from(bus, dialog_ptr, &all_items, start_index);
+ 
+@@ -3965,6 +3966,7 @@ impl super::TrapDispatcher {
+             self.dialog_item_handles.remove(&handle);
+         }
+ 
++        if keep_count < items.len() { self.window_list.invalidate_dialog_content(dialog_ptr); }
+         let removed_items = items[keep_count..].to_vec();
+         items.truncate(keep_count);
+         if ditl_ptr != 0 && ditl_len >= 2 {
+@@ -12122,6 +12124,7 @@ impl super::TrapDispatcher {
+                         crate::dialog_manager::get_item_at_1_indexed(items, params.item_number())
+                     })
+                     .cloned();
++                if previous_item.is_some() { self.window_list.invalidate_dialog_content(params.dialog_ptr()); }
+                 if trace_dialog_items_enabled() {
+                     eprintln!(
+                         "[DIALOG-ITEM] SetDItem pc=${:08X} sp=${:08X} rawbytes={:02X?} dialog=${:08X} item={} type={} proc=${:08X} rect=({},{},{},{})",

@@ -3916,6 +3916,7 @@ impl super::TrapDispatcher {
         bus.write_word(new_ptr, max_index);
         bus.write_long(items_handle, new_ptr);
 
+        self.window_list.invalidate_dialog_content(dialog_ptr);
         self.dialog_items.insert(dialog_ptr, all_items.clone());
         self.initialize_dialog_item_handles_from(bus, dialog_ptr, &all_items, start_index);
 
@@ -3965,6 +3966,7 @@ impl super::TrapDispatcher {
             self.dialog_item_handles.remove(&handle);
         }
 
+        if keep_count < items.len() { self.window_list.invalidate_dialog_content(dialog_ptr); }
         let removed_items = items[keep_count..].to_vec();
         items.truncate(keep_count);
         if ditl_ptr != 0 && ditl_len >= 2 {
@@ -12122,6 +12124,7 @@ impl super::TrapDispatcher {
                         crate::dialog_manager::get_item_at_1_indexed(items, params.item_number())
                     })
                     .cloned();
+                if previous_item.is_some() { self.window_list.invalidate_dialog_content(params.dialog_ptr()); }
                 if trace_dialog_items_enabled() {
                     eprintln!(
                         "[DIALOG-ITEM] SetDItem pc=${:08X} sp=${:08X} rawbytes={:02X?} dialog=${:08X} item={} type={} proc=${:08X} rect=({},{},{},{})",

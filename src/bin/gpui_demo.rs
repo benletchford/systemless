@@ -5654,6 +5654,7 @@ mod desktop {
                     },
                 ];
                 demo.dialogs = vec![DialogSnapshot {
+                    content_revision: 0,
                     guest_id: 1,
                     generation: 1,
                     bounds: (50, 50, 180, 240),
@@ -11106,10 +11107,10 @@ mod desktop {
                 let dialogs = session.runner_mut().dialog_snapshot();
                 let windows = session.runner_mut().window_frame_snapshot();
                 let owner = dialog_text_owner(&dialogs, &windows).expect("standard active modal item");
-                for mutation in 0..4 {
+                for mutation in 0..5 {
                     let mut stale = owner.clone();
                     match mutation { 0 => stale.identity.1 += 1, 1 => stale.item = 7,
-                        2 => stale.text.push(b'x'), _ => stale.selection = 0..1 }
+                        2 => stale.text.push(b'x'), 3 => stale.selection = 0..1, _ => stale.content_revision += 1 }
                     assert!(guest_dialog_commit_inputs(&mut session, &stale, b"x").is_none());
                 }
                 for bytes in [&b"\r"[..], &b"\t"[..], &b"\x1b"[..]] {
@@ -12595,6 +12596,7 @@ mod desktop {
                         grow_icon_drawn: false,
                     }];
                     demo.dialogs = vec![DialogSnapshot {
+                    content_revision: 0,
                         guest_id: 7,
                         generation: 1,
                         bounds,
@@ -12726,6 +12728,7 @@ mod desktop {
                         grow_icon_drawn: false,
                     }];
                     demo.dialogs = vec![DialogSnapshot {
+                    content_revision: 0,
                         guest_id: 7,
                         generation: 1,
                         bounds,
