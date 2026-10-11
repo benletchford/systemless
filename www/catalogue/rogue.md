@@ -36,7 +36,7 @@ artifacts:
   format: hqx
   source:
     type: url
-    url: https://www.semicolon.com/Downloads/Rogue.sea.hqx
+    url: https://www.gryphel.com/d/sw/games/rogue/c/Rogue.sea.hqx
     expected_sha256: 9c1822d7ef48bd9de01cc186b0280df6f993d109de066c676fb7a5a4f206d173
     expected_size: 127671
   provenance:
