@@ -3,7 +3,10 @@ use super::*;
 #[test]
 fn low_memory_ghost_window_accessor_reads_current_pointer() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"LMGetGhostWindow")).unwrap();
-    loaded.memory.write_u32_be(crate::memory::globals::addr::GHOST_WINDOW, 0x1234_5678).unwrap();
+    loaded
+        .memory
+        .write_u32_be(crate::memory::globals::addr::GHOST_WINDOW, 0x1234_5678)
+        .unwrap();
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetGhostWindow);
     assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
 }
@@ -42,9 +45,18 @@ fn hle_import_runner_unpacks_packbits_and_advances_pointer_variables() {
     let destination = base + 64;
     loaded.memory.add_region(base, vec![0; 128]);
     loaded.memory.write_u32_be(source_variable, source).unwrap();
-    loaded.memory.write_u32_be(destination_variable, destination).unwrap();
+    loaded
+        .memory
+        .write_u32_be(destination_variable, destination)
+        .unwrap();
     // Three literals, three repeated bytes, a no-op, then two literals.
-    loaded.memory.write_bytes(source, &[2, b'A', b'B', b'C', 0xfe, b'X', 0x80, 1, b'Y', b'Z']).unwrap();
+    loaded
+        .memory
+        .write_bytes(
+            source,
+            &[2, b'A', b'B', b'C', 0xfe, b'X', 0x80, 1, b'Y', b'Z'],
+        )
+        .unwrap();
     loaded.cpu.gpr[3] = source_variable;
     loaded.cpu.gpr[4] = destination_variable;
     loaded.cpu.gpr[5] = 8;
@@ -53,9 +65,18 @@ fn hle_import_runner_unpacks_packbits_and_advances_pointer_variables() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, destination, 8), Some(b"ABCXXXYZ".to_vec()));
-    assert_eq!(loaded.memory.read_u32_be(source_variable), Some(source + 10));
-    assert_eq!(loaded.memory.read_u32_be(destination_variable), Some(destination + 8));
+    assert_eq!(
+        ppc_memory_read_bytes(&mut loaded.memory, destination, 8),
+        Some(b"ABCXXXYZ".to_vec())
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(source_variable),
+        Some(source + 10)
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(destination_variable),
+        Some(destination + 8)
+    );
 }
 
 #[test]
@@ -69,7 +90,10 @@ fn hle_import_runner_unpackbits_rejects_unreadable_input_without_advancing() {
     let destination = base + 64;
     loaded.memory.add_region(base, vec![0; 128]);
     loaded.memory.write_u32_be(source_variable, source).unwrap();
-    loaded.memory.write_u32_be(destination_variable, destination).unwrap();
+    loaded
+        .memory
+        .write_u32_be(destination_variable, destination)
+        .unwrap();
     loaded.memory.write_u8(source, 0).unwrap();
     loaded.cpu.gpr[3] = source_variable;
     loaded.cpu.gpr[4] = destination_variable;
@@ -79,7 +103,10 @@ fn hle_import_runner_unpackbits_rejects_unreadable_input_without_advancing() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(loaded.memory.read_u32_be(source_variable), Some(source));
-    assert_eq!(loaded.memory.read_u32_be(destination_variable), Some(destination));
+    assert_eq!(
+        loaded.memory.read_u32_be(destination_variable),
+        Some(destination)
+    );
     assert_eq!(loaded.memory.read_u8(destination), Some(0));
 }
 
@@ -278,7 +305,6 @@ fn hle_import_runner_handles_rel_string() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3] as i32 as i16, -1);
 }
-
 
 #[test]
 fn iu_equal_pstring_uses_primary_roman_order_for_default_script() {
@@ -496,8 +522,8 @@ fn carbon_copy_c_string_to_pascal_handles_overlap_and_str255_limit() {
         dispatcher_target_for_import("CarbonLib", "CopyCStringToPascal"),
         PpcImportDispatcherTarget::CopyCStringToPascal
     );
-    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyCStringToPascal"))
-        .unwrap();
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_import(b"CopyCStringToPascal")).unwrap();
     let base = PPC_DATA_BASE + 0x1000;
     loaded.memory.add_region(base, vec![0; 800]);
 
@@ -519,7 +545,10 @@ fn carbon_copy_c_string_to_pascal_handles_overlap_and_str255_limit() {
         Some(b"World".as_slice())
     );
 
-    loaded.memory.write_bytes(base + 128, &vec![b'Q'; 300]).unwrap();
+    loaded
+        .memory
+        .write_bytes(base + 128, &vec![b'Q'; 300])
+        .unwrap();
     loaded.memory.write_u8(base + 428, 0).unwrap();
     loaded.cpu.gpr[3] = base + 128;
     loaded.cpu.gpr[4] = base + 448;
@@ -733,7 +762,49 @@ fn import_bindings_classify_text_and_conversion_imports() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "FindWordBreaks"),
         PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::FindWordBreaks
+            crate::loader::ppc::PpcSystemCompatibilityOperation::FindWordBreaks,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "GetFormatOrder"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::GetFormatOrder,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "GetFormatOrder"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::GetFormatOrder,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "Char2Pixel"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::Char2Pixel,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "Pixel2Char"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::Pixel2Char,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "DrawJust"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::DrawJust,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "MeasureJust"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::MeasureJust,
+        )
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "Transliterate"),
+        PpcImportDispatcherTarget::SystemCompatibility(
+            crate::loader::ppc::PpcSystemCompatibilityOperation::Transliterate,
         )
     );
 }
@@ -861,7 +932,11 @@ fn hle_import_runner_tracks_toolbox_startup_manager_state() {
     assert_eq!(loaded.toolbox_startup.last_flush_event_mask, 0xffff);
     assert_eq!(loaded.toolbox_startup.last_flush_stop_mask, 0x0002);
     assert_eq!(
-        loaded.event_queue.iter().map(|event| event.what).collect::<Vec<_>>(),
+        loaded
+            .event_queue
+            .iter()
+            .map(|event| event.what)
+            .collect::<Vec<_>>(),
         vec![6, 1, 4]
     );
 
@@ -982,7 +1057,10 @@ fn qd_random_seed_weak_setter_updates_live_globals_and_random_sequence() {
     for library in ["InterfaceLib", "CarbonLib"] {
         for symbol in ["SetQDGlobalsRandomSeed", "setqdglobalsrandomseed"] {
             let loader = synthetic_loader_with_symbol_class(
-                library.as_bytes(), symbol.as_bytes(), 0x82, &[run_reloc(0x23, 1)],
+                library.as_bytes(),
+                symbol.as_bytes(),
+                0x82,
+                &[run_reloc(0x23, 1)],
             );
             let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
             let setter = PpcImportDispatcherTarget::SetQDGlobalsRandomSeed;
@@ -995,7 +1073,10 @@ fn qd_random_seed_weak_setter_updates_live_globals_and_random_sequence() {
             assert_eq!(loaded.cpu.gpr[3], 12345); // void ABI preserves r3
             assert_eq!(loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR), Some(12345));
             run_test_import(&mut loaded, PpcImportDispatcherTarget::Random);
-            assert_eq!(loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR), Some(207482415));
+            assert_eq!(
+                loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR),
+                Some(207482415)
+            );
             let globals = PPC_DATA_BASE + 0x2800;
             loaded.memory.add_region(globals - 130, vec![0xA5; 134]);
             loaded.cpu.gpr[3] = globals;
@@ -1018,7 +1099,6 @@ fn qd_random_seed_weak_setter_updates_live_globals_and_random_sequence() {
         }
     }
 }
-
 
 #[test]
 fn get_caret_time_reads_original_low_memory_interval_without_clobbering_arguments() {

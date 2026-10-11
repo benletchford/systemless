@@ -17483,7 +17483,7 @@ fn scriptutil_pixel2char_returns_offset_zero_and_clears_leadingedge() {
 
     bus.write_long(sp, 0x0000_0014); // selector 20
     bus.write_long(sp + 4, leading_edge_ptr); // VAR leadingEdge (last arg)
-    bus.write_word(sp + 8, 12); // pixelWidth
+    bus.write_word(sp + 8, 0); // pixelWidth 0
     bus.write_word(sp + 10, 0); // slop
     bus.write_word(sp + 12, 8); // textLen
     bus.write_long(sp + 14, 0x363000); // textBuf (first arg, deepest)
@@ -17497,6 +17497,158 @@ fn scriptutil_pixel2char_returns_offset_zero_and_clears_leadingedge() {
     assert_eq!(bus.read_byte(leading_edge_ptr), 0); // FALSE
     assert_eq!(bus.read_word(sp + 18), 0);
     assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+}
+
+#[test]
+fn scriptutil_pixel2char_and_char2pixel_evaluate_character_offsets() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let text_ptr = 0x363000u32;
+    bus.write_bytes(text_ptr, b"Sample Text");
+
+    // Char2Pixel (22): offset 6 ("e" after space) -> 6 * 6 = 36 px
+    bus.write_long(sp, 0x0000_0016); // selector 22
+    bus.write_word(sp + 4, 0); // direction (left-to-right)
+    bus.write_word(sp + 6, 6); // offset
+    bus.write_word(sp + 8, 0); // slop
+    bus.write_word(sp + 10, 11); // textLen
+    bus.write_long(sp + 12, text_ptr); // textBuf
+    bus.write_word(sp + 16, 0xBEEF); // result slot
+
+    let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+    assert_eq!(bus.read_word(sp + 16), 36);
+    assert_eq!(cpu.read_reg(Register::D0), 36);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+
+    // Pixel2Char (20): pixelWidth 38 (inside char 6 [36..42], mid 39 -> leadingEdge = true)
+    cpu.write_reg(Register::A7, sp);
+    let leading_edge_ptr = 0x362000u32;
+    bus.write_long(sp, 0x0000_0014); // selector 20
+    bus.write_long(sp + 4, leading_edge_ptr);
+    bus.write_word(sp + 8, 38); // pixelWidth
+    bus.write_word(sp + 10, 0); // slop
+    bus.write_word(sp + 12, 11); // textLen
+    bus.write_long(sp + 14, text_ptr);
+    bus.write_word(sp + 18, 0xBEEF);
+
+    let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+    assert_eq!(bus.read_byte(leading_edge_ptr), 1); // TRUE
+    assert_eq!(bus.read_word(sp + 18), 6);
+    assert_eq!(cpu.read_reg(Register::D0), 6);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+}
+
+#[test]
+fn scriptutil_getformatorder_populates_ordering_array() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let ordering_ptr = 0x364000u32;
+    bus.write_bytes(ordering_ptr, &[0xFF; 8]); // 4 words
+
+    // GetFormatOrder ($8012FFFC): firstFormat = 0, lastFormat = 3, lineRight = false
+    bus.write_long(sp, 0x8012_FFFC); // selector
+    bus.write_long(sp + 4, 0); // dirParam
+    bus.write_long(sp + 8, 0); // rlDirProc
+    bus.write_word(sp + 12, 0); // lineRight (false)
+    bus.write_word(sp + 14, 3); // lastFormat
+    bus.write_word(sp + 16, 0); // firstFormat
+    bus.write_long(sp + 18, ordering_ptr); // ordering
+
+    let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+    assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+
+    assert_eq!(bus.read_word(ordering_ptr), 0);
+    assert_eq!(bus.read_word(ordering_ptr + 2), 1);
+    assert_eq!(bus.read_word(ordering_ptr + 4), 2);
+    assert_eq!(bus.read_word(ordering_ptr + 6), 3);
+
+    // GetFormatOrder with lineRight = true
+    cpu.write_reg(Register::A7, sp);
+    bus.write_long(sp, 0x8012_FFFC);
+    bus.write_long(sp + 4, 0);
+    bus.write_long(sp + 8, 0);
+    bus.write_word(sp + 12, 1); // lineRight (true)
+    bus.write_word(sp + 14, 3);
+    bus.write_word(sp + 16, 0);
+    bus.write_long(sp + 18, ordering_ptr);
+
+    let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+    assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+
+    assert_eq!(bus.read_word(ordering_ptr), 3);
+    assert_eq!(bus.read_word(ordering_ptr + 2), 2);
+    assert_eq!(bus.read_word(ordering_ptr + 4), 1);
+    assert_eq!(bus.read_word(ordering_ptr + 6), 0);
+}
+
+#[test]
+fn scriptutil_measurejust_populates_charlocs_array() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+    let text_ptr = 0x365000u32;
+    let char_locs_ptr = 0x366000u32;
+    bus.write_bytes(text_ptr, b"ABC");
+
+    // MeasureJust (32): charLocs(4), slop(2), textLength(2), textPtr(4)
+    bus.write_long(sp, 0x0000_0020); // selector 32
+    bus.write_long(sp + 4, char_locs_ptr);
+    bus.write_word(sp + 8, 0); // slop
+    bus.write_word(sp + 10, 3); // textLength
+    bus.write_long(sp + 12, text_ptr);
+
+    let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+    assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+
+    assert_eq!(bus.read_word(char_locs_ptr), 0);
+    assert_eq!(bus.read_word(char_locs_ptr + 2), 6);
+    assert_eq!(bus.read_word(char_locs_ptr + 4), 12);
+    assert_eq!(bus.read_word(char_locs_ptr + 6), 18);
+}
+
+#[test]
+fn scriptutil_transliterate_converts_case_and_returns_noerr() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+
+    // Allocate src and dst handles in heap
+    let src_ptr = bus.alloc(16);
+    bus.write_bytes(src_ptr, b"Hello World");
+    let src_handle = bus.alloc(4);
+    bus.write_long(src_handle, src_ptr);
+
+    let dst_ptr = bus.alloc(16);
+    let dst_handle = bus.alloc(4);
+    bus.write_long(dst_handle, dst_ptr);
+
+    // Transliterate (24): srcMask(4), target(2), dstHandle(4), srcHandle(4)
+    // target = SM_TRANS_CASE | SM_TRANS_LOWER = 0x40FE
+    bus.write_long(sp, 0x0000_0018); // selector 24
+    bus.write_long(sp + 4, 0xFFFF_FFFF); // srcMask
+    bus.write_word(sp + 8, 0x40FE); // target
+    bus.write_long(sp + 10, dst_handle);
+    bus.write_long(sp + 14, src_handle);
+    bus.write_word(sp + 18, 0xBEEF); // result slot
+
+    let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+    assert_eq!(bus.read_word(sp + 18), 0); // noErr
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+
+    let updated_dst_ptr = bus.read_long(dst_handle);
+    assert_eq!(&bus.read_bytes(updated_dst_ptr, 11), b"hello world");
 }
 
 // ScriptUtil ($A8B5) selector 26 FindWord

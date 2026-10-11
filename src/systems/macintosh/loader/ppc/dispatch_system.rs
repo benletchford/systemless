@@ -6,6 +6,7 @@ pub enum PpcSystemCompatibilityOperation {
     BuildDdPwds,
     CtbGetCtbVersion,
     CallComponentUpp,
+    Char2Pixel,
     CharByte,
     CharType,
     DiBadMount,
@@ -14,6 +15,7 @@ pub enum PpcSystemCompatibilityOperation {
     DiUnload,
     DiVerify,
     DiZero,
+    DrawJust,
     Debugger,
     Dequeue,
     Enqueue,
@@ -25,6 +27,7 @@ pub enum PpcSystemCompatibilityOperation {
     FontScript,
     GetNextProcess,
     GetEvQHdr,
+    GetFormatOrder,
     GetScript,
     GetScriptManagerVariable,
     GetScriptVariable,
@@ -45,6 +48,7 @@ pub enum PpcSystemCompatibilityOperation {
     LmGetCurApName,
     LmGetSysFontFam,
     LmGetSysFontSize,
+    MeasureJust,
     MidiAddPort,
     MidiRemovePort,
     MidiSignOut,
@@ -56,6 +60,7 @@ pub enum PpcSystemCompatibilityOperation {
     ObscureCursor,
     OpenDefaultComponent,
     ParseTable,
+    Pixel2Char,
     PortionText,
     ReplaceText,
     ResetAlertStage,
@@ -63,6 +68,7 @@ pub enum PpcSystemCompatibilityOperation {
     SetSysDirection,
     StyledLineBreak,
     SystemEdit,
+    Transliterate,
     TruncText,
     UpperString,
 }
@@ -262,6 +268,54 @@ pub(crate) fn ppc_replace_text_compatibility(
     substitutions
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ppc_transliterate_compatibility(
+    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    src_handle: u32,
+    dst_handle: u32,
+    target: i16,
+    src_mask: u32,
+) -> i16 {
+    if src_handle == 0 || dst_handle == 0 {
+        *last_mem_error = crate::text_utils::NIL_HANDLE_ERR;
+        return crate::text_utils::NIL_HANDLE_ERR;
+    }
+    let Some(src_bytes) = ppc_handle_bytes(memory, handles, src_handle) else {
+        *last_mem_error = crate::text_utils::MEM_WZ_ERR;
+        return crate::text_utils::MEM_WZ_ERR;
+    };
+    let (trans, _) = crate::text_utils::evaluate_transliterate(&src_bytes, target, src_mask);
+    let resize_err = ppc_allocator_view_resize_handle(
+        allocator,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        dst_handle,
+        u32::try_from(trans.len()).unwrap_or(u32::MAX),
+    );
+    *last_mem_error = resize_err;
+    if resize_err != PPC_NO_ERR {
+        return crate::text_utils::MEM_FULL_ERR;
+    }
+    if !trans.is_empty() {
+        if let Some(ptr) = memory.read_u32_be(dst_handle) {
+            if memory.write_bytes(ptr, &trans).is_none() {
+                *last_mem_error = PPC_PARAM_ERR;
+                return crate::text_utils::MEM_FULL_ERR;
+            }
+        }
+    }
+    *last_mem_error = PPC_NO_ERR;
+    0
+}
+
 pub(crate) fn ppc_enqueue_compatibility(
     memory: &mut PpcSectionMem,
     element: u32,
@@ -458,7 +512,9 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             if let Some(new_text) = eval.new_text {
                 if ppc_memory_can_write_bytes(memory, text, new_text.len() as u32)
                     && memory.write_bytes(text, &new_text).is_some()
-                    && memory.write_u16_be(length_ptr, new_text.len() as u16).is_some()
+                    && memory
+                        .write_u16_be(length_ptr, new_text.len() as u16)
+                        .is_some()
                 {
                     PpcImportAction::Return(ppc_i16_result(eval.result))
                 } else {
@@ -645,11 +701,8 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             let second_offset = (cpu.gpr[6] as i16).max(0) as usize;
             let offsets_ptr = cpu.gpr[7];
             if offsets_ptr != 0 {
-                let table = crate::text_utils::evaluate_hilite_text(
-                    text_len,
-                    first_offset,
-                    second_offset,
-                );
+                let table =
+                    crate::text_utils::evaluate_hilite_text(text_len, first_offset, second_offset);
                 let _ = ppc_write_offset_table(memory, offsets_ptr, table);
             }
             PpcImportAction::ReturnPreserve
@@ -681,10 +734,8 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             // Inside Macintosh: Text (1993), pp. 5-71–5-73.
             let text_len = (cpu.gpr[4] as i32).max(0) as usize;
             let run_len_ptr = cpu.gpr[5];
-            let (script_code, run_len) = crate::text_utils::evaluate_find_script_run(
-                text_len,
-                crate::text_utils::SM_ROMAN,
-            );
+            let (script_code, run_len) =
+                crate::text_utils::evaluate_find_script_run(text_len, crate::text_utils::SM_ROMAN);
             if run_len_ptr != 0 {
                 let _ = memory.write_u32_be(run_len_ptr, run_len as u32);
             }
@@ -695,10 +746,8 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             // Inside Macintosh: Text (1993), pp. 6-77–6-78.
             let table_ptr = cpu.gpr[3];
             let mut table = [0u8; 256];
-            let has_2byte = crate::text_utils::evaluate_parse_table(
-                &mut table,
-                crate::text_utils::SM_ROMAN,
-            );
+            let has_2byte =
+                crate::text_utils::evaluate_parse_table(&mut table, crate::text_utils::SM_ROMAN);
             if table_ptr != 0 {
                 let _ = memory.write_bytes(table_ptr, &table);
             }
@@ -716,6 +765,98 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             };
             let portion = crate::text_utils::evaluate_portion_text(&bytes);
             PpcImportAction::Return(portion as u32)
+        }
+        PpcSystemCompatibilityOperation::GetFormatOrder => {
+            // PROCEDURE GetFormatOrder(ordering: FormatOrderPtr; firstFormat, lastFormat: short;
+            //   lineRight: Boolean; rlDirProc: StyleRunDirectionUPP; dirParam: void*);
+            // Inside Macintosh: Text (1993), pp. 5-64–5-68.
+            let ordering_ptr = cpu.gpr[3];
+            let first_format = cpu.gpr[4] as i16;
+            let last_format = cpu.gpr[5] as i16;
+            let line_right = cpu.gpr[6] != 0;
+            let order =
+                crate::text_utils::evaluate_get_format_order(first_format, last_format, line_right);
+            if ordering_ptr != 0 {
+                for (i, &val) in order.iter().enumerate() {
+                    let _ = memory.write_u16_be(ordering_ptr + (i * 2) as u32, val as u16);
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcSystemCompatibilityOperation::Char2Pixel => {
+            // FUNCTION Char2Pixel(textBuf: Ptr; textLen, slop, offset, direction: short): short;
+            // Inside Macintosh: Text (1993), pp. 5-54–5-56.
+            let text_ptr = cpu.gpr[3];
+            let text_len = (cpu.gpr[4] as i16).max(0) as u32;
+            let slop = cpu.gpr[5] as i16;
+            let offset = cpu.gpr[6] as i16;
+            let direction = cpu.gpr[7] as i16;
+            let bytes = if text_ptr != 0 && text_len > 0 {
+                ppc_memory_read_bytes(memory, text_ptr, text_len).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let pixels = crate::text_utils::evaluate_char2pixel(&bytes, slop, offset, direction);
+            PpcImportAction::Return(ppc_i16_result(pixels))
+        }
+        PpcSystemCompatibilityOperation::Pixel2Char => {
+            // FUNCTION Pixel2Char(textBuf: Ptr; textLen, slop, pixelWidth: short; VAR leadingEdge: Boolean): short;
+            // Inside Macintosh: Text (1993), pp. 5-56–5-60.
+            let text_ptr = cpu.gpr[3];
+            let text_len = (cpu.gpr[4] as i16).max(0) as u32;
+            let slop = cpu.gpr[5] as i16;
+            let pixel_width = cpu.gpr[6] as i16;
+            let leading_edge_ptr = cpu.gpr[7];
+            let bytes = if text_ptr != 0 && text_len > 0 {
+                ppc_memory_read_bytes(memory, text_ptr, text_len).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let (offset, leading_edge) =
+                crate::text_utils::evaluate_pixel2char(&bytes, slop, pixel_width);
+            if leading_edge_ptr != 0 {
+                let _ = memory.write_u8(leading_edge_ptr, if leading_edge { 1 } else { 0 });
+            }
+            PpcImportAction::Return(ppc_i16_result(offset))
+        }
+        PpcSystemCompatibilityOperation::DrawJust => PpcImportAction::ReturnPreserve,
+        PpcSystemCompatibilityOperation::MeasureJust => {
+            // PROCEDURE MeasureJust(textPtr: Ptr; textLength, slop: short; charLocs: Ptr);
+            // Inside Macintosh: Text (1993), pp. 5-54–5-56.
+            let text_ptr = cpu.gpr[3];
+            let text_len = (cpu.gpr[4] as i16).max(0) as u32;
+            let slop = cpu.gpr[5] as i16;
+            let char_locs = cpu.gpr[6];
+            let bytes = if text_ptr != 0 && text_len > 0 {
+                ppc_memory_read_bytes(memory, text_ptr, text_len).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let locs = crate::text_utils::evaluate_measure_just(&bytes, slop);
+            if char_locs != 0 {
+                for (i, &loc) in locs.iter().enumerate() {
+                    let _ = memory.write_u16_be(char_locs + (i * 2) as u32, loc as u16);
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcSystemCompatibilityOperation::Transliterate => {
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            let result = ppc_transliterate_compatibility(
+                Some(&mut allocator),
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5] as i16,
+                cpu.gpr[6],
+            );
+            PpcImportAction::Return(ppc_i16_result(result))
         }
         PpcSystemCompatibilityOperation::GetSysDirection => {
             // GetSysDirection returns the SysDirection global: zero for
@@ -803,10 +944,8 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             };
             let result = match crate::notification_manager::validate_nm_rec(nm_rec, q_type) {
                 Ok(()) => {
-                    let _ = memory.write_u32_be(
-                        nm_rec + crate::notification_manager::Q_LINK_OFFSET,
-                        0,
-                    );
+                    let _ =
+                        memory.write_u32_be(nm_rec + crate::notification_manager::Q_LINK_OFFSET, 0);
                     crate::notification_manager::NO_ERR
                 }
                 Err(err) => err,
@@ -824,10 +963,8 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             };
             let result = match crate::notification_manager::validate_nm_rec(nm_rec, q_type) {
                 Ok(()) => {
-                    let _ = memory.write_u32_be(
-                        nm_rec + crate::notification_manager::Q_LINK_OFFSET,
-                        0,
-                    );
+                    let _ =
+                        memory.write_u32_be(nm_rec + crate::notification_manager::Q_LINK_OFFSET, 0);
                     crate::notification_manager::NO_ERR
                 }
                 Err(err) => err,
