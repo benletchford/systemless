@@ -1044,7 +1044,7 @@ fn ppc_standard_file_draw_put_dialog(
         message.extend_from_slice(&tracking.name);
         message.extend_from_slice(b"\"?");
         ppc_draw_dialog_text(memory, gworlds, layout.message, &message, PPC_RGB_BLACK);
-        for (rect, label, default) in [(layout.cancel, b"Cancel".as_slice(), false), (layout.replace, b"Replace".as_slice(), true)] {
+        for (rect, label, default) in [(layout.cancel, b"Cancel".as_slice(), true), (layout.replace, b"Replace".as_slice(), false)] {
             ppc_standard_file_draw_button(memory, front, gworlds, (0, 0, 0, 0), rect, label, true, default);
         }
     }
@@ -1802,6 +1802,9 @@ fn ppc_dispatch_standard_file(
                             Some(true) => return ppc_standard_file_finish_put(memory, startup, tracking, vfs_directories, vfs_files, vfs_resource_files, vfs_volumes, working_directories, next_working_directory_ref_num, true),
                             Some(false) => {
                                 tracking.confirming_replace = false;
+                                tracking.list_has_focus = false;
+                                tracking.sel_start = 0;
+                                tracking.sel_end = tracking.name.len();
                                 startup.next_standard_file_generation = startup.next_standard_file_generation.saturating_add(1);
                                 tracking.generation = startup.next_standard_file_generation;
                             },

@@ -2846,7 +2846,7 @@ impl super::TrapDispatcher {
                 DialogItem { item_type: 4, rect: local(layout.cancel), text: "Cancel".into(), ..DialogItem::default() },
                 DialogItem { item_type: 8, rect: local(layout.message), text: format!("Replace existing \"{}\"?", tracking.name), ..DialogItem::default() },
             ];
-            self.draw_dialog(bus, layout.bounds, 2, "", &items, 1, "", 0, false, 0);
+            self.draw_dialog(bus, layout.bounds, 2, "", &items, 2, "", 0, false, 0);
         }
         self.standard_file_drawn = bus.screen_mark();
     }
@@ -3175,6 +3175,8 @@ impl super::TrapDispatcher {
                     Some(true) => { self.finish_standard_file_put_tracking(cpu, bus, tracking, true); return; }
                     Some(false) => {
                         tracking.confirming_replace = false;
+                        tracking.sel_start = 0;
+                        tracking.sel_end = encode_mac_roman_lossy(&tracking.name).len().min(i16::MAX as usize) as i16;
                         self.next_standard_file_generation = self.next_standard_file_generation.saturating_add(1);
                         tracking.generation = self.next_standard_file_generation;
                     },
