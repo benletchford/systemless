@@ -1,0 +1,194 @@
+{
+  "base_commit": "ecf33f08",
+  "renderer_sha256": "f7f36772e7d7b75d67c3424fcc1446c1949bbbc9701989839f766918f859dcad",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "commands": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit [--screen-depth 1|--screen-depth 8|--prefer-powerpc] [--capture-modeless-dialog|--capture-modal-dialog-caret-visible] /tmp/output.png",
+  "scope": "Six shared live/headless compositor captures with paired guest frames at historical 900x740 logical viewport; contact sheet is cropped QA only; archives are losslessly encoded with exact decoded pixels.",
+  "gaps": [
+    "native Macintosh font fidelity",
+    "native host input/observer qualification",
+    "dialog field scale/state matrix",
+    "styled/multiline/scrolled dialog fields",
+    "font mutation and exhaustive interaction qualification"
+  ],
+  "captures": [
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-mono-modeless.png",
+      "original_capture_sha256": "4b54620c4e6008a38e395a52f1eaf9d4fd83c6a1017f3ebebf1a115b583b9733",
+      "sha256": "9eb5c8b2dd4b5ee1bfb45a38343d26d4dd99830510c39f3e80c83c0bcb7f938e",
+      "decoded_pixel_sha256": "f47d6c4ffb10adf4872c1ff6896f8856c0837eaffd0fb2f8377f00b12cad5afd",
+      "pixel_mode": "RGBA",
+      "size": [
+        1800,
+        1480
+      ],
+      "guest": false,
+      "mode": "mono",
+      "case": "modeless"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-mono-modeless.guest.png",
+      "original_capture_sha256": "e6bae2733538aa7f0f6a77c9f187469b534406620b86e868dfbd9be29a7a8cf6",
+      "sha256": "480e1210bcffe0269b42fe4035c049dc7ddad6d615c8aeab5cc010e520d70655",
+      "decoded_pixel_sha256": "dda9a40471a8dc70e9185b668863e5f1ac02dd1c04a40e6c065e1891ae96e47f",
+      "pixel_mode": "RGBA",
+      "size": [
+        800,
+        600
+      ],
+      "guest": true,
+      "mode": "mono",
+      "case": "modeless"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-mono-caret.png",
+      "original_capture_sha256": "f6fbc167477b8e9bfacf301a4d14010e4c904fc7504113adaafe075ca4b9dc65",
+      "sha256": "a5947486872b67c242cf1f51280e74255d4121ed8083170071a39b61d4f21221",
+      "decoded_pixel_sha256": "5acf630e9b00dd0ec9666c73aea43512dc6fec097d8d34cd9955912f90ba0365",
+      "pixel_mode": "RGBA",
+      "size": [
+        1800,
+        1480
+      ],
+      "guest": false,
+      "mode": "mono",
+      "case": "caret"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-mono-caret.guest.png",
+      "original_capture_sha256": "75f8a87b6950e8836cd34f9901a288c5ff17374f43bfb60ad877e4ca1b81116f",
+      "sha256": "ff2ac73d4fada730450647f51dfa261b1664adb000e67c83337669bb96a62bc8",
+      "decoded_pixel_sha256": "afb25fbb9c5f3d95b7eda0405cd20f8bbfde4d780597be513c670274618620bc",
+      "pixel_mode": "RGBA",
+      "size": [
+        800,
+        600
+      ],
+      "guest": true,
+      "mode": "mono",
+      "case": "caret"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-colour-modeless.png",
+      "original_capture_sha256": "a5a84d1234aa59844f28bff270a83f48421026e9cb772c211dbbdeafec23c981",
+      "sha256": "565fc65fa7e4340738f9ebeb249a574677e62a3433bc245e718c55d6d34b56f6",
+      "decoded_pixel_sha256": "efe2c082cc0791e0b88b57e7310b728b36518d9dcb184d598559dddc48878bf3",
+      "pixel_mode": "RGBA",
+      "size": [
+        1800,
+        1480
+      ],
+      "guest": false,
+      "mode": "colour",
+      "case": "modeless"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-colour-modeless.guest.png",
+      "original_capture_sha256": "6e43d3a3037392ecfd6fbffc0ec44d5ac22f3a744b4968c9f211fbdb0f8352af",
+      "sha256": "7ff77237562dcd78b373a22e1e35185be98d7893799df812ef389c4f0838da77",
+      "decoded_pixel_sha256": "81b0a936c069ed4cc7fc6a0cc2957fdbe58a512e2262abf7e5dbc3dabd94b48a",
+      "pixel_mode": "RGBA",
+      "size": [
+        800,
+        600
+      ],
+      "guest": true,
+      "mode": "colour",
+      "case": "modeless"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-colour-caret.png",
+      "original_capture_sha256": "425c8afa8b456dadc3064c12deefe67c4062a7f0affb61af752a1ccf79e0431a",
+      "sha256": "5aff0aa4f4bec73344efefc6cd0eacb3c3047abd5b8feea7ebc1a4691368f266",
+      "decoded_pixel_sha256": "44cf5ae4703639c0f725d538f02e86618af70b33b8de8b2de3c3e547002c3443",
+      "pixel_mode": "RGBA",
+      "size": [
+        1800,
+        1480
+      ],
+      "guest": false,
+      "mode": "colour",
+      "case": "caret"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-colour-caret.guest.png",
+      "original_capture_sha256": "02398d83bbb9147c05d111acd52ca949ef89cacc85bd47d2e2fdb2cbd90b5eb9",
+      "sha256": "d384bf2cea14b1b6954922c78215aefd3342de0c6b154ac77ed2cc847404ac9f",
+      "decoded_pixel_sha256": "330788e731bc02ca91ba0d3777019e2c59f9175363d75460656dd56d359d81b6",
+      "pixel_mode": "RGBA",
+      "size": [
+        800,
+        600
+      ],
+      "guest": true,
+      "mode": "colour",
+      "case": "caret"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-ppc-modeless.png",
+      "original_capture_sha256": "a01e3f438673e37acde7f786834cee43a6ab6be7472e1e09f9c1c55a845ad388",
+      "sha256": "a674c5091a007434a20ab3cddc62104e5081f2fb7d28d559a7bb2ada8c27c6fe",
+      "decoded_pixel_sha256": "4a31323cb01a4c3c0f9137aa6f9ea59fad4598b7fc3cf3b5c705453395e95d3d",
+      "pixel_mode": "RGBA",
+      "size": [
+        1800,
+        1480
+      ],
+      "guest": false,
+      "mode": "ppc",
+      "case": "modeless"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-ppc-modeless.guest.png",
+      "original_capture_sha256": "16ed15c3034a36c727a7d7f4f1e4d65a160e1f149906c2d236d10db49461e23e",
+      "sha256": "41594c6266ad504d8e70e031550699f2a729a06978c8b5690a37da5a4682e40b",
+      "decoded_pixel_sha256": "fddf0692b80aa21299e3d62ca397035c042e7f3996f494f946c33b91969714aa",
+      "pixel_mode": "RGBA",
+      "size": [
+        800,
+        600
+      ],
+      "guest": true,
+      "mode": "ppc",
+      "case": "modeless"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-ppc-caret.png",
+      "original_capture_sha256": "66a9380014a96fc88c9ab7a10705b8be31ebeaa51411fc97924f80522ce73b6d",
+      "sha256": "1d43774ba4c3c9c72fa41fd98d6f7ba3c813b694beeb9ce17e251985191cc657",
+      "decoded_pixel_sha256": "2d8e669c73d8834c7853ecb2da3b1d337eee3f90817909e380b8d05732a16563",
+      "pixel_mode": "RGBA",
+      "size": [
+        1800,
+        1480
+      ],
+      "guest": false,
+      "mode": "ppc",
+      "case": "caret"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/dialog-edit-font-ppc-caret.guest.png",
+      "original_capture_sha256": "20d1ac1e509cdc9ea3024545f41edb8278fcf2eba5c5643201715d223ea5a8fe",
+      "sha256": "4c18333c8addcc9d5ea35f58ad172deae949fb7d80915fd69caef0d67914aa07",
+      "decoded_pixel_sha256": "946a69c35148225dd6d90e3f9341b8ddbd9c53b1ae5f58a4de3e4a8388988dcc",
+      "pixel_mode": "RGBA",
+      "size": [
+        800,
+        600
+      ],
+      "guest": true,
+      "mode": "ppc",
+      "case": "caret"
+    }
+  ],
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "243c503e5a23464f3e0a7165c9ca07fca0d5e153ab2dd196bf09faf2ad93ff1d",
+    "src/bin/gpui_demo_frames.rs": "2a00b6914d2a28a860514e105399ed6866ddd17baa3b140cd463506228c5d352",
+    "src/bin/gpui_demo_text.rs": "f7f36772e7d7b75d67c3424fcc1446c1949bbbc9701989839f766918f859dcad",
+    "src/systems/macintosh/dialog_manager.rs": "49de9a1312a23b7efcb44afe59a3734449659b774878517705077ab7e301fcc7",
+    "src/systems/macintosh/trap/dialog.rs": "bbc99859f3c6adc8055a5c6c9d234bf7aa0a0013ccbb42110129ca7b03c00df5",
+    "src/systems/macintosh/loader/ppc/loaded_app_display.rs": "9c64c9ce6fd436bc378d16c9224667db42b0c27398a69ad0fc7693374d95dbfa",
+    "src/systems/macintosh/runner/mod.rs": "161ba8394502010fb3d71cc295c49183c8f44ce32ce308eb4acd1b7fd92d9d75"
+  },
+  "visual_review": "All six field crops reviewed against paired guest frames: tested glyph forms, baselines and caret placement are consistent. This is Systemless guest/compositor evidence, not native Macintosh qualification."
+}

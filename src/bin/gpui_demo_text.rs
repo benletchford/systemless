@@ -491,6 +491,53 @@ pub(crate) fn classic_directory_label(
     )
 }
 
+pub(crate) fn classic_dialog_edit_text(
+    text: &str, layout: &systemless::runner::DialogEditTextLayout,
+    selection: (usize, usize), focused: bool, caret_visible: bool,
+    scale: f32, foreground: gpui_kit::Hsla, selection_color: gpui_kit::Hsla,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::{prelude::*, *};
+    if layout.wrap {
+        return classic_wrapped_text(text, layout.font, 0, 0, (1, layout.baseline, layout.line_height),
+            false, scale, foreground).into_any_element();
+    }
+    let line = ClassicLine::unicode(text, layout.font.0, layout.font.1);
+    let length = if layout.text_edit_geometry {
+        text.trim_end_matches([' ', '\r', '\n']).chars().count()
+    } else { line.positions.len() - 1 };
+    let start = selection.0.min(length);
+    let end = selection.1.min(length).max(start);
+    let layout = layout.clone();
+    canvas(move |bounds, _, _| bounds, move |_, bounds, window, _| {
+        let x = |offset: usize| px((1 + line.positions[offset]) as f32 * scale);
+        if focused && start < end {
+            let left = if start == 0 { px(0.) } else { x(start) };
+            let right = if !layout.text_edit_geometry && end == length { bounds.size.width } else { x(end) };
+            window.paint_quad(fill(Bounds::new(point(bounds.left() + left, bounds.top()),
+                size((right - left).max(px(0.)), px(f32::from(layout.line_height) * scale).min(bounds.size.height))), selection_color));
+        }
+        for &(x, y, width) in &line.ink {
+            window.paint_quad(fill(Bounds::new(
+                point(bounds.left() + px((x + 1) as f32 * scale),
+                    bounds.top() + px((y + i32::from(layout.baseline)) as f32 * scale)),
+                size(px(width as f32 * scale), px(scale))), foreground));
+        }
+        if focused && start == end && caret_visible {
+            let caret_x = x(start) - if layout.text_edit_geometry && start != 0 { px(scale) } else { px(0.) };
+            let (top, height) = if layout.text_edit_geometry {
+                (px(0.), px(f32::from(layout.line_height) * scale).min(bounds.size.height))
+            } else {
+                (px(2. * scale), (bounds.size.height - px(3. * scale)).max(px(0.)))
+            };
+            let limit = bounds.size.width - if layout.text_edit_geometry { px(0.) } else { px(scale) };
+            if caret_x >= px(0.) && caret_x < limit {
+                window.paint_quad(fill(Bounds::new(point(bounds.left() + caret_x, bounds.top() + top),
+                    size(px(scale), height)), foreground));
+            }
+        }
+    }).size_full().into_any_element()
+}
+
 pub(crate) fn classic_dialog_static_text(
     text: &str, layout: &systemless::runner::DialogStaticTextLayout,
     scale: f32, foreground: gpui_kit::Hsla,
