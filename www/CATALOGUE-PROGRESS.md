@@ -76,7 +76,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 34 | Descent 3 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 35 | Carmageddon | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 36 | Shadow Warrior | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 37 | Heretic | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 37 | Heretic | [Original port/WAD permission pending](CATALOGUE-SOURCES.md#heretic-092--target-225) | Exact 0.9.2 receipt; 103 original files; production parity pending | N/A: 68K wrapper is installer, not game | [PPC title reached; incorrect colours; gameplay unverified](https://github.com/benletchford/systemless/issues/4563) | Pending | Pending | Pending |
 | 38 | Dark Castle | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 39 | Trinity | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 40 | Railroad Tycoon II | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
