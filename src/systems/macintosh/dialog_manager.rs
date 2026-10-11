@@ -684,6 +684,8 @@ pub struct DialogItemSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DialogSnapshot {
     pub guest_id: u32,
+    /// Matches the owning WindowRecord lifetime, even when its pointer is reused.
+    pub generation: u64,
     pub bounds: (i16, i16, i16, i16),
     pub visible: bool,
     pub active: bool,

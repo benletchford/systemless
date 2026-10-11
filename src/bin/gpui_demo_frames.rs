@@ -326,6 +326,7 @@ mod tests {
     ) -> WindowFrameSnapshot {
         WindowFrameSnapshot {
             guest_id: 1,
+            generation: 1,
             window: WindowSnapshot {
                 title: "Test".into(),
                 bounds,
