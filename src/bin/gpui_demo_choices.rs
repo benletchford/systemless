@@ -1,7 +1,7 @@
-//! Guest-controlled checkbox presentation with independent value and tracking state.
+//! Guest-controlled choice controls with independent value and tracking state.
 
 use gpui_kit::{
-    base::{Checkbox, CheckboxIndicator},
+    base::{Checkbox, Radio},
     component::{ActiveTheme, IconName, IconNamed},
     prelude::*,
     *,
@@ -16,6 +16,50 @@ pub fn guest_checkbox(
     scale: f32,
     cx: &App,
 ) -> Checkbox {
+    Checkbox::new(id)
+        .checked(checked)
+        .disabled(!enabled)
+        .accessibility_label(label.clone())
+        .tab_stop(false)
+        .w_full()
+        .h_full()
+        .child(choice_content(
+            label, checked, enabled, pressed, scale, false, cx,
+        ))
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+}
+
+pub fn guest_radio(
+    id: String,
+    label: String,
+    checked: bool,
+    enabled: bool,
+    pressed: bool,
+    scale: f32,
+    cx: &App,
+) -> Radio {
+    Radio::new(id)
+        .checked(checked)
+        .disabled(!enabled)
+        .accessibility_label(label.clone())
+        .tab_stop(false)
+        .w_full()
+        .h_full()
+        .child(choice_content(
+            label, checked, enabled, pressed, scale, true, cx,
+        ))
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+}
+
+fn choice_content(
+    label: String,
+    checked: bool,
+    enabled: bool,
+    pressed: bool,
+    scale: f32,
+    circular: bool,
+    cx: &App,
+) -> Div {
     let theme = cx.theme();
     let pressed = enabled && pressed;
     let border = if pressed {
@@ -36,11 +80,7 @@ pub fn guest_checkbox(
     };
     // Value and tracking are independent: contrlHilite=11 does not toggle contrlValue.
     // Macintosh Toolbox Essentials (1992), pp. 5-89, 5-95.
-    Checkbox::new(id)
-        .checked(checked)
-        .disabled(!enabled)
-        .accessibility_label(label.clone())
-        .tab_stop(false)
+    div()
         .flex()
         .items_start()
         .gap_x(px(4. * scale))
@@ -53,9 +93,7 @@ pub fn guest_checkbox(
         .w_full()
         .h_full()
         .child(
-            CheckboxIndicator::new()
-                .checked(checked)
-                .disabled(!enabled)
+            div()
                 .relative()
                 .size(px(14. * scale))
                 .mt(px(1.75 * scale))
@@ -68,7 +106,11 @@ pub fn guest_checkbox(
                 } else {
                     background
                 })
-                .rounded(theme.radius.min(px(4. * scale)))
+                .rounded(if circular {
+                    px(9999.)
+                } else {
+                    theme.radius.min(px(4. * scale))
+                })
                 .child(
                     svg()
                         .absolute()
@@ -90,5 +132,4 @@ pub fn guest_checkbox(
                 .line_height(relative(1.25))
                 .child(label),
         )
-        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
 }

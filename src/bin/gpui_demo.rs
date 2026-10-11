@@ -28,8 +28,8 @@ mod frames;
 mod metrics;
 
 #[cfg(target_os = "macos")]
-#[path = "gpui_demo_checkbox.rs"]
-mod checkbox;
+#[path = "gpui_demo_choices.rs"]
+mod choices;
 
 #[cfg(target_os = "macos")]
 #[path = "desktop/desktop_save_store.rs"]
@@ -52,7 +52,6 @@ mod desktop {
         component::{
             button::{Button, ButtonVariants},
             popover::Popover,
-            radio::Radio,
             ActiveTheme, Disableable, Sizable,
         },
         prelude::*,
@@ -125,6 +124,15 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_controls_held: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_radio_held: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_radio_outside: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_radio_selected: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_lists: Option<PathBuf>,
@@ -1487,7 +1495,7 @@ mod desktop {
                         }
                         1 => {
                             overlay = overlay.child(
-                                super::checkbox::guest_checkbox(
+                                super::choices::guest_checkbox(
                                     format!("guest-control-checkbox-{}-{}", control.guest_id, control.generation),
                                     control.title.clone(), control.value != 0, control.enabled,
                                     control.hilite == 11, scene_scale, cx,
@@ -1496,19 +1504,11 @@ mod desktop {
                         }
                         2 => {
                             overlay = overlay.child(
-                                Radio::new(format!(
-                                    "guest-control-radio-{}-{}",
-                                    control.guest_id, control.generation
-                                ))
-                                    .label(control.title.clone())
-                                    .checked(control.value != 0)
-                                    .disabled(!control.enabled)
-                                    .tab_stop(false)
-                                    .small()
-                                    .gap_x(guest_px(4.))
-                                    .text_size(guest_px(12.))
-                                    .w_full()
-                                    .h_full(),
+                                super::choices::guest_radio(
+                                    format!("guest-control-radio-{}-{}", control.guest_id, control.generation),
+                                    control.title.clone(), control.value != 0, control.enabled,
+                                    control.hilite == 11, scene_scale, cx,
+                                ),
                             );
                         }
                         16 => {
@@ -1742,26 +1742,18 @@ mod desktop {
                             overlay.child(field.child(suffix))
                         }
                         DialogItemKind::Checkbox => overlay.child(
-                            super::checkbox::guest_checkbox(
+                            super::choices::guest_checkbox(
                                 format!("guest-dialog-checkbox-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
                                 item.text.clone(), item.value.unwrap() != 0, item.enabled,
                                 dialog.active && item.pressed, scene_scale, cx,
                             ),
                         ),
                         DialogItemKind::RadioButton => overlay.child(
-                            Radio::new(format!(
-                                "guest-dialog-radio-{}-{}-{}",
-                                dialog.guest_id, dialog.generation, item.number
-                            ))
-                            .label(item.text.clone())
-                            .checked(item.value.unwrap() != 0)
-                            .disabled(!item.enabled)
-                            .tab_stop(false)
-                            .small()
-                            .gap_x(guest_px(4.))
-                            .text_size(guest_px(12.))
-                            .w_full()
-                            .h_full(),
+                            super::choices::guest_radio(
+                                format!("guest-dialog-radio-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
+                                item.text.clone(), item.value.unwrap() != 0, item.enabled,
+                                dialog.active && item.pressed, scene_scale, cx,
+                            ),
                         ),
                         _ => unreachable!(),
                     };
@@ -2289,6 +2281,9 @@ mod desktop {
         ControlsChanged,
         ControlsDragged,
         ControlsHeld,
+        RadioHeld,
+        RadioOutside,
+        RadioSelected,
         Lists,
         ListsSelected,
         ListsHeld,
@@ -2377,6 +2372,7 @@ mod desktop {
         );
         let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed);
         let standard_file_page = standard_file_save || standard_file_open;
+        let radio_page = matches!(capture, CaptureCase::RadioHeld | CaptureCase::RadioOutside | CaptureCase::RadioSelected);
         let controls_changed = matches!(capture, CaptureCase::ControlsChanged);
         let controls_dragged = matches!(capture, CaptureCase::ControlsDragged);
         let controls_held = matches!(capture, CaptureCase::ControlsHeld);
@@ -2416,6 +2412,8 @@ mod desktop {
             (129, 7)
         } else if popup_page {
             (129, 16)
+        } else if radio_page {
+            (129, 5)
         } else if controls_page {
             (129, 2)
         } else {
@@ -2912,6 +2910,12 @@ mod desktop {
                 .iter()
                 .any(|list| list.draw_enabled && list.definition_id == 0));
             Vec::new()
+        } else if radio_page {
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(100_000, None);
+                session.runner_mut().control_snapshot().iter().any(|c| c.visible && c.title == "Recruit (Easy)")
+            }));
+            Vec::new()
         } else if controls_page {
             for _ in 0..300 {
                 session.runner_mut().run_steps(100_000, None);
@@ -2962,6 +2966,7 @@ mod desktop {
             )
             .is_empty());
         } else if !windows_page
+            && !radio_page
             && !controls_page
             && !lists_page
             && !text_edit_page
@@ -3139,6 +3144,26 @@ mod desktop {
             } else {
                 assert!(value >= 8);
             }
+        }
+        if radio_page {
+            let target = session.runner_mut().control_snapshot().into_iter()
+                .find(|c| c.visible && c.title == "Recruit (Easy)").unwrap();
+            let rect = target.bounds;
+            let inside = ((rect.0 + rect.2) / 2, (rect.1 + rect.3) / 2);
+            let mut inputs = vec![MacintoshInput::MouseDown { vertical: inside.0, horizontal: inside.1 }];
+            if matches!(capture, CaptureCase::RadioOutside) {
+                inputs.push(MacintoshInput::MouseMove { vertical: rect.0 - 10, horizontal: rect.1 - 10 });
+            } else if matches!(capture, CaptureCase::RadioSelected) {
+                inputs.push(MacintoshInput::MouseUp { vertical: inside.0, horizontal: inside.1 });
+            }
+            for input in inputs {
+                session.deliver_input(input);
+                for _ in 0..20 { session.runner_mut().run_steps(10_000, None); }
+            }
+            let controls = session.runner_mut().control_snapshot();
+            let current = controls.iter().find(|c| c.guest_id == target.guest_id).unwrap();
+            assert_eq!(current.hilite, if matches!(capture, CaptureCase::RadioHeld) { 11 } else { 0 });
+            assert_eq!(current.value, if matches!(capture, CaptureCase::RadioSelected) { 1 } else { 0 });
         }
         let controls = session.runner_mut().control_snapshot();
         let lists = session.runner_mut().list_manager_snapshot();
@@ -3521,6 +3546,21 @@ mod desktop {
                 args.screen_depth,
                 CaptureCase::ControlsDragged,
             );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_radio_held.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::RadioHeld);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_radio_outside.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::RadioOutside);
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_radio_selected.as_ref() {
+            capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth, CaptureCase::RadioSelected);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -4129,6 +4169,9 @@ mod desktop {
                         capture_controls_changed: None,
                         capture_controls_dragged: None,
                         capture_controls_held: None,
+                        capture_radio_held: None,
+                        capture_radio_outside: None,
+                        capture_radio_selected: None,
                         capture_lists: None,
                         capture_lists_selected: None,
                         capture_lists_held: None,
