@@ -472,6 +472,69 @@ fn carbon_event_loop_timer_upp_binds_weak_import_and_builds_descriptor() {
 }
 
 #[test]
+fn carbon_grow_zone_upp_binds_weak_import_and_builds_descriptor() {
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "NewGrowZoneUPP"),
+        PpcImportDispatcherTarget::NewGrowZoneUPP
+    );
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "DisposeGrowZoneUPP"),
+        PpcImportDispatcherTarget::DisposeGrowZoneUPP
+    );
+
+    let bindings = PpcImportBindingPlan::prepare(
+        vec![PefResolvedImport {
+            library_index: 0,
+            symbol_index: 0,
+            library_name: "CarbonLib".to_string(),
+            symbol_name: "NewGrowZoneUPP".to_string(),
+            class: 2,
+            weak: true,
+        }],
+        1,
+        0,
+        ppc_import_layout(),
+        &SystemlessPpcImportBindingPolicy,
+    )
+    .unwrap()
+    .into_initial_bindings();
+    assert_eq!(bindings[0].address, PPC_IMPORT_TVECTOR_BASE);
+    assert_eq!(
+        bindings[0].dispatcher_target,
+        PpcImportDispatcherTarget::NewGrowZoneUPP
+    );
+
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewGrowZoneUPP")).unwrap();
+    let callback = PPC_CODE_BASE;
+    loaded.cpu.gpr[3] = callback;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGrowZoneUPP);
+    let descriptor = loaded.cpu.gpr[3];
+    assert_ne!(descriptor, 0);
+    assert_eq!(
+        loaded.memory.read_u16_be(descriptor),
+        Some(PPC_MIXED_MODE_TRAP)
+    );
+    let record = descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE;
+    assert_eq!(loaded.memory.read_u32_be(record), Some(0x00F0));
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(record + PPC_ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET),
+        Some(callback)
+    );
+
+    loaded.cpu.gpr[3] = descriptor;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeGrowZoneUPP);
+    assert_eq!(loaded.cpu.gpr[3], descriptor);
+    loaded.cpu.gpr[3] = callback;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGrowZoneUPP);
+    assert_eq!(
+        loaded.cpu.gpr[3], descriptor,
+        "disposed descriptor storage is reused"
+    );
+}
+
+#[test]
 fn carbon_control_action_upp_binds_weak_import_and_builds_descriptor() {
     assert_eq!(
         dispatcher_target_for_import("CarbonLib", "NewControlActionUPP"),

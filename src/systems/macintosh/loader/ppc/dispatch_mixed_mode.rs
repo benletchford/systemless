@@ -26,6 +26,10 @@ pub(super) const PPC_CONTROL_KEY_FILTER_PROC_INFO: u32 = 0x3FE0;
 // ControlEditTextValidationProcPtr returns void and takes one ControlRef.
 pub(super) const PPC_CONTROL_EDIT_TEXT_VALIDATION_PROC_INFO: u32 = 0x00C0;
 
+// Apple Universal Interfaces 3.4.1 MacMemory.h: uppGrowZoneProcInfo.
+// Pascal stack convention, a 4-byte result and one 4-byte Size parameter.
+pub(super) const PPC_GROW_ZONE_PROC_INFO: u32 = 0x00F0;
+
 pub(super) const PPC_SYSTEM_ALLOCATION_POOL_SIZE: u32 = 64 * 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -198,6 +202,18 @@ pub(super) fn dispatch_mixed_mode_import(
                 &mut toolbox_startup.system_allocations,
             ))))
         }
+        PpcImportDispatcherTarget::NewGrowZoneUPP => {
+            Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                PPC_GROW_ZONE_PROC_INFO,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            ))))
+        }
         PpcImportDispatcherTarget::NewControlActionUPP => {
             Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
                 cpu.gpr[3],
@@ -250,6 +266,7 @@ pub(super) fn dispatch_mixed_mode_import(
         | PpcImportDispatcherTarget::DisposeAEEventHandlerUPP
         | PpcImportDispatcherTarget::DisposeEventHandlerUPP
         | PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
+        | PpcImportDispatcherTarget::DisposeGrowZoneUPP
         | PpcImportDispatcherTarget::DisposeControlActionUPP
         | PpcImportDispatcherTarget::DisposeControlKeyFilterUPP
         | PpcImportDispatcherTarget::DisposeControlEditTextValidationUPP => {
