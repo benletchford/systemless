@@ -169,6 +169,7 @@ mod desktop {
         menus: GuestMenuSnapshot,
         windows: Vec<WindowFrameSnapshot>,
         image: Option<Arc<RenderImage>>,
+        logo: Arc<RenderImage>,
         width: u32,
         height: u32,
         crop_top: u32,
@@ -229,6 +230,11 @@ mod desktop {
                 menus: Default::default(),
                 windows: Vec::new(),
                 image: None,
+                logo: Arc::new(RenderImage::new(vec![image::Frame::new(
+                    image::load_from_memory(include_bytes!("../../www/assets/icons/icon-192.png"))
+                        .expect("decode Systemless logo")
+                        .to_rgba8(),
+                )])),
                 width: 640,
                 height: 460,
                 crop_top: 20,
@@ -314,6 +320,14 @@ mod desktop {
                 .bg(cx.theme().background)
                 .border_b_1()
                 .border_color(cx.theme().border);
+            bar = bar.child(
+                div()
+                    .ml(px(10.))
+                    .mr(px(2.))
+                    .w(px(20.))
+                    .h(px(20.))
+                    .child(img(self.logo.clone()).size_full()),
+            );
             for menu in self.menus.menus.iter().filter(|m| m.visible_in_menu_bar) {
                 let snapshot = self.menus.clone();
                 let commands = self.commands.clone();
@@ -492,6 +506,56 @@ mod desktop {
                         .w(px(clip.width() as f32))
                         .h(px(clip.height() as f32))
                         .child(strip),
+                );
+            }
+            for piece in super::frames::gutter_pieces(&self.windows, viewport) {
+                let source = piece.source;
+                let clip = piece.clip;
+                let mut gutter = div()
+                    .absolute()
+                    .left(px((source.left - clip.left) as f32))
+                    .top(px((source.top - clip.top) as f32))
+                    .w(px(source.width() as f32))
+                    .h(px(source.height() as f32))
+                    .bg(cx.theme().secondary)
+                    .border_color(cx.theme().border);
+                gutter = match piece.kind {
+                    super::frames::GutterKind::Vertical => gutter.border_l_1(),
+                    super::frames::GutterKind::Horizontal => gutter.border_t_1(),
+                    super::frames::GutterKind::GrowBox => {
+                        let mut corner = gutter.border_l_1().border_t_1();
+                        if self.windows[piece.window].window.active {
+                            for (left, top) in [
+                                (4., 10.),
+                                (7., 7.),
+                                (7., 10.),
+                                (10., 4.),
+                                (10., 7.),
+                                (10., 10.),
+                            ] {
+                                corner = corner.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(left))
+                                        .top(px(top))
+                                        .w(px(2.))
+                                        .h(px(2.))
+                                        .bg(cx.theme().muted_foreground),
+                                );
+                            }
+                        }
+                        corner
+                    }
+                };
+                screen = screen.child(
+                    div()
+                        .absolute()
+                        .overflow_hidden()
+                        .left(px(clip.left as f32))
+                        .top(px((clip.top - self.crop_top as i32) as f32))
+                        .w(px(clip.width() as f32))
+                        .h(px(clip.height() as f32))
+                        .child(gutter),
                 );
             }
             div()

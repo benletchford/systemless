@@ -5,8 +5,10 @@ This prototype presents a running Macintosh application's menu bar and standard 
 the usual `systemless` runner and Toolbox drawing code are unchanged.
 
 Frames use GPUI elements and GPUI Kit theme colours over the guest's existing
-frame rectangles. They do not use the Kit's host `TitleBar`, which moves the
-actual OS window. Window content, geometry and behaviour remain guest-owned.
+frame rectangles. Standard document windows also receive matching content-edge
+scrollbar gutters and a resize grip. They do not use the Kit's host `TitleBar`,
+which moves the actual OS window. Window content, geometry and behaviour remain
+guest-owned.
 
 ## Try it on macOS
 
@@ -30,7 +32,7 @@ Choose **Pages → Windows** to try overlapping windows. Drag a title bar,
 click an exposed rear window to activate it, and use the front window's **×**
 to close it. The demo follows the guest's title, active state, frame bounds
 and front-to-back order. Supported zoom windows show **□** in their original
-zoom hit region; resizing still uses the guest's original content-area grip.
+zoom hit region; resizing still uses the guest's original lower-right hit region.
 
 ## What the demo exercises
 
@@ -42,6 +44,8 @@ zoom hit region; resizing still uses the guest's original content-area grip.
 - Original guest framebuffer content and dialogs below the new menu bar.
 - GPUI-drawn standard title bars, frame edges, close and zoom glyphs, with
   active/inactive colours and close-button press feedback.
+- The Systemless logo in the menu bar, and GPUI-drawn document gutters and
+  resize corners over the classic `DrawGrowIcon` marks.
 - Clipped frame overlays that preserve content and respect overlapping windows.
 - Guest-owned dragging, activation and closing through normal mouse events.
 - Presentation-only removal of the old menu rows, preserving guest coordinates.
@@ -57,11 +61,13 @@ against live state. Reopening a menu refreshes its checkmarks and enabled states
 Custom guest MDEF drawing is not reproduced.
 
 Frame overlays preserve the original compact guest geometry; they do not enlarge
-title bars, detach windows or restyle controls inside windows. Unknown/custom
+title bars, detach windows or restyle other controls inside windows. Unknown/custom
 WDEFs retain guest rendering. Occlusion by a custom nonrectangular window uses
 its bounding box conservatively, leaving original pixels in that area. Standard
 fullscreen takeover suppresses the frame overlays. Window movement keeps the
 guest's original drag outline rather than introducing live GPUI window movement.
+The gutter overlays are presentation only: scrollbar tracks do not invent a
+thumb or scroll state, and input in those areas still reaches the guest.
 
 The framebuffer is shown at 1:1 with no automatic scaling. Enlarge the window
 if necessary. Keyboard forwarding covers Return, Escape, Space, Tab and
