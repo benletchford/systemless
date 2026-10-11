@@ -10648,6 +10648,16 @@ impl super::TrapDispatcher {
             self.persist_visible_dialog_snapshot(bus, &saved);
             self.dialog_saved_pixels.insert(dialog_ptr, saved.saved_pixels);
             if saved.item_hit_ptr != 0 { bus.write_word(saved.item_hit_ptr, item_no as u16); }
+            self.record_modal_dialog_input_trace(
+                "release",
+                dialog_ptr,
+                bounds,
+                item_no,
+                Some(item_type),
+                None,
+                "returned",
+                "checkbox_item_hit_retained",
+            );
             cpu.write_reg(Register::A7, saved.stack_ptr + 8);
             return;
         }

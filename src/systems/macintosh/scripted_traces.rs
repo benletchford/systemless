@@ -693,6 +693,8 @@ pub fn scripted_modaldialog_preferences_checkbox_input_trace() -> Result<String,
         return Err("scripted ModalDialog preferences replay did not enter tracking".to_string());
     }
 
+    let held_item_hit = bus.read_word(item_hit_ptr);
+    let held_sp = cpu.read_reg(Register::A7);
     dispatcher.push_mouse_down(174, 180);
     scripted_call_dialog_trap(
         &mut dispatcher,
@@ -700,6 +702,25 @@ pub fn scripted_modaldialog_preferences_checkbox_input_trace() -> Result<String,
         &mut bus,
         0x191,
         "ModalDialog preferences checkbox mouseDown",
+    )?;
+    if dispatcher
+        .dialog_tracking
+        .as_ref()
+        .and_then(|tracking| tracking.active_button.as_ref())
+        .is_none()
+    {
+        return Err("scripted ModalDialog preferences replay did not retain the held checkbox".into());
+    }
+    if bus.read_word(item_hit_ptr) != held_item_hit || cpu.read_reg(Register::A7) != held_sp {
+        return Err("scripted ModalDialog preferences replay returned before checkbox release".into());
+    }
+    dispatcher.push_mouse_up(174, 180);
+    scripted_call_dialog_trap(
+        &mut dispatcher,
+        &mut cpu,
+        &mut bus,
+        0x191,
+        "ModalDialog preferences checkbox mouseUp",
     )?;
     if dispatcher.dialog_tracking.is_some() {
         return Err(
@@ -728,8 +749,6 @@ pub fn scripted_modaldialog_preferences_checkbox_input_trace() -> Result<String,
         );
     }
 
-    dispatcher.push_mouse_up(174, 180);
-    dispatcher.event_queue.pop_back_event();
     scripted_set_control_value(
         &mut dispatcher,
         &mut cpu,
