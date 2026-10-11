@@ -5793,6 +5793,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "IUDateString") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::IuDateString,
         ),
+        ("InterfaceLib", "IUTimePString" | "TimeString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuTimePString,
+            )
+        }
+        ("InterfaceLib", "IUTimeString") => PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::IuTimeString,
+        ),
         ("InterfaceLib", "IUEqualString") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::IuEqualString,
         ),

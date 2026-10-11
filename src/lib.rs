@@ -84,6 +84,7 @@ pub mod debug_overlay {
     pub use crate::systems::macintosh::debug_overlay::*;
 }
 pub(crate) use systems::macintosh::cursor_manager;
+pub(crate) use systems::macintosh::date_format;
 pub(crate) use systems::macintosh::desk_manager;
 pub(crate) use systems::macintosh::dialog_manager;
 pub(crate) use systems::macintosh::disk_init_manager;

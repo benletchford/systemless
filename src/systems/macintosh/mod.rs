@@ -13,6 +13,7 @@ pub mod cpu;
 #[cfg(feature = "debug")]
 pub mod debug;
 pub(crate) mod cursor_manager;
+pub(crate) mod date_format;
 pub mod debug_overlay;
 pub(crate) mod desk_manager;
 pub(crate) mod dialog_manager;

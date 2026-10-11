@@ -13261,6 +13261,24 @@ impl super::TrapDispatcher {
                 let selector = bus.read_word(sp);
                 let operation = pack6_operation_route(self.current_trap_word, selector);
                 self.current_selector_operation = operation.map(|route| route.operation_id);
+                fn resolve_68k_intl_resource<B: MemoryBus>(
+                    bus: &mut B,
+                    intl_handle: u32,
+                    default_res_id: i16,
+                    required_len: usize,
+                ) -> Option<Vec<u8>> {
+                    if intl_handle == 0 {
+                        super::TrapDispatcher::system_intl_default_body(default_res_id)
+                    } else {
+                        let master_ptr = bus.read_long(intl_handle);
+                        if master_ptr != 0 {
+                            Some(bus.read_bytes(master_ptr, required_len))
+                        } else {
+                            super::TrapDispatcher::system_intl_default_body(default_res_id)
+                        }
+                    }
+                }
+
                 match selector {
                     // PROCEDURE IUDateString(dateTime: LongInt;
                     //                        form: DateForm;
@@ -13269,8 +13287,16 @@ impl super::TrapDispatcher {
                     // + form(2) + dateTime(4) = 12.
                     0x0000 => {
                         let result_ptr = bus.read_long(sp + 2);
-                        if result_ptr != 0 {
-                            bus.write_pstring(result_ptr, b"1/1/04");
+                        let form = bus.read_word(sp + 6) as i16;
+                        let date_time = bus.read_long(sp + 8);
+                        let resource =
+                            super::TrapDispatcher::system_intl_default_body(if form == 0 { 0 } else { 1 });
+                        if let Some(bytes) =
+                            resource.and_then(|r| crate::date_format::format_date(date_time, form, &r))
+                        {
+                            if result_ptr != 0 {
+                                bus.write_pstring(result_ptr, &bytes);
+                            }
                         }
                         cpu.write_reg(Register::A7, sp + 12);
                         cpu.write_reg(Register::D0, 0);
@@ -13284,13 +13310,14 @@ impl super::TrapDispatcher {
                     0x0002 => {
                         let result_ptr = bus.read_long(sp + 2);
                         let want_seconds = bus.read_word(sp + 6) != 0;
-                        if result_ptr != 0 {
-                            let s: &[u8] = if want_seconds {
-                                b"12:00:00 AM"
-                            } else {
-                                b"12:00 AM"
-                            };
-                            bus.write_pstring(result_ptr, s);
+                        let date_time = bus.read_long(sp + 8);
+                        let resource = super::TrapDispatcher::system_intl_default_body(0);
+                        if let Some(bytes) = resource
+                            .and_then(|r| crate::date_format::format_time(date_time, want_seconds, &r))
+                        {
+                            if result_ptr != 0 {
+                                bus.write_pstring(result_ptr, &bytes);
+                            }
                         }
                         cpu.write_reg(Register::A7, sp + 12);
                         cpu.write_reg(Register::D0, 0);
@@ -13397,9 +13424,22 @@ impl super::TrapDispatcher {
                     // intlParam(4) + result(4) + form(2) +
                     // dateTime(4) = 16.
                     0x000E => {
+                        let intl_handle = bus.read_long(sp + 2);
                         let result_ptr = bus.read_long(sp + 6);
-                        if result_ptr != 0 {
-                            bus.write_pstring(result_ptr, b"1/1/04");
+                        let form = bus.read_word(sp + 10) as i16;
+                        let date_time = bus.read_long(sp + 12);
+                        let resource = resolve_68k_intl_resource(
+                            bus,
+                            intl_handle,
+                            if form == 0 { 0 } else { 1 },
+                            if form == 0 { 10 } else { 332 },
+                        );
+                        if let Some(bytes) =
+                            resource.and_then(|r| crate::date_format::format_date(date_time, form, &r))
+                        {
+                            if result_ptr != 0 {
+                                bus.write_pstring(result_ptr, &bytes);
+                            }
                         }
                         cpu.write_reg(Register::A7, sp + 16);
                         cpu.write_reg(Register::D0, 0);
@@ -13413,15 +13453,17 @@ impl super::TrapDispatcher {
                     // intlParam(4) + result(4) + wantSec(2) +
                     // dateTime(4) = 16.
                     0x0010 => {
+                        let intl_handle = bus.read_long(sp + 2);
                         let result_ptr = bus.read_long(sp + 6);
                         let want_seconds = bus.read_word(sp + 10) != 0;
-                        if result_ptr != 0 {
-                            let s: &[u8] = if want_seconds {
-                                b"12:00:00 AM"
-                            } else {
-                                b"12:00 AM"
-                            };
-                            bus.write_pstring(result_ptr, s);
+                        let date_time = bus.read_long(sp + 12);
+                        let resource = resolve_68k_intl_resource(bus, intl_handle, 0, 32);
+                        if let Some(bytes) = resource
+                            .and_then(|r| crate::date_format::format_time(date_time, want_seconds, &r))
+                        {
+                            if result_ptr != 0 {
+                                bus.write_pstring(result_ptr, &bytes);
+                            }
                         }
                         cpu.write_reg(Register::A7, sp + 16);
                         cpu.write_reg(Register::D0, 0);
@@ -13435,9 +13477,27 @@ impl super::TrapDispatcher {
                     // IM:VI 14-135. Stack: sel(2) + intlParam(4) +
                     // result(4) + longFlag(2) + dateTime ptr(4) = 16.
                     0x0014 => {
+                        let intl_handle = bus.read_long(sp + 2);
                         let result_ptr = bus.read_long(sp + 6);
-                        if result_ptr != 0 {
-                            bus.write_pstring(result_ptr, b"1/1/04");
+                        let form = bus.read_word(sp + 10) as i16;
+                        let date_time_ptr = bus.read_long(sp + 12);
+                        let seconds = if date_time_ptr != 0 {
+                            bus.read_long(date_time_ptr + 4)
+                        } else {
+                            0
+                        };
+                        let resource = resolve_68k_intl_resource(
+                            bus,
+                            intl_handle,
+                            if form == 0 { 0 } else { 1 },
+                            if form == 0 { 10 } else { 332 },
+                        );
+                        if let Some(bytes) =
+                            resource.and_then(|r| crate::date_format::format_date(seconds, form, &r))
+                        {
+                            if result_ptr != 0 {
+                                bus.write_pstring(result_ptr, &bytes);
+                            }
                         }
                         cpu.write_reg(Register::A7, sp + 16);
                         cpu.write_reg(Register::D0, 0);
@@ -13451,15 +13511,22 @@ impl super::TrapDispatcher {
                     // IM:VI 14-135. Stack: sel(2) + intlParam(4) +
                     // result(4) + wantSec(2) + dateTime ptr(4) = 16.
                     0x0016 => {
+                        let intl_handle = bus.read_long(sp + 2);
                         let result_ptr = bus.read_long(sp + 6);
                         let want_seconds = bus.read_word(sp + 10) != 0;
-                        if result_ptr != 0 {
-                            let s: &[u8] = if want_seconds {
-                                b"12:00:00 AM"
-                            } else {
-                                b"12:00 AM"
-                            };
-                            bus.write_pstring(result_ptr, s);
+                        let date_time_ptr = bus.read_long(sp + 12);
+                        let seconds = if date_time_ptr != 0 {
+                            bus.read_long(date_time_ptr + 4)
+                        } else {
+                            0
+                        };
+                        let resource = resolve_68k_intl_resource(bus, intl_handle, 0, 32);
+                        if let Some(bytes) = resource
+                            .and_then(|r| crate::date_format::format_time(seconds, want_seconds, &r))
+                        {
+                            if result_ptr != 0 {
+                                bus.write_pstring(result_ptr, &bytes);
+                            }
                         }
                         cpu.write_reg(Register::A7, sp + 16);
                         cpu.write_reg(Register::D0, 0);

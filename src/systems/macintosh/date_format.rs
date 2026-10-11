@@ -1,8 +1,17 @@
-use super::*;
+//! Classic Macintosh International Utilities date and time formatting evaluation.
+//!
+//! Inside Macintosh Volume I, pp. I-487, I-504--I-506;
+//! Inside Macintosh: Text (1993), Chapter 5, Appendix B (pp. B-23--B-26, B-29--B-32).
+
+use crate::loader::ppc::memory::{ppc_memory_read_bytes, ppc_optional_pstring_output_can_write};
+use crate::loader::ppc::ppc_write_pstring_bytes;
+use crate::loader::ppc::PpcSectionMem;
+use crate::trap::TrapDispatcher;
+use ppc::PpcMemory;
 
 // Inside Macintosh: Text (1993), pp. 5-86--5-87, B-23--B-26, B-29--B-32.
 // DateString is the renamed IUDatePString; DateForm is an integer, not Boolean.
-pub(super) fn write_date_string(
+pub(crate) fn ppc_write_date_string(
     memory: &mut PpcSectionMem,
     seconds: u32,
     form: i16,
@@ -18,6 +27,34 @@ pub(super) fn write_date_string(
             .and_then(|ptr| ppc_memory_read_bytes(memory, ptr, if form == 0 { 10 } else { 332 }))
     };
     let Some(bytes) = resource.and_then(|resource| format_date(seconds, form, &resource)) else {
+        return;
+    };
+    if result != 0 && ppc_optional_pstring_output_can_write(memory, result, &bytes) {
+        let _ = ppc_write_pstring_bytes(memory, result, &bytes);
+    }
+}
+
+// TimeString is the renamed IUTimePString.
+pub(crate) fn ppc_write_time_string(
+    memory: &mut PpcSectionMem,
+    seconds: u32,
+    want_seconds: bool,
+    result: u32,
+    intl_handle: u32,
+) {
+    let resource = if intl_handle == 0 {
+        TrapDispatcher::system_intl_default_body(0)
+    } else {
+        memory
+            .read_u32_be(intl_handle)
+            .filter(|ptr| *ptr != 0)
+            .and_then(|ptr| {
+                ppc_memory_read_bytes(memory, ptr, 32)
+                    .or_else(|| ppc_memory_read_bytes(memory, ptr, 21))
+            })
+    };
+    let Some(bytes) = resource.and_then(|resource| format_time(seconds, want_seconds, &resource))
+    else {
         return;
     };
     if result != 0 && ppc_optional_pstring_output_can_write(memory, result, &bytes) {
@@ -49,7 +86,12 @@ fn separator(resource: &[u8], index: usize) -> Option<&[u8]> {
     Some(&bytes[..bytes.iter().position(|byte| *byte == 0).unwrap_or(4)])
 }
 
-fn format_date(seconds: u32, form: i16, resource: &[u8]) -> Option<Vec<u8>> {
+fn suffix_string(bytes: &[u8]) -> &[u8] {
+    let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    &bytes[..len]
+}
+
+pub(crate) fn format_date(seconds: u32, form: i16, resource: &[u8]) -> Option<Vec<u8>> {
     let date = crate::time_manager::evaluate_seconds_to_date(seconds);
     if form == 0 {
         let flags = *resource.get(8)?;
@@ -123,6 +165,51 @@ fn format_date(seconds: u32, form: i16, resource: &[u8]) -> Option<Vec<u8>> {
     Some(result)
 }
 
+pub(crate) fn format_time(seconds: u32, want_seconds: bool, resource: &[u8]) -> Option<Vec<u8>> {
+    let date = crate::time_manager::evaluate_seconds_to_date(seconds);
+    let time_cycle = *resource.get(10)?;
+    let time_fmt = *resource.get(11)?;
+    let time_sep = *resource.get(20)?;
+
+    let (hour, is_afternoon) = match time_cycle {
+        0 => (date.hour, date.hour >= 12),
+        1 => (date.hour % 12, date.hour >= 12),
+        _ => {
+            let h = date.hour % 12;
+            (if h == 0 { 12 } else { h }, date.hour >= 12)
+        }
+    };
+
+    let hour_str = decimal(hour, if time_fmt & 0x80 != 0 { 2 } else { 1 });
+    let min_str = decimal(date.minute, if time_fmt & 0x40 != 0 { 2 } else { 1 });
+
+    let mut result = Vec::new();
+    result.extend_from_slice(&hour_str);
+    if time_sep != 0 {
+        result.push(time_sep);
+    }
+    result.extend_from_slice(&min_str);
+
+    if want_seconds {
+        let sec_str = decimal(date.second, if time_fmt & 0x20 != 0 { 2 } else { 1 });
+        if time_sep != 0 {
+            result.push(time_sep);
+        }
+        result.extend_from_slice(&sec_str);
+    }
+
+    let suffix = if time_cycle == 0 {
+        let range = if is_afternoon { 25..29 } else { 21..25 };
+        resource.get(range).map(suffix_string).unwrap_or_default()
+    } else {
+        let range = if is_afternoon { 16..20 } else { 12..16 };
+        resource.get(range).map(suffix_string).unwrap_or_default()
+    };
+    result.extend_from_slice(suffix);
+
+    Some(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +219,18 @@ mod tests {
             year,
             month,
             day,
+            ..Default::default()
+        })
+    }
+
+    fn time_stamp(hour: u16, minute: u16, second: u16) -> u32 {
+        crate::time_manager::evaluate_date_to_seconds(&crate::time_manager::DateTimeRecord {
+            year: 2024,
+            month: 2,
+            day: 9,
+            hour,
+            minute,
+            second,
             ..Default::default()
         })
     }
@@ -211,5 +310,78 @@ mod tests {
         );
         resource[330..332].copy_from_slice(&[0xA8, 0x9F]);
         assert!(format_date(0, 1, &resource).is_none());
+    }
+
+    #[test]
+    fn time_formatting_honors_cycles_leading_zeros_and_am_pm_suffixes() {
+        let mut resource = TrapDispatcher::system_intl_default_body(0).unwrap();
+
+        // 12-hour defaults at midnight and noon
+        assert_eq!(format_time(0, true, &resource).unwrap(), b"12:00:00 AM");
+        assert_eq!(format_time(0, false, &resource).unwrap(), b"12:00 AM");
+        let noon = time_stamp(12, 0, 0);
+        assert_eq!(format_time(noon, true, &resource).unwrap(), b"12:00:00 PM");
+        assert_eq!(format_time(noon, false, &resource).unwrap(), b"12:00 PM");
+
+        // Afternoon time with single-digit hour, minutes, seconds
+        let afternoon = time_stamp(13, 5, 9);
+        assert_eq!(
+            format_time(afternoon, true, &resource).unwrap(),
+            b"1:05:09 PM"
+        );
+        assert_eq!(
+            format_time(afternoon, false, &resource).unwrap(),
+            b"1:05 PM"
+        );
+
+        // Leading zero for hours flag (0x80)
+        resource[11] |= 0x80;
+        assert_eq!(
+            format_time(afternoon, true, &resource).unwrap(),
+            b"01:05:09 PM"
+        );
+
+        // Omit leading zero for minutes and seconds
+        resource[11] = 0;
+        assert_eq!(
+            format_time(afternoon, true, &resource).unwrap(),
+            b"1:5:9 PM"
+        );
+
+        // 24-hour cycle (0) with and without custom suffix
+        resource[10] = 0;
+        resource[11] = 0x60;
+        assert_eq!(
+            format_time(afternoon, true, &resource).unwrap(),
+            b"13:05:09"
+        );
+        assert_eq!(format_time(afternoon, false, &resource).unwrap(), b"13:05");
+        // Evening suffix in 24-hour mode (bytes 25..29)
+        resource[25..29].copy_from_slice(b" Uhr");
+        assert_eq!(
+            format_time(afternoon, true, &resource).unwrap(),
+            b"13:05:09 Uhr"
+        );
+        let morning = time_stamp(9, 15, 30);
+        resource[21..25].copy_from_slice(b" am\0");
+        assert_eq!(
+            format_time(morning, true, &resource).unwrap(),
+            b"9:15:30 am"
+        );
+
+        // 12-hour cycle variant (timeCycleZero = 1): midnight and noon as 0
+        resource[10] = 1;
+        assert_eq!(format_time(0, true, &resource).unwrap(), b"0:00:00 AM");
+        assert_eq!(format_time(noon, true, &resource).unwrap(), b"0:00:00 PM");
+
+        // Custom time separator and omitted separator
+        resource[10] = 0xFF;
+        resource[20] = b'.';
+        assert_eq!(format_time(0, true, &resource).unwrap(), b"12.00.00 AM");
+        resource[20] = 0;
+        assert_eq!(format_time(0, true, &resource).unwrap(), b"120000 AM");
+
+        // Resource shorter than required minimum 21 bytes returns None
+        assert!(format_time(0, true, &resource[..20]).is_none());
     }
 }

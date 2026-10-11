@@ -13847,6 +13847,96 @@
         assert_eq!(disp.current_selector_operation, None);
     }
 
+    #[test]
+    fn pack6_date_and_time_formatting_evaluates_system_defaults_and_custom_intl_records() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let result_ptr = bus.alloc(256);
+
+        let timestamp = crate::time_manager::evaluate_date_to_seconds(&crate::time_manager::DateTimeRecord {
+            year: 2024,
+            month: 2,
+            day: 29,
+            hour: 13,
+            minute: 5,
+            second: 9,
+            ..Default::default()
+        });
+
+        // 1. IUDateString (0x0000): short date form (0)
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0000);
+        bus.write_long(sp + 2, result_ptr);
+        bus.write_word(sp + 6, 0);
+        bus.write_long(sp + 8, timestamp);
+        disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_pstring(result_ptr), b"2/29/24");
+
+        // 2. IUDateString (0x0000): long date form (1)
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0000);
+        bus.write_long(sp + 2, result_ptr);
+        bus.write_word(sp + 6, 1);
+        bus.write_long(sp + 8, timestamp);
+        disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_pstring(result_ptr), b"Thursday, February 29, 2024");
+
+        // 3. IUTimeString (0x0002): with seconds
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0002);
+        bus.write_long(sp + 2, result_ptr);
+        bus.write_word(sp + 6, 1);
+        bus.write_long(sp + 8, timestamp);
+        disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_pstring(result_ptr), b"1:05:09 PM");
+
+        // 4. IUTimeString (0x0002): without seconds
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0002);
+        bus.write_long(sp + 2, result_ptr);
+        bus.write_word(sp + 6, 0);
+        bus.write_long(sp + 8, timestamp);
+        disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_pstring(result_ptr), b"1:05 PM");
+
+        // 5. IUDatePString (0x000E) with custom intl0 handle
+        let mut custom_intl0 = TrapDispatcher::system_intl_default_body(0).unwrap();
+        custom_intl0[7] = 1; // day/month/year
+        custom_intl0[8] = 0xE0; // century + leading zeroes
+        custom_intl0[9] = b'.';
+        custom_intl0[10] = 0; // 24-hour cycle
+        custom_intl0[11] = 0x80 | 0x60; // all leading zeroes
+        let intl0_buf = bus.alloc(custom_intl0.len() as u32);
+        bus.write_bytes(intl0_buf, &custom_intl0);
+        let intl0_handle = bus.alloc(4);
+        bus.write_long(intl0_handle, intl0_buf);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x000E);
+        bus.write_long(sp + 2, intl0_handle);
+        bus.write_long(sp + 6, result_ptr);
+        bus.write_word(sp + 10, 0);
+        bus.write_long(sp + 12, timestamp);
+        disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(bus.read_pstring(result_ptr), b"29.02.2024");
+
+        // 6. IUTimePString (0x0010) with custom intl0 handle (24-hour cycle with leading zeroes)
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0010);
+        bus.write_long(sp + 2, intl0_handle);
+        bus.write_long(sp + 6, result_ptr);
+        bus.write_word(sp + 10, 1);
+        bus.write_long(sp + 12, timestamp);
+        disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus).unwrap().unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(bus.read_pstring(result_ptr), b"13:05:09");
+    }
+
     // Pack6 / Intl Utilities ($A9ED) — IUGetIntl selector $0006.
     // IM:I pp. I-495 and I-505: return the requested INTL resource handle.
     #[test]

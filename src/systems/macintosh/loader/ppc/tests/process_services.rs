@@ -1880,6 +1880,9 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("IUDateString", PpcSystemCompatibilityOperation::IuDateString),
         ("IUDatePString", PpcSystemCompatibilityOperation::IuDatePString),
         ("DateString", PpcSystemCompatibilityOperation::IuDatePString),
+        ("IUTimeString", PpcSystemCompatibilityOperation::IuTimeString),
+        ("IUTimePString", PpcSystemCompatibilityOperation::IuTimePString),
+        ("TimeString", PpcSystemCompatibilityOperation::IuTimePString),
         ("IUEqualString", PpcSystemCompatibilityOperation::IuEqualString),
         ("InitCRM", PpcSystemCompatibilityOperation::InitCrm),
         ("InitCTBUtilities", PpcSystemCompatibilityOperation::InitCtbUtilities),
@@ -2208,6 +2211,87 @@ fn ppc_date_string_imports_use_abi_handle_and_preserve_registers_and_output_boun
     run_test_import(
         &mut loaded,
         dispatcher_target_for_import("InterfaceLib", "IUDatePString"),
+    );
+    assert_eq!(loaded.memory.read_u8(small_result), Some(0x5A));
+    assert_eq!(loaded.memory.read_u8(small_result + 1), Some(0x5A));
+}
+
+#[test]
+fn ppc_time_string_imports_use_abi_handle_and_preserve_registers_and_output_bounds() {
+    let pef = synthetic_pef_with_import(b"IUTimePString");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let region = PPC_DATA_BASE + 0x3200;
+    let result = region + 4;
+    let handle = region + 0x200;
+    let resource_ptr = region + 0x220;
+    loaded.memory.add_region(region, vec![0xA5; 0x300]);
+    let mut resource = TrapDispatcher::system_intl_default_body(0).unwrap();
+    resource[10] = 0; // 24-hour cycle
+    resource[11] = 0x60; // min and sec leading zeros
+    resource[20] = b':';
+    loaded.memory.write_u32_be(handle, resource_ptr).unwrap();
+    for (offset, byte) in resource.iter().copied().enumerate() {
+        loaded
+            .memory
+            .write_u8(resource_ptr + offset as u32, byte)
+            .unwrap();
+    }
+    let timestamp =
+        crate::time_manager::evaluate_date_to_seconds(&crate::time_manager::DateTimeRecord {
+            year: 2024,
+            month: 2,
+            day: 9,
+            hour: 13,
+            minute: 5,
+            second: 9,
+            ..Default::default()
+        });
+
+    for symbol in ["IUTimePString", "TimeString", "IUTimeString"] {
+        loaded.cpu.gpr[3] = timestamp;
+        loaded.cpu.gpr[4] = 1; // wantSeconds = true
+        loaded.cpu.gpr[5] = result;
+        loaded.cpu.gpr[6] = handle;
+        let before = loaded.cpu.gpr;
+        run_test_import(
+            &mut loaded,
+            dispatcher_target_for_import("InterfaceLib", symbol),
+        );
+        let expected = if symbol == "IUTimeString" {
+            b"1:05:09 PM".as_slice() // default U.S. 12-hour
+        } else {
+            b"13:05:09".as_slice() // custom 24-hour resource
+        };
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, result).unwrap(),
+            expected
+        );
+        assert_eq!(loaded.cpu.gpr[3..7], before[3..7]);
+        assert_eq!(loaded.memory.read_u8(result - 1), Some(0xA5));
+        assert_eq!(loaded.memory.read_u8(result + 12), Some(0xA5));
+    }
+
+    // Without seconds
+    loaded.cpu.gpr[3] = timestamp;
+    loaded.cpu.gpr[4] = 0; // wantSeconds = false
+    loaded.cpu.gpr[5] = result;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "IUTimeString"),
+    );
+    assert_eq!(
+        ppc_read_pstring_bytes(&mut loaded.memory, result).unwrap(),
+        b"1:05 PM"
+    );
+
+    // Short buffer protection
+    let small_result = PPC_DATA_BASE + 0x4000;
+    loaded.memory.add_region(small_result, vec![0x5A; 2]);
+    loaded.cpu.gpr[5] = small_result;
+    run_test_import(
+        &mut loaded,
+        dispatcher_target_for_import("InterfaceLib", "IUTimePString"),
     );
     assert_eq!(loaded.memory.read_u8(small_result), Some(0x5A));
     assert_eq!(loaded.memory.read_u8(small_result + 1), Some(0x5A));
