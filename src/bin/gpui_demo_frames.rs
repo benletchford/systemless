@@ -267,6 +267,22 @@ pub fn text_edit_pieces(
     windows: &[WindowFrameSnapshot],
     viewport: Rect,
 ) -> Vec<TextEditPiece> {
+    text_edit_pieces_for_kind(records, dialogs, controls, windows, viewport, false)
+}
+
+/// Visibility candidates only. A styled recipe must additionally pass native
+/// whole-field paint qualification before any candidate becomes GPUI-owned.
+pub fn styled_text_edit_candidates(
+    records: &[TextEditSnapshot], dialogs: &[DialogSnapshot], controls: &[ControlSnapshot],
+    windows: &[WindowFrameSnapshot], viewport: Rect,
+) -> Vec<TextEditPiece> {
+    text_edit_pieces_for_kind(records, dialogs, controls, windows, viewport, true)
+}
+
+fn text_edit_pieces_for_kind(
+    records: &[TextEditSnapshot], dialogs: &[DialogSnapshot], controls: &[ControlSnapshot],
+    windows: &[WindowFrameSnapshot], viewport: Rect, styled: bool,
+) -> Vec<TextEditPiece> {
     let mut pieces = Vec::new();
     let mut covers = Vec::new();
     for frame in windows {
@@ -284,18 +300,13 @@ pub fn text_edit_pieces(
             continue;
         }
         for (index, record) in records.iter().enumerate() {
-            if !record.drawing_intact
-                || record.owner_port != frame.guest_id
-                || record.styled
-                || record.face != 0
-                || record.justification != 0
-                || record.line_height <= 0
-                // A scaled substitute strike can differ between CPU drawing
-                // paths. Retain guest pixels until that scaling is qualified.
-                || systemless::quickdraw::fonts::get_font_face_or_default(record.font, record.size).size
-                    != if record.size == 0 { 12 } else { record.size }
-                || record.display_lines().is_none()
-            {
+            if !record.drawing_intact || record.owner_port != frame.guest_id
+                || record.styled != styled
+                || (!styled && (record.face != 0 || record.justification != 0 || record.line_height <= 0
+                    // Plain scaled substitutes retain their existing qualification guard.
+                    || systemless::quickdraw::fonts::get_font_face_or_default(record.font, record.size).size
+                        != if record.size == 0 { 12 } else { record.size }
+                    || record.display_lines().is_none())) {
                 continue;
             }
             let Some(source) = record.global_view_rect.map(Rect::from) else {
@@ -1124,7 +1135,7 @@ mod tests {
         assert!(pieces.iter().all(|piece| piece.clip.intersection(Rect::from((40, 60, 92, 142))).is_none()));
         let mut custom = back.clone();
         custom.definition_id = Some(128);
-        assert!(text_edit_pieces(&[record.clone()], &[], &[], &[front, custom], viewport).is_empty());
+        assert!(text_edit_pieces(&[record.clone()], &[], &[], &[front.clone(), custom], viewport).is_empty());
         let mut partial = record.clone();
         partial.painted_regions = vec![(100, 30, 110, 70)];
         let partial_pieces = text_edit_pieces(&[partial], &[], &[], &[back.clone()], viewport);
@@ -1135,7 +1146,21 @@ mod tests {
         assert!(text_edit_pieces(&[scaled], &[], &[], &[back.clone()], viewport).is_empty());
         let mut styled = record;
         styled.styled = true;
-        assert!(text_edit_pieces(&[styled], &[], &[], &[back], viewport).is_empty());
+        assert!(text_edit_pieces(&[styled.clone()], &[], &[], &[back.clone()], viewport).is_empty());
+        let candidates = super::styled_text_edit_candidates(&[styled.clone()], &[], &[], &[back.clone()], viewport);
+        assert!(!candidates.is_empty());
+        let covered = super::styled_text_edit_candidates(&[styled.clone()], &[], &[], &[front, back.clone()], viewport);
+        assert!(covered.iter().all(|piece| piece.clip.intersection(Rect::from((40, 60, 92, 142))).is_none()));
+        styled.painted_regions = vec![(100, 30, 110, 70)];
+        let candidates = super::styled_text_edit_candidates(&[styled.clone()], &[], &[], &[back.clone()], viewport);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].clip, Rect::from((100, 30, 110, 70)));
+        styled.drawing_intact = false;
+        assert!(super::styled_text_edit_candidates(&[styled.clone()], &[], &[], &[back.clone()], viewport).is_empty());
+        styled.drawing_intact = true;
+        let mut custom = back;
+        custom.definition_id = Some(128);
+        assert!(super::styled_text_edit_candidates(&[styled], &[], &[], &[custom], viewport).is_empty());
     }
 
     #[test]
