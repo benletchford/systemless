@@ -5,7 +5,8 @@ use super::{
     ppc_memory_can_write_bytes, ppc_memory_read_bytes, ppc_process_heap_alloc,
     ppc_sound_trace_enabled, ppc_vfs_resource_index, PpcCpu, PpcFileRecord, PpcHandleRecord,
     PpcImportAction, PpcSectionMem, PpcVfsFileRecord, PpcVfsResourceRecord, PPC_BAD_FORMAT,
-    PPC_MEM_FULL_ERR, PPC_NOT_ENOUGH_HARDWARE_ERR, PPC_NO_ERR, PPC_PARAM_ERR, PPC_RES_PROBLEM, PPC_RF_NUM_ERR,
+    PPC_FNF_ERR, PPC_MEM_FULL_ERR, PPC_NOT_ENOUGH_HARDWARE_ERR, PPC_NO_ERR, PPC_PARAM_ERR,
+    PPC_RES_PROBLEM, PPC_RF_NUM_ERR,
 };
 use crate::callback_manager::CallbackTaskArchitecture;
 use crate::process_context::{ProcessNativeMemoryManager, SharedProcessSoundManager};
@@ -1538,13 +1539,30 @@ pub(crate) fn ppc_snd_start_file_play(
     let channel = cpu.gpr[3];
     let ref_num = cpu.gpr[4] as u16 as i16;
     let resource_id = cpu.gpr[5] as u16 as i16;
-    let playing_file = !(ref_num == 0 && resource_id != 0);
-    if playing_file
-        && ppc_file_data_for_refnum(ref_num, files, vfs_files)
-            .is_some_and(|data| !ppc_is_aiff_form(data))
+    // A zero file reference selects an 'snd ' resource, including ID zero.
+    // Sound 1994, pp. 2-124--2-125: loading failures do not start playback
+    // or run a completion routine (resProblem=-204, badFormat=-206).
+    let playing_file = ref_num != 0;
+    if playing_file {
+        if !files.iter().any(|file| file.ref_num == ref_num) {
+            return PPC_RF_NUM_ERR;
+        }
+        let Some(data) = ppc_file_data_for_refnum(ref_num, files, vfs_files) else {
+            return PPC_FNF_ERR;
+        };
+        if !ppc_is_aiff_form(data) {
+            return BAD_FILE_FORMAT;
+        }
+    } else if ppc_vfs_resource_index(
+        vfs_resources,
+        current_resource_refnum,
+        u32::from_be_bytes(*b"snd "),
+        resource_id,
+        false,
+    )
+    .is_none()
     {
-        // Nothing starts, so no completion routine runs for this call.
-        return BAD_FILE_FORMAT;
+        return PPC_RES_PROBLEM;
     }
     let file_playback_index = u32::try_from(sound.file_playbacks.len()).ok();
     let (aiff, decoded_sound) = if !playing_file {
@@ -1555,7 +1573,33 @@ pub(crate) fn ppc_snd_start_file_play(
     } else {
         ppc_aiff_playback_for_refnum(ref_num, files, vfs_files)
     };
+    if decoded_sound.is_none() {
+        return if !playing_file {
+            PPC_BAD_FORMAT
+        } else if aiff.is_some_and(|metadata| {
+            ppc_sound_codec(
+                FIXED_COMPRESSION,
+                metadata.compression_type,
+                metadata.sample_size,
+            )
+            .is_none()
+        }) {
+            -223 // siInvalidCompression
+        } else {
+            BAD_FILE_FORMAT
+        };
+    }
     let decoded_aiff_summary = decoded_sound.as_ref().map(|decoded| decoded.summary);
+    if ppc_sound_trace_enabled() {
+        let path = files
+            .iter()
+            .find(|file| file.ref_num == ref_num)
+            .map(|file| file.path.as_str());
+        eprintln!(
+            "[PPC-SOUND] SndStartFilePlay channel=${:08X} ref={} resource={} path={:?} aiff={:?} decoded={:?} completion=${:08X} async={}",
+            channel, ref_num, resource_id, path, aiff, decoded_aiff_summary, cpu.gpr[9], cpu.gpr[10]
+        );
+    }
     let record = PpcSoundFilePlaybackRecord {
         channel,
         ref_num,

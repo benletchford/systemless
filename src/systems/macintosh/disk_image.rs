@@ -12,6 +12,7 @@ use std::{
 use crate::mac_roman::decode_mac_roman;
 
 mod hfs;
+mod udif;
 
 use hfs::HfsVolume;
 
@@ -65,7 +66,8 @@ pub struct DiskImageFile {
 }
 
 pub fn looks_like_dc42_or_hfs(bytes: &[u8]) -> bool {
-    raw_filesystem_signature(bytes).is_some()
+    udif::recognizes(bytes)
+        || raw_filesystem_signature(bytes).is_some()
         || dc42_data_range(bytes)
             .and_then(|(start, end)| raw_filesystem_signature(&bytes[start..end]))
             .is_some()
@@ -73,6 +75,16 @@ pub fn looks_like_dc42_or_hfs(bytes: &[u8]) -> bool {
 }
 
 pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, String> {
+    if udif::recognizes(bytes) {
+        let decoded = udif::decode(bytes)?;
+        return extract_uncompressed(&decoded)?
+            .map(Some)
+            .ok_or_else(|| "UDIF image contains no supported HFS filesystem".to_owned());
+    }
+    extract_uncompressed(bytes)
+}
+
+fn extract_uncompressed(bytes: &[u8]) -> Result<Option<DiskImageContents>, String> {
     if !looks_like_dc42_or_hfs(bytes) {
         return Ok(None);
     }

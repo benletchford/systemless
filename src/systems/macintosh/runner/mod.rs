@@ -4102,6 +4102,10 @@ impl FixtureRunner {
             addr::KEY_REP_THRESH,
             crate::memory::globals::DEFAULT_AUTO_KEY_RATE_TICKS,
         );
+        let (red, green, blue) = crate::process_context::DEFAULT_QUICKDRAW_HILITE_COLOR;
+        self.bus.write_word(addr::HILITE_RGB, red);
+        self.bus.write_word(addr::HILITE_RGB + 2, green);
+        self.bus.write_word(addr::HILITE_RGB + 4, blue);
         // RndSeed ($0156): system random seed initialized during boot.
         // On a real Mac, the boot code seeds this from the real-time clock
         // so that programs that read it directly (without calling Random)
@@ -4846,6 +4850,10 @@ impl FixtureRunner {
             addr::KEY_REP_THRESH,
             crate::memory::globals::DEFAULT_AUTO_KEY_RATE_TICKS,
         );
+        let (red, green, blue) = crate::process_context::DEFAULT_QUICKDRAW_HILITE_COLOR;
+        self.bus.write_word(addr::HILITE_RGB, red);
+        self.bus.write_word(addr::HILITE_RGB + 2, green);
+        self.bus.write_word(addr::HILITE_RGB + 4, blue);
         self.bus.write_byte(addr::MMU32_BIT, 1);
         // Reapply the documented constant after adopting native low memory.
         // Inside Macintosh Volume I (1985), p. I-85; Volume III, p. III-228.

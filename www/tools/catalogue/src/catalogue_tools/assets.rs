@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::{BufReader, Read, Write},
+    io::{BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -65,6 +65,7 @@ pub fn is_managed_key(key: &str) -> bool {
         FileType::Bin,
         FileType::Hqx,
         FileType::Img,
+        FileType::Dmg,
         FileType::Gz,
     ];
     formats
@@ -204,6 +205,7 @@ pub fn inspect(path: &Path, format: FileType) -> Result<Inspection> {
             }
             FileType::Hqx => String::from_utf8_lossy(&header)
                 .contains("(This file must be converted with BinHex 4.0)"),
+            FileType::Dmg => recognized_udif(&mut file, size)?,
             FileType::Img => {
                 let diskcopy = size >= 84
                     && header[0] <= 63
@@ -228,6 +230,35 @@ pub fn inspect(path: &Path, format: FileType) -> Result<Inspection> {
         );
     }
     hash_file(path)
+}
+
+/// Header recognition only; runtime extraction checks block tables and chunks.
+fn recognized_udif(file: &mut File, size: u64) -> Result<bool> {
+    if size < 512 {
+        return Ok(false);
+    }
+    file.seek(SeekFrom::End(-512))?;
+    let mut footer = [0; 512];
+    file.read_exact(&mut footer)?;
+    let u32_at = |off| u32::from_be_bytes(footer[off..off + 4].try_into().unwrap());
+    let u64_at = |off| u64::from_be_bytes(footer[off..off + 8].try_into().unwrap());
+    let within = |off: u64, len: u64| off.checked_add(len).is_some_and(|end| end <= size - 512);
+    let data_start = u64_at(24);
+    let data_len = u64_at(32);
+    let xml_start = u64_at(216);
+    let xml_len = u64_at(224);
+    Ok(&footer[..4] == b"koly"
+        && u32_at(4) == 4
+        && u32_at(8) == 512
+        && u64_at(16) == 0
+        && u32_at(56) <= 1
+        && u32_at(60) <= 1
+        && within(data_start, data_len)
+        && xml_len > 0
+        && xml_len <= 16 * 1024 * 1024
+        && within(xml_start, xml_len)
+        && (data_start + data_len <= xml_start || xml_start + xml_len <= data_start)
+        && (1..=256 * 1024 * 1024 / 512).contains(&u64_at(492)))
 }
 
 fn recognized_sit(header: &[u8], size: u64) -> bool {

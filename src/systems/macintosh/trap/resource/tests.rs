@@ -11303,3 +11303,37 @@ fn osdispatch_sameprocess_selector_003d_writes_boolean_result() {
     assert_eq!(bus.read_word(TEST_SP + 14), 0, "noErr result");
     assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
 }
+
+#[test]
+fn fsdispatch_pbgetcatinfo_preserves_literal_slash_and_macroman_basename() {
+    for directory in [false, true] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let parent = disp.ensure_vfs_directory("Game Folder");
+        let encoded = super::super::TrapDispatcher::encode_hfs_component_for_vfs("Café/Level");
+        let path = format!("Game Folder/{encoded}");
+        if directory {
+            disp.ensure_vfs_directory(&path);
+        } else {
+            disp.vfs.insert(path.clone(), vec![1, 2, 3]);
+        }
+        let pb = 0x300000;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"");
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_word(pb + 28, 1);
+        bus.write_long(pb + 48, parent);
+        cpu.write_reg(Register::D0, 9);
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Caf\x8e/Level");
+        assert_eq!(bus.read_byte(pb + 30) & 0x10 != 0, directory);
+
+        // Reuse exactly the returned guest bytes in a non-indexed lookup.
+        bus.write_word(pb + 28, 0);
+        bus.write_long(pb + 48, parent);
+        cpu.write_reg(Register::D0, 9);
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Caf\x8e/Level");
+        assert!(disp.vfs.contains_key(&path) || directory);
+    }
+}

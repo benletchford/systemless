@@ -121,8 +121,8 @@ pub fn load_game(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
 /// The packed format stores fully decompressed data/resource forks for each file,
 /// so loading avoids runtime archive decompression in Wasm.
 pub fn pack_stuffit_for_web(file_data: &[u8]) -> Result<Vec<u8>, String> {
-    let archive =
-        SitArchive::parse(file_data).map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
+    let archive = super::stuffit_paths::parse(file_data)
+        .map_err(|e| format!("Failed to parse StuffIt: {e}"))?;
 
     let payload = payload_from_stuffit_archive(&archive, 1)?;
     pack_payload_for_web(payload)
@@ -146,16 +146,39 @@ pub fn pack_game_sources_for_web(
     };
     for source in sources {
         let source_payload = if is_stuffit_archive(source) {
-            let archive = SitArchive::parse(source)
-                .map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
+            let archive = super::stuffit_paths::parse(source)
+                .map_err(|e| format!("Failed to parse StuffIt: {e}"))?;
             payload_from_stuffit_archive(&archive, 1)?
         } else if let Some(image) = crate::disk_image::extract_dc42_or_hfs(source)? {
             payload_from_disk_image(image, 1)?
         } else if is_zip_archive(source) {
             collect_zip_payload(source)?
+        } else if crate::binhex::looks_like_binhex(source) {
+            let file = crate::binhex::decode(source)?
+                .ok_or_else(|| "Not a BinHex file".to_string())?;
+            payload_from_forks(
+                &file.name,
+                file.data,
+                file.rsrc,
+                file.file_type,
+                file.creator,
+                file.finder_flags,
+                1,
+            )?
+        } else if looks_like_macbinary(source) {
+            let file = parse_macbinary_payload(source, "", 1)?;
+            payload_from_forks(
+                &file.name,
+                file.data,
+                file.rsrc,
+                file.file_type,
+                file.creator,
+                file.finder_flags,
+                file.executable_priority,
+            )?
         } else {
             return Err(
-                "Game source is not a StuffIt archive, ZIP archive, or HFS disk image".to_string(),
+                "Game source is not a StuffIt archive, ZIP archive, HFS disk image, BinHex file, or MacBinary file".to_string(),
             );
         };
         merge_payload(&mut payload, source_payload);
@@ -390,8 +413,8 @@ fn decompress_file_entries(entries: &[&SitEntry]) -> DecodedForks {
 }
 
 fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
-    let archive =
-        SitArchive::parse(file_data).map_err(|e| format!("Failed to parse StuffIt: {:?}", e))?;
+    let archive = super::stuffit_paths::parse(file_data)
+        .map_err(|e| format!("Failed to parse StuffIt: {e}"))?;
 
     let file_entries: Vec<&SitEntry> = archive
         .entries
@@ -1637,8 +1660,8 @@ fn payload_from_stuffit_bytes(
     bytes: &[u8],
     executable_priority: u8,
 ) -> Result<Payload, String> {
-    let archive = SitArchive::parse(bytes)
-        .map_err(|e| format!("Nested StuffIt {name}: failed to parse: {:?}", e))?;
+    let archive = super::stuffit_paths::parse(bytes)
+        .map_err(|e| format!("Nested StuffIt {name}: failed to parse: {e}"))?;
     payload_from_stuffit_archive(&archive, executable_priority)
 }
 
@@ -1967,8 +1990,57 @@ fn payload_from_forks(
         return payload_from_stuffit_bytes(name, &rsrc, executable_priority);
     }
 
+    if let Some(files) = crate::game::smaller_installer::expand_compact_pro(&data)? {
+        let mut payload = Payload {
+            dirs: vec![name.to_string()],
+            files: Vec::new(),
+            volumes: Vec::new(),
+            installer_roots: Vec::new(),
+            skipped_disk_image_errors: Vec::new(),
+        };
+        for file in files {
+            let embedded = payload_from_forks(
+                &format!("{name}/{}", file.name),
+                file.data,
+                file.rsrc,
+                file.file_type,
+                file.creator,
+                file.finder_flags,
+                executable_priority,
+            )?;
+            merge_payload(&mut payload, embedded);
+        }
+        return Ok(payload);
+    }
+
     if let Some(payload) = expand_installer_maker_payload(name, &data, executable_priority)? {
         return Ok(payload);
+    }
+
+    if file_type == *b"APPL" {
+        if let Some(files) = crate::game::smaller_installer::expand(&data, &rsrc)? {
+            let mut payload = Payload {
+                dirs: vec![name.to_string()],
+                files: Vec::new(),
+                volumes: Vec::new(),
+                installer_roots: vec![name.to_string()],
+                skipped_disk_image_errors: Vec::new(),
+            };
+            for file in files {
+                let embedded_name = format!("{name}/{}", file.name);
+                let embedded = payload_from_forks(
+                    &embedded_name,
+                    file.data,
+                    file.rsrc,
+                    file.file_type,
+                    file.creator,
+                    file.finder_flags,
+                    executable_priority,
+                )?;
+                merge_payload(&mut payload, embedded);
+            }
+            return Ok(payload);
+        }
     }
 
     if let Some(parsed) = crate::game::vise::parse_vise(&data) {
@@ -2080,13 +2152,13 @@ fn expand_installer_maker_payload(
     data: &[u8],
     executable_priority: u8,
 ) -> Result<Option<Payload>, String> {
-    let Some(container) = crate::game::installer_maker::parse_installer_maker_st46(data) else {
+    let Some(container) = crate::game::installer_maker::parse_installer_maker(data) else {
         return Ok(None);
     };
 
     if crate::runner::trace_load_enabled() {
         eprintln!(
-            "[LOAD] Extracting InstallerMaker ST46 payload from \"{}\": {} files",
+            "[LOAD] Extracting InstallerMaker payload from \"{}\": {} files",
             name,
             container.entries.len()
         );
@@ -5870,6 +5942,125 @@ mod tests {
         let err = collect_zip_payload(b"PK\x03\x04not a zip")
             .expect_err("malformed ZIP should be rejected");
         assert!(err.contains("Failed to parse ZIP archive"), "{err}");
+    }
+
+    #[test]
+    fn web_pack_sources_preserve_binhex_forks_companions_and_metadata() {
+        let data = b"original data fork";
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let original = crate::binhex::make_test_binhex(
+            "Original Game", *b"APPL", *b"TEST", 0x20, data, &rsrc,
+        );
+        let companion = make_zip(&[("README", b"retain original terms")]);
+        let packed = pack_game_sources_for_web(&[&original, &companion], &[]).unwrap();
+        let mut runner = new_runner();
+        load_web_pack(&mut runner, &packed).unwrap();
+        assert_eq!(runner.dispatcher().vfs.get("Original Game"), Some(&data.to_vec()));
+        assert_eq!(runner.dispatcher().vfs_rsrc.get("Original Game"), Some(&rsrc));
+        assert_eq!(runner.dispatcher().vfs.get("README"), Some(&b"retain original terms".to_vec()));
+        let metadata = runner.dispatcher_mut().vfs_file_metadata("Original Game").unwrap();
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"APPL"));
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"TEST"));
+        assert_eq!(metadata.finder_flags, 0x20);
+    }
+
+    #[test]
+    fn web_pack_sources_expand_binhex_installer_and_apply_prefixes() {
+        let data = b"unchanged installed application";
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let installer = crate::game::vise::make_test_archive("Installed Game", data, &rsrc);
+        let original = crate::binhex::make_test_binhex(
+            "Original Installer", *b"APPL", *b"TEST", 0, &installer, &rsrc,
+        );
+        let companion = make_zip(&[("omit.txt", b"outside selected prefix")]);
+        let packed = pack_game_sources_for_web(&[&original, &companion], &["Original Installer"]).unwrap();
+        let mut runner = new_runner();
+        load_web_pack(&mut runner, &packed).unwrap();
+        assert_eq!(runner.dispatcher().vfs.get("Original Installer/Installed Game"), Some(&data.to_vec()));
+        assert_eq!(runner.dispatcher().vfs_rsrc.get("Original Installer/Installed Game"), Some(&rsrc));
+        assert!(!runner.dispatcher().vfs.contains_key("Original Installer"));
+        assert!(!runner.dispatcher().vfs.contains_key("omit.txt"));
+    }
+
+    #[test]
+    fn web_pack_sources_reject_corrupt_binhex_crc_and_truncated_stream() {
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let original = crate::binhex::make_test_binhex("Original Game", *b"APPL", *b"TEST", 0, b"data", &rsrc);
+        let mut corrupt = original.clone();
+        let start = corrupt.iter().position(|byte| *byte == b':').unwrap() + 1;
+        corrupt[start + 2] = if corrupt[start + 2] == b'!' { b'"' } else { b'!' };
+        assert!(pack_game_sources_for_web(&[&corrupt], &[]).is_err());
+        assert!(pack_game_sources_for_web(&[&original[..original.len() - 4]], &[]).is_err());
+    }
+
+    #[test]
+    fn web_pack_sources_preserve_macbinary_forks_and_companions() {
+        let data = b"original data fork";
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let original = make_macbinary_application("Original Game", data, &rsrc);
+        let companion = make_zip(&[("README", b"retain original terms")]);
+        let packed = pack_game_sources_for_web(&[&original, &companion], &[]).unwrap();
+        let mut runner = new_runner();
+        load_web_pack(&mut runner, &packed).unwrap();
+        assert_eq!(
+            runner.dispatcher().vfs.get("Original Game"),
+            Some(&data.to_vec())
+        );
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get("Original Game"),
+            Some(&rsrc)
+        );
+        assert_eq!(
+            runner.dispatcher().vfs.get("README"),
+            Some(&b"retain original terms".to_vec())
+        );
+        let metadata = runner
+            .dispatcher_mut()
+            .vfs_file_metadata("Original Game")
+            .unwrap();
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"APPL"));
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"TEST"));
+    }
+
+    #[test]
+    fn web_pack_sources_expand_macbinary_installer_and_apply_prefixes() {
+        let data = b"unchanged installed application";
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let installer_data = crate::game::vise::make_test_archive("Installed Game", data, &rsrc);
+        let original = make_macbinary_application("Original Installer", &installer_data, &rsrc);
+        let packed = pack_game_sources_for_web(&[&original], &["Original Installer"]).unwrap();
+        let mut runner = new_runner();
+        load_web_pack(&mut runner, &packed).unwrap();
+        assert_eq!(
+            runner
+                .dispatcher()
+                .vfs
+                .get("Original Installer/Installed Game"),
+            Some(&data.to_vec())
+        );
+        assert_eq!(
+            runner
+                .dispatcher()
+                .vfs_rsrc
+                .get("Original Installer/Installed Game"),
+            Some(&rsrc)
+        );
+        assert!(!runner.dispatcher().vfs.contains_key("Original Installer"));
+    }
+
+    #[test]
+    fn web_pack_sources_reject_invalid_macbinary_headers_and_truncated_forks() {
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let original = make_macbinary_application("Original Game", b"data", &rsrc);
+        for (offset, value) in [(0, 1), (1, 0), (1, 64), (74, 1), (82, 1)] {
+            let mut invalid = original.clone();
+            invalid[offset] = value;
+            assert!(pack_game_sources_for_web(&[&invalid], &[]).is_err());
+        }
+        assert!(pack_game_sources_for_web(&[&original[..original.len() - 129]], &[]).is_err());
+        let mut invalid = original;
+        invalid[83..87].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(pack_game_sources_for_web(&[&invalid], &[]).is_err());
     }
 
     #[test]

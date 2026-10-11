@@ -2788,6 +2788,10 @@ impl super::TrapDispatcher {
         bus.write_long(window_ptr + Self::WINDOW_REFCON_OFFSET, ref_con);
         self.set_window_vis_from_content(bus, window_ptr, visible);
         self.track_window_front(bus, window_ptr);
+        self.window_list.set_window_class(
+            window_ptr,
+            crate::window_manager::window_class_for_legacy_proc(proc_id),
+        );
     }
 
     pub(crate) fn window_visible(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
@@ -5438,8 +5442,9 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-285
             (true, 0x108) => {
                 let sp = cpu.read_reg(Register::A7);
-                // A byte pushed to A7 occupies the low byte of its two-byte stack slot.
-                let show_flag = bus.read_byte(sp + 1) != 0;
+                // Byte predecrement through A7 reserves two bytes but writes at
+                // the new A7 address. The second byte is unused stack padding.
+                let show_flag = bus.read_byte(sp) != 0;
                 let the_window = bus.read_long(sp + 2);
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);

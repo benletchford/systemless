@@ -40,7 +40,7 @@ pub fn prefetch_game_archive(game: &Game) {
     if !game.approved || game.assets.archive_path.is_empty() {
         return;
     }
-    prefetch_archive(&primary_archive_url(game));
+    prefetch_archive(&primary_archive_url(game, game.default_architecture));
 }
 
 #[component]
@@ -54,6 +54,12 @@ pub fn GameScreen(game: &'static Game) -> impl IntoView {
     });
 
     view! {
+        <a class="game-download"
+            href=move || asset_path(game.assets.archive_for(selected_architecture.get()).0)
+            target="_blank" rel="noopener noreferrer"
+            download=move || game.assets.archive_for(selected_architecture.get()).1
+            aria-label=move || format!("Download {} for {}", game.title, selected_architecture.get().label())
+        >"Download game"</a>
         {if game.architectures.len() > 1 {
             view! {
                 <div class="game-architecture" role="group" aria-label="Choose game architecture">
@@ -348,11 +354,11 @@ fn GameRuntime(
         let Some(canvas) = canvas_ref.get() else {
             return;
         };
-        let primary_url = primary_archive_url(game);
+        let primary_url = primary_archive_url(game, architecture);
         let fallback_url = game
             .assets
             .web_pack_path
-            .map(|_| asset_path(game.assets.archive_path));
+            .map(|_| asset_path(game.assets.archive_for(architecture).0));
         let arrows_as_numpad = game.settings.arrows_as_numpad;
         let launch_modifiers = game.settings.launch_modifiers;
         let show_menu_bar = game.settings.show_menu_bar;
@@ -1352,11 +1358,11 @@ fn prefetched_archive_promise(url: &str) -> Option<js_sys::Promise> {
     }
 }
 
-fn primary_archive_url(game: &Game) -> String {
+fn primary_archive_url(game: &Game, architecture: GameArchitecture) -> String {
     asset_path(
         game.assets
             .web_pack_path
-            .unwrap_or(game.assets.archive_path),
+            .unwrap_or(game.assets.archive_for(architecture).0),
     )
 }
 
@@ -1773,6 +1779,22 @@ mod tests {
     #[test]
     fn perf_toggle_key_is_host_only() {
         assert_eq!(super::map_key("F3", "F3"), None);
+    }
+
+    #[test]
+    fn shifted_punctuation_preserves_the_typed_character_and_physical_key() {
+        for (key, code, adb) in [
+            (">", "Period", 0x2f),
+            ("<", "Comma", 0x2b),
+            ("?", "Slash", 0x2c),
+            ("!", "Digit1", 0x12),
+            ("{", "BracketLeft", 0x21),
+            ("+", "Equal", 0x18),
+        ] {
+            assert_eq!(super::map_key(key, code), Some((adb, key.as_bytes()[0])));
+        }
+        assert_eq!(super::map_key(".", "Period"), Some((0x2f, b'.')));
+        assert_eq!(super::map_key("1", "Numpad1"), Some((0x53, b'1')));
     }
 
     #[test]
@@ -4626,9 +4648,7 @@ fn map_key(key: &str, code: &str) -> Option<(u8, u8)> {
         "Backspace" => Some((0x33, 0x08)),
         k if k.len() == 1 => {
             let c = k.as_bytes()[0];
-            if c.is_ascii_alphanumeric()
-                || matches!(c, b'.' | b',' | b'-' | b'=' | b'[' | b']' | b'\\' | b'/')
-            {
+            if c.is_ascii_alphanumeric() || c.is_ascii_punctuation() {
                 let lower = c.to_ascii_lowercase();
                 let mac = match lower {
                     b'a' => 0x00,
@@ -4657,25 +4677,25 @@ fn map_key(key: &str, code: &str) -> Option<(u8, u8)> {
                     b'x' => 0x07,
                     b'y' => 0x10,
                     b'z' => 0x06,
-                    b'0' => 0x1D,
-                    b'1' => 0x12,
-                    b'2' => 0x13,
-                    b'3' => 0x14,
-                    b'4' => 0x15,
-                    b'5' => 0x17,
-                    b'6' => 0x16,
-                    b'7' => 0x1A,
-                    b'8' => 0x1C,
-                    b'9' => 0x19,
-                    b'=' => 0x18,
-                    b'.' => 0x2F,
-                    b',' => 0x2B,
-                    b'-' => 0x1B,
-                    b'[' => 0x21,
-                    b']' => 0x1E,
-                    b'\\' => 0x2A,
+                    b'0' | b')' => 0x1D,
+                    b'1' | b'!' => 0x12,
+                    b'2' | b'@' => 0x13,
+                    b'3' | b'#' => 0x14,
+                    b'4' | b'$' => 0x15,
+                    b'5' | b'%' => 0x17,
+                    b'6' | b'^' => 0x16,
+                    b'7' | b'&' => 0x1A,
+                    b'8' | b'*' => 0x1C,
+                    b'9' | b'(' => 0x19,
+                    b'=' | b'+' => 0x18,
+                    b'.' | b'>' => 0x2F,
+                    b',' | b'<' => 0x2B,
+                    b'-' | b'_' => 0x1B,
+                    b'[' | b'{' => 0x21,
+                    b']' | b'}' => 0x1E,
+                    b'\\' | b'|' => 0x2A,
                     // Inside Macintosh: Text, Appendix C; HIToolbox Events.h kVK_ANSI_Slash.
-                    b'/' => 0x2C,
+                    b'/' | b'?' => 0x2C,
                     _ => return None,
                 };
                 Some((mac, c))

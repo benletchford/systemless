@@ -1402,6 +1402,26 @@ pub(super) fn dispatch_event_import(
         PpcImportDispatcherTarget::GetKeys => {
             Some(dispatch_getkeys_import(cpu, memory, input, None))
         }
+        PpcImportDispatcherTarget::GetCurrentKeyModifiers => {
+            // CarbonEventsCore.h: hardware keyboard modifiers, not mouse flags.
+            let mut modifiers = u32::from(ppc_current_event_modifiers(input) & 0x1f00);
+            // Classic Events.h retains distinct right-side modifier bits.
+            for (key, flag) in [(0x3c, 0x2000), (0x3d, 0x4000), (0x3e, 0x8000)] {
+                if input.key_down(key) {
+                    modifiers |= flag;
+                }
+            }
+            Some(PpcImportAction::Return(modifiers))
+        }
+        PpcImportDispatcherTarget::GetGlobalMouse => {
+            // CarbonEventsCore.h: a global Point, independent of the current port.
+            let point_ptr = cpu.gpr[3];
+            if point_ptr != 0 && ppc_memory_can_write_bytes(memory, point_ptr, 4) {
+                let _ = memory.write_u16_be(point_ptr, input.mouse_v as u16);
+                let _ = memory.write_u16_be(point_ptr + 2, input.mouse_h as u16);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetMouse => {
             let point_ptr = cpu.gpr[3];
             if point_ptr != 0 && ppc_memory_can_write_bytes(memory, point_ptr, 4) {

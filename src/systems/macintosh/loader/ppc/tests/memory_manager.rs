@@ -5197,3 +5197,42 @@ fn ppc_ptr_and_hand_appends_to_classic_handle_and_rejects_empty_master() {
         assert_eq!(manager.classic_allocation_size(destination), Some(9));
     });
 }
+#[test]
+fn temp_top_mem_returns_machine_boundary_without_mutating_allocator_state() {
+    for mem_top in [0, 0x03F0_0000] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TempTopMem")).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::TempTopMem
+        );
+        loaded.toolbox_startup.physical_ram_size = 32 * 1024 * 1024;
+        loaded
+            .memory
+            .write_u32_be(crate::memory::globals::addr::MEM_TOP, mem_top)
+            .unwrap();
+        loaded.set_last_mem_error(PPC_PARAM_ERR);
+        loaded.cpu.gpr[3] = 0xDEAD_BEEF;
+        loaded.cpu.gpr[4] = 0xA5A5_1234;
+        let cursor = loaded.heap_cursor();
+        let limit = loaded.heap_limit();
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TempTopMem);
+        assert_eq!(
+            loaded.cpu.gpr[3],
+            if mem_top == 0 {
+                32 * 1024 * 1024
+            } else {
+                mem_top
+            }
+        );
+        assert_eq!(loaded.cpu.gpr[4], 0xA5A5_1234);
+        assert_eq!(loaded.heap_cursor(), cursor);
+        assert_eq!(loaded.heap_limit(), limit);
+        assert_eq!(loaded.last_mem_error(), PPC_PARAM_ERR);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::MEM_TOP),
+            Some(mem_top)
+        );
+    }
+}

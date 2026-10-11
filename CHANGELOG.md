@@ -1,5 +1,175 @@
 # Changelog
 
+## [0.96.0](https://github.com/benletchford/systemless/compare/v0.95.2...v0.96.0) (2026-10-11)
+
+
+### Features
+
+* **catalogue:** add playable original Arashi ([30c72df](https://github.com/benletchford/systemless/commit/30c72df767e2b394e2113f0344917e259de1a282))
+
+
+### Bug Fixes
+
+* preserve guest records when selecting graphics ports ([903b1f9](https://github.com/benletchford/systemless/commit/903b1f9d0119e2f29673c29a78607d9fd3604171))
+
+## [0.95.2](https://github.com/benletchford/systemless/compare/v0.95.1...v0.95.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* support PowerPC FillRoundRect pattern drawing ([f98c1b8](https://github.com/benletchford/systemless/commit/f98c1b8974e53b2921aee97af2021a82fbfc4a46))
+
+## [0.95.1](https://github.com/benletchford/systemless/compare/v0.95.0...v0.95.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* preserve byte alignment after PICT v1 metadata ([2b05217](https://github.com/benletchford/systemless/commit/2b05217ec4edbce728fbb62087672fa19033faf3))
+
+## [0.95.0](https://github.com/benletchford/systemless/compare/v0.94.0...v0.95.0) (2026-10-10)
+
+
+### Features
+
+* catalogue HeartQuest for 68K and PowerPC ([2ffdfa9](https://github.com/benletchford/systemless/commit/2ffdfa987c129a8b1db01a351d43a053da85722c))
+* catalogue the original Hexmines freeware release ([#4455](https://github.com/benletchford/systemless/issues/4455)) ([eca058b](https://github.com/benletchford/systemless/commit/eca058b96862b27ff09b0d9f6bcf8ff62ef3ccd8))
+
+
+### Bug Fixes
+
+* support PowerPC OpenRFPerm resource access ([#4449](https://github.com/benletchford/systemless/issues/4449)) ([e7d4f22](https://github.com/benletchford/systemless/commit/e7d4f2214ddbd55d2f1f4ea91521f1dddad241ff))
+* support PowerPC rounded rectangle erasure ([#4450](https://github.com/benletchford/systemless/issues/4450)) ([551346e](https://github.com/benletchford/systemless/commit/551346e21a23992106948a8e93ce7a49a0658c7a))
+
+## [0.94.0](https://github.com/benletchford/systemless/compare/v0.93.0...v0.94.0) (2026-10-10)
+
+
+### Features
+
+* add the original Ingemar skiing freeware release ([#4445](https://github.com/benletchford/systemless/issues/4445)) ([ba45c0f](https://github.com/benletchford/systemless/commit/ba45c0f923c4e4e49ebeaa7e7925ad2cdf54f996))
+
+## [0.93.0](https://github.com/benletchford/systemless/compare/v0.92.2...v0.93.0) (2026-10-10)
+
+
+### Features
+
+* add the original Moria Macintosh port ([#4442](https://github.com/benletchford/systemless/issues/4442)) ([5554543](https://github.com/benletchford/systemless/commit/5554543dfee9421a36c721c55b77c823a526b99d))
+
+## [0.92.2](https://github.com/benletchford/systemless/compare/v0.92.1...v0.92.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* expand nested Compact Pro game archives ([7c2b50c](https://github.com/benletchford/systemless/commit/7c2b50cf965f49c3d592c6a16cf623092b25de47))
+
+## [0.92.1](https://github.com/benletchford/systemless/compare/v0.92.0...v0.92.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* enable the qualified Monkey Shines launcher ([da29806](https://github.com/benletchford/systemless/commit/da29806547a760479d087f5b5e259999d1354fba))
+
+## [0.92.0](https://github.com/benletchford/systemless/compare/v0.91.2...v0.92.0) (2026-10-10)
+
+
+### Features
+
+* add the original Monkey Shines trial with custom control tracking ([029983a](https://github.com/benletchford/systemless/commit/029983a3040074e3b5e2f9ea327217946cdbec29))
+
+
+### Bug Fixes
+
+* track live global mouse points over standard buttons ([08b9143](https://github.com/benletchford/systemless/commit/08b91435e41d3b89a6288e016e172b04c3def181))
+
+## [0.91.2](https://github.com/benletchford/systemless/compare/v0.91.1...v0.91.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* support PPC system highlight colour accessors ([0cf1a97](https://github.com/benletchford/systemless/commit/0cf1a976b65db5154e0b57f20d61f202a1782b1b))
+
+## [0.91.1](https://github.com/benletchford/systemless/compare/v0.91.0...v0.91.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **loader:** expand original ST65 installer payloads ([dcec775](https://github.com/benletchford/systemless/commit/dcec775966ec51e45faa86a3d4ff14bae7e94702))
+
+## [0.91.0](https://github.com/benletchford/systemless/compare/v0.90.0...v0.91.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** add verified Sigma Chess Lite play ([516db9c](https://github.com/benletchford/systemless/commit/516db9c30df50a49404e4876b7cce3125c30d290))
+
+## [0.90.0](https://github.com/benletchford/systemless/compare/v0.89.0...v0.90.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** add original Solitaire Till Dawn ([24321cf](https://github.com/benletchford/systemless/commit/24321cfcbb71bac0371288d8cee22d9dd97c831f))
+
+## [0.89.0](https://github.com/benletchford/systemless/compare/v0.88.0...v0.89.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** add original Angband ports ([96bee04](https://github.com/benletchford/systemless/commit/96bee04905d4e78a9bb2b90563758dfcdc0d0bba))
+* **catalogue:** select original archives by architecture ([cff06e6](https://github.com/benletchford/systemless/commit/cff06e6910ab98a49da78301fe081d56ea5e89a4))
+
+
+### Bug Fixes
+
+* **quickdraw:** clear PPC text cells in srcCopy mode ([df61439](https://github.com/benletchford/systemless/commit/df61439139d340a7ccc4e30df860b4cfe41c728a))
+* **www:** forward shifted punctuation to the guest ([356f6f4](https://github.com/benletchford/systemless/commit/356f6f45699a3b240b10b410dc547d469e4d0966))
+
+## [0.88.0](https://github.com/benletchford/systemless/compare/v0.87.0...v0.88.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** add playable Swoop original shareware ([71e690d](https://github.com/benletchford/systemless/commit/71e690d90195605f06d39c3f35c64b3e6a7291fe))
+* load Smaller Installer game payloads ([54dec2a](https://github.com/benletchford/systemless/commit/54dec2a9d8600a61d4e6e5046e477b69d7fbb6da))
+
+## [0.87.0](https://github.com/benletchford/systemless/compare/v0.86.0...v0.87.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** enable Bubble Trouble browser gameplay ([314f1dc](https://github.com/benletchford/systemless/commit/314f1dc1c14c1f7e820e3fdfc91b2934b89b82ff))
+* **catalogue:** enable Chiral browser gameplay ([fc34288](https://github.com/benletchford/systemless/commit/fc3428887491d01b4215b95e16db2aa1a9bf4ba5))
+
+## [0.86.0](https://github.com/benletchford/systemless/compare/v0.85.0...v0.86.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** enable FiveStones browser gameplay ([c86ebe7](https://github.com/benletchford/systemless/commit/c86ebe7ab459fee14b62c68e587b928b90b8c3cb))
+
+## [0.85.0](https://github.com/benletchford/systemless/compare/v0.84.1...v0.85.0) (2026-10-10)
+
+
+### Features
+
+* **catalogue:** enable iPuzzle and Kalaha browser games ([4704f5c](https://github.com/benletchford/systemless/commit/4704f5ca1849e78500eb78866375627162deb5ab))
+
+
+### Bug Fixes
+
+* reject missing sound file playback sources ([7d5364c](https://github.com/benletchford/systemless/commit/7d5364c6101654d5510137881480e5dd25b7c4fe))
+* resolve the global InputSprocket element list ([b5e724d](https://github.com/benletchford/systemless/commit/b5e724df394ef855b1793f379d590436dad32102))
+
+## [0.84.1](https://github.com/benletchford/systemless/compare/v0.84.0...v0.84.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* load original compressed UDIF game packages ([4289b74](https://github.com/benletchford/systemless/commit/4289b742b67be5240f114a3d698f706f41559d83))
+
+
+### Code Refactoring
+
+* **macintosh:** centralize Disk Initialization Manager operations evaluation ([6639836](https://github.com/benletchford/systemless/commit/6639836261d31fbf5fd5c3de57d62aa409f2ace3))
+
 ## [0.84.0](https://github.com/benletchford/systemless/compare/v0.83.0...v0.84.0) (2026-10-10)
 
 

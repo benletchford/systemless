@@ -709,6 +709,13 @@ pub(crate) fn ppc_update_res_file(
         *last_resource_error = PPC_RES_F_NOT_FOUND_ERR;
         return;
     }
+    if resource_files
+        .iter()
+        .any(|file| file.ref_num == ref_num && file.writable == Some(false))
+    {
+        *last_resource_error = PPC_RES_ATTR_ERR;
+        return;
+    }
     for record in vfs_resources
         .iter_mut()
         .filter(|record| record.ref_num == ref_num)

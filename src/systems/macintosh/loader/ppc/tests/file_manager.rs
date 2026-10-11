@@ -7546,6 +7546,7 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         let ref_num = PPC_FIRST_FILE_REF_NUM;
         loaded.set_current_resource_refnum(ref_num);
         loaded.push_resource_file(PpcResourceFileRecord {
+            writable: None,
             ref_num,
             path: "Frame.PICR".to_string(),
         });
@@ -9250,6 +9251,7 @@ fn get_v_ref_num_uses_open_file_references() {
         position: 0,
     });
     loaded.push_resource_file(PpcResourceFileRecord {
+        writable: None,
         ref_num: 131,
         path: "Resource File".to_string(),
     });
@@ -9982,6 +9984,7 @@ fn hle_import_runner_uses_typed_delete_by_name_operation() {
         .process_file_system
         .with_mut(|file_system| file_system.files.with_mut(|files| files.clear()));
     loaded.push_resource_file(PpcResourceFileRecord {
+        writable: None,
         ref_num: PPC_FIRST_FILE_REF_NUM + 1,
         path: "Typed Folder/Victim".to_string(),
     });
@@ -10601,4 +10604,240 @@ fn pb_resolve_file_id_ref_sync_handles_resource_only_files_and_rejects_short_out
     assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NSV_ERR));
     assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_NSV_ERR as u16));
     assert_eq!(loaded.memory.read_u32_be(pb + 48), Some(0x1234));
+}
+
+#[test]
+fn open_rf_perm_resolves_current_directory_and_preserves_current_on_reopen() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"OpenRFPerm")).unwrap();
+    loaded
+        .default_dir_id
+        .with_mut(|dir| *dir = PPC_PREFERENCES_DIR_ID);
+    loaded
+        .memory
+        .write_u32_be(
+            crate::memory::globals::addr::CUR_DIR_STORE,
+            PPC_PREFERENCES_DIR_ID,
+        )
+        .unwrap();
+    let name = PPC_DATA_BASE + 0x6000;
+    loaded.memory.add_region(name, vec![0; 64]);
+    write_ppc_pstring(&mut loaded.memory, name, b"Prefs");
+    for path in ["Prefs", "System Folder/Preferences/Prefs"] {
+        loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+            path: path.into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            resource_len: 0,
+            raw_data: None,
+            map_attrs: 0,
+            dirty: false,
+        });
+    }
+    loaded.cpu.gpr[3] = name;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 1;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+    let reference = loaded.cpu.gpr[3] as u16 as i16;
+    assert_eq!(loaded.resource_files.len(), 1);
+    assert_eq!(
+        loaded.resource_files[0].path,
+        "System Folder/Preferences/Prefs"
+    );
+    assert_eq!(*loaded.process_file_system.current_resource_file, reference);
+    loaded
+        .process_file_system
+        .current_resource_file
+        .with_mut(|current| *current = 0);
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = name;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 1;
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.test_resource_error(), PPC_NO_ERR, "reopen ResError");
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(reference));
+    assert_eq!(*loaded.process_file_system.current_resource_file, 0);
+    assert_eq!(loaded.resource_files.len(), 1);
+}
+
+#[test]
+fn open_rf_perm_failure_does_not_create_a_resource_fork() {
+    for (volume, permission, expected) in [
+        (0u32, 1u32, PPC_FNF_ERR),
+        (0x1234, 1, PPC_NSV_ERR),
+        (0, 255, PPC_PARAM_ERR),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"OpenRFPerm")).unwrap();
+        let name = PPC_DATA_BASE + 0x6000;
+        loaded.memory.add_region(name, vec![0; 64]);
+        write_ppc_pstring(&mut loaded.memory, name, b"Missing");
+        loaded.cpu.gpr[3] = name;
+        loaded.cpu.gpr[4] = volume;
+        loaded.cpu.gpr[5] = permission;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1));
+        assert_eq!(loaded.test_resource_error(), expected);
+        assert!(loaded.resource_files.is_empty());
+        assert!(loaded.vfs_resource_files.is_empty());
+    }
+}
+
+#[test]
+fn open_rf_perm_read_only_blocks_updates_and_keeps_first_open_mode() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"OpenRFPerm")).unwrap();
+    loaded
+        .default_dir_id
+        .with_mut(|directory| *directory = PPC_ROOT_DIR_ID);
+    loaded
+        .memory
+        .write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, PPC_ROOT_DIR_ID)
+        .unwrap();
+    let name = PPC_DATA_BASE + 0x6000;
+    loaded.memory.add_region(name, vec![0; 64]);
+    write_ppc_pstring(&mut loaded.memory, name, b"Read Only");
+    loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+        path: "Read Only".into(),
+        creator: 0,
+        file_type: 0,
+        finder_flags: 0,
+        resource_len: 0,
+        raw_data: None,
+        map_attrs: 0,
+        dirty: false,
+    });
+    loaded.cpu.gpr[3] = name;
+    loaded.cpu.gpr[4] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+    loaded.cpu.gpr[5] = 1;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenRFPerm);
+    assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+    let reference = loaded.cpu.gpr[3];
+    assert_eq!(loaded.resource_files[0].writable, Some(false));
+    loaded.cpu.gpr[3] = reference;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::UpdateResFile);
+    assert_eq!(loaded.test_resource_error(), PPC_RES_ATTR_ERR);
+    assert!(!loaded.vfs_resource_files[0].dirty);
+    loaded.cpu.gpr[3] = name;
+    loaded.cpu.gpr[4] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+    loaded.cpu.gpr[5] = 3;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::OpenRFPerm);
+    assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+    assert_eq!(loaded.cpu.gpr[3], reference);
+    assert_eq!(loaded.resource_files.len(), 1);
+    assert_eq!(loaded.resource_files[0].writable, Some(false));
+    loaded.cpu.gpr[3] = reference;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CloseResFile);
+    assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
+    assert!(loaded.resource_files.is_empty());
+    assert!(!loaded.vfs_resource_files[0].dirty);
+}
+
+#[test]
+fn pb_get_cat_info_preserves_literal_slash_and_macroman_basename() {
+    for resource_only in [false, true] {
+        let pef = synthetic_pef_with_import(b"PBGetCatInfoSync");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let pb = PPC_DATA_BASE + 0x1000;
+        let name_ptr = pb + 128;
+        loaded.memory.add_region(pb, vec![0; 256]);
+        write_ppc_pstring(&mut loaded.memory, name_ptr, b"");
+        loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+        loaded
+            .memory
+            .write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+            .unwrap();
+        loaded.memory.write_u16_be(pb + 28, 1).unwrap();
+        loaded
+            .memory
+            .write_u32_be(pb + 48, PPC_PREFERENCES_DIR_ID)
+            .unwrap();
+        let encoded = crate::trap::TrapDispatcher::encode_hfs_component_for_vfs("Café/Level");
+        let path = format!("System Folder/Preferences/{encoded}");
+        if resource_only {
+            loaded.push_vfs_resource_file(PpcVfsResourceFileRecord {
+                path: path.clone(),
+                creator: u32::from_be_bytes(*b"TEST"),
+                file_type: u32::from_be_bytes(*b"TEXT"),
+                finder_flags: 0,
+                resource_len: 9,
+                raw_data: Some(b"unchanged".to_vec().into()),
+                map_attrs: 0,
+                dirty: false,
+            });
+        } else {
+            loaded.push_test_vfs_file(PpcVfsFileRecord {
+                path: path.clone(),
+                data: b"unchanged".to_vec().into(),
+                creator: u32::from_be_bytes(*b"TEST"),
+                file_type: u32::from_be_bytes(*b"TEXT"),
+                finder_flags: 0,
+                dirty: false,
+            });
+        }
+        loaded.cpu.gpr[3] = pb;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, name_ptr).unwrap(),
+            b"Caf\x8e/Level"
+        );
+        let entry = ppc_catalog_entry_for_lookup(
+            &loaded.vfs_directories,
+            &loaded.vfs_files,
+            &loaded.vfs_resource_files,
+            PPC_PREFERENCES_DIR_ID,
+            b"Caf\x8e/Level",
+            0,
+        )
+        .expect("enumerated guest basename must resolve to the same file");
+        assert_eq!(entry.path, path);
+        assert_eq!(entry.name, b"Caf\x8e/Level");
+        let spec_ptr = pb + 0x200;
+        loaded
+            .memory
+            .add_region(spec_ptr, vec![0; PPC_FSSPEC_SIZE as usize]);
+        loaded.cpu.gpr[3] = ppc_i16_result(PPC_BOOT_VOLUME_REF_NUM);
+        loaded.cpu.gpr[4] = PPC_PREFERENCES_DIR_ID;
+        loaded.cpu.gpr[5] = name_ptr;
+        loaded.cpu.gpr[6] = spec_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::FSMakeFSSpec);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, spec_ptr + 6).unwrap(),
+            b"Caf\x8e/Level"
+        );
+        let directories = loaded.vfs_directories.clone();
+        let files = loaded.vfs_files.clone();
+        let resources = loaded.vfs_resource_files.clone();
+        assert_eq!(
+            ppc_path_for_fsspec(&mut loaded.memory, &directories, spec_ptr),
+            Ok(path.clone())
+        );
+        assert_eq!(
+            ppc_existing_path_for_fsspec(
+                &mut loaded.memory,
+                &directories,
+                &files,
+                &resources,
+                spec_ptr
+            ),
+            Ok(path.clone())
+        );
+        if !resource_only {
+            assert_eq!(
+                ppc_existing_data_path_for_fsspec(
+                    &mut loaded.memory,
+                    &directories,
+                    &files,
+                    spec_ptr
+                ),
+                Ok(path.clone())
+            );
+        }
+    }
 }

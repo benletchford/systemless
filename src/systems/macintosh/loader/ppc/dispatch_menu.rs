@@ -638,6 +638,19 @@ pub(super) fn dispatch_menu_import(context: PpcMenuDispatchContext<'_>) -> Optio
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::IsMenuItemEnabled => {
+            // Apple Menu Manager Reference: item 0 queries the menu title;
+            // individual item queries ignore the parent menu's enabled bit.
+            let item = cpu.gpr[4] as u16;
+            let enabled = cpu.gpr[3] != 0 && ppc_menu_items_from_memory(memory, cpu.gpr[3]).is_some_and(|menu| {
+                if item == 0 {
+                    menu.enable_flags & 1 != 0
+                } else {
+                    menu.items.get(usize::from(item - 1)).is_some_and(|item| item.enabled)
+                }
+            });
+            Some(PpcImportAction::Return(u32::from(enabled)))
+        }
         PpcImportDispatcherTarget::SetItemMark => {
             if crate::menu_manager::evaluate_set_item_mark_parameters(
                 cpu.gpr[3],

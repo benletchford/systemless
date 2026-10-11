@@ -21,5 +21,8 @@ allow = [
 # Keep copyleft and component-specific licences scoped to the reviewed crates
 # that require them. New GPL, LGPL, AGPL, or OFL dependencies will fail.
 exceptions = [
+    # Reviewed unchanged Rust translation; source notices and no-endorsement terms.
+    # https://spdx.org/licenses/bzip2-1.0.6.html
+    { crate = "libbz2-rs-sys", allow = ["bzip2-1.0.6"] },
     { crate = "systemless", allow = ["GPL-3.0-or-later", "OFL-1.1"] },
 ]

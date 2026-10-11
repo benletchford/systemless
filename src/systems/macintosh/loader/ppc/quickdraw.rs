@@ -1013,6 +1013,40 @@ pub(crate) fn ppc_draw_text_bytes_styled_clipped(
     advance
 }
 
+// srcCopy replaces the complete character cell, including a space's background.
+#[allow(clippy::too_many_arguments)]
+fn ppc_clear_text_cell(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    port: u32,
+    vis: Option<&[u8]>,
+    clip: Option<&[u8]>,
+    left: i32,
+    baseline: i32,
+    advance: i32,
+    metrics: super::super::super::quickdraw::fonts::FontMetrics,
+    numerator: i32,
+    denominator: i32,
+) {
+    let Some(background) = ppc_read_rgb_color(memory, port + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET)
+        .and_then(|color| ppc_quickdraw_surface_color_pixel(memory, surface, color))
+    else {
+        return;
+    };
+    let top = baseline + ppc_scale_font_floor(-i32::from(metrics.ascent), numerator, denominator);
+    let bottom =
+        baseline + ppc_scale_font_floor(i32::from(metrics.descent), numerator, denominator);
+    let right = left + ppc_scale_font_floor(advance, numerator, denominator);
+    for y in top..bottom {
+        for x in left..right {
+            if ppc_local_point_in_port_regions(surface, (x, y), vis, clip) {
+                let _ =
+                    ppc_quickdraw_write_raw_pixel(memory, surface.front_buffer, (x, y), background);
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn ppc_draw_text_chars(
     memory: &mut PpcSectionMem,
@@ -1052,6 +1086,21 @@ pub(crate) fn ppc_draw_text_chars(
     for ch in chars {
         let local_h = local_h + ppc_char_extra_pixels(packed_extra, text_size, nonspaces);
         if let Some((glyph, data)) = get_glyph(text_font, face.size, ch) {
+            if text_mode & 0x3f == 0 {
+                ppc_clear_text_cell(
+                    memory,
+                    surface,
+                    current_gworld,
+                    vis_storage.as_deref(),
+                    clip_storage.as_deref(),
+                    local_h + ppc_scale_font_floor(base_advance, numerator, denominator),
+                    local_v,
+                    i32::from(glyph.advance),
+                    get_font_metrics(text_font, face.size),
+                    numerator,
+                    denominator,
+                );
+            }
             if matches!(text_mode & 0x3f, 0 | 1) && numerator == denominator {
                 ppc_begin_outline_text_glyph(
                     memory,
@@ -1202,6 +1251,21 @@ pub(crate) fn ppc_draw_text_chars_styled(
             nonspaces += i32::from(ch != ' ');
             continue;
         };
+        if text_mode & 0x3f == 0 {
+            ppc_clear_text_cell(
+                memory,
+                surface,
+                current_gworld,
+                vis_storage.as_deref(),
+                clip_storage.as_deref(),
+                local_h + ppc_scale_font_floor(source_advance, numerator, denominator),
+                local_v,
+                style.glyph_advance(i32::from(glyph.advance)),
+                metrics,
+                numerator,
+                denominator,
+            );
+        }
         if matches!(text_mode & 0x3f, 0 | 1) && numerator == denominator {
             ppc_begin_outline_text_glyph(
                 memory,

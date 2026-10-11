@@ -503,6 +503,8 @@ pub struct CompiledEntry {
     pub year: u16,
     pub architectures: Vec<Architecture>,
     pub default_architecture: Architecture,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub architecture_archives: BTreeMap<Architecture, String>,
     pub category: String,
     pub path: String,
     pub aliases: Vec<String>,
@@ -557,6 +559,7 @@ pub fn build(c: &Catalogue) -> Result<CompiledCatalogue> {
                 year: e.year,
                 architectures: e.architectures.clone(),
                 default_architecture: e.default_architecture,
+                architecture_archives: e.architecture_archives.clone(),
                 category: e.category.clone(),
                 path: community::canonical_path(e),
                 aliases: e.aliases.clone(),

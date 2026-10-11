@@ -386,7 +386,7 @@ fn compiled_contract_resolves_assets_without_publishing_ingestion_or_storage_sta
     c.documents[0].markdown = "# Details\n".into();
     let json = serde_json::to_value(compiled(&c)).unwrap();
     assert_eq!(json.as_object().unwrap().len(), 4);
-    assert_eq!(json["schema_version"], 2);
+    assert_eq!(json["schema_version"], 3);
     let e = &json["entries"][0];
     assert_eq!(e["id"], "one");
     assert_eq!(e["path"], "/one");
@@ -1597,4 +1597,95 @@ fn runtime_defaults_to_workers_without_overriding_explicit_compatibility() {
     assert!(!compatibility.worker);
     assert_eq!(omitted.runtime_pacing, RuntimePacing::default());
     assert!(!omitted.show_menu_bar);
+}
+
+#[test]
+fn dmg_inspection_checks_footer_ranges_and_managed_extension() {
+    use std::io::Write;
+    let mut bytes = vec![0; 1024];
+    let f = &mut bytes[512..];
+    f[..4].copy_from_slice(b"koly");
+    f[4..8].copy_from_slice(&4_u32.to_be_bytes());
+    f[8..12].copy_from_slice(&512_u32.to_be_bytes());
+    f[32..40].copy_from_slice(&256_u64.to_be_bytes());
+    f[216..224].copy_from_slice(&256_u64.to_be_bytes());
+    f[224..232].copy_from_slice(&256_u64.to_be_bytes());
+    f[492..500].copy_from_slice(&1_u64.to_be_bytes());
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&bytes).unwrap();
+    let inspected = assets::inspect(file.path(), FileType::Dmg).unwrap();
+    let key = assets::object_key(&inspected.sha256, FileType::Dmg);
+    assert!(key.ends_with(".dmg") && assets::is_managed_key(&key));
+    assert_eq!(FileType::Dmg.mime(), "application/octet-stream");
+    bytes[512 + 216..512 + 224].copy_from_slice(&u64::MAX.to_be_bytes());
+    std::fs::write(file.path(), &bytes).unwrap();
+    assert!(assets::inspect(file.path(), FileType::Dmg).is_err());
+    bytes[512 + 216..512 + 224].copy_from_slice(&256_u64.to_be_bytes());
+    bytes[512 + 4..512 + 8].copy_from_slice(&3_u32.to_be_bytes());
+    std::fs::write(file.path(), &bytes).unwrap();
+    assert!(assets::inspect(file.path(), FileType::Dmg).is_err());
+}
+
+#[test]
+fn architecture_archive_bindings_require_complete_archive_coverage() {
+    let mut entry = hosted("separate-ports", &hash(1));
+    entry.architectures = vec![Architecture::M68k, Architecture::Ppc];
+    entry.default_architecture = Architecture::M68k;
+    let mut ppc = entry.artifacts[0].clone();
+    ppc.id = "ppc-archive".into();
+    ppc.source = AssetSource::Sha256 {
+        sha256: hash(2),
+        size_bytes: 456,
+    };
+    entry.artifacts.push(ppc);
+    assert!(validate::entry(&entry).is_err());
+    entry
+        .architecture_archives
+        .insert(Architecture::M68k, "archive".into());
+    assert!(validate::entry(&entry).is_err());
+    entry
+        .architecture_archives
+        .insert(Architecture::Ppc, "ppc-archive".into());
+    validate::entry(&entry).unwrap();
+    entry
+        .architecture_archives
+        .insert(Architecture::Ppc, "missing".into());
+    assert!(validate::entry(&entry).is_err());
+    entry
+        .architecture_archives
+        .insert(Architecture::Ppc, "archive".into());
+    assert!(validate::entry(&entry).is_err());
+    entry.artifacts.pop();
+    validate::entry(&entry).unwrap(); // One intact FAT archive may serve both architectures.
+}
+
+#[test]
+fn architecture_archives_survive_compilation_and_select_default_port() {
+    let mut source = common::catalogue();
+    source.documents.truncate(1);
+    source.documents[0].markdown.clear();
+    let entry = &mut source.documents[0].entry;
+    entry.architectures = vec![Architecture::M68k, Architecture::Ppc];
+    entry.default_architecture = Architecture::Ppc;
+    entry.artifacts.clear();
+    for (id, n) in [("classic", 1), ("powerpc", 2)] {
+        let mut archive = hosted("ports", &hash(n)).artifacts.remove(0);
+        archive.id = id.into();
+        entry.artifacts.push(archive);
+    }
+    entry
+        .architecture_archives
+        .insert(Architecture::M68k, "classic".into());
+    entry
+        .architecture_archives
+        .insert(Architecture::Ppc, "powerpc".into());
+    let expected = entry.architecture_archives.clone();
+    let resolved = catalogue::build(&source).unwrap();
+    assert_eq!(resolved.entries[0].architecture_archives, expected);
+    let generated = site::rust_games(&resolved).unwrap();
+    let classic_url = &resolved.entries[0].assets[0].url;
+    let ppc_url = &resolved.entries[0].assets[1].url;
+    assert!(generated.contains(&format!("archive_path: {ppc_url:?}")));
+    assert!(generated.contains(&format!("GameArchitecture::M68k, {classic_url:?}")));
+    assert!(generated.contains(&format!("GameArchitecture::PowerPc, {ppc_url:?}")));
 }

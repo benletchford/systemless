@@ -142,7 +142,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 97 | 285 | Clue | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
 | 98 | 286 | Game of Life | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
 | 99 | 287 | Battleship | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 100 | 288 | Yahtzee! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/); [Garden](https://macintoshgarden.org/games/yahtzee) |
+| 100 | 288 | Yahtzee! | 68K (original 3.2.0) | U | [Original 3.2.0 archive](https://www.vintageapplemac.com/files/games/Yahtzee%21%20v3.2.0.sit); [intake evidence](CATALOGUE-SOURCES.md#yahtzee-320--target-100-original-package-intake) |
 | 101 | 289 | Shanghai Dynasty | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/shanghai-dynasty) |
 | 102 | 290 | Mahjong | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 103 | 291 | MacTaipei | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
@@ -471,14 +471,14 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 416 | 604 | Candy Crisis | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
 | 417 | 605 | DragonMaze | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
 | 418 | 606 | ExaChess_Lite | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
-| 419 | 607 | Fanorona | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 420 | 608 | GL Tron | PPC (filename) | F | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
-| 421 | 609 | HipHop | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
+| 419 | 607 | Fanorona | Original Java/MRJ game; native CPU routes unqualified | U | [Original package and runtime/rights findings](CATALOGUE-SOURCES.md#fanorona-original-java-package--target-607) |
+| 420 | 608 | GL Tron | PPC-only original PEF; no CODE | F | [Original 0.61 intake and GPL/component checks](CATALOGUE-SOURCES.md#gltron-061--target-608-original-ppc-package-intake) |
+| 421 | 609 | HipHop | 68K (original 1.0.1; rights/startup held) | F | [Archive index](https://www.vintageapplemac.com/software/games/h/); [Original intake](CATALOGUE-SOURCES.md#hiphop-101--target-609-original-68k-installer-intake) |
 | 422 | 610 | Imp Fodder | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 423 | 611 | Jailbreak | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/); [Garden](https://macintoshgarden.org/games/jailbreak) |
 | 424 | 612 | Kalah | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
 | 425 | 613 | Lunar Commando | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 426 | 614 | MacSolitaire | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 426 | 614 | MacSolitaire | PPC (original 1.6; startup held) | F | [Archive index](https://www.vintageapplemac.com/software/games/m/); [Original intake](CATALOGUE-SOURCES.md#macsolitaire-16--target-614-original-installer-intake) |
 | 427 | 615 | Nethergate | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
 | 428 | 616 | Oilcap Pro | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
 | 429 | 617 | Project Magellan | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
@@ -734,7 +734,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 674 | 862 | DeadEnd | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
 | 675 | 863 | Escape! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
 | 676 | 864 | Flip Out | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/f/) |
-| 677 | 865 | Galactica | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/g/) |
+| 677 | 865 | Galactica | Original 1.1.2: 68K CODE + PPC PEF; archive/name fixes merged, gameplay blocked | U | [Archive index](https://www.vintageapplemac.com/software/games/g/); [original grant and qualification evidence](CATALOGUE-SOURCES.md#galactica-112--target-677-original-fat-package); [68K setup/login investigation](https://github.com/benletchford/systemless/issues/4496); [PPC ordering blocker](https://github.com/benletchford/systemless/issues/4493) |
 | 678 | 866 | HeartQuest | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
 | 679 | 867 | iPoker 2000 | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 680 | 868 | J. B. Harold: Blue Chicago Blues (J.B.ハロルド ブルー・シカゴ・ブルース | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/j-b-harold-blue-chicago-blues) |
@@ -810,7 +810,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 750 | 938 | Hemiroids | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
 | 751 | 939 | Iris Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 752 | 940 | Jack Keane | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack-keane) |
-| 753 | 941 | Klondike | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 753 | 941 | Klondike | 68K/PPC (original 7.7.1; startup held) | S | [Publisher original](https://www.casteel.org/klondike.html); [Original intake](CATALOGUE-SOURCES.md#klondike-771--target-941-original-publisher-intake) |
 | 754 | 942 | Lose Your Marbles! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
 | 755 | 943 | MacBaseball | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 756 | 944 | Nomis | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
@@ -1178,3 +1178,8 @@ This inventory makes exclusions and the architecture imbalance reviewable. Launc
 The existing [50-game candidate queue](CATALOGUE-CANDIDATES.md) and [exact source record](CATALOGUE-SOURCES.md) remain authoritative for their archive receipts, rights restrictions and bounded runtime findings. This larger plan does not overwrite them. In particular, the Tomb Raider index link actually points to a Gold demo; its retired entry must not be restored without a new rights and qualification review; Populous II's recorded copying restrictions still require affirmative permission; and Zork interpreter permission does not cover Infocom story data.
 
 No source establishes that the most popular 1,000 classic Mac games are all available as redistributable distributions. The 812-slot target list is achievable arithmetic with a replacement strategy, **not a guarantee of 812 licensable games**. Identity and architecture remain unresolved for many long-tail archives. Famous unavailable games should stay in rights outreach rather than be published on presumed abandonment. Reassess the baseline and remaining gap after every 100 qualified additions, and replenish the reserves when exclusions consume them.
+
+
+## Additional discoveries during intake
+
+- **Swoop:** well-known Ambrosia arcade shooter omitted from the original research list. The original 1.0.2 installer has now been inspected: complete unchanged nonprofit distribution is explicitly allowed, with its 30-day trial retained. This release is 68K, not PPC-native. Native movement/firing evidence and remaining browser/publication work are tracked in [#4398](https://github.com/benletchford/systemless/issues/4398). Keep the original slot numbering; count this game toward the final distinct qualified total only after its production launch is verified.

@@ -220,6 +220,8 @@ mod blit;
 mod file_manager;
 mod opengl_memory;
 mod event_manager;
+mod global_mouse;
+mod current_key_modifiers;
 
 mod text_edit;
 mod scrap_manager;
@@ -253,10 +255,13 @@ mod draw_sprocket;
 mod input_sprocket;
 mod qd3d;
 mod menu_manager;
+mod menu_item_enabled;
 pub(crate) use menu_manager::*;
 mod window_manager;
 mod mixed_mode;
+mod osl_callbacks;
 mod core_foundation;
+mod internet_config;
 mod icon_services;
 pub(crate) use mixed_mode::*;
 mod quicktime;
@@ -921,3 +926,5 @@ fn write_u16(bytes: &mut [u8], offset: usize, value: u16) {
 }
 
 mod copy_pixpat;
+
+mod highlight_preferences;

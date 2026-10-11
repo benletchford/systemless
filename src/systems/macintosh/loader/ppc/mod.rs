@@ -103,6 +103,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
+mod date_format;
 mod dispatch_cfm;
 use dispatch_cfm::*;
 mod dispatch_apple_events;
@@ -114,6 +115,7 @@ mod dispatch_collection;
 mod dispatch_color_tables;
 mod dispatch_control;
 mod dispatch_core_foundation;
+mod dispatch_internet_config;
 mod dispatch_cursor;
 mod dispatch_desk;
 mod dispatch_devices;

@@ -1,6 +1,6 @@
 [package]
 name = "systemless"
-version = "0.84.0"
+version = "0.96.0"
 edition = "2021"
 rust-version = "1.93"
 # Emulator code is GPL-3.0-or-later.
@@ -53,6 +53,10 @@ image = { version = "0.25", default-features = false, features = ["png", "gif", 
 cpal = { version = "0.15", optional = true }
 stuffit = "0.3.0"
 hfsplus = "0.2.4"
+# Pure-Rust backend also supports browser archive loading.
+bzip2 = "0.6.1"
+base64 = "0.22"
+roxmltree = "0.21"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
 

@@ -1369,6 +1369,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::HeapFreeBytes
         | PpcImportDispatcherTarget::MaxMem
         | PpcImportDispatcherTarget::TempMaxMem
+        | PpcImportDispatcherTarget::TempTopMem
         | PpcImportDispatcherTarget::PurgeMem
         | PpcImportDispatcherTarget::PurgeMemSys
         | PpcImportDispatcherTarget::MemError => {
@@ -1399,6 +1400,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::InsertResMenu
         | PpcImportDispatcherTarget::EnableMenuItem
         | PpcImportDispatcherTarget::DisableMenuItem
+        | PpcImportDispatcherTarget::IsMenuItemEnabled
         | PpcImportDispatcherTarget::SetItemMark
         | PpcImportDispatcherTarget::CheckItem
         | PpcImportDispatcherTarget::GetMenuBar
@@ -1540,6 +1542,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::ISpDevicesExtractByClass
         | PpcImportDispatcherTarget::ISpDeviceGetDefinition
         | PpcImportDispatcherTarget::ISpDeviceGetElementList
+        | PpcImportDispatcherTarget::ISpGetGlobalElementList
         | PpcImportDispatcherTarget::ISpElementListExtract
         | PpcImportDispatcherTarget::ISpElementGetInfo
         | PpcImportDispatcherTarget::ISpElementGetConfigurationInfo
@@ -1657,6 +1660,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CurResFile
         | PpcImportDispatcherTarget::UseResFile
         | PpcImportDispatcherTarget::OpenResFile
+        | PpcImportDispatcherTarget::OpenRFPerm
         | PpcImportDispatcherTarget::HOpenResFile
         | PpcImportDispatcherTarget::ResError
         | PpcImportDispatcherTarget::GetVol
@@ -1747,6 +1751,7 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("resource imports return through dispatch_resource_import")
         }
         PpcImportDispatcherTarget::InitGraf
+        | PpcImportDispatcherTarget::GetQDGlobalsScreenBits
         | PpcImportDispatcherTarget::GetForeColor
         | PpcImportDispatcherTarget::GetBackColor
         | PpcImportDispatcherTarget::GetGray
@@ -1866,7 +1871,10 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::InvertRgn => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
-        PpcImportDispatcherTarget::FrameRoundRect | PpcImportDispatcherTarget::PaintRoundRect => {
+        PpcImportDispatcherTarget::FrameRoundRect
+        | PpcImportDispatcherTarget::PaintRoundRect
+        | PpcImportDispatcherTarget::EraseRoundRect
+        | PpcImportDispatcherTarget::FillRoundRect => {
             unreachable!("QuickDraw imports return through dispatch_quickdraw_import")
         }
         PpcImportDispatcherTarget::InvalRect
@@ -2303,6 +2311,19 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CfBundleLoadExecutable => {
             unreachable!("Core Foundation imports return through typed dispatch")
         }
+        PpcImportDispatcherTarget::ICStart
+        | PpcImportDispatcherTarget::ICStop
+        | PpcImportDispatcherTarget::ICGetSeed => {
+            dispatch_internet_config::dispatch_internet_config_import(
+                binding,
+                cpu,
+                memory,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                toolbox_startup,
+            )
+        }
         PpcImportDispatcherTarget::GetCurrentProcess
         | PpcImportDispatcherTarget::WakeUpProcess
         | PpcImportDispatcherTarget::SameProcess
@@ -2606,6 +2627,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DisposeEventHandlerUPP
         | PpcImportDispatcherTarget::NewEventLoopTimerUPP
         | PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
+        | PpcImportDispatcherTarget::NewGrowZoneUPP
+        | PpcImportDispatcherTarget::NewObjectSupportUPP { .. }
+        | PpcImportDispatcherTarget::DisposeGrowZoneUPP
         | PpcImportDispatcherTarget::NewControlActionUPP
         | PpcImportDispatcherTarget::DisposeControlActionUPP
         | PpcImportDispatcherTarget::NewControlKeyFilterUPP
@@ -2876,7 +2900,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::StillDown
         | PpcImportDispatcherTarget::WaitMouseUp
         | PpcImportDispatcherTarget::GetKeys
-        | PpcImportDispatcherTarget::GetMouse => {
+        | PpcImportDispatcherTarget::GetMouse
+        | PpcImportDispatcherTarget::GetCurrentKeyModifiers
+        | PpcImportDispatcherTarget::GetGlobalMouse => {
             unreachable!("event imports return through dispatch_event_import")
         }
         PpcImportDispatcherTarget::LMGetMenuList
@@ -2889,6 +2915,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMSetKeyThresh
         | PpcImportDispatcherTarget::LMGetKeyRepThresh
         | PpcImportDispatcherTarget::LMSetKeyRepThresh
+        | PpcImportDispatcherTarget::LMGetHiliteRGB
+        | PpcImportDispatcherTarget::LMSetHiliteRGB
         | PpcImportDispatcherTarget::LMGetPaintWhite
         | PpcImportDispatcherTarget::LMGetHWCfgFlags
         | PpcImportDispatcherTarget::LMSetROMMapInsert

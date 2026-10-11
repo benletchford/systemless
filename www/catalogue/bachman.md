@@ -35,6 +35,30 @@ compatibility:
       ticks per second.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/3747
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 0.93.0
+    architecture: 68k
+    environment: >-
+      Fresh explicit 68K headless run from the unchanged archive. Command-B,
+      600 frontend ticks for the introduction, then Right held for 30 ticks moved
+      the player and raised the score from 0 to 1. Six measured pixel assertions
+      passed in 1,434 frontend ticks with no exhausted frames.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3747
+  - date: "2026-10-11"
+    tester: Catalogue maintainer
+    systemless_version: 0.94.0
+    architecture: 68k
+    environment: >-
+      Public systemless.org route at ec812923f4ac, actual 68K worker/WebGL,
+      800 by 600, 25 MHz and max two ticks per paint. Command-B and nine seconds
+      for the original introduction opened Level 1 at score 0; ordinary Right
+      held for 600 ms moved the player and raised the score to 1. The actual
+      HTTP 200 archive body matched the original hash and 310,177-byte size.
+      Complete levels, every setting and audio remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/3747
 artifacts:
 - id: archive
   role: archive

@@ -2957,3 +2957,117 @@ fn virtual_idle_cursor_is_invisible_across_fixed_slices() {
         "the cursor must actually have skipped passes"
     );
 }
+
+#[test]
+fn track_control_custom_cdef_preserves_guest_parts_and_release_cancellation() {
+    for (initial_part, release_part) in [(42u16, 42u16), (42, 17), (42, 0), (0, 0)] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+        let port = runner.bus.alloc(200);
+        let handle = runner.bus.alloc(4);
+        let pointer = runner.bus.alloc(36);
+        let cdef_handle = runner.bus.alloc(4);
+        let cdef = runner.bus.alloc(48);
+        let tested_point = runner.bus.alloc(4);
+        let supplied_part = runner.bus.alloc(4);
+        let calls = runner.bus.alloc(2);
+        runner.bus.write_long(supplied_part, u32::from(initial_part));
+        runner.bus.write_word(base, 0xA968);
+        runner.bus.write_word(base + 2, 0x60FE); // caller waits here after TrackControl
+        runner.bus.write_word(cdef, 0x4E56); // LINK A6,#0
+        runner.bus.write_word(cdef + 2, 0);
+        runner.bus.write_word(cdef + 4, 0x0C6E); // CMPI.W #1,12(A6): testCntl only
+        runner.bus.write_word(cdef + 6, 1);
+        runner.bus.write_word(cdef + 8, 12);
+        runner.bus.write_word(cdef + 10, 0x6608); // BNE.S skip point capture
+        runner.bus.write_word(cdef + 12, 0x23EE); // MOVE.L 8(A6),tested_point
+        runner.bus.write_word(cdef + 14, 8);
+        runner.bus.write_long(cdef + 16, tested_point);
+        runner.bus.write_word(cdef + 20, 0x2039); // MOVE.L supplied_part,D0
+        runner.bus.write_long(cdef + 22, supplied_part);
+        runner.bus.write_word(cdef + 26, 0x2D40); // MOVE.L D0,20(A6): Pascal result
+        runner.bus.write_word(cdef + 28, 20);
+        runner.bus.write_word(cdef + 30, 0x5279); // ADDQ.W #1,calls
+        runner.bus.write_long(cdef + 32, calls);
+        runner.bus.write_word(cdef + 36, 0x4E5E); // UNLK A6
+        runner.bus.write_word(cdef + 38, 0x4E74); // RTD #12
+        runner.bus.write_word(cdef + 40, 12);
+        runner.bus.write_long(cdef_handle, cdef);
+        runner.bus.write_long(handle, pointer);
+        runner.bus.write_long(pointer + 4, port);
+        runner.bus.write_word(port + 8, (-100i16) as u16);
+        runner.bus.write_word(port + 10, (-120i16) as u16);
+        for (offset, value) in [(8, 10), (10, 10), (12, 50), (14, 80)] {
+            runner.bus.write_word(pointer + offset, value);
+        }
+        runner.bus.write_byte(pointer + 16, 255);
+        runner.bus.write_long(pointer + 24, cdef_handle);
+        runner
+            .dispatcher
+            .control_manager
+            .register(handle, pointer, 160 << 4, 0);
+        runner
+            .dispatcher
+            .input_state
+            .set_mouse_button_for_test(true);
+        runner
+            .dispatcher
+            .input_state
+            .set_mouse_position_for_test((120, 140));
+        runner.bus.write_long(sp, 0);
+        runner.bus.write_word(sp + 4, 120); // live global point: local (20,20)
+        runner.bus.write_word(sp + 6, 140);
+        runner.bus.write_long(sp + 8, handle);
+        runner.m68k.cpu.write_reg(Register::PC, base);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        let (_, running) = runner.run_steps(512, None);
+        assert!(running);
+        if initial_part == 0 {
+            assert!(!runner.dispatcher.is_control_tracking());
+            assert_eq!(runner.bus.read_word(sp + 12), 0);
+            assert_eq!(runner.bus.read_word(calls), 1);
+            assert_eq!(runner.bus.read_byte(pointer + 17), 0);
+            assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp + 12);
+            continue;
+        }
+        assert!(runner.dispatcher.is_control_tracking());
+        assert_eq!(runner.bus.read_byte(pointer + 17), 42);
+        assert_eq!(runner.bus.read_long(tested_point), (20 << 16) | 20);
+        assert_eq!(
+            runner.bus.read_word(calls),
+            2,
+            "guest test and pressed drawing must execute once"
+        );
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+        runner
+            .bus
+            .write_long(supplied_part, u32::from(release_part));
+        runner
+            .dispatcher
+            .input_state
+            .set_mouse_position_for_test((105, 125));
+        runner
+            .dispatcher
+            .input_state
+            .set_mouse_button_for_test(false);
+        runner
+            .bus
+            .write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
+        let (_, running) = runner.run_steps(512, None);
+        assert!(running);
+        assert!(!runner.dispatcher.is_control_tracking());
+        assert_eq!(
+            runner.bus.read_word(sp + 12),
+            if release_part == 42 { 42 } else { 0 }
+        );
+        assert_eq!(runner.bus.read_byte(pointer + 17), 0);
+        assert_eq!(runner.bus.read_long(tested_point), (5 << 16) | 5);
+        assert_eq!(
+            runner.bus.read_word(calls),
+            4,
+            "release hit test and restoration must execute"
+        );
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp + 12);
+    }
+}

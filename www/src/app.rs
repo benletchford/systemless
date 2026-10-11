@@ -10,7 +10,7 @@ use crate::components::{
     game_screen::{prefetch_game_archive, GameScreen, UnavailableGameScreen},
     game_thumb::GameThumb,
 };
-use crate::paths::{asset_path, browser_path_for_route, normalized_path};
+use crate::paths::{browser_path_for_route, normalized_path};
 
 const SYSTEMLESS_REPOSITORY: &str = env!("SYSTEMLESS_REPOSITORY");
 const SYSTEMLESS_VERSION: &str = env!("SYSTEMLESS_VERSION");
@@ -475,16 +475,6 @@ fn GamePage(
                             format!("{} · {}", game.developer, game.year)
                         }}
                     </p>
-                    <a
-                        class="game-download"
-                        href=move || asset_path(active_game.get().assets.archive_path)
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        download=move || active_game.get().assets.archive_download_name
-                        aria-label=move || format!("Download {}", active_game.get().title)
-                    >
-                        "Download game"
-                    </a>
                 </div>
             </header>
             <div class="game-screen-wrap">

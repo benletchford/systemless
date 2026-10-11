@@ -59,6 +59,33 @@ pub(super) fn dispatch_quickdraw_import(
             let _ = ppc_init_graf(memory, gworlds, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetQDGlobalsScreenBits => {
+            // QuickDraw Reference: copies the global BitMap and returns the
+            // caller's pointer. Its record is 14 bytes, not a color PixMap.
+            let destination = cpu.gpr[3];
+            if destination == 0 || !ppc_memory_can_write_bytes(memory, destination, 14) {
+                return Some(PpcImportAction::Return(0));
+            }
+            let source = ppc_screen_bits_addr(toolbox_startup.init_graf_global_ptr)
+                .and_then(|address| ppc_memory_read_bytes(memory, address, 14));
+            if let Some(bits) = source {
+                let _ = memory.write_bytes(destination, &bits);
+            } else {
+                // Carbon applications may use this accessor before InitGraf.
+                // Use the same live primary-screen record as InitGraf.
+                let Some(front) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
+                    return Some(PpcImportAction::Return(0));
+                };
+                let _ = memory.write_u32_be(destination, front.base_addr);
+                let _ = memory.write_u16_be(destination + 4, front.row_bytes as u16 & 0x3fff);
+                let _ = ppc_write_rect(
+                    memory, destination + 6, 0, 0,
+                    ppc_u32_to_i16_saturating(front.height),
+                    ppc_u32_to_i16_saturating(front.width),
+                );
+            }
+            Some(PpcImportAction::Return(destination))
+        }
         PpcImportDispatcherTarget::GetForeColor => {
             let color_ptr = cpu.gpr[3];
             if color_ptr != 0 && ppc_memory_can_write_bytes(memory, color_ptr, 6) {
@@ -823,6 +850,96 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::EraseRoundRect => {
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                let oval_width = cpu.gpr[4] as u16 as i16;
+                let oval_height = cpu.gpr[5] as u16 as i16;
+                if let Some(commands) = ppc_open_picture_commands(toolbox_startup, current_gworld) {
+                    pict::recording_push_round_rect(
+                        commands,
+                        0x0042,
+                        rect,
+                        oval_width,
+                        oval_height,
+                    );
+                } else if toolbox_startup.open_region_port == current_gworld {
+                    let shape = Rect {
+                        top: rect.0,
+                        left: rect.1,
+                        bottom: rect.2,
+                        right: rect.3,
+                    };
+                    let rows = TrapDispatcher::compute_rrect_spans(&shape, oval_width, oval_height)
+                        .into_iter()
+                        .map(|(left, right)| vec![left, right])
+                        .collect();
+                    ppc_open_region_include_rows(toolbox_startup, rect.0, rows);
+                } else {
+                    ppc_erase_round_rect(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        rect,
+                        oval_width,
+                        oval_height,
+                        *quickdraw_fore_color,
+                        *quickdraw_back_color,
+                        toolbox_startup,
+                    );
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FillRoundRect => {
+            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+                let oval_width = cpu.gpr[4] as u16 as i16;
+                let oval_height = cpu.gpr[5] as u16 as i16;
+                let mut pattern = [0u8; 8];
+                if memory.read_bytes_into(cpu.gpr[6], &mut pattern).is_none() {
+                    return Some(PpcImportAction::ReturnPreserve);
+                }
+                if let Some(commands) = ppc_open_picture_commands(toolbox_startup, current_gworld) {
+                    pict::recording_push_word(commands, 0x000A); // FillPat
+                    commands.extend_from_slice(&pattern);
+                    pict::recording_push_round_rect(
+                        commands,
+                        0x0044,
+                        rect,
+                        oval_width,
+                        oval_height,
+                    );
+                } else if toolbox_startup.open_region_port == current_gworld {
+                    let shape = Rect {
+                        top: rect.0,
+                        left: rect.1,
+                        bottom: rect.2,
+                        right: rect.3,
+                    };
+                    let rows = TrapDispatcher::compute_rrect_spans(&shape, oval_width, oval_height)
+                        .into_iter()
+                        .map(|(left, right)| vec![left, right])
+                        .collect();
+                    ppc_open_region_include_rows(toolbox_startup, rect.0, rows);
+                } else {
+                    ppc_fill_round_rect(
+                        memory,
+                        gworlds,
+                        current_gworld,
+                        rect,
+                        oval_width,
+                        oval_height,
+                        *quickdraw_fore_color,
+                        *quickdraw_back_color,
+                        pattern,
+                        toolbox_startup
+                            .quickdraw_back_indices
+                            .get(&current_gworld)
+                            .copied(),
+                    );
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::FrameRoundRect | PpcImportDispatcherTarget::PaintRoundRect => {
             let paint = matches!(
                 binding.dispatcher_target,
@@ -980,6 +1097,9 @@ pub(super) fn dispatch_quickdraw_import(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcQuickDrawCompatibilityOperation {
+    IsPortBuffered,
+    IsPortBufferDirty,
+    FlushPortBuffer,
     AnimateEntry,
     AnimatePalette,
     BackPat,
@@ -1016,6 +1136,98 @@ pub enum PpcQuickDrawCompatibilityOperation {
     SetItemStyle,
     SetStdCProcs,
     SetStdProcs,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_erase_round_rect(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    oval_width: i16,
+    oval_height: i16,
+    fore_color: PpcRgbColor,
+    back_color: PpcRgbColor,
+    toolbox_startup: &PpcToolboxStartupState,
+) {
+    let pattern = ppc_quickdraw_background_pattern(
+        memory,
+        current_gworld,
+        toolbox_startup.quickdraw_back_pattern,
+    );
+    ppc_fill_round_rect(
+        memory,
+        gworlds,
+        current_gworld,
+        rect,
+        oval_width,
+        oval_height,
+        fore_color,
+        back_color,
+        pattern,
+        toolbox_startup
+            .quickdraw_back_indices
+            .get(&current_gworld)
+            .copied(),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ppc_fill_round_rect(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    oval_width: i16,
+    oval_height: i16,
+    fore_color: PpcRgbColor,
+    back_color: PpcRgbColor,
+    pattern: [u8; 8],
+    explicit_back_index: Option<u8>,
+) {
+    // Fill and erase use patCopy without changing the pen. Compute the
+    // original rounded shape before clipping it to the destination regions.
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return;
+    };
+    let shape = Rect {
+        top: rect.0,
+        left: rect.1,
+        bottom: rect.2,
+        right: rect.3,
+    };
+    let rows = TrapDispatcher::compute_rrect_spans(&shape, oval_width, oval_height);
+    let (fore_color, back_color) =
+        ppc_port_rgb_colors(memory, current_gworld).unwrap_or((fore_color, back_color));
+    let vis = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|handle| ppc_region_storage(memory, handle));
+    let clip = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|handle| ppc_region_storage(memory, handle));
+    for (row, (left, right)) in rows.into_iter().enumerate() {
+        let (x0, y) = surface.local_point((i32::from(left), i32::from(rect.0) + row as i32));
+        let (x1, _) = surface.local_point((i32::from(right), i32::from(rect.0) + row as i32));
+        if y < 0 || y >= surface.front_buffer.height as i32 {
+            continue;
+        }
+        for x in x0.max(0)..x1.min(surface.front_buffer.width as i32) {
+            if !ppc_local_point_in_port_regions(surface, (x, y), vis.as_deref(), clip.as_deref()) {
+                continue;
+            }
+            if let Some(pixel) = ppc_quickdraw_surface_background_pixel(
+                memory,
+                surface,
+                (x, y),
+                fore_color,
+                back_color,
+                explicit_back_index,
+                pattern,
+            ) {
+                let _ = ppc_quickdraw_write_raw_pixel(memory, surface.front_buffer, (x, y), pixel);
+            }
+        }
+    }
 }
 
 pub(super) fn ppc_quickdraw_background_pattern(
@@ -1088,6 +1300,13 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> PpcImportAction {
     match operation {
+        // Apple's Quickdraw.h (Mac OS X 10.1.5 SDK) explicitly says these
+        // APIs do nothing on Mac OS 8/9 and the buffering query is false.
+        // Systemless exposes the classic Mac OS 9 profile and draws directly
+        // into port storage; an application's GWorld is not Quartz buffering.
+        PpcQuickDrawCompatibilityOperation::IsPortBuffered
+        | PpcQuickDrawCompatibilityOperation::IsPortBufferDirty => PpcImportAction::Return(0),
+        PpcQuickDrawCompatibilityOperation::FlushPortBuffer => PpcImportAction::ReturnPreserve,
         PpcQuickDrawCompatibilityOperation::SetCPixel => {
             let color = ppc_read_rgb_color(memory, cpu.gpr[5]);
             let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld);

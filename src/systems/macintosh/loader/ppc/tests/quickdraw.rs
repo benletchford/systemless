@@ -5570,3 +5570,334 @@ fn set_origin_keeps_visible_screen_pixels_inside_the_port_region() {
         Some(255)
     );
 }
+
+#[test]
+fn erase_round_rect_uses_background_pattern_and_original_curves_under_clipping() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"EraseRoundRect")).unwrap();
+    let rect = PPC_DATA_BASE + 0x1000;
+    let clip = rect + 8;
+    loaded.memory.add_region(rect, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rect, 10, 10, 30, 30).unwrap();
+    ppc_write_rect(&mut loaded.memory, clip, 0, 20, 40, 40).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    for y in 10..30 {
+        for x in 10..30 {
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 17);
+        }
+    }
+    loaded.toolbox_startup.quickdraw_back_pattern = [0xaa; 8];
+    loaded
+        .toolbox_startup
+        .quickdraw_back_indices
+        .insert(PPC_MAIN_GWORLD, 84);
+    loaded.cpu.gpr[3] = clip;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ClipRect);
+    loaded.cpu.gpr[3] = 10; // patXor must not affect EraseRoundRect's patCopy.
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PenMode);
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::EraseRoundRect);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (15, 20)),
+        Some(17),
+        "outside clip"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (29, 10)),
+        Some(17),
+        "outside curved corner"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (22, 20)),
+        Some(255),
+        "foreground bits of bkPat"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (23, 20)),
+        Some(84),
+        "background bits of bkPat"
+    );
+}
+
+#[test]
+fn fill_round_rect_uses_supplied_pattern_and_original_curves_under_clipping() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FillRoundRect")).unwrap();
+    let rect = PPC_DATA_BASE + 0x1000;
+    let clip = rect + 8;
+    loaded.memory.add_region(rect, vec![0; 24]);
+    ppc_write_rect(&mut loaded.memory, rect, 10, 10, 30, 30).unwrap();
+    ppc_write_rect(&mut loaded.memory, clip, 0, 20, 40, 40).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    for y in 10..30 {
+        for x in 10..30 {
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), 17);
+        }
+    }
+    loaded.toolbox_startup.quickdraw_back_pattern = [0; 8];
+    let pattern = rect + 16;
+    loaded.memory.write_bytes(pattern, &[0xaa; 8]).unwrap();
+    loaded
+        .toolbox_startup
+        .quickdraw_back_indices
+        .insert(PPC_MAIN_GWORLD, 84);
+    loaded.cpu.gpr[3] = clip;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::ClipRect);
+    loaded.cpu.gpr[3] = 10; // patXor must not affect FillRoundRect's patCopy.
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PenMode);
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = 8;
+    loaded.cpu.gpr[6] = pattern;
+    let pen_mode = loaded
+        .memory
+        .read_u16_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PN_MODE_OFFSET);
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRoundRect);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u16_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PN_MODE_OFFSET),
+        pen_mode
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (15, 20)),
+        Some(17),
+        "outside clip"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (29, 10)),
+        Some(17),
+        "outside curved corner"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (22, 20)),
+        Some(255),
+        "foreground bits of supplied pattern"
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (23, 20)),
+        Some(84),
+        "background bits of supplied pattern"
+    );
+}
+
+#[test]
+fn fill_round_rect_records_pattern_and_curved_region_without_painting() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FillRoundRect")).unwrap();
+    let rect = PPC_DATA_BASE + 0x1000;
+    let pattern = rect + 8;
+    loaded.memory.add_region(rect, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rect, 10, 10, 30, 30).unwrap();
+    loaded.memory.write_bytes(pattern, &[0xaa; 8]).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (20, 20), 17);
+    loaded.toolbox_startup.open_picture = Some((1, PPC_MAIN_GWORLD, (0, 0, 40, 40), Vec::new()));
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = 8;
+    loaded.cpu.gpr[5] = 12;
+    loaded.cpu.gpr[6] = pattern;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRoundRect);
+    let commands = &loaded.toolbox_startup.open_picture.as_ref().unwrap().3;
+    assert_eq!(
+        &commands[..10],
+        &[0, 10, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa]
+    );
+    assert_eq!(
+        &commands[10..],
+        &[0, 11, 0, 12, 0, 8, 0, 0x44, 0, 10, 0, 10, 0, 30, 0, 30]
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (20, 20)),
+        Some(17)
+    );
+
+    loaded.toolbox_startup.open_picture = None;
+    loaded.toolbox_startup.open_region_port = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[3] = rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRoundRect);
+    let (top, rows) = loaded.toolbox_startup.open_region_rows.as_ref().unwrap();
+    assert_eq!(*top, 10);
+    assert_eq!(
+        loaded.toolbox_startup.open_region_bounds,
+        Some((10, 10, 30, 30))
+    );
+    assert!(rows[0][0] > 10, "rounded upper-left corner is excluded");
+    assert_eq!(rows[10], vec![10, 30]);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (20, 20)),
+        Some(17)
+    );
+}
+
+#[test]
+fn qd_global_screen_bits_copies_live_bitmap_and_guards_complete_destination() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            library.as_bytes(),
+            b"GetQDGlobalsScreenBits",
+        ))
+        .unwrap();
+        let target = dispatcher_target_for_import(library, "GetQDGlobalsScreenBits");
+        assert_eq!(target, PpcImportDispatcherTarget::GetQDGlobalsScreenBits);
+        assert_eq!(
+            dispatcher_target_for_import(library, "getqdglobalsscreenbits"),
+            target
+        );
+        let destination = PPC_DATA_BASE + 0x2400;
+        loaded.memory.add_region(destination - 1, vec![0xA5; 16]);
+        let front = loaded
+            .gworlds
+            .iter_mut()
+            .find(|g| g.port == PPC_MAIN_GWORLD)
+            .unwrap();
+        front.width = 320;
+        front.height = 240;
+        front.row_bytes = 640;
+        loaded.cpu.gpr[3] = destination;
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], destination);
+        assert_eq!(
+            loaded.memory.read_u32_be(destination),
+            Some(PPC_MAIN_SCREEN_BASE)
+        );
+        assert_eq!(loaded.memory.read_u16_be(destination + 4), Some(640));
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, destination + 6),
+            Some((0, 0, 240, 320))
+        );
+        assert_eq!(loaded.memory.read_u8(destination - 1), Some(0xA5));
+        assert_eq!(loaded.memory.read_u8(destination + 14), Some(0xA5));
+        let globals = PPC_DATA_BASE + 0x2800;
+        loaded.memory.add_region(globals - 126, vec![0; 130]);
+        loaded.cpu.gpr[3] = globals;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::InitGraf);
+        let source = globals - 122;
+        // The initialized global record, including signed bounds, is authoritative.
+        loaded.memory.write_u32_be(source, 0x00123456).unwrap();
+        loaded.memory.write_u16_be(source + 4, 512).unwrap();
+        ppc_write_rect(&mut loaded.memory, source + 6, -12, -24, 188, 276).unwrap();
+        let original = ppc_memory_read_bytes(&mut loaded.memory, source, 14).unwrap();
+        loaded.cpu.gpr[3] = destination;
+        run_test_import(&mut loaded, target.clone());
+        assert_eq!(loaded.cpu.gpr[3], destination);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, destination, 14),
+            Some(original)
+        );
+        let short = 0x70000000;
+        loaded.memory.add_region(short, vec![0x5A; 13]);
+        assert_eq!(loaded.memory.read_u8(short + 13), None);
+        for invalid in [0, short, u32::MAX - 6] {
+            loaded.cpu.gpr[3] = invalid;
+            run_test_import(&mut loaded, target.clone());
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, short, 13),
+            Some(vec![0x5A; 13])
+        );
+    }
+}
+
+#[test]
+fn classic_carbon_port_buffering_weak_imports_use_documented_mac_os_9_contract() {
+    for (symbol, operation, boolean) in [
+        (
+            "QDIsPortBuffered",
+            PpcQuickDrawCompatibilityOperation::IsPortBuffered,
+            true,
+        ),
+        (
+            "QDIsPortBufferDirty",
+            PpcQuickDrawCompatibilityOperation::IsPortBufferDirty,
+            true,
+        ),
+        (
+            "QDFlushPortBuffer",
+            PpcQuickDrawCompatibilityOperation::FlushPortBuffer,
+            false,
+        ),
+    ] {
+        for spelling in [symbol.to_owned(), symbol.to_ascii_lowercase()] {
+            for unavailable_library in ["InterfaceLib", "AppearanceLib"] {
+                assert_eq!(
+                    dispatcher_target_for_import(unavailable_library, &spelling),
+                    PpcImportDispatcherTarget::Unsupported,
+                );
+            }
+            let loader = synthetic_loader_with_symbol_class(
+                b"CarbonLib",
+                spelling.as_bytes(),
+                0x82,
+                &[run_reloc(0x23, 1)],
+            );
+            let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            assert!(loaded.imports[0].weak);
+            assert_ne!(loaded.imports[0].address, 0);
+            assert_eq!(
+                loaded.imports[0].dispatcher_target,
+                PpcImportDispatcherTarget::QuickDrawCompatibility(operation)
+            );
+            let port = PPC_MAIN_GWORLD;
+            let before = ppc_memory_read_bytes(&mut loaded.memory, port, 108).unwrap();
+            loaded.cpu.gpr[3] = port;
+            // A classic flush must not dereference its optional region.
+            loaded.cpu.gpr[4] = u32::MAX;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::QuickDrawCompatibility(operation),
+            );
+            assert_eq!(loaded.cpu.gpr[3], if boolean { 0 } else { port });
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, port, 108),
+                Some(before)
+            );
+        }
+    }
+}
+
+#[test]
+fn classic_port_drawing_is_visible_without_a_quartz_flush() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"InvertRect")).unwrap();
+    let rect = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect, 1, 2, 4, 5).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!(ppc_quickdraw_write_raw_pixel(
+        &mut loaded.memory,
+        front,
+        (2, 1),
+        0x12
+    ));
+    loaded.cpu.gpr[3] = rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InvertRect);
+    // The draw is already committed to screen storage before any flush API.
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+        Some(0xED)
+    );
+    for operation in [
+        PpcQuickDrawCompatibilityOperation::IsPortBuffered,
+        PpcQuickDrawCompatibilityOperation::IsPortBufferDirty,
+    ] {
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::QuickDrawCompatibility(operation),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::FlushPortBuffer,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], PPC_MAIN_GWORLD);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+        Some(0xED)
+    );
+}

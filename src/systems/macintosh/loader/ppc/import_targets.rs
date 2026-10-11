@@ -53,6 +53,7 @@ pub enum PpcImportDispatcherTarget {
     HeapFreeBytes,
     MaxMem,
     TempMaxMem,
+    TempTopMem,
     PurgeMem,
     PurgeMemSys,
     MemError,
@@ -60,6 +61,7 @@ pub enum PpcImportDispatcherTarget {
     UseResFile,
     CloseResFile,
     OpenResFile,
+    OpenRFPerm,
     HOpenResFile,
     ResError,
     SetResLoad,
@@ -123,6 +125,7 @@ pub enum PpcImportDispatcherTarget {
     GetDiskFragment,
     InitCursor,
     GetQDGlobalsArrow,
+    GetQDGlobalsScreenBits,
     HideCursor,
     ShowCursor,
     ShieldCursor,
@@ -209,6 +212,8 @@ pub enum PpcImportDispatcherTarget {
     FillCRect,
     FrameRoundRect,
     PaintRoundRect,
+    EraseRoundRect,
+    FillRoundRect,
     InvalRect,
     InvalRgn,
     ValidRect,
@@ -284,6 +289,8 @@ pub enum PpcImportDispatcherTarget {
     PaintBehind,
     CalcVisBehind,
     GetMouse,
+    GetGlobalMouse,
+    GetCurrentKeyModifiers,
     ActivatePalette,
     NSetPalette,
     GetPalette,
@@ -328,6 +335,7 @@ pub enum PpcImportDispatcherTarget {
     InsertResMenu,
     EnableMenuItem,
     DisableMenuItem,
+    IsMenuItemEnabled,
     SetItemMark,
     CheckItem,
     GetMenuBar,
@@ -339,6 +347,8 @@ pub enum PpcImportDispatcherTarget {
     LMSetKeyThresh,
     LMGetKeyRepThresh,
     LMSetKeyRepThresh,
+    LMGetHiliteRGB,
+    LMSetHiliteRGB,
     LMGetPaintWhite,
     LMGetHWCfgFlags,
     LMSetROMMapInsert,
@@ -907,6 +917,9 @@ pub enum PpcImportDispatcherTarget {
     YieldToAnyThread,
     DisposeThread,
     ThreadEndCritical,
+    ICStart,
+    ICStop,
+    ICGetSeed,
     GetCurrentProcess,
     WakeUpProcess,
     SameProcess,
@@ -1155,6 +1168,7 @@ pub enum PpcImportDispatcherTarget {
     ISpDevicesExtractByClass,
     ISpDeviceGetDefinition,
     ISpDeviceGetElementList,
+    ISpGetGlobalElementList,
     ISpElementListExtract,
     ISpElementGetInfo,
     ISpElementGetConfigurationInfo,
@@ -1210,6 +1224,11 @@ pub enum PpcImportDispatcherTarget {
     DisposeEventHandlerUPP,
     NewEventLoopTimerUPP,
     DisposeEventLoopTimerUPP,
+    NewGrowZoneUPP,
+    NewObjectSupportUPP {
+        proc_info: u32,
+    },
+    DisposeGrowZoneUPP,
     NewControlActionUPP,
     DisposeControlActionUPP,
     NewControlKeyFilterUPP,
@@ -1317,6 +1336,13 @@ pub(crate) fn dispatcher_target_for_import(
         // (1994), pp. 6-10--6-11 (sqrt), 10-17--10-19 (pow),
         // 10-29--10-30 (cos).
         ("CarbonLib", "cos" | "pow" | "round" | "sqrt") => "MathLib",
+        // These classic port-buffering routines are Carbon-only exports.
+        (
+            "CarbonLib",
+            "QDIsPortBuffered" | "qdisportbuffered"
+            | "QDIsPortBufferDirty" | "qdisportbufferdirty"
+            | "QDFlushPortBuffer" | "qdflushportbuffer",
+        ) => "CarbonLib",
         ("CarbonLib", _) => "InterfaceLib",
         // Director's CFM runtime exports these ISO C entry points with the
         // same PowerPC signatures as StdCLib. Leave its private symbols
@@ -2535,6 +2561,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InputSprocketLib", "ISpDevice_GetElementList") => {
             PpcImportDispatcherTarget::ISpDeviceGetElementList
         }
+        ("InputSprocketLib", "ISpGetGlobalElementList") => {
+            PpcImportDispatcherTarget::ISpGetGlobalElementList
+        }
         ("InputSprocketLib", "ISpElementList_Extract") => {
             PpcImportDispatcherTarget::ISpElementListExtract
         }
@@ -2630,11 +2659,13 @@ pub(crate) fn dispatcher_target_for_import(
         | ("InterfaceLib", "FreeMemSys") => PpcImportDispatcherTarget::HeapFreeBytes,
         ("InterfaceLib", "MaxMem") => PpcImportDispatcherTarget::MaxMem,
         ("InterfaceLib", "TempMaxMem") => PpcImportDispatcherTarget::TempMaxMem,
+        ("InterfaceLib", "TempTopMem") => PpcImportDispatcherTarget::TempTopMem,
         ("InterfaceLib", "MemError") => PpcImportDispatcherTarget::MemError,
         ("InterfaceLib", "CurResFile") => PpcImportDispatcherTarget::CurResFile,
         ("InterfaceLib", "UseResFile") => PpcImportDispatcherTarget::UseResFile,
         ("InterfaceLib", "CloseResFile") => PpcImportDispatcherTarget::CloseResFile,
         ("InterfaceLib", "OpenResFile") => PpcImportDispatcherTarget::OpenResFile,
+        ("InterfaceLib", "OpenRFPerm") => PpcImportDispatcherTarget::OpenRFPerm,
         ("InterfaceLib", "HOpenResFile") => PpcImportDispatcherTarget::HOpenResFile,
         ("InterfaceLib", "ResError") => PpcImportDispatcherTarget::ResError,
         ("InterfaceLib", "SetResLoad") => PpcImportDispatcherTarget::SetResLoad,
@@ -2708,6 +2739,20 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetDiskFragment") => PpcImportDispatcherTarget::GetDiskFragment,
         ("InterfaceLib", "InitCursor") => PpcImportDispatcherTarget::InitCursor,
         ("InterfaceLib", "GetQDGlobalsArrow") => PpcImportDispatcherTarget::GetQDGlobalsArrow,
+        ("InterfaceLib" | "CarbonLib", "GetQDGlobalsScreenBits" | "getqdglobalsscreenbits") =>
+            PpcImportDispatcherTarget::GetQDGlobalsScreenBits,
+        ("CarbonLib", "QDIsPortBuffered" | "qdisportbuffered") =>
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::IsPortBuffered,
+            ),
+        ("CarbonLib", "QDIsPortBufferDirty" | "qdisportbufferdirty") =>
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::IsPortBufferDirty,
+            ),
+        ("CarbonLib", "QDFlushPortBuffer" | "qdflushportbuffer") =>
+            PpcImportDispatcherTarget::QuickDrawCompatibility(
+                PpcQuickDrawCompatibilityOperation::FlushPortBuffer,
+            ),
         ("InterfaceLib", "HideCursor") => PpcImportDispatcherTarget::HideCursor,
         ("InterfaceLib", "ShowCursor") => PpcImportDispatcherTarget::ShowCursor,
         ("InterfaceLib", "ShieldCursor") => PpcImportDispatcherTarget::ShieldCursor,
@@ -2852,6 +2897,8 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DisableItem" | "disableitem" | "DisableMenuItem" | "disablemenuitem",
         ) => PpcImportDispatcherTarget::DisableMenuItem,
+        ("InterfaceLib" | "AppearanceLib" | "MenusLib", "IsMenuItemEnabled") =>
+            PpcImportDispatcherTarget::IsMenuItemEnabled,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetItemMark" | "setitemmark" | "SetMenuItemMark" | "setmenuitemmark",
@@ -2888,6 +2935,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "CarbonLib", "LMSetKeyRepThresh") => {
             PpcImportDispatcherTarget::LMSetKeyRepThresh
         }
+        ("InterfaceLib" | "CarbonLib", "LMGetHiliteRGB") => PpcImportDispatcherTarget::LMGetHiliteRGB,
+        ("InterfaceLib" | "CarbonLib", "LMSetHiliteRGB") => PpcImportDispatcherTarget::LMSetHiliteRGB,
         ("InterfaceLib", "LMGetPaintWhite") => PpcImportDispatcherTarget::LMGetPaintWhite,
         ("InterfaceLib", "LMGetHWCfgFlags") => PpcImportDispatcherTarget::LMGetHWCfgFlags,
         ("InterfaceLib", "LMSetROMMapInsert") => PpcImportDispatcherTarget::LMSetROMMapInsert,
@@ -3053,6 +3102,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "FillCRect") => PpcImportDispatcherTarget::FillCRect,
         ("InterfaceLib", "FrameRoundRect") => PpcImportDispatcherTarget::FrameRoundRect,
         ("InterfaceLib", "PaintRoundRect") => PpcImportDispatcherTarget::PaintRoundRect,
+        ("InterfaceLib", "EraseRoundRect") => PpcImportDispatcherTarget::EraseRoundRect,
+        ("InterfaceLib", "FillRoundRect") => PpcImportDispatcherTarget::FillRoundRect,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "InvalRect" | "invalrect",
@@ -3215,6 +3266,10 @@ pub(crate) fn dispatcher_target_for_import(
             "CalcVisBehind" | "calcvisbehind",
         ) => PpcImportDispatcherTarget::CalcVisBehind,
         ("InterfaceLib", "GetMouse") => PpcImportDispatcherTarget::GetMouse,
+        ("InterfaceLib", "GetCurrentKeyModifiers") => {
+            PpcImportDispatcherTarget::GetCurrentKeyModifiers
+        }
+        ("InterfaceLib", "GetGlobalMouse") => PpcImportDispatcherTarget::GetGlobalMouse,
         ("InterfaceLib", "ActivatePalette") => PpcImportDispatcherTarget::ActivatePalette,
         ("InterfaceLib", "SetPalette") | ("InterfaceLib", "NSetPalette") => {
             PpcImportDispatcherTarget::NSetPalette
@@ -4277,6 +4332,9 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "ThreadsLib", "ThreadEndCritical") => {
             PpcImportDispatcherTarget::ThreadEndCritical
         }
+        ("InterfaceLib", "ICStart") => PpcImportDispatcherTarget::ICStart,
+        ("InterfaceLib", "ICStop") => PpcImportDispatcherTarget::ICStop,
+        ("InterfaceLib", "ICGetSeed") => PpcImportDispatcherTarget::ICGetSeed,
         ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
             PpcImportDispatcherTarget::GetCurrentProcess
         }
@@ -4452,6 +4510,50 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DisposeEventLoopTimerUPP") => {
             PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
         }
+        ("InterfaceLib", "NewGrowZoneUPP") => PpcImportDispatcherTarget::NewGrowZoneUPP,
+        // Apple AEObjects.h callback signatures; MixedMode.h Pascal size encoding.
+        ("InterfaceLib", "NewOSLAccessorUPP") => PpcImportDispatcherTarget::NewObjectSupportUPP {
+            proc_info: 0x000FFFE0,
+        },
+        ("InterfaceLib", "NewOSLCompareUPP") => PpcImportDispatcherTarget::NewObjectSupportUPP {
+            proc_info: 0x00003FE0,
+        },
+        ("InterfaceLib", "NewOSLCountUPP") => PpcImportDispatcherTarget::NewObjectSupportUPP {
+            proc_info: 0x00003FE0,
+        },
+        ("InterfaceLib", "NewOSLDisposeTokenUPP") => {
+            PpcImportDispatcherTarget::NewObjectSupportUPP {
+                proc_info: 0x000000E0,
+            }
+        }
+        ("InterfaceLib", "NewOSLGetMarkTokenUPP") => {
+            PpcImportDispatcherTarget::NewObjectSupportUPP {
+                proc_info: 0x00000FE0,
+            }
+        }
+        ("InterfaceLib", "NewOSLGetErrDescUPP") => PpcImportDispatcherTarget::NewObjectSupportUPP {
+            proc_info: 0x000000E0,
+        },
+        ("InterfaceLib", "NewOSLMarkUPP") => PpcImportDispatcherTarget::NewObjectSupportUPP {
+            proc_info: 0x00000FE0,
+        },
+        ("InterfaceLib", "NewOSLAdjustMarksUPP") => {
+            PpcImportDispatcherTarget::NewObjectSupportUPP {
+                proc_info: 0x00000FE0,
+            }
+        }
+        (
+            "InterfaceLib",
+            "DisposeOSLAccessorUPP"
+            | "DisposeOSLCompareUPP"
+            | "DisposeOSLCountUPP"
+            | "DisposeOSLDisposeTokenUPP"
+            | "DisposeOSLGetMarkTokenUPP"
+            | "DisposeOSLGetErrDescUPP"
+            | "DisposeOSLMarkUPP"
+            | "DisposeOSLAdjustMarksUPP",
+        ) => PpcImportDispatcherTarget::DisposeRoutineDescriptor,
+        ("InterfaceLib", "DisposeGrowZoneUPP") => PpcImportDispatcherTarget::DisposeGrowZoneUPP,
         ("InterfaceLib", "NewControlActionUPP") => {
             PpcImportDispatcherTarget::NewControlActionUPP
         }
@@ -4724,6 +4826,12 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "TrackControl" | "trackcontrol",
         ) => PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::TrackControl),
+        (
+            "InterfaceLib" | "AppearanceLib" | "CarbonLib",
+            "FrontNonFloatingWindow" | "frontnonfloatingwindow",
+        ) => PpcImportDispatcherTarget::LegacyWindow(
+            PpcLegacyWindowOperation::FrontNonFloatingWindow,
+        ),
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "ActiveNonFloatingWindow" | "activenonfloatingwindow",
@@ -5634,6 +5742,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "IUCompString") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::IuCompString,
         ),
+        ("InterfaceLib", "IUDatePString" | "DateString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuDatePString,
+            )
+        }
         ("InterfaceLib", "IUDateString") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::IuDateString,
         ),
@@ -6073,30 +6186,34 @@ pub(crate) fn dispatcher_target_for_import(
         ("StdCLib", "vsprintf") => {
             PpcImportDispatcherTarget::StdCCompatibility(PpcStdCCompatibilityOperation::Vsprintf)
         }
-        ("ObjectSupportLib", "AEObjectInit") => PpcImportDispatcherTarget::ObjectSupportInit,
-        ("ObjectSupportLib", "AEInstallObjectAccessor") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AEObjectInit") => {
+            PpcImportDispatcherTarget::ObjectSupportInit
+        }
+        ("ObjectSupportLib" | "InterfaceLib", "AEInstallObjectAccessor") => {
             PpcImportDispatcherTarget::ObjectSupportInstallAccessor
         }
-        ("ObjectSupportLib", "AEGetObjectAccessor") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AEGetObjectAccessor") => {
             PpcImportDispatcherTarget::ObjectSupportGetAccessor
         }
-        ("ObjectSupportLib", "AECallObjectAccessor") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AECallObjectAccessor") => {
             PpcImportDispatcherTarget::ObjectSupportCallAccessor
         }
-        ("ObjectSupportLib", "AEDisposeToken") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AEDisposeToken") => {
             PpcImportDispatcherTarget::ObjectSupportDisposeToken
         }
-        ("ObjectSupportLib", "AERemoveObjectAccessor") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AERemoveObjectAccessor") => {
             PpcImportDispatcherTarget::ObjectSupportRemoveAccessor
         }
-        ("ObjectSupportLib", "AESetObjectCallbacks") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AESetObjectCallbacks") => {
             PpcImportDispatcherTarget::ObjectSupportSetCallbacks
         }
-        ("ObjectSupportLib", "AEResolve") => PpcImportDispatcherTarget::ObjectSupportResolve,
-        ("ObjectSupportLib", "CreateObjSpecifier") => {
+        ("ObjectSupportLib" | "InterfaceLib", "AEResolve") => {
+            PpcImportDispatcherTarget::ObjectSupportResolve
+        }
+        ("ObjectSupportLib" | "InterfaceLib", "CreateObjSpecifier") => {
             PpcImportDispatcherTarget::ObjectSupportCompatibility
         }
-        ("ObjectSupportLib", "CreateOffsetDescriptor") => {
+        ("ObjectSupportLib" | "InterfaceLib", "CreateOffsetDescriptor") => {
             PpcImportDispatcherTarget::ObjectSupportCreateOffsetDescriptor
         }
         ("OpenGLLibrary", "aglChoosePixelFormat") => {
