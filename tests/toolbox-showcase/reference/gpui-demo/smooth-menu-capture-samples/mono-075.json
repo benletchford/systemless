@@ -1,0 +1,81 @@
+{
+  "actual_depth": 1,
+  "prefer_powerpc": false,
+  "menu_id": 129,
+  "requested_scale": 0.75,
+  "items": [
+    {
+      "text": "Graphics",
+      "style": 0
+    },
+    {
+      "text": "Controls",
+      "style": 0
+    },
+    {
+      "text": "Windows",
+      "style": 0
+    },
+    {
+      "text": "Drawing & 3D Bevels",
+      "style": 0
+    },
+    {
+      "text": "Game Preferences",
+      "style": 0
+    },
+    {
+      "text": "Dialogs & Alerts",
+      "style": 0
+    },
+    {
+      "text": "TextEdit",
+      "style": 0
+    },
+    {
+      "text": "Palettes",
+      "style": 0
+    },
+    {
+      "text": "Lists & Inventory",
+      "style": 0
+    },
+    {
+      "text": "Sound & Channels",
+      "style": 0
+    },
+    {
+      "text": "Styled Text & Fonts",
+      "style": 0
+    },
+    {
+      "text": "Standard File",
+      "style": 0
+    },
+    {
+      "text": "Resource Browser",
+      "style": 0
+    },
+    {
+      "text": "Sprites, Masks & Scrolling",
+      "style": 0
+    },
+    {
+      "text": "Events & Cursors",
+      "style": 0
+    },
+    {
+      "text": "Popup & Dropdown Lists",
+      "style": 0
+    }
+  ],
+  "display_scale": 0.75,
+  "display_origin": [
+    0.0,
+    0.0
+  ],
+  "viewport": [
+    600.0,
+    450.0
+  ]
+}
