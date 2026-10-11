@@ -38,6 +38,7 @@ pub(super) struct PpcListDispatchContext<'a> {
     pub(super) current_resource_refnum: i16,
     pub(super) tick_count: u32,
     pub(super) cycles_per_tick: u32,
+    pub(super) screen_clut: &'a [[u16; 3]; 256],
     pub(super) input: &'a PpcInputSnapshot,
 }
 
@@ -59,6 +60,7 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
         tick_count,
         cycles_per_tick,
         input,
+        screen_clut,
     } = context;
 
     match binding.dispatcher_target {
@@ -470,6 +472,7 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                             frame: (cpu.gpr[1], cpu.lr), bounds: snapshot_local_rect_to_global(bounds, origin),
                             start_mouse: (v.wrapping_sub(origin.0), h.wrapping_sub(origin.1)),
                             start_limits: record.scrollbar_limits(vertical),
+                            outline: None,
                             part, last_tick: tick_count.wrapping_sub(crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS),
                         });
                         break;
@@ -489,6 +492,14 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                 let down = valid && input.mouse_button;
                 let mouse = if initial { (v.wrapping_sub(origin.0), h.wrapping_sub(origin.1)) }
                     else { (input.mouse_v, input.mouse_h) };
+                let next_outline = if valid && down { tracking.outline_rect(mouse, record) } else { None };
+                let front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
+                if tracking.outline.as_ref().is_some_and(|outline| Some(outline.rect) != next_outline
+                    || front.map(|f| (f.base_addr, f.row_bytes, f.width, f.height, f.depth)) != Some(outline.surface)) {
+                    if let Some(outline) = tracking.outline.take() {
+                        ppc_restore_list_outline(memory, front, outline);
+                    }
+                }
                 let before = record.visible;
                 let delta = if valid && !down && !initial && tracking.part == 129 {
                     tracking.release_delta(mouse, record)
@@ -508,7 +519,32 @@ pub(super) fn dispatch_list_import(context: PpcListDispatchContext<'_>) -> Optio
                     let needs_draw = record.visible != before || memory.read_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET) != Some(hilite);
                     let _ = memory.write_u8(tracking.pointer + PPC_CONTROL_HILITE_OFFSET, hilite);
                     if record.draw_enabled && needs_draw {
-                        ppc_list_redraw(memory, handles, controls, gworlds, vfs_resources, current_resource_refnum, record);
+                        if let Some(outline) = tracking.outline.take() {
+                            ppc_restore_list_outline(memory, front, outline);
+                        }
+                        if record.visible != before {
+                            ppc_list_redraw(memory, handles, controls, gworlds, vfs_resources, current_resource_refnum, record);
+                        } else {
+                            let _ = ppc_draw_control(memory, handles, controls, gworlds, vfs_resources, current_resource_refnum, tracking.control);
+                        }
+                    }
+                }
+                if tracking.outline.is_none() {
+                    if let (Some(rect), Some(front)) = (next_outline, front) {
+                        let mut pixels: crate::memory::SavedPixels<(i32, i32, u16)> = ppc_drag_outline_points(front, rect).into_iter()
+                            .filter_map(|(x, y)| ppc_quickdraw_read_pixel(memory, front, (x, y)).map(|pixel| (x, y, pixel))).collect::<Vec<_>>().into();
+                        for index in 0..pixels.len() {
+                            let (x, y, _) = pixels[index];
+                            ppc_capture_saved_detail(memory, front, (x, y), &mut pixels, index);
+                        }
+                        if let (Some(black), Some(white)) = (ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, screen_clut), ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, screen_clut)) {
+                            for (x, y, _) in pixels.iter().copied() {
+                                let _ = ppc_quickdraw_write_raw_pixel(memory, front, (x, y), if (x + y).rem_euclid(2) == 0 { black } else { white });
+                            }
+                            tracking.outline = Some(crate::list_manager::ListScrollbarOutline { rect,
+                                surface: (front.base_addr, front.row_bytes, front.width, front.height, front.depth),
+                                pixels: crate::list_manager::ListScrollbarPixels::Samples(pixels) });
+                        }
                     }
                 }
                 if down { retained = Some(tracking); }
@@ -1438,6 +1474,20 @@ pub(super) fn ppc_list_draw(
                     .map(Vec::as_slice)
                     .unwrap_or(&[]),
             );
+        }
+    }
+}
+
+fn ppc_restore_list_outline(
+    memory: &mut PpcSectionMem,
+    front: Option<PpcFrontBuffer>,
+    outline: crate::list_manager::ListScrollbarOutline,
+) {
+    let Some(front) = front.filter(|f| (f.base_addr, f.row_bytes, f.width, f.height, f.depth) == outline.surface) else { return; };
+    if let crate::list_manager::ListScrollbarPixels::Samples(pixels) = outline.pixels {
+        for (index, (x, y, pixel)) in pixels.iter().copied().enumerate() {
+            let _ = ppc_quickdraw_write_raw_pixel(memory, front, (x, y), pixel);
+            ppc_restore_saved_detail(memory, front, (x, y), &pixels, index);
         }
     }
 }

@@ -1061,6 +1061,7 @@ pub(crate) fn dispatch_supported_import(
             current_resource_refnum: *current_resource_refnum,
             tick_count: *tick_count,
             cycles_per_tick,
+            screen_clut,
             input: &input,
         })
     {

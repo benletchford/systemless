@@ -4373,6 +4373,33 @@ mod desktop {
                     assert_eq!(page.visible.2, expected + 7, "visible extent must retain the clipped row: powerpc={powerpc}");
                     assert_eq!(page.selected, initial.selected);
                 }
+                let outline_pixels = |session: &mut MacintoshSession| {
+                    let frame = session.video_frame().unwrap();
+                    (210..226).flat_map(|y| {
+                        let start = ((y * frame.width + 514) * 4) as usize;
+                        frame.pixels[start..start + 16 * 4].to_vec()
+                    }).collect::<Vec<_>>()
+                };
+                let content_pixels = |session: &mut MacintoshSession| {
+                    let frame = session.video_frame().unwrap();
+                    (128..242).flat_map(|y| {
+                        let start = ((y * frame.width + 64) * 4) as usize;
+                        frame.pixels[start..start + 450 * 4].to_vec()
+                    }).collect::<Vec<_>>()
+                };
+                let clean_content = content_pixels(&mut session);
+                let clean_track = outline_pixels(&mut session);
+                session.deliver_input(MacintoshInput::MouseDown { vertical: 150, horizontal: 522 });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseMove { vertical: 218, horizontal: 522 });
+                settle(&mut session);
+                assert_eq!(content_pixels(&mut session), clean_content, "thumb feedback repainted list content: powerpc={powerpc}, depth={depth:?}");
+                assert_ne!(outline_pixels(&mut session), clean_track, "missing guest thumb outline: powerpc={powerpc}, depth={depth:?}");
+                session.deliver_input(MacintoshInput::MouseMove { vertical: 218, horizontal: 650 });
+                settle(&mut session);
+                assert_eq!(outline_pixels(&mut session), clean_track, "cancelled outline left stale pixels: powerpc={powerpc}, depth={depth:?}");
+                session.deliver_input(MacintoshInput::MouseUp { vertical: 218, horizontal: 650 });
+                settle(&mut session);
                 // Native PPC LClick leaves content stationary while dragging,
                 // commits on release, and cancels beyond the drag allowance.
                 for (start, end, release_h, expected) in [(150, 218, 522, 6), (218, 150, 522, 0), (150, 218, 650, 0), (150, 300, 522, 0)] {

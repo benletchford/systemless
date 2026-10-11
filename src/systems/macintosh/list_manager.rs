@@ -95,6 +95,20 @@ impl ProcessListRecord {
     }
 }
 
+/// Saved raster feedback belongs to the retained call, never to guest values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ListScrollbarPixels {
+    IndexedStrips(Vec<(i16, i16, i16, i16, super::memory::SavedPixels)>),
+    Samples(super::memory::SavedPixels<(i32, i32, u16)>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ListScrollbarOutline {
+    pub rect: (i16, i16, i16, i16),
+    pub surface: (u32, u32, u32, u32, u32),
+    pub pixels: ListScrollbarPixels,
+}
+
 /// Retained standard list-scrollbar tracking. LClick owns the
 /// call until release and scrolls without changing selection.
 /// More Macintosh Toolbox (1993), pp. 4-84--4-85.
@@ -113,6 +127,7 @@ pub(crate) struct ListScrollbarTracking {
     pub last_tick: u32,
     pub start_mouse: (i16, i16),
     pub start_limits: (i16, i16, i16),
+    pub outline: Option<ListScrollbarOutline>,
 }
 
 impl ListScrollbarTracking {
@@ -167,6 +182,31 @@ impl ListScrollbarTracking {
             self.vertical,
             record.scrollbar_limits(self.vertical),
         ) == Some(self.part)
+    }
+
+    pub(crate) fn outline_rect(
+        &self,
+        point: (i16, i16),
+        record: &ProcessListRecord,
+    ) -> Option<(i16, i16, i16, i16)> {
+        if self.part != 129 || record.scrollbar_limits(self.vertical) != self.start_limits {
+            return None;
+        }
+        let offset = super::control_manager::scrollbar_drag_position(
+            self.bounds,
+            self.vertical,
+            self.start_limits,
+            self.start_mouse,
+            point,
+        )?;
+        let (top, left, bottom, right) = self.bounds;
+        Some(if self.vertical {
+            let position = (i32::from(top) + offset) as i16;
+            (position, left, position.saturating_add(16), right)
+        } else {
+            let position = (i32::from(left) + offset) as i16;
+            (top, position, bottom, position.saturating_add(16))
+        })
     }
 
     /// Commit a scroll-box drag only on release. MTE (1992), pp. 5-89--5-90;
@@ -334,6 +374,7 @@ mod tests {
             last_tick: u32::MAX - 2,
             start_mouse: (0, 0),
             start_limits: (0, 0, 10),
+            outline: None,
         };
         let record = ProcessListRecord {
             handle: 1,
@@ -405,6 +446,7 @@ mod tests {
             last_tick: 0,
             start_mouse: (150, 522),
             start_limits: (0, 0, 6),
+            outline: None,
         };
         let mut thumb = tracking.clone();
         thumb.part = 129;
@@ -414,6 +456,8 @@ mod tests {
         );
         assert_eq!(thumb.step((218, 522), 3, &record), None);
         assert_eq!(thumb.release_delta((218, 522), &record), Some(6));
+        assert_eq!(thumb.outline_rect((218, 522), &record), Some((210, 514, 226, 530)));
+        assert_eq!(thumb.outline_rect((218, 650), &record), None);
         assert_eq!(thumb.release_delta((150, 522), &record), Some(0));
         assert_eq!(thumb.release_delta((218, 650), &record), None);
         let mut mutated = record.clone();
