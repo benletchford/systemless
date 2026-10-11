@@ -1,5 +1,15 @@
 # GPUI production release gates
 
+Notification visual checkpoint: actual worker-owned mono68k/scale1 and default
+PPC16/scale2 alerts were captured through the shared offscreen Demo renderer and
+both images reviewed. The accented Mac Roman message is smooth and legible;
+message and OK button fit the alert bounds, while application-drawn headings
+retain guest raster ink. Captures and review hashes are under
+`reference/gpui-demo/notification-composed`. The capture helper explicitly
+requests worker acquisition; automatic acquisition is covered separately by
+the timer-driven workflow test. These selected active scenes do not establish
+native alert geometry, independent font fidelity or physical qualification.
+
 Latest notification workflow evidence: the rebuilt dual-CPU guest fixture now
 calls NMInstall from normal key events and constructs its response with
 NewNMUPP. The actual production worker + shared GPUI polling/render/click
