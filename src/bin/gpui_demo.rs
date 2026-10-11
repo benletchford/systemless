@@ -439,7 +439,7 @@ mod desktop {
         mouse_position: (i16, i16),
         scrollbar_drag: Option<(u32, u64, (i16, i16))>,
         popup_tracking: Option<(u32, u64)>,
-        command_down: bool,
+        host_modifiers: Modifiers,
         held_keys: HashMap<u8, u8>,
         _focus_out: Option<Subscription>,
         _focus_lost: Option<Subscription>,
@@ -529,7 +529,7 @@ mod desktop {
                 mouse_position: (0, 0),
                 scrollbar_drag: None,
                 popup_tracking: None,
-                command_down: false,
+                host_modifiers: Modifiers::default(),
                 held_keys: HashMap::new(),
                 _focus_out: None,
                 _focus_lost: None,
@@ -560,17 +560,25 @@ mod desktop {
             self.menus.requires_guest_menu_rendering()
         }
 
-        fn sync_command_key(&mut self, down: bool) {
-            if self.command_down == down {
-                return;
+        fn sync_host_modifiers(&mut self, modifiers: Modifiers) {
+            // Event Manager exposes Command, Shift, Option and Control in
+            // EventRecord.modifiers (Macintosh Toolbox Essentials, chapter 2).
+            for (mac_key, previous, down) in [
+                (0x37, self.host_modifiers.platform, modifiers.platform),
+                (0x38, self.host_modifiers.shift, modifiers.shift),
+                (0x3a, self.host_modifiers.alt, modifiers.alt),
+                (0x3b, self.host_modifiers.control, modifiers.control),
+            ] {
+                if previous != down {
+                    let input = if down {
+                        MacintoshInput::KeyDown { mac_key, character: 0 }
+                    } else {
+                        MacintoshInput::KeyUp { mac_key, character: 0 }
+                    };
+                    let _ = self.commands.send(Command::Input(input));
+                }
             }
-            self.command_down = down;
-            let input = if down {
-                MacintoshInput::KeyDown { mac_key: 0x37, character: 0 }
-            } else {
-                MacintoshInput::KeyUp { mac_key: 0x37, character: 0 }
-            };
-            let _ = self.commands.send(Command::Input(input));
+            self.host_modifiers = modifiers;
         }
 
         fn press_host_key(&mut self, mac_key: u8, character: u8) {
@@ -608,7 +616,7 @@ mod desktop {
             for mac_key in keys {
                 self.release_host_key(mac_key);
             }
-            self.sync_command_key(false);
+            self.sync_host_modifiers(Modifiers::default());
         }
 
         fn scrollbar_at(&self, point: (i16, i16)) -> Option<(u32, u64, (i16, i16))> {
@@ -2077,7 +2085,7 @@ mod desktop {
                     }
                 }))
                 .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                    this.sync_command_key(event.keystroke.modifiers.platform);
+                    this.sync_host_modifiers(event.keystroke.modifiers);
                     if event.keystroke.modifiers.platform {
                         if let Some((mac_key, character)) = guest_key(&event.keystroke) {
                             this.press_host_key(mac_key, character);
@@ -2093,10 +2101,10 @@ mod desktop {
                     if let Some((mac_key, _)) = guest_key(&event.keystroke) {
                         this.release_host_key(mac_key);
                     }
-                    this.sync_command_key(event.keystroke.modifiers.platform);
+                    this.sync_host_modifiers(event.keystroke.modifiers);
                 }))
                 .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, _| {
-                    this.sync_command_key(event.modifiers.platform);
+                    this.sync_host_modifiers(event.modifiers);
                 }))
                 .child(super::metrics::SceneMetrics::new(screen, window.rem_size() * scene_scale))
                 .when(!guest_menu_fallback && (self.menu_presented || menu_hovered), |root| {
@@ -4130,6 +4138,13 @@ mod desktop {
                     .unwrap();
                 session.initialize(&app);
                 wait_for_menu(&mut session, 129, 1, true);
+                for mac_key in [0x38, 0x3a, 0x3b] {
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key, character: 0 });
+                    session.runner_mut().run_steps(100_000, None);
+                    assert!(key_is_down(&session, mac_key), "modifier={mac_key:x}, powerpc={powerpc}");
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key, character: 0 });
+                    assert!(!key_is_down(&session, mac_key));
+                }
                 session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x37, character: 0 });
                 session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x23, character: b'p' });
                 wait_for_menu(&mut session, 129, 5, true);
@@ -5270,6 +5285,33 @@ mod desktop {
             assert!(matches!(inputs.as_slice(), [
                 MacintoshInput::KeyDown { mac_key: 0x00, character: b'A' },
                 MacintoshInput::KeyUp { mac_key: 0x00, character: b'A' },
+            ]));
+            cx.update_window(window.into(), |_, window, cx| {
+                for _ in 0..2 {
+                    window.dispatch_event(ModifiersChangedEvent {
+                        modifiers: gpui_kit::Modifiers {
+                            shift: true, alt: true, control: true,
+                            ..Default::default()
+                        },
+                        capslock: gpui_kit::Capslock { on: false },
+                    }.to_platform_input(), cx);
+                }
+                view.update(cx, |demo, _| {
+                    demo.release_host_input();
+                    demo.release_host_input();
+                });
+            }).unwrap();
+            let modifiers: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                super::Command::Input(input) => Some(input),
+                _ => None,
+            }).collect();
+            assert!(matches!(modifiers.as_slice(), [
+                MacintoshInput::KeyDown { mac_key: 0x38, character: 0 },
+                MacintoshInput::KeyDown { mac_key: 0x3a, character: 0 },
+                MacintoshInput::KeyDown { mac_key: 0x3b, character: 0 },
+                MacintoshInput::KeyUp { mac_key: 0x38, character: 0 },
+                MacintoshInput::KeyUp { mac_key: 0x3a, character: 0 },
+                MacintoshInput::KeyUp { mac_key: 0x3b, character: 0 },
             ]));
             cx.update(|cx| {
                 view.update(cx, |demo, cx| {
