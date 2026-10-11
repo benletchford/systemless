@@ -153,6 +153,8 @@ impl StandardFileReplacementLayout {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StandardFileNewFolderSnapshot {
     pub name: String,
+    /// Global guest x positions for each Mac Roman insertion offset, including EOF.
+    pub insertion_positions: Vec<i16>,
     pub selection: (usize, usize),
     pub error: Option<i16>,
     pub layout: StandardFileNewFolderLayout,
@@ -296,13 +298,28 @@ impl StandardFileNewFolderState {
         self.pointer_anchor.is_some()
     }
 
-    pub(crate) fn snapshot(&self, parent: (i16, i16, i16, i16)) -> StandardFileNewFolderSnapshot {
+    pub(crate) fn prompt(&self) -> &'static str {
+        new_folder_prompt(self.error)
+    }
+
+    pub(crate) fn snapshot(
+        &self, parent: (i16, i16, i16, i16), inset: i16,
+        measure: impl Fn(&[u8]) -> i16,
+    ) -> StandardFileNewFolderSnapshot {
         let selection = self.edit.selection();
+        let layout = StandardFileNewFolderLayout::new(parent);
+        // Text (1993), CharToPixel: insertion positions correspond to source
+        // buffer offsets. Preserve guest metrics for themed pointer translation.
+        let insertion_positions = (0..=self.edit.text().len())
+            .map(|offset| layout.name.1.saturating_add(inset)
+                .saturating_add(measure(&self.edit.text()[..offset])))
+            .collect();
         StandardFileNewFolderSnapshot {
+            insertion_positions,
             name: crate::trap::types::decode_mac_roman(self.edit.text()),
             selection: (selection.start, selection.end),
             error: self.error,
-            layout: StandardFileNewFolderLayout::new(parent),
+            layout,
         }
     }
 
@@ -429,6 +446,27 @@ mod new_folder_tests {
         }
         state.edit = crate::text_edit::TextEditBuffer::new(Vec::new(), 0, 0);
         assert_eq!(state.offset_at_x(100, measure), 0);
+    }
+
+    #[test]
+    fn new_folder_snapshot_positions_round_trip_mac_roman_offsets() {
+        let mut state = StandardFileNewFolderState::default();
+        state.edit = crate::text_edit::TextEditBuffer::new(vec![b'i', 0x8e, b'W'], 1, 2);
+        let measure = |bytes: &[u8]| -> i16 {
+            bytes.iter().map(|byte| match byte { b'i' => 5, 0x8e => 9, _ => 12 }).sum()
+        };
+        for inset in [1, 2] {
+            let snapshot = state.snapshot((100, 100, 360, 460), inset, measure);
+            assert_eq!(snapshot.name, "iéW");
+            assert_eq!(snapshot.selection, (1, 2));
+            assert_eq!(snapshot.insertion_positions.len(), 4);
+            for (offset, x) in snapshot.insertion_positions.iter().enumerate() {
+                assert_eq!(state.offset_at_x(
+                    i32::from(*x - snapshot.layout.name.1 - inset),
+                    |bytes| i32::from(measure(bytes)),
+                ), offset);
+            }
+        }
     }
 
     #[test]

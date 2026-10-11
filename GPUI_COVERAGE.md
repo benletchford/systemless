@@ -1759,14 +1759,15 @@ Validation:
   colour-68k capture after the font correction matches the PPC selected prefix
   for this checkpoint.
 
-Exact pointer-to-GPUI-displayed-glyph alignment remains incomplete: the host
-font differs from the guest font used for hit testing. Host focus-loss handling,
+At the initial pointer milestone, pointer-to-GPUI-displayed-glyph alignment
+remained incomplete because the host and guest fonts differed (addressed below
+for the exercised New Folder paths). Host focus-loss handling,
 double-click word selection, and full accessibility text editing also remain
 unqualified. These results establish guest pointer semantics for the exercised
 paths, not complete GPUI text-editing readiness. The full GPUI example regression
 suite passed: 73 tests, zero failures, in 215.61s.
 
-The remaining alignment defect is confirmed in the live path: `pointer` applies
+The initial alignment defect was confirmed in the live path: `pointer` applies
 only the aspect-fit transform, while the New Folder field renders proportional
 host text as separate prefix, selection and suffix elements with host padding.
 The CPU adapters interpret that unadjusted position using guest font widths and
@@ -1775,3 +1776,40 @@ Mac Roman offset, preserve that mapping throughout captured dragging, and route
 the result through guest interaction semantics. Verification must click actual
 displayed glyph boundaries at multiple scene scales, including accented Roman
 characters, rather than only exercising guest-coordinate endpoints.
+
+The next alignment change exposes one global guest insertion x position per
+Mac Roman byte offset (including EOF) in the New Folder snapshot. Both CPU
+adapters obtain these positions from their existing system-font measurement
+paths and preserve their field insets. This is read-only presentation metadata;
+it does not change guest selection. The six-scenario New Folder workflow still
+passes (34.67s). The New Folder frontend now renders one shaped text element with selection
+highlighting and an independently painted caret. After paint, its actual glyph
+positions map to the corresponding guest insertion positions. Mouse-down starts
+translation inside the field; movement and release retain it outside the field.
+Snapshot identity and text checks reject stale maps, and host input release
+clears capture. No guest records are changed by this presentation mapping.
+
+The host midpoint test passes at 0.75, 1, 1.5 and 2 scales. The live GPUI test
+checks all 16 painted insertion positions in the default name and dispatches
+mouse-down, outside-field movement and mouse-up, asserting translated guest
+input coordinates. Both tests pass. Composed partial-selection captures were reviewed for colour
+68k, monochrome 68k and PPC; the New Folder text and selected prefix agree. The
+painted-layout test also passes for an accented Mac Roman name and an empty
+field (0.15s), exercising their insertion positions and caret rendering. Remaining
+qualification includes long-name horizontal scrolling, double-click selection,
+composition and accessibility editing.
+The mapping currently covers New Folder only, not other TextEdit surfaces.
+
+The guest-side round-trip test also passes across all six New Folder scenarios
+(62.91s): clicks at exported offsets 0, 1, 7 and 15 return those exact caret
+offsets on monochrome 68k, colour 68k and PPC. This complements the painted host coordinate test.
+
+The combined host-to-running-guest test now passes (12.23s). It opens New Folder
+through guest Standard File, renders it at 0.75, 1 and 1.5 scene scales on all
+three guest modes, reads the actual painted glyph positions, dispatches host
+mouse-down/move/up events and verifies guest caret offsets and retained drag
+selection after each event. The full GPUI suite passed before this additional
+test (74 tests, zero failures, 227.25s); the added test passed separately. The
+ordinary library Mac Roman geometry test also passed. These results qualify
+single-click and drag alignment for the exercised short New Folder names, not
+all TextEdit surfaces or complete GPUI readiness.

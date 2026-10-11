@@ -12,6 +12,10 @@ fn main() {
 }
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_text.rs"]
+mod text;
+
+#[cfg(target_os = "macos")]
 #[path = "gpui_demo_input.rs"]
 mod input;
 
@@ -580,6 +584,8 @@ mod desktop {
         lists: Vec<ListManagerSnapshot>,
         text_edits: Vec<TextEditSnapshot>,
         standard_file: Option<StandardFileSnapshot>,
+        text_pointer_map: std::rc::Rc<std::cell::RefCell<Option<super::text::TextPointerMap>>>,
+        text_pointer_capture: Option<(u32, u64)>,
         image: Option<Arc<RenderImage>>,
         prepared_buttons: Option<PreparedButtonImage>,
         logo: Arc<RenderImage>,
@@ -683,6 +689,8 @@ mod desktop {
                 display_size: (640., 460.),
                 status: "Loading guest…".into(),
                 focus: cx.focus_handle(),
+                text_pointer_map: Default::default(),
+                text_pointer_capture: None,
                 mouse_down: false,
                 mouse_position: (0, 0),
                 scrollbar_drag: None,
@@ -703,6 +711,22 @@ mod desktop {
                 / self.display_scale)
                 .clamp(0., self.height.saturating_sub(1) as f32);
             (y as i16, x as i16)
+        }
+
+        fn text_pointer(&mut self, position: Point<Pixels>, begin: bool) -> (i16, i16) {
+            let point = self.pointer(position);
+            let map = self.text_pointer_map.borrow();
+            let Some(map) = map.as_ref() else { return point; };
+            let Some(panel) = self.standard_file.as_ref() else { return point; };
+            let Some(folder) = panel.new_folder.as_ref().filter(|folder| folder.error.is_none()) else { return point; };
+            if (panel.guest_id, panel.generation) != map.identity || folder.name != map.text {
+                return point;
+            }
+            let r = map.guest_bounds;
+            let inside = point.0 >= r.0 && point.0 < r.2 && point.1 >= r.1 && point.1 < r.3;
+            if begin && inside { self.text_pointer_capture = Some(map.identity); }
+            if self.text_pointer_capture != Some(map.identity) { return point; }
+            (point.0, map.horizontal(f32::from(position.x)).unwrap_or(point.1))
         }
 
         fn inside_guest_pane(&self, position: Point<Pixels>) -> bool {
@@ -743,6 +767,7 @@ mod desktop {
         }
 
         fn release_host_input(&mut self) {
+            self.text_pointer_capture = None;
             self.wheel.reset();
             let _ = self.commands.send(Command::CancelWheel);
             if self.mouse_down {
@@ -1066,7 +1091,7 @@ mod desktop {
                     }
                 }))
                 .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                    let (vertical, horizontal) = this.pointer(event.position);
+                    let (vertical, horizontal) = this.text_pointer(event.position, false);
                     this.mouse_position = (vertical, horizontal);
                     if this.scrollbar_drag.is_some() {
                         cx.notify();
@@ -1083,7 +1108,7 @@ mod desktop {
                     cx.listener(|this, event: &MouseDownEvent, window, cx| {
                         this.mouse_down = true;
                         this.focus.focus(window, cx);
-                        let (vertical, horizontal) = this.pointer(event.position);
+                        let (vertical, horizontal) = this.text_pointer(event.position, true);
                         this.mouse_position = (vertical, horizontal);
                         this.scrollbar_drag = this.scrollbar_at((vertical, horizontal));
                         this.popup_tracking = this.popup_at((vertical, horizontal));
@@ -1103,7 +1128,8 @@ mod desktop {
                         this.scrollbar_drag = None;
                         this.popup_tracking = None;
                         cx.notify();
-                        let (vertical, horizontal) = this.pointer(event.position);
+                        let (vertical, horizontal) = this.text_pointer(event.position, false);
+                        this.text_pointer_capture = None;
                         let _ = this.commands.send(Command::Input(MacintoshInput::MouseUp {
                             vertical,
                             horizontal,
@@ -1118,7 +1144,8 @@ mod desktop {
                             this.scrollbar_drag = None;
                             this.popup_tracking = None;
                             cx.notify();
-                            let (vertical, horizontal) = this.pointer(event.position);
+                            let (vertical, horizontal) = this.text_pointer(event.position, false);
+                            this.text_pointer_capture = None;
                             let _ = this.commands.send(Command::Input(MacintoshInput::MouseUp {
                                 vertical,
                                 horizontal,
@@ -2384,16 +2411,40 @@ mod desktop {
                         .text_color(cx.theme().foreground).text_size(guest_px(13.))
                         .child(at(if is_error { layout.error_message() } else { layout.prompt }).overflow_hidden().child(prompt));
                     if !is_error {
-                        let (prefix, selected, suffix) = save_name_segments(&folder.name, folder.selection, true);
-                        let mut name = at(layout.name).id("guest-standard-new-folder-name").test_support()
+                        let bytes: Vec<usize> = folder.name.char_indices().map(|(index, _)| index)
+                            .chain(std::iter::once(folder.name.len())).collect();
+                        let start = bytes[folder.selection.0.min(bytes.len() - 1)];
+                        let end = bytes[folder.selection.1.min(bytes.len() - 1)].max(start);
+                        let text = StyledText::new(if folder.name.is_empty() { " ".to_string() } else { folder.name.clone() })
+                            .with_highlights([(start..end, HighlightStyle {
+                                background_color: Some(cx.theme().selection), ..Default::default()
+                            })]);
+                        let layout = text.layout().clone();
+                        let output = self.text_pointer_map.clone();
+                        let identity = (panel.guest_id, panel.generation);
+                        let name_text = folder.name.clone();
+                        let guest_bounds = folder.layout.name;
+                        let guest_positions = folder.insertion_positions.clone();
+                        let caret_color = cx.theme().foreground;
+                        let caret_width = guest_px(1.);
+                        let caret_height = guest_px(14.);
+                        let caret = (start == end).then_some(start);
+                        let name = at(folder.layout.name).id("guest-standard-new-folder-name").test_support()
                             .aria_label("Name of new folder").overflow_hidden().flex().items_center().px_1()
-                            .border_1().border_color(cx.theme().accent).bg(cx.theme().background).child(prefix);
-                        if selected.is_empty() {
-                            name = name.child(div().w(guest_px(1.)).h(guest_px(14.)).bg(cx.theme().foreground));
-                        } else {
-                            name = name.child(div().bg(cx.theme().selection).text_color(cx.theme().foreground).child(selected));
-                        }
-                        overlay = overlay.child(name.child(suffix));
+                            .border_1().border_color(cx.theme().accent).bg(cx.theme().background)
+                            .child(div().flex_shrink_0().whitespace_nowrap().child(text))
+                            .child(canvas(|_, _, _| (), move |_, _, window, _| {
+                                let positions = bytes.iter().zip(&guest_positions).filter_map(|(index, guest)| {
+                                    layout.position_for_index(*index).map(|point| (f32::from(point.x), *guest))
+                                }).collect();
+                                *output.borrow_mut() = Some(super::text::TextPointerMap {
+                                    identity, text: name_text, guest_bounds, positions,
+                                });
+                                if let Some(point) = caret.and_then(|index| layout.position_for_index(index)) {
+                                    window.paint_quad(fill(Bounds::new(point, size(caret_width, caret_height)), caret_color));
+                                }
+                            }).absolute().size_full());
+                        overlay = overlay.child(name);
                     }
                     let actions = if is_error {
                         vec![(layout.create, "OK", super::activation::FileAction::DismissFolderError)]
@@ -5894,6 +5945,18 @@ mod desktop {
                 activate(&mut session, FileAction::NewFolder);
                 let child = session.runner().standard_file_snapshot().unwrap();
                 assert_eq!(child.new_folder.as_ref().unwrap().selection, (0, 15));
+                let folder = child.new_folder.as_ref().unwrap();
+                assert_eq!(folder.insertion_positions.len(), 16);
+                let vertical = (folder.layout.name.0 + folder.layout.name.2) / 2;
+                for offset in [0, 1, 7, 15] {
+                    let horizontal = folder.insertion_positions[offset];
+                    session.deliver_input(MacintoshInput::MouseDown { vertical, horizontal });
+                    step(&mut session);
+                    session.deliver_input(MacintoshInput::MouseUp { vertical, horizontal });
+                    step(&mut session);
+                    assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().selection,
+                        (offset, offset), "snapshot insertion position: PPC={powerpc}, depth={depth:?}");
+                }
                 for (mac_key, character, selection) in [(0x7e, 0x1e, (0, 0)), (0x7d, 0x1f, (15, 15))] {
                     session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
                     session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
@@ -6844,6 +6907,94 @@ mod desktop {
             assert!(commands.iter().any(|command| matches!(command,
                 super::Command::Input(MacintoshInput::KeyDown { character: b'x', .. })
             )), "cancelled menus must restore guest keyboard input");
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn painted_new_folder_pointer_events_reach_guest_selection(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{test::TestWindowExt, AppContext, InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
+            use super::super::activation::{ControlActivation, FileAction};
+            cx.update(gpui_kit::init);
+            for (powerpc, depth) in [(false, Some(1)), (false, Some(8)), (true, None)] {
+                let mut session = MacintoshSession::new(true, depth);
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 12));
+                wait_for_menu(&mut session, 129, 12, true);
+                settle(&mut session);
+                let step = |session: &mut MacintoshSession| {
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                };
+                session.deliver_input(MacintoshInput::MouseDown { vertical: 266, horizontal: 400 });
+                session.deliver_input(MacintoshInput::MouseUp { vertical: 266, horizontal: 400 });
+                let panel = (0..100).find_map(|_| { step(&mut session); session.runner().standard_file_snapshot() }).unwrap();
+                let click = ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, FileAction::NewFolder).unwrap();
+                step(&mut session);
+                let click = click.advance(&mut session).unwrap();
+                step(&mut session);
+                assert!(click.advance(&mut session).is_none());
+                for scale in [0.75, 1., 1.5] {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let (window, view) = cx.update(|cx| {
+                        gpui_kit::open_window(gpui_kit::WindowOptions {
+                            window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::centered(None,
+                                gpui_kit::size(gpui_kit::px(800. * scale), gpui_kit::px(600. * scale)), cx))),
+                            ..Default::default()
+                        }, cx, |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap()
+                    });
+                    // Point clicks followed by a held drag; every coordinate comes
+                    // from painted host glyphs, never a guessed guest text width.
+                    for (phase, offset, expected) in [
+                        (0, 0, (0, 0)), (2, 0, (0, 0)),
+                        (0, 1, (1, 1)), (2, 1, (1, 1)),
+                        (0, 7, (7, 7)), (2, 7, (7, 7)),
+                        (0, 15, (15, 15)), (2, 15, (15, 15)),
+                        (0, 6, (6, 6)), (1, 1, (1, 6)), (2, 1, (1, 6)),
+                    ] {
+                        cx.update_window(window.into(), |_, window, cx| {
+                            view.update(cx, |demo, cx| {
+                                demo.width = 800;
+                                demo.height = 600;
+                                demo.standard_file = session.runner().standard_file_snapshot();
+                                if demo.image.is_none() {
+                                    demo.image = Some(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![
+                                        image::Frame::new(image::RgbaImage::new(800, 600))
+                                    ])));
+                                }
+                                cx.notify();
+                            });
+                            window.render_frame(cx);
+                            let position = view.update(cx, |demo, _| {
+                                assert!((demo.display_scale - scale).abs() < 0.01);
+                                let map = demo.text_pointer_map.borrow();
+                                let map = map.as_ref().expect("painted name");
+                                let y = demo.display_origin.1 + f32::from((map.guest_bounds.0 + map.guest_bounds.2) / 2) * demo.display_scale;
+                                gpui_kit::point(gpui_kit::px(map.positions[offset].0), gpui_kit::px(y))
+                            });
+                            let event = match phase {
+                                0 => MouseDownEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input(),
+                                1 => MouseMoveEvent { position, pressed_button: Some(MouseButton::Left), ..Default::default() }.to_platform_input(),
+                                _ => MouseUpEvent { position, button: MouseButton::Left, click_count: 1, ..Default::default() }.to_platform_input(),
+                            };
+                            window.dispatch_event(event, cx);
+                        }).unwrap();
+                        let mut delivered = 0;
+                        for command in receiver.try_iter() {
+                            if let super::Command::Input(input) = command {
+                                session.deliver_input(input);
+                                delivered += 1;
+                            }
+                        }
+                        assert_eq!(delivered, 1);
+                        step(&mut session);
+                        assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().selection,
+                            expected, "PPC={powerpc}, depth={depth:?}, scale={scale}, phase={phase}, offset={offset}");
+                    }
+                }
+            }
         }
 
         #[cfg(feature = "gpui-demo-test")]
@@ -8878,7 +9029,7 @@ mod desktop {
         fn themed_standard_file_actions_forward_guest_clicks(
             cx: &mut gpui_kit::TestAppContext,
         ) {
-            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, InputEvent, WindowBounds, WindowOptions};
             use systemless::runner::{
                 StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind,
                 StandardFilePutLayout, StandardFileSnapshot,
@@ -9150,6 +9301,7 @@ mod desktop {
                     let panel = demo.standard_file.as_mut().unwrap();
                     panel.new_folder = Some(systemless::runner::StandardFileNewFolderSnapshot {
                         name: "untitled folder".into(), selection: (0, 15), error: None,
+                        insertion_positions: (0..=15).map(|i| folder_layout.name.1 + 2 + i * 7).collect(),
                         layout: folder_layout.clone(),
                     });
                     panel.name_has_focus = Some(false);
@@ -9157,8 +9309,66 @@ mod desktop {
                 });
                 window.render_frame(cx);
                 assert_eq!(window.find("guest-standard-new-folder").role(), Some(gpui_kit::Role::Dialog));
+                view.update(cx, |demo, _| {
+                    let map = demo.text_pointer_map.borrow().clone().expect("painted glyph positions");
+                    assert_eq!(map.positions.len(), 16);
+                    let y = demo.display_origin.1 + f32::from((folder_layout.name.0 + folder_layout.name.2) / 2) * demo.display_scale;
+                    for (x, guest) in &map.positions {
+                        demo.text_pointer_capture = None;
+                        assert_eq!(demo.text_pointer(gpui_kit::point(gpui_kit::px(*x), gpui_kit::px(y)), true).1, *guest);
+                    }
+                    // Drag ownership continues beyond the field, including mouse-up.
+                    assert_eq!(demo.text_pointer(gpui_kit::point(gpui_kit::px(map.positions[0].0 - 40.), gpui_kit::px(y)), false).1, map.positions[0].1);
+                    demo.text_pointer_capture = None;
+                });
                 for label in ["Desktop", "New", "Cancel", "Save"] {
                     assert_eq!(window.find(format!("guest-standard-save-8-2-{label}")).focused(), None);
+                }
+                let (start, outside, first, selected) = view.update(cx, |demo, _| {
+                    let map = demo.text_pointer_map.borrow();
+                    let map = map.as_ref().unwrap();
+                    let y = demo.display_origin.1 + f32::from((folder_layout.name.0 + folder_layout.name.2) / 2) * demo.display_scale;
+                    (gpui_kit::point(gpui_kit::px(map.positions[6].0), gpui_kit::px(y)),
+                     gpui_kit::point(gpui_kit::px(map.positions[0].0 - 30.), gpui_kit::px(y)),
+                     map.positions[0].1, map.positions[6].1)
+                });
+                window.dispatch_event(gpui_kit::MouseDownEvent {
+                    position: start, button: gpui_kit::MouseButton::Left, click_count: 1, ..Default::default()
+                }.to_platform_input(), cx);
+                window.dispatch_event(gpui_kit::MouseMoveEvent {
+                    position: outside, pressed_button: Some(gpui_kit::MouseButton::Left), ..Default::default()
+                }.to_platform_input(), cx);
+                window.dispatch_event(gpui_kit::MouseUpEvent {
+                    position: outside, button: gpui_kit::MouseButton::Left, click_count: 1, ..Default::default()
+                }.to_platform_input(), cx);
+                let inputs: Vec<_> = receiver.try_iter().filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input), _ => None,
+                }).collect();
+                assert!(matches!(inputs.as_slice(), [
+                    MacintoshInput::MouseDown { horizontal: down, .. },
+                    MacintoshInput::MouseMove { horizontal: moved, .. },
+                    MacintoshInput::MouseUp { horizontal: up, .. },
+                ] if *down == selected && *moved == first && *up == first), "{inputs:?}");
+                for name in ["iéW", "", "untitled folder"] {
+                    view.update(cx, |demo, cx| {
+                        let folder = demo.standard_file.as_mut().unwrap().new_folder.as_mut().unwrap();
+                        folder.name = name.into();
+                        let count = name.chars().count();
+                        folder.selection = (count, count);
+                        folder.insertion_positions = (0..=count).map(|i| folder.layout.name.1 + 2 + i as i16 * 7).collect();
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    view.update(cx, |demo, _| {
+                        let map = demo.text_pointer_map.borrow().clone().unwrap();
+                        assert_eq!(map.positions.len(), name.chars().count() + 1);
+                        let y = demo.display_origin.1 + f32::from((folder_layout.name.0 + folder_layout.name.2) / 2) * demo.display_scale;
+                        for (x, guest) in &map.positions {
+                            demo.text_pointer_capture = None;
+                            assert_eq!(demo.text_pointer(gpui_kit::point(gpui_kit::px(*x), gpui_kit::px(y)), true).1, *guest, "{name}");
+                        }
+                        demo.text_pointer_capture = None;
+                    });
                 }
                 window.click("guest-standard-new-folder-8-2-Create", cx);
             }).unwrap();
