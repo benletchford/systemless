@@ -1,5 +1,26 @@
 # GPUI Kit system-interface coverage
 
+### Canonical classic TextEdit paint-mode inputs (2026-10-12)
+
+The classic TextEdit paint snapshot now resolves its mode from canonical
+TERec.txMode. Drawing restores the caller's port attributes afterward; reading
+that restored port mode could falsely reject a supported styled field or resolve
+a monochrome white run using the wrong recipe. PPC already reads the TERec mode.
+
+All 432 classic dialog tests pass (0.22s). The new one-bit paint-input regression
+varies five record modes independently of four caller modes, checks mode-sensitive
+white ink and unchanged caller state. It intentionally isolates colour resolution
+from style-table parsing. Its first attempt was correctly refused because the
+synthetic port and dispatcher had different screen profiles; the corrected fixture
+uses one matching 512x342 one-bit surface.
+
+The shared-presentation styled-field regression passes mono68k, colour68k,
+PPC8 and PPC16 (2.67s), comparing ordered glyph ink and the entire field recipe
+against native runtime pixels before GPUI replacement. This does not add a new
+visual capture or Macintosh oracle. Nonzero plain-face GPUI support, full transfer
+recipes, font fidelity and native gameplay qualification remain open.
+The fresh locked/offline default desktop build check passes (20.45s).
+
 ### Canonical PPC plain TextEdit font style (2026-10-12)
 
 PPC plain TextEdit now uses TERec.txFace for wrapping, insertion/selection/caret

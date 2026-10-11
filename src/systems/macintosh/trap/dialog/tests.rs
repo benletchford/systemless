@@ -17560,6 +17560,37 @@
     }
 
     #[test]
+    fn textedit_paint_snapshot_uses_record_mode_after_restoring_caller_mode() {
+        use crate::text_edit::TextEditStyleRunSnapshot;
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        // The helper port is a 512x342 one-bit screen, while the shared
+        // dispatcher defaults can select a different display profile.
+        disp.set_screen_mode_for_test(bus.read_long(0x181002), 64, 512, 342, 1);
+        let handle = make_te_with_text(&mut disp, &mut bus, b"A");
+        let ptr = bus.read_long(handle);
+        for record_mode in [0i16, 1, 2, 3, 7] {
+            bus.write_word(ptr + TrapDispatcher::TE_TX_MODE_OFFSET, record_mode as u16);
+            let mut record = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+                &mut |address| Some(bus.read_byte(address))).records.remove(0);
+            // Isolate paint-input resolution from the style table parser. A
+            // white run exposes mode-sensitive one-bit foreground resolution.
+            record.styled = true;
+            record.style_runs = Some(vec![TextEditStyleRunSnapshot {
+                start: 0, font: 4, face: 0, size: 10, color: (0xffff, 0xffff, 0xffff),
+                line_height: record.line_height, ascent: record.font_ascent,
+            }]);
+            for caller_mode in [0i16, 1, 2, 7] {
+                bus.write_word(record.owner_port + 72, caller_mode as u16);
+                let paint = disp.text_edit_paint_snapshot(&bus, &record).unwrap();
+                assert_eq!(paint.mode, record_mode);
+                assert_eq!(paint.style_ink[0].pixel,
+                    u16::from(!matches!(record_mode, 0 | 1)));
+                assert_eq!(bus.read_word(record.owner_port + 72), caller_mode as u16);
+            }
+        }
+    }
+
+    #[test]
     fn plain_textedit_layout_and_points_use_record_face_without_changing_caller_style() {
         let (mut disp, _cpu, mut bus) = setup();
         let text = b"HELLO WORLD HELLO WORLD";

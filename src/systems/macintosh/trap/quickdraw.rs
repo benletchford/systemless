@@ -25949,7 +25949,7 @@ impl super::TrapDispatcher {
         };
         if base != self.screen_mode.0 || row_bytes != self.screen_mode.1
             || depth != self.screen_mode.4 || !matches!(depth, 1 | 8) { return None; }
-        let mode = bus.read_word(port + 72) as i16;
+        let mode = record.text_mode;
         let palette = crate::display::rgba_palette_from_clut_with_gamma(&self.device_clut, &self.display_gamma.table());
         let rgb_at = |pixel: u8| {
             if depth == 1 { return if pixel == 0 { [255; 3] } else { [0; 3] }; }
