@@ -1309,6 +1309,10 @@ mod desktop {
                                     .disabled(!control.enabled)
                                     .tab_stop(false)
                                     .small()
+                                    // Toolbox Essentials (1992), Control Manager,
+                                    // NewControl: standard titles use the 12-point system font.
+                                    .gap_x(guest_px(4.))
+                                    .text_size(guest_px(12.))
                                     .w_full()
                                     .h_full(),
                             );
@@ -1324,6 +1328,8 @@ mod desktop {
                                     .disabled(!control.enabled)
                                     .tab_stop(false)
                                     .small()
+                                    .gap_x(guest_px(4.))
+                                    .text_size(guest_px(12.))
                                     .w_full()
                                     .h_full(),
                             );
@@ -1562,6 +1568,8 @@ mod desktop {
                             .disabled(!item.enabled)
                             .tab_stop(false)
                             .small()
+                            .gap_x(guest_px(4.))
+                            .text_size(guest_px(12.))
                             .w_full()
                             .h_full(),
                         ),
@@ -1575,6 +1583,8 @@ mod desktop {
                             .disabled(!item.enabled)
                             .tab_stop(false)
                             .small()
+                            .gap_x(guest_px(4.))
+                            .text_size(guest_px(12.))
                             .w_full()
                             .h_full(),
                         ),

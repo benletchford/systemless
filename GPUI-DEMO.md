@@ -90,7 +90,7 @@ headless GPUI renderer. Reviewed composed captures use the same showcase on
 [68K](tests/toolbox-showcase/reference/gpui-demo/20-standard-menu-68k.png) and
 [PowerPC](tests/toolbox-showcase/reference/gpui-demo/20-standard-menu-ppc.png).
 
-These menu references and the initial Controls references use the current uncropped live layout. The Controls references also verify that retained, unpainted TextEdit records do not overlay the page and are byte-identical across 68K and PPC. Other composed
+These menu references, initial colour TextEdit references, and initial Controls references use the current uncropped live layout. The Controls references also verify that retained, unpainted TextEdit records do not overlay the page and are byte-identical across 68K and PPC. Other composed
 references below predate that layout change and still require regeneration
 and visual review; they are not current layout acceptance evidence.
 
