@@ -1,0 +1,16 @@
+{
+  "cases": 12,
+  "modes": [
+    "mono68k",
+    "colour68k",
+    "PPC8",
+    "explicit PPC16"
+  ],
+  "elapsed_seconds": 16.75,
+  "scope": "Actual guest NMInstall through keyboard events, automatic Demo acquisition, captured AudioBackend non-silent output before acknowledgment for system-sound cases, rendered menu exclusion and OK acknowledgment; nil-system-sound autoremove and compiled responses in the other cases. No physical speakers, sustained audio continuity, custom sounds, marks/icons or release qualification.",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "c13a488c52b8899589be89647deef96b1deda6d7e7c99c313703adeb2faebc6a",
+    "tests/toolbox-showcase/showcase.c": "b2f25bf6769acfc29038104877b34ab393533d08bc8c56f23111ddf1b718ed93",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "c09a50a1edc52b8b0f63f78629c8f428993ab7a1d93af5624022c65665b6d23a"
+  }
+}
