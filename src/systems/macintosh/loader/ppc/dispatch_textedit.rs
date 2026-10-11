@@ -285,6 +285,33 @@ pub(super) fn dispatch_textedit_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::TEGetStyle => {
+            // Native ABI: (short offset, TextStyle *, short *height,
+            // short *ascent, TEHandle). Style is a byte; padding is untouched.
+            let te_handle = cpu.gpr[7];
+            let Some(text) = ppc_te_text_bytes(memory, handles, te_handle) else {
+                return Some(PpcImportAction::ReturnPreserve);
+            };
+            let runs = ppc_te_style_runs(memory, handles, te_handle, text.len());
+            let offset = (cpu.gpr[3] as i16).max(0) as usize;
+            let style = ppc_te_style_at_offset(&runs, offset.min(text.len()));
+            let attrs = cpu.gpr[4];
+            if attrs != 0 {
+                let _ = memory.write_u16_be(attrs, style.font as u16);
+                let _ = memory.write_u8(attrs + 2, style.face);
+                let _ = memory.write_u16_be(attrs + 4, style.size as u16);
+                let _ = memory.write_u16_be(attrs + 6, style.color.red);
+                let _ = memory.write_u16_be(attrs + 8, style.color.green);
+                let _ = memory.write_u16_be(attrs + 10, style.color.blue);
+            }
+            if cpu.gpr[5] != 0 {
+                let _ = memory.write_u16_be(cpu.gpr[5], style.line_height as u16);
+            }
+            if cpu.gpr[6] != 0 {
+                let _ = memory.write_u16_be(cpu.gpr[6], style.ascent as u16);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::TEUseStyleScrap => {
             // TextEdit.h exposes the native PPC ABI as (rangeStart, rangeEnd,
             // StScrpHandle, redraw, TEHandle). A style scrap may describe

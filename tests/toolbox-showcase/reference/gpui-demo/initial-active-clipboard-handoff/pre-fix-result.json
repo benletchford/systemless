@@ -1,0 +1,14 @@
+{
+  "outcome": "Initial foreground TEXT handoff failed before fix on mono68k: guest clipboard transition did not settle; terminal exit101 after1620.37s",
+  "base_source_commit": "ac691332",
+  "source_sha256": {
+    "src/systems/macintosh/process_manager/activation.rs": "abc154d957648d517e894865ff993e046adba396e86721cd849bc213592bf57c",
+    "src/systems/macintosh/runner/mod.rs": "cbe90b515c07e17922544471f8c6bb21efdacd7e6c62cba409e028dc0f297015",
+    "src/systems/macintosh/session.rs": "3cc1b620b7eb6a343f009f676c5960d36592b91bdf6c2e548f0fe402ab802122",
+    "src/systems/macintosh/process_context.rs": "130493ea4848d2c2c2adbc7c415c1e08ca25fc053ebeb0a53a6508645340cca5",
+    "tests/macintosh_clipboard.rs": "8689aa2975642cc101ba7a7e84b46980e89f040f0c1508b655f74d4a4a46b94b"
+  },
+  "source_hash_timing": "Captured after repro job started and before implementation edits. Backend was clean ac691332; new regression was uncommitted.",
+  "test_executable_hash": "Not recorded before original execution; test binary has since been rebuilt and no substitute hash is claimed.",
+  "scope": "Bounded guest-event loop confirms mono68k initial foreground notification gap. It exits on the first failing mode; no pre-fix all4-mode failure is claimed. Separate post-fix all4-mode evidence is already archived."
+}

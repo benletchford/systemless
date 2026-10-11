@@ -1486,6 +1486,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::TENew
         | PpcImportDispatcherTarget::TEStyleNew
         | PpcImportDispatcherTarget::TESetStyle
+        | PpcImportDispatcherTarget::TEGetStyle
         | PpcImportDispatcherTarget::TEUseStyleScrap
         | PpcImportDispatcherTarget::TEContinuousStyle
         | PpcImportDispatcherTarget::TEGetText

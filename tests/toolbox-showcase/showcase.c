@@ -2721,6 +2721,27 @@ void ApplyStyledStyle(short start, short end, TextStyle *style)
     TESetStyle(doAll, style, true, gStyledTE);
 }
 
+/* Preserve each character's font, size, colour and non-spacing face bits.
+ * Option-C/E/B/N exercises condensed/extended/both/normal through guest
+ * TEGetStyle and TESetStyle, retaining the existing selection. */
+void SetStyledSpacing(Style spacing)
+{
+    short offset, start, end, length, height, ascent;
+    TextStyle style;
+
+    if (gStyledTE == nil) return;
+    start = (**gStyledTE).selStart;
+    end = (**gStyledTE).selEnd;
+    length = (**gStyledTE).teLength;
+    for (offset = 0; offset < length; ++offset) {
+        TESetSelect(offset, offset + 1, gStyledTE);
+        TEGetStyle(offset, &style, &height, &ascent, gStyledTE);
+        style.tsFace = (style.tsFace & ~(condense | extend)) | spacing;
+        TESetStyle(doFace, &style, true, gStyledTE);
+    }
+    TESetSelect(start, end, gStyledTE);
+}
+
 void InspectStyledText(void)
 {
     short textLength;
@@ -5078,6 +5099,12 @@ static void DoEvent(EventRecord *event)
             key = (char)(event->message & charCodeMask);
             if ((event->modifiers & cmdKey) != 0) {
                 DoMenuChoice(MenuKey(key));
+            } else if (gPage == pageStyledText && gStyledTE != nil &&
+                       (event->modifiers & optionKey) != 0 &&
+                       (key == 'c' || key == 'e' || key == 'b' || key == 'n')) {
+                SetStyledSpacing(key == 'c' ? condense : key == 'e' ? extend :
+                                 key == 'b' ? (condense | extend) : 0);
+                DrawMainWindow();
             } else if (gPage == pageTextEdit && gTE != nil) {
                 TEKey(key, gTE);
                 DrawMainWindow();
