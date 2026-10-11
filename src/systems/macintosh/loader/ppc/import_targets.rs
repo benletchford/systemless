@@ -332,6 +332,7 @@ pub enum PpcImportDispatcherTarget {
     InsertResMenu,
     EnableMenuItem,
     DisableMenuItem,
+    IsMenuItemEnabled,
     SetItemMark,
     CheckItem,
     GetMenuBar,
@@ -2872,6 +2873,8 @@ pub(crate) fn dispatcher_target_for_import(
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "DisableItem" | "disableitem" | "DisableMenuItem" | "disablemenuitem",
         ) => PpcImportDispatcherTarget::DisableMenuItem,
+        ("InterfaceLib" | "AppearanceLib" | "MenusLib", "IsMenuItemEnabled") =>
+            PpcImportDispatcherTarget::IsMenuItemEnabled,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "SetItemMark" | "setitemmark" | "SetMenuItemMark" | "setmenuitemmark",
