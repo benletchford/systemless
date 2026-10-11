@@ -357,6 +357,12 @@ mod desktop {
         capture_standard_file_volume_popup_composed: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_standard_file_volume_many_composed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_standard_file_volume_scrolled_composed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_standard_file_open_scrolled: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -3766,6 +3772,7 @@ mod desktop {
         StandardFileSaveComposed,
         StandardFileOpenComposed,
         StandardFileVolumePopupComposed,
+        StandardFileVolumeManyComposed { scrolled: bool },
         StandardFileOpenScrolled,
         StandardFileSaveEditedComposed,
         StandardFileSaveCaretHiddenComposed,
@@ -3956,7 +3963,7 @@ mod desktop {
                 | CaptureCase::StandardFileNewFolderSelectedComposed
                 | CaptureCase::StandardFileNewFolderLongComposed | CaptureCase::StandardFileNewFolderCaretHiddenComposed
         );
-        let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileVolumePopupComposed | CaptureCase::StandardFileOpenScrolled);
+        let standard_file_open = matches!(capture, CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileVolumePopupComposed | CaptureCase::StandardFileVolumeManyComposed { .. } | CaptureCase::StandardFileOpenScrolled);
         let standard_file_page = standard_file_save || standard_file_open;
         let radio_page = matches!(capture, CaptureCase::RadioFonts | CaptureCase::RadioHeld | CaptureCase::RadioOutside | CaptureCase::RadioSelected);
         let controls_changed = matches!(capture, CaptureCase::ControlsChanged);
@@ -3973,6 +3980,12 @@ mod desktop {
         }
         let app = session.load_path(game).unwrap();
         session.initialize(&app);
+        if matches!(capture, CaptureCase::StandardFileVolumeManyComposed { .. }) {
+            for index in 0..40 {
+                assert!(session.runner_mut().mount_fixture_volume(-100 - index as i16,
+                    &format!("Archive café {index:02}"), 60000 + index));
+            }
+        }
         for _ in 0..300 {
             session.runner_mut().run_steps(100_000, None);
             if session
@@ -4533,7 +4546,7 @@ mod desktop {
                         && panel.entries.as_ref().is_some_and(|entries| !entries.is_empty())
                 })
             }));
-            if matches!(capture, CaptureCase::StandardFileVolumePopupComposed) {
+            if matches!(capture, CaptureCase::StandardFileVolumePopupComposed | CaptureCase::StandardFileVolumeManyComposed { .. }) {
                 let panel = session.runner().standard_file_snapshot().unwrap();
                 let selector = panel.get_layout.as_ref().unwrap().volume;
                 session.deliver_input(MacintoshInput::MouseDown {
@@ -4546,6 +4559,18 @@ mod desktop {
                 for _ in 0..5 {
                     let tick = session.runner().guest_tick().saturating_add(1);
                     session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                }
+                if matches!(capture, CaptureCase::StandardFileVolumeManyComposed { scrolled: true }) {
+                    let popup = session.runner().standard_file_snapshot().unwrap().volume_popup.unwrap();
+                    session.deliver_input(MacintoshInput::MouseMove {
+                        vertical: popup.bounds.2 - 5, horizontal: popup.bounds.1 + 20 });
+                    assert!((0..300).any(|_| {
+                        let tick = session.runner().guest_tick().saturating_add(1);
+                        session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                        session.runner().standard_file_snapshot().is_some_and(|panel|
+                            panel.volume_popup.as_ref().is_some_and(|popup|
+                                popup.highlighted == Some(popup.choices.len() - 1)))
+                    }), "guest pointer must scroll to the final mounted volume");
                 }
                 let popup = session.runner().standard_file_snapshot().unwrap().volume_popup.unwrap();
                 std::fs::write(output.with_extension("volume-popup.json"), serde_json::to_vec_pretty(&serde_json::json!({
@@ -5588,7 +5613,7 @@ mod desktop {
         });
         visual.run_until_parked();
         if matches!(capture, CaptureCase::StandardFileSaveComposed | CaptureCase::StandardFileNewFolderComposed
-            | CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileVolumePopupComposed | CaptureCase::StandardFileOpenScrolled) {
+            | CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileVolumePopupComposed | CaptureCase::StandardFileVolumeManyComposed { .. } | CaptureCase::StandardFileOpenScrolled) {
             visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
                 demo.host_active = Some(true); window.focus(&demo.focus, cx);
                 demo.synchronize_composition(window, cx); cx.notify();
@@ -5612,7 +5637,7 @@ mod desktop {
                 "scope": "Capture provenance only; no automatic smooth visual, font fidelity or performance qualification",
             })).unwrap()).unwrap();
         composed.save(output).unwrap();
-        if matches!(capture, CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileVolumePopupComposed | CaptureCase::StandardFileOpenScrolled) {
+        if matches!(capture, CaptureCase::StandardFileOpenComposed | CaptureCase::StandardFileVolumePopupComposed | CaptureCase::StandardFileVolumeManyComposed { .. } | CaptureCase::StandardFileOpenScrolled) {
             visual.update_window(window.into(), |_, _, cx| view.update(cx, |demo, cx| {
                 demo.host_active = Some(false); cx.notify();
             })).unwrap();
@@ -7222,6 +7247,17 @@ mod desktop {
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
+        for (output, scrolled) in [
+            (args.capture_standard_file_volume_many_composed.as_ref(), false),
+            (args.capture_standard_file_volume_scrolled_composed.as_ref(), true),
+        ] {
+            if let Some(output) = output {
+                capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth,
+                    CaptureCase::StandardFileVolumeManyComposed { scrolled }, args.capture_scale);
+                return;
+            }
+        }
+        #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_standard_file_volume_popup_composed.as_ref() {
             capture_fixture_screen(&args.game, output, args.prefer_powerpc, args.screen_depth,
                 CaptureCase::StandardFileVolumePopupComposed, args.capture_scale);
@@ -7865,6 +7901,8 @@ mod desktop {
                         capture_standard_file_save_composed: None,
                         capture_standard_file_open_composed: None,
                         capture_standard_file_volume_popup_composed: None,
+                        capture_standard_file_volume_many_composed: None,
+                        capture_standard_file_volume_scrolled_composed: None,
                         capture_standard_file_open_scrolled: None,
                         capture_standard_file_save_edited_composed: None,
                         capture_standard_file_save_caret_hidden_composed: None,

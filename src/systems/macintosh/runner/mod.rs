@@ -4363,6 +4363,30 @@ impl FixtureRunner {
                 finder_flags: directory.finder_flags }).collect()
     }
 
+    /// Install a read-only mounted root for debug fixture workflows. Both CPU
+    /// adapters consume the same process-owned volume and directory records.
+    #[cfg(feature = "debug")]
+    #[doc(hidden)]
+    pub fn mount_fixture_volume(&mut self, ref_num: i16, name: &str, root_dir_id: u32) -> bool {
+        let path = TrapDispatcher::normalize_vfs_path(name);
+        if ref_num == crate::trap::dispatch::BOOT_VOLUME_REF_NUM || root_dir_id < 3
+            || path.is_empty() || path.contains('/')
+            || self.dispatcher.vfs_volumes.iter().any(|volume| volume.ref_num == ref_num)
+            || self.dispatcher.vfs_directories.iter().any(|directory|
+                directory.dir_id == root_dir_id || directory.path == path) { return false; }
+        self.dispatcher.vfs_directories.with_mut(|directories| directories.push(crate::process_context::ProcessVfsDirectory {
+            dir_id: root_dir_id, parent_dir_id: 1, path, creator: 0, file_type: 0,
+            finder_flags: 0, dirty: false,
+        }));
+        self.dispatcher.vfs_volumes.with_mut(|volumes| volumes.push(crate::process_context::ProcessVfsVolumeRecord {
+            ref_num, name: name.into(), root_dir_id, attributes: 0x0080,
+            file_count: 0, allocation_block_count: 0, allocation_block_size: 0,
+            clump_size: 0, free_blocks: 0, bitmap_start: 0, allocation_pointer: 0,
+            allocation_start: 0, next_catalog_id: 0, created_date: 0, modified_date: 0,
+        }));
+        true
+    }
+
     pub fn import_vfs_directory(&mut self, directory: &VfsDirectorySnapshot) {
         let path = TrapDispatcher::normalize_vfs_path(&directory.path);
         if path.is_empty() || path.starts_with("__rsrc__") { return; }

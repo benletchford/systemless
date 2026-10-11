@@ -1,5 +1,26 @@
 # GPUI production release gates
 
+### Oversized popup shared-compositor review (2026-10-11)
+
+Reusable hidden capture flags now install debug-only read-only mounted roots,
+open the guest selector, and optionally scroll it through held guest pointer
+tracking before using the shared Demo renderer. Eight initial/scrolled scenes
+were reviewed: mono68k/0.75, colour68k/1, PPC8/1.5 and PPC16/2. Smooth accented
+labels, clipping, row placement, arrows and final-choice highlighting fit the
+popup. Eight inactive original-resolution popup crops were also reviewed; popup
+highlight is retained during host inactivity. All eight active/reactivated
+image pairs are byte-identical; final source/executable hash audit matches.
+Local captures, crops and provenance: `target/gpui-qualification/volume-many`.
+This selected matrix does not prove all CPU by scale combinations, native
+activation, physical pointer/IME, native accessibility, independent Macintosh
+font fidelity or production readiness. All broad release gates remain open.
+
+Reproduce with `cargo build --locked --example gpui-menu-demo --features gpui-demo-test`,
+then use `--capture-standard-file-volume-many-composed <output.png>` or
+`--capture-standard-file-volume-scrolled-composed <output.png>` alongside
+`--screen-depth`, `--prefer-powerpc` and `--capture-scale`.
+
+
 ### Oversized guest volume-popup scrolling (2026-10-11)
 
 Volume popups now reuse shared Menu Manager pointer tracking and arrow pixels
