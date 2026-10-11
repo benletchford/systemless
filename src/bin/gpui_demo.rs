@@ -126,6 +126,9 @@ mod desktop {
     #[path = "../gpui_demo_native_delivery.rs"]
     mod native_delivery;
 
+    #[cfg(feature = "gpui-demo-test")]
+    mod native_accessibility;
+
     use std::{
         collections::{HashMap, HashSet},
         path::PathBuf,
@@ -2094,6 +2097,7 @@ mod desktop {
                     bottom: self.height as i32,
                     right: self.width as i32,
                 };
+                let mut accessible_titles = HashSet::new();
                 for piece in super::frames::frame_pieces(&self.windows, viewport) {
                     let frame = &self.windows[piece.window];
                     let source = piece.source;
@@ -2112,6 +2116,17 @@ mod desktop {
                             .collect::<Option<Vec<_>>>() else { continue; };
                         let glyphs = super::text::ClassicLine::plain(&bytes, 0, 12);
                         let title_clip = super::frames::Rect::from(title.clip);
+                        let ink_bounds = super::frames::Rect {
+                            top: i32::from(title.baseline) - i32::from(title.ascent),
+                            left: i32::from(title.horizontal),
+                            bottom: i32::from(title.baseline) + i32::from(title.descent),
+                            right: i32::from(title.horizontal) + i32::from(title.width),
+                        };
+                        // A split/occluded title gets one semantic label, attached
+                        // to its first visible text fragment, not the border.
+                        let accessible_title = !frame.window.title.is_empty()
+                            && clip.intersection(title_clip).and_then(|clip| clip.intersection(ink_bounds)).is_some()
+                            && accessible_titles.insert((frame.guest_id, frame.generation));
                         let foreground = if frame.window.active {
                             cx.theme().foreground
                         } else {
@@ -2140,6 +2155,10 @@ mod desktop {
                                     .top(guest_px((i32::from(title.baseline - title.ascent) - title_clip.top) as f32))
                                     .w(guest_px(f32::from(title.width.max(1))))
                                     .h(guest_px(f32::from(title.ascent + title.descent)))
+                                    .id(format!("guest-window-title-{}-{}-{}-{}", frame.guest_id, frame.generation, clip.top, clip.left))
+                                    .when(accessible_title, |label| label
+                                        .role(gpui_kit::accesskit::Role::Label)
+                                        .aria_label(frame.window.title.clone()))
                                     .child(super::text::classic_line(glyphs, title.ascent,
                                         title.ascent + title.descent, (0, 0), None,
                                         super::text::ClassicLineGeometry::Title, scene_scale, foreground, cx.theme().selection))));
@@ -7051,6 +7070,11 @@ mod desktop {
     }
 
     fn run(args: Args) {
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = std::env::var_os("SYSTEMLESS_GPUI_NATIVE_ACCESSIBILITY_OUTPUT") {
+            native_accessibility::run(args, PathBuf::from(output));
+            return;
+        }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = std::env::var_os("SYSTEMLESS_GPUI_NATIVE_DELIVERY_OUTPUT") {
             native_delivery::run(args, PathBuf::from(output));

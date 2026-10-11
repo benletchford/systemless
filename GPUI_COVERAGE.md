@@ -1,5 +1,28 @@
 # GPUI Kit system-interface coverage
 
+### Native guest window title accessibility (2026-10-12)
+
+Recognized standard window titles expose a Label node with the guest title.
+Split title strips expose one label on the first fragment intersecting the
+title's text bounds; hidden or fully occluded title text exposes none. Guest
+identity and generation scope the fragment IDs. Painting and Toolbox input
+routing retain their existing coordinates and behavior.
+
+The qualification-only `SYSTEMLESS_GPUI_NATIVE_ACCESSIBILITY_OUTPUT` probe
+creates an unfocused, hidden native GPUI window with the real guest worker,
+activates its own NSAccessibility provider, publishes the frame, and reads
+bounded native descendants' titles and values. It requires the actual native
+provider and GPUI debug tree both to contain the live guest window title.
+Original evidence without the title node failed despite provider activation.
+The corrected probe passes monochrome 68k, colour 68k, PPC 8-bit and PPC 16-bit
+with `Toolbox Showcase` read from the native provider, at host scale 2.
+Evidence is in ignored `target/gpui-qualification/native-accessibility-provider/`.
+The runner checks JSON `passed`, because native application termination alone
+does not establish probe success. This is functional evidence from a CI profile
+with the root crate at optimization level 0, not performance qualification.
+Visible activation, external assistive-tool requests/actions, physical input,
+other scales, audio and persistence remain outside this probe's scope.
+
 ### Escape Velocity GPUI work (2026-10-11, qualification in progress)
 
 Original EV's New Pilot dialog combines standard controls/text with resource
