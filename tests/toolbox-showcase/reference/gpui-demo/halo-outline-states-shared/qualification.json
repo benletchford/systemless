@@ -1,0 +1,13 @@
+{
+  "cases": 192,
+  "restoration_pairs": 48,
+  "visibility_checks": 48,
+  "metadata_corruptions_rejected": 39,
+  "pixel_corruptions_rejected": 5,
+  "tools_sha256": {
+    "verify-gpui-styled-state-visibility.py": "e1abd0d21e6ff03840043fdb05ebfeb43fa9b4bb0251a265617ae73213d2d50d",
+    "check-gpui-styled-state-visibility.py": "1c513842722561bd8548d59e22e3103349f22cc1084a4d8d94cd0e3ff8f0bf33",
+    "verify-gpui-styled-activation-pixels.py": "978e93e6bbe92aa4e976d1f74e878ebf4c1e65570d677153daf047f8e6883f7e"
+  },
+  "scope": "Complete single-line matrix metadata and state-pixel checks; decoded RGBA preserved after compression. One full composed state image per style directly viewed with exact resizing scope in review.json. No independent font appearance oracle, GPUI editing pixels, physical host interaction or performance qualification."
+}

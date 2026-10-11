@@ -81,7 +81,10 @@ Underline/halo combinations now combine CPU-specific guest strokes with the
 original outline before smear/exclusion. Classic preserves per-character
 descender gaps and its Everything-style row restrictions; PPC includes the
 run-wide ribbon in each glyph effect buffer. Binary-recipe and smooth-mask
-tests pass; composed appearance and interaction remain unqualified.
+tests pass. All four halo policies have complete single-line CPU/state/scale
+matrices with restoration and visibility checks; one full state composition
+per policy was directly reviewed, with viewer resizing recorded. Broader
+appearance and interaction qualification remain unfinished.
 Ratio-scaled strikes and bitmap-only sources still need faithful smooth
 support. Their existing fallback remains part of the GPUI frontend. Condensed/extended support has native recipe and smooth-mask tests,
 guest-driven editing checks, and selected two-line composed captures across
