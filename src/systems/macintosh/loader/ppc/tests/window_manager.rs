@@ -2155,7 +2155,7 @@ fn disposing_hidden_ppc_window_does_not_repaint_exposed_pixels() {
     let mut loaded = load_pef_application(&pef).unwrap();
     let bounds_ptr = PPC_DATA_BASE + 0x1000;
     loaded.memory.add_region(bounds_ptr, vec![0; 32]);
-    let _visible = create_test_cwindow(
+    let visible = create_test_cwindow(
         &mut loaded,
         bounds_ptr,
         (100, 100, 260, 300),
@@ -2174,8 +2174,15 @@ fn disposing_hidden_ppc_window_does_not_repaint_exposed_pixels() {
     let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
     ppc_quickdraw_write_pixel(&mut loaded.memory, front, (160, 160), PPC_RGB_BLACK);
     let before = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (160, 160));
-    loaded.set_event_queue(std::iter::empty());
+    loaded.set_event_queue([
+        PpcQueuedEvent { what: 6, message: hidden, when: 0, where_v: 0, where_h: 0, modifiers: 0 },
+        PpcQueuedEvent { what: 8, message: hidden, when: 0, where_v: 0, where_h: 0, modifiers: 0 },
+        PpcQueuedEvent { what: 8, message: visible, when: 0, where_v: 0, where_h: 0, modifiers: 1 },
+        PpcQueuedEvent { what: 3, message: hidden, when: 0, where_v: 0, where_h: 0, modifiers: 0 },
+    ]);
 
+    loaded.memory.write_u32_be(0x0A64, visible).unwrap();
+    loaded.memory.write_u32_be(0x0A68, hidden).unwrap();
     loaded.cpu.gpr[3] = hidden;
     run_test_import(
         &mut loaded,
@@ -2190,8 +2197,12 @@ fn disposing_hidden_ppc_window_does_not_repaint_exposed_pixels() {
     assert!(!loaded
         .event_queue()
         .iter()
-        .any(|event| event.message == hidden));
+        .any(|event| matches!(event.what, 6 | 8) && event.message == hidden));
+    assert!(loaded.event_queue().iter().any(|event| event.what == 8 && event.message == visible));
+    assert!(loaded.event_queue().iter().any(|event| event.what == 3 && event.message == hidden));
     assert!(!loaded.window_list.contains(&hidden));
+    assert_eq!(loaded.memory.read_u32_be(0x0A64), Some(visible));
+    assert_eq!(loaded.memory.read_u32_be(0x0A68), Some(0));
 }
 
 #[test]
