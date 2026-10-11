@@ -1097,6 +1097,9 @@ pub(super) fn dispatch_quickdraw_import(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcQuickDrawCompatibilityOperation {
+    IsPortBuffered,
+    IsPortBufferDirty,
+    FlushPortBuffer,
     AnimateEntry,
     AnimatePalette,
     BackPat,
@@ -1297,6 +1300,13 @@ pub(super) fn ppc_dispatch_quickdraw_compatibility(
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> PpcImportAction {
     match operation {
+        // Apple's Quickdraw.h (Mac OS X 10.1.5 SDK) explicitly says these
+        // APIs do nothing on Mac OS 8/9 and the buffering query is false.
+        // Systemless exposes the classic Mac OS 9 profile and draws directly
+        // into port storage; an application's GWorld is not Quartz buffering.
+        PpcQuickDrawCompatibilityOperation::IsPortBuffered
+        | PpcQuickDrawCompatibilityOperation::IsPortBufferDirty => PpcImportAction::Return(0),
+        PpcQuickDrawCompatibilityOperation::FlushPortBuffer => PpcImportAction::ReturnPreserve,
         PpcQuickDrawCompatibilityOperation::SetCPixel => {
             let color = ppc_read_rgb_color(memory, cpu.gpr[5]);
             let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld);
