@@ -1,0 +1,6 @@
+{
+  "case": "changed rendered crop pixel with updated sheet hash",
+  "exit_code": 1,
+  "expected_rejection": "crop pixels changed",
+  "scope": "Tests exact derivation only; no appearance oracle"
+}

@@ -79,8 +79,12 @@ styles, plus non-underlined TextEdit halos, use this spacing policy.
 
 Underline/halo combinations, ratio-scaled strikes and bitmap-only sources still
 need faithful smooth support. Their existing fallback remains part of the GPUI
-frontend. Condensed/extended support has native recipe and smooth-mask tests;
-composed appearance and actual editing with those styles remain unqualified.
+frontend. Condensed/extended support has native recipe and smooth-mask tests,
+guest-driven editing checks, and selected two-line composed captures across
+four CPU/display modes at four scales. Native-pixel field crops from all32
+cases were directly reviewed; this scope excludes the field's right edge and
+full scene. GPUI pointer routing, caret/activation matrices, broader editing
+and scrolling, and independent native-font comparison remain unfinished.
 
 ## Evidence and completion gate
 
