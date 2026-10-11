@@ -2415,6 +2415,7 @@ mod desktop {
                                         (selection.0.max(0) as usize, selection.1.max(0) as usize),
                                         focused, item.caret_visible == Some(true), scene_scale,
                                         foreground, cx.theme().selection)));
+                            let accessible_run_id = std::rc::Rc::new(std::cell::Cell::new(None));
                             let field = field.when(focused && self.composition.preedit.is_none() && self.host_active != Some(false)
                                 && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
                                 let Some(owner) = self.composition.owner().filter(|owner|
@@ -2422,16 +2423,35 @@ mod desktop {
                                         && matches!(owner.target, super::input::TextInputTarget::Dialog { item: number, .. } if number == item.number)).cloned()
                                     else { return field; };
                                 let sender = self.commands.clone();
+                                let selection_sender = self.commands.clone();
+                                let selection_owner = owner.clone();
+                                let selection_id = accessible_run_id.clone();
                                 field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
                                     if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
                                         if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, false) {
                                             let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
                                         }
                                     }
+                                }).when(!item.edit_text_layout.as_ref().unwrap().wrap, |field| {
+                                    field.on_a11y_action(gpui_kit::accesskit::Action::SetTextSelection, move |data, _, _| {
+                                        if let Some(gpui_kit::accesskit::ActionData::SetTextSelection(selection)) = data {
+                                            if let Some(range) = super::a11y::guest_selection_range(selection, selection_id.get(), selection_owner.text.len()) {
+                                                let _ = selection_sender.send(Command::SelectText(selection_owner.clone(), range));
+                                            }
+                                        }
+                                    })
                                 })
                             });
-                            overlay.child(super::a11y::AccessibleState::new(field, !item.enabled || !semantic_active)
-                                .text_value(item.text.clone(), false))
+                            let field = super::a11y::AccessibleState::new(field, !item.enabled || !semantic_active)
+                                .text_value(item.text.clone(), item.edit_text_layout.as_ref().unwrap().wrap);
+                            let field = if !item.edit_text_layout.as_ref().unwrap().wrap {
+                                let layout = item.edit_text_layout.as_ref().unwrap();
+                                field.single_line_run_id(accessible_run_id)
+                                    .single_line_selection(selection.0.max(0) as usize..selection.1.max(0) as usize)
+                                    .single_line_positions(super::text::ClassicLine::unicode(&item.text, layout.font.0, layout.font.1)
+                                        .positions.into_iter().map(|x| (x + 4) as f32 * scene_scale).collect())
+                            } else { field };
+                            overlay.child(field)
                         }
                         DialogItemKind::Checkbox => overlay.child(
                             super::a11y::AccessibleComponent::new(super::choices::guest_checkbox(
@@ -10719,6 +10739,22 @@ mod desktop {
                     .is_some_and(|(_, actual)| actual == &owner));
                 assert_eq!(rejected.dialogs.iter().find(|dialog| dialog.guest_id == pinned.identity.0).unwrap().items[8].text, expected);
                 eprintln!("PASS worker-accessible-modal-value powerpc={powerpc} depth={actual_depth} wrapped={wrapped}");
+                let current = super::super::input::dialog_text_owner_with_records(
+                    &edited.dialogs, &edited.windows, &edited.text_edits, &edited.controls).unwrap();
+                let selection_owner = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::Dialog { item: current.item, content_revision: current.content_revision },
+                    text: current.text, selection: current.selection };
+                worker.0.send(Command::SelectText(selection_owner.clone(), 0..2)).unwrap();
+                let selected = wait("accessible dialog selection", &updates, |update| update.dialogs.iter().any(|dialog|
+                    (dialog.guest_id, dialog.generation) == pinned.identity && dialog.items[8].selection == Some((0, 2))));
+                let selected_dialog = selected.dialogs.iter().find(|dialog| dialog.guest_id == pinned.identity.0).unwrap();
+                assert_eq!(selected_dialog.items[8].text, expected); assert_eq!(selected_dialog.items[6].text, before.items[6].text);
+                worker.0.send(Command::SelectText(selection_owner.clone(), 0..1)).unwrap();
+                let rejected = wait("stale accessible dialog selection", &updates, |update| update.text_commit_rejection.as_ref()
+                    .is_some_and(|(_, owner)| owner == &selection_owner));
+                assert_eq!(rejected.dialogs.iter().find(|dialog| dialog.guest_id == pinned.identity.0).unwrap().items[8].selection, Some((0, 2)));
+                eprintln!("PASS worker-accessible-modal-selection powerpc={powerpc} depth={actual_depth} wrapped={wrapped}");
+
 
 
 
