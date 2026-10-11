@@ -934,3 +934,25 @@ item, title, arrow and whitespace. Before replacing these rules, compare
 non-fixed controls at multiple owner fonts and title widths in both native
 oracles, including menu mutation after creation. The earlier fixed-width
 probe does not establish automatic-width behavior.
+
+
+### Native automatic popup baseline on both CPUs
+
+A temporary copy of the dual-CPU showcase was rebuilt through its existing
+MPW pipeline with Theme's control rectangle `(190, 136, 500, 160)`, title
+width 52 and `popupUseWFont`, removing only `popupFixedWidth` from the earlier
+width probe. The existing popup action sequence completed through both
+BasiliskII and SheepShaver. Closed and open captures were inspected on both
+CPUs: Theme's closed box spans approximately x=282..400 and its open dropdown
+x=282..398. Both are substantially narrower than the fixed-width baseline
+(open x=282..522). The owner uses Geneva 9; the diagnostic text reports
+`StringWidth("Deep Field Archive")` as 84 and the stored menu width as 143
+after drawing. Stored menu width therefore must not be used directly as
+the automatic owner-font popup width.
+
+This provides a matching native automatic-width sample for both CPUs. It
+does not yet establish the rule across fonts, narrow bounding rectangles,
+title widths or live item mutation. The added control-record diagnostic was
+partly clipped by the window bottom and is not evidence for record mutation.
+The automatic-sizing implementation gap remains open pending those probes
+and a shared geometry implementation.
