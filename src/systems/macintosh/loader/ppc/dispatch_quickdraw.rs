@@ -59,6 +59,33 @@ pub(super) fn dispatch_quickdraw_import(
             let _ = ppc_init_graf(memory, gworlds, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetQDGlobalsScreenBits => {
+            // QuickDraw Reference: copies the global BitMap and returns the
+            // caller's pointer. Its record is 14 bytes, not a color PixMap.
+            let destination = cpu.gpr[3];
+            if destination == 0 || !ppc_memory_can_write_bytes(memory, destination, 14) {
+                return Some(PpcImportAction::Return(0));
+            }
+            let source = ppc_screen_bits_addr(toolbox_startup.init_graf_global_ptr)
+                .and_then(|address| ppc_memory_read_bytes(memory, address, 14));
+            if let Some(bits) = source {
+                let _ = memory.write_bytes(destination, &bits);
+            } else {
+                // Carbon applications may use this accessor before InitGraf.
+                // Use the same live primary-screen record as InitGraf.
+                let Some(front) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
+                    return Some(PpcImportAction::Return(0));
+                };
+                let _ = memory.write_u32_be(destination, front.base_addr);
+                let _ = memory.write_u16_be(destination + 4, front.row_bytes as u16 & 0x3fff);
+                let _ = ppc_write_rect(
+                    memory, destination + 6, 0, 0,
+                    ppc_u32_to_i16_saturating(front.height),
+                    ppc_u32_to_i16_saturating(front.width),
+                );
+            }
+            Some(PpcImportAction::Return(destination))
+        }
         PpcImportDispatcherTarget::GetForeColor => {
             let color_ptr = cpu.gpr[3];
             if color_ptr != 0 && ppc_memory_can_write_bytes(memory, color_ptr, 6) {
