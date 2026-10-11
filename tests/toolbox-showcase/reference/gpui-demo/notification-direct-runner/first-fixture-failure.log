@@ -1,0 +1,19 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 31.76s
+     Running unittests src/lib.rs (target/debug/deps/systemless-257ba83b63f6679f)
+
+running 1 test
+
+thread 'systems::macintosh::runner::tests::trap_dispatch::notification_runner_delivers_direct_m68k_response_and_restores_native_context' (1835504) panicked at src/systems/macintosh/runner/tests/trap_dispatch.rs:46:9:
+assertion failed: runner.run_realtime_steps_with_audio(32, 0).1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test systems::macintosh::runner::tests::trap_dispatch::notification_runner_delivers_direct_m68k_response_and_restores_native_context ... FAILED
+
+failures:
+
+failures:
+    systems::macintosh::runner::tests::trap_dispatch::notification_runner_delivers_direct_m68k_response_and_restores_native_context
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6732 filtered out; finished in 0.08s
+
+error: test failed, to rerun pass `--lib`

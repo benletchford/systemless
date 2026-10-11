@@ -1,0 +1,6 @@
+{
+  "source_hashes": {
+    "src/systems/macintosh/runner/tests/trap_dispatch.rs": "0340977c54300c7e116efa35668192a5802cd962774923fd3abbb3fa14ef5904"
+  },
+  "scope": "Public runner direct Mixed Mode notification response; verifies record argument, return, native CPU restoration and duplicate rejection. Does not verify visible GPUI notification delivery."
+}

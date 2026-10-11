@@ -5,6 +5,59 @@ use crate::process_context::PendingFileCompletion;
 use crate::trap::dispatch::TrapTableProfile;
 
 #[test]
+fn notification_runner_delivers_direct_m68k_response_and_restores_native_context() {
+    use crate::guest_procedure::*;
+    use crate::mixed_mode::proc_info;
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&halted_ppc_app_with_sound(PpcSoundState::default()));
+    let request = PPC_DATA_BASE + 0x6000;
+    let descriptor = PPC_HEAP_BASE + 0x1000;
+    let callback = PPC_HEAP_BASE + 0x2000;
+    let output = request + 40;
+    let foreground;
+    {
+        let native = runner.native.application_mut().unwrap();
+        native.memory.add_region(request, vec![0; 128]);
+        native.memory.add_region(descriptor, vec![0; 128]);
+        let mut code = Vec::new();
+        for word in [0x202fu16, 4, 0x23c0, (output >> 16) as u16,
+            output as u16, 0x4e74, 4] { code.extend_from_slice(&word.to_be_bytes()); }
+        native.memory.add_region(callback, code);
+        native.set_heap_cursor(native.heap_cursor().max(callback + 128));
+        native.memory.write_u16_be(descriptor, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP).unwrap();
+        native.memory.write_u8(descriptor + 2, ROUTINE_DESCRIPTOR_VERSION).unwrap();
+        let record = descriptor + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        native.memory.write_u32_be(record, proc_info::PASCAL_STACK_BASED
+            | (proc_info::SIZE_FOUR << proc_info::STACK_PARAMETER_PHASE)).unwrap();
+        native.memory.write_u8(record + ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_M68K_ISA).unwrap();
+        native.memory.write_u32_be(record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET, callback).unwrap();
+        native.memory.write_u16_be(request + 4, 8).unwrap();
+        native.memory.write_u32_be(request + 24, request + 64).unwrap();
+        native.memory.write_u32_be(request + 28, descriptor).unwrap();
+        native.memory.write_u32_be(request + 96, 0x4800_0000).unwrap();
+        native.cpu.pc = request + 96;
+        native.toolbox_startup.notification_requests.push(request);
+        foreground = native.cpu.capture_execution_context();
+    }
+    let notice = runner.notification_snapshot().pop().unwrap();
+    assert!(runner.complete_notification_delivery(&notice));
+    assert!(!runner.complete_notification_delivery(&notice));
+    assert!(runner.native.application_mut().unwrap().parked_interrupt_callback.is_some());
+    let mut completed = false;
+    for _ in 0..100 {
+        assert!(runner.run_realtime_steps_with_audio(32, 0).1);
+        let native = runner.native.application_mut().unwrap();
+        if native.parked_interrupt_callback.is_none() {
+            assert_eq!(native.memory.read_u32_be(output), Some(request));
+            assert_eq!(native.cpu.capture_execution_context().architectural(), foreground.architectural());
+            completed = true;
+            break;
+        }
+    }
+    assert!(completed, "direct Mixed Mode response did not return to native foreground");
+}
+
+#[test]
 fn notification_native_runner_finishes_response_before_foreground_instructions() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     runner.init_app(&halted_ppc_app_with_sound(PpcSoundState::default()));
