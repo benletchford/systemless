@@ -24,6 +24,10 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Volume-popup wheel boundary
+
+Frontend file-list wheel targeting and worker semantic click creation now reject current volume-popup ownership. The actual modal snapshot regression passes15.27s across eight CPU/depth/input cases, checking a scrollable target loses ownership and a queued worker scroll preserves popup/pointer state. Normal Open-list wheel scrolling still passes four modes40.62s. Evidence: `reference/gpui-demo/volume-wheel-boundary`. Oversized popup pointer autoscrolling, physical wheel integration and broader qualification remain open; no production gate closes.
+
 ### Volume-popup accessibility contracts
 
 Popup choices expose full volume names, list-box/option roles and selected state. Weak Demo callbacks reject inactive, changed-owner, changed-popup and non-visible requests before restoring guest focus and sending one guest mouse-down/up pair. The expanded shared GPUI regression passes3.87s; its initial missing-observer failure is preserved. Evidence: `reference/gpui-demo/volume-accessibility`. This proves helper metadata and synthetic dispatch contracts; native assistive navigation and complete modal accessibility remain open. No production gate closes.

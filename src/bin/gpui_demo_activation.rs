@@ -62,7 +62,8 @@ impl ControlActivation {
             return None;
         }
         let panel = session.runner().standard_file_snapshot()?;
-        if panel.guest_id != id || panel.generation != generation || !panel.standard_entry_point {
+        if panel.guest_id != id || panel.generation != generation || !panel.standard_entry_point
+            || panel.volume_popup.is_some() {
             return None;
         }
         // Standard File owns the modal loop and reply; semantic actions are clicks.

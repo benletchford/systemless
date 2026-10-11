@@ -9014,6 +9014,18 @@ mod desktop {
                     session.runner_mut().standard_file_snapshot().and_then(|panel| panel.volume_popup)
                 }).expect("guest selector must open its retained popup");
                 assert!(!popup.choices.is_empty());
+                let mut wheel_panel = opened.clone();
+                let entry = wheel_panel.entries.as_ref().unwrap()[0].clone();
+                wheel_panel.entries = Some(vec![entry; layout.visible_rows + 1]);
+                let wheel_point = (layout.list.0 + 5, layout.list.1 + 5);
+                assert!(super::super::scroll::file_target(&wheel_panel, wheel_point, true).is_some());
+                wheel_panel.volume_popup = Some(popup.clone());
+                assert!(super::super::scroll::file_target(&wheel_panel, wheel_point, true).is_none());
+                let pointer_before = session.runner().dispatcher().mouse_position();
+                assert!(super::super::activation::ControlActivation::begin_file(&mut session,
+                    opened.guest_id, opened.generation, super::super::activation::FileAction::ScrollDown).is_none());
+                assert_eq!(session.runner().dispatcher().mouse_position(), pointer_before);
+                assert!(session.runner().standard_file_snapshot().unwrap().volume_popup.is_some());
                 session.deliver_input(MacintoshInput::MouseMove {
                     vertical: popup.bounds.2 + 1, horizontal: popup.bounds.1 + 5 });
                 assert!((0..100).any(|_| {

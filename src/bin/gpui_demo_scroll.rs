@@ -25,7 +25,8 @@ fn contains(rect: Rect, point: (i16, i16)) -> bool {
 /// is visible. Nested confirmation/name dialogs must not scroll the parent.
 pub(crate) fn file_target(panel: &systemless::runner::StandardFileSnapshot,
     point: (i16, i16), vertical: bool) -> Option<ScrollTarget> {
-    if !vertical || !panel.standard_entry_point || panel.confirming_replace || panel.new_folder.is_some() { return None; }
+    if !vertical || !panel.standard_entry_point || panel.volume_popup.is_some()
+        || panel.confirming_replace || panel.new_folder.is_some() { return None; }
     let (list, scroll, visible) = match panel.kind {
         systemless::runner::StandardFileKind::Get => {
             let layout = panel.get_layout.as_ref()?; (layout.list, layout.scroll, layout.visible_rows)
