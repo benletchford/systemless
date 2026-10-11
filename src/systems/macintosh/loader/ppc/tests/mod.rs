@@ -220,6 +220,7 @@ mod blit;
 mod file_manager;
 mod opengl_memory;
 mod event_manager;
+mod global_mouse;
 
 mod text_edit;
 mod scrap_manager;
