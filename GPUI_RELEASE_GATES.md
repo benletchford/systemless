@@ -234,3 +234,14 @@ These separate tests do not yet establish one composed automatic
 install/display/acknowledge workflow, PPC guest installation, mixed mark/icon/
 sound delivery, native accessibility or physical interaction. All release gates
 remain open.
+
+### Integrated classic notification workflow (2026-10-11)
+
+The real-worker notification regression now feeds its installed guest snapshot
+through the actual Demo polling task, waits for worker-owned acquisition, renders
+the shared GPUI alert and clicks its OK button. All four classic cases pass:
+mono/colour with autoremove or a Pascal leaf response (one test, 4.30s).
+It verifies exact acknowledgment, response-once behavior and discarded background
+menu input. This supersedes separate-path evidence for those cases; it is a GPUI
+test-window workflow, not a reviewed image or physical desktop qualification.
+PPC installation and mixed mark/icon/sound delivery remain unfinished.

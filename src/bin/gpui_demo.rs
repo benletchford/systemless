@@ -9028,8 +9028,11 @@ mod desktop {
             }
         }
 
-        #[test]
-        fn worker_delivers_guest_installed_notification_alert_on_classic_depths() {
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn worker_delivers_guest_installed_notification_alert_on_classic_depths(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{AppContext, test::TestWindowExt};
+            cx.update(gpui_kit::init);
             use super::{Args, Command, Update};
             use std::{sync::{mpsc, Arc, Mutex}, time::{Duration, Instant}};
             use clap::Parser;
@@ -9103,17 +9106,34 @@ mod desktop {
                         }
                         runner.cpu_mut().core.set_sr_noint_nosp(sr);
                     }))));
-                let mut initial = wait("install", &updates, |update| update.notifications.len() == 1
+                let initial = wait("install", &updates, |update| update.notifications.len() == 1
                     && update.menus.menus.iter().any(|menu| menu.id == 129));
                 let menu = initial.menus.menus.iter().find(|menu| menu.id == 129).unwrap();
                 let blocked_menu = Command::Menu(129, 7, menu.guest_id, menu.generation);
-                let notice = initial.notifications.pop().unwrap();
+                let notice = initial.notifications[0].clone();
                 assert_eq!(notice.text.as_deref(), Some(b"Caf\x8e".as_slice()));
-                worker.0.send(Command::BeginNotificationAlert(notice.clone())).unwrap();
+                let frontend_updates = Arc::new(Mutex::new(Some(initial)));
+                let frontend_sender = worker.0.clone();
+                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(frontend_sender, frontend_updates.clone(), cx))).unwrap());
+                cx.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+                    demo.host_active = Some(true);
+                    demo.focus.focus(window, cx);
+                })).unwrap();
+                cx.run_until_parked();
+                cx.executor().advance_clock(Duration::from_millis(16));
+                cx.run_until_parked();
                 let owned = wait("acquire", &updates, |update| update.notification_alert.as_ref() == Some(&notice));
                 assert!(!owned.notifications[0].response_started);
                 worker.0.send(blocked_menu).unwrap();
-                worker.0.send(Command::DismissNotificationAlert(notice.clone())).unwrap();
+                *frontend_updates.lock().unwrap() = Some(owned);
+                cx.executor().advance_clock(Duration::from_millis(16));
+                cx.run_until_parked();
+                cx.update_window(window.into(), |_, window, cx| {
+                    assert_eq!(view.read(cx).notification_alert.as_ref(), Some(&notice));
+                    window.render_frame(cx);
+                    window.click("guest-notification-ok", cx);
+                }).unwrap();
                 let completed = wait("response", &updates, |update| update.notification_alert.is_none()
                     && if procedure {
                         update.notifications.len() == 1 && update.notifications[0].response_started
