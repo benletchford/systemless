@@ -1488,7 +1488,7 @@ mod desktop {
                 // Macintosh Toolbox Essentials (1992), pp. 5-58--5-64.
                 for piece in super::frames::control_pieces(&self.controls, &self.menus, &self.windows, viewport) {
                     let control = &self.controls[piece.control];
-                    let semantic_enabled = control.enabled && self.windows.iter().any(|frame| {
+                    let semantic_enabled = self.standard_file.is_none() && control.enabled && self.windows.iter().any(|frame| {
                         frame.guest_id == control.owner_id && frame.window.visible && frame.window.active
                     });
                     if (1008..=1023).contains(&control.proc_id)
@@ -1764,6 +1764,7 @@ mod desktop {
                     super::frames::dialog_item_pieces(&self.dialogs, &self.windows, viewport)
                 {
                     let dialog = &self.dialogs[piece.dialog];
+                    let semantic_active = dialog.active && self.standard_file.is_none();
                     let item = &dialog.items[piece.item];
                     let item_rect = super::frames::Rect::from(item.bounds);
                     let source = piece.source;
@@ -1779,9 +1780,9 @@ mod desktop {
                         DialogItemKind::Button => overlay.child(
                             super::a11y::AccessibleComponent::new(super::choices::guest_button(
                                 format!("guest-dialog-button-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
-                                item.text.clone(), item.enabled, dialog.active,
-                                dialog.active && item.enabled && item.pressed,
-                                dialog.active && item.enabled && dialog.default_item == Some(item.number), scene_scale, cx,
+                                item.text.clone(), item.enabled, semantic_active,
+                                semantic_active && item.enabled && item.pressed,
+                                semantic_active && item.enabled && dialog.default_item == Some(item.number), scene_scale, cx,
                             )
                             .absolute()
                             .left(guest_px((item_rect.left - source.left) as f32))
@@ -1798,21 +1799,21 @@ mod desktop {
                                     }
                                 }
                             })
-                            .when(item.enabled && dialog.active, |button| {
+                            .when(item.enabled && semantic_active, |button| {
                                 let sender = self.commands.clone();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
                                 button.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
                                     let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
                                 })
-                            }), !item.enabled || !dialog.active),
+                            }), !item.enabled || !semantic_active),
                         ),
                         DialogItemKind::StaticText => overlay
                             .text_size(guest_px(13.))
                             .text_color(cx.theme().foreground)
                             .child(item.text.replace('\r', "\n")),
                         DialogItemKind::EditText => {
-                            let focused = dialog.active
+                            let focused = semantic_active
                                 && dialog.edit_field == Some(item.number)
                                 && item.enabled
                                 && item.selection.is_some();
@@ -1870,8 +1871,8 @@ mod desktop {
                             super::a11y::AccessibleComponent::new(super::choices::guest_checkbox(
                                 format!("guest-dialog-checkbox-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
                                 item.text.clone(), item.value.unwrap() != 0, item.enabled,
-                                dialog.active && item.pressed, scene_scale, cx,
-                            ).disabled(!item.enabled || !dialog.active).on_change({
+                                semantic_active && item.pressed, scene_scale, cx,
+                            ).disabled(!item.enabled || !semantic_active).on_change({
                                 let sender = self.commands.clone();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
@@ -1880,21 +1881,21 @@ mod desktop {
                                         let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
                                     }
                                 }
-                            }).when(dialog.active && item.enabled, |choice| {
+                            }).when(semantic_active && item.enabled, |choice| {
                                 let sender = self.commands.clone();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
                                 choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
                                     let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
                                 })
-                            }), !item.enabled || !dialog.active),
+                            }), !item.enabled || !semantic_active),
                         ),
                         DialogItemKind::RadioButton => overlay.child(
                             super::a11y::AccessibleComponent::new(super::choices::guest_radio(
                                 format!("guest-dialog-radio-{}-{}-{}", dialog.guest_id, dialog.generation, item.number),
                                 item.text.clone(), item.value.unwrap() != 0, item.enabled,
-                                dialog.active && item.pressed, scene_scale, cx,
-                            ).disabled(!item.enabled || !dialog.active).on_change({
+                                semantic_active && item.pressed, scene_scale, cx,
+                            ).disabled(!item.enabled || !semantic_active).on_change({
                                 let sender = self.commands.clone();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
@@ -1903,14 +1904,14 @@ mod desktop {
                                         let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
                                     }
                                 }
-                            }).when(dialog.active && item.enabled, |choice| {
+                            }).when(semantic_active && item.enabled, |choice| {
                                 let sender = self.commands.clone();
                                 let (id, generation, number) = (dialog.guest_id, dialog.generation, item.number);
                                 let identity = item.control_identity;
                                 choice.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, _| {
                                     let _ = sender.send(Command::ActivateDialog(id, generation, number, identity));
                                 })
-                            }), !item.enabled || !dialog.active),
+                            }), !item.enabled || !semantic_active),
                         ),
                         _ => unreachable!(),
                     };
@@ -8848,6 +8849,50 @@ mod desktop {
                     demo.width = 800;
                     demo.height = 600;
 
+                    let bounds = (50, 40, 420, 600);
+                    demo.windows = vec![systemless::runner::WindowFrameSnapshot {
+                        guest_id: 7,
+                        generation: 1,
+                        window: systemless::runner::WindowSnapshot {
+                            title: "Controls".into(),
+                            bounds,
+                            structure_bounds: Some((31, 39, 422, 602)),
+                            visible_region: None,
+                            update_region: None,
+                            visible: true,
+                            active: true,
+                        },
+                        definition_id: Some(0),
+                        rectangular_regions: true,
+                        visible_content_rects: Some(vec![bounds]),
+                        close_box: false,
+                        grow_icon_drawn: false,
+                    }];
+                    demo.controls = vec![systemless::runner::ControlSnapshot {
+                        guest_id: 22,
+                        generation: 1,
+                        owner_id: 7,
+                        proc_id: 0,
+                        local_bounds: (20, 20, 44, 140),
+                        bounds: (70, 60, 94, 180),
+                        owner_visible: true,
+                        visible: true,
+                        enabled: true,
+                        hilite: 0,
+                        value: 0,
+                        minimum: 0,
+                        maximum: 1,
+                        title: "Button".into(),
+                        popup_menu_id: None,
+                        popup_title_width: None,
+                        popup_font: None,
+                    }];
+                    demo.width = 800;
+                    demo.height = 600;
+                    demo.image = Some(std::sync::Arc::new(gpui_kit::RenderImage::new(vec![
+                        image::Frame::new(image::RgbaImage::new(800, 600)),
+                    ])));
+
                     demo.standard_file = Some(StandardFileSnapshot {
                         guest_id: 7,
                         generation: 1,
@@ -8889,6 +8934,7 @@ mod desktop {
             });
             cx.update_window(window.into(), |_, window, cx| {
                 window.render_frame(cx);
+                assert_eq!(window.find("guest-control-button-22-1").focused(), None, "Standard File must remove background controls from keyboard focus");
                 assert_eq!(window.find("guest-standard-open-list-7-1").role(), Some(gpui_kit::Role::ListBox));
                 let row = window.find("guest-standard-open-entry-7-1-0");
                 assert_eq!(row.role(), Some(gpui_kit::Role::ListBoxOption));
@@ -9084,6 +9130,15 @@ mod desktop {
             let presses = receiver.try_iter().filter(|command| matches!(command,
                 super::Command::Input(MacintoshInput::MouseDown { .. } | MacintoshInput::MouseUp { .. }))).count();
             assert_eq!(presses, 2);
+            cx.update_window(window.into(), |_, window, cx| {
+                view.update(cx, |demo, cx| {
+                    demo.standard_file = None;
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert_eq!(window.find("guest-control-button-22-1").focused(), Some(false),
+                    "closing Standard File restores background control focus eligibility");
+            }).unwrap();
         }
 
         #[cfg(feature = "gpui-demo-test")]

@@ -107,7 +107,8 @@ impl ControlActivation {
         })
     }
     pub fn begin(session: &mut MacintoshSession, id: u32, generation: u64) -> Option<Self> {
-        if session.runner().is_ui_tracking_active()
+        if session.runner().standard_file_snapshot().is_some()
+            || session.runner().is_ui_tracking_active()
             || session.runner().guest_menu_tracking_active()
             || session
                 .runner_mut()
@@ -155,7 +156,8 @@ impl ControlActivation {
     ) -> Option<Self> {
         // ModalDialog's waiting loop is the intended recipient, not a competing
         // gesture. The worker serializes presses; item tracking is checked below.
-        if (session.runner().is_ui_tracking_active()
+        if session.runner().standard_file_snapshot().is_some()
+            || (session.runner().is_ui_tracking_active()
             && !session.runner().dispatcher().is_dialog_tracking())
             || session.runner().guest_menu_tracking_active()
         {
