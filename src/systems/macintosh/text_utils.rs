@@ -615,6 +615,79 @@ pub fn evaluate_iu_equal_string(str_a: &[u8], str_b: &[u8]) -> bool {
         .eq(str_b.iter().map(|&byte| mac_roman_to_upper(byte, true)))
 }
 
+/// UpperString / UprString ($A054) trap word.
+pub const UPR_STRING_TRAP: u16 = 0xA054;
+
+/// UpperString / UprString trap number (OS trap 0x54).
+pub const UPR_STRING_TRAP_NUM: u16 = 0x54;
+
+/// Text conversion utility family base trap word ($A056).
+pub const TEXT_CONVERT_TRAP: u16 = 0xA056;
+
+/// Text conversion utility family trap number (OS trap 0x56).
+pub const TEXT_CONVERT_TRAP_NUM: u16 = 0x56;
+
+/// LowerText ($A056) trap word.
+pub const LOWER_TEXT_TRAP: u16 = 0xA056;
+
+/// StripText ($A256) trap word.
+pub const STRIP_TEXT_TRAP: u16 = 0xA256;
+
+/// UpperText ($A456) trap word.
+pub const UPPER_TEXT_TRAP: u16 = 0xA456;
+
+/// StripUpperText ($A656) trap word.
+pub const STRIP_UPPER_TEXT_TRAP: u16 = 0xA656;
+
+/// Text transformation operations supported by classic Macintosh Text Utilities.
+///
+/// References:
+/// - Inside Macintosh Volume VI (1991), 14-62 to 14-63
+/// - Inside Macintosh: Text (1993), pp. 5-64 to 5-66
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextTransformOperation {
+    /// Convert Roman characters to lowercase (`LowerText`).
+    Lower,
+    /// Strip diacritical marks from Roman characters without case change (`StripText`).
+    StripDiacritics,
+    /// Convert Roman characters to uppercase preserving diacritical marks (`UpperText`).
+    Upper,
+    /// Convert Roman characters to uppercase and strip diacritical marks (`StripUpperText`).
+    StripUpper,
+}
+
+/// Transforms a single Mac Roman character according to the specified operation.
+#[inline]
+pub fn evaluate_transform_char(ch: u8, op: TextTransformOperation) -> u8 {
+    match op {
+        TextTransformOperation::Lower => mac_roman_to_lower(ch),
+        TextTransformOperation::StripDiacritics => mac_roman_strip_diacriticals(ch),
+        TextTransformOperation::Upper => mac_roman_to_upper(ch, false),
+        TextTransformOperation::StripUpper => mac_roman_to_upper(ch, true),
+    }
+}
+
+/// Transforms a slice of Mac Roman characters in-place.
+pub fn evaluate_transform_text(bytes: &mut [u8], op: TextTransformOperation) {
+    for b in bytes.iter_mut() {
+        *b = evaluate_transform_char(*b, op);
+    }
+}
+
+/// Converts a Pascal or raw string to uppercase in-place (`UpperString` / `UprString`).
+///
+/// If `diac_sensitive` is `true`, diacritical marks are retained (`strip_diacritics = false`).
+/// If `diac_sensitive` is `false`, diacritical marks are stripped (`strip_diacritics = true`).
+///
+/// References:
+/// - Inside Macintosh: Text (1993), pp. 5-64 to 5-65.
+pub fn evaluate_upper_string(bytes: &mut [u8], diac_sensitive: bool) {
+    let strip_diacritics = !diac_sensitive;
+    for b in bytes.iter_mut() {
+        *b = mac_roman_to_upper(*b, strip_diacritics);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1012,5 +1085,57 @@ mod tests {
         assert!(!evaluate_iu_equal_string(b"Rose", b"Rope"));
 
         assert_eq!(evaluate_iu_comp_string(b"Rope", b"Rose"), -1);
+    }
+
+    #[test]
+    fn test_text_transform_constants() {
+        assert_eq!(UPR_STRING_TRAP, 0xA054);
+        assert_eq!(UPR_STRING_TRAP_NUM, 0x54);
+        assert_eq!(TEXT_CONVERT_TRAP, 0xA056);
+        assert_eq!(TEXT_CONVERT_TRAP_NUM, 0x56);
+        assert_eq!(LOWER_TEXT_TRAP, 0xA056);
+        assert_eq!(STRIP_TEXT_TRAP, 0xA256);
+        assert_eq!(UPPER_TEXT_TRAP, 0xA456);
+        assert_eq!(STRIP_UPPER_TEXT_TRAP, 0xA656);
+    }
+
+    #[test]
+    fn test_evaluate_transform_text_operations() {
+        // Source text: "Café 123" with Mac Roman 'é' = 0x8E
+        let text = vec![b'C', b'a', b'f', 0x8E, b' ', b'1', b'2', b'3'];
+
+        // LowerText
+        let mut lower = text.clone();
+        evaluate_transform_text(&mut lower, TextTransformOperation::Lower);
+        assert_eq!(lower, vec![b'c', b'a', b'f', 0x8E, b' ', b'1', b'2', b'3']);
+
+        // StripText (strips diacritics without case folding)
+        let mut strip = text.clone();
+        evaluate_transform_text(&mut strip, TextTransformOperation::StripDiacritics);
+        assert_eq!(strip, vec![b'C', b'a', b'f', b'e', b' ', b'1', b'2', b'3']);
+
+        // UpperText (uppercases while preserving diacritics: 0x8E 'é' -> 0x83 'É')
+        let mut upper = text.clone();
+        evaluate_transform_text(&mut upper, TextTransformOperation::Upper);
+        assert_eq!(upper, vec![b'C', b'A', b'F', 0x83, b' ', b'1', b'2', b'3']);
+
+        // StripUpperText (uppercases and strips diacritics: 0x8E 'é' -> 'E')
+        let mut strip_upper = text.clone();
+        evaluate_transform_text(&mut strip_upper, TextTransformOperation::StripUpper);
+        assert_eq!(strip_upper, vec![b'C', b'A', b'F', b'E', b' ', b'1', b'2', b'3']);
+    }
+
+    #[test]
+    fn test_evaluate_upper_string() {
+        // String with accented character 'é' = 0x8E
+        let mut str1 = vec![b'c', b'a', b'f', 0x8E];
+        // diac_sensitive = true (preserves marks -> 0x83 'É')
+        evaluate_upper_string(&mut str1, true);
+        assert_eq!(str1, vec![b'C', b'A', b'F', 0x83]);
+
+        let mut str2 = vec![b'c', b'a', b'f', 0x8E];
+        // diac_sensitive = false (strips marks -> 'E')
+        evaluate_upper_string(&mut str2, false);
+        assert_eq!(str2, vec![b'C', b'A', b'F', b'E']);
     }
 }

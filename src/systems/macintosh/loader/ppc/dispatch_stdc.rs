@@ -461,13 +461,12 @@ pub(super) fn dispatch_stdc_import(ctx: PpcStdCDispatchContext<'_>) -> Option<Pp
             let text_ptr = cpu.gpr[3];
             let length = u32::from(cpu.gpr[4] as u16);
             if ppc_memory_can_write_bytes(memory, text_ptr, length) {
-                for offset in 0..length {
-                    if let Some(byte) = memory.read_u8(text_ptr + offset) {
-                        let _ = memory.write_u8(
-                            text_ptr + offset,
-                            crate::trap::mac_roman_to_upper(byte, false),
-                        );
-                    }
+                if let Some(mut bytes) = ppc_memory_read_bytes(memory, text_ptr, length) {
+                    crate::text_utils::evaluate_transform_text(
+                        &mut bytes,
+                        crate::text_utils::TextTransformOperation::Upper,
+                    );
+                    let _ = memory.write_bytes(text_ptr, &bytes);
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
