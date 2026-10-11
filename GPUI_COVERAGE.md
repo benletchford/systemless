@@ -6421,6 +6421,52 @@ keeps its full geometry. Ignored local evidence and producer hashes are in
 `target/gpui-qualification/escape-velocity/publication-pilot-dialog-review.json`.
 This run overlaps frontend tests and supports interaction/presentation only.
 
-The complete updated frontend suite is still running at this checkpoint.
+The complete updated frontend suite ends with 220 passed, one failed and one
+intentionally ignored test (804.66 seconds). Notification acquisition's fixture
+still relied on the removed polling timer without publishing an update; its
+follow-up now explicitly publishes the pending notice and keeps the held-key
+release-before-acquisition assertion. The failed full-suite result is retained;
+all five notification regressions pass after the correction (5.98 seconds),
+including the held-key ordering check and actual worker delivery. A clean full
+current-candidate run remains pending.
 EV gameplay capture, native presentation/audio, sustained latency, and the wider
 production matrix remain unqualified for this change. No broad release gate closes.
+
+
+### Windowless native publication handoff (2026-10-12)
+
+A debug-only native probe now initializes the ordinary GPUI application and real
+Demo entity, consumes publications from the production guest worker, and shuts
+the worker down through its existing command path. It opens no window and does not request
+app activation. A 30-second failure deadline retains the view but does not
+poll updates; initialization resets the requested result before running so an
+early native-loop exit cannot reuse a stale passing artifact.
+
+The final probe build passes (24.67 seconds). Original EV colour68k and Toolbox
+Showcase mono68k/PPC8/PPC16 each deliver 120 updates into Demo through macOS's
+native foreground dispatcher, retaining Running status and a frame. Source,
+executable hashes and final reports are in ignored
+`target/gpui-qualification/native-delivery/current-review.json`.
+This combines real-thread publication and real GPUI foreground consumption; it
+is not a rendered/window/display latency, FPS, audio, physical input or font
+fidelity measurement. Host services are disabled. No production gate closes.
+
+Reproduce with the GPUI test-feature example executable and set
+`SYSTEMLESS_GPUI_NATIVE_DELIVERY_OUTPUT` to a JSON result path in an existing
+scratch directory. Pass the archive and the usual CPU/display-depth arguments.
+The ordinary desktop command without that test feature ignores this probe.
+
+
+### Publication-driven EV gameplay capture (2026-10-12)
+
+The current example build passes (43.12 seconds). Original EV colour68k completes
+all fourteen scheduled actions with zero readiness delay through 2,800 observed
+updates (46.86 seconds), with no concurrent checks/builds from this task. The
+original-resolution shared-compositor image shows flight, the full guest HUD and
+retained application-drawn text. Scene geometry stays 800x600 at scale1; menus
+remain hidden. Final 120 worker intervals average 16.00 ms, p95 19.64 ms and
+maximum 21.73 ms. These are worker intervals, not native display/frame/audio
+qualification or a controlled FPS comparison. Evidence and producer hashes:
+`target/gpui-qualification/escape-velocity/publication-flight-review.json`.
+The full suite with the corrected notification fixture remains pending; all
+broad production gates remain open.

@@ -122,6 +122,10 @@ mod desktop {
     #[path = "../gpui_demo_composition.rs"]
     mod composition;
 
+    #[cfg(feature = "gpui-demo-test")]
+    #[path = "../gpui_demo_native_delivery.rs"]
+    mod native_delivery;
+
     use std::{
         collections::{HashMap, HashSet},
         path::PathBuf,
@@ -6991,6 +6995,11 @@ mod desktop {
     }
 
     fn run(args: Args) {
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = std::env::var_os("SYSTEMLESS_GPUI_NATIVE_DELIVERY_OUTPUT") {
+            native_delivery::run(args, PathBuf::from(output));
+            return;
+        }
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_guest_cursor.as_ref() { capture_guest_cursor(&args, output); return; }
         #[cfg(feature = "gpui-demo-test")]
@@ -17279,9 +17288,10 @@ mod desktop {
         fn notification_acquisition_releases_keys_before_foreground_ownership(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::AppContext;
             let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(Updates::default());
             cx.update(gpui_kit::init);
             let (_window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
-                |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+                |_, cx| cx.new(|cx| super::Demo::new(sender, updates.clone(), cx))).unwrap());
             let notice = systemless::runner::NotificationSnapshot {
                 guest_id: 1, instance_id: 2, response_started: false, mark: 0,
                 icon_handle: 0, sound_handle: 0, text: Some(b"Notice".to_vec()),
@@ -17303,7 +17313,10 @@ mod desktop {
             });
             receiver.try_iter().for_each(drop);
             cx.run_until_parked();
-            cx.executor().advance_clock(std::time::Duration::from_millis(16));
+            assert_eq!(receiver.try_iter().count(), 0, "acquisition waits for worker publication");
+            updates.publish(super::Update { notifications: vec![notice.clone()], ..Default::default() });
+            // The production worker republishes pending notices after tracking ends.
+            // No clock advance: acquisition follows publication, not a timer.
             cx.run_until_parked();
             let commands = receiver.try_iter().collect::<Vec<_>>();
             let release = commands.iter().position(|command| matches!(command,
