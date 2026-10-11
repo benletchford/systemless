@@ -1217,6 +1217,8 @@ pub enum PpcImportDispatcherTarget {
     DisposeEventHandlerUPP,
     NewEventLoopTimerUPP,
     DisposeEventLoopTimerUPP,
+    NewGrowZoneUPP,
+    DisposeGrowZoneUPP,
     NewControlActionUPP,
     DisposeControlActionUPP,
     NewControlKeyFilterUPP,
@@ -4468,6 +4470,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DisposeEventLoopTimerUPP") => {
             PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
         }
+        ("InterfaceLib", "NewGrowZoneUPP") => PpcImportDispatcherTarget::NewGrowZoneUPP,
+        ("InterfaceLib", "DisposeGrowZoneUPP") => PpcImportDispatcherTarget::DisposeGrowZoneUPP,
         ("InterfaceLib", "NewControlActionUPP") => {
             PpcImportDispatcherTarget::NewControlActionUPP
         }
