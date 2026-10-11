@@ -1135,6 +1135,7 @@ pub(crate) fn dispatch_supported_import(
             param_text,
             tick_count: *tick_count,
             input,
+            scrap,
             quickdraw_text_mode: *quickdraw_text_mode,
             quickdraw_text_size: *quickdraw_text_size,
             quickdraw_fore_color,

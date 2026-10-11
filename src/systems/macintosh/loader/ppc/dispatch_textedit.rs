@@ -4,6 +4,118 @@ use super::*;
 use crate::event_queue::EventQueue;
 use std::collections::HashMap;
 
+#[allow(clippy::too_many_arguments)]
+pub(super) fn track_ppc_text_edit_selection(
+    memory: &mut PpcSectionMem, handles: &[PpcHandleRecord], gworlds: &[PpcGWorldRecord],
+    manager: &crate::process_context::SharedProcessTextEditManager,
+    input: PpcInputSnapshot, event_queue: &mut EventQueue, te_handle: u32,
+    initial_point: (i16, i16), extend: bool, tick_count: u32, current_gworld: u32,
+    fore_color: PpcRgbColor, back_color: PpcRgbColor, fore_indices: &HashMap<u32, u8>,
+) -> bool {
+    // Inside Macintosh: Text (1993), p. 2-85: retain mouse ownership
+    // until release, expanding or shortening the selection as it moves.
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        manager.clear_click_tracking();
+        return false;
+    };
+    let previous_selection = (
+        memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
+        memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
+    );
+    let tracking = if let Some(mut tracking) = manager.take_click_tracking() {
+        let port = memory
+            .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
+            .unwrap_or(0);
+        let bounds = memory
+            .read_u32_be(port + 2)
+            .and_then(|handle| memory.read_u32_be(handle))
+            .and_then(|pixmap| ppc_read_rect(memory, pixmap + 6))
+            .unwrap_or((0, 0, 0, 0));
+        let v = input.mouse_v.wrapping_add(bounds.0);
+        let h = input.mouse_h.wrapping_add(bounds.1);
+        let offset = ppc_te_point_to_offset(memory, handles, te_handle, v, h).unwrap_or(0);
+        if tracking.last_point != (v, h) {
+            let _ = memory.write_u16_be(
+                te_ptr + PPC_TE_SEL_START_OFFSET,
+                tracking.anchor.min(offset) as u16,
+            );
+            let _ = memory.write_u16_be(
+                te_ptr + PPC_TE_SEL_END_OFFSET,
+                tracking.anchor.max(offset) as u16,
+            );
+            tracking.last_point = (v, h);
+        }
+        tracking
+    } else {
+        let v = initial_point.0;
+        let h = initial_point.1;
+        let offset = ppc_te_point_to_offset(memory, handles, te_handle, v, h).unwrap_or(0);
+        let old_start = memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
+            .unwrap_or(0) as usize;
+        let old_end = memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
+            .unwrap_or(0) as usize;
+        let anchor = if extend {
+            if offset < old_start {
+                old_end
+            } else {
+                old_start
+            }
+        } else {
+            offset
+        };
+        ppc_te_click(
+            memory,
+            handles,
+            te_handle,
+            v,
+            h,
+            extend,
+            tick_count,
+        );
+        crate::text_edit::TextEditClickTracking {
+            handle: te_handle,
+            anchor,
+            native: true,
+            last_point: (v, h),
+        }
+    };
+    if previous_selection
+        != (
+            memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
+            memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
+        )
+    {
+        let port = memory
+            .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
+            .unwrap_or(current_gworld);
+        if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET) {
+            let background = ppc_port_rgb_colors(memory, port)
+                .map_or(back_color, |colors| colors.1);
+            ppc_paint_rect_bounds(memory, gworlds, port, view, background, None);
+        }
+        ppc_te_draw(
+            memory,
+            handles,
+            gworlds,
+            te_handle,
+            current_gworld,
+            fore_color,
+            fore_indices,
+        );
+    }
+    if input.mouse_button {
+        manager.retain_click_tracking(tracking);
+        true
+    } else {
+        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+            event_queue.remove(index);
+        }
+        false
+    }
+}
+
 pub(super) struct PpcTextEditDispatchContext<'a> {
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
@@ -504,109 +616,11 @@ pub(super) fn dispatch_textedit_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TEClick => {
-            // Inside Macintosh: Text (1993), p. 2-85: retain mouse ownership
-            // until release, expanding or shortening the selection as it moves.
-            let te_handle = cpu.gpr[5];
-            let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
-                scrap.text_edit.clear_click_tracking();
-                return Some(PpcImportAction::ReturnPreserve);
-            };
-            let previous_selection = (
-                memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
-                memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
-            );
-            let tracking = if let Some(mut tracking) = scrap.text_edit.take_click_tracking() {
-                let port = memory
-                    .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
-                    .unwrap_or(0);
-                let bounds = memory
-                    .read_u32_be(port + 2)
-                    .and_then(|handle| memory.read_u32_be(handle))
-                    .and_then(|pixmap| ppc_read_rect(memory, pixmap + 6))
-                    .unwrap_or((0, 0, 0, 0));
-                let v = input.mouse_v.wrapping_add(bounds.0);
-                let h = input.mouse_h.wrapping_add(bounds.1);
-                let offset = ppc_te_point_to_offset(memory, handles, te_handle, v, h).unwrap_or(0);
-                if tracking.last_point != (v, h) {
-                    let _ = memory.write_u16_be(
-                        te_ptr + PPC_TE_SEL_START_OFFSET,
-                        tracking.anchor.min(offset) as u16,
-                    );
-                    let _ = memory.write_u16_be(
-                        te_ptr + PPC_TE_SEL_END_OFFSET,
-                        tracking.anchor.max(offset) as u16,
-                    );
-                    tracking.last_point = (v, h);
-                }
-                tracking
-            } else {
-                let v = (cpu.gpr[3] >> 16) as i16;
-                let h = cpu.gpr[3] as i16;
-                let offset = ppc_te_point_to_offset(memory, handles, te_handle, v, h).unwrap_or(0);
-                let old_start = memory
-                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-                    .unwrap_or(0) as usize;
-                let old_end = memory
-                    .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-                    .unwrap_or(0) as usize;
-                let anchor = if cpu.gpr[4] != 0 {
-                    if offset < old_start {
-                        old_end
-                    } else {
-                        old_start
-                    }
-                } else {
-                    offset
-                };
-                ppc_te_click(
-                    memory,
-                    handles,
-                    te_handle,
-                    v,
-                    h,
-                    cpu.gpr[4] != 0,
-                    tick_count,
-                );
-                crate::text_edit::TextEditClickTracking {
-                    handle: te_handle,
-                    anchor,
-                    native: true,
-                    last_point: (v, h),
-                }
-            };
-            if previous_selection
-                != (
-                    memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
-                    memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
-                )
-            {
-                let port = memory
-                    .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
-                    .unwrap_or(current_gworld);
-                if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET) {
-                    let background = ppc_port_rgb_colors(memory, port)
-                        .map_or(*quickdraw_back_color, |colors| colors.1);
-                    ppc_paint_rect_bounds(memory, gworlds, port, view, background, None);
-                }
-                ppc_te_draw(
-                    memory,
-                    handles,
-                    gworlds,
-                    te_handle,
-                    current_gworld,
-                    *quickdraw_fore_color,
-                    quickdraw_fore_indices,
-                );
-            }
-            if input.mouse_button {
-                scrap.text_edit.retain_click_tracking(tracking);
-                Some(PpcImportAction::Yield(u64::MAX))
-            } else {
-                if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
-                    event_queue.remove(index);
-                }
-                Some(PpcImportAction::ReturnPreserve)
-            }
+            let held = track_ppc_text_edit_selection(memory, handles, gworlds, &scrap.text_edit,
+                input, event_queue, cpu.gpr[5], ((cpu.gpr[3] >> 16) as i16, cpu.gpr[3] as i16),
+                cpu.gpr[4] != 0, tick_count, current_gworld, *quickdraw_fore_color,
+                *quickdraw_back_color, quickdraw_fore_indices);
+            Some(if held { PpcImportAction::Yield(u64::MAX) } else { PpcImportAction::ReturnPreserve })
         }
         PpcImportDispatcherTarget::TEIdle => {
             // Text (1993), p. 2-51: TEIdle only blinks an insertion-point
