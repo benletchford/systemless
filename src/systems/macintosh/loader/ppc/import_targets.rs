@@ -1235,6 +1235,8 @@ pub enum PpcImportDispatcherTarget {
         proc_info: u32,
     },
     DisposeGrowZoneUPP,
+    NewUserItemUPP,
+    DisposeUserItemUPP,
     NewControlActionUPP,
     DisposeControlActionUPP,
     NewControlKeyFilterUPP,
@@ -4573,6 +4575,12 @@ pub(crate) fn dispatcher_target_for_import(
             | "DisposeOSLAdjustMarksUPP",
         ) => PpcImportDispatcherTarget::DisposeRoutineDescriptor,
         ("InterfaceLib", "DisposeGrowZoneUPP") => PpcImportDispatcherTarget::DisposeGrowZoneUPP,
+        ("InterfaceLib", "NewUserItemUPP" | "newuseritemupp") => {
+            PpcImportDispatcherTarget::NewUserItemUPP
+        }
+        ("InterfaceLib", "DisposeUserItemUPP" | "disposeuseritemupp") => {
+            PpcImportDispatcherTarget::DisposeUserItemUPP
+        }
         ("InterfaceLib", "NewControlActionUPP") => {
             PpcImportDispatcherTarget::NewControlActionUPP
         }

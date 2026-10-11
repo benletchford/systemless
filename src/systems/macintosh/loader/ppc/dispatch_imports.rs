@@ -2636,6 +2636,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::NewGrowZoneUPP
         | PpcImportDispatcherTarget::NewObjectSupportUPP { .. }
         | PpcImportDispatcherTarget::DisposeGrowZoneUPP
+        | PpcImportDispatcherTarget::NewUserItemUPP
+        | PpcImportDispatcherTarget::DisposeUserItemUPP
         | PpcImportDispatcherTarget::NewControlActionUPP
         | PpcImportDispatcherTarget::DisposeControlActionUPP
         | PpcImportDispatcherTarget::NewControlKeyFilterUPP

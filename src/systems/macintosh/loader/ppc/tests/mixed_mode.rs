@@ -535,6 +535,122 @@ fn carbon_grow_zone_upp_binds_weak_import_and_builds_descriptor() {
 }
 
 #[test]
+fn user_item_upp_weak_import_owns_descriptor_with_dialog_callback_abi() {
+    for library in ["CarbonLib", "InterfaceLib"] {
+        for (create, dispose) in [
+            ("NewUserItemUPP", "DisposeUserItemUPP"),
+            ("newuseritemupp", "disposeuseritemupp"),
+        ] {
+            let loader = synthetic_loader_with_symbol_class(
+                library.as_bytes(),
+                create.as_bytes(),
+                0x82,
+                &[run_reloc(0x23, 1)],
+            );
+            let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            assert!(loaded.imports[0].weak);
+            assert_eq!(
+                loaded.imports[0].dispatcher_target,
+                PpcImportDispatcherTarget::NewUserItemUPP
+            );
+            assert_ne!(loaded.imports[0].address, 0);
+            assert_eq!(
+                loaded.memory.read_u32_be(PPC_DATA_BASE),
+                Some(loaded.imports[0].address)
+            );
+            let callback = PPC_DATA_BASE + 0x1800;
+            loaded.memory.add_region(callback, vec![0; 8]);
+            loaded
+                .memory
+                .write_u32_be(callback, PPC_CODE_BASE + 0x1000)
+                .unwrap();
+            loaded
+                .memory
+                .write_u32_be(callback + 4, PPC_DATA_BASE + 0x2000)
+                .unwrap();
+            loaded.cpu.gpr[3] = callback;
+            let probe = loaded.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            let descriptor = loaded.cpu.gpr[3];
+            assert_ne!(descriptor, 0);
+            assert_ne!(descriptor, callback);
+            let record = descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE;
+            assert_eq!(
+                loaded.memory.read_u16_be(descriptor),
+                Some(PPC_MIXED_MODE_TRAP)
+            );
+            assert_eq!(
+                loaded.memory.read_u8(descriptor + 2),
+                Some(PPC_ROUTINE_DESCRIPTOR_VERSION)
+            );
+            assert_eq!(loaded.memory.read_u32_be(record), Some(0x02C0));
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u8(record + PPC_ROUTINE_RECORD_ISA_OFFSET),
+                Some(PPC_ROUTINE_RECORD_POWERPC_ISA)
+            );
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u32_be(record + PPC_ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET),
+                Some(callback)
+            );
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u16_be(record + PPC_ROUTINE_RECORD_FLAGS_OFFSET),
+                Some(PPC_ROUTINE_FLAG_USE_NATIVE_ISA)
+            );
+            assert_eq!(
+                dispatcher_target_for_import(library, dispose),
+                PpcImportDispatcherTarget::DisposeUserItemUPP
+            );
+            loaded.cpu.gpr[3] = descriptor;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeUserItemUPP);
+            assert_eq!(loaded.cpu.gpr[3], descriptor);
+            assert_eq!(
+                loaded.memory.read_u32_be(callback),
+                Some(PPC_CODE_BASE + 0x1000)
+            );
+            loaded.cpu.gpr[3] = callback;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::NewUserItemUPP);
+            assert_eq!(
+                loaded.cpu.gpr[3], descriptor,
+                "released owned descriptor storage is reused"
+            );
+            loaded.cpu.gpr[3] = 0;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::NewUserItemUPP);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            // The disposal symbol itself must also resolve as a relocated weak vector.
+            let loader = synthetic_loader_with_symbol_class(
+                library.as_bytes(),
+                dispose.as_bytes(),
+                0x82,
+                &[run_reloc(0x23, 1)],
+            );
+            let mut disposal = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            assert!(disposal.imports[0].weak);
+            assert_eq!(
+                disposal.imports[0].dispatcher_target,
+                PpcImportDispatcherTarget::DisposeUserItemUPP
+            );
+            assert_ne!(disposal.imports[0].address, 0);
+            assert_eq!(
+                disposal.memory.read_u32_be(PPC_DATA_BASE),
+                Some(disposal.imports[0].address)
+            );
+            disposal.cpu.gpr[3] = 0;
+            let probe = disposal.run_with_hle_imports(64);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(disposal.cpu.gpr[3], 0);
+        }
+    }
+}
+
+#[test]
 fn carbon_control_action_upp_binds_weak_import_and_builds_descriptor() {
     assert_eq!(
         dispatcher_target_for_import("CarbonLib", "NewControlActionUPP"),

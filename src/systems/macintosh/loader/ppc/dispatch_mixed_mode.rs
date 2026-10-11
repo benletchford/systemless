@@ -19,6 +19,9 @@ pub(super) const PPC_EVENT_LOOP_TIMER_PROC_INFO: u32 = 0x03C0;
 // ControlActionProcPtr takes a ControlHandle and a 2-byte part code,
 // returns void, and uses the Pascal stack convention.
 pub(super) const PPC_CONTROL_ACTION_PROC_INFO: u32 = 0x02C0;
+// Apple Dialogs.h: void UserItemProcPtr(DialogRef, DialogItemIndex).
+// Pascal stack convention, void result, a 4-byte pointer and a 2-byte index.
+pub(super) const PPC_USER_ITEM_PROC_INFO: u32 = 0x02C0;
 // Apple Control Manager Reference (Controls.h): ControlKeyFilterProcPtr
 // returns a 2-byte result and takes four pointers using Pascal stack calling.
 pub(super) const PPC_CONTROL_KEY_FILTER_PROC_INFO: u32 = 0x3FE0;
@@ -226,6 +229,18 @@ pub(super) fn dispatch_mixed_mode_import(
                 &mut toolbox_startup.system_allocations,
             ))))
         }
+        PpcImportDispatcherTarget::NewUserItemUPP => {
+            Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                PPC_USER_ITEM_PROC_INFO,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            ))))
+        }
         PpcImportDispatcherTarget::NewControlActionUPP => {
             Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
                 cpu.gpr[3],
@@ -279,6 +294,7 @@ pub(super) fn dispatch_mixed_mode_import(
         | PpcImportDispatcherTarget::DisposeEventHandlerUPP
         | PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
         | PpcImportDispatcherTarget::DisposeGrowZoneUPP
+        | PpcImportDispatcherTarget::DisposeUserItemUPP
         | PpcImportDispatcherTarget::DisposeControlActionUPP
         | PpcImportDispatcherTarget::DisposeControlKeyFilterUPP
         | PpcImportDispatcherTarget::DisposeControlEditTextValidationUPP => {
