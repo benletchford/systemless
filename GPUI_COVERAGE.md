@@ -839,3 +839,23 @@ exact GPUI font-family mapping and performance remain unqualified.
 
 The reverse-scroll / down-arrow release / reopen-and-select regression also
 passes across all three modes with the changed font metrics (104.05 seconds).
+
+
+The native popup scenario was rerun with the current showcase archive
+(SHA-256 `b1218d2ce2273950fe30911c26cd1b0c0037f86c703cf7dce9906a79bcf4f381`)
+through the existing BasiliskII play runner. The stored capture manifest had
+named an older archive, so it was not treated as proof of current geometry.
+The fresh 45-action run completed and its open/scrolled screenshots were
+reviewed: Theme still spans approximately x=282..422 and exposes part of
+Archive 09 below its up arrow. The width difference is therefore still real,
+not just stale-reference evidence. A targeted native width/closed-control
+probe is needed before choosing a minimum-width rule.
+
+GPUI now renders rows intersecting the visible content area, letting the
+scroll-arrow overlays and pane clip hide the covered portions. Previously it
+omitted any partly covered row, despite the guest's existing hit test allowing
+selection in the exposed portion. A fresh composed colour-68k capture was
+reviewed after the change and now exposes partial Archive 09, with the up arrow
+and last-item highlight intact. The example build passes. This is a shared
+presentation change; runtime pixel painting still needs equivalent clipping
+qualification, and no new PPC native capture was produced in this follow-up.
