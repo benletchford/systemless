@@ -5666,3 +5666,18 @@ build3m44s), covering each delivery field on both CPU paths. Native response,
 Mixed Mode response, shared queue clearing and link/error checks also pass.
 The current log and hashes are under `notification-queue/all-delivery-*`.
 Visible delivery and completion remain required; no release gate closes.
+
+### Shared notification snapshot transport (2026-10-11)
+
+The runner now validates complete NMRec records and Pascal strings using the
+active CPU's guest memory reader. Macintosh Roman bytes, mark, icon/sound
+handles, response and refCon remain guest-owned values. Unreadable records or
+strings decline the snapshot. The actual production worker publishes the
+snapshots into shared Demo state; composed capture update consumption uses the
+same field. Twelve library notification tests pass (0.25s; build2m11s), and the
+GPUI example with capture features passes its compile check (1m00s). Logs and
+source hashes are under `reference/gpui-demo/notification-snapshot`.
+This proves parsing and compiled transport, not displayed notices or interaction.
+Presentation, installation identity reuse guards, acknowledgment, sound
+completion and post-delivery guest callbacks remain unfinished. No host font is
+introduced and no application-owned drawing is replaced. All gates remain open.

@@ -219,6 +219,8 @@ pub(crate) use interrupt::*;
 pub(crate) use ppc_exec::*;
 mod cursor;
 pub use cursor::CursorSnapshot;
+mod notification;
+pub use notification::NotificationSnapshot;
 pub use vfs::*;
 pub(crate) use virtual_idle::*;
 
@@ -2248,6 +2250,22 @@ impl FixtureRunner {
                 || ppc_state.is_some_and(|state| state.update_event_seen),
             cursor_visible: self.dispatcher.cursor_visible(),
             cursor_level: self.dispatcher.cursor_level(),
+        }
+    }
+
+    pub fn notification_snapshot(&mut self) -> Vec<NotificationSnapshot> {
+        let requests = self.dispatcher.notification_requests.iter().copied().collect::<Vec<_>>();
+        if let Some(app) = self.native.application_mut() {
+            requests.into_iter().filter_map(|request| {
+                notification::snapshot_request(request, |address| app.memory.read_u8(address))
+            }).collect()
+        } else {
+            requests.into_iter().filter_map(|request| {
+                notification::snapshot_request(request, |address| {
+                    (self.bus.translate_guest_address(address) < self.bus.ram_size())
+                        .then(|| self.bus.read_byte(address))
+                })
+            }).collect()
         }
     }
 
