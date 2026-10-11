@@ -984,16 +984,18 @@ mod desktop {
                         .child(overlay),
                 );
             }
-            // The Dialog Manager creates standard controls from button,
-            // checkbox, and radio DITL items. Keep edit fields in guest pixels
-            // until both guest TextEdit layouts are available to the host.
-            // Macintosh Toolbox Essentials (1992), pp. 5-60--5-64, 6-13--6-15.
+            // Standard DITL items use guest geometry and live guest state.
+            // The single-line edit field is a read-only GPUI presentation;
+            // pointer and keyboard events still enter the guest Dialog Manager.
+            // Macintosh Toolbox Essentials (1992), pp. 6-13--6-15, 6-79--6-80.
             if let Some(dialog) = standard_dbox_dialog(&self.dialogs, &self.windows) {
                 for item in &dialog.items {
                     if !item.visible {
                         continue;
                     }
-                    if item.kind == DialogItemKind::EditText {
+                    if item.kind == DialogItemKind::EditText
+                        && (item.text.contains('\r') || item.bounds.2 - item.bounds.0 > 24)
+                    {
                         continue;
                     }
                     let item_rect = super::frames::Rect::from(item.bounds);
@@ -1002,6 +1004,13 @@ mod desktop {
                     let source = if item.kind == DialogItemKind::Button
                         && dialog.default_item == Some(item.number)
                     {
+                        super::frames::Rect {
+                            top: item_rect.top - 4,
+                            left: item_rect.left - 4,
+                            bottom: item_rect.bottom + 4,
+                            right: item_rect.right + 4,
+                        }
+                    } else if item.kind == DialogItemKind::EditText {
                         super::frames::Rect {
                             top: item_rect.top - 4,
                             left: item_rect.left - 4,
@@ -1045,6 +1054,59 @@ mod desktop {
                             .text_size(px(13.))
                             .text_color(cx.theme().foreground)
                             .child(item.text.replace('\r', "\n")),
+                        DialogItemKind::EditText => {
+                            let focused = dialog.edit_field == Some(item.number)
+                                && item.enabled
+                                && item.selection.is_some();
+                            let selection = item.selection.unwrap_or((0, 0));
+                            let (prefix, selected, suffix) = save_name_segments(
+                                &item.text,
+                                (selection.0.max(0) as usize, selection.1.max(0) as usize),
+                                focused,
+                            );
+                            let mut field = div()
+                                .id(format!(
+                                    "guest-dialog-edit-{}-{}-{}",
+                                    dialog.guest_id, dialog.generation, item.number
+                                ))
+                                .test_support()
+                                .absolute()
+                                .left(px((item_rect.left - source.left) as f32))
+                                .top(px((item_rect.top - source.top) as f32))
+                                .w(px(item_rect.width() as f32))
+                                .h(px(item_rect.height() as f32))
+                                .overflow_hidden()
+                                .flex()
+                                .items_center()
+                                .px_1()
+                                .border_1()
+                                .border_color(if focused {
+                                    cx.theme().accent
+                                } else {
+                                    cx.theme().border
+                                })
+                                .bg(cx.theme().background)
+                                .text_size(px(13.))
+                                .text_color(if item.enabled {
+                                    cx.theme().foreground
+                                } else {
+                                    cx.theme().muted_foreground
+                                })
+                                .child(prefix);
+                            if focused && !selected.is_empty() {
+                                field = field.child(
+                                    div()
+                                        .bg(cx.theme().accent)
+                                        .text_color(cx.theme().foreground)
+                                        .child(selected),
+                                );
+                            } else if focused {
+                                field = field.child(
+                                    div().w(px(1.)).h(px(14.)).bg(cx.theme().foreground),
+                                );
+                            }
+                            overlay.child(field.child(suffix))
+                        }
                         DialogItemKind::Checkbox => overlay.child(
                             Checkbox::new(format!(
                                 "guest-dialog-checkbox-{}-{}-{}",
@@ -3176,6 +3238,26 @@ mod desktop {
                             && current.items.iter().any(|item| {
                                 item.number == checkbox.number && item.value == Some(1)
                             })
+                        })
+                }));
+                let second_edit = dialog.items.iter().find(|item| item.number == 9).unwrap();
+                let second_point = (
+                    (second_edit.bounds.0 + second_edit.bounds.2) / 2,
+                    (second_edit.bounds.1 + second_edit.bounds.3) / 2,
+                );
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: second_point.0,
+                    horizontal: second_point.1,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: second_point.0,
+                    horizontal: second_point.1,
+                });
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().dialog_snapshot().iter().any(|current| {
+                        current.guest_id == dialog.guest_id && current.edit_field == Some(9)
                     })
                 }));
             }
@@ -3423,7 +3505,7 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
-        fn themed_dialog_checkbox_forwards_one_guest_press_and_release(
+        fn themed_dialog_checkbox_and_edit_field_forward_guest_clicks(
             cx: &mut gpui_kit::TestAppContext,
         ) {
             use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
@@ -3475,7 +3557,7 @@ mod desktop {
                         active: true,
                         default_item: None,
                         cancel_item: None,
-                        edit_field: Some(1),
+                        edit_field: Some(2),
                         items: vec![
                             DialogItemSnapshot {
                                 number: 1,
@@ -3495,7 +3577,7 @@ mod desktop {
                                 enabled: true,
                                 visible: true,
                                 value: None,
-                                selection: None,
+                                selection: Some((0, 0)),
                             },
                         ],
                     }];
@@ -3533,6 +3615,36 @@ mod desktop {
                     MacintoshInput::MouseUp {
                         vertical: 145..=164,
                         horizontal: 150..=449,
+                    },
+                ]
+            ));
+            cx.update_window(window.into(), |_, window, cx| {
+                window.click("guest-dialog-edit-7-1-2", cx);
+            })
+            .unwrap();
+            let edit_inputs: Vec<_> = receiver
+                .try_iter()
+                .filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input),
+                    _ => None,
+                })
+                .filter(|input| {
+                    matches!(
+                        input,
+                        MacintoshInput::MouseDown { .. } | MacintoshInput::MouseUp { .. }
+                    )
+                })
+                .collect();
+            assert!(matches!(
+                edit_inputs.as_slice(),
+                [
+                    MacintoshInput::MouseDown {
+                        vertical: 200..=219,
+                        horizontal: 235..=429,
+                    },
+                    MacintoshInput::MouseUp {
+                        vertical: 200..=219,
+                        horizontal: 235..=429,
                     },
                 ]
             ));
