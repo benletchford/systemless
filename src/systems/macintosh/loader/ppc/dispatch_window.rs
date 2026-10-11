@@ -2110,6 +2110,9 @@ pub(super) fn ppc_repaint_window_geometry_transition(
     when: u32,
     input: PpcInputSnapshot,
 ) {
+    if previous_structure != next_structure {
+        window_list.invalidate_grow_icon(window);
+    }
     if !was_visible {
         return;
     }
