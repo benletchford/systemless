@@ -34,6 +34,20 @@ impl GuestMenuSnapshot {
         }
         Some((u32::from(menu_id as u16) << 16) | u32::from(item_number as u16))
     }
+
+    /// Reject an action from a popup built for a disposed or replaced menu.
+    pub fn selectable_result_for_guest(
+        &self,
+        menu_id: i16,
+        item_number: i16,
+        guest_id: u32,
+        generation: u64,
+    ) -> Option<u32> {
+        let menu = self.menus.iter().find(|menu| menu.id == menu_id)?;
+        (menu.guest_id == guest_id && menu.generation == generation)
+            .then(|| self.selectable_result(menu_id, item_number))
+            .flatten()
+    }
 }
 
 /// One menu in the guest's current menu list.
@@ -118,6 +132,20 @@ mod tests {
         let mut parent = item();
         parent.submenu_id = Some(200);
         assert_eq!(snapshot(true, parent).selectable_result(-120, 2), None);
+    }
+
+    #[test]
+    fn stale_popup_selection_cannot_target_a_reused_menu_id() {
+        let mut current = snapshot(true, item());
+        assert_eq!(
+            current.selectable_result_for_guest(-120, 2, 0x1000, 1),
+            Some(0xff88_0002)
+        );
+        current.menus[0].guest_id = 0x2000;
+        assert_eq!(current.selectable_result_for_guest(-120, 2, 0x1000, 1), None);
+        current.menus[0].guest_id = 0x1000;
+        current.menus[0].generation = 2;
+        assert_eq!(current.selectable_result_for_guest(-120, 2, 0x1000, 1), None);
     }
 
     #[test]
