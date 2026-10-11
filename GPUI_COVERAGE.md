@@ -5463,3 +5463,12 @@ qualification. The current full-suite run is pinned to earlier `e0d709d8`
 production source and does not include this change. The eligible control-font
 inventory row was also reconciled against current source flags and background
 guards. No release gate is closed by this checkpoint.
+
+The re-registration fix additionally passes actual classic trap drawing and
+PowerPC import drawing regressions (two tests, 0.04s). Each draws a guest button,
+checks unchanged registration preserves the completed backdrop, then changes to
+a checkbox definition and verifies unchanged raster/generation but declined
+painter ownership. Evidence is in `control-reregister-paint/guest-cpu-tests.log`
+with source hashes and limits in `guest-cpu-review.json`. This establishes the
+focused CPU drawing boundary; complete display-depth/composed lifecycle and
+physical input qualification remain open.

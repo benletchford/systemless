@@ -1590,6 +1590,33 @@ fn appearance_client_and_collapse_imports_report_their_results() {
 }
 
 #[test]
+fn reregistered_control_definition_declines_completed_guest_ink() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Draw1Control")).unwrap();
+    let handle = appearance_push_button(&mut loaded, 0);
+    run_appearance_import(&mut loaded,
+        &PpcImportDispatcherTarget::LegacyControl(PpcLegacyControlOperation::DrawOneControl), &[handle]);
+    let record = loaded.controls.records().into_iter().find(|record| record.handle == handle).unwrap();
+    let pointer = loaded.memory.read_u32_be(handle).unwrap();
+    let owner = loaded.memory.read_u32_be(pointer + 4).unwrap();
+    let local = ppc_read_rect(&mut loaded.memory, pointer + PPC_CONTROL_RECT_OFFSET).unwrap();
+    let (identity, pixels) = ppc_capture_standard_control_pixels(&mut loaded.memory, &loaded.gworlds,
+        owner, record.generation, pointer, local).unwrap();
+    let backdrop = record.paint.backdrop(identity, &pixels).expect("actual guest draw owns its ink");
+    loaded.controls.register(handle, pointer, 0, 0);
+    assert_eq!(record.paint.backdrop(identity, &pixels), Some(backdrop));
+    loaded.controls.register(handle, pointer, 1, 0);
+    let current = loaded.controls.records().into_iter().find(|record| record.handle == handle).unwrap();
+    assert_eq!(current.generation, record.generation);
+    assert_eq!(current.proc_id, 1);
+    let (unchanged_identity, unchanged_pixels) = ppc_capture_standard_control_pixels(&mut loaded.memory,
+        &loaded.gworlds, owner, current.generation, pointer, local).unwrap();
+    assert_eq!(unchanged_identity, identity);
+    assert_eq!(unchanged_pixels, pixels, "registration must not alter guest raster");
+    assert!(current.paint.backdrop(unchanged_identity, &unchanged_pixels).is_none(),
+        "the new definition cannot claim the old guest button ink");
+}
+
+#[test]
 fn raw_control_value_mutation_declines_old_painter_evidence() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"Draw1Control")).unwrap();
     let handle = appearance_push_button(&mut loaded, 1);

@@ -1,0 +1,16 @@
+{
+  "production_commit": "d2c8fa8a",
+  "result": "PASS 68k trap draw and PPC import draw, 0.04s total",
+  "assertions": [
+    "Actual completed guest button drawing establishes backdrop ownership",
+    "Unchanged re-registration preserves backdrop",
+    "Changed definition preserves generation and guest raster exactly",
+    "Changed definition declines old painter ownership"
+  ],
+  "source_sha256": {
+    "src/systems/macintosh/trap/control/tests.rs": "3826f8847f74f86354e5fbece6237176a46ce1c23462af8ec096e0051560583c",
+    "src/systems/macintosh/loader/ppc/tests/control_manager.rs": "3a44a2cc40dd86c31c3d005b766f3382ff895656b9f520f882513e23e406c57e",
+    "src/systems/macintosh/control_manager.rs": "715aee678adad76c435ce1123b08901cef216ea293f4bb2840e25988f28d627a"
+  },
+  "limitations": "Focused guest draw/ownership tests. Not a composed lifecycle matrix, all display depths, or physical interaction. The running full frontend suite remains pinned to earlier source."
+}
