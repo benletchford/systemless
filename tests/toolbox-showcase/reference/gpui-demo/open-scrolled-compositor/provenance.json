@@ -1,0 +1,15 @@
+{
+  "base_head": "3359abc7",
+  "source_sha256": "db7976c952a6230170a0c1294d1ba320f986a6b4b2f3d4650076c730e108cb37",
+  "command": "--screen-depth 8 --capture-scale 1 --capture-standard-file-open-scrolled",
+  "terminal_exit": 0,
+  "review": "All four selected shared Demo captures reviewed: mono68k scale0.75, colour68k scale1, PPC8 scale2, PPC16 scale1.5. Visible rows and selection match guest sidecars. Actual guest arrow clicks; no independent oracle, physical wheel or complete CPU/scale/state matrix.",
+  "terminal_results": {
+    "capture-build": 0,
+    "test-build": 0,
+    "mono": 0,
+    "colour": 0,
+    "ppc8": 0,
+    "ppc16": 0
+  }
+}
