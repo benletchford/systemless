@@ -4301,3 +4301,55 @@ fn track_control_global_live_button_point_preserves_release_cancellation() {
         assert!(disp.control_tracking.is_none());
     }
 }
+
+#[test]
+fn setctlvalue_preserves_updated_checkbox_in_visible_dialog_snapshot() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    let window = *disp.current_port;
+    let base = bus.read_long(window + 2);
+    let row_bytes = u32::from(bus.read_word(window + 6));
+    disp.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+    disp.front_window = window;
+    disp.window_list.replace(vec![window]);
+    let bounds = (0, 0, 342, 512);
+    let (handle, pointer) = alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 120));
+    disp.control_manager.set_proc_id(pointer, 1);
+    bus.write_word(pointer + 20, 0);
+    bus.write_word(pointer + 22, 1);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    // Application artwork outside the checkbox must survive the region refresh.
+    bus.write_byte(base + 300 * row_bytes + 60, 0xA5);
+    let before = disp.save_dialog_pixels(&bus, bounds);
+    disp.dialog_visible_snapshots.insert(
+        window,
+        crate::trap::dispatch::PersistentDialogSnapshot {
+            bounds,
+            pixels: before.clone().into(),
+        },
+    );
+    let sp = 0x300000;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 1);
+    bus.write_long(sp + 2, handle);
+    disp.dispatch_control(true, 0x163, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    let expected = disp.save_dialog_pixels(&bus, bounds);
+    assert_ne!(
+        before, expected,
+        "checking the control must change its drawn pixels"
+    );
+    let snapshot = disp
+        .dialog_visible_snapshots
+        .get(&window)
+        .unwrap()
+        .pixels
+        .clone();
+    disp.restore_dialog_pixels(&mut bus, bounds, &snapshot);
+    assert_eq!(
+        disp.save_dialog_pixels(&bus, bounds),
+        expected,
+        "visible snapshot restoration must retain the updated checkbox and other artwork"
+    );
+    assert_eq!(bus.read_byte(base + 300 * row_bytes + 60), 0xA5);
+}

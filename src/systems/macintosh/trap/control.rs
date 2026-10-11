@@ -1753,6 +1753,13 @@ impl super::TrapDispatcher {
         for (top, left, width, height, pixels) in occluded_pixels {
             self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
         }
+        // Retained dialog composition must include the control's new value,
+        // without replacing application drawing elsewhere in the dialog.
+        self.refresh_visible_dialog_snapshot_region_for_port(
+            bus,
+            window_ptr,
+            (abs_top, abs_left, abs_bottom, abs_right),
+        );
         if *self.current_port != saved_port || *self.current_gdevice != saved_gdevice {
             self.set_current_port_state(bus, cpu, saved_port, Some(saved_gdevice));
         }
