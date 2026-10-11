@@ -5397,3 +5397,15 @@ all four CPU/depth modes (32.30 seconds). The test verifies guarded original
 ownership, exact merged text, caret before the retained suffix, and unchanged
 suffix bytes/styles. Evidence is `retained-marked-composition/merged-worker.log`;
 modal/file merged transactions and physical IME remain open.
+
+### Control guest-state freshness (2026-10-11)
+
+Completed standard-control paint evidence now includes exact paint-relevant
+raw guest record bytes and used Pascal title storage on both CPU paths. A direct
+value/title/highlight mutation cannot authorize a new GPUI replacement over old
+CDEF ink. Unused title padding does not invalidate evidence. Genuine redraws
+recover the original background independently of the updated recipe.
+Seven shared tests, actual PPC checkbox mutation/redraw, and classic control
+font drawing with raw value mutation rejection pass. Evidence is archived in
+`control-state-freshness`. This closes the specific unstamped raw-record gap;
+broader custom paint provenance, composed fidelity and release gates remain open.

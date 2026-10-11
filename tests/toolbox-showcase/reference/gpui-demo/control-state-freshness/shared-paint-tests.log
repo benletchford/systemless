@@ -1,0 +1,15 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 03s
+     Running unittests src/lib.rs (target/debug/deps/systemless-257ba83b63f6679f)
+
+running 7 tests
+test systems::macintosh::control_manager::paint::tests::changed_font_declines_presentation_until_redraw_without_losing_backdrop ... ok
+test systems::macintosh::control_manager::paint::tests::changed_recipe_declines_presentation_but_recovers_backdrop_after_redraw ... ok
+test systems::macintosh::control_manager::paint::tests::cloned_records_share_draws_and_incomplete_draws_invalidate_evidence ... ok
+test systems::macintosh::control_manager::paint::tests::indexed_backdrop_uses_current_display_palette_without_guest_redraw ... ok
+test systems::macintosh::control_manager::paint::tests::recipe_tracks_guest_title_and_state_without_unused_title_padding ... ok
+test systems::macintosh::control_manager::paint::tests::rejects_stale_identity_surface_bounds_depth_and_partial_rasters ... ok
+test systems::macintosh::control_manager::paint::tests::retains_pattern_for_repeated_draws_and_declines_ambiguous_partial_repaint ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 6704 filtered out; finished in 0.00s
+

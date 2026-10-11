@@ -107,10 +107,16 @@ fn appearance_control_font_overrides_change_classic_ink_and_restore_default() {
             let (origin_top, origin_left, _, _) = TrapDispatcher::dialog_screen_bounds(&bus, window);
             let global = (bounds.0 + origin_top, bounds.1 + origin_left,
                 bounds.2 + origin_top, bounds.3 + origin_left);
-            let (identity, painted) = disp.capture_standard_control_pixels(&bus, window, generation, global).unwrap();
+            let (identity, painted) = disp.capture_standard_control_pixels(&bus, window, generation, pointer, global).unwrap();
             let backdrop = paint.backdrop(identity, &painted).expect("completed guest draw must retain its backdrop");
             assert!(backdrop.iter().all(|byte| *byte == 255),
                 "control draw must retain the original white background without bitmap ink");
+            bus.write_word(pointer + 18, 1);
+            let (changed, unchanged_ink) = disp.capture_standard_control_pixels(&bus, window, generation, pointer, global).unwrap();
+            assert_eq!(unchanged_ink, painted, "raw value mutation must not repaint guest ink");
+            assert!(paint.backdrop(changed, &unchanged_ink).is_none(),
+                "new control values cannot reuse old painter ownership");
+            bus.write_word(pointer + 18, 0);
             captures.push((0..rows * 342).map(|offset| bus.read_byte(base + offset))
                 .collect::<Vec<_>>());
             assert_eq!((bus.read_word(pointer + 8) as i16, bus.read_word(pointer + 10) as i16,

@@ -22,6 +22,22 @@ pub(crate) struct ControlPaintIdentity {
     pub depth: u16,
     pub palette: u64,
     pub format: ControlPaintFormat,
+    pub recipe: [u8; 268],
+}
+
+/// Exact paint-relevant guest fields, excluding unused title storage. This also
+/// catches direct application writes which bypass Control Manager setters.
+pub(crate) fn control_recipe(pointer: u32, mut read: impl FnMut(u32) -> Option<u8>) -> Option<[u8; 268]> {
+    let mut recipe = [0; 268];
+    for (index, byte) in recipe[..12].iter_mut().enumerate() {
+        *byte = read(pointer.checked_add(16 + index as u32)?)?;
+    }
+    let length = read(pointer.checked_add(40)?)?;
+    recipe[12] = length;
+    for index in 0..usize::from(length) {
+        recipe[13 + index] = read(pointer.checked_add(41 + index as u32)?)?;
+    }
+    Some(recipe)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,7 +65,11 @@ impl ControlPaint {
         }
         let mut backdrop = before;
         if let Some(previous) = previous {
-            if previous.identity == identity && backdrop == previous.completed {
+            let mut previous_surface = previous.identity;
+            let mut surface = identity;
+            previous_surface.recipe = [0; 268];
+            surface.recipe = [0; 268];
+            if previous_surface == surface && backdrop == previous.completed {
                 backdrop = previous.backdrop.clone();
             } else if !Self::uniform(&backdrop) {
                 // A partly changed raster cannot distinguish new application
@@ -147,10 +167,37 @@ mod tests {
 
     fn identity() -> ControlPaintIdentity {
         ControlPaintIdentity { owner: 10, generation: 1, surface: 20,
-            bounds: (0, 0, 1, 3), depth: 8, palette: 0, format: ControlPaintFormat::Rgba }
+            bounds: (0, 0, 1, 3), depth: 8, palette: 0, format: ControlPaintFormat::Rgba, recipe: [0; 268] }
     }
     fn pixels(colours: [[u8; 3]; 3]) -> Vec<u8> {
         colours.into_iter().flat_map(|[r, g, b]| [r, g, b, 255]).collect()
+    }
+
+    #[test]
+    fn recipe_tracks_guest_title_and_state_without_unused_title_padding() {
+        let mut memory = vec![0u8; 300];
+        memory[40] = 3; memory[41..44].copy_from_slice(b"ABC");
+        let original = control_recipe(0, |address| memory.get(address as usize).copied()).unwrap();
+        memory[44] = 99;
+        assert_eq!(control_recipe(0, |address| memory.get(address as usize).copied()), Some(original));
+        memory[18] = 1;
+        assert_ne!(control_recipe(0, |address| memory.get(address as usize).copied()), Some(original));
+        memory[18] = 0; memory[42] = b'Z';
+        assert_ne!(control_recipe(0, |address| memory.get(address as usize).copied()), Some(original));
+        assert!(control_recipe(u32::MAX - 10, |_| Some(0)).is_none());
+    }
+
+    #[test]
+    fn changed_recipe_declines_presentation_but_recovers_backdrop_after_redraw() {
+        let slot = ControlPaintSlot::default();
+        let original = identity();
+        let before = pixels([[238, 238, 238]; 3]);
+        let completed = pixels([[0, 0, 0], [238, 238, 238], [0, 0, 0]]);
+        slot.record(original, before.clone(), completed.clone());
+        let mut changed = original; changed.recipe[1] = 255;
+        assert!(slot.backdrop(changed, &completed).is_none());
+        slot.record(changed, completed.clone(), completed.clone());
+        assert_eq!(slot.backdrop(changed, &completed), Some(before));
     }
 
     #[test]
