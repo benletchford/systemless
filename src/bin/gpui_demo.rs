@@ -7562,7 +7562,9 @@ mod desktop {
                         let layout = super::super::text::ClassicLine::plain(
                             &record.text[starts[line_index]..starts[line_index + 1]], record.font, record.size);
                         let dest = record.global_dest_rect.unwrap();
-                        let guest_x = i32::from(dest.1) + layout.positions[offset];
+                        // TextEdit paints glyphs one guest pixel inside destRect.
+                        // Exercise the displayed boundary, including that inset.
+                        let guest_x = i32::from(dest.1) + 1 + layout.positions[offset];
                         let guest_y = i32::from(dest.0) + line_index as i32 * i32::from(record.line_height)
                             + i32::from(record.font_ascent);
                         for down in [true, false] {

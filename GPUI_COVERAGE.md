@@ -2669,3 +2669,12 @@ native host observers, native Macintosh font fidelity, scaled pointer/editing
 interactions, all caret phases, mixed-run TextEdit, or general dialog editing.
 The modeless dialog's remaining host-typography edit field is visible in these
 captures and remains unfinished.
+
+Scaled plain TextEdit insertion clicks are now checked at the painted glyph
+boundary, including the one-pixel destRect inset. The GPUI test
+`classic_document_glyph_clicks_reach_guest_at_scene_scales` dispatches real
+frontend mouse-down/up events through the existing guest input path and asserts
+the resulting guest insertion offset on two lines at 0.75x, 1x, 1.5x and 2x,
+across monochrome 68k, colour 68k and PPC (24 checks; passed in 254.37 seconds).
+This qualifies that bounded click mapping; scaled dragging, Shift-selection,
+editing, scrolling and native host input remain open.
