@@ -1,0 +1,25 @@
+{
+  "base": "46088c468c1d402adbcf00193c5c7e0976757977",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "a6b9cd0170a50a55ff5782f1712f97ce671942ff38bd79bc9085f53d71e0aff8",
+    "src/bin/gpui_demo_composition.rs": "1071940d28daae6c114a77d617065729680219598a04b797096310cd7ee6f785",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f",
+    "target/ci-test/examples/gpui-menu-demo": "38bdd5e2699e2811ff4d8b56cef5cef66b734b2823686480010bc5e717e19155"
+  },
+  "image_sha256": {
+    "true-16-baseline.png": "11730bab9c8560bd75bb26ba09f9aeaed4f58846636616b3b6598f504439b5c7",
+    "true-8-baseline.png": "c863c2078195848f659836e2291321f6ce5e10c64995da73d95c63339ee77e3d",
+    "true-8-marked.png": "1dbf85c11d2e5cb1b28bb5f7cdcb023f97dd622662101134777034e18435d5e1",
+    "false-8-marked.png": "33b6ce03dcd0fa42110fb060dca3db511f029b54f237e22b634c5ea20cbd8b5c",
+    "false-8-baseline.png": "98876890e6ffa3db4624fd785ab5c5a4e8dc2ca2b3624f28820b74a00bea2bd8",
+    "false-1-baseline.png": "a12152e39547f0187ea356338b350d23811cda7e46bebbf1f7319f2bfdffa36b",
+    "false-1-marked.png": "2bab97bb0bf49caa6514d9dae8538ab5f2bbbfaabc5a5328d048ae62eeb9dc26",
+    "true-16-marked.png": "d5bc7d93eeaa42e1f45b1a38e09ce1038e249df133442a45bca1915c32b9c6d5"
+  },
+  "command": "target/ci-test/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --capture-composition-surface target/gpui-qualification/composition-surface",
+  "scope": "Four shared Demo captures, actual guest styled document, Unicode Japanese/emoji selection, differing marked pixels and exact baseline restoration on cancellation; snapshot preserved. Explicit host activation/focus.",
+  "direct_review": [
+    "true-16-marked.png"
+  ],
+  "limits": "One direct appearance review. Fixed scale1, host font staging surface, not inline guest reflow. No native physical IME, marked geometry queries, multiline/CR/vertical overflow, modal editing or independent oracle."
+}

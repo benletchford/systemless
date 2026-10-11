@@ -1,0 +1,12 @@
+{
+  "base": "46088c468c1d402adbcf00193c5c7e0976757977",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "2ce194ee33b9c633b9153b7a63e6bf3b57faf58b9d26617c8ae8de1402bd89f2",
+    "src/bin/gpui_demo_composition.rs": "860e6af5096eb8414ce69cff5e188934dd78602e1a80702bcb44461bd35e30cf",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f",
+    "target/ci-test/examples/gpui-menu-demo": "ae140e9b1641767313cb87d2d4a0548d6039ce2336e2ce11dd829ba275c45be5"
+  },
+  "command": "target/ci-test/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --capture-composition-surface target/gpui-qualification/composition-marked-geometry",
+  "scope": "All four actual CPU/depth modes: shaped marked emoji bounds, point query at visible selected boundary, surrogate split rejection, exact composed cancellation restoration and unchanged guest snapshots.",
+  "limits": "Fixed scale1 and one marked string. Separate host staging surface, not inline guest reflow; physical IME, arbitrary mixed ranges, CR/multiline/vertical overflow and modal editors remain open."
+}

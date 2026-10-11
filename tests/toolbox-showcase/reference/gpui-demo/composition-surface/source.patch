@@ -1,0 +1,238 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index 9aa22a35..dd29fb66 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -343,6 +343,9 @@ mod desktop {
+         capture_windows: Option<PathBuf>,
+         #[cfg(feature = "gpui-demo-test")]
+         #[arg(long, hide = true)]
++        capture_composition_surface: Option<PathBuf>,
++        #[cfg(feature = "gpui-demo-test")]
++        #[arg(long, hide = true)]
+         capture_windows_moved: Option<PathBuf>,
+         #[cfg(feature = "gpui-demo-test")]
+         #[arg(long, hide = true)]
+@@ -2884,6 +2887,7 @@ mod desktop {
+                     }
+                 }).absolute().size_full())
+                 .child(super::metrics::SceneMetrics::new(screen, window.rem_size() * scene_scale))
++                .children(self.composition_surface(cx))
+                 .when(!guest_menu_fallback && self.guest_popup.is_none() && (self.menu_presented || menu_hovered), |root| {
+                     root.child(bar.unwrap().absolute().top_0().left_0().when(self.menu_presented, |bar| {
+                         bar.top(px(self.display_origin.1)).left(px(self.display_origin.0))
+@@ -4776,6 +4780,109 @@ mod desktop {
+         eprintln!("saved GPUI styled ink capture to {}", output.display());
+     }
+ 
++        #[cfg(feature = "gpui-demo-test")]
++        fn capture_composition_surface(output: &std::path::Path) {
++            use gpui_kit::*;
++            use std::sync::Arc;
++        fn settle(session: &mut MacintoshSession) {
++            let start = session.runner().guest_tick();
++            for _ in 0..100 {
++                session.runner_mut().run_steps(10_000, None);
++                if session.runner().guest_tick().wrapping_sub(start) >= 2 {
++                    return;
++                }
++            }
++            panic!("guest did not advance while tracking input");
++        }
++        fn wait_for_menu(
++            session: &mut MacintoshSession,
++            menu_id: i16,
++            item_number: i16,
++            checked: bool,
++        ) {
++            for _ in 0..300 {
++                session.runner_mut().run_steps(100_000, None);
++                let snapshot = session.runner_mut().guest_menu_snapshot();
++                if snapshot.menus.iter().any(|menu| {
++                    menu.id == menu_id
++                        && menu
++                            .items
++                            .iter()
++                            .any(|item| item.number == item_number && item.checked == checked)
++                }) {
++                    return;
++                }
++                assert!(
++                    session.status().running,
++                    "guest halted before updating menu"
++                );
++            }
++            panic!("menu {menu_id} item {item_number} did not reach checked={checked}");
++        }
++            std::fs::create_dir_all(&output).unwrap();
++            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
++                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
++                session.runner_mut().set_prefer_powerpc_executables(powerpc);
++                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
++                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
++                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
++                session.initialize(&app);
++                wait_for_menu(&mut session, 129, 1, true);
++                assert!(session.runner_mut().select_guest_menu_item(129, 11));
++                wait_for_menu(&mut session, 129, 11, true); settle(&mut session);
++                let initial = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.styled).unwrap();
++                let rect = initial.global_view_rect.unwrap();
++                for input in [MacintoshInput::MouseDown { vertical: rect.0 + 4, horizontal: rect.1 + 4 },
++                    MacintoshInput::MouseUp { vertical: rect.0 + 4, horizontal: rect.1 + 4 }] {
++                    session.deliver_input(input); settle(&mut session);
++                }
++                let records = session.runner_mut().text_edit_snapshot().records;
++                let frame = session.video_frame().unwrap();
++                let plans = qualify_styled_text_fields(&records, &frame.pixels, frame.width, frame.height);
++                let windows = session.runner_mut().window_frame_snapshot();
++                let menus = session.runner_mut().guest_menu_snapshot();
++                let mut visual = HeadlessAppContext::with_platform(platform::current_platform(true).text_system(),
++                    Arc::new(gpui_kit::assets::Assets), platform::current_headless_renderer);
++                visual.update(gpui_kit::init);
++                let (sender, _receiver) = std::sync::mpsc::channel();
++                let mut view = None;
++                let window = visual.open_window(size(px(800.), px(600.)), |window, cx| {
++                    let entity = cx.new(|cx| {
++                        let mut demo = Demo::new(sender, Default::default(), cx);
++                        demo.width = frame.width; demo.height = frame.height;
++                        demo.text_edits = records.clone(); demo.styled_text_plans = plans;
++                        demo.windows = windows; demo.menus = menus; demo.host_active = Some(true);
++                        demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
++                            image::RgbaImage::from_raw(frame.width, frame.height, gpui_pixels(frame.pixels)).unwrap())])));
++                        window.focus(&demo.focus, cx);
++                        demo
++                    });
++                    view = Some(entity.clone()); entity
++                }).unwrap();
++                let view = view.unwrap(); visual.run_until_parked();
++                let baseline = visual.capture_screenshot(window.into()).unwrap();
++                visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
++                    demo.host_active = Some(true);
++                    window.focus(&demo.focus, cx);
++                    demo.synchronize_composition(window, cx);
++                    assert!(demo.composition.mark("日😀", 1..3)); cx.notify();
++                })).unwrap();
++                visual.run_until_parked();
++                let marked = visual.capture_screenshot(window.into()).unwrap();
++                assert_ne!(baseline, marked, "marked text must change composed pixels");
++                marked.save(output.join(format!("{powerpc}-{depth}-marked.png"))).unwrap();
++                visual.update(|cx| view.update(cx, |demo, cx| {
++                    assert_eq!(demo.text_edits, records);
++                    demo.composition.cancel(); cx.notify();
++                }));
++                visual.run_until_parked();
++                let restored = visual.capture_screenshot(window.into()).unwrap();
++                assert_eq!(baseline, restored, "cancellation must restore exact composed pixels");
++                baseline.save(output.join(format!("{powerpc}-{depth}-baseline.png"))).unwrap();
++                eprintln!("PASS composition-surface-restoration powerpc={powerpc} depth={depth}");
++            }
++        }
++
+     pub(super) fn main() {
+         run(Args::parse());
+     }
+@@ -4789,6 +4896,11 @@ mod desktop {
+     }
+ 
+     fn run(args: Args) {
++        #[cfg(feature = "gpui-demo-test")]
++        if let Some(output) = args.capture_composition_surface.as_ref() {
++            capture_composition_surface(output);
++            return;
++        }
+         #[cfg(feature = "gpui-demo-test")]
+         if let Some(output) = args.capture_custom_menu_fallback.as_ref() {
+             capture_custom_menu_fallback(output);
+@@ -8974,7 +9086,10 @@ mod desktop {
+                         let mut adjusted = None;
+                         assert_eq!(demo.text_for_range(start..start + 3, &mut adjusted, window, cx), Some("日😀".into()));
+                         assert!(demo.text_for_range(start + 1..start + 2, &mut adjusted, window, cx).is_none());
++                        assert!(demo.composition_surface(cx).is_some());
++                        assert_eq!(demo.text_edits.iter().find(|record| record.guest_id == before.guest_id).unwrap(), &before);
+                     });
++                    window.render_frame(cx);
+                     window.press("backspace", cx);
+                 }).unwrap();
+                 assert!(!receiver.try_iter().any(|command| matches!(command, super::Command::Input(_) | super::Command::CommitText(..))),
+diff --git a/src/bin/gpui_demo_composition.rs b/src/bin/gpui_demo_composition.rs
+index be8cff73..ce26b745 100644
+--- a/src/bin/gpui_demo_composition.rs
++++ b/src/bin/gpui_demo_composition.rs
+@@ -1,6 +1,7 @@
+ //! Native text-service adapter. Guest bytes and selection remain authoritative.
+ use super::{Command, Demo};
+ use gpui_kit::*;
++use gpui_kit::component::ActiveTheme;
+ use std::ops::Range;
+ 
+ pub(super) fn text_range_width(record: &systemless::runner::TextEditSnapshot, range: Range<usize>) -> Option<i16> {
+@@ -34,6 +35,70 @@ impl Demo {
+         self.composition.synchronize(owner);
+     }
+ 
++    /// Unicode staging belongs to the host text service. It uses host typography
++    /// in a separate surface, never as a replacement for committed guest glyphs.
++    pub(super) fn composition_surface(&self, cx: &Context<Self>) -> Option<AnyElement> {
++        let owner = self.composition.owner()?;
++        let preedit = self.composition.preedit.clone()?;
++        let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
++        if record.text != owner.text || self.display_scale <= 0. { return None; }
++        let starts = record.line_starts.as_ref()?;
++        let index = starts.partition_point(|start| *start <= owner.selection.start).saturating_sub(1)
++            .min(starts.len().checked_sub(2)?);
++        let geometry = text_line_geometry(record, index)?;
++        let dest = record.global_dest_rect?;
++        let view = record.global_view_rect?;
++        let x = i32::from(dest.1) - i32::from(record.dest_rect.1) + i32::from(geometry.left)
++            + i32::from(text_range_width(record, starts[index]..owner.selection.start)?);
++        let y = i32::from(dest.0) - i32::from(record.dest_rect.0) + i32::from(geometry.top);
++        if x < i32::from(view.1) || x >= i32::from(view.3) || y < i32::from(view.0) || y >= i32::from(view.2) { return None; }
++        let width = 240f32.min(self.width as f32 * self.display_scale).max(1.);
++        let lines: Vec<String> = preedit.text.split('\n').map(str::to_owned).collect();
++        let height = (lines.len().max(1) as f32 * 20. + 8.).min(self.height as f32 * self.display_scale);
++        let left = (self.display_origin.0 + x as f32 * self.display_scale)
++            .min(self.display_origin.0 + self.width as f32 * self.display_scale - width);
++        let top = (self.display_origin.1 + (y + i32::from(geometry.height)) as f32 * self.display_scale)
++            .min(self.display_origin.1 + self.height as f32 * self.display_scale - height);
++        let foreground = cx.theme().foreground;
++        let selection = cx.theme().selection;
++        Some(div().id("guest-composition-surface").absolute().left(px(left)).top(px(top))
++            .w(px(width)).h(px(height)).bg(cx.theme().background).border_1().border_color(foreground)
++            .overflow_hidden().child(canvas(move |bounds, _, _| bounds, move |_, bounds, window, cx| {
++                let mut utf16_start = 0usize;
++                for (index, text) in lines.iter().enumerate() {
++                    let length = text.encode_utf16().count();
++                    let byte_at = |unit: usize| {
++                        let mut count = 0;
++                        for (byte, ch) in text.char_indices() {
++                            if count >= unit { return byte; }
++                            count += ch.len_utf16();
++                        }
++                        text.len()
++                    };
++                    let selected_start = preedit.selection_utf16.start.saturating_sub(utf16_start).min(length);
++                    let selected_end = preedit.selection_utf16.end.saturating_sub(utf16_start).min(length);
++                    let line = window.text_system().shape_line(text.clone().into(), px(14.), &[TextRun {
++                        len: text.len(), font: font(".SystemUIFont"), color: foreground,
++                        background_color: None, underline: None, strikethrough: None,
++                    }], None);
++                    let caret = line.x_for_index(byte_at(selected_end));
++                    let scroll = (f32::from(caret) - (width - 12.)).max(0.);
++                    let origin = point(bounds.origin.x + px(4. - scroll), bounds.origin.y + px(4. + index as f32 * 20.));
++                    if selected_start < selected_end {
++                        let a = line.x_for_index(byte_at(selected_start));
++                        let b = line.x_for_index(byte_at(selected_end));
++                        window.paint_quad(fill(Bounds::new(point(origin.x + a, origin.y), size(b - a, px(20.))), selection));
++                    }
++                    let _ = line.paint(origin, px(20.), TextAlign::Left, None, window, cx);
++                    window.paint_quad(fill(Bounds::new(point(origin.x, origin.y + px(19.)), size(line.width(), px(1.))), foreground));
++                    if preedit.selection_utf16.end >= utf16_start && preedit.selection_utf16.end <= utf16_start + length {
++                        window.paint_quad(fill(Bounds::new(point(origin.x + caret, origin.y), size(px(1.), px(20.))), foreground));
++                    }
++                    utf16_start += length + 1;
++                }
++            }).size_full()).into_any_element())
++    }
++
+     fn composition_text(&self) -> Option<String> {
+         let owner = self.composition.owner()?;
+         let mut text = systemless::systems::macintosh::mac_roman::decode_mac_roman(&owner.text);
