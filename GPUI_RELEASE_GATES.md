@@ -202,3 +202,11 @@ with fresh-process guest readback. Evidence: `reference/gpui-demo/atomic-save-sn
 This addresses the audited mixed-generation process-interruption risk. Sudden
 power loss, tree creation/deletion durability, disk failure injection and full
 storage barriers remain unqualified. No overall production gate closes here.
+
+### Completed mixed-checkpoint frontend regression (2026-10-11)
+
+The preserved full-suite run has now terminated successfully: 189 passed,
+zero failed and one ignored in 8401.92s. Its parent began at `e0d709d8`, while
+later targeted builds replaced the executable used by `current_exe` children.
+This is mixed-checkpoint regression evidence, not final-candidate qualification.
+A pinned packaged candidate still requires a clean, reproducible full run.

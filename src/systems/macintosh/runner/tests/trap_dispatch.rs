@@ -5,6 +5,39 @@ use crate::process_context::PendingFileCompletion;
 use crate::trap::dispatch::TrapTableProfile;
 
 #[test]
+fn notification_native_runner_completes_null_and_auto_remove_without_cpu_changes() {
+    for response in [0, u32::MAX] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        runner.init_app(&app);
+        let request = PPC_DATA_BASE + 0x6000;
+        let foreground;
+        {
+            let native = runner.native.application_mut().unwrap();
+            native.memory.add_region(request, vec![0; 128]);
+            native.memory.write_u16_be(request + 4, 8).unwrap();
+            native.memory.write_u32_be(request + 24, request + 64).unwrap();
+            native.memory.write_u32_be(request + 28, response).unwrap();
+            native.toolbox_startup.notification_requests.push(request);
+            foreground = native.cpu.capture_execution_context();
+        }
+        let notice = runner.notification_snapshot().pop().unwrap();
+        let mut stale = notice.clone();
+        stale.instance_id += 1;
+        assert!(!runner.complete_notification_delivery(&stale));
+        assert!(!runner.notification_snapshot().pop().unwrap().response_started);
+        assert!(runner.complete_notification_delivery(&notice));
+        assert!(!runner.complete_notification_delivery(&notice));
+        if response == 0 {
+            assert!(runner.notification_snapshot().pop().unwrap().response_started);
+        } else { assert!(runner.notification_snapshot().is_empty()); }
+        let native = runner.native.application_mut().unwrap();
+        assert_eq!(native.cpu.capture_execution_context().architectural(), foreground.architectural());
+        assert_eq!(native.memory.read_u32_be(request), Some(0));
+    }
+}
+
+#[test]
 fn notification_delivery_restores_full_guest_registers_and_condition_codes() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     let resume_pc = 0x10000;

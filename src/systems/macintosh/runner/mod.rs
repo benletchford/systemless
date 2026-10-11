@@ -2256,9 +2256,13 @@ impl FixtureRunner {
     /// Complete an actually delivered notice. The frontend must supply the
     /// displayed snapshot; this method does not establish delivery itself.
     pub fn complete_notification_delivery(&mut self, expected: &NotificationSnapshot) -> bool {
-        if self.native.application_mut().is_some() || self.active_interrupt_callback.is_some()
+        if self.active_interrupt_callback.is_some()
             || !self.notification_snapshot().iter().any(|current| current == expected) {
             return false;
+        }
+        if let Some(app) = self.native.application_mut() {
+            return app.complete_notification_without_procedure(expected.guest_id,
+                expected.instance_id, expected.response);
         }
         let saved = self.capture_callback_context(ActiveInterruptCallbackSource::NotificationResponse);
         if !self.dispatcher.complete_notification_delivery(&mut self.m68k.cpu, &mut self.bus,

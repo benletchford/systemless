@@ -526,7 +526,7 @@ pub(crate) fn ppc_dispatch_system_compatibility(
     }
 }
 
-fn ppc_remove_notification(memory: &mut PpcSectionMem, requests: &mut crate::process_context::SharedProcessNotificationQueue, request: u32) -> i16 {
+pub(super) fn ppc_remove_notification(memory: &mut PpcSectionMem, requests: &mut crate::process_context::SharedProcessNotificationQueue, request: u32) -> i16 {
     let Some(index) = requests.iter().position(|&entry| entry == request) else { return -1; };
     requests.remove(index);
     let _ = memory.write_u32_be(request, 0);
