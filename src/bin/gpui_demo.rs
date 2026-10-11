@@ -5139,6 +5139,101 @@ mod desktop {
 
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
+        fn themed_window_title_drag_forwards_guest_coordinates(
+            cx: &mut gpui_kit::TestAppContext,
+        ) {
+            use gpui_kit::{test::TestWindowExt, AppContext, Bounds, WindowBounds, WindowOptions};
+            use systemless::runner::{WindowFrameSnapshot, WindowSnapshot};
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let (window, view) = cx.update(|cx| {
+                gpui_kit::open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(740.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, updates, cx)),
+                )
+                .unwrap()
+            });
+            cx.update(|cx| {
+                view.update(cx, |demo, cx| {
+                    demo.windows = vec![WindowFrameSnapshot {
+                        guest_id: 7,
+                        generation: 1,
+                        window: WindowSnapshot {
+                            title: "Inspector".into(),
+                            bounds: (50, 40, 420, 600),
+                            structure_bounds: Some((31, 39, 422, 602)),
+                            visible_region: None,
+                            update_region: None,
+                            visible: true,
+                            active: true,
+                        },
+                        definition_id: Some(8),
+                        close_box: true,
+                    }];
+                    demo.width = 800;
+                    demo.height = 580;
+                    demo.crop_top = 20;
+                    cx.notify();
+                });
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.drag(
+                    gpui_kit::point(gpui_kit::px(300.), gpui_kit::px(57.)),
+                    gpui_kit::point(gpui_kit::px(316.), gpui_kit::px(69.)),
+                    cx,
+                );
+            })
+            .unwrap();
+            let inputs: Vec<_> = receiver
+                .try_iter()
+                .filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input),
+                    _ => None,
+                })
+                .collect();
+            let presses: Vec<_> = inputs
+                .iter()
+                .filter(|input| {
+                    matches!(
+                        input,
+                        MacintoshInput::MouseDown { .. } | MacintoshInput::MouseUp { .. }
+                    )
+                })
+                .collect();
+            assert!(matches!(
+                presses.as_slice(),
+                [
+                    MacintoshInput::MouseDown {
+                        vertical: 41,
+                        horizontal: 300
+                    },
+                    MacintoshInput::MouseUp {
+                        vertical: 53,
+                        horizontal: 316
+                    }
+                ]
+            ), "{inputs:?}");
+            assert!(inputs.iter().any(|input| matches!(
+                input,
+                MacintoshInput::MouseMove {
+                    vertical: 53,
+                    horizontal: 316
+                }
+            )), "{inputs:?}");
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
         fn held_pointer_routes_across_guest_pane_boundary(
             cx: &mut gpui_kit::TestAppContext,
         ) {
