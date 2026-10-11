@@ -24,6 +24,10 @@ capture run is archived in `styled-text-single-line-shared`, pinned to f565b695.
 All 192 fixture raster/state cases pass; this earlier bitmap evidence does not
 qualify the newer smooth typography or production readiness.
 
+### Current-state accessibility text dispatch
+
+Plain/styled TextEdit, dialog editors, Save filenames and New Folder names now revalidate current host activity, root focus, menu/composition boundaries and exact text ownership at accessibility callback invocation. Value and selection actions use weak Demo callbacks and retain guest worker validation. Two focused tests pass (0.02s), covering direct shared-helper rejection without rerendering across four target types and existing Mac Roman conversion. Evidence: `text-inactive-dispatch`. This is synthetic dispatch/helper evidence; native accessibility delivery and CPU-specific end-to-end qualification remain open. All eight broad production gates remain open.
+
 ### Current-state dialog and window-control dispatch
 
 Keyboard/accessibility callbacks for buttons, checkboxes and radio buttons now revalidate host activity and current guest ownership/state at invocation. Weak Demo callbacks reject stale generations, disabled or hidden items and changed dialog control identities. Eight themed frontend regressions pass (20.85s), including direct no-rerender rejection checks for all three dialog kinds and window-control definitions, plus existing exactly-once guest pointer delivery. Evidence: `control-inactive-dispatch`. Physical activation, native accessibility delivery and comprehensive lifecycle qualification remain open; all eight broad production gates remain open.

@@ -1,0 +1,5 @@
+# Accessibility text dispatch at invocation
+
+Plain/styled document TextEdit, dialog editors, Save filenames and New Folder names now use weak Demo callbacks for accessibility value and selection actions. Before dispatch, the shared helper requires current host activity, root focus, no owned notification, no preedit or menu/popup tracking, a valid guest range and exact composition ownership including identity, target, contents and selection. The existing worker retains canonical guest validation and Toolbox/event delivery.
+
+Two focused tests pass (0.02s): synthetic shared Demo rejection checks across document/dialog/Save/New Folder targets, for both replacement and selection; and existing Mac Roman replacement/conversion rejection checks. The new test changes state without rerendering and rejects inactive hosts, stale generations, changed contents/selection, preedit, tracking and displaced focus, then admits eight valid actions. It exercises the shared dispatch helper, not native accessibility callback delivery or actual guest CPU workflows. No new rendering capture or font qualification is claimed. All eight broad production gates remain open.
