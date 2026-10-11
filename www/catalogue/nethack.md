@@ -59,6 +59,24 @@ artifacts:
       match production packing. Original Kevin Hugo port differences are included
       as src-diff.txt, SHA-256
       2e1540a7e6c8222a7f904cb0181b834b4894e1c21969be735eb03100ce5b7c9b.
+- id: gameplay-screenshot
+  role: screenshot
+  format: png
+  source:
+    type: incoming
+    path: catalogue/incoming/nethack/gameplay.png
+  provenance:
+    redistribution: permitted
+    content_only: true
+    sources:
+    - https://github.com/benletchford/systemless/issues/4568
+    license: NetHack General Public License
+    rights_holder: The NetHack DevTeam and contributors
+    permission: Original game content covered by the bundled NetHack General Public License.
+    notes: >-
+      Actual first-dungeon map after keypad movement and dog displacement.
+      Cropped to the map content, excluding window frame, clipped status line,
+      menu bar and desktop. Native source c1a98415f47e04887b7afb0c4d8b302cfd5bfea4.
 references:
 - https://www.nethack.org/v343/ports/download-mac.html
 - https://github.com/benletchford/systemless/issues/4568
@@ -75,3 +93,5 @@ source above and use it with the included src-diff.txt.
 
 First-dungeon movement and dog displacement are verified natively. Browser
 qualification, broader gameplay, saving and audio remain pending.
+
+![NetHack first dungeon after moving west](incoming/nethack/gameplay.png)
