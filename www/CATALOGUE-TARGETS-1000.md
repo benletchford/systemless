@@ -810,7 +810,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 750 | 938 | Hemiroids | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/h/) |
 | 751 | 939 | Iris Puzzle | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/i/) |
 | 752 | 940 | Jack Keane | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/jack-keane) |
-| 753 | 941 | Klondike | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
+| 753 | 941 | Klondike | 68K/PPC (original 7.7.1; startup held) | S | [Publisher original](https://www.casteel.org/klondike.html); [Original intake](CATALOGUE-SOURCES.md#klondike-771--target-941-original-publisher-intake) |
 | 754 | 942 | Lose Your Marbles! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
 | 755 | 943 | MacBaseball | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 756 | 944 | Nomis | 68K/PPC (filename) | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
