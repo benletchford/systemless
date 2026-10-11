@@ -5798,3 +5798,106 @@ fn qd_global_screen_bits_copies_live_bitmap_and_guards_complete_destination() {
         );
     }
 }
+
+#[test]
+fn classic_carbon_port_buffering_weak_imports_use_documented_mac_os_9_contract() {
+    for (symbol, operation, boolean) in [
+        (
+            "QDIsPortBuffered",
+            PpcQuickDrawCompatibilityOperation::IsPortBuffered,
+            true,
+        ),
+        (
+            "QDIsPortBufferDirty",
+            PpcQuickDrawCompatibilityOperation::IsPortBufferDirty,
+            true,
+        ),
+        (
+            "QDFlushPortBuffer",
+            PpcQuickDrawCompatibilityOperation::FlushPortBuffer,
+            false,
+        ),
+    ] {
+        for spelling in [symbol.to_owned(), symbol.to_ascii_lowercase()] {
+            for unavailable_library in ["InterfaceLib", "AppearanceLib"] {
+                assert_eq!(
+                    dispatcher_target_for_import(unavailable_library, &spelling),
+                    PpcImportDispatcherTarget::Unsupported,
+                );
+            }
+            let loader = synthetic_loader_with_symbol_class(
+                b"CarbonLib",
+                spelling.as_bytes(),
+                0x82,
+                &[run_reloc(0x23, 1)],
+            );
+            let mut loaded = load_pef_application(&synthetic_pef_with_loader(loader)).unwrap();
+            assert!(loaded.imports[0].weak);
+            assert_ne!(loaded.imports[0].address, 0);
+            assert_eq!(
+                loaded.imports[0].dispatcher_target,
+                PpcImportDispatcherTarget::QuickDrawCompatibility(operation)
+            );
+            let port = PPC_MAIN_GWORLD;
+            let before = ppc_memory_read_bytes(&mut loaded.memory, port, 108).unwrap();
+            loaded.cpu.gpr[3] = port;
+            // A classic flush must not dereference its optional region.
+            loaded.cpu.gpr[4] = u32::MAX;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::QuickDrawCompatibility(operation),
+            );
+            assert_eq!(loaded.cpu.gpr[3], if boolean { 0 } else { port });
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, port, 108),
+                Some(before)
+            );
+        }
+    }
+}
+
+#[test]
+fn classic_port_drawing_is_visible_without_a_quartz_flush() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"InvertRect")).unwrap();
+    let rect = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect, 1, 2, 4, 5).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!(ppc_quickdraw_write_raw_pixel(
+        &mut loaded.memory,
+        front,
+        (2, 1),
+        0x12
+    ));
+    loaded.cpu.gpr[3] = rect;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::InvertRect);
+    // The draw is already committed to screen storage before any flush API.
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+        Some(0xED)
+    );
+    for operation in [
+        PpcQuickDrawCompatibilityOperation::IsPortBuffered,
+        PpcQuickDrawCompatibilityOperation::IsPortBufferDirty,
+    ] {
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::QuickDrawCompatibility(operation),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+    loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::QuickDrawCompatibility(
+            PpcQuickDrawCompatibilityOperation::FlushPortBuffer,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3], PPC_MAIN_GWORLD);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+        Some(0xED)
+    );
+}
