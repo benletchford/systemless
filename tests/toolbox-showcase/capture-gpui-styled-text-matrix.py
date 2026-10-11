@@ -39,6 +39,7 @@ def png_size(path):
  return list(struct.unpack('>II',header[16:24]))
 manifest={'source_commit':source,'capture_binary_sha256':binary_hash,'fixture':'tests/toolbox-showcase/toolbox-showcase.sit','fixture_sha256':fixture_hash,'field_bounds':[126,74,164,561],'scope':'Public mixed-style field raster only; no production ownership, general themes/backgrounds, GPUI pointer mapping or native host observer qualification','cases':[],'complete':False,'matrix_kind':'multiline' if args.multiline else 'single-line','compositor':'shared Demo renderer'}
 manifest['source_sha256']=source_hashes
+manifest['runtime_cpu_evidence']='active application runtime'
 manifest['smooth_review']=args.smooth_review
 if args.smooth_review:manifest['scope']='Shared smooth field preflight, native guest state and geometry; requires explicit composed visual review. No binary ink oracle, all font fidelity, physical host input, production performance or release claim.'
 configs=[('inactive','inactive',None,'--capture-styled-text-edit-ink'),*[( 'selection',state,None,flag) for state,flag in [('selected','--capture-styled-text-edit-selected'),('suspended','--capture-styled-text-edit-selected-suspended'),('resumed','--capture-styled-text-edit-selected-resumed')]],*[( 'caret',state,offset,'--capture-styled-text-edit-caret') for offset in [0,26] for state in ['visible','blink-off','suspended','resumed']]]
@@ -57,6 +58,8 @@ for mode,depth,flags in [('ppc16',16,['--prefer-powerpc']),('ppc8',8,['--prefer-
     print('FAILED '+name+'\n'+result.stderr,flush=True);raise SystemExit(result.returncode)
    check_pins()
    evidence=json.loads(path.with_suffix('.json').read_text())
+   assert type(evidence['runtime_powerpc']) is bool
+   assert evidence['runtime_powerpc']==mode.startswith('ppc'),(name,evidence)
    assert evidence['depth']==depth,(name,evidence)
    assert evidence['drawing_intact'] and evidence['active']==(state not in ['inactive','suspended']),(name,evidence)
    assert evidence.get('compositor')=='shared Demo renderer'

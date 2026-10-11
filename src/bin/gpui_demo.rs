@@ -4535,7 +4535,10 @@ mod desktop {
         assert_eq!(record.text, original.text);
         assert_eq!(record.style_runs, original.style_runs);
         assert_eq!(record.generation, original.generation);
+        let runtime_powerpc = session.runner().is_powerpc_app();
+        assert_eq!(runtime_powerpc, prefer_powerpc, "capture must execute the requested CPU");
         let mut evidence = serde_json::json!({
+            "runtime_powerpc": runtime_powerpc,
             "caret_state": if caret { caret_state } else { "not-requested" },
             "insertion_offset": caret_offset, "multiline": multiline, "selection": record.selection,
             "compositor": "shared Demo renderer",
