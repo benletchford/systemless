@@ -2976,3 +2976,18 @@ pass. The existing shared-raster/gray-phase regression also passes (0.02 seconds
 The prior popup interaction matrix remains evidence for unchanged tracking,
 not composed verification of this new raster. Scrolled compositions across
 CPUs/scales and native colour/pattern fidelity remain unqualified.
+
+The updated binary build and three scrolled-popup captures complete. Full
+monochrome 68k, colour 68k and PPC compositions were reviewed and archived
+losslessly with hashes in `popup-guest-raster-scrolled-review.json`. Capture
+assertions verify Geneva 9 owner font, 12-pixel rows, 140-pixel width and final
+item visibility after held down-arrow tracking. The compositions show the
+up-arrow raster and selected final row. The partially clipped top label needs
+closer comparison; native parity and additional scales/states remain open.
+
+Follow-up clipping inspection: both guest painters reserve a 16-pixel upper
+scroll slot and preserve original baselines when clipping partially exposed
+rows. The PPC guest-frame crop also contains the partial first label. Retain
+this clipping rather than shifting its baseline. This internal renderer
+comparison supports the observed clipping policy; it is not native-oracle
+evidence or complete pixel parity. All archived composition hashes revalidate.
