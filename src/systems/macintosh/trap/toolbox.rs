@@ -13732,18 +13732,17 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 2);
 
                 match selector {
-                    0 => {
+                    crate::text_utils::NUM_TO_STRING_SELECTOR => {
                         // NumToString: D0.L = number, A0 = pointer to Str255 result
                         let number = cpu.read_reg(Register::D0) as i32;
                         let a0 = cpu.read_reg(Register::A0);
-                        bus.write_pstring(a0, format!("{}", number).as_bytes());
+                        bus.write_pstring(a0, &crate::text_utils::evaluate_num_to_string(number));
                     }
-                    1 => {
+                    crate::text_utils::STRING_TO_NUM_SELECTOR => {
                         // StringToNum: A0 = pointer to Pascal string, D0.L = result
                         let a0 = cpu.read_reg(Register::A0);
                         let bytes = bus.read_pstring(a0);
-                        let s = String::from_utf8_lossy(&bytes);
-                        let num: i32 = s.trim().parse().unwrap_or(0);
+                        let num = crate::text_utils::evaluate_string_to_num(&bytes);
                         cpu.write_reg(Register::D0, num as u32);
                     }
                     2 => {

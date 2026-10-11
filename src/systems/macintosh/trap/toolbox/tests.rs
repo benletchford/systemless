@@ -14034,6 +14034,33 @@
         assert_eq!(bus.read_byte(decimal_ptr + 25), 0);
     }
 
+    #[test]
+    fn pack7_num_to_string_and_string_to_num() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let str_ptr = 0x5400;
+
+        // NumToString (selector 0): D0 = -12345, A0 = str_ptr
+        bus.write_word(sp, 0); // selector 0
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, (-12345i32) as u32);
+        cpu.write_reg(Register::A0, str_ptr);
+        disp.dispatch_toolbox(true, 0x1EE, &mut cpu, &mut bus)
+            .expect("Pack7 dispatch")
+            .expect("NumToString succeeds");
+        assert_eq!(bus.read_pstring(str_ptr), b"-12345");
+
+        // StringToNum (selector 1): A0 = str_ptr (" 42abc") -> D0 = 42
+        bus.write_pstring(str_ptr, b" 42abc");
+        bus.write_word(sp, 1); // selector 1
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::A0, str_ptr);
+        disp.dispatch_toolbox(true, 0x1EE, &mut cpu, &mut bus)
+            .expect("Pack7 dispatch")
+            .expect("StringToNum succeeds");
+        assert_eq!(cpu.read_reg(Register::D0), 42);
+    }
+
     fn run_fdec2str(
         disp: &mut TrapDispatcher,
         cpu: &mut MockCpu,

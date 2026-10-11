@@ -688,6 +688,62 @@ pub fn evaluate_upper_string(bytes: &mut [u8], diac_sensitive: bool) {
     }
 }
 
+/// Binary-Decimal Conversion Package (Pack7) trap word ($A9EE).
+pub const PACK7_TRAP: u16 = 0xA9EE;
+
+/// Toolbox trap offset for Pack7 ($A9EE & 0x03FF = 0x01EE).
+pub const PACK7_TRAP_OFFSET: u16 = 0x01EE;
+
+/// Package selector for NumToString (0).
+pub const NUM_TO_STRING_SELECTOR: u16 = 0;
+
+/// Package selector for StringToNum (1).
+pub const STRING_TO_NUM_SELECTOR: u16 = 1;
+
+/// Converts a 32-bit signed integer into decimal ASCII bytes (`NumToString`).
+///
+/// References:
+/// - Inside Macintosh Volume I (1985), p. I-489
+/// - Inside Macintosh: Text (1993), p. 5-73
+#[inline]
+pub fn evaluate_num_to_string(number: i32) -> Vec<u8> {
+    format!("{}", number).into_bytes()
+}
+
+/// Parses a 32-bit signed integer from ASCII / Pascal string bytes (`StringToNum`).
+///
+/// Skips leading whitespace, parses an optional '+' or '-' sign, and converts
+/// consecutive decimal digits until the first non-digit character.
+/// Overflow behavior wraps using standard 32-bit signed two's complement arithmetic.
+///
+/// References:
+/// - Inside Macintosh Volume I (1985), p. I-490
+/// - Inside Macintosh: Text (1993), p. 5-73
+pub fn evaluate_string_to_num(bytes: &[u8]) -> i32 {
+    let mut index = 0usize;
+    while bytes.get(index).is_some_and(|byte| byte.is_ascii_whitespace()) {
+        index += 1;
+    }
+    let mut sign = 1i64;
+    if let Some(&byte) = bytes.get(index) {
+        if byte == b'-' {
+            sign = -1;
+            index += 1;
+        } else if byte == b'+' {
+            index += 1;
+        }
+    }
+    let mut value = 0i64;
+    while let Some(&byte) = bytes.get(index) {
+        if !byte.is_ascii_digit() {
+            break;
+        }
+        value = value.wrapping_mul(10).wrapping_add(i64::from(byte - b'0'));
+        index += 1;
+    }
+    value.wrapping_mul(sign) as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1137,5 +1193,38 @@ mod tests {
         // diac_sensitive = false (strips marks -> 'E')
         evaluate_upper_string(&mut str2, false);
         assert_eq!(str2, vec![b'C', b'A', b'F', b'E']);
+    }
+
+    #[test]
+    fn test_binary_decimal_constants() {
+        assert_eq!(PACK7_TRAP, 0xA9EE);
+        assert_eq!(PACK7_TRAP_OFFSET, 0x01EE);
+        assert_eq!(NUM_TO_STRING_SELECTOR, 0);
+        assert_eq!(STRING_TO_NUM_SELECTOR, 1);
+    }
+
+    #[test]
+    fn test_evaluate_num_to_string() {
+        assert_eq!(evaluate_num_to_string(0), b"0");
+        assert_eq!(evaluate_num_to_string(42), b"42");
+        assert_eq!(evaluate_num_to_string(-1234), b"-1234");
+        assert_eq!(evaluate_num_to_string(i32::MAX), b"2147483647");
+        assert_eq!(evaluate_num_to_string(i32::MIN), b"-2147483648");
+    }
+
+    #[test]
+    fn test_evaluate_string_to_num() {
+        assert_eq!(evaluate_string_to_num(b"0"), 0);
+        assert_eq!(evaluate_string_to_num(b"42"), 42);
+        assert_eq!(evaluate_string_to_num(b"-1234"), -1234);
+        assert_eq!(evaluate_string_to_num(b"+567"), 567);
+        assert_eq!(evaluate_string_to_num(b"   123"), 123);
+        assert_eq!(evaluate_string_to_num(b"  -456"), -456);
+        assert_eq!(evaluate_string_to_num(b"  +789"), 789);
+        assert_eq!(evaluate_string_to_num(b"123abc"), 123);
+        assert_eq!(evaluate_string_to_num(b"  -99xyz"), -99);
+        assert_eq!(evaluate_string_to_num(b"not a number"), 0);
+        assert_eq!(evaluate_string_to_num(b""), 0);
+        assert_eq!(evaluate_string_to_num(b"2147483647"), i32::MAX);
     }
 }
