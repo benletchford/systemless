@@ -110,6 +110,15 @@ and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/22-windows-activated-pp
 `--capture-windows-grown` checks the guest's 25×25 growth and records the
 resized frame on [68K](tests/toolbox-showcase/reference/gpui-demo/23-windows-grown-68k.png)
 and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/23-windows-grown-ppc.png).
+`--capture-windows-zoomed` grows and zooms the auxiliary window, recording
+the reachable themed title bar on
+[68K](tests/toolbox-showcase/reference/gpui-demo/26-windows-zoomed-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/26-windows-zoomed-ppc.png).
+`--capture-windows-zoom-restored` clicks the guest zoom box again and checks
+that the grown bounds and window identity return. The composed
+[68K](tests/toolbox-showcase/reference/gpui-demo/27-windows-zoom-restored-68k.png)
+and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/27-windows-zoom-restored-ppc.png)
+captures show the re-exposed window stack.
 `--capture-windows-promoted` closes the inspector, leaving the auxiliary window
 frontmost on [68K](tests/toolbox-showcase/reference/gpui-demo/24-windows-promoted-68k.png)
 and [PowerPC](tests/toolbox-showcase/reference/gpui-demo/24-windows-promoted-ppc.png).

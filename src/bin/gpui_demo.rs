@@ -135,6 +135,12 @@ mod desktop {
         capture_windows_grown: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_windows_zoomed: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_windows_zoom_restored: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_windows_promoted: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2011,6 +2017,8 @@ mod desktop {
         WindowsMoved,
         WindowsActivated,
         WindowsGrown,
+        WindowsZoomed,
+        WindowsZoomRestored,
         WindowsPromoted,
         WindowsMainPromoted,
         ModalDialog,
@@ -2083,6 +2091,8 @@ mod desktop {
                 | CaptureCase::WindowsMoved
                 | CaptureCase::WindowsActivated
                 | CaptureCase::WindowsGrown
+                | CaptureCase::WindowsZoomed
+                | CaptureCase::WindowsZoomRestored
                 | CaptureCase::WindowsPromoted
                 | CaptureCase::WindowsMainPromoted
         );
@@ -2190,7 +2200,13 @@ mod desktop {
                     moved[0].window.bounds,
                     (top + 12, left + 16, bottom + 12, right + 16)
                 );
-            } else if matches!(capture, CaptureCase::WindowsActivated | CaptureCase::WindowsGrown) {
+            } else if matches!(
+                capture,
+                CaptureCase::WindowsActivated
+                    | CaptureCase::WindowsGrown
+                    | CaptureCase::WindowsZoomed
+                    | CaptureCase::WindowsZoomRestored
+            ) {
                 // tests/toolbox-showcase/oracle/windows.json activates the
                 // exposed auxiliary content at this guest coordinate.
                 for input in [
@@ -2217,7 +2233,12 @@ mod desktop {
                 assert_eq!(activated[0].guest_id, before[1].guest_id);
                 assert!(activated[0].window.active);
                 assert!(!activated[1].window.active);
-                if matches!(capture, CaptureCase::WindowsGrown) {
+                if matches!(
+                    capture,
+                    CaptureCase::WindowsGrown
+                        | CaptureCase::WindowsZoomed
+                        | CaptureCase::WindowsZoomRestored
+                ) {
                     let (top, left, bottom, right) = activated[0].window.bounds;
                     let from = (bottom - 5, right - 10);
                     for input in [
@@ -2251,6 +2272,66 @@ mod desktop {
                         grown[0].window.bounds,
                         (top, left, bottom + 25, right + 25)
                     );
+                    if matches!(
+                        capture,
+                        CaptureCase::WindowsZoomed | CaptureCase::WindowsZoomRestored
+                    ) {
+                        let (grown_top, _, _, grown_right) = grown[0].window.bounds;
+                        let zoom = (grown_top - 9, grown_right - 7);
+                        for input in [
+                            MacintoshInput::MouseDown {
+                                vertical: zoom.0,
+                                horizontal: zoom.1,
+                            },
+                            MacintoshInput::MouseUp {
+                                vertical: zoom.0,
+                                horizontal: zoom.1,
+                            },
+                        ] {
+                            session.deliver_input(input);
+                            let start = session.runner().guest_tick();
+                            assert!(
+                                (0..100).any(|_| {
+                                    session.runner_mut().run_steps(10_000, None);
+                                    session.runner().guest_tick().wrapping_sub(start) >= 2
+                                }),
+                                "guest should advance during window zoom"
+                            );
+                        }
+                        let zoomed = session.runner_mut().window_frame_snapshot();
+                        assert_eq!(zoomed[0].guest_id, grown[0].guest_id);
+                        assert_eq!(zoomed[0].generation, grown[0].generation);
+                        assert_ne!(zoomed[0].window.bounds, grown[0].window.bounds);
+                        assert!(zoomed[0].window.bounds.0 >= 40);
+                        if matches!(capture, CaptureCase::WindowsZoomRestored) {
+                            let (zoomed_top, _, _, zoomed_right) = zoomed[0].window.bounds;
+                            let restore = (zoomed_top - 9, zoomed_right - 7);
+                            for input in [
+                                MacintoshInput::MouseDown {
+                                    vertical: restore.0,
+                                    horizontal: restore.1,
+                                },
+                                MacintoshInput::MouseUp {
+                                    vertical: restore.0,
+                                    horizontal: restore.1,
+                                },
+                            ] {
+                                session.deliver_input(input);
+                                let start = session.runner().guest_tick();
+                                assert!(
+                                    (0..100).any(|_| {
+                                        session.runner_mut().run_steps(10_000, None);
+                                        session.runner().guest_tick().wrapping_sub(start) >= 2
+                                    }),
+                                    "guest should advance during window zoom restore"
+                                );
+                            }
+                            let restored = session.runner_mut().window_frame_snapshot();
+                            assert_eq!(restored[0].guest_id, grown[0].guest_id);
+                            assert_eq!(restored[0].generation, grown[0].generation);
+                            assert_eq!(restored[0].window.bounds, grown[0].window.bounds);
+                        }
+                    }
                 }
             } else if matches!(
                 capture,
@@ -2498,6 +2579,14 @@ mod desktop {
                 })
                 .expect("About alert should become visible")
         };
+        if matches!(
+            capture,
+            CaptureCase::WindowsZoomed | CaptureCase::WindowsZoomRestored
+        ) {
+            for _ in 0..20 {
+                session.runner_mut().run_steps(100_000, None);
+            }
+        }
         let windows = session.runner_mut().window_frame_snapshot();
         if matches!(
             capture,
@@ -2825,6 +2914,28 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::WindowsGrown,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_windows_zoomed.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::WindowsZoomed,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_windows_zoom_restored.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::WindowsZoomRestored,
             );
             return;
         }
@@ -3508,6 +3619,8 @@ mod desktop {
                         capture_windows_moved: None,
                         capture_windows_activated: None,
                         capture_windows_grown: None,
+                        capture_windows_zoomed: None,
+                        capture_windows_zoom_restored: None,
                         capture_windows_promoted: None,
                         capture_windows_main_promoted: None,
                         capture_modeless_dialog_layout: None,
