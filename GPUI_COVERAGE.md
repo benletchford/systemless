@@ -1969,6 +1969,15 @@ both guest ABIs, adapter attachment and detached snapshots, and successive
 the shared policy source; it does not implement suspend/resume event delivery
 or background scheduling.
 
+The shared Event Manager state now owns a foreground-transition sequencer.
+Its model tests cover suspend handling before yielding, delayed activation
+availability, peeking without consumption, policy combinations, modality,
+background-only applications, rapid requests, and clipboard conversion flags.
+Queue tests cover snapshot isolation, merge conflicts, preservation during
+event replacement, and launch reset. This is internal sequencing infrastructure:
+Toolbox event scans and the host activation callback are not yet connected to
+it, so these tests do not qualify guest suspend/resume behavior.
+
 The existing Window Manager adapters already own activation delivery through
 `CurActivate`/`CurDeactive` and coalesced activation records. A new host bridge
 must use those lifecycle paths, rather than directly modifying TERec.active
