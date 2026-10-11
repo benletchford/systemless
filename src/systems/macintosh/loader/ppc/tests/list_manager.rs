@@ -298,6 +298,23 @@ fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_record
             pixels: crate::list_manager::ListScrollbarPixels::Samples(vec![(2, 2, 42)].into()),
         }),
     }));
+    let retained = loaded.list_manager.with_ref(|manager| manager.scroll_tracking.clone());
+    loaded.list_manager.with_mut(|manager| {
+        manager.with_record_mut(list, |record| record.definition_id = 1);
+        // synthetic_code calls the import with bctrl at entry + 12.
+        manager.scroll_tracking.as_mut().unwrap().frame = (loaded.cpu.gpr[1], loaded.entry_pc + 16);
+    });
+    let selected_before = loaded.list_manager.get_record(list).unwrap().selected;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = list;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LClick);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 2)), Some(42));
+    assert!(loaded.list_manager.with_ref(|manager| manager.scroll_tracking.is_none()));
+    assert_eq!(loaded.list_manager.get_record(list).unwrap().selected, selected_before);
+    loaded.list_manager.with_mut(|manager| manager.scroll_tracking = retained);
+    assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (2, 2), 99));
     loaded.cpu.gpr[3] = list;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LDispose);
     assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 2)), Some(42));
