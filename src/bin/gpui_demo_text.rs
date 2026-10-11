@@ -256,3 +256,43 @@ pub(crate) fn classic_line(
     )
     .size_full()
 }
+
+/// Standard CDEF/dialog/Standard File buttons use the Roman system font.
+/// Center in integer guest coordinates before applying presentation scale.
+pub(crate) fn classic_button_label(
+    label: &str,
+    scale: f32,
+    foreground: gpui_kit::Hsla,
+) -> impl gpui_kit::IntoElement {
+    use gpui_kit::{prelude::*, *};
+    let bytes = label
+        .chars()
+        .map(systemless::systems::macintosh::mac_roman::encode_mac_roman_char)
+        .collect::<Option<Vec<_>>>()
+        .expect("guest button labels originate in Mac Roman buffers");
+    let line = ClassicLine::plain(&bytes, 0, 12);
+    let metrics = systemless::quickdraw::text::get_font_metrics(0, 12);
+    canvas(
+        move |bounds, _, _| bounds,
+        move |_, bounds, window, _| {
+            let width = (f32::from(bounds.size.width) / scale).round() as i32;
+            let height = (f32::from(bounds.size.height) / scale).round() as i32;
+            let x = (width - line.positions.last().copied().unwrap_or(0)) / 2;
+            let baseline = (height - i32::from(metrics.ascent) - i32::from(metrics.descent)) / 2
+                + i32::from(metrics.ascent);
+            for &(ink_x, ink_y, ink_width) in &line.ink {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(
+                            bounds.left() + px((x + ink_x) as f32 * scale),
+                            bounds.top() + px((baseline + ink_y) as f32 * scale),
+                        ),
+                        size(px(ink_width as f32 * scale), px(scale)),
+                    ),
+                    foreground,
+                ));
+            }
+        },
+    )
+    .size_full()
+}

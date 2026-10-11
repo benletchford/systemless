@@ -2312,3 +2312,21 @@ The shared reader regression preserves every style field while validating
 record identity and owner-font mutation (0.01 seconds). Default desktop and
 no-default-features type-checks pass. These are structural and compositor
 ownership checks; no new native font/style visual qualification is claimed.
+
+### Guest glyphs in standard button labels
+
+The shared GPUI button wrapper now paints font-family 0, size-12 guest glyphs,
+with the guest integer centering rule applied before presentation scaling.
+CDEF, dialog and Standard File buttons use this wrapper. The border is a
+decorative child so it cannot inset the guest label coordinate space. Labels
+retain their accessibility text and guest event routing. Regular CDEF font
+overrides retain guest pixels; dialog override metadata remains unfinished.
+
+The document and dialog button input regressions pass (0.08 and 0.14 seconds),
+preserving one guest press/release pair and existing activation semantics.
+Three actual shared-compositor captures and paired guest frames were reviewed;
+`text-classic-buttons-review.json` records the commands, hashes and limits.
+Open TEXT and Standard File/New Folder actions show centered, clipped guest
+labels with primary and secondary styling. This one viewport does not qualify
+all scales, active/inactive, pressed/disabled states or authentic Apple fonts.
+The remaining text surfaces and production gates are still incomplete.
