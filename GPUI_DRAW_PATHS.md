@@ -92,3 +92,17 @@ recipe, delivery ordering and modality before wiring acknowledgment to the
 public runner completion entry. Queue/callback tests do not prove visible
 notification delivery. Menu marks, icon flashing and sound completion remain
 separate unfinished delivery stages.
+
+### Standard File volume-selector source audit (2026-10-11)
+
+The current Open overlay covers the full guest volume selector and paints only
+its retained label. The classic guest path calls `draw_popup_control`, including
+CPU-resolved indicator spans (or the configured theme provider). PPC draws a
+PopupButton through `ppc_draw_retained_control_rect` and then its retained label.
+The four reviewed Open/Save captures in `standard-file-current-typography` show
+that the GPUI Open replacement loses that indicator. A shared presentation fix
+must carry the guest-resolved indicator/theme geometry rather than pick a host
+font symbol, preserve label bounds and paint order, and retain guest event
+routing. The selector drawing alone does not establish volume-selection
+tracking: that behavior needs a separate source and interaction audit. This is
+an identified release gap, not an accepted fallback or completed control.

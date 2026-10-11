@@ -1,0 +1,40 @@
+{
+  "commit": "1e65dc06a927a1a145340446c150372652531426",
+  "cases": [
+    {
+      "image": "mono-open.png",
+      "actual_depth": 1,
+      "scene_scale": 1.0,
+      "directly_reviewed": true,
+      "viewer_resize": null
+    },
+    {
+      "image": "mono-save.png",
+      "actual_depth": 1,
+      "scene_scale": 1.0,
+      "directly_reviewed": true,
+      "viewer_resize": null
+    },
+    {
+      "image": "ppc16-open.png",
+      "actual_depth": 16,
+      "scene_scale": 1.5,
+      "directly_reviewed": true,
+      "viewer_resize": "2400x1800 to 1824x1368"
+    },
+    {
+      "image": "ppc16-save.png",
+      "actual_depth": 16,
+      "scene_scale": 1.5,
+      "directly_reviewed": true,
+      "viewer_resize": "2400x1800 to 1824x1368"
+    }
+  ],
+  "scope": "Four shared Demo Open/Save captures directly reviewed. Smooth system labels and guest-owned application headings retained. Guest mono Open source also directly inspected. Open volume selector dropdown indicator is absent from GPUI overlay: unresolved parity gap. No native Macintosh font oracle, physical input, all-mode/state matrix or release qualification.",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "e77d9d42b8053c9e7e4300ac9046957a58cdb0e7692db6dd5126c69b56b20acd",
+    "src/bin/gpui_demo_text.rs": "530e6c35efabe97ccd4ad3a1a7e335952c71eb7ac0bbce8788d74bc24369e252",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "7e9259cf65889bd1097a34439278ef4ecc1e69ec6272009488b169adeb72bb59"
+  },
+  "executable_sha256": "392c6afcf0e011f5d0e4b49d70214a4e64704844ac959cdf7916eb52b1a0639e"
+}
