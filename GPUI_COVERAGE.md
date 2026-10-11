@@ -5878,3 +5878,15 @@ This uses an injected notice and does not qualify real worker acquisition,
 response execution, physical input, native accessibility or reviewed captures.
 Automatic acquisition remains disabled. Broader CPU/scale/modal lifecycle and
 complete ordered delivery remain open; no production gate closes.
+
+### Notification text-service and modifier boundary (2026-10-11)
+
+Owned alerts now exclude background editors from synchronize_composition,
+retiring their text-service owner/preedit, and root modifier-change events do
+not enqueue guest input while alert ownership is active. The shared-window
+acknowledgment/input regression now includes a modified key and passes (0.39s).
+Logs/provenance: `reference/gpui-demo/notification-modal-boundary`. This does not
+prove a separately simulated modifier event, actual background editor restoration,
+physical IME or live native focus. Automatic acquisition and broader real-worker,
+CPU/scale, visual, native-reference and complete notification qualification remain
+open. No production gate closes.
