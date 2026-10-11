@@ -2011,7 +2011,21 @@ mod desktop {
                             .top(guest_px(clip.top as f32))
                             .w(guest_px(clip.width() as f32))
                             .h(guest_px(clip.height() as f32))
-                            .child(overlay), false,
+                            .child(overlay)
+                            .when(self.composition.preedit.is_none(), |field| {
+                                let Some(owner) = self.composition.owner().filter(|owner|
+                                    owner.identity == (record.guest_id, record.generation)
+                                        && matches!(owner.target, super::input::TextInputTarget::Document { .. })).cloned()
+                                    else { return field; };
+                                let sender = self.commands.clone();
+                                field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
+                                    if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
+                                        if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, true) {
+                                            let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
+                                        }
+                                    }
+                                })
+                            }), false,
                     ).text_value(systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text), record.line_count > 1));
                 }
                 // Styled fields use the owning CPU's strikes and paint order.
@@ -2036,7 +2050,21 @@ mod desktop {
                         .absolute().overflow_hidden()
                         .left(guest_px(clip.left as f32)).top(guest_px(clip.top as f32))
                         .w(guest_px(clip.width() as f32)).h(guest_px(clip.height() as f32))
-                        .child(ink), false,
+                        .child(ink)
+                            .when(self.composition.preedit.is_none(), |field| {
+                                let Some(owner) = self.composition.owner().filter(|owner|
+                                    owner.identity == (record.guest_id, record.generation)
+                                        && matches!(owner.target, super::input::TextInputTarget::Document { .. })).cloned()
+                                    else { return field; };
+                                let sender = self.commands.clone();
+                                field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
+                                    if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
+                                        if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, true) {
+                                            let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
+                                        }
+                                    }
+                                })
+                            }), false,
                     ).text_value(systemless::systems::macintosh::mac_roman::decode_mac_roman(&record.text), record.line_count > 1));
                 }
                 // CDEF-owned standard controls can use Kit components while their
@@ -2396,6 +2424,20 @@ mod desktop {
                                         (selection.0.max(0) as usize, selection.1.max(0) as usize),
                                         focused, item.caret_visible == Some(true), scene_scale,
                                         foreground, cx.theme().selection)));
+                            let field = field.when(focused && self.composition.preedit.is_none(), |field| {
+                                let Some(owner) = self.composition.owner().filter(|owner|
+                                    owner.identity == (dialog.guest_id, dialog.generation)
+                                        && matches!(owner.target, super::input::TextInputTarget::Dialog { item: number, .. } if number == item.number)).cloned()
+                                    else { return field; };
+                                let sender = self.commands.clone();
+                                field.on_a11y_action(gpui_kit::accesskit::Action::SetValue, move |data, _, _| {
+                                    if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
+                                        if let Some((expected, range, bytes)) = super::input::accessibility_text_replacement(owner.clone(), value, false) {
+                                            let _ = sender.send(Command::ReplaceText(expected, range, bytes, None));
+                                        }
+                                    }
+                                })
+                            });
                             overlay.child(super::a11y::AccessibleState::new(field, !item.enabled || !semantic_active)
                                 .text_value(item.text.clone(), false))
                         }
@@ -10441,6 +10483,21 @@ mod desktop {
                     (record.guest_id, record.generation) == pinned.identity).unwrap();
                 assert_eq!(result.style_runs, completed.style_runs);
                 eprintln!("PASS worker-overlapping-mark powerpc={powerpc} depth={actual_depth}");
+                let owner = super::super::input::TextInputOwner { identity: pinned.identity,
+                    target: initial_mark.target, text: result.text.clone(), selection: result.selection.0..result.selection.1 };
+                let (owner, range, bytes) = super::super::input::accessibility_text_replacement(owner, "Café\r\nSecond", true).unwrap();
+                let expected = bytes.clone(); let len = bytes.len();
+                worker.0.send(Command::ReplaceText(owner.clone(), range.clone(), bytes.clone(), None)).unwrap();
+                let edited = wait("accessible document value", &updates, |update| update.text_edits.iter().any(|record|
+                    (record.guest_id, record.generation) == pinned.identity && record.text == expected && record.selection == (len, len)));
+                let edited = edited.text_edits.iter().find(|record| (record.guest_id, record.generation) == pinned.identity).unwrap();
+                assert_eq!(edited.view_rect, result.view_rect); assert_eq!(edited.owner_port, result.owner_port);
+                worker.0.send(Command::ReplaceText(owner.clone(), range, bytes, None)).unwrap();
+                let rejected = wait("stale accessible document value", &updates, |update| update.text_commit_rejection.as_ref()
+                    .is_some_and(|(_, actual)| actual == &owner));
+                assert_eq!(rejected.text_edits.iter().find(|record| (record.guest_id, record.generation) == pinned.identity).unwrap().text, expected);
+                eprintln!("PASS worker-accessible-document-value powerpc={powerpc} depth={actual_depth}");
+
 
                 drop(worker);
             }
@@ -10615,6 +10672,24 @@ mod desktop {
                 assert_eq!(marked.dialogs.iter().find(|dialog| dialog.guest_id == pinned.identity.0).unwrap().items[6].text,
                     before.items[6].text);
                 eprintln!("PASS worker-modal-initial-mark powerpc={powerpc} depth={actual_depth} wrapped={wrapped}");
+                let current = super::super::input::dialog_text_owner_with_records(
+                    &marked.dialogs, &marked.windows, &marked.text_edits, &marked.controls).unwrap();
+                let owner = super::super::input::TextInputOwner { identity: current.identity,
+                    target: super::super::input::TextInputTarget::Dialog { item: current.item, content_revision: current.content_revision },
+                    text: current.text, selection: current.selection };
+                let (owner, range, bytes) = super::super::input::accessibility_text_replacement(owner, "Café Accessible", false).unwrap();
+                let expected = systemless::systems::macintosh::mac_roman::decode_mac_roman(&bytes); let len = bytes.len() as i16;
+                worker.0.send(Command::ReplaceText(owner.clone(), range.clone(), bytes.clone(), None)).unwrap();
+                let edited = wait("accessible modal value", &updates, |update| update.dialogs.iter().any(|dialog|
+                    (dialog.guest_id, dialog.generation) == pinned.identity && dialog.items[8].text == expected
+                        && dialog.items[8].selection == Some((len, len))));
+                assert_eq!(edited.dialogs.iter().find(|dialog| dialog.guest_id == pinned.identity.0).unwrap().items[6].text, before.items[6].text);
+                worker.0.send(Command::ReplaceText(owner.clone(), range, bytes, None)).unwrap();
+                let rejected = wait("stale accessible modal value", &updates, |update| update.text_commit_rejection.as_ref()
+                    .is_some_and(|(_, actual)| actual == &owner));
+                assert_eq!(rejected.dialogs.iter().find(|dialog| dialog.guest_id == pinned.identity.0).unwrap().items[8].text, expected);
+                eprintln!("PASS worker-accessible-modal-value powerpc={powerpc} depth={actual_depth} wrapped={wrapped}");
+
 
 
                 eprintln!("PASS worker-modal-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
