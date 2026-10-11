@@ -121,13 +121,7 @@ pub(crate) fn ppc_quickdraw_surface_color_pixel(
             // pixel values at 1, 2, 4, and 8 bits. Match only the entries that
             // the destination pixel can represent; matching all 256 and then
             // truncating would select a different color and corrupt its index.
-            let fallback = TrapDispatcher::standard_mac_indexed_clut(depth as u16)
-                .map(|(clut, _)| clut)
-                .unwrap_or_else(TrapDispatcher::standard_mac_8bpp_clut);
-            let clut = surface
-                .ctable_handle
-                .and_then(|handle| ppc_read_ctable_clut(memory, handle, &fallback))
-                .unwrap_or(fallback);
+            let clut = ppc_quickdraw_surface_clut(memory, surface, depth);
             Some(u16::from(ppc_rgb_color_to_index_in_clut(
                 color,
                 &clut,
@@ -137,6 +131,56 @@ pub(crate) fn ppc_quickdraw_surface_color_pixel(
         16 => Some(ppc_rgb_color_to_rgb555(color)),
         _ => None,
     }
+}
+
+/// The colour table RGB colours are matched against on an indexed surface:
+/// its own table, or the standard table for `depth`.
+#[inline(always)]
+fn ppc_quickdraw_surface_clut(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    depth: u32,
+) -> [[u16; 3]; 256] {
+    let fallback = TrapDispatcher::standard_mac_indexed_clut(depth as u16)
+        .map(|(clut, _)| clut)
+        .unwrap_or_else(TrapDispatcher::standard_mac_8bpp_clut);
+    surface
+        .ctable_handle
+        .and_then(|handle| ppc_read_ctable_clut(memory, handle, &fallback))
+        .unwrap_or(fallback)
+}
+
+/// The foreground and background pixels of a two-colour pattern draw, each
+/// resolved as [`ppc_quickdraw_surface_fore_pixel`] does, but reading the
+/// surface's colour table at most once. A colour passed as `None` (the
+/// pattern has no bits of it) is not resolved and comes back as 0.
+pub(crate) fn ppc_quickdraw_surface_pattern_pixels(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    fore: Option<(PpcRgbColor, Option<u8>)>,
+    back: Option<(PpcRgbColor, Option<u8>)>,
+) -> Option<(u16, u16)> {
+    let depth = surface.front_buffer.depth;
+    let Some(entry_count) = ppc_indexed_depth_entry_count(depth) else {
+        let direct = |color: Option<(PpcRgbColor, Option<u8>)>| {
+            color.map_or(0, |(color, _)| ppc_rgb_color_to_rgb555(color))
+        };
+        return (depth == 16).then(|| (direct(fore), direct(back)));
+    };
+    let mut clut = None;
+    let mut resolve = |color: Option<(PpcRgbColor, Option<u8>)>| {
+        let Some((color, explicit_index)) = color else {
+            return 0;
+        };
+        if let Some(index) = explicit_index {
+            return u16::from(index) & (entry_count as u16 - 1);
+        }
+        let clut = clut.get_or_insert_with(|| ppc_quickdraw_surface_clut(memory, surface, depth));
+        u16::from(ppc_rgb_color_to_index_in_clut(color, clut, entry_count))
+    };
+    let fore = resolve(fore);
+    let back = resolve(back);
+    Some((fore, back))
 }
 
 pub(crate) fn ppc_quickdraw_surface_fore_pixel(

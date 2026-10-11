@@ -8,6 +8,8 @@ pub mod bus;
 pub mod globals;
 
 pub use address_space::{GuestAddressSpace, GuestWritableSpan};
+#[cfg(test)]
+pub(crate) use address_space::write_log;
 pub(crate) use address_space::{
     flat_memory_route, GuestMemoryRoute, SharedGuestAddressSpace,
 };

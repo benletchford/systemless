@@ -10,8 +10,8 @@
 //!   `DrawText`, and friends. Reads the active font/style from
 //!   the current `GrafPort` and writes pixel coverage directly
 //!   into the framebuffer at the current pen location.
-//! - `raster` — region-row algebra and shape spans shared by the
-//!   68K trap path and the PowerPC import path.
+//! - `raster` — region-row algebra, shape spans and pattern rectangle
+//!   fills shared by the 68K trap path and the PowerPC import path.
 
 pub mod fonts;
 pub(crate) mod raster;

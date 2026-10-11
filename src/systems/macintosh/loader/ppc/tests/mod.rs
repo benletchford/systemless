@@ -271,6 +271,7 @@ mod process_services;
 mod trap_manager;
 mod code_fragment_manager;
 pub(crate) use code_fragment_manager::synthetic_pef_with_enumerable_exports;
+mod fill_rect;
 mod quickdraw;
 mod region_rows;
 

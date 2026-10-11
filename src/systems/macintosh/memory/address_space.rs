@@ -1804,6 +1804,8 @@ impl GuestAddressSpace {
     }
 
     pub fn write_bytes(&mut self, addr: u32, src: &[u8]) -> Option<()> {
+        #[cfg(test)]
+        write_log::record(addr, src.len());
         if src.is_empty() {
             return Some(());
         }
@@ -2378,6 +2380,36 @@ impl AddressBus for GuestAddressSpace {
     fn try_write_long(&mut self, address: u32, value: u32) -> Result<(), BusFault> {
         self.write_u32_be(address, value)
             .ok_or_else(|| Self::bus_fault(address))
+    }
+}
+
+/// Test-only record of `GuestAddressSpace::write_bytes` calls on the
+/// current thread, so drawing tests can compare how many writes a path
+/// makes, and where.
+#[cfg(test)]
+pub(crate) mod write_log {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static LOG: RefCell<Option<Vec<(u32, usize)>>> = const { RefCell::new(None) };
+    }
+
+    /// Starts a new record on this thread.
+    pub(crate) fn start() {
+        LOG.with(|log| *log.borrow_mut() = Some(Vec::new()));
+    }
+
+    /// Stops recording and returns each call's `(address, length)`.
+    pub(crate) fn take() -> Vec<(u32, usize)> {
+        LOG.with(|log| log.borrow_mut().take().unwrap_or_default())
+    }
+
+    pub(super) fn record(address: u32, len: usize) {
+        LOG.with(|log| {
+            if let Some(log) = log.borrow_mut().as_mut() {
+                log.push((address, len));
+            }
+        });
     }
 }
 

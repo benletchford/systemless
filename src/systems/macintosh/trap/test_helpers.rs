@@ -214,3 +214,90 @@ pub fn setup_with_port() -> (TrapDispatcher, MockCpu, MacMemoryBus) {
 
     (disp, cpu, bus)
 }
+
+/// An 8-bit offscreen CGrafPort for differential drawing tests, described
+/// as plain data so the PowerPC path can build the same port.
+pub(crate) struct IndexedPortFixture<'a> {
+    /// The PixMap bounds, in port coordinates (top, left, bottom, right).
+    pub(crate) bounds: (i16, i16, i16, i16),
+    pub(crate) row_bytes: u16,
+    /// Initial pixel bytes, `row_bytes` per row.
+    pub(crate) pixels: &'a [u8],
+    /// The resolved fgColor/bkColor pixel values.
+    pub(crate) fg_index: u8,
+    pub(crate) bg_index: u8,
+    /// visRgn and clipRgn as a bounding box plus region data words.
+    pub(crate) vis: ((i16, i16, i16, i16), &'a [i16]),
+    pub(crate) clip: ((i16, i16, i16, i16), &'a [i16]),
+}
+
+/// The region storage QuickDraw keeps behind a region handle: size,
+/// bounding box, then the data words.
+pub(crate) fn region_storage_bytes(bbox: (i16, i16, i16, i16), data: &[i16]) -> Vec<u8> {
+    let size = 10 + 2 * data.len();
+    let mut bytes = (size as u16).to_be_bytes().to_vec();
+    for word in [bbox.0, bbox.1, bbox.2, bbox.3].iter().chain(data) {
+        bytes.extend_from_slice(&word.to_be_bytes());
+    }
+    bytes
+}
+
+/// Runs the 68K FillRect drawing path, `draw_rect` with `ShapeOp::Fill`,
+/// on `fixture` and returns the pixel bytes afterwards.
+pub(crate) fn fill_rect_8bpp_68k(
+    fixture: &IndexedPortFixture<'_>,
+    (top, left, bottom, right): (i16, i16, i16, i16),
+    pattern: [u8; 8],
+) -> Vec<u8> {
+    let (mut d, mut cpu, mut bus) = setup();
+    let base = bus.alloc(fixture.pixels.len() as u32);
+    bus.write_bytes(base, fixture.pixels);
+    let pixmap_handle = bus.alloc(4);
+    let pixmap = bus.alloc(50);
+    bus.write_long(pixmap_handle, pixmap);
+    bus.write_long(pixmap, base);
+    bus.write_word(pixmap + 4, 0x8000 | fixture.row_bytes);
+    let (b_top, b_left, b_bottom, b_right) = fixture.bounds;
+    for (offset, word) in [(6, b_top), (8, b_left), (10, b_bottom), (12, b_right)] {
+        bus.write_word(pixmap + offset, word as u16);
+    }
+    bus.write_word(pixmap + 30, 0); // pixelType: indexed
+    bus.write_word(pixmap + 32, 8); // pixelSize
+    bus.write_word(pixmap + 34, 1); // cmpCount
+    bus.write_word(pixmap + 36, 8); // cmpSize
+    bus.write_long(pixmap + 42, 0); // pmTable
+
+    let port = bus.alloc(108);
+    bus.write_long(port + 2, pixmap_handle);
+    bus.write_word(port + 6, 0xC000);
+    for (offset, word) in [(16, b_top), (18, b_left), (20, b_bottom), (22, b_right)] {
+        bus.write_word(port + offset, word as u16);
+    }
+    for (offset, (bbox, data)) in [(24, fixture.vis), (28, fixture.clip)] {
+        let storage = region_storage_bytes(bbox, data);
+        let handle = bus.alloc(4);
+        let ptr = bus.alloc(storage.len() as u32);
+        bus.write_bytes(ptr, &storage);
+        bus.write_long(handle, ptr);
+        bus.write_long(port + offset, handle);
+    }
+    bus.write_long(port + 80, u32::from(fixture.fg_index));
+    bus.write_long(port + 84, u32::from(fixture.bg_index));
+    d.set_current_port_state(&mut bus, &mut cpu, port, None);
+    // fgColor and bkColor hold the resolved pixel values above.
+    d.resolved_port_color_fields.insert(port, 0x03);
+
+    let rect = super::types::Rect {
+        top,
+        left,
+        bottom,
+        right,
+    };
+    d.draw_rect(
+        &mut cpu,
+        &mut bus,
+        &rect,
+        super::types::ShapeOp::Fill(pattern),
+    );
+    bus.read_bytes(base, fixture.pixels.len())
+}

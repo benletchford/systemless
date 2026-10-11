@@ -1,0 +1,401 @@
+//! FillRect through the shared raster core: against the 68K FillRect path,
+//! against the earlier PowerPC solid fill, and the cases the core declines.
+
+use super::*;
+use crate::memory::write_log;
+use crate::trap::test_helpers::{fill_rect_8bpp_68k, region_storage_bytes, IndexedPortFixture};
+
+const STOP: i16 = i16::MAX;
+const GRAY: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+const DIAGONAL: [u8; 8] = [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01];
+const MIXED: [u8; 8] = [0x11, 0x22, 0x44, 0x88, 0x0F, 0xF0, 0x3C, 0xC3];
+
+/// A 24×12 image whose top-left pixel is port point (-5, -3), so pattern
+/// alignment to the port differs from alignment to the pixel image.
+const BOUNDS: (i16, i16, i16, i16) = (-3, -5, 9, 19);
+/// Room for 24 pixels at 16 bits, plus padding.
+const ROW_BYTES: u16 = 50;
+const HEIGHT: usize = 12;
+
+const SCRATCH: u32 = PPC_DATA_BASE + 0x1c00;
+const PORT: u32 = SCRATCH;
+const PIXMAP_HANDLE: u32 = SCRATCH + 0x100;
+const PIXMAP: u32 = SCRATCH + 0x120;
+const REGION_HANDLES: [u32; 2] = [SCRATCH + 0x180, SCRATCH + 0x184];
+const REGION_STORAGE: [u32; 2] = [SCRATCH + 0x200, SCRATCH + 0x300];
+const RECT: u32 = SCRATCH + 0x400;
+const PATTERN: u32 = SCRATCH + 0x410;
+const PIXELS: u32 = SCRATCH + 0x800;
+
+fn initial_pixels() -> Vec<u8> {
+    (0..usize::from(ROW_BYTES) * HEIGHT)
+        .map(|i| (i * 37 + 11) as u8)
+        .collect()
+}
+
+/// Clips as (visRgn, clipRgn) bounding boxes and data words.
+type RegionSpec = ((i16, i16, i16, i16), &'static [i16]);
+
+const WHOLE_PORT: RegionSpec = (BOUNDS, &[]);
+const CLIP_RECT: RegionSpec = ((-1, -2, 7, 15), &[]);
+/// A rectangle with a hole at rows 1..4, columns 3..8.
+const CLIP_WITH_HOLE: RegionSpec = (
+    (-2, -4, 8, 17),
+    &[
+        -2, -4, 17, STOP, 1, 3, 8, STOP, 4, 3, 8, STOP, 8, -4, 17, STOP, STOP,
+    ],
+);
+/// A rectangle notched at row 2, columns 10..12.
+const VIS_NOTCHED: RegionSpec = (
+    (-1, -3, 7, 16),
+    &[
+        -1, -3, 16, STOP, 2, 10, 12, STOP, 3, 10, 12, STOP, 7, -3, 16, STOP, STOP,
+    ],
+);
+
+fn fixture<'a>(pixels: &'a [u8], vis: RegionSpec, clip: RegionSpec) -> IndexedPortFixture<'a> {
+    IndexedPortFixture {
+        bounds: BOUNDS,
+        row_bytes: ROW_BYTES,
+        pixels,
+        fg_index: 103,
+        bg_index: 42,
+        vis,
+        clip,
+    }
+}
+
+/// Builds `fixture`'s port as a `depth`-bit GWorld in `loaded` and makes it
+/// current, with the fixture's indices as explicit fore/back indices.
+fn install_port(loaded: &mut PpcLoadedApp, fixture: &IndexedPortFixture<'_>, depth: u32) {
+    let memory = &mut loaded.memory;
+    memory.add_region(SCRATCH, vec![0; 0x1000]);
+    let (top, left, bottom, right) = fixture.bounds;
+    ppc_write_gworld_port(memory, PORT, PIXMAP_HANDLE, top, left, bottom, right).unwrap();
+    memory.write_u32_be(PIXMAP_HANDLE, PIXMAP).unwrap();
+    ppc_write_pixmap(
+        memory,
+        PIXMAP,
+        PIXELS,
+        u32::from(fixture.row_bytes),
+        top,
+        left,
+        bottom,
+        right,
+        depth,
+    )
+    .unwrap();
+    memory.write_bytes(PIXELS, fixture.pixels).unwrap();
+    for (index, (bbox, data)) in [fixture.vis, fixture.clip].into_iter().enumerate() {
+        memory
+            .write_bytes(REGION_STORAGE[index], &region_storage_bytes(bbox, data))
+            .unwrap();
+        memory
+            .write_u32_be(REGION_HANDLES[index], REGION_STORAGE[index])
+            .unwrap();
+    }
+    memory
+        .write_u32_be(PORT + PPC_CGRAF_PORT_VIS_RGN_OFFSET, REGION_HANDLES[0])
+        .unwrap();
+    memory
+        .write_u32_be(PORT + PPC_CGRAF_PORT_CLIP_RGN_OFFSET, REGION_HANDLES[1])
+        .unwrap();
+    loaded.gworlds.push(PpcGWorldRecord {
+        ui_theme: crate::ui_theme::UiThemeId::ClassicSystem7,
+        port: PORT,
+        pixmap_handle: PIXMAP_HANDLE,
+        pixmap: PIXMAP,
+        base_addr: PIXELS,
+        gdevice: PPC_MAIN_GDEVICE,
+        width: (right - left) as u32,
+        height: (bottom - top) as u32,
+        depth,
+        row_bytes: u32::from(fixture.row_bytes),
+        pixels_locked: false,
+        pixels_no_purge: false,
+    });
+    loaded
+        .current_gworld
+        .with_mut(|current_gworld| *current_gworld = PORT);
+    loaded.quickdraw_fore_indices.insert(PORT, fixture.fg_index);
+    loaded
+        .toolbox_startup
+        .quickdraw_back_indices
+        .insert(PORT, fixture.bg_index);
+}
+
+fn read_pixels(loaded: &mut PpcLoadedApp, len: usize) -> Vec<u8> {
+    let mut out = vec![0; len];
+    loaded.memory.read_bytes_into(PIXELS, &mut out).unwrap();
+    out
+}
+
+/// Runs the FillRect import on `fixture` and returns the pixel bytes.
+fn fill_rect_ppc(
+    fixture: &IndexedPortFixture<'_>,
+    depth: u32,
+    (top, left, bottom, right): (i16, i16, i16, i16),
+    pattern: [u8; 8],
+) -> Vec<u8> {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FillRect")).unwrap();
+    install_port(&mut loaded, fixture, depth);
+    ppc_write_rect(&mut loaded.memory, RECT, top, left, bottom, right).unwrap();
+    loaded.memory.write_bytes(PATTERN, &pattern).unwrap();
+    loaded.cpu.gpr[3] = RECT;
+    loaded.cpu.gpr[4] = PATTERN;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRect);
+    read_pixels(&mut loaded, fixture.pixels.len())
+}
+
+const RECTS: [(i16, i16, i16, i16); 4] = [
+    (-6, -4, 5, 30),
+    (0, 0, 1, 1),
+    (2, -1, 8, 13),
+    (-3, -5, 9, 19),
+];
+const CLIPS: [(RegionSpec, RegionSpec); 4] = [
+    (WHOLE_PORT, WHOLE_PORT),
+    (WHOLE_PORT, CLIP_RECT),
+    (WHOLE_PORT, CLIP_WITH_HOLE),
+    (VIS_NOTCHED, CLIP_WITH_HOLE),
+];
+
+#[test]
+fn fill_rect_matches_the_68k_fill_rect_path_on_an_8bpp_port() {
+    let pixels = initial_pixels();
+    let mut differing_from_solid = 0;
+    for (vis, clip) in CLIPS {
+        let fixture = fixture(&pixels, vis, clip);
+        for rect in RECTS {
+            let solid = fill_rect_8bpp_68k(&fixture, rect, [0xFF; 8]);
+            for pattern in [[0xFF; 8], [0x00; 8], GRAY, DIAGONAL, MIXED] {
+                let expected = fill_rect_8bpp_68k(&fixture, rect, pattern);
+                let actual = fill_rect_ppc(&fixture, 8, rect, pattern);
+                assert_eq!(
+                    actual, expected,
+                    "rect {rect:?} pattern {pattern:02x?} vis {:?} clip {:?}",
+                    vis.0, clip.0
+                );
+                differing_from_solid += usize::from(expected != solid);
+            }
+        }
+    }
+    // The comparison is not vacuous: patterns other than solid black change
+    // the result in nearly every case (a one-pixel rect can land on a
+    // black bit).
+    assert!(differing_from_solid >= 3 * 4 * 4, "{differing_from_solid}");
+}
+
+#[test]
+fn solid_black_fill_rect_makes_the_same_writes_as_the_solid_fill() {
+    let pixels = initial_pixels();
+    for (vis, clip) in CLIPS {
+        let fixture = fixture(&pixels, vis, clip);
+        for depth in [8, 16] {
+            for (top, left, bottom, right) in RECTS {
+                let mut runs = Vec::new();
+                for core in [false, true] {
+                    let mut loaded =
+                        load_pef_application(&synthetic_pef_with_import(b"FillRect")).unwrap();
+                    install_port(&mut loaded, &fixture, depth);
+                    let fore = (PPC_RGB_BLACK, Some(fixture.fg_index));
+                    let back = (PPC_RGB_WHITE, Some(fixture.bg_index));
+                    let rect = (top, left, bottom, right);
+                    write_log::start();
+                    if core {
+                        ppc_fill_rect(
+                            &mut loaded.memory,
+                            &loaded.gworlds,
+                            PORT,
+                            rect,
+                            [0xFF; 8],
+                            fore,
+                            back,
+                        );
+                    } else {
+                        ppc_paint_rect_bounds(
+                            &mut loaded.memory,
+                            &loaded.gworlds,
+                            PORT,
+                            rect,
+                            fore.0,
+                            fore.1,
+                        );
+                    }
+                    let writes = write_log::take();
+                    runs.push((writes, read_pixels(&mut loaded, pixels.len())));
+                }
+                let context = format!(
+                    "depth {depth} rect {:?} vis {:?} clip {:?}",
+                    (top, left, bottom, right),
+                    vis.0,
+                    clip.0
+                );
+                assert_eq!(runs[1].1, runs[0].1, "pixels: {context}");
+                assert_eq!(runs[1].0, runs[0].0, "write_bytes calls: {context}");
+            }
+        }
+    }
+}
+
+#[test]
+fn fill_rect_draws_its_pattern_with_the_ports_explicit_indices() {
+    let pef = synthetic_pef_with_import(b"FillRect");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let rect = scratch;
+    let gray = scratch + 0x10;
+    let white = scratch + 0x18;
+    loaded.memory.add_region(scratch, vec![0; 0x20]);
+    loaded.memory.write_bytes(gray, &GRAY).unwrap();
+    loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+    loaded
+        .toolbox_startup
+        .quickdraw_back_indices
+        .insert(PPC_MAIN_GWORLD, 42);
+    // The pen pattern stays solid: FillRect must not consult it.
+    assert_eq!(loaded.toolbox_startup.quickdraw_pen_pattern, [0xff; 8]);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert_eq!(front.depth, 8);
+
+    ppc_write_rect(&mut loaded.memory, rect, 4, 8, 7, 16).unwrap();
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = gray;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRect);
+    // Row 4 is 0xaa (even columns set); row 5 is 0x55 (odd columns set).
+    for (point, expected) in [
+        ((8, 4), 103),
+        ((9, 4), 42),
+        ((8, 5), 42),
+        ((9, 5), 103),
+        ((15, 6), 42),
+    ] {
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, point),
+            Some(expected),
+            "{point:?}"
+        );
+    }
+    let outside = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (8, 7));
+    assert_ne!(outside, Some(103));
+    assert_ne!(outside, Some(42));
+
+    // An all-white pattern paints the whole rectangle in the background.
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = white;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRect);
+    for point in [(8, 4), (9, 5), (15, 6)] {
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, point),
+            Some(42),
+            "{point:?}"
+        );
+    }
+}
+
+#[test]
+fn fill_rect_at_16bpp_uses_the_rgb_fore_and_back_colours() {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, WHOLE_PORT, CLIP_WITH_HOLE);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FillRect")).unwrap();
+    install_port(&mut loaded, &fixture, 16);
+    loaded.quickdraw_fore_color = PpcRgbColor {
+        red: 0xFFFF,
+        green: 0,
+        blue: 0,
+    };
+    loaded.quickdraw_back_color = PpcRgbColor {
+        red: 0,
+        green: 0,
+        blue: 0xFFFF,
+    };
+    ppc_write_rect(&mut loaded.memory, RECT, -3, -5, 9, 19).unwrap();
+    loaded.memory.write_bytes(PATTERN, &MIXED).unwrap();
+    loaded.cpu.gpr[3] = RECT;
+    loaded.cpu.gpr[4] = PATTERN;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRect);
+    let after = read_pixels(&mut loaded, pixels.len());
+    let ((t, l, b, r), _) = CLIP_WITH_HOLE;
+    for y in BOUNDS.0..BOUNDS.2 {
+        for x in BOUNDS.1..BOUNDS.3 {
+            let offset =
+                (y - BOUNDS.0) as usize * usize::from(ROW_BYTES) + (x - BOUNDS.1) as usize * 2;
+            let in_hole = (1..4).contains(&y) && (3..8).contains(&x);
+            let covered = y >= t && y < b && x >= l && x < r && !in_hole;
+            let pixel = u16::from_be_bytes([after[offset], after[offset + 1]]);
+            if covered {
+                let set = MIXED[y.rem_euclid(8) as usize] & (0x80 >> x.rem_euclid(8)) != 0;
+                assert_eq!(pixel, if set { 0x7C00 } else { 0x001F }, "({x}, {y})");
+            } else {
+                assert_eq!(
+                    [after[offset], after[offset + 1]],
+                    [pixels[offset], pixels[offset + 1]],
+                    "({x}, {y}) must be unchanged"
+                );
+            }
+        }
+    }
+}
+
+/// Runs FillRect with `pattern` and, separately, the earlier solid fill,
+/// on the same port; returns both images.
+fn fill_rect_and_solid_fill(
+    fixture: &IndexedPortFixture<'_>,
+    depth: u32,
+    rect: (i16, i16, i16, i16),
+    pattern: [u8; 8],
+) -> (Vec<u8>, Vec<u8>) {
+    let filled = fill_rect_ppc(fixture, depth, rect, pattern);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FillRect")).unwrap();
+    install_port(&mut loaded, fixture, depth);
+    ppc_paint_rect_bounds(
+        &mut loaded.memory,
+        &loaded.gworlds,
+        PORT,
+        rect,
+        PPC_RGB_BLACK,
+        Some(fixture.fg_index),
+    );
+    (filled, read_pixels(&mut loaded, fixture.pixels.len()))
+}
+
+#[test]
+fn fill_rect_keeps_the_solid_fill_at_depths_the_core_declines() {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, WHOLE_PORT, CLIP_RECT);
+    for depth in [1, 2, 4] {
+        let (filled, solid) = fill_rect_and_solid_fill(&fixture, depth, (-6, -4, 5, 30), GRAY);
+        assert_eq!(filled, solid, "{depth} bpp");
+        assert_ne!(filled, pixels, "{depth} bpp must still draw");
+    }
+}
+
+#[test]
+fn fill_rect_keeps_the_solid_fill_when_a_clip_region_is_malformed() {
+    let pixels = initial_pixels();
+    // The data runs past the region's stored size: the parser cannot finish.
+    let truncated: RegionSpec = ((-1, -2, 7, 15), &[-1, -2, 15]);
+    let fixture = fixture(&pixels, WHOLE_PORT, truncated);
+    let (filled, solid) = fill_rect_and_solid_fill(&fixture, 8, (-6, -4, 5, 30), GRAY);
+    assert_eq!(filled, solid);
+    // The solid fill gives up on such a region and draws nothing.
+    assert_eq!(filled, pixels);
+}
+
+#[test]
+fn fill_rect_with_an_unreadable_pattern_keeps_the_solid_fill() {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, WHOLE_PORT, CLIP_RECT);
+    let rect = (-6, -4, 5, 30);
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FillRect")).unwrap();
+    install_port(&mut loaded, &fixture, 8);
+    ppc_write_rect(&mut loaded.memory, RECT, rect.0, rect.1, rect.2, rect.3).unwrap();
+    loaded.cpu.gpr[3] = RECT;
+    loaded.cpu.gpr[4] = 0xFFFF_FFF0;
+    assert!(loaded.memory.read_u8(0xFFFF_FFF0).is_none());
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRect);
+    let filled = read_pixels(&mut loaded, pixels.len());
+    let (_, solid) = fill_rect_and_solid_fill(&fixture, 8, rect, GRAY);
+    assert_eq!(filled, solid);
+    assert_ne!(filled, pixels);
+}
