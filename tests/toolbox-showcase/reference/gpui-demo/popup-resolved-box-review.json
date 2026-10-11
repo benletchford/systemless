@@ -1,0 +1,442 @@
+{
+  "scope": "Closed selected popup resolved CDEF boxes, three CPU/display modes and four scales; inactive states, exact chrome and native oracle parity remain unqualified",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "03b7ef23ca59ed6161b0caac36280446efd6ca401c58e2ac3f2de00cb1001acb",
+    "src/bin/gpui_demo_text.rs": "13d426a337d510b6ed8ce09d24455bc80f9e8eac2a65c9e16ae3da0df7d52566",
+    "src/systems/macintosh/control_manager.rs": "8fff4d7e2154ef03baffbbec4d0ab77999169c79c154446a0ca9ee165fb7d58d",
+    "src/systems/macintosh/runner/mod.rs": "9dc73d14cdc6312490c3772f572b10ece93db6737fae2ba6d8567039f3069ba4"
+  },
+  "binary_sha256": "7a8a04adf87a826756e51d507693a0fb44b515fff4e3206f1d85373fd9057dec",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "visual_review": "All twelve full compositions inspected",
+  "captures": [
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-resolved-box-scales/popup-selected-scale-mono-active-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-selected-scale-mono-active-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "3c882ca256e17d857f14b1684f14e2c8f816ef0444968b68ce64e1533cc92cb8"
+        },
+        {
+          "file": "popup-selected-scale-mono-active-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e"
+        }
+      ],
+      "archived_image": "popup-resolved-box-mono-075.png",
+      "review": "Full composition reviewed: title and selected text fit, ellipsis before arrow, scene stable; monochrome custom panels retained"
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-resolved-box-scales/popup-selected-scale-mono-active-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-selected-scale-mono-active-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "9020dceb69d5b697225a275ac029903178d515ea9d871d7c31202812bc563aa5"
+        },
+        {
+          "file": "popup-selected-scale-mono-active-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e"
+        }
+      ],
+      "archived_image": "popup-resolved-box-mono-100.png",
+      "review": "Full composition reviewed: title and selected text fit, ellipsis before arrow, scene stable; monochrome custom panels retained"
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-resolved-box-scales/popup-selected-scale-mono-active-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-selected-scale-mono-active-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "6a86ccb65bbfc1084c6280f878b58fe2d22948d271532b08e40c2804e399cfd5"
+        },
+        {
+          "file": "popup-selected-scale-mono-active-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e"
+        }
+      ],
+      "archived_image": "popup-resolved-box-mono-150.png",
+      "review": "Full composition reviewed: title and selected text fit, ellipsis before arrow, scene stable; monochrome custom panels retained"
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-resolved-box-scales/popup-selected-scale-mono-active-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-selected-scale-mono-active-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "24122af1ff59086f5f674f2ac3fb81b0c2d179e5a0aa23541eec2a065a1508ae"
+        },
+        {
+          "file": "popup-selected-scale-mono-active-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e"
+        }
+      ],
+      "archived_image": "popup-resolved-box-mono-200.png",
+      "review": "Full composition reviewed: title and selected text fit, ellipsis before arrow, scene stable; monochrome custom panels retained"
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-resolved-box-scales/popup-selected-scale-colour-active-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-selected-scale-colour-active-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "6250518c9d2065a99bf4a862ea2bcf08c1330fd34ccdcbf2812b939b34947f71"
+        },
+        {
+          "file": "popup-selected-scale-colour-active-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9"
+        }
+      ],
+      "archived_image": "popup-resolved-box-colour-075.png",
+      "review": "Full composition reviewed: title and selected text fit, ellipsis before arrow, scene stable; monochrome custom panels retained"
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-resolved-box-scales/popup-selected-scale-colour-active-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-selected-scale-colour-active-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "32295ed722e9e6561364ef9421165668ed2674907265cebf1f65ac14b26ee1ab"
+        },
+        {
+          "file": "popup-selected-scale-colour-active-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9"
+        }
+      ],
+      "archived_image": "popup-resolved-box-colour-100.png",
+      "review": "Full composition reviewed: title and selected text fit, ellipsis before arrow, scene stable; monochrome custom panels retained"
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-resolved-box-scales/popup-selected-scale-colour-active-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-selected-scale-colour-active-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "50fa927aa7feafb5a8d4e037e8129e8d566425880df8bd32d21966339d2254cd"
+        },
+        {
+          "file": "popup-selected-scale-colour-active-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9"
+        }
+      ],
+      "archived_image": "popup-resolved-box-colour-150.png",
+      "review": "Full composition reviewed: title and selected text fit, ellipsis before arrow, scene stable; monochrome custom panels retained"
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-resolved-box-scales/popup-selected-scale-colour-active-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-selected-scale-colour-active-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "456993b04ebee06de79de5a37cdfa41304c6ea6df4aaec41297c2b707652a4f7"
+        },
+        {
+          "file": "popup-selected-scale-colour-active-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9"
+        }
+      ],
+      "archived_image": "popup-resolved-box-colour-200.png",
+      "review": "Full composition reviewed: title and selected text fit, ellipsis before arrow, scene stable; monochrome custom panels retained"
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-resolved-box-scales/popup-selected-scale-ppc-active-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-selected-scale-ppc-active-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "5a979143d6bdd1a2be22fb4d6f99b3dd206814b1ab211ecdcd4e253c8f57096b"
+        },
+        {
+          "file": "popup-selected-scale-ppc-active-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312"
+        }
+      ],
+      "archived_image": "popup-resolved-box-ppc-075.png",
+      "review": "Full composition reviewed: title and selected text fit, ellipsis before arrow, scene stable; monochrome custom panels retained"
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-resolved-box-scales/popup-selected-scale-ppc-active-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-selected-scale-ppc-active-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "17ce6db079e73de9374b40308cdd9a65185036385b66fe4cad5571834ec6e650"
+        },
+        {
+          "file": "popup-selected-scale-ppc-active-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312"
+        }
+      ],
+      "archived_image": "popup-resolved-box-ppc-100.png",
+      "review": "Full composition reviewed: title and selected text fit, ellipsis before arrow, scene stable; monochrome custom panels retained"
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-resolved-box-scales/popup-selected-scale-ppc-active-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-selected-scale-ppc-active-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "eb28660b2a56c506a20eab84725aa91fafbcf9b944aa8c3d130b42723fd8d0ac"
+        },
+        {
+          "file": "popup-selected-scale-ppc-active-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312"
+        }
+      ],
+      "archived_image": "popup-resolved-box-ppc-150.png",
+      "review": "Full composition reviewed: title and selected text fit, ellipsis before arrow, scene stable; monochrome custom panels retained"
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-resolved-box-scales/popup-selected-scale-ppc-active-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-selected-scale-ppc-active-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "be90bde16b07fed9d3d235de8fa3acc1c6d6e47c8a963cfce2d7adf32d6e457f"
+        },
+        {
+          "file": "popup-selected-scale-ppc-active-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312"
+        }
+      ],
+      "archived_image": "popup-resolved-box-ppc-200.png",
+      "review": "Full composition reviewed: title and selected text fit, ellipsis before arrow, scene stable; monochrome custom panels retained"
+    }
+  ]
+}
