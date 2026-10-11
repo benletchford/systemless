@@ -5582,24 +5582,44 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetSysBeepVolume") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetSysBeepVolume,
         ),
-        ("InterfaceLib" | "CarbonLib", "IUCompString" | "IUCompPString" | "CompareString") => {
+        ("InterfaceLib" | "CarbonLib", "IUCompString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuCompString,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "IUCompPString" | "CompareString") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::CompareString,
             )
         }
-        ("InterfaceLib" | "CarbonLib", "IUEqualString" | "IdenticalString") => {
+        ("InterfaceLib" | "CarbonLib", "IUEqualString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuEqualString,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "IdenticalString") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::IdenticalString,
             )
         }
-        ("InterfaceLib" | "CarbonLib", "CompareText" | "IUMagPString" | "IUMagString") => {
+        ("InterfaceLib" | "CarbonLib", "CompareText" | "IUMagPString") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::CompareText,
             )
         }
-        ("InterfaceLib" | "CarbonLib", "IdenticalText" | "IUMagIDPString" | "IUMagIDString") => {
+        ("InterfaceLib" | "CarbonLib", "IUMagString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuMagString,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "IdenticalText" | "IUMagIDPString") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::IdenticalText,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "IUMagIDString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuMagIdString,
             )
         }
         ("InterfaceLib" | "CarbonLib", "ScriptOrder" | "IUScriptOrder") => {

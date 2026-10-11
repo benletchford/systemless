@@ -840,13 +840,13 @@ fn import_bindings_classify_text_and_conversion_imports() {
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "IUMagString"),
         PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::CompareText,
+            crate::loader::ppc::PpcSystemCompatibilityOperation::IuMagString,
         )
     );
     assert_eq!(
         dispatcher_target_for_import("InterfaceLib", "IUMagIDString"),
         PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::IdenticalText,
+            crate::loader::ppc::PpcSystemCompatibilityOperation::IuMagIdString,
         )
     );
     assert_eq!(
