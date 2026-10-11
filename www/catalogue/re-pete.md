@@ -9,6 +9,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -28,16 +29,18 @@ compatibility:
       matches both original forks and supported Finder metadata against production
       packing. This proves bounded native memory-game rounds, not all difficulty settings
       or independent audio fidelity. Promoted assets are hosted; browser preview
-      evidence is recorded separately below and launch approval remains pending.
+      evidence is recorded separately below; launch is approved after integrated replay.
     status: playable
     evidence: https://github.com/benletchford/systemless/pull/4657
   - date: "2026-10-12"
     tester: Catalogue maintainer
-    systemless_version: 052693c3380a801374beca5374d62c8fa014cd01
+    systemless_version: 4a861808896b4a6af6706ac1b64a652d6520afea
     architecture: 68k
     environment: >-
-      Production-origin browser preview with the promoted catalogue entry and rebased
-      sound fix; local-only launch override excluded from the catalogue PR. Chrome
+      Production-origin browser preview with the promoted catalogue entry and integrated
+      sound/text utilities. Runtime src tree matches merged d5b3864b; subsequent
+      default-branch changes are confined to PPC DrawSprocket. Local launch override
+      was used for testing before approval. Chrome
       151.0.7922.174, actual runtime worker, WebGL, isolated 800x600 canvas, depth 8,
       default 25 MHz. Only frontend files are substituted at the production origin;
       the archive request is untouched: HTTP 200, 73613 bytes and expected SHA-256.
@@ -48,7 +51,9 @@ compatibility:
       A preview-server reset interrupted the first asserted attempt before assertions;
       the unchanged retry passes. This is bounded browser preview qualification;
       all difficulty settings, browser audio fidelity, human release and independent
-      public replay remain unverified. Current integrated-runtime replay and launch approval remain pending.
+      public replay remain unverified. Fresh integrated-runtime replay passes the same twelve measured score checks
+      with no console errors. Launch approved for these bounded native/browser
+      memory rounds; human release and independent public replay remain pending.
     status: playable
     evidence: https://github.com/benletchford/systemless/pull/4656
 runtime:
@@ -113,8 +118,7 @@ Play the original **Re-Pete 2.2** by Tom Bender. Choose **Game → Start Game**,
 watch the flashing buttons and listen to their tones, then click the buttons in
 the same order. Each new round adds another button to remember.
 
-Two native and browser-preview memory rounds and their score progression are
-verified. Launch remains disabled pending runtime integration and approval.
-All difficulty settings and browser audio fidelity remain unverified.
+The first two memory rounds and score progression are verified. Other difficulty
+settings and browser audio fidelity remain unverified.
 
 ![Re-Pete after two matching memory rounds](https://assets.systemless.org/catalogue/media/sha256/9f/9f126808b4d5b80c37741d72ee20bfd06d335491b5d8d0f3c68174062c6561ac.png)

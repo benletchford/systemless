@@ -1859,3 +1859,15 @@ quick-click input never started the game, and a server-reset attempt ended befor
 assertions; those attempts are excluded. Difficulty coverage and browser audio
 fidelity remain unverified. Integrated-runtime replay, launch approval, human release
 and independent public replay remain pending. No qualified-live increment yet.
+
+
+Integrated browser source `4a861808896b4a6af6706ac1b64a652d6520afea` has an
+identical runtime src tree to merged sound/text-utility head `d5b3864b`.
+Fresh optimized production preview replays the unchanged 12 expected score-pixel
+checks successfully through two rounds, score 0→1→3; actual browser archive GET
+again verifies HTTP 200, 73,613 bytes and the publisher SHA-256 without interception.
+The score-3 capture is inspected and the pacing probe passes with no console
+errors. Newer default-branch changes are confined to PPC DrawSprocket and do not
+change this 68K runtime path. Launch is approved for the bounded native/browser
+memory rounds and the entry is enabled. Final catalogue CI/merge, human release
+and independent public replay remain pending; no qualified-live increment yet.
