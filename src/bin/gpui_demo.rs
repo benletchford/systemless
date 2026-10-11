@@ -68,6 +68,9 @@ mod desktop {
         capture_modeless_dialog: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
+        capture_nested_modal_dialog: Option<PathBuf>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
         capture_controls: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
@@ -2034,6 +2037,7 @@ mod desktop {
         ModalDialog,
         ModalDialogChecked,
         ModelessDialog,
+        NestedModalDialog,
         Controls,
         ControlsChanged,
         ControlsDragged,
@@ -2135,7 +2139,10 @@ mod desktop {
         }
         let (menu_id, item) = if standard_file_page {
             (129, 12)
-        } else if matches!(capture, CaptureCase::ModelessDialog) {
+        } else if matches!(
+            capture,
+            CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
+        ) {
             (132, 7)
         } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked) {
             (129, 6)
@@ -2151,8 +2158,11 @@ mod desktop {
             (128, 1)
         };
         assert!(session.runner_mut().select_guest_menu_item(menu_id, item));
-        let dialogs = if matches!(capture, CaptureCase::ModelessDialog) {
-            (0..300)
+        let dialogs = if matches!(
+            capture,
+            CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
+        ) {
+            let modeless = (0..300)
                 .find_map(|_| {
                     session.runner_mut().run_steps(100_000, None);
                     let dialogs = session.runner_mut().dialog_snapshot();
@@ -2160,7 +2170,29 @@ mod desktop {
                         dialog.visible && dialog.items.len() == 4
                     }).then_some(dialogs)
                 })
-                .expect("modeless dialog should become visible")
+                .expect("modeless dialog should become visible");
+            if matches!(capture, CaptureCase::NestedModalDialog) {
+                let modeless_id = modeless
+                    .iter()
+                    .find(|dialog| dialog.visible && dialog.items.len() == 4)
+                    .unwrap()
+                    .guest_id;
+                assert!(session.runner_mut().select_guest_menu_item(132, 6));
+                (0..300)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        let dialogs = session.runner_mut().dialog_snapshot();
+                        (dialogs.iter().any(|dialog| {
+                            dialog.visible && dialog.active && dialog.items.len() == 10
+                        }) && dialogs.iter().any(|dialog| {
+                            dialog.guest_id == modeless_id && dialog.visible
+                        }))
+                        .then_some(dialogs)
+                    })
+                    .expect("nested modal should occlude a visible modeless dialog")
+            } else {
+                modeless
+            }
         } else if matches!(capture, CaptureCase::ModalDialog | CaptureCase::ModalDialogChecked) {
             assert!((0..300).any(|_| {
                 session.runner_mut().run_steps(100_000, None);
@@ -2327,7 +2359,10 @@ mod desktop {
                 .expect("About alert should become visible")
         };
         let windows = session.runner_mut().window_frame_snapshot();
-        if matches!(capture, CaptureCase::ModelessDialog) {
+        if matches!(
+            capture,
+            CaptureCase::ModelessDialog | CaptureCase::NestedModalDialog
+        ) {
             assert!(!super::frames::dialog_item_pieces(
                 &dialogs,
                 &windows,
@@ -2638,6 +2673,17 @@ mod desktop {
                 args.prefer_powerpc,
                 args.screen_depth,
                 CaptureCase::ModelessDialog,
+            );
+            return;
+        }
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_nested_modal_dialog.as_ref() {
+            capture_fixture_screen(
+                &args.game,
+                output,
+                args.prefer_powerpc,
+                args.screen_depth,
+                CaptureCase::NestedModalDialog,
             );
             return;
         }
@@ -3129,6 +3175,7 @@ mod desktop {
                         capture_modal_dialog: None,
                         capture_modal_dialog_checked: None,
                         capture_modeless_dialog: None,
+                        capture_nested_modal_dialog: None,
                         capture_controls: None,
                         capture_controls_changed: None,
                         capture_controls_dragged: None,

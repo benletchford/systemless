@@ -67,7 +67,13 @@ checks that a modal dialog opened above a modeless one receives key input,
 that the underlying edit field stays unchanged, and that focus and editing
 return to the modeless dialog on dismissal. Nested modal GPUI composition
 and nonrectangular visible regions remain unqualified. The
-`--capture-modeless-dialog-layout` headless case composes an inactive standard
+`--capture-nested-modal-dialog` headless case now records the composed 68K
+and PowerPC surface with both real dialogs visible. Both captures show the
+front modal covering the modeless controls without duplicate foreground
+items; the PowerPC capture retains a selected menu title after direct menu
+selection, and its edit focus differs from the 68K capture. Those differences
+still require investigation before calling nested modality visually qualified.
+The `--capture-modeless-dialog-layout` headless case composes an inactive standard
 dialog behind a front window and checks that its covered item keeps guest
 pixels while the exposed part uses the GPUI overlay. The showcase also opens
 a real resource-backed modeless dialog through its Options menu. A focused
