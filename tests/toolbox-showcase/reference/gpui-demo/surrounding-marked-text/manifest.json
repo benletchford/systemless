@@ -24,6 +24,10 @@
     "true-8-crlf-interior.json": "2aa7da00425e65156f7d7d94b94bf56b7f0a608a3fe29a96607fb93e8d5a7bec",
     "true-16-multiline.json": "e160f37a3c2f48cc74850eb38204a28938c16251fbd731eb957e7aa54762bd1f",
     "false-8-multiline.json": "20be692a58b807552fe8a3cf51958436a3bc92d46928683395e354686dfac338",
-    "build.log": "2b70a26e5ef4b0c3122ee13c55ce61d0f2960e8afb24eb37db1c3f2d0b58fa3d"
-  }
+    "build.log": "2b70a26e5ef4b0c3122ee13c55ce61d0f2960e8afb24eb37db1c3f2d0b58fa3d",
+    "document-regression.log": "bb2b93b3776d8986c8b67cb9e11ee70fc6fb390819afc7b27205bca0cef70761",
+    "modal-file-regression.log": "4c3144a8153f1813b1402377184e6e55c99ae855622333ef62d6a92387736641"
+  },
+  "regression_source_head": "20d6a2f063cefdc06de5482c5d720491b6d48cfb",
+  "regression_scope": "three GPUI platform-handler tests: document four modes; dialog four modes; Save/New Folder eight cases; guest commits/cancellation/subrange corrections; no physical IME claim"
 }
