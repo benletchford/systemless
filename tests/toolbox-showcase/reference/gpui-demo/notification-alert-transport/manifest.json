@@ -1,0 +1,7 @@
+{
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "24aadcf19bb4464b8ed11df6a3676cbaf4af2d35b7e24b4f2e4456c9ea841c10"
+  },
+  "scope": "Compile/source transport evidence only. Worker command variants acquire/dismiss exact runner alerts and publish ownership through live/headless update paths. No renderer invokes acquisition yet and no runtime acknowledgment qualification is claimed.",
+  "check_seconds": 14.93
+}

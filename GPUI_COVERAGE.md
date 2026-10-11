@@ -5820,3 +5820,15 @@ recipes, shared paint, pointer/keyboard/accessibility modality, delivery stages
 and actual acknowledgment remain unfinished. Evidence is under
 `reference/gpui-demo/notification-alert-ownership`; all eight release gates remain
 open. Contract: Apple's Notification Manager reference, Processes pp.5-4–5-5.
+
+### Notification alert worker transport (2026-10-11)
+
+The production worker now accepts explicit begin/dismiss requests carrying the
+exact notification snapshot and publishes current alert ownership in Update.
+Live and headless Demo consumers retain the same owned snapshot. Active pointer
+and control tracking prevent acquisition/dismissal; the runner revalidates queue
+ownership and current identity. The GPUI capture-feature compile check passes
+(14.93s). Evidence: `reference/gpui-demo/notification-alert-transport`.
+This establishes source/compile transport only. No renderer invokes acquisition
+yet: faithful alert font/layout, painting and modal input remain unfinished.
+No runtime worker/compositor acknowledgment or production gate is qualified.
