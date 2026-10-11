@@ -2868,7 +2868,7 @@ mod desktop {
                             visible: true,
                             active: false,
                         },
-                        definition_id: Some(1),
+                        definition_id: Some(4),
                         close_box: false,
                     },
                 ];

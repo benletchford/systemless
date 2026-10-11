@@ -53,10 +53,13 @@ release. Scroll-wheel translation still needs a defined guest event route;
 the frontend does not synthesize direct scrollbar value changes.
 
 Standard DITL items are now selected by their owning window identity and
-generation rather than by the active-dialog flag. Visible inactive modeless
-dialogs can therefore use the same GPUI item presentation, clipped beneath
-front window structure bounds. A focused clipping test checks an inactive
-dialog, a custom-item fallback, and a stale window generation. Nested modal
+generation rather than by the active-dialog flag. The supported standard
+window definitions include `noGrowDocProc` (4), the usual modeless dialog
+frame (Macintosh Toolbox Essentials, pp. 4-10--4-11); custom WDEFs retain
+guest pixels. Visible inactive modeless dialogs can therefore use the same
+GPUI item presentation, clipped beneath front window structure bounds. A
+focused clipping test checks an inactive WDEF 4 dialog, custom item/WDEF
+fallbacks, and a stale window generation. Nested modal
 ordering and nonrectangular visible regions remain unqualified. The
 `--capture-modeless-dialog-layout` headless case composes an inactive standard
 dialog behind a front window and checks that its covered item keeps guest
