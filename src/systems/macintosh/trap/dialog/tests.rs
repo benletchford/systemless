@@ -15499,6 +15499,67 @@
     }
 
     #[test]
+    fn modal_dialog_first_entry_preserves_visible_app_text_outside_items() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = 0x200000u32;
+        let screen_base = bus.alloc(64 * 64);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        let bounds = (10, 12, 40, 44);
+        disp.front_window = dialog_ptr;
+        disp.window_bounds = bounds;
+        disp.window_proc_id = 1;
+        disp.window_title.clear();
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 4,
+                rect: (20, 2, 28, 28),
+                text: "Not Yet".into(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+        // GetNewDialog paints the visible dialog before the application adds
+        // status text outside its DITL items. QuickDraw refreshes this snapshot.
+        disp.draw_dialog(
+            &mut bus,
+            bounds,
+            1,
+            "",
+            &disp.dialog_items[&dialog_ptr].clone(),
+            0,
+            "",
+            0,
+            false,
+            dialog_ptr,
+        );
+        let probe = screen_base + 20 * 64 + 20;
+        bus.write_byte(probe, 0x42);
+        disp.dialog_visible_snapshots.insert(
+            dialog_ptr,
+            PersistentDialogSnapshot {
+                bounds,
+                pixels: disp.save_dialog_pixels(&bus, bounds).into(),
+            },
+        );
+        assert!(!disp.dialogs_drawn_by_app.contains(&dialog_ptr));
+        bus.write_long(TEST_SP, 0x300000);
+        bus.write_long(TEST_SP + 4, 0);
+        disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(disp.dialog_tracking.is_some());
+        assert_eq!(
+            bus.read_byte(probe),
+            0x42,
+            "ModalDialog must preserve application text in an already visible dialog"
+        );
+    }
+
+    #[test]
     fn modal_dialog_retained_reentry_reuses_visible_snapshot_without_user_item_redraw() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = 0x200000u32;
