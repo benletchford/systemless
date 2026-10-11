@@ -231,6 +231,13 @@ mod desktop {
         rendered: Option<Vec<GuestMenu>>,
     }
 
+    struct PreparedButtonImage {
+        source: Arc<RenderImage>,
+        clips: Vec<super::frames::Rect>,
+        background: [u8; 4],
+        image: Arc<RenderImage>,
+    }
+
     #[derive(Default)]
     struct Update {
         menus: GuestMenuSnapshot,
@@ -492,6 +499,7 @@ mod desktop {
         text_edits: Vec<TextEditSnapshot>,
         standard_file: Option<StandardFileSnapshot>,
         image: Option<Arc<RenderImage>>,
+        prepared_buttons: Option<PreparedButtonImage>,
         logo: Arc<RenderImage>,
         width: u32,
         height: u32,
@@ -578,6 +586,7 @@ mod desktop {
                 text_edits: Vec::new(),
                 standard_file: None,
                 image: None,
+                prepared_buttons: None,
                 logo: Arc::new(RenderImage::new(vec![image::Frame::new(
                     image::load_from_memory(include_bytes!("../../www/assets/icons/icon-192.png"))
                         .expect("decode Systemless logo")
@@ -1020,8 +1029,44 @@ mod desktop {
                         }
                     }),
                 );
-            if let Some(image) = &self.image {
-                screen = screen.child(img(image.clone()).absolute().top_0().left_0().size_full());
+            if let Some(source) = self.image.clone() {
+                let viewport = super::frames::Rect {
+                    top: 0, left: 0, bottom: self.height as i32, right: self.width as i32,
+                };
+                let mut clips = Vec::new();
+                if !self.guest_menu_fallback() || !self.guest_menu_tracking {
+                    clips.extend(super::frames::dialog_item_pieces(&self.dialogs, &self.windows, viewport)
+                        .into_iter().filter(|piece| self.dialogs[piece.dialog].items[piece.item].kind == DialogItemKind::Button)
+                        .map(|piece| piece.clip));
+                    clips.extend(super::frames::control_pieces(&self.controls, &self.menus, &self.windows, viewport)
+                        .into_iter().filter(|piece| self.controls[piece.control].proc_id == 0)
+                        .map(|piece| piece.clip));
+                }
+                let color = cx.theme().background.to_rgb();
+                let background = [color.b, color.g, color.r, color.a].map(|channel| (channel * 255.).round() as u8);
+                let image = if clips.is_empty() {
+                    if let Some(old) = self.prepared_buttons.take() { cx.drop_image(old.image, None); }
+                    source
+                } else {
+                    let current = self.prepared_buttons.as_ref().is_some_and(|prepared| {
+                        Arc::ptr_eq(&prepared.source, &source) && prepared.clips == clips
+                            && prepared.background == background
+                    });
+                    if !current {
+                        let mut pixels = source.as_bytes(0).expect("guest frame pixels").to_vec();
+                        // Remove only pixels already owned by opaque GPUI button overlays
+                        // before linear texture filtering can blend them beyond their edges.
+                        super::frames::fill_texture_clips(&mut pixels, self.width, self.height, &clips, background);
+                        let buffer = image::RgbaImage::from_raw(self.width, self.height, pixels).unwrap();
+                        let prepared = PreparedButtonImage {
+                            source, clips, background,
+                            image: Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])),
+                        };
+                        if let Some(old) = self.prepared_buttons.replace(prepared) { cx.drop_image(old.image, None); }
+                    }
+                    self.prepared_buttons.as_ref().unwrap().image.clone()
+                };
+                screen = screen.child(img(image).absolute().top_0().left_0().size_full());
             }
             // A tracking custom MDEF may draw its dropdown over any window.
             // Keep those pixels, but present standard windows and dialogs

@@ -393,3 +393,32 @@ The same visual review exposes thin residual outlines around standard buttons,
 including the default button; their paint ownership and overlay bounds still
 need investigation. The monochrome custom page background also differs from
 the colour page and needs separate guest/oracle comparison.
+
+Button-outline diagnosis: the current GPUI image fragment shader uses linear
+minification and magnification. Standard guest button borders are inside their
+recorded rectangles, but their sampled colour reaches outside the covering GPUI
+rectangle at fractional output scales. A diagnostic composed modal capture
+cleared only the existing clipped button source rectangles before image upload,
+without expanding any overlay. The two dialog button outlines disappeared;
+878 output pixels changed within their combined output bounds. The document
+buttons, which were deliberately untouched, retained their outlines. This
+isolates the source to the sampled framebuffer underlay, not GPUI button chrome.
+The diagnostic-only edit was removed. A production solution must share texture
+preparation between live and capture paths, use the current presentation theme,
+and preserve custom, occluded and fallback content without enlarging hit regions.
+
+The shared live/capture render path now prepares the framebuffer beneath
+standard document and dialog buttons using the exact existing clipped overlay
+rectangles and current GPUI background colour. It does not expand guest bounds
+or hit regions. Custom-control overlap and window visibility use the same
+piece selection as the visible overlays; custom-menu tracking leaves the raw
+framebuffer in place. Prepared textures are cached by source image, clipping
+rectangles and theme colour, and old textures are released on replacement.
+A focused pixel test checks negative/out-of-screen clipping and unchanged bytes
+outside owned rectangles, including a gap between them. All 57 GPUI tests pass.
+This fixes button underlay preparation; other component edges, dark-theme
+captures and material performance impact still require qualification.
+Fresh composed captures on monochrome 68K, colour 68K and PPC show clean dialog
+and document buttons. Each mode changes the same 2,621 outline pixels compared
+with its previous capture. The visible/hidden caret pair still differs only in
+62 pixels at the existing caret rectangle, with no text or layout movement.
