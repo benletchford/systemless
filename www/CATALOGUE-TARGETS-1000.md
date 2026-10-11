@@ -478,7 +478,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 423 | 611 | Jailbreak | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/j/); [Garden](https://macintoshgarden.org/games/jailbreak) |
 | 424 | 612 | Kalah | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
 | 425 | 613 | Lunar Commando | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
-| 426 | 614 | MacSolitaire | Verify 68K/PPC | F | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
+| 426 | 614 | MacSolitaire | PPC (original 1.6; startup held) | F | [Archive index](https://www.vintageapplemac.com/software/games/m/); [Original intake](CATALOGUE-SOURCES.md#macsolitaire-16--target-614-original-installer-intake) |
 | 427 | 615 | Nethergate | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
 | 428 | 616 | Oilcap Pro | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/o/) |
 | 429 | 617 | Project Magellan | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
