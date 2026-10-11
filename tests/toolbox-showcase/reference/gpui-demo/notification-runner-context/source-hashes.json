@@ -1,0 +1,5 @@
+{
+  "src/systems/macintosh/runner/mod.rs": "f3a930e743b3eeb60072982991600e20392ac81a58ad4e92f945ab7bff170da9",
+  "src/systems/macintosh/runner/interrupt.rs": "d26b8533159bd822104798be4d4100cc6392f79ee80d2189400d634f57fdae00",
+  "src/systems/macintosh/runner/tests/trap_dispatch.rs": "e6d626ba459aa7f13ebd1de92167565ff02cd48bb731fc0f7c3bb415d6ed97c3"
+}

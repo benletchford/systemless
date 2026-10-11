@@ -5711,3 +5711,19 @@ under `reference/gpui-demo/notification-response-once`. The harness supplies
 completion explicitly; no GPUI acknowledgment is proved. Asynchronous runner
 CPU/condition-code preservation, PPC deferred callback continuation, visible
 notices and sound completion remain unfinished. All production gates stay open.
+
+### Classic deferred response runner context (2026-10-11)
+
+The runner now accepts a current displayed notification snapshot for classic
+completion, rejects stale/mutated ownership and concurrent callbacks, and
+retains full CPU context before the Toolbox completion enters guest code.
+Existing callback restoration restores registers, stack and status/condition
+codes. Notification responses run without stopping guest time. Native PPC
+completion explicitly declines until its bounded continuation path is ready.
+Fourteen notification tests pass (0.12s), including intentional guest register
+and condition-code clobbering; the existing File Manager callback restoration
+regression also passes after extracting the shared capture helper. Evidence is
+under `reference/gpui-demo/notification-runner-context`. This remains a backend
+harness check: actual GPUI acknowledgment, nested interrupt coverage, PPC and
+Mixed Mode post-delivery continuation, rendering and sound completion stay open.
+No production gate closes.
