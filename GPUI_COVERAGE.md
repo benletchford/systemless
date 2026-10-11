@@ -2611,3 +2611,16 @@ fixture verifies bold blue Geneva 12, italic green Monaco 14 and underline
 runs and line metrics in monochrome 68k, colour 68k and PPC (2.69 seconds).
 This proves state extraction, not mixed-run GPUI rendering or native font
 fidelity. Default and JIT/headless checks pass.
+
+Plain GPUI TextEdit now applies the shared 68k/PPC one-pixel destRect inset to
+its glyphs and selection end. A selection beginning at line offset zero still
+includes the left inset; the caret starts at the inset and backs up one pixel
+after nonzero byte offsets, matching both guest draw paths. WDEF title geometry
+is separate and retains its own pen origin. The existing three-mode TextEdit
+regression now compares corrected GPUI binary spans and caret against actual
+guest first-line pixels before checking clicks at the displayed insertion
+boundary, typing, selection replacement and Mac Roman edits (139.02 seconds,
+passes). The default build passes. This covers the tested plain line/caret;
+composed scale/state recaptures, newline/soft-wrap caret ownership, theme caret
+width and mixed-run TextEdit rendering remain open. Earlier composed text
+captures precede this inset correction and do not qualify the current matrix.
