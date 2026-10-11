@@ -9,6 +9,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -25,11 +26,27 @@ compatibility:
       exhausted frames. Captures inspected. Production extraction matches all five
       installed files, ten original forks and supported Finder metadata against independent
       unar. Six focused extraction tests pass. Full deals/games, saves and audio
-      fidelity remain unverified. Browser qualification, asset promotion, launch approval,
+      fidelity remain unverified. Asset promotion and browser launch are approved below;
       human release and independent public replay remain pending. Trial restrictions are
       retained without patches.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4674
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: eca6116d6c213a26834b940812f36b22c74d23ec
+    architecture: 68k
+    environment: >-
+      Integrated Chrome 151 Worker/WebGL preview at default 25 MHz; frontend-only
+      preview interception, actual promoted original archive. Normal DEMO and Command-N
+      open player setup; three computer players, deal and player discard produce
+      computer replies. Fresh replay passes sixteen measured setup/deal/discard pixel
+      checks; captures inspected. Pacing passes the unchanged 50 guest ticks/second
+      minimum at 61.013 ticks/second, with no console errors. Archive and screenshot
+      return HTTP 200 from the supported production origin and match original hashes
+      and sizes. Launch approved for this bounded flow. Full hands/games, saves and
+      audio fidelity remain unverified; human release and public replay are pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/4675
 runtime:
   executable_path: Mahjong 1.0.5/Mahjong 1.0.5/Mahjong 1.0.5 INT
   screen_depth: 8
@@ -82,12 +99,12 @@ references:
 ---
 
 Play **Mahjong 1.0.5 International**, Matti Larborn's four-player game.
-Choose **DEMO** in the original registration dialog, then **File → New Game**.
+Choose **DEMO** in the original registration dialog, then press **Command-N** for New Game.
 Leave Player 1 human and mark the other three players as Computer.
 Click a tile in your hand to discard it and respond to any offered bids.
 
-Trial setup, a player discard and computer responses are verified natively.
+Trial setup, a player discard and computer responses are verified natively and in the browser.
 The original one-round trial, registration reminders and locked saves remain.
-Browser launch is awaiting qualification.
+Browser launch is approved for this bounded flow.
 
 ![Mahjong after a discard and computer responses](https://assets.systemless.org/catalogue/media/sha256/54/54512df4f4980ad507ef9b04a887568a0a357292c1995db853ded37e1664232d.png)
