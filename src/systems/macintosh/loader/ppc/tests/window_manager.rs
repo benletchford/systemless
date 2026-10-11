@@ -521,7 +521,7 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
     let mut zoom_cpu = loaded.cpu.clone();
     zoom_cpu.gpr[3] = window;
     zoom_cpu.gpr[4] = 8;
-    let _ = ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds);
+    let _ = ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds, &loaded.window_list);
     assert_eq!(
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
         Some((
@@ -536,7 +536,7 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
     // must report the matching zoom direction, and zooming back must retain
     // the original userState. MTE (1992), pp. 4-53--4-55.
     zoom_cpu.gpr[4] = 7;
-    ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds).unwrap();
+    ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds, &loaded.window_list).unwrap();
     assert_eq!(
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
         Some((40, 50, 240, 350))
@@ -563,7 +563,7 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
         (8, window),
     );
     zoom_cpu.gpr[4] = 8;
-    ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds).unwrap();
+    ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds, &loaded.window_list).unwrap();
     assert_eq!(
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
         Some(custom_standard),
@@ -580,7 +580,7 @@ fn hle_import_runner_creates_window_title_and_zoom_state() {
         (7, window),
     );
     zoom_cpu.gpr[4] = 7;
-    ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds).unwrap();
+    ppc_zoom_window(&zoom_cpu, &mut loaded.memory, &mut loaded.gworlds, &loaded.window_list).unwrap();
     assert_eq!(
         ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
         Some((40, 50, 240, 350)),
@@ -2191,7 +2191,7 @@ fn new_cwindow_manager_regions_follow_move_and_size() {
     move_cpu.gpr[4] = 30;
     move_cpu.gpr[5] = 40;
     assert_eq!(
-        ppc_move_window(&move_cpu, &mut loaded.memory, &mut loaded.gworlds),
+        ppc_move_window(&move_cpu, &mut loaded.memory, &mut loaded.gworlds, &loaded.window_list),
         Some(())
     );
     assert_eq!(
@@ -2345,6 +2345,27 @@ fn disposing_hidden_ppc_window_does_not_repaint_exposed_pixels() {
         .iter()
         .any(|event| event.message == hidden));
     assert!(!loaded.window_list.contains(&hidden));
+}
+
+#[test]
+fn ppc_move_window_preserves_overlapping_content_and_front_occlusion() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"MoveWindow")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    let back = create_test_cwindow(&mut loaded, scratch, (50, 50, 160, 160), 0, true, u32::MAX);
+    let _front = create_test_cwindow(&mut loaded, scratch, (80, 70, 140, 130), 0, true, u32::MAX);
+    let surface = ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    for (point, pixel) in [((60, 50), 1), ((60, 58), 0), ((80, 55), 0),
+        ((80, 63), 1), ((120, 139), 0), ((120, 147), 1)] {
+        assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, surface, point, pixel));
+    }
+    let mut cpu = loaded.cpu.clone();
+    cpu.gpr[3] = back; cpu.gpr[4] = 50; cpu.gpr[5] = 58; cpu.gpr[6] = 0;
+    ppc_move_window(&cpu, &mut loaded.memory, &mut loaded.gworlds, &loaded.window_list).unwrap();
+    for (point, expected) in [((60, 58), 1), ((60, 66), 0), ((80, 63), 1), ((120, 147), 1)] {
+        assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, surface, point), Some(expected),
+            "content transfer or front occlusion at {point:?}");
+    }
 }
 
 #[test]

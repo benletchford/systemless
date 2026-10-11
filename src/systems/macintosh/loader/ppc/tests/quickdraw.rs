@@ -2138,6 +2138,79 @@ fn rectangle_fill_respects_disjoint_clip_spans_at_every_depth() {
 }
 
 #[test]
+fn rectangle_frame_respects_disjoint_clip_and_visibility_at_every_depth() {
+    for depth in [1, 2, 4, 8, 16] {
+        let mut loaded = load_pef_application_with_config(
+            &synthetic_pef(),
+            PpcLoadConfig {
+                screen_depth: depth,
+                ..PpcLoadConfig::default()
+            },
+        )
+        .unwrap();
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (0, 0, 8, 10),
+            PPC_RGB_WHITE,
+            None
+        ));
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 512]);
+        let clip = ppc_region_storage_from_rows(2, &vec![vec![1, 3, 5, 9]; 3]).unwrap();
+        let vis = ppc_region_storage_from_rows(1, &vec![vec![2, 8]; 5]).unwrap();
+        for (handle, ptr, bytes, field) in [
+            (scratch, scratch + 16, clip, PPC_CGRAF_PORT_CLIP_RGN_OFFSET),
+            (
+                scratch + 4,
+                scratch + 128,
+                vis,
+                PPC_CGRAF_PORT_VIS_RGN_OFFSET,
+            ),
+        ] {
+            loaded.memory.write_u32_be(handle, ptr).unwrap();
+            loaded.memory.write_bytes(ptr, &bytes).unwrap();
+            loaded
+                .memory
+                .write_u32_be(PPC_MAIN_GWORLD + field, handle)
+                .unwrap();
+        }
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let front = surface.front_buffer;
+        let before: Vec<_> = (0..8)
+            .flat_map(|y| (0..10).map(move |x| (x, y)))
+            .map(|point| ppc_quickdraw_read_pixel(&mut loaded.memory, front, point).unwrap())
+            .collect();
+        let color =
+            ppc_quickdraw_surface_fore_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK, None)
+                .unwrap();
+        ppc_write_rect(&mut loaded.memory, scratch + 400, 2, 1, 5, 9).unwrap();
+        loaded.cpu.gpr[3] = scratch + 400;
+        loaded.memory.write_u16_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 1).unwrap();
+        loaded.memory.write_u16_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2, 1).unwrap();
+        assert!(ppc_frame_rect(&loaded.cpu, &mut loaded.memory, &loaded.gworlds,
+            PPC_MAIN_GWORLD, PPC_RGB_BLACK, None));
+        for y in 0..8 {
+            for x in 0..10 {
+                let painted = (y == 2 || y == 4) && (x == 2 || (5..8).contains(&x));
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                    Some(if painted {
+                        color
+                    } else {
+                        before[(y * 10 + x) as usize]
+                    }),
+                    "depth {depth}, pixel ({x}, {y})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn frame_round_rect_respects_the_current_port_clip_region() {
     let pef = synthetic_pef_with_import(b"ClipRect");
     let mut loaded = load_pef_application(&pef).unwrap();

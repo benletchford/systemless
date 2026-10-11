@@ -1585,29 +1585,30 @@ pub(crate) fn ppc_frame_rect(
     else {
         return false;
     };
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|region| ppc_region_storage(memory, region));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|region| ppc_region_storage(memory, region));
+    // FrameRect is application drawing: both port regions must protect
+    // overlapping windows, including during exposure updates after a move.
+    let mut write_pixel = |point| {
+        ppc_local_point_in_port_regions(surface, point, vis_storage.as_deref(),
+            clip_storage.as_deref())
+            && ppc_quickdraw_write_raw_pixel(memory, front_buffer, point, color_pixel)
+    };
     let mut wrote = false;
     for dy in 0..pen_height {
         for x in left..right {
-            wrote |=
-                ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, top + dy), color_pixel);
-            wrote |= ppc_quickdraw_write_raw_pixel(
-                memory,
-                front_buffer,
-                (x, bottom - 1 - dy),
-                color_pixel,
-            );
+            wrote |= write_pixel((x, top + dy));
+            wrote |= write_pixel((x, bottom - 1 - dy));
         }
     }
     for dx in 0..pen_width {
         for y in top..bottom {
-            wrote |=
-                ppc_quickdraw_write_raw_pixel(memory, front_buffer, (left + dx, y), color_pixel);
-            wrote |= ppc_quickdraw_write_raw_pixel(
-                memory,
-                front_buffer,
-                (right - 1 - dx, y),
-                color_pixel,
-            );
+            wrote |= write_pixel((left + dx, y));
+            wrote |= write_pixel((right - 1 - dx, y));
         }
     }
     wrote

@@ -432,7 +432,7 @@ pub(super) fn dispatch_window_import(
                 let previous_front = ppc_front_visible_process_window(memory, window_list);
                 let bring_to_front = params.bring_to_front();
                 let previous_structure = ppc_window_global_structure_bounds(memory, gworlds, window);
-                if ppc_move_window(cpu, memory, gworlds).is_some() {
+                if ppc_move_window(cpu, memory, gworlds, window_list).is_some() {
                     if bring_to_front {
                         ppc_reorder_window(gworlds, window_list, window, 0, true);
                     }
@@ -2656,7 +2656,8 @@ pub(super) fn ppc_size_window(
 
 pub(super) fn ppc_move_window_coordinates(
     memory: &mut PpcSectionMem,
-    _gworlds: &mut [PpcGWorldRecord],
+    gworlds: &mut [PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
     window_ptr: u32,
     new_left: i16,
     new_top: i16,
@@ -2665,6 +2666,33 @@ pub(super) fn ppc_move_window_coordinates(
     // "MoveWindow": moving a window changes its global location without
     // affecting the local coordinates of its upper-left corner. Shift the
     // screen boundary rectangle and leave the local port rectangle intact.
+    // Capture before changing the port origin: source and destination may
+    // overlap, and application content must move without requiring a redraw.
+    let moving_ink = if ppc_window_is_visible(memory, window_ptr) {
+        ppc_window_global_content_bounds(memory, gworlds, window_ptr).and_then(|content| {
+            if (content.0, content.1) == (new_top, new_left) { return None; }
+            let front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)?;
+            let visible = crate::window_manager::snapshot_port_region_rects(window_ptr, 24, true,
+                |address| memory.read_u8(address).unwrap_or(0))?;
+            let mut pixels = Vec::new();
+            for y in i32::from(content.0).max(0)..i32::from(content.2).min(front.height as i32) {
+                for x in i32::from(content.1).max(0)..i32::from(content.3).min(front.width as i32) {
+                    if !visible.iter().any(|&(top, left, bottom, right)|
+                        i32::from(top) <= y && y < i32::from(bottom)
+                            && i32::from(left) <= x && x < i32::from(right)) { continue; }
+                    if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front, (x, y)) {
+                        pixels.push((x, y, pixel));
+                    }
+                }
+            }
+            let mut saved = crate::memory::SavedPixels::from(pixels);
+            for index in 0..saved.len() {
+                let (x, y, _) = saved[index];
+                ppc_capture_saved_detail(memory, front, (x, y), &mut saved, index);
+            }
+            Some((front, content, saved))
+        })
+    } else { None };
     let (port_top, port_left, port_bottom, port_right) =
         ppc_read_rect(memory, window_ptr.checked_add(16)?)?;
     let pixmap_handle = memory.read_u32_be(window_ptr.checked_add(2)?)?;
@@ -2714,6 +2742,25 @@ pub(super) fn ppc_move_window_coordinates(
         ),
     );
 
+    if let Some((front, previous, pixels)) = moving_ink {
+        let delta = (i32::from(new_left) - i32::from(previous.1),
+            i32::from(new_top) - i32::from(previous.0));
+        let occluders = window_list.with_ref(|windows|
+            crate::window_manager::window_occluders(windows.iter().copied(), window_ptr,
+                |candidate| ppc_window_is_visible(memory, candidate)));
+        let covers: Vec<_> = occluders.into_iter().filter_map(|window|
+            ppc_window_global_structure_bounds(memory, gworlds, window)).collect();
+        for (index, (x, y, pixel)) in pixels.iter().copied().enumerate() {
+            let point = (x + delta.0, y + delta.1);
+            if point.0 < 0 || point.1 < 0 || point.0 >= front.width as i32
+                || point.1 >= front.height as i32 || covers.iter().any(|&(top, left, bottom, right)|
+                    i32::from(top) <= point.1 && point.1 < i32::from(bottom)
+                        && i32::from(left) <= point.0 && point.0 < i32::from(right)) { continue; }
+            let _ = ppc_quickdraw_write_raw_pixel(memory, front, point, pixel);
+            ppc_restore_saved_detail(memory, front, point, &pixels, index);
+        }
+    }
+
     // portRect is guest-writable and describes local coordinates, not the
     // allocated backing surface. It may legitimately differ from the cached
     // GWorld dimensions. Moving translates PixMap bounds while preserving
@@ -2743,6 +2790,7 @@ pub(super) fn ppc_move_window(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     gworlds: &mut [PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
 ) -> Option<()> {
     let params = crate::window_manager::evaluate_move_window_parameters(
         cpu.gpr[3],
@@ -2753,6 +2801,7 @@ pub(super) fn ppc_move_window(
     ppc_move_window_coordinates(
         memory,
         gworlds,
+        window_list,
         params.window_ptr(),
         params.h_global(),
         params.v_global(),
@@ -3708,7 +3757,7 @@ pub(super) fn ppc_dispatch_legacy_window(
             let mut move_cpu = cpu.clone();
             move_cpu.gpr[4] = new_left as u16 as u32;
             move_cpu.gpr[5] = new_top as u16 as u32;
-            if ppc_move_window(&move_cpu, memory, gworlds).is_none() {
+            if ppc_move_window(&move_cpu, memory, gworlds, window_list).is_none() {
                 return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
             }
             ppc_recalculate_window_vis_regions(
@@ -4128,7 +4177,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                 let was_visible = ppc_window_is_visible(memory, window);
                 let previous_front = ppc_front_visible_process_window(memory, window_list);
                 let previous_structure = ppc_window_global_structure_bounds(memory, gworlds, window);
-                if ppc_zoom_window(cpu, memory, gworlds).is_some() {
+                if ppc_zoom_window(cpu, memory, gworlds, window_list).is_some() {
                     if params.front() {
                         ppc_reorder_window(gworlds, window_list, window, 0, true);
                     }
@@ -4750,7 +4799,7 @@ pub(super) fn ppc_dispatch_legacy_window(
                         let was_visible = ppc_window_is_visible(memory, params.window_ptr());
                         let previous_structure =
                             ppc_window_global_structure_bounds(memory, gworlds, params.window_ptr());
-                        let _ = ppc_move_window_coordinates(memory, gworlds, params.window_ptr(), left, top);
+                        let _ = ppc_move_window_coordinates(memory, gworlds, window_list, params.window_ptr(), left, top);
                         let _ = ppc_size_window_dimensions(memory, gworlds, params.window_ptr(), width, height);
                         ppc_recalculate_window_vis_regions(
                             process_memory_manager,
@@ -6212,7 +6261,7 @@ pub(super) fn ppc_dispatch_drag_window(
                 .saturating_add(release.0.wrapping_sub(start.0))
                 as u16 as u32;
             move_cpu.gpr[6] = 1;
-            if ppc_move_window(&move_cpu, memory, gworlds).is_some() {
+            if ppc_move_window(&move_cpu, memory, gworlds, window_list).is_some() {
                 let previous_front = ppc_front_visible_process_window(memory, window_list);
                 ppc_reorder_window(gworlds, window_list, call.window, 0, true);
                 ppc_recalculate_window_vis_regions(
@@ -6698,6 +6747,7 @@ pub(super) fn ppc_zoom_window(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     gworlds: &mut [PpcGWorldRecord],
+    window_list: &SharedProcessWindowList,
 ) -> Option<()> {
     let window = cpu.gpr[3];
     let part = cpu.gpr[4] as u16 as i16;
@@ -6713,7 +6763,7 @@ pub(super) fn ppc_zoom_window(
     let mut move_cpu = cpu.clone();
     move_cpu.gpr[4] = left as u16 as u32;
     move_cpu.gpr[5] = top as u16 as u32;
-    ppc_move_window(&move_cpu, memory, gworlds)?;
+    ppc_move_window(&move_cpu, memory, gworlds, window_list)?;
     let mut size_cpu = cpu.clone();
     size_cpu.gpr[4] = right.saturating_sub(left) as u16 as u32;
     size_cpu.gpr[5] = bottom.saturating_sub(top) as u16 as u32;

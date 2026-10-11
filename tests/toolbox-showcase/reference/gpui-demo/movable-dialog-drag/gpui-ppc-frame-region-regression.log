@@ -1,0 +1,10 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 54.49s
+     Running unittests src/lib.rs (target/debug/deps/systemless-257ba83b63f6679f)
+
+running 1 test
+test systems::macintosh::loader::ppc::tests::quickdraw::rectangle_frame_respects_disjoint_clip_and_visibility_at_every_depth ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6718 filtered out; finished in 0.08s
+
