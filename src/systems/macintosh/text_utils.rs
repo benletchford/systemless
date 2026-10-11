@@ -981,6 +981,45 @@ pub const CHAR_BYTE_SELECTOR: i32 = 16;
 /// CharType selector (18).
 pub const CHAR_TYPE_SELECTOR: i32 = 18;
 
+/// HiliteText ($800E001C) encoded selector.
+pub const HILITE_TEXT_SELECTOR: u32 = 0x800E_001C;
+
+/// HiliteText legacy selector (28).
+pub const HILITE_TEXT_LEGACY_SELECTOR: i32 = 28;
+
+/// NFindWord ($8012FFE2) encoded selector.
+pub const NFIND_WORD_SELECTOR: u32 = 0x8012_FFE2;
+
+/// FindWordBreaks ($C012001A) encoded selector.
+pub const FIND_WORD_BREAKS_SELECTOR: u32 = 0xC012_001A;
+
+/// FindWord legacy selector (26).
+pub const FIND_WORD_SELECTOR: i32 = 26;
+
+/// FontScript selector (0).
+pub const FONT_SCRIPT_SELECTOR: i32 = 0;
+
+/// IntlScript selector (2).
+pub const INTL_SCRIPT_SELECTOR: i32 = 2;
+
+/// KeyScript selector (4).
+pub const KEY_SCRIPT_SELECTOR: i32 = 4;
+
+/// Standard Roman ASCII character type for CharType (`smCharAscii = 0`).
+pub const SM_CHAR_ASCII: i16 = 0;
+
+/// European / Extended Roman character type for CharType (`smCharEuro = 7`).
+pub const SM_CHAR_EURO: i16 = 7;
+
+/// Punctuation character type for CharType (`smCharPunct = 2`).
+pub const SM_CHAR_PUNCT: i16 = 2;
+
+/// Left-to-right text direction for CharType (`smCharLeft = 0`).
+pub const SM_CHAR_LEFT: i16 = 0;
+
+/// Right-to-left text direction for CharType (`smCharRight = 1`).
+pub const SM_CHAR_RIGHT: i16 = 1;
+
 /// Classic nilHandleErr error code (-109).
 pub const NIL_HANDLE_ERR: i16 = -109;
 
@@ -1031,6 +1070,28 @@ pub fn font_id_to_script(font_id: i16) -> u8 {
         (((font - 0x4000) / 0x0200) + 1) as u8
     } else {
         0
+    }
+}
+
+/// Returns true if the given script code is enabled.
+///
+/// In the current Macintosh runtime, only the Roman script system (`smRoman` = 0) is enabled.
+#[inline]
+pub fn is_script_enabled(script: u8) -> bool {
+    script == SM_ROMAN
+}
+
+/// Maps a font family ID to the script code of an enabled script system.
+/// If the script system for that font is not enabled, returns the system script (`smRoman` = 0).
+///
+/// Inside Macintosh: Text (1993), pp. 6-82 to 6-83 (`FontToScript`).
+#[inline]
+pub fn font_id_to_enabled_script(font_id: i16) -> u8 {
+    let script = font_id_to_script(font_id);
+    if is_script_enabled(script) {
+        script
+    } else {
+        SM_ROMAN
     }
 }
 
@@ -1179,6 +1240,97 @@ pub fn evaluate_replace_text(
         (0, None)
     } else {
         (substitutions, Some(replaced))
+    }
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `HiliteText`.
+///
+/// Finds word or character boundaries for highlighting text between `first_offset`
+/// and `second_offset`. For Roman and 1-byte left-to-right text, returns a single
+/// contiguous range clamped to `text_len` with `offFirst = min(first, second)` and
+/// `offSecond = max(first, second)`, and zeroed trailing pairs.
+///
+/// References:
+/// - Inside Macintosh Volume V (1986), p. V-314
+/// - Inside Macintosh: Text (1993), pp. 5-75 to 5-77
+pub fn evaluate_hilite_text(
+    text_len: usize,
+    first_offset: usize,
+    second_offset: usize,
+) -> [(i16, i16); 3] {
+    let max_len = text_len.min(i16::MAX as usize);
+    let low = first_offset.min(second_offset).min(max_len) as i16;
+    let high = first_offset.max(second_offset).min(max_len) as i16;
+    [(low, high), (0, 0), (0, 0)]
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `FindWord`.
+///
+/// Determines the boundaries of the word (or whitespace sequence) containing the
+/// character at `offset` for Roman text. Returns the start and end offsets in `offsets[0]`,
+/// with `offsets[1]` and `offsets[2]` zeroed.
+///
+/// References:
+/// - Inside Macintosh Volume V (1986), p. V-313
+/// - Inside Macintosh: Text (1993), pp. 5-69 to 5-72
+pub fn evaluate_find_word(text: &[u8], offset: usize) -> [(i16, i16); 3] {
+    let len = text.len().min(i16::MAX as usize);
+    if len == 0 {
+        return [(0, 0), (0, 0), (0, 0)];
+    }
+    if offset >= len {
+        let l = len as i16;
+        return [(l, l), (0, 0), (0, 0)];
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum CharClass {
+        Whitespace,
+        Word,
+        Punctuation,
+    }
+
+    fn classify(b: u8) -> CharClass {
+        if matches!(b, b' ' | b'\t' | b'\r' | b'\n') {
+            CharClass::Whitespace
+        } else if b.is_ascii_alphanumeric() || b == b'_' || (0x80..=0xFE).contains(&b) {
+            CharClass::Word
+        } else {
+            CharClass::Punctuation
+        }
+    }
+
+    let target_class = classify(text[offset]);
+
+    let mut start = offset;
+    while start > 0 && classify(text[start - 1]) == target_class {
+        start -= 1;
+    }
+
+    let mut end = offset + 1;
+    while end < len && classify(text[end]) == target_class {
+        end += 1;
+    }
+
+    [(start as i16, end as i16), (0, 0), (0, 0)]
+}
+
+/// Canonical architecture-neutral evaluation of classic Macintosh `CharType`.
+///
+/// Returns an integer describing the character type and direction at `offset` in `text`.
+/// High byte encodes `smCharAscii` (0) or `smCharEuro` (7).
+/// Low byte encodes direction (`smCharLeft = 0`).
+///
+/// References:
+/// - Inside Macintosh: Text (1993), pp. 6-79 to 6-80
+pub fn evaluate_char_type(text: &[u8], offset: usize) -> i16 {
+    let Some(&byte) = text.get(offset) else {
+        return 0;
+    };
+    if byte < 0x80 {
+        0
+    } else {
+        SM_CHAR_EURO << 8
     }
 }
 
@@ -1827,6 +1979,21 @@ mod tests {
     }
 
     #[test]
+    fn test_font_id_to_enabled_script() {
+        assert!(is_script_enabled(SM_ROMAN));
+        assert!(!is_script_enabled(SM_JAPANESE));
+        assert!(!is_script_enabled(SM_TRAD_CHINESE));
+        assert_eq!(font_id_to_enabled_script(0), SM_ROMAN);
+        assert_eq!(font_id_to_enabled_script(1), SM_ROMAN);
+        assert_eq!(font_id_to_enabled_script(3), SM_ROMAN);
+        assert_eq!(font_id_to_enabled_script(0x3FFF), SM_ROMAN);
+        // Non-enabled scripts fallback to SM_ROMAN
+        assert_eq!(font_id_to_enabled_script(0x4000), SM_ROMAN);
+        assert_eq!(font_id_to_enabled_script(0x4200), SM_ROMAN);
+        assert_eq!(font_id_to_enabled_script(0x4400), SM_ROMAN);
+    }
+
+    #[test]
     fn test_char_byte_matrix() {
         // Roman script: always single byte
         let text_roman = b"Hello, World!";
@@ -1886,5 +2053,62 @@ mod tests {
         let (count, result) = evaluate_replace_text(&[0x81, 0x40], b"X", &[0x81], SM_JAPANESE);
         assert_eq!(count, 0);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_hilite_text_matrix() {
+        // Normal ordered offsets
+        assert_eq!(evaluate_hilite_text(10, 2, 7), [(2, 7), (0, 0), (0, 0)]);
+        // Inverted offsets (second < first)
+        assert_eq!(evaluate_hilite_text(10, 7, 2), [(2, 7), (0, 0), (0, 0)]);
+        // Insertion point (first == second)
+        assert_eq!(evaluate_hilite_text(10, 4, 4), [(4, 4), (0, 0), (0, 0)]);
+        // Clamping to text_len
+        assert_eq!(evaluate_hilite_text(5, 2, 100), [(2, 5), (0, 0), (0, 0)]);
+        assert_eq!(evaluate_hilite_text(5, 100, 200), [(5, 5), (0, 0), (0, 0)]);
+        // Zero text length
+        assert_eq!(evaluate_hilite_text(0, 0, 5), [(0, 0), (0, 0), (0, 0)]);
+    }
+
+    #[test]
+    fn test_find_word_matrix() {
+        let text = b"Hello,   world!";
+        // Alphanumeric word "Hello" at offsets 0..5
+        assert_eq!(evaluate_find_word(text, 0), [(0, 5), (0, 0), (0, 0)]);
+        assert_eq!(evaluate_find_word(text, 3), [(0, 5), (0, 0), (0, 0)]);
+        assert_eq!(evaluate_find_word(text, 4), [(0, 5), (0, 0), (0, 0)]);
+
+        // Punctuation "," at offset 5
+        assert_eq!(evaluate_find_word(text, 5), [(5, 6), (0, 0), (0, 0)]);
+
+        // Whitespace "   " at offsets 6..9
+        assert_eq!(evaluate_find_word(text, 6), [(6, 9), (0, 0), (0, 0)]);
+        assert_eq!(evaluate_find_word(text, 7), [(6, 9), (0, 0), (0, 0)]);
+        assert_eq!(evaluate_find_word(text, 8), [(6, 9), (0, 0), (0, 0)]);
+
+        // Word "world" at offsets 9..14
+        assert_eq!(evaluate_find_word(text, 9), [(9, 14), (0, 0), (0, 0)]);
+        assert_eq!(evaluate_find_word(text, 13), [(9, 14), (0, 0), (0, 0)]);
+
+        // Punctuation "!" at offset 14
+        assert_eq!(evaluate_find_word(text, 14), [(14, 15), (0, 0), (0, 0)]);
+
+        // Out of bounds and empty
+        assert_eq!(evaluate_find_word(text, 15), [(15, 15), (0, 0), (0, 0)]);
+        assert_eq!(evaluate_find_word(b"", 0), [(0, 0), (0, 0), (0, 0)]);
+    }
+
+    #[test]
+    fn test_char_type_matrix() {
+        let text = [b'A', b'!', 0x8E, 0xFF];
+        // ASCII alphanumeric
+        assert_eq!(evaluate_char_type(&text, 0), 0);
+        // ASCII punctuation
+        assert_eq!(evaluate_char_type(&text, 1), 0);
+        // European / extended Roman
+        assert_eq!(evaluate_char_type(&text, 2), SM_CHAR_EURO << 8);
+        assert_eq!(evaluate_char_type(&text, 3), SM_CHAR_EURO << 8);
+        // Out of bounds
+        assert_eq!(evaluate_char_type(&text, 4), 0);
     }
 }

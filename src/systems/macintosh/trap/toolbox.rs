@@ -3719,7 +3719,17 @@ impl super::TrapDispatcher {
     }
 
     fn scriptutil_font_script(&self) -> u8 {
-        crate::text_utils::font_id_to_script(self.tx_font as i16)
+        crate::text_utils::font_id_to_enabled_script(self.tx_font as i16)
+    }
+
+    fn write_offset_table(bus: &mut MacMemoryBus, offsets_ptr: u32, table: [(i16, i16); 3]) {
+        if offsets_ptr != 0 {
+            for (i, (first, second)) in table.iter().enumerate() {
+                let base = offsets_ptr + (i as u32 * 4);
+                bus.write_word(base, *first as u16);
+                bus.write_word(base + 2, *second as u16);
+            }
+        }
     }
 
     fn scriptutil_replace_text(
@@ -3756,7 +3766,7 @@ impl super::TrapDispatcher {
 
         let base = bus.read_bytes(base_ptr, base_size as usize);
         let substitution = bus.read_bytes(substitution_ptr, substitution_size as usize);
-        let script = self.scriptutil_font_script();
+        let script = crate::text_utils::font_id_to_script(self.tx_font as i16);
         let (substitutions, new_data) = crate::text_utils::evaluate_replace_text(
             &base,
             &substitution,
@@ -15814,14 +15824,59 @@ impl super::TrapDispatcher {
                     0x821C_FFFE => {
                         return Some(self.handle_scriptutil_styled_line_break(bus, cpu, sp));
                     }
+                    // HiliteText ($800E001C): PROCEDURE HiliteText(textPtr: Ptr; textLength,
+                    //   firstOffset, secondOffset: INTEGER; VAR offsets: OffsetTable)
+                    // Stack: selector(4), offsets_ptr(4), secondOffset(2), firstOffset(2),
+                    // textLength(2), textPtr(4). Pop 18 bytes.
+                    crate::text_utils::HILITE_TEXT_SELECTOR => {
+                        let offsets_ptr = bus.read_long(sp + 4);
+                        let second_offset = bus.read_word(sp + 8) as i16;
+                        let first_offset = bus.read_word(sp + 10) as i16;
+                        let text_length = bus.read_word(sp + 12) as i16;
+                        let _text_ptr = bus.read_long(sp + 14);
+                        let table = crate::text_utils::evaluate_hilite_text(
+                            text_length.max(0) as usize,
+                            first_offset.max(0) as usize,
+                            second_offset.max(0) as usize,
+                        );
+                        Self::write_offset_table(bus, offsets_ptr, table);
+                        cpu.write_reg(Register::A7, sp + 18);
+                        return Some(Ok(()));
+                    }
+                    // NFindWord ($8012FFE2): PROCEDURE NFindWord(textPtr: Ptr; textLength, offset: INTEGER;
+                    //   leadingEdge: BOOLEAN; nbreaks: NBreakTablePtr; VAR offsets: OffsetTable)
+                    // Stack: selector(4), offsets_ptr(4), nbreaks(4), leadingEdge(2), offset(2),
+                    // textLength(2), textPtr(4). Pop 22 bytes.
+                    crate::text_utils::NFIND_WORD_SELECTOR => {
+                        let offsets_ptr = bus.read_long(sp + 4);
+                        let _nbreaks = bus.read_long(sp + 8);
+                        let _leading_edge = bus.read_word(sp + 12);
+                        let offset = bus.read_word(sp + 14) as i16;
+                        let text_length = bus.read_word(sp + 16) as i16;
+                        let text_ptr = bus.read_long(sp + 18);
+                        let len = text_length.max(0) as usize;
+                        let bytes = if text_ptr != 0 && len > 0 {
+                            bus.read_bytes(text_ptr, len)
+                        } else {
+                            Vec::new()
+                        };
+                        let table = crate::text_utils::evaluate_find_word(
+                            &bytes,
+                            offset.max(0) as usize,
+                        );
+                        Self::write_offset_table(bus, offsets_ptr, table);
+                        cpu.write_reg(Register::A7, sp + 22);
+                        return Some(Ok(()));
+                    }
                     _ => {}
                 }
 
                 match selector {
                     // FontScript (0): FUNCTION FontScript: INTEGER
                     // Returns script code. Stack: selector(4), result space(2)
-                    0 => {
-                        bus.write_word(sp + 4, 0); // smRoman = 0
+                    crate::text_utils::FONT_SCRIPT_SELECTOR => {
+                        let script = self.scriptutil_font_script();
+                        bus.write_word(sp + 4, script as u16);
                         cpu.write_reg(Register::A7, sp + 4); // pop selector, result stays
                     }
                     // IntlScript (2): FUNCTION IntlScript: INTEGER
@@ -15892,8 +15947,17 @@ impl super::TrapDispatcher {
                     }
                     // CharType (18): FUNCTION CharType(textBuf: Ptr; textOffset: INTEGER): INTEGER
                     // Stack: selector(4), textBuf(4), textOffset(2), result(2)
-                    18 => {
-                        bus.write_word(sp + 10, 0); // return 0 (left-to-right)
+                    crate::text_utils::CHAR_TYPE_SELECTOR => {
+                        let text_offset = bus.read_word(sp + 4) as i16;
+                        let text_buf = bus.read_long(sp + 6);
+                        let result = if text_buf != 0 && text_offset >= 0 {
+                            let len = (text_offset as usize + 1).min(256);
+                            let bytes = bus.read_bytes(text_buf, len);
+                            crate::text_utils::evaluate_char_type(&bytes, text_offset as usize)
+                        } else {
+                            0
+                        };
+                        bus.write_word(sp + 10, result as u16);
                         cpu.write_reg(Register::A7, sp + 10);
                     }
                     // Char2Pixel (22): FUNCTION Char2Pixel(textBuf: Ptr; textLen: INTEGER;
@@ -15951,12 +16015,41 @@ impl super::TrapDispatcher {
                     // OffsetTable is ARRAY[0..2] OF OffPair = 3*4 = 12 bytes
                     // (Inside Macintosh Volume VI, p. 33514 summary; Text 1993,
                     // p. 10664).
+                    // FindWord (26): PROCEDURE FindWord(textPtr: Ptr; textLength, offset: INTEGER;
+                    //   leadingEdge: BOOLEAN; breaksPtr: Ptr; VAR offsets: OffsetTable)
+                    // Pascal pushes args left-to-right (first arg deepest), so the
+                    // VAR offsets pointer is the LAST arg pushed and lives at sp+4.
+                    // Layout post-trap-entry:
+                    //   sp+0  selector long
+                    //   sp+4  offsets_ptr (last arg, 4 bytes)
+                    //   sp+8  breaksPtr (4 bytes)
+                    //   sp+12 leadingEdge (2 bytes)
+                    //   sp+14 offset (2 bytes)
+                    //   sp+16 textLength (2 bytes)
+                    //   sp+18 textPtr (first arg, 4 bytes)
+                    // No return value. Pop 22 (selector + 18 arg bytes).
+                    // OffsetTable is ARRAY[0..2] OF OffPair = 3*4 = 12 bytes
+                    // (Inside Macintosh Volume VI, p. 33514 summary; Text 1993,
+                    // p. 10664).
                     // Inside Macintosh Volume V, V-313
-                    26 => {
+                    crate::text_utils::FIND_WORD_SELECTOR => {
                         let offsets_ptr = bus.read_long(sp + 4);
-                        if offsets_ptr != 0 {
-                            bus.write_bytes(offsets_ptr, &[0u8; 12]);
-                        }
+                        let _breaks_ptr = bus.read_long(sp + 8);
+                        let _leading_edge = bus.read_word(sp + 12);
+                        let offset = bus.read_word(sp + 14) as i16;
+                        let text_length = bus.read_word(sp + 16) as i16;
+                        let text_ptr = bus.read_long(sp + 18);
+                        let len = text_length.max(0) as usize;
+                        let bytes = if text_ptr != 0 && len > 0 {
+                            bus.read_bytes(text_ptr, len)
+                        } else {
+                            Vec::new()
+                        };
+                        let table = crate::text_utils::evaluate_find_word(
+                            &bytes,
+                            offset.max(0) as usize,
+                        );
+                        Self::write_offset_table(bus, offsets_ptr, table);
                         cpu.write_reg(Register::A7, sp + 22);
                     }
                     // HiliteText (28): PROCEDURE HiliteText(textPtr: Ptr; textLength,
@@ -15972,11 +16065,18 @@ impl super::TrapDispatcher {
                     // No return. Pop 18 (selector + 14 arg bytes). OffsetTable is
                     // 12 bytes (Inside Macintosh Volume VI, p. 33514 summary).
                     // Inside Macintosh Volume V, V-314
-                    28 => {
+                    crate::text_utils::HILITE_TEXT_LEGACY_SELECTOR => {
                         let offsets_ptr = bus.read_long(sp + 4);
-                        if offsets_ptr != 0 {
-                            bus.write_bytes(offsets_ptr, &[0u8; 12]);
-                        }
+                        let second_offset = bus.read_word(sp + 8) as i16;
+                        let first_offset = bus.read_word(sp + 10) as i16;
+                        let text_length = bus.read_word(sp + 12) as i16;
+                        let _text_ptr = bus.read_long(sp + 14);
+                        let table = crate::text_utils::evaluate_hilite_text(
+                            text_length.max(0) as usize,
+                            first_offset.max(0) as usize,
+                            second_offset.max(0) as usize,
+                        );
+                        Self::write_offset_table(bus, offsets_ptr, table);
                         cpu.write_reg(Register::A7, sp + 18);
                     }
                     // DrawJust (30): PROCEDURE DrawJust(textPtr: Ptr; textLength, slop: INTEGER)

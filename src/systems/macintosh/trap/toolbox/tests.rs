@@ -17304,7 +17304,10 @@
 
             let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
             assert!(result.expect("ScriptUtil arm").is_ok());
-            assert_eq!(bus.read_bytes(offsets_ptr, 12), vec![0; 12]);
+            assert_eq!(
+                bus.read_bytes(offsets_ptr, 12),
+                vec![0, 2, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0]
+            );
             assert_eq!(cpu.read_reg(Register::A7), sp + 18);
 
             let expected = (trap_word == 0xA8B5)
@@ -17443,26 +17446,90 @@
     // pushed (sp+4); textPtr is FIRST and deepest (sp+18). OffsetTable
     // is 12 bytes (ARRAY[0..2] OF OffPair) per IM:VI 33514.
     #[test]
-    fn scriptutil_findword_zeros_offsettable_and_pops_selector_plus_args() {
+    fn scriptutil_findword_populates_offsettable_and_pops_selector_plus_args() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         let offsets_ptr = 0x364000u32;
+        let text_ptr = 0x365000u32;
+        bus.write_bytes(text_ptr, b"Hello, world!");
 
         bus.write_long(sp, 0x0000_001A); // selector 26
         bus.write_long(sp + 4, offsets_ptr); // VAR offsets (last arg)
         bus.write_long(sp + 8, 0x366000); // breaksPtr
         bus.write_word(sp + 12, 1); // leadingEdge
-        bus.write_word(sp + 14, 4); // offset
-        bus.write_word(sp + 16, 12); // textLength
-        bus.write_long(sp + 18, 0x365000); // textPtr (first arg, deepest)
+        bus.write_word(sp + 14, 2); // offset in "Hello"
+        bus.write_word(sp + 16, 13); // textLength
+        bus.write_long(sp + 18, text_ptr); // textPtr (first arg, deepest)
         bus.write_bytes(offsets_ptr, &[0xA5; 12]);
 
         let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert_eq!(bus.read_bytes(offsets_ptr, 12), vec![0; 12]);
+        assert_eq!(
+            bus.read_bytes(offsets_ptr, 12),
+            vec![0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
         assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+    }
+
+    #[test]
+    fn scriptutil_nfindword_encoded_selector_populates_offsettable() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let offsets_ptr = 0x364000u32;
+        let text_ptr = 0x365000u32;
+        bus.write_bytes(text_ptr, b"Alpha   Beta");
+
+        bus.write_long(sp, 0x8012_FFE2); // NFindWord selector
+        bus.write_long(sp + 4, offsets_ptr);
+        bus.write_long(sp + 8, 0); // nbreaks
+        bus.write_word(sp + 12, 0); // leadingEdge
+        bus.write_word(sp + 14, 6); // offset in spaces "   "
+        bus.write_word(sp + 16, 12); // textLength
+        bus.write_long(sp + 18, text_ptr);
+        bus.write_bytes(offsets_ptr, &[0xFF; 12]);
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.expect("NFindWord").is_ok());
+
+        assert_eq!(
+            bus.read_bytes(offsets_ptr, 12),
+            vec![0, 5, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 22);
+    }
+
+    #[test]
+    fn scriptutil_chartype_returns_ascii_and_european_categories() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let text_ptr = 0x365000u32;
+        bus.write_bytes(text_ptr, &[b'A', 0x8E]);
+
+        // Offset 0: 'A' -> 0 (smCharAscii)
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0x0000_0012); // selector 18 (CharType)
+        bus.write_word(sp + 4, 0); // textOffset 0
+        bus.write_long(sp + 6, text_ptr); // textBuf
+        bus.write_word(sp + 10, 0xBEEF); // result
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.expect("CharType").is_ok());
+        assert_eq!(bus.read_word(sp + 10), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+
+        // Offset 1: 0x8E -> 0x0700 (smCharEuro << 8)
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0x0000_0012);
+        bus.write_word(sp + 4, 1); // textOffset 1
+        bus.write_long(sp + 6, text_ptr); // textBuf
+        bus.write_word(sp + 10, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+        assert!(result.expect("CharType").is_ok());
+        assert_eq!(bus.read_word(sp + 10), 0x0700);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
     }
 
     // ScriptUtil ($A8B5) encoded selector $821CFFFE StyledLineBreak

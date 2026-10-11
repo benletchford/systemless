@@ -1859,6 +1859,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("CTBGetCTBVersion", PpcSystemCompatibilityOperation::CtbGetCtbVersion),
         ("CallComponentUPP", PpcSystemCompatibilityOperation::CallComponentUpp),
         ("CharByte", PpcSystemCompatibilityOperation::CharByte),
+        ("CharType", PpcSystemCompatibilityOperation::CharType),
         ("DIBadMount", PpcSystemCompatibilityOperation::DiBadMount),
         ("DIFormat", PpcSystemCompatibilityOperation::DiFormat),
         ("DILoad", PpcSystemCompatibilityOperation::DiLoad),
@@ -1869,7 +1870,9 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("Dequeue", PpcSystemCompatibilityOperation::Dequeue),
         ("Enqueue", PpcSystemCompatibilityOperation::Enqueue),
         ("FindNextComponent", PpcSystemCompatibilityOperation::FindNextComponent),
+        ("FindWord", PpcSystemCompatibilityOperation::FindWord),
         ("Font2Script", PpcSystemCompatibilityOperation::Font2Script),
+        ("FontScript", PpcSystemCompatibilityOperation::FontScript),
         ("GetNextProcess", PpcSystemCompatibilityOperation::GetNextProcess),
         ("GetEvQHdr", PpcSystemCompatibilityOperation::GetEvQHdr),
         ("GetScript", PpcSystemCompatibilityOperation::GetScript),
@@ -1877,6 +1880,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("GetScriptVariable", PpcSystemCompatibilityOperation::GetScriptVariable),
         ("GetSysBeepVolume", PpcSystemCompatibilityOperation::GetSysBeepVolume),
         ("GetSysDirection", PpcSystemCompatibilityOperation::GetSysDirection),
+        ("HiliteText", PpcSystemCompatibilityOperation::HiliteText),
         ("IUCompString", PpcSystemCompatibilityOperation::IuCompString),
         ("IUDateString", PpcSystemCompatibilityOperation::IuDateString),
         ("IUDatePString", PpcSystemCompatibilityOperation::IuDatePString),
@@ -1898,6 +1902,7 @@ fn system_compatibility_imports_pre_resolve_to_typed_operations() {
         ("MIDISignOut", PpcSystemCompatibilityOperation::MidiSignOut),
         ("MIDIWritePacket", PpcSystemCompatibilityOperation::MidiWritePacket),
         ("Munger", PpcSystemCompatibilityOperation::Munger),
+        ("NFindWord", PpcSystemCompatibilityOperation::NFindWord),
         ("NMInstall", PpcSystemCompatibilityOperation::NmInstall),
         ("NMRemove", PpcSystemCompatibilityOperation::NmRemove),
         ("ObscureCursor", PpcSystemCompatibilityOperation::ObscureCursor),
@@ -2459,5 +2464,101 @@ fn ppc_font2script_compatibility_maps_script_ranges() {
         ),
     );
     assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn ppc_chartype_compatibility_identifies_ascii_and_european_bytes() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CharType")).unwrap();
+    let text_ptr = PPC_DATA_BASE + 0x100;
+    loaded.memory.add_region(text_ptr, vec![b'A', 0x8E]);
+
+    // Offset 0: 'A' -> smCharAscii (0)
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CharType,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32 as i16, 0);
+
+    // Offset 1: 0x8E -> smCharEuro << 8 (0x0700)
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = 1;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::CharType,
+        ),
+    );
+    assert_eq!(loaded.cpu.gpr[3] as i32 as i16, 0x0700);
+}
+
+#[test]
+fn ppc_hilitetext_compatibility_writes_offset_table() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"HiliteText")).unwrap();
+    let offsets_ptr = PPC_DATA_BASE + 0x200;
+    loaded.memory.add_region(offsets_ptr, vec![0xFF; 12]);
+
+    loaded.cpu.gpr[3] = 0; // textPtr (not dereferenced for length clamping)
+    loaded.cpu.gpr[4] = 20; // textLength
+    loaded.cpu.gpr[5] = 15; // firstOffset
+    loaded.cpu.gpr[6] = 5; // secondOffset
+    loaded.cpu.gpr[7] = offsets_ptr;
+
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::HiliteText,
+        ),
+    );
+
+    assert_eq!(loaded.memory.read_u16_be(offsets_ptr), Some(5));
+    assert_eq!(loaded.memory.read_u16_be(offsets_ptr + 2), Some(15));
+    assert_eq!(loaded.memory.read_u16_be(offsets_ptr + 4), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(offsets_ptr + 6), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(offsets_ptr + 8), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(offsets_ptr + 10), Some(0));
+}
+
+#[test]
+fn ppc_findword_compatibility_finds_word_boundaries() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FindWord")).unwrap();
+    let text_ptr = PPC_DATA_BASE + 0x300;
+    let offsets_ptr = PPC_DATA_BASE + 0x400;
+    let text = b"Alpha  Beta!";
+    loaded.memory.add_region(text_ptr, text.to_vec());
+    loaded.memory.add_region(offsets_ptr, vec![0xFF; 12]);
+
+    // Query offset in "Alpha"
+    loaded.cpu.gpr[3] = text_ptr;
+    loaded.cpu.gpr[4] = text.len() as u32;
+    loaded.cpu.gpr[5] = 2; // offset in "Alpha"
+    loaded.cpu.gpr[6] = 0; // leadingEdge
+    loaded.cpu.gpr[7] = 0; // breaksPtr
+    loaded.cpu.gpr[8] = offsets_ptr;
+
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::FindWord,
+        ),
+    );
+
+    assert_eq!(loaded.memory.read_u16_be(offsets_ptr), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(offsets_ptr + 2), Some(5));
+
+    // Query offset in whitespace "  "
+    loaded.cpu.gpr[5] = 6;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::SystemCompatibility(
+            PpcSystemCompatibilityOperation::FindWord,
+        ),
+    );
+
+    assert_eq!(loaded.memory.read_u16_be(offsets_ptr), Some(5));
+    assert_eq!(loaded.memory.read_u16_be(offsets_ptr + 2), Some(7));
 }
 
