@@ -13,6 +13,8 @@ pub(crate) struct TextEditDrawing {
     editor_recipe: Option<Box<super::TextEditSnapshot>>,
     pub(crate) painted_regions: Vec<(i16, i16, i16, i16)>,
     pub(crate) solid_caret: Option<((i16, i16, i16, i16), u16, u16)>,
+    /// Plain editor foreground resolved before selection/caret painting.
+    pub(crate) plain_ink: Option<(u16, u16)>,
 }
 
 impl TextEditDrawing {
@@ -271,6 +273,7 @@ impl TextEditDrawing {
             editor_recipe: None,
             painted_regions,
             solid_caret: None,
+            plain_ink: None,
         })
     }
 }

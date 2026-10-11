@@ -1,5 +1,31 @@
 # GPUI Kit system-interface coverage
 
+### Retained PPC plain TextEdit foreground ink (2026-10-12)
+
+PPC plain TextEdit records the actual foreground pixel resolved for its glyph
+paint, before selection and themed caret drawing. The ink travels with existing
+TextEdit drawing evidence, so disposal/forgetting removes it together. A fresh
+plain field snapshot exposes that one physical ink and its display/inversion
+colours; stale ownership, missing ink or a changed surface depth is refused.
+Later caller colour state cannot substitute for the value actually painted.
+Styled snapshot resolution retains its existing canonical style-run path.
+
+All 25 PPC TextEdit tests pass (5.02s), including actual PPC8/PPC16 ink checks
+under nine record faces, three alignments and four caller styles. Changing later
+foreground colour/index state preserves the recorded ink; stale and forgotten
+records are rejected. The native selection activation/deactivation test also
+checks that inverted selection ink never replaces the glyph foreground.
+All 43 related shared/TextEdit regressions pass (4.47s). The active multiline
+GPUI interaction regression passes four CPU/display modes and four scales
+(18.74s), preserving existing field eligibility and guest editing paths.
+
+This is paint-input groundwork, not a newly rendered plain-font style matrix.
+Classic retained plain ink, faithful GPUI nonzero-face field composition,
+selection/caret geometry, all font ratios/scales, original Macintosh font
+references and native gameplay qualification remain required. No broad gate
+closes. Functional tests use root optimization0 and incremental CI compilation.
+The fresh locked/offline default desktop check passes (26.14s).
+
 ### Canonical classic TextEdit paint-mode inputs (2026-10-12)
 
 The classic TextEdit paint snapshot now resolves its mode from canonical

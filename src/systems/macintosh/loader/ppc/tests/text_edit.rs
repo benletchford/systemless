@@ -1318,13 +1318,18 @@ fn text_edit_activation_repaints_selection_without_update_or_idle() {
     loaded.cpu.gpr[3] = handle;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: false });
     let inactive = pixels(&mut loaded.memory);
+    let glyph_ink = loaded.memory.presentation().text_edit_plain_ink(handle);
+    assert!(glyph_ink.is_some(), "completed native paint must retain plain glyph ink");
     loaded.cpu.gpr[3] = handle;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: true });
     let active = pixels(&mut loaded.memory);
+    assert_eq!(loaded.memory.presentation().text_edit_plain_ink(handle), glyph_ink,
+        "selection inversion must not become the retained foreground");
     assert_ne!(active, inactive, "activation must paint the selection immediately");
     loaded.cpu.gpr[3] = handle;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: false });
     assert_eq!(pixels(&mut loaded.memory), inactive, "deactivation must remove selection pixels");
+    assert_eq!(loaded.memory.presentation().text_edit_plain_ink(handle), glyph_ink);
     let snapshot = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
         &mut |addr| loaded.memory.read_u8(addr));
     assert_eq!(snapshot.records[0].selection, (0, 1));
@@ -1581,6 +1586,26 @@ fn plain_textedit_uses_record_face_for_paint_layout_and_hit_testing() {
                     ppc_te_draw(&mut loaded.memory, test_handles!(loaded), &loaded.gworlds,
                         handle, PPC_MAIN_GWORLD, loaded.quickdraw_fore_color,
                         &loaded.quickdraw_fore_indices);
+                    let captured = crate::text_edit::TextEditDrawing::capture_editor(
+                        handle, PPC_MAIN_GWORLD, (10, 20, 150, 80), |address| loaded.memory.read_u8(address));
+                    let mut record = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+                        &mut |address| loaded.memory.read_u8(address)).records.remove(0);
+                    record.drawing_intact = !loaded.memory.presentation().text_edit_drawing_regions(
+                        handle, captured, front.base_addr).is_empty();
+                    assert!(record.drawing_intact);
+                    let saved_foreground = loaded.quickdraw_fore_color;
+                    loaded.quickdraw_fore_color = PPC_RGB_WHITE;
+                    loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 0);
+                    let paint = loaded.text_edit_paint_snapshot(&record).unwrap();
+                    assert_eq!(paint.style_ink.len(), 1);
+                    assert_eq!(Some(paint.style_ink[0].pixel), ink);
+                    loaded.quickdraw_fore_color = saved_foreground;
+                    loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+                    record.drawing_intact = false;
+                    assert!(loaded.text_edit_paint_snapshot(&record).is_none(), "stale plain ink must not qualify");
+                    record.drawing_intact = true;
+                    loaded.memory.presentation().forget_text_edit_drawing(handle);
+                    assert!(loaded.text_edit_paint_snapshot(&record).is_none(), "forgotten ink must not qualify");
                     let mut pixels = Vec::new();
                     for y in 10..150 {
                         for x in 20..80 {

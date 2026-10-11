@@ -201,13 +201,13 @@ impl PpcLoadedApp {
         true
     }
 
-    /// Inspect styled TextEdit destination colours; do not mutate its port or
-    /// borrow the caller's current foreground, which is restored after drawing.
+    /// Inspect TextEdit destination colours without mutating its port. Plain
+    /// glyph ink comes from actual drawing, before selection/caret paint.
     pub(crate) fn text_edit_paint_snapshot(
         &mut self, record: &crate::text_edit::TextEditSnapshot,
     ) -> Option<crate::text_edit::TextEditPaintSnapshot> {
         use crate::text_edit::{TextEditCharExtraSnapshot, TextEditInkSnapshot, TextEditPaintSnapshot};
-        let runs = record.style_runs.as_ref()?;
+        let runs = if record.styled { Some(record.style_runs.as_ref()?) } else { None };
         let front = self.presented_front_buffer()?;
         let surface = ppc_live_quickdraw_surface(&mut self.memory, &self.gworlds, record.owner_port)?;
         if !matches!(front.depth, 8 | 16) || surface.front_buffer.base_addr != front.base_addr
@@ -222,11 +222,18 @@ impl PpcLoadedApp {
             let [r, g, b, _] = palette[usize::from(pixel)].to_le_bytes();
             [r, g, b]
         };
-        let mut style_ink = Vec::with_capacity(runs.len());
-        for run in runs {
+        let mut style_ink = Vec::with_capacity(runs.map_or(1, Vec::len));
+        for run in runs.into_iter().flatten() {
             let pixel = ppc_quickdraw_surface_fore_pixel(&mut self.memory, surface,
                 PpcRgbColor { red: run.color.0, green: run.color.1, blue: run.color.2 }, None)?;
             style_ink.push(TextEditInkSnapshot { pixel, rgb: rgb_at(pixel), inverted_rgb: rgb_at(pixel ^ if front.depth == 16 { 0xffff } else { 0xff }) });
+        }
+        if !record.styled {
+            if !record.drawing_intact { return None; }
+            let (depth, pixel) = self.memory.presentation().text_edit_plain_ink(record.guest_id)?;
+            if u32::from(depth) != front.depth { return None; }
+            style_ink.push(TextEditInkSnapshot { pixel, rgb: rgb_at(pixel),
+                inverted_rgb: rgb_at(pixel ^ if depth == 16 { 0xffff } else { 0xff }) });
         }
         Some(TextEditPaintSnapshot { depth: front.depth as u16, mode,
             char_extra: TextEditCharExtraSnapshot::PpcPacked(ppc_port_char_extra_packed(&mut self.memory, record.owner_port)),

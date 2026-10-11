@@ -654,7 +654,8 @@ pub struct TextEditPaintSnapshot {
     pub mode: i16,
     pub char_extra: TextEditCharExtraSnapshot,
     pub space_extra: i32,
-    /// One ink per canonical style run, in the same order.
+    /// One ink per canonical style run, or the retained foreground for a
+    /// plain editor. Plain ink requires actual native drawing evidence.
     pub style_ink: Vec<TextEditInkSnapshot>,
     /// Solid native caret fragment retained at drawing time, before restoring
     /// the caller's foreground. Missing evidence retains guest caret rendering.

@@ -2182,6 +2182,14 @@ pub(super) fn ppc_te_draw(
     let mode = memory
         .read_u16_be(te_ptr + PPC_TE_TX_MODE_OFFSET)
         .unwrap_or(PPC_QD_TEXT_MODE_SRC_OR as u16) as i16;
+    // Keep actual glyph ink separate from later selection and themed caret
+    // paint. Snapshotting the caller's current foreground cannot recover it.
+    let plain_ink = if !styled && matches!(mode, 0 | 1) {
+        ppc_live_quickdraw_surface(memory, gworlds, port).and_then(|surface| {
+            ppc_quickdraw_surface_fore_pixel(memory, surface, fallback_color, explicit_index)
+                .map(|pixel| (surface.front_buffer.depth as u16, pixel))
+        })
+    } else { None };
     let line_count = usize::from(
         memory
             .read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET)
@@ -2424,7 +2432,8 @@ pub(super) fn ppc_te_draw(
         }
     }
     // Text (1993), p. 2-88: retain evidence only after actual drawing.
-    let drawing = crate::text_edit::TextEditDrawing::capture_editor(te_handle, port, view, |addr| memory.read_u8(addr));
+    let mut drawing = crate::text_edit::TextEditDrawing::capture_editor(te_handle, port, view, |addr| memory.read_u8(addr));
+    if let Some(drawing) = &mut drawing { drawing.plain_ink = plain_ink; }
     memory.presentation().record_text_edit_drawing(te_handle, drawing);
 
 }

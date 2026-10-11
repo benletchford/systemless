@@ -131,6 +131,9 @@ impl std::fmt::Debug for PresentationSlot {
     }
 }
 impl PresentationSlot {
+    pub(crate) fn text_edit_plain_ink(&self, handle: u32) -> Option<(u16, u16)> {
+        self.1.borrow().get(&handle)?.plain_ink
+    }
     pub(crate) fn text_edit_solid_caret(&self, handle: u32) -> Option<((i16, i16, i16, i16), u16, u16)> {
         self.1.borrow().get(&handle)?.solid_caret
     }
