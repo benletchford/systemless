@@ -446,7 +446,17 @@ mod desktop {
             }
         }
 
-        fn release_all_host_keys(&mut self) {
+        fn release_host_input(&mut self) {
+            if self.mouse_down {
+                self.mouse_down = false;
+                self.scrollbar_drag = None;
+                self.popup_tracking = None;
+                let (vertical, horizontal) = self.mouse_position;
+                let _ = self.commands.send(Command::Input(MacintoshInput::MouseUp {
+                    vertical,
+                    horizontal,
+                }));
+            }
             let mut keys: Vec<u8> = self.held_keys.keys().copied().collect();
             keys.sort_unstable();
             for mac_key in keys {
@@ -616,13 +626,15 @@ mod desktop {
     impl Render for Demo {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             if self._focus_out.is_none() {
-                self._focus_out = Some(cx.on_focus_out(&self.focus, window, |this, _, _, _| {
-                    this.release_all_host_keys();
+                self._focus_out = Some(cx.on_focus_out(&self.focus, window, |this, _, _, cx| {
+                    this.release_host_input();
+                    cx.notify();
                 }));
             }
             if self._focus_lost.is_none() {
-                self._focus_lost = Some(cx.on_focus_lost(window, |this, _, _| {
-                    this.release_all_host_keys();
+                self._focus_lost = Some(cx.on_focus_lost(window, |this, _, cx| {
+                    this.release_host_input();
+                    cx.notify();
                 }));
             }
             let mut bar = div()
@@ -4488,6 +4500,44 @@ mod desktop {
                 })
             ));
             assert!(!view.read_with(cx, |demo, _| demo.mouse_down));
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
+        #[gpui_kit::test]
+        fn focus_loss_releases_guest_button_once(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::AppContext;
+
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let updates = std::sync::Arc::new(std::sync::Mutex::new(None));
+            cx.update(gpui_kit::init);
+            let view = cx.update(|cx| cx.new(|cx| super::Demo::new(sender, updates, cx)));
+            cx.update(|cx| {
+                view.update(cx, |demo, _| {
+                    demo.mouse_down = true;
+                    demo.mouse_position = (92, 137);
+                    demo.scrollbar_drag = Some((1, 1, (92, 137)));
+                    demo.popup_tracking = Some((2, 1));
+                    demo.release_host_input();
+                    demo.release_host_input();
+                    assert!(!demo.mouse_down);
+                    assert!(demo.scrollbar_drag.is_none());
+                    assert!(demo.popup_tracking.is_none());
+                });
+            });
+            let inputs: Vec<_> = receiver
+                .try_iter()
+                .filter_map(|command| match command {
+                    super::Command::Input(input) => Some(input),
+                    _ => None,
+                })
+                .collect();
+            assert!(matches!(
+                inputs.as_slice(),
+                [MacintoshInput::MouseUp {
+                    vertical: 92,
+                    horizontal: 137
+                }]
+            ));
         }
 
         #[cfg(feature = "gpui-demo-test")]
