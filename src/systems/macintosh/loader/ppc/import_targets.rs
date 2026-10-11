@@ -288,6 +288,7 @@ pub enum PpcImportDispatcherTarget {
     PaintBehind,
     CalcVisBehind,
     GetMouse,
+    GetGlobalMouse,
     ActivatePalette,
     NSetPalette,
     GetPalette,
@@ -3242,6 +3243,7 @@ pub(crate) fn dispatcher_target_for_import(
             "CalcVisBehind" | "calcvisbehind",
         ) => PpcImportDispatcherTarget::CalcVisBehind,
         ("InterfaceLib", "GetMouse") => PpcImportDispatcherTarget::GetMouse,
+        ("InterfaceLib", "GetGlobalMouse") => PpcImportDispatcherTarget::GetGlobalMouse,
         ("InterfaceLib", "ActivatePalette") => PpcImportDispatcherTarget::ActivatePalette,
         ("InterfaceLib", "SetPalette") | ("InterfaceLib", "NSetPalette") => {
             PpcImportDispatcherTarget::NSetPalette
