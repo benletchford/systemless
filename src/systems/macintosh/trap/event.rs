@@ -628,6 +628,28 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         event_mask: u16,
     ) -> (u16, u32, u32, i16, i16, u16, bool) {
+        // Dialog button tracking follows physical release, independently of
+        // the application's requested event mask (MTE 1992, pp. 5-57--5-59).
+        // An app-owned press only restores its pixels; its queued mouseUp stays
+        // available to the application. A retained Dialog Manager press owns
+        // its matching release, but must not swallow older unrelated mouseUps.
+        if self.retained_modal_dialog_click.is_some() && !self.input_state.mouse_button_pressed() {
+            let (where_v, where_h) = self.input_state.mouse_position();
+            let release = super::dispatch::QueuedEvent {
+                what: 2, message: 0, when: self.current_tick(), where_v, where_h,
+                modifiers: self.current_event_modifiers(),
+            };
+            if self.consume_retained_modal_dialog_event(cpu, bus, &release) {
+                let index = self.event_queue.iter().position(|event|
+                    event.what == 2 && event.where_v == where_v && event.where_h == where_h);
+                if let Some(index) = index { self.event_queue.remove(index); }
+                // Match the retained release path below: finishing an owned
+                // gesture yields a null event. Disposal's queued activation and
+                // update events remain for the next application poll.
+                return (0, 0, self.current_tick(), where_v, where_h,
+                    self.current_event_modifiers(), false);
+            }
+        }
         self.enqueue_open_application_event_if_needed(event_mask);
         self.enqueue_auto_key_if_due(
             bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),

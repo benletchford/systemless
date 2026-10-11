@@ -10436,6 +10436,15 @@ impl super::TrapDispatcher {
                 if click.item_no > 0 {
                     let bounds = Self::dialog_screen_bounds(bus, click.dialog_ptr);
                     let rect = Self::dialog_item_screen_rect(bounds, click.rect);
+                    if click.delivered_to_app {
+                        // This affordance began by inverting the app's pixels.
+                        // Restore them without disposing its dialog or consuming
+                        // the event: the application owns the action and lifetime.
+                        if click.highlighted {
+                            self.invert_button_rect(bus, rect.0, rect.1, rect.2, rect.3);
+                        }
+                        return false;
+                    }
                     if click.highlighted {
                         self.draw_dialog_button_highlight_state(
                             bus,

@@ -56,6 +56,38 @@ pass (32.51s), covering document, modal and Standard File commits across their C
 modes. The corrected example and ordinary desktop test builds pass. GPUI's optional
 test module requires `gpui-demo-test`; ordinary headless tests stay enabled.
 
+EV follow-up (2026-10-12): fixed worker deadlines avoid accumulated relative-sleep
+overshoot; diagnostics separately record worker-cycle intervals. EV exposed a
+second scheduling problem: an active ModalDialog caused the frontend to stop
+CPU work after one small batch even when an interrupt-time sound refill was
+still running. The bounded CPU loop now continues pending sound work within its
+existing host deadline and instruction limit, then yields the retained UI loop.
+A finite refill longer than one batch completes before the modal yield in the
+new regression. This addresses callback starvation, without extending budgets.
+
+Semantic dialog activation releases the physical button normally, then retains
+its inside pointer position until guest tracking/delivery finishes. Later input
+supersedes deferred restoration; shutdown flushes completed writes. Retained
+Dialog Manager releases complete independently of the application's mouseUp
+mask; application-owned dialogs keep their release event and require guest
+disposal. All 427 dialog and 54 event tests pass. Fast press/release checkbox
+coverage passes across mono68k, colour68k and PPC (0.38s); the three affected
+rapid text-commit regressions pass (17.38s), as do live cross-CPU notifications
+(5.48s). The current ordinary suite
+passes 146 tests with native pasteboard access (3.19s); sandbox execution passes
+145 but fails native pasteboard creation. The complete 206-test GPUI suite is
+historical evidence pinned to `7b4ad125` (866.57s), preceding these changes.
+
+Reviewed current original-EV colour68k captures pass pilot-to-ship dialog
+transition (3 commands/4 actions), flight with both GPUI creation buttons and
+held acceleration/turning (14 actions), and edited pilot/ship creation followed
+by same-process Standard File reopening (12 commands/13 actions). Each has zero
+readiness delay. Production source/executable and image hashes are recorded in
+ignored qualification output. Earlier stalled candidates remain recorded. Flight
+overlapped compilation and has late worker intervals, so this is behavioral
+qualification, not a controlled smoothness result or native presentation FPS.
+Physical interaction, device audio continuity and restart persistence remain open.
+
 Application captures release the shared worker update lock before scene rendering
 and scripted input, matching live polling. The previous if-let temporary retained
 the lock through Metal submission and could delay publication; those observation

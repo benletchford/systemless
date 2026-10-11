@@ -7,10 +7,23 @@ pub struct ControlActivation {
     point: (i16, i16),
     origin: (i16, i16),
     released: bool,
+    wait_logged: bool,
+    dialog_target: Option<DialogActivationTarget>,
+}
+
+struct DialogActivationTarget {
+    id: u32,
+    generation: u64,
+    number: i16,
+    control_identity: (u32, u64),
+    initial_value: Option<i16>,
 }
 
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(feature = "gpui-demo-test", derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(
+    feature = "gpui-demo-test",
+    derive(serde::Deserialize, serde::Serialize)
+)]
 #[cfg_attr(feature = "gpui-demo-test", serde(rename_all = "snake_case"))]
 pub enum FileAction {
     Accept,
@@ -30,27 +43,63 @@ pub enum FileAction {
 
 fn file_scroll_arrow(rect: (i16, i16, i16, i16), action: FileAction) -> (i16, i16, i16, i16) {
     match action {
-        FileAction::ScrollUp => (rect.0, rect.1, rect.0.saturating_add(16).min(rect.2), rect.3),
-        _ => (rect.2.saturating_sub(16).max(rect.0), rect.1, rect.2, rect.3),
+        FileAction::ScrollUp => (
+            rect.0,
+            rect.1,
+            rect.0.saturating_add(16).min(rect.2),
+            rect.3,
+        ),
+        _ => (
+            rect.2.saturating_sub(16).max(rect.0),
+            rect.1,
+            rect.2,
+            rect.3,
+        ),
     }
 }
 
-fn file_entry_rect(list: (i16, i16, i16, i16), first: usize, visible: usize,
-    height: i16, index: usize, count: usize) -> Option<(i16, i16, i16, i16)> {
+fn file_entry_rect(
+    list: (i16, i16, i16, i16),
+    first: usize,
+    visible: usize,
+    height: i16,
+    index: usize,
+    count: usize,
+) -> Option<(i16, i16, i16, i16)> {
     let row = index.checked_sub(first)?;
-    if row >= visible || index >= count || height <= 0 { return None; }
-    let top = i32::from(list.0).checked_add(2)?.checked_add(i32::try_from(row).ok()?.checked_mul(i32::from(height))?)?;
+    if row >= visible || index >= count || height <= 0 {
+        return None;
+    }
+    let top = i32::from(list.0)
+        .checked_add(2)?
+        .checked_add(i32::try_from(row).ok()?.checked_mul(i32::from(height))?)?;
     let bottom = top.checked_add(i32::from(height))?.min(i32::from(list.2));
-    if top >= bottom { return None; }
-    Some((i16::try_from(top).ok()?, list.1.saturating_add(2), i16::try_from(bottom).ok()?, list.3.saturating_sub(2)))
+    if top >= bottom {
+        return None;
+    }
+    Some((
+        i16::try_from(top).ok()?,
+        list.1.saturating_add(2),
+        i16::try_from(bottom).ok()?,
+        list.3.saturating_sub(2),
+    ))
 }
 
 impl ControlActivation {
-    pub fn begin_file_entry(session: &mut MacintoshSession, id: u32, generation: u64,
-        index: usize, expected: &systemless::runner::StandardFileEntrySnapshot) -> Option<Self> {
+    pub fn begin_file_entry(
+        session: &mut MacintoshSession,
+        id: u32,
+        generation: u64,
+        index: usize,
+        expected: &systemless::runner::StandardFileEntrySnapshot,
+    ) -> Option<Self> {
         let panel = session.runner().standard_file_snapshot()?;
-        if panel.guest_id != id || panel.generation != generation
-            || panel.entries.as_ref()?.get(index)? != expected { return None; }
+        if panel.guest_id != id
+            || panel.generation != generation
+            || panel.entries.as_ref()?.get(index)? != expected
+        {
+            return None;
+        }
         Self::begin_file(session, id, generation, FileAction::Entry(index))
     }
 
@@ -65,8 +114,11 @@ impl ControlActivation {
             return None;
         }
         let panel = session.runner().standard_file_snapshot()?;
-        if panel.guest_id != id || panel.generation != generation || !panel.standard_entry_point
-            || panel.volume_popup.is_some() {
+        if panel.guest_id != id
+            || panel.generation != generation
+            || !panel.standard_entry_point
+            || panel.volume_popup.is_some()
+        {
             return None;
         }
         // Standard File owns the modal loop and reply; semantic actions are clicks.
@@ -74,7 +126,9 @@ impl ControlActivation {
         let rect = if let Some(folder) = &panel.new_folder {
             match action {
                 FileAction::DismissFolderError if folder.error.is_some() => folder.layout.create,
-                FileAction::CreateFolder if folder.error.is_none() && !folder.name.is_empty() => folder.layout.create,
+                FileAction::CreateFolder if folder.error.is_none() && !folder.name.is_empty() => {
+                    folder.layout.create
+                }
                 FileAction::CancelNewFolder if folder.error.is_none() => folder.layout.cancel,
                 _ => return None,
             }
@@ -99,9 +153,17 @@ impl ControlActivation {
                         }
                         FileAction::Cancel => layout.cancel,
                         FileAction::Desktop => layout.desktop,
-                        FileAction::ScrollUp | FileAction::ScrollDown => file_scroll_arrow(layout.scroll, action),
-                        FileAction::Entry(index) => file_entry_rect(layout.list, layout.first_visible,
-                            layout.visible_rows, layout.row_height, index, panel.entries.as_ref()?.len())?,
+                        FileAction::ScrollUp | FileAction::ScrollDown => {
+                            file_scroll_arrow(layout.scroll, action)
+                        }
+                        FileAction::Entry(index) => file_entry_rect(
+                            layout.list,
+                            layout.first_visible,
+                            layout.visible_rows,
+                            layout.row_height,
+                            index,
+                            panel.entries.as_ref()?.len(),
+                        )?,
                         _ => return None,
                     }
                 }
@@ -112,9 +174,17 @@ impl ControlActivation {
                         FileAction::Cancel => layout.cancel,
                         FileAction::Desktop => layout.desktop,
                         FileAction::NewFolder => layout.new_folder,
-                        FileAction::ScrollUp | FileAction::ScrollDown => file_scroll_arrow(layout.scroll, action),
-                        FileAction::Entry(index) => file_entry_rect(layout.list, layout.first_visible,
-                            layout.visible_rows, layout.row_height, index, panel.entries.as_ref()?.len())?,
+                        FileAction::ScrollUp | FileAction::ScrollDown => {
+                            file_scroll_arrow(layout.scroll, action)
+                        }
+                        FileAction::Entry(index) => file_entry_rect(
+                            layout.list,
+                            layout.first_visible,
+                            layout.visible_rows,
+                            layout.row_height,
+                            index,
+                            panel.entries.as_ref()?.len(),
+                        )?,
                         _ => return None,
                     }
                 }
@@ -142,6 +212,8 @@ impl ControlActivation {
             point,
             origin,
             released: false,
+            wait_logged: false,
+            dialog_target: None,
         })
     }
     pub fn begin(session: &mut MacintoshSession, id: u32, generation: u64) -> Option<Self> {
@@ -182,6 +254,8 @@ impl ControlActivation {
             point,
             origin,
             released: false,
+            wait_logged: false,
+            dialog_target: None,
         })
     }
 
@@ -196,7 +270,7 @@ impl ControlActivation {
         // gesture. The worker serializes presses; item tracking is checked below.
         if session.runner().standard_file_snapshot().is_some()
             || (session.runner().is_ui_tracking_active()
-            && !session.runner().dispatcher().is_dialog_tracking())
+                && !session.runner().dispatcher().is_dialog_tracking())
             || session.runner().guest_menu_tracking_active()
         {
             return None;
@@ -231,7 +305,23 @@ impl ControlActivation {
             point,
             origin,
             released: false,
+            wait_logged: false,
+            dialog_target: Some(DialogActivationTarget {
+                id,
+                generation,
+                number,
+                control_identity: identity?,
+                initial_value: dialogs
+                    .iter()
+                    .find(|dialog| dialog.guest_id == id && dialog.generation == generation)
+                    .and_then(|dialog| dialog.items.iter().find(|item| item.number == number))
+                    .and_then(|item| item.value),
+            }),
         })
+    }
+
+    pub fn is_released(&self) -> bool {
+        self.released
     }
 
     // Each phase is separated by guest execution, just like physical input.
@@ -239,13 +329,63 @@ impl ControlActivation {
     // (Macintosh Toolbox Essentials, pp. 5-57--5-59).
     pub fn advance(mut self, session: &mut MacintoshSession) -> Option<Self> {
         if !self.released {
+            // Release even if the event remains queued. Classic applications
+            // may wait for Button() to clear before they consume mouseDown.
             session.deliver_input(MacintoshInput::MouseUp {
                 vertical: self.point.0,
                 horizontal: self.point.1,
             });
             self.released = true;
+            self.wait_logged = false;
             Some(self)
         } else {
+            // Keep the release inside the painted item until the guest finishes
+            // tracking it. Restoring the pointer on the next publication can
+            // turn an unprocessed inside release into an outside cancellation.
+            let dialogs = session.runner_mut().dialog_snapshot();
+            let target = self.dialog_target.as_ref().and_then(|target| {
+                dialogs
+                    .iter()
+                    .find(|dialog| {
+                        dialog.visible
+                            && dialog.active
+                            && dialog.guest_id == target.id
+                            && dialog.generation == target.generation
+                    })
+                    .and_then(|dialog| {
+                        dialog.items.iter().find(|item| {
+                            item.visible
+                                && item.number == target.number
+                                && item.control_identity == Some(target.control_identity)
+                        })
+                    })
+            });
+            let awaiting_release = target.is_some_and(|item| item.pressed)
+                || target.is_some_and(|item| {
+                    self.dialog_target
+                        .as_ref()
+                        .is_some_and(|target| item.value == target.initial_value)
+                        && session
+                            .runner()
+                            .event_manager_snapshot()
+                            .queued_event_types
+                            .contains(&1)
+                });
+            if awaiting_release {
+                if !self.wait_logged && std::env::var_os("SYSTEMLESS_GPUI_PROFILE").is_some() {
+                    eprintln!(
+                        "[GPUI-ACTIVATION] awaiting inside release at {:?} tick={} pc={:08X} events={:?} tracking={:?}",
+                        self.point,
+                        session.runner().guest_tick(),
+                        session.runner().cpu().read_reg(systemless::cpu::Register::PC),
+                        session.runner().event_manager_snapshot().queued_event_types,
+                        session.runner().dispatcher().dialog_tracking.as_ref().map(|tracking|
+                            (tracking.draw_procs_done, tracking.active_button.is_some(), tracking.flash_remaining, tracking.flash_delay))
+                    );
+                }
+                self.wait_logged = true;
+                return Some(self);
+            }
             session.deliver_input(MacintoshInput::MouseMove {
                 vertical: self.origin.0,
                 horizontal: self.origin.1,

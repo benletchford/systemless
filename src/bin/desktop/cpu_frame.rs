@@ -28,7 +28,12 @@ pub(crate) fn advance(
         let (executed, running) =
             runner.run_gui_cpu_slice(slice_batch.min(remaining), guest_deadline);
         steps += executed;
-        if executed == 0 || !running || runner.is_ui_tracking_active() {
+        // A retained UI loop can coexist with a sound refill callback. Yield
+        // once that work finishes, rather than restricting the callback to one
+        // small batch per publication and starving the foreground modal loop.
+        if executed == 0 || !running
+            || (runner.is_ui_tracking_active() && !runner.has_pending_sound_work())
+        {
             break;
         }
     }

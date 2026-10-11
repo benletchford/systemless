@@ -12,6 +12,7 @@ const STAGES: [&str; 7] = [
 pub(crate) struct FrameTiming {
     previous: Option<Instant>,
     values: Vec<f64>,
+    cycle_interval_ms: Option<f64>,
 }
 impl FrameTiming {
     pub fn checkpoint(&mut self) {
@@ -26,21 +27,32 @@ impl FrameTiming {
 pub(crate) struct WorkerProfiler {
     enabled: bool,
     samples: Vec<Vec<f64>>,
+    previous_cycle: Option<Instant>,
+    cycle_intervals_ms: Vec<f64>,
 }
 impl WorkerProfiler {
     pub fn from_env() -> Self {
         Self {
             enabled: std::env::var_os("SYSTEMLESS_GPUI_PROFILE").is_some(),
             samples: Vec::new(),
+            previous_cycle: None,
+            cycle_intervals_ms: Vec::new(),
         }
     }
     pub fn enabled(&self) -> bool {
         self.enabled
     }
-    pub fn begin(&self) -> FrameTiming {
+    pub fn begin(&mut self) -> FrameTiming {
+        let now = self.enabled.then(Instant::now);
+        let cycle_interval_ms = now.and_then(|now| {
+            self.previous_cycle
+                .replace(now)
+                .map(|previous| now.duration_since(previous).as_secs_f64() * 1000.)
+        });
         FrameTiming {
-            previous: self.enabled.then(Instant::now),
+            previous: now,
             values: Vec::new(),
+            cycle_interval_ms,
         }
     }
     pub fn record(&mut self, timing: FrameTiming) {
@@ -49,6 +61,9 @@ impl WorkerProfiler {
         }
         assert_eq!(timing.values.len(), STAGES.len());
         self.samples.push(timing.values);
+        if let Some(interval) = timing.cycle_interval_ms {
+            self.cycle_intervals_ms.push(interval);
+        }
         if self.samples.len() < 120 {
             return;
         }
@@ -58,10 +73,23 @@ impl WorkerProfiler {
             values.sort_by(f64::total_cmp);
             serde_json::json!({ "phase": name, "mean_ms": mean, "p95_ms": values[values.len() * 95 / 100], "max_ms": values[values.len() - 1] })
         }).collect();
+        // Consecutive cycle starts include sleeping and scheduling delay. These
+        // are production intervals, not compositor submission/presentation times.
+        self.cycle_intervals_ms.sort_by(f64::total_cmp);
+        let intervals = &self.cycle_intervals_ms;
+        let cadence = serde_json::json!({
+            "samples": intervals.len(),
+            "mean_ms": intervals.iter().sum::<f64>() / intervals.len() as f64,
+            "p95_ms": intervals[intervals.len() * 95 / 100],
+            "max_ms": intervals[intervals.len() - 1],
+        });
         eprintln!(
             "[GPUI-PROFILE] {}",
-            serde_json::json!({ "worker_cycles": self.samples.len(), "phases": phases, "scope": "worker work only; excludes sleeping, GPUI drawing and native frame presentation" })
+            serde_json::json!({ "worker_cycles": self.samples.len(), "phases": phases,
+                "worker_cycle_intervals": cadence,
+                "scope": "phases measure worker work only; cycle intervals include sleep and scheduling; neither measures native frame presentation" })
         );
         self.samples.clear();
+        self.cycle_intervals_ms.clear();
     }
 }

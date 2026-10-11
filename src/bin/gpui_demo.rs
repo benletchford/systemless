@@ -646,6 +646,7 @@ mod desktop {
             let mut epoch = Instant::now();
             let mut initial_tick = session.runner().guest_tick();
             let mut previous = epoch;
+            let mut worker_cadence = super::cadence::Cadence::new(epoch, Duration::from_millis(16));
             let mut queued = std::collections::VecDeque::new();
             let mut text_commit_wait: Option<Instant> = None;
             let mut text_commit_rejection: Option<(u64, super::input::TextInputOwner)> = None;
@@ -656,6 +657,7 @@ mod desktop {
             let mut profiler = super::performance::WorkerProfiler::from_env();
             let mut committed_input_wait_logged = false;
             let mut last_profile_dialog = None;
+            let mut last_profile_cpu_stall = None;
             loop {
                 let mut timing = profiler.begin();
                 let start = Instant::now();
@@ -686,9 +688,10 @@ mod desktop {
                         }
                     }
                 }
-                // A deferred text request must not prevent closing the worker.
-                // Shutdown cancels the pending request and flushes completed guest writes.
-                if text_commit_wait.is_some() && queued.iter().any(|command| matches!(command, Command::Shutdown)) {
+                // A deferred text request or semantic press awaiting guest event
+                // consumption must not prevent closing and flushing completed writes.
+                if (text_commit_wait.is_some() || activation.is_some())
+                    && queued.iter().any(|command| matches!(command, Command::Shutdown)) {
                     if let Some(store) = save_store.as_mut() {
                         store.sync_save_files_now(session.runner_mut());
                     }
@@ -697,6 +700,12 @@ mod desktop {
                 if let Some(mut click) = wheel.take() {
                     if !queued.is_empty() { click.stop_repeating(); }
                     wheel = click.advance(&mut session);
+                }
+                // New input supersedes a deferred pointer restoration. The
+                // physical release has already been delivered; do not move the
+                // pointer back over later user input or block a modal handoff.
+                if activation.as_ref().is_some_and(|click| click.is_released()) && !queued.is_empty() {
+                    activation = None;
                 }
                 if let Some(click) = activation.take() {
                     activation = click.advance(&mut session);
@@ -960,7 +969,14 @@ mod desktop {
                 // afterward so queued Toolbox events cannot be starved by UI work.
                 timing.checkpoint();
                 let cpu_deadline = Instant::now() + Duration::from_millis(12);
-                super::cpu_frame::advance(session.runner_mut(), batch, deadline, cpu_deadline);
+                let cpu_steps = super::cpu_frame::advance(session.runner_mut(), batch, deadline, cpu_deadline);
+                if profiler.enabled() {
+                    let stall = (activation.is_some() && cpu_steps == 0).then_some((current_tick, deadline));
+                    if stall != last_profile_cpu_stall {
+                        eprintln!("[GPUI-CPU] pending_activation_stall={stall:?} steps={cpu_steps} due_tick={due_tick} tracking={}", session.runner().is_ui_tracking_active());
+                        last_profile_cpu_stall = stall;
+                    }
+                }
                 timing.checkpoint();
                 session.runner_mut().advance_notification_system_sounds();
                 session.runner_mut().mix_gui_audio_slice(367);
@@ -1047,7 +1063,9 @@ mod desktop {
                     }
                     return Ok(());
                 }
-                std::thread::sleep(Duration::from_millis(16).saturating_sub(start.elapsed()));
+                // Preserve the original schedule after an overslept host timer;
+                // skip missed deadlines instead of accumulating wake-up delay.
+                std::thread::sleep(worker_cadence.delay(Instant::now()));
             }
         });
         let error = match result {
@@ -15052,12 +15070,16 @@ mod desktop {
                 assert_eq!(session.runner().dispatcher().mouse_position(), before);
                 assert!(super::super::activation::ControlActivation::begin_dialog(&mut session, id, generation + 1, number, identity).is_none());
                 let click = super::super::activation::ControlActivation::begin_dialog(&mut session, id, generation, number, identity).unwrap();
-                settle(&mut session);
-                let held = session.runner_mut().dialog_snapshot();
-                let item = held.iter().find(|d| d.guest_id == id).unwrap().items.iter().find(|i| i.number == number).unwrap();
-                assert_eq!(item.value, Some(0));
-                assert!(item.pressed);
-                let click = click.advance(&mut session).unwrap();
+                // Physical release must not wait for event consumption: an app
+                // can wait for Button() before polling its queued mouseDown.
+                let mut click = click.advance(&mut session).unwrap();
+                let release_point = session.runner().dispatcher().mouse_position();
+                for _ in 0..3 {
+                    assert!(session.runner().event_manager_snapshot().queued_event_types.contains(&1));
+                    click = click.advance(&mut session).unwrap();
+                    assert_eq!(session.runner().dispatcher().mouse_position(), release_point);
+                    assert_ne!(session.runner().bus().read_byte(0x0172), 0);
+                }
                 settle(&mut session);
                 assert!(click.advance(&mut session).is_none());
                 let updated = session.runner_mut().dialog_snapshot();

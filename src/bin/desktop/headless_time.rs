@@ -445,6 +445,46 @@ mod tests {
     }
 
     #[test]
+    fn live_modal_slice_finishes_long_sound_refill_before_yielding() {
+        let mut runner = modal_runner();
+        let callback = 0x40000;
+        let marker = 0x50000;
+        let header = 0x60000;
+        let buffer = 0x61000;
+        // A finite refill longer than a single live CPU batch. Its side effect
+        // must be visible before the retained modal loop yields this frame.
+        runner.bus_mut().write_word(callback, 0x203C); // MOVE.L #15000,D0
+        runner.bus_mut().write_long(callback + 2, 15000);
+        runner.bus_mut().write_word(callback + 6, 0x5380); // SUBQ.L #1,D0
+        runner.bus_mut().write_word(callback + 8, 0x66FC); // BNE.S loop
+        runner.bus_mut().write_word(callback + 10, 0x13FC); // MOVE.B #$A5,marker
+        runner.bus_mut().write_word(callback + 12, 0x00A5);
+        runner.bus_mut().write_long(callback + 14, marker);
+        runner.bus_mut().write_word(callback + 18, 0x4E75); // RTS
+        runner.bus_mut().write_long(header + 12, buffer);
+        runner.dispatcher_mut().queue_sound_doubleback_callback(
+            systemless::sound::PendingDoubleBackCallback {
+                callback_addr: callback,
+                chan_ptr: 0x62000,
+                header_ptr: header,
+                exhausted_buffer_index: 0,
+            },
+        );
+        let deadline = runner.guest_tick() + 1;
+        let steps = super::super::cpu_frame::advance(
+            &mut runner, super::super::CPU_BATCH_INSTRUCTIONS, deadline,
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert!(steps > super::super::CPU_BATCH_INSTRUCTIONS);
+        assert_eq!(runner.bus().read_byte(marker), 0xA5);
+        assert!(!runner.has_pending_sound_work());
+        assert!(runner.is_ui_tracking_active());
+        assert_eq!(runner.cpu().read_reg(Register::PC), 0x10000);
+        assert_eq!(runner.cpu().read_reg(Register::A7), 0x100000);
+        assert_eq!(runner.guest_tick(), deadline);
+    }
+
+    #[test]
     fn retained_modal_wait_matches_desktop_tick_scheduling_without_a_window() {
         let mut timed = modal_runner();
         let mut live = modal_runner();

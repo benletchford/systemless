@@ -13,6 +13,37 @@
     use std::collections::VecDeque;
 
     #[test]
+    fn retained_modal_release_ignores_application_mouse_up_mask() {
+        for delivered_to_app in [false, true] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let dialog = bus.alloc(170);
+            let previous = bus.alloc(170);
+            seed_app_owned_modal_dialog(&mut disp, &mut bus, dialog, previous, 2);
+            if !delivered_to_app { disp.dialog_modal_entered.insert(dialog); }
+            disp.push_mouse_down(70, 160);
+            let down = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
+            assert_eq!(down.6, delivered_to_app);
+            let click = disp.retained_modal_dialog_click.as_ref().unwrap();
+            assert_eq!((click.item_no, click.delivered_to_app), (1, delivered_to_app));
+            disp.push_mouse_up(70, 160);
+            // The application requests mouseDown only. Tracking must finish
+            // on physical release without waiting for a mouseUp event mask.
+            let next = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 1);
+            assert!(!next.6);
+            assert!(disp.retained_modal_dialog_click.is_none());
+            if delivered_to_app {
+                assert!(disp.window_list.contains(&dialog));
+                assert!(disp.dialog_items.contains_key(&dialog));
+                let up = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 1 << 2);
+                assert_eq!((up.0, up.3, up.4, up.6), (2, 70, 160, true));
+            } else {
+                assert!(!disp.window_list.contains(&dialog));
+                assert!(!disp.event_queue.iter().any(|event| event.what == 2));
+            }
+        }
+    }
+
+    #[test]
     fn styled_text_layout_uses_run_faces_independently_of_port_face() {
         let (mut disp, _, _) = setup();
         let text = b"A condensed heading\rPlain text should wrap using its own font metrics and remain inside the view.";
@@ -12425,11 +12456,11 @@
     }
 
     #[test]
-    fn app_owned_modal_dialog_button_mouse_up_dismisses_after_delivery() {
+    fn app_owned_modal_dialog_button_mouse_up_preserves_application_disposal() {
         // Some apps drive modal DLOGs with their own WaitNextEvent loop and
         // only ask the Window Manager which window was clicked. Keep the
-        // mouseDown deliverable, but finish the standard modal button press
-        // on mouseUp if app code has not called DialogSelect.
+        // mouseDown deliverable and finish its visual press on mouseUp.
+        // The application still owns disposal through its Toolbox call.
         // Macintosh Toolbox Essentials 1992, pp. 6-136, 6-138..6-141.
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = bus.alloc(170);
@@ -12456,14 +12487,21 @@
 
         assert!(
             has_event,
-            "app-owned modal mouseUp remains deliverable after compatibility close"
+            "app-owned modal mouseUp remains deliverable to the application"
         );
         assert_eq!(what, 2);
         assert_eq!((where_v, where_h), (70, 150));
         assert_eq!(bus.read_byte(probe), 17);
+        assert_eq!(disp.front_window, dialog_ptr);
+        assert!(disp.dialog_items.contains_key(&dialog_ptr));
+        assert!(disp.retained_modal_dialog_click.is_none());
+        // Handling the click does not authorize the runtime to dispose the
+        // dialog. Model the application's explicit DisposeDialog call instead.
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dialog_ptr);
+        assert!(disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus).unwrap().is_ok());
         assert_eq!(disp.front_window, prev_window);
         assert!(!disp.dialog_items.contains_key(&dialog_ptr));
-        assert!(disp.retained_modal_dialog_click.is_none());
         assert!(
             disp.event_queue
                 .iter()

@@ -37,6 +37,20 @@ impl Cadence {
 mod tests {
     use super::*;
     #[test]
+    fn repeated_late_wakeups_recover_the_original_phase() {
+        let start = Instant::now();
+        let ms = Duration::from_millis;
+        let mut cadence = Cadence::new(start, ms(16));
+        let mut now = start;
+        for _ in 0..100 {
+            // A timer wakes 5 ms late and the next cycle does 1 ms of work.
+            // Rebased sleeps would accumulate all 600 ms of that delay.
+            now += cadence.delay(now) + ms(5) + ms(1);
+        }
+        assert_eq!(now.duration_since(start), ms(1606));
+    }
+
+    #[test]
     fn update_work_and_host_stalls_do_not_accumulate_or_burst() {
         let start = Instant::now();
         let ms = Duration::from_millis;
