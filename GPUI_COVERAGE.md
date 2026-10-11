@@ -6515,3 +6515,16 @@ Ignored reproducible artifacts and producer/image hashes are recorded in
 This is selected family/size/face rendering and retained state evidence, not
 physical activation, native font-oracle, all Appearance flags, or performance
 qualification. All broad production gates remain open.
+
+
+### Locked offline public-crate verification (2026-10-12)
+
+The production package contains 486 files (34.9 MiB, 7.5 MiB compressed),
+including the GPUI logo, publication mailbox and bundled rasterizer headers.
+`cargo package --locked --offline --allow-dirty` verifies the extracted package
+and compiles its default desktop command successfully (4m 24s). The archived
+GPUI source matches the current capture-extension source. Archive/source/log
+hashes are retained in `target/gpui-qualification/package-current-review.json`.
+The registry warns that locked yoke-derive0.8.3 is yanked; this check retains the
+lockfile and does not qualify fresh online resolution. No package is published.
+This closes this selected packaging check, not the wider release gate.
