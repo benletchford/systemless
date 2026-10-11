@@ -1,0 +1,15 @@
+{
+  "source_commit": "24de452504b2d083ce7a09592215567b869465a2",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "45f3d4118bbd363ce8a94c0555f841de0e2aed76b686475690321b1894dfbcfc",
+    "src/bin/gpui_demo_text.rs": "32e80700c0ac68edf1b4a1fe1aa62d0a6e2327ef5d28754c698f6790c4c02084",
+    "src/systems/macintosh/quickdraw/text.rs": "02ec10943157ecc921e7e2f110605ee66c4ba0e2b6b7ebf12ff2e71ed4734537",
+    "src/systems/macintosh/quickdraw/fonts/outline.rs": "382f02c1e262f26b164756d5f86547b200f0f745f02a1b960270dd1197331b46",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f",
+    "target/ci-test/examples/gpui-menu-demo": "06797360b9de7c05db1b12be7efd7fc243566816d42fe0caaa93ed13c237505f",
+    "target/gpui-qualification/post-font-selected.png": "5ee6033dbcb2dd9a2f517e9027526890e107a946b7c3046ea1bd9a89236b6b33",
+    "target/gpui-qualification/post-font-selected.guest.png": "2aad33ef6dfcf22aa37e27b9a90dd4149ccef9d416122a809f1a0b766c8f9cb1"
+  },
+  "comparison_reference": "tests/toolbox-showcase/reference/gpui-demo/halo-everything-states-shared/selection-ppc16-selected-none-1.5",
+  "scope": "Actual guest PPC16 selected everything-style scene at scale1.5. Guest and shared-compositor images match archived same-Systemless baseline exactly; full composed image directly reviewed. Existing unit-ratio guest fonts, not new fractional/large font paths or independent native reference."
+}
