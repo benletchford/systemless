@@ -1,0 +1,12 @@
+{
+  "base_head": "397c823a74bc7f235c8c49106d1b8dd23224f38f",
+  "source_state": "uncommitted overlapping mark extension",
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "858b20bd860acc0e3bd5686d7e640c47218357acfa5a852d39d47317cb528979",
+    "src/bin/gpui_demo_input.rs": "9c1181b054ca7aaafe002e533807e38ef86d4b35f231b539d79e2c17093e7530"
+  },
+  "scope": "14 state tests; actual document worker across mono68k, colour68k, PPC8, PPC16 with exact text/caret/style-run checks; synthetic GPUI handler requests for document/dialog/Save/New Folder; default production compile check. No composed visual or physical IME qualification. Worker ran before test-only platform extension; production adapter unchanged.",
+  "selected_compositor": "PPC16 Save scale1.5 completed exit0; overlapping-stage whole-image equality, candidate hit-testing and exact cancellation passed; stage image reviewed. No physical IME.",
+  "parallel_worker_attempt": "exit101: two tests passed, modal test timed out before new marked expansion case. Serial rerun pending.",
+  "serial_worker_rerun": "exit0: all three actual worker tests pass serially, covering document4, modal6, Save4 and NewFolder4 initial/overlapping expansion cases. Parallel modal timeout retained; no established diagnosis."
+}
