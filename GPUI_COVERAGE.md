@@ -3404,3 +3404,43 @@ the fixed binary, fixture and eight source hashes were verified before lossless
 archival as `popup-disabled-canonical-*`. This qualifies the inspected fixture
 regions in the shared compositor, not native typography, arbitrary palettes,
 clipping/letterboxing, popup arrow/chrome or the broader release gate.
+
+### Shared classic popup indicator candidate
+
+The GPUI closed popup still used a host “▾” glyph for both CPU CDEFs. A new
+shared geometry helper now retains the classic 68K downward triangle and dotted
+disabled pattern, and PPC paired up/down marks. Both guest painters and popup
+snapshots use that helper; GPUI paints the resolved runs with canonical global
+guest coordinates and solid guest ink. Classic colour ink resolves the same
+logical black ColorTable index as the guest framebuffer path. Themed indicator
+projection remains unfinished and still uses the previous host glyph. Build,
+guest raster preservation, compositor captures and interaction checks are
+pending; no fidelity qualification is claimed for this candidate.
+
+The initial candidate's example check passes (1m09s), capture build passes
+(3m05s), and public no-default-features check passes (22.09s). Its reviewed
+mono 0.75 disabled composition at `/tmp/gpui-popup-indicator-mono-075.png`
+exactly matches both guest indicator ink masks after independent device-edge
+scaling. The raw guest pixels are unchanged from the archived canonical disabled
+capture, so the shared geometry refactor preserves this guest raster. PPC
+snapshot selection was subsequently moved to a helper reading the live main
+GWorld theme, matching the CDEF even when a one-bit world forces classic
+presentation. That metadata correction is rebuilding; the three-mode guest
+interaction regression is running against the initial candidate. Further CPU,
+scale, active-state and themed-indicator qualification remain pending.
+
+The live-theme PPC metadata correction's capture build passes (27.72s). A
+fresh fixed-binary 36-capture matrix is running at
+`/tmp/gpui-popup-indicator-scales`: active, host-suspended and disabled states
+across all three CPU/display modes and four scales. Twelve source/fixture
+fingerprints are recorded before capture in
+`/tmp/gpui-popup-indicator-v2-source-sha.json`. Review and guest/composed pixel
+comparison remain pending; the prior single-capture proof is still scoped to
+monochrome disabled indicator geometry.
+
+The initial candidate's real guest popup interaction regression passes across
+all three CPU/display modes (149.90s), including disabled rejection, retained
+selection and tracking after re-enabling. The shared shape helper and guest
+painters are unchanged by the subsequent PPC live-theme metadata correction.
+This is interaction evidence; the full composed state/scale matrix remains
+running and is not yet qualified.

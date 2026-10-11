@@ -7974,44 +7974,14 @@ impl super::TrapDispatcher {
                 }
             }
 
-            // Downward-pointing triangle on right side (popup indicator)
-            // Macintosh Toolbox Essentials 1992, 5-26
-            let tri_x = right - 12;
-            if enabled {
-                for row in 0..6i16 {
-                    Self::fb_hline(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        top + 6 + row,
-                        tri_x - 5 + row,
-                        tri_x + 6 - row,
-                        true,
-                    );
-                }
-            } else {
-                for row in [0i16, 2, 4] {
-                    let start = tri_x - 4 + row;
-                    let end = tri_x + 5 - row;
-                    for x in start..end {
-                        if (x - start) % 2 == 0 {
-                            Self::fb_set_pixel(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                x,
-                                top + 7 + row,
-                                true,
-                            );
-                        }
-                    }
-                }
+            // Shared standard indicator geometry also feeds GPUI presentation.
+            for span in crate::control_manager::popup_indicator_spans(
+                crate::control_manager::PopupIndicatorKind::Classic68k,
+                (top, left, bottom, right), enabled,
+            ) {
+                Self::fb_hline(bus, screen_base, row_bytes, pixel_size,
+                    screen_width, screen_height, span.top, span.left,
+                    span.left.saturating_add(span.width), true);
             }
         }
 

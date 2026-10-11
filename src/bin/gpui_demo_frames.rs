@@ -790,6 +790,7 @@ mod tests {
             popup_title_width: None,
             popup_text_inset: 15,
             popup_ink: None,
+            popup_indicator: None,
             popup_box_bounds: None,
             popup_font: None,
             font_style: None,

@@ -523,6 +523,24 @@ pub(crate) fn classic_menu_symbol(
         .overflow_hidden().child(classic_label_canvas(line, false, 1., foreground))
 }
 
+/// Paint CPU-resolved indicator runs using the same scene transform as text.
+pub(crate) fn classic_popup_indicator(
+    indicator: systemless::runner::ControlPopupIndicator,
+    scale: f32, scene_origin: (f32, f32),
+) -> impl gpui_kit::IntoElement {
+    use gpui_kit::{prelude::*, *};
+    canvas(|bounds, _, _| bounds, move |_, _, window, _| {
+        let [r, g, b] = indicator.rgb;
+        let ink: Hsla = rgb((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)).into();
+        for span in &indicator.spans {
+            window.paint_quad(fill(Bounds::new(
+                point(px(scene_origin.0 + f32::from(span.left) * scale),
+                    px(scene_origin.1 + f32::from(span.top) * scale)),
+                size(px(f32::from(span.width) * scale), px(scale))), ink));
+        }
+    }).size_full()
+}
+
 pub(crate) fn classic_popup_control_label(
     label: &str, guest_font: systemless::menu_model::GuestMenuFont, title: bool, text_inset: i16,
     scale: f32, ink: systemless::runner::ControlTextInk,

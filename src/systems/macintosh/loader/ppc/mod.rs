@@ -353,4 +353,4 @@ pub type PpcHandleStateRecord = ProcessHandleStateRecord;
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub(crate) use dispatch_control::ppc_popup_text_ink;
+pub(crate) use dispatch_control::{ppc_popup_indicator, ppc_popup_text_ink};

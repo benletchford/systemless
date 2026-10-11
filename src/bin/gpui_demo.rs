@@ -1793,7 +1793,12 @@ mod desktop {
                                 )
                                 .child(
                                     div().absolute().left(guest_px((title_width + box_width - 18) as f32)).top(guest_px(box_y as f32))
-                                        .w(guest_px(18.)).h(guest_px(box_height as f32)).flex().items_center().justify_center().child("▾"),
+                                        .w(guest_px(18.)).h(guest_px(box_height as f32)).flex().items_center().justify_center()
+                                        .child(if let Some(indicator) = control.popup_indicator.clone() {
+                                            super::text::classic_popup_indicator(indicator, scene_scale, self.display_origin).into_any_element()
+                                        } else {
+                                            div().child("▾").into_any_element()
+                                        }),
                                 );
                         }
                         0 => {
@@ -10604,6 +10609,7 @@ mod desktop {
                         popup_title_width: None,
                         popup_text_inset: 15,
                         popup_ink: None,
+                        popup_indicator: None,
                         popup_box_bounds: None,
                         popup_font: None,
                         font_style: None,
@@ -11139,6 +11145,7 @@ mod desktop {
                         popup_title_width: None,
                         popup_text_inset: 15,
                         popup_ink: None,
+                        popup_indicator: None,
                         popup_box_bounds: None,
                         popup_font: None,
                         font_style: None,
@@ -11279,6 +11286,7 @@ mod desktop {
                         popup_title_width: None,
                         popup_text_inset: 15,
                         popup_ink: None,
+                        popup_indicator: None,
                         popup_box_bounds: None,
                         popup_font: None,
                         font_style: None,
