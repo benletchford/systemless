@@ -1643,7 +1643,7 @@ mod desktop {
                                 .small()
                                 .compact()
                                 .h(px(bar_height))
-                                .disabled(!menu.enabled),
+                                .disabled(!menu.enabled || self.notification_alert.is_some()),
                         )
                         .content(move |_, window, cx| {
                             let menu_tree = rendered_menu_tree(&snapshot, id);
@@ -3472,8 +3472,8 @@ mod desktop {
                 }).absolute().size_full())
                 .child(super::metrics::SceneMetrics::new(screen, window.rem_size() * scene_scale))
                 .children(self.composition_surface(cx))
-                .when(self.notification_alert.is_none() && !guest_menu_fallback
-                    && self.guest_popup.is_none() && (self.menu_presented || menu_hovered), |root| {
+                .when(!guest_menu_fallback && self.guest_popup.is_none()
+                    && (self.menu_presented || (menu_hovered && self.notification_alert.is_none())), |root| {
                     root.child(bar.unwrap().absolute().top_0().left_0().when(self.menu_presented, |bar| {
                         bar.top(px(self.display_origin.1)).left(px(self.display_origin.0))
                     }))
@@ -9119,6 +9119,11 @@ mod desktop {
                 cx.update_window(window.into(), |_, window, cx| {
                     assert_eq!(view.read(cx).notification_alert.as_ref(), Some(&notice));
                     window.render_frame(cx);
+                    let menu = view.read(cx).menus.menus.iter().find(|menu| menu.id == 129).unwrap();
+                    let trigger = format!("guest-menu-{}-{}", menu.guest_id, menu.generation);
+                    window.click(trigger, cx);
+                    assert!(view.read(cx).open_menus.is_empty(),
+                        "visible GPUI menus must remain unavailable during notification ownership");
                     window.click("guest-notification-ok", cx);
                 }).unwrap();
                 let completed = wait("response", &updates, |update| update.notification_alert.is_none()

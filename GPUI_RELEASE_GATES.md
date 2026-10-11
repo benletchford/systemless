@@ -1,5 +1,15 @@
 # GPUI production release gates
 
+Notification menu retention fix: alert ownership previously removed the GPUI
+bar, exposing guest bitmap menus. Presented standard menus now retain the GPUI
+bar with disabled triggers; hidden menus retain their visibility policy.
+The five notification regressions pass (11.00s), followed by the strengthened
+eight-case cross-CPU workflow checking rendered menu-trigger exclusion (12.43s).
+One corrected mono shared-compositor image was reviewed and shows smooth menu
+labels throughout the alert. Evidence: `reference/gpui-demo/notification-menu-retention`.
+No font substitution or metric change is introduced; native/physical and broad
+font qualification remain open.
+
 Explicit PPC16 launch correction: both frontend parsers accept 16; the shared
 constructor retains the supported 8-bit classic configuration and selects
 16-bit native PowerPC presentation, with that distinction documented in CLI

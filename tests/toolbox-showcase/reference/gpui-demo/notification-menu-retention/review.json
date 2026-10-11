@@ -1,0 +1,7 @@
+{
+  "reviewed": "mono.png",
+  "finding": "Visible GPUI menu labels stay smooth during notification ownership; app-owned text retains guest pixels. Menu triggers are disabled while alert owns input.",
+  "workflow": "Eight mono/colour68k/PPC8/PPC16 explicit-depth cases pass rendered trigger exclusion and notification acknowledgment (12.43s).",
+  "scope": "Selected shared offscreen appearance and GPUI test-window interaction, not physical UI or independent native font fidelity.",
+  "source_sha256": "298c582f4d86487fe3a4329d7d399462053393409b07db475bd9dd5aa7e87b36"
+}
