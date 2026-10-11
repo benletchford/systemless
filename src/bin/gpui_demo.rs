@@ -4612,6 +4612,108 @@ mod desktop {
             }
         }
 
+        #[test]
+        fn nested_modal_dialog_keeps_modeless_text_out_of_its_key_path() {
+            for powerpc in [false, true] {
+                let mut session = MacintoshSession::new(true, if powerpc { None } else { Some(8) });
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                let app = session
+                    .load_path(
+                        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("tests/toolbox-showcase/toolbox-showcase.sit"),
+                    )
+                    .unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(132, 7));
+                let modeless = (0..300)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session
+                            .runner_mut()
+                            .dialog_snapshot()
+                            .into_iter()
+                            .find(|dialog| dialog.visible && dialog.items.len() == 4)
+                    })
+                    .expect("modeless dialog should open");
+                assert_eq!(modeless.items[3].text, "Pilot");
+
+                assert!(session.runner_mut().select_guest_menu_item(132, 6));
+                let modal = (0..300)
+                    .find_map(|_| {
+                        session.runner_mut().run_steps(100_000, None);
+                        session
+                            .runner_mut()
+                            .dialog_snapshot()
+                            .into_iter()
+                            .find(|dialog| dialog.visible && dialog.items.len() == 10)
+                    })
+                    .expect("nested modal dialog should open");
+                assert!(modal.active);
+                session.deliver_input(MacintoshInput::KeyDown {
+                    mac_key: 0x07,
+                    character: b'X',
+                });
+                session.deliver_input(MacintoshInput::KeyUp {
+                    mac_key: 0x07,
+                    character: b'X',
+                });
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    let dialogs = session.runner_mut().dialog_snapshot();
+                    dialogs.iter().any(|current| {
+                        current.guest_id == modal.guest_id
+                            && current.items[6].text == "XCade Connelly"
+                    }) && dialogs.iter().any(|current| {
+                        current.guest_id == modeless.guest_id
+                            && current.items[3].text == "Pilot"
+                    })
+                }), "nested modal key input reached the wrong dialog on {powerpc:?}");
+
+                let cancel = &modal.items[1];
+                let cancel_point = (
+                    (cancel.bounds.0 + cancel.bounds.2) / 2,
+                    (cancel.bounds.1 + cancel.bounds.3) / 2,
+                );
+                session.deliver_input(MacintoshInput::MouseDown {
+                    vertical: cancel_point.0,
+                    horizontal: cancel_point.1,
+                });
+                settle(&mut session);
+                session.deliver_input(MacintoshInput::MouseUp {
+                    vertical: cancel_point.0,
+                    horizontal: cancel_point.1,
+                });
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    let dialogs = session.runner_mut().dialog_snapshot();
+                    dialogs.iter().all(|current| current.guest_id != modal.guest_id)
+                        && dialogs.iter().any(|current| {
+                            current.guest_id == modeless.guest_id
+                                && current.visible
+                                && current.active
+                                && current.items[3].text == "Pilot"
+                        })
+                }), "modeless dialog should regain focus after nested modal dismissal on {powerpc:?}");
+                session.deliver_input(MacintoshInput::KeyDown {
+                    mac_key: 0x06,
+                    character: b'z',
+                });
+                session.deliver_input(MacintoshInput::KeyUp {
+                    mac_key: 0x06,
+                    character: b'z',
+                });
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(100_000, None);
+                    session.runner_mut().dialog_snapshot().iter().any(|current| {
+                        current.guest_id == modeless.guest_id
+                            && current.active
+                            && current.items[3].text == "zPilot"
+                    })
+                }), "modeless edit should accept input after nested modal dismissal on {powerpc:?}");
+            }
+        }
+
         #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
         fn held_pointer_routes_across_guest_pane_boundary(
