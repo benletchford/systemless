@@ -3397,8 +3397,8 @@ fn draw_shape_rect(
             );
         }
         2 => {
-            // eraseRect — interior uses bk_pat with bg_idx for set bits
-            // per IM:V V-66 (erase draws in background color).
+            // Erase uses the background pattern in patCopy mode. Its zero
+            // bits retain background color; set bits use foreground color.
             fill_dst_rect_pat(
                 bus,
                 screen_mode,
@@ -3415,8 +3415,8 @@ fn draw_shape_rect(
                 clip_region,
                 dst_clip,
                 bk_pat,
-                bg_idx,
                 fg_idx,
+                bg_idx,
             );
         }
         3 => {
@@ -3621,22 +3621,7 @@ fn draw_shape_round_rect(
                 _ => [0xFF; 8],
             };
             let set = pattern[y.rem_euclid(8) as usize] & (1 << (7 - x.rem_euclid(8))) != 0;
-            let color = match kind {
-                2 => {
-                    if set {
-                        bg_idx
-                    } else {
-                        fg_idx
-                    }
-                }
-                _ => {
-                    if set {
-                        fg_idx
-                    } else {
-                        bg_idx
-                    }
-                }
-            };
+            let color = if set { fg_idx } else { bg_idx };
             plot_dst_pixel(
                 bus,
                 screen_base,
@@ -3856,11 +3841,11 @@ fn draw_shape_oval_or_arc(
                     }
                 }
                 2 => {
-                    // erase — bk_pat, set bit = bg (IM:V V-66).
+                    // Background patterns use the same color mapping as pen patterns.
                     if bk_pat[pat_row_idx] & pat_bit != 0 {
-                        bg_idx
-                    } else {
                         fg_idx
+                    } else {
+                        bg_idx
                     }
                 }
                 4 => {
@@ -4124,11 +4109,9 @@ fn render_pict_polygon(
                         );
                     }
                     2 => {
-                        // erasePoly — bk_pat. Set bit → bg, clear → fg
-                        // (per IM:V V-66 "erase paints in background color";
-                        // bk_pat's set bits are the dominant erase color).
+                        // erasePoly uses the background pattern in patCopy mode.
                         let bit_set = bk_pat[pat_row_idx] & pat_bit != 0;
-                        let color = if bit_set { bg_idx } else { fg_idx };
+                        let color = if bit_set { fg_idx } else { bg_idx };
                         write_pixel_clipped(
                             bus,
                             screen_base,
