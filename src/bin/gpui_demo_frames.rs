@@ -483,8 +483,14 @@ pub fn list_pieces(
 
 /// Restyle only the grow-icon background and separator pixels after the guest
 /// draws them; the WDEF alone does not reserve content pixels for scrollbars.
-/// Macintosh Toolbox Essentials (1992), pp. 4-4--4-5, 4-12, 4-111--4-112.
-pub fn gutter_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<GutterPiece> {
+/// Visible guest controls take precedence over this decorative presentation.
+/// Macintosh Toolbox Essentials (1992), pp. 4-4--4-5, 4-12, 4-111--4-112,
+/// 5-60--5-64.
+pub fn gutter_pieces(
+    windows: &[WindowFrameSnapshot],
+    controls: &[ControlSnapshot],
+    viewport: Rect,
+) -> Vec<GutterPiece> {
     let mut result = Vec::new();
     let mut covers = Vec::new();
     for (index, frame) in windows.iter().enumerate() {
@@ -538,6 +544,17 @@ pub fn gutter_pieces(windows: &[WindowFrameSnapshot], viewport: Rect) -> Vec<Gut
                     clips = clips
                         .into_iter()
                         .flat_map(|clip| clip.subtract(*cover))
+                        .collect();
+                }
+                for control in controls.iter().filter(|control| {
+                    control.owner_id == frame.guest_id
+                        && control.owner_visible
+                        && control.visible
+                }) {
+                    let bounds = Rect::from(control.bounds);
+                    clips = clips
+                        .into_iter()
+                        .flat_map(|clip| clip.subtract(bounds))
                         .collect();
                 }
                 result.extend(clips.into_iter().map(|clip| GutterPiece {
@@ -916,10 +933,10 @@ mod tests {
             window((40, 40, 140, 140), true, 8),
             window((20, 20, 160, 160), true, 99),
         ];
-        assert!(gutter_pieces(&windows, Rect::from((0, 0, 180, 180))).is_empty());
+        assert!(gutter_pieces(&windows, &[], Rect::from((0, 0, 180, 180))).is_empty());
         windows[0].grow_icon_drawn = true;
         windows[1].grow_icon_drawn = true;
-        let pieces = gutter_pieces(&windows, Rect::from((0, 0, 180, 180)));
+        let pieces = gutter_pieces(&windows, &[], Rect::from((0, 0, 180, 180)));
         assert!(pieces.iter().all(|piece| match piece.kind {
             GutterKind::Vertical => piece.source.width() == 1,
             GutterKind::Horizontal => piece.source.height() == 1,
@@ -944,6 +961,26 @@ mod tests {
             .iter()
             .filter(|piece| piece.window == 1)
             .all(|piece| piece.clip.intersection(front).is_none()));
+    }
+
+    #[test]
+    fn grow_overlay_leaves_guest_controls_visible_at_content_edges() {
+        let mut frame = window((60, 60, 120, 120), true, 8);
+        frame.grow_icon_drawn = true;
+        let custom_corner = control(1, 99, (108, 108, 119, 119));
+        let standard_bar = control(1, 16, (60, 105, 105, 120));
+        let controls = [custom_corner, standard_bar];
+        let pieces = gutter_pieces(
+            &[frame],
+            &controls,
+            Rect::from((0, 0, 180, 180)),
+        );
+        for piece in &pieces {
+            for control in &controls {
+                assert!(piece.clip.intersection(Rect::from(control.bounds)).is_none());
+            }
+        }
+        assert!(pieces.iter().any(|piece| piece.kind == GutterKind::GrowBox));
     }
 
     #[test]

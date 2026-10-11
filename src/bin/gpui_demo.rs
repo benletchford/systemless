@@ -892,7 +892,9 @@ mod desktop {
                             .child(strip),
                     );
                 }
-                for piece in super::frames::gutter_pieces(&self.windows, viewport) {
+                let gutters =
+                    super::frames::gutter_pieces(&self.windows, &self.controls, viewport);
+                for piece in gutters {
                     let source = piece.source;
                     let clip = piece.clip;
                     let mut gutter = div()
