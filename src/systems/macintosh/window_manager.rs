@@ -79,7 +79,7 @@ impl WindowFrameSnapshot {
     /// Unknown definitions retain guest pixels rather than assuming this font.
     pub fn title_layout(&self, menu_bar_height: i16) -> Option<WindowTitleLayout> {
         let definition = self.presentation_definition_id()?;
-        if !matches!(definition, 0 | 4 | 8 | 12 | 16) {
+        if !matches!(definition, 0 | 4 | 5 | 8 | 12 | 16) {
             return None;
         }
         if crate::quickdraw::fonts::get_font_face_or_default(0, 12).size != 12 {
@@ -4710,6 +4710,35 @@ mod tests {
         assert!(!standard_desktop_pattern_is_ink(1, 0));
         assert!(!standard_desktop_pattern_is_ink(0, 1));
         assert!(standard_desktop_pattern_is_ink(1, 1));
+    }
+
+    #[test]
+    fn movable_dialog_title_uses_the_shared_guest_chrome_geometry() {
+        let content = (100, 130, 315, 470);
+        let mut frame = WindowFrameSnapshot {
+            guest_id: 1, generation: 1,
+            window: WindowSnapshot {
+                title: "Movable dialog".into(), bounds: content,
+                structure_bounds: Some(standard_window_structure_bounds(content)),
+                visible_region: Some(content), update_region: None,
+                visible: true, active: true,
+            },
+            definition_id: Some(5), rectangular_regions: true,
+            visible_content_rects: Some(vec![content]),
+            close_box: true, grow_icon_drawn: false,
+        };
+        let layout = frame.title_layout(20).expect("standard movable title");
+        let chrome = standard_window_chrome(content, 20, layout.width,
+            layout.ascent, layout.descent, true, true, false, true, false);
+        assert_eq!((layout.horizontal, layout.baseline, layout.clip),
+            (chrome.title_h, chrome.title_baseline, chrome.title_clip));
+        assert!(chrome.zoom_ink.is_empty());
+        assert_eq!(chrome.ink, standard_window_chrome(content, 20, layout.width,
+            layout.ascent, layout.descent, true, true, false, false, false).ink);
+        frame.window.active = false;
+        assert_eq!(frame.title_layout(20), Some(layout));
+        frame.definition_id = Some(128);
+        assert!(frame.title_layout(20).is_none());
     }
 
     #[test]

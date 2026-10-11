@@ -74,12 +74,21 @@ pub(crate) fn create_test_cwindow(
 
 #[test]
 fn standard_window_title_descender_stays_inside_wdef_clip() {
+    assert_standard_window_title_descender(8);
+}
+
+#[test]
+fn movable_dialog_window_title_descender_stays_inside_wdef_clip() {
+    assert_standard_window_title_descender(5);
+}
+
+fn assert_standard_window_title_descender(proc_id: i16) {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewCWindow")).unwrap();
     loaded.set_ui_theme(UiThemeId::SystemlessDefault);
     let scratch = PPC_DATA_BASE + 0x1400;
     loaded.memory.add_region(scratch, vec![0; 0x100]);
     let bounds = (250, 330, 495, 575);
-    let window = create_test_cwindow(&mut loaded, scratch, bounds, 8, true, u32::MAX);
+    let window = create_test_cwindow(&mut loaded, scratch, bounds, proc_id, true, u32::MAX);
     write_ppc_pstring(&mut loaded.memory, scratch + 16, b"p");
     loaded.cpu.gpr[3] = window;
     loaded.cpu.gpr[4] = scratch + 16;
@@ -105,9 +114,9 @@ fn standard_window_title_descender_stays_inside_wdef_clip() {
         metrics.descent,
         true,
         false,
+        proc_id == 8,
         true,
-        true,
-        true,
+        proc_id == 8,
     );
     let palette = ppc_ui_theme(&loaded.gworlds).provider().palette();
     let background = ppc_physical_screen_color_pixel(

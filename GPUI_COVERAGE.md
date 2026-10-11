@@ -5525,3 +5525,14 @@ font fidelity and the full release gates remain open.
 The same candidate additionally passes styled halo editing across four modes
 (174.32s) and spacing-style editing across four modes (56.85s), with the combined
 log archived in `reference/gpui-demo/textedit-paint-recipe`.
+
+### Movable dialog system-font titles (2026-10-11)
+
+Standard movable dialog frames (definition 5) now obtain guest-authoritative
+system-font title layout instead of declining their title strip. GPUI uses its
+existing smooth font0/size12 painter with shared guest advances/baseline/clipping,
+and does not add close/zoom controls. Six shared/classic/PPC checks pass (0.09s);
+PPC document and movable-title clipping both pass separately. Evidence and
+explicit limits are under `reference/gpui-demo/movable-dialog-title`.
+Composed images, scales, physical drag/input and independent native fidelity for
+this variant remain unqualified; all release gates remain open.
