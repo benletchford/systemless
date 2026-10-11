@@ -50,6 +50,9 @@ mod desktop {
         prefer_powerpc: bool,
         #[arg(long, value_parser = parse_depth)]
         screen_depth: Option<u16>,
+        #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true)]
+        capture_about_alert: Option<PathBuf>,
     }
 
     fn parse_depth(value: &str) -> Result<u16, String> {
@@ -590,7 +593,21 @@ mod desktop {
                     if !item.visible {
                         continue;
                     }
-                    let source = super::frames::Rect::from(item.bounds);
+                    let item_rect = super::frames::Rect::from(item.bounds);
+                    // The Dialog Manager draws the default button outline
+                    // outside its DITL rectangle. Cover those pixels too.
+                    let source = if item.kind == DialogItemKind::Button
+                        && dialog.default_item == Some(item.number)
+                    {
+                        super::frames::Rect {
+                            top: item_rect.top - 4,
+                            left: item_rect.left - 4,
+                            bottom: item_rect.bottom + 4,
+                            right: item_rect.right + 4,
+                        }
+                    } else {
+                        item_rect
+                    };
                     let Some(clip) = source
                         .intersection(dialog.bounds.into())
                         .and_then(|rect| rect.intersection(viewport))
@@ -615,13 +632,16 @@ mod desktop {
                             .compact()
                             .tab_stop(false)
                             .disabled(!item.enabled)
-                            .w_full()
-                            .h_full(),
+                            .absolute()
+                            .left(px((item_rect.left - source.left) as f32))
+                            .top(px((item_rect.top - source.top) as f32))
+                            .w(px(item_rect.width() as f32))
+                            .h(px(item_rect.height() as f32)),
                         ),
                         DialogItemKind::StaticText => overlay
                             .text_size(px(13.))
                             .text_color(cx.theme().foreground)
-                            .child(item.text.clone()),
+                            .child(item.text.replace('\r', "\n")),
                         _ => unreachable!(),
                     };
                     screen = screen.child(
@@ -696,8 +716,102 @@ mod desktop {
         }
     }
 
+    #[cfg(feature = "gpui-demo-test")]
+    fn capture_about_alert(
+        game: &std::path::Path,
+        output: &std::path::Path,
+        prefer_powerpc: bool,
+        screen_depth: Option<u16>,
+    ) {
+        use gpui_kit::{platform, VisualTestAppContext};
+
+        let mut session = MacintoshSession::new(true, screen_depth.or(Some(8)));
+        session
+            .runner_mut()
+            .set_prefer_powerpc_executables(prefer_powerpc);
+        let app = session.load_path(game).unwrap();
+        session.initialize(&app);
+        for _ in 0..300 {
+            session.runner_mut().run_steps(100_000, None);
+            if session
+                .runner_mut()
+                .guest_menu_snapshot()
+                .menus
+                .iter()
+                .any(|menu| menu.id == 128 && !menu.items.is_empty())
+            {
+                break;
+            }
+        }
+        assert!(session.runner_mut().select_guest_menu_item(128, 1));
+        let dialogs = (0..300)
+            .find_map(|_| {
+                session.runner_mut().run_steps(100_000, None);
+                let dialogs = session.runner_mut().dialog_snapshot();
+                dialogs.iter().any(|dialog| dialog.visible).then_some(dialogs)
+            })
+            .expect("About alert should become visible");
+        let windows = session.runner_mut().window_frame_snapshot();
+        assert!(standard_dbox_dialog(&dialogs, &windows).is_some());
+        let menus = session.runner_mut().guest_menu_snapshot();
+        let frame = session.video_frame().unwrap();
+        let top = u32::from(session.runner().bus().read_word(MBAR_HEIGHT));
+        let mut pixels = frame.pixels[(top * frame.width * 4) as usize..].to_vec();
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        let frame_height = frame.height - top;
+
+        let mut visual = VisualTestAppContext::with_asset_source(
+            platform::current_platform(true),
+            Arc::new(gpui_kit::assets::Assets),
+        );
+        visual.update(gpui_kit::init);
+        let (sender, _receiver) = mpsc::channel();
+        let updates = Arc::new(Mutex::new(None));
+        let mut view = None;
+        let window = visual
+            .open_offscreen_window(size(px(900.), px(740.)), |_, cx| {
+                let entity = cx.new(|cx| Demo::new(sender, updates, cx));
+                view = Some(entity.clone());
+                entity
+            })
+            .unwrap();
+        let view = view.unwrap();
+        visual.update(|cx| {
+            view.update(cx, |demo, cx| {
+                demo.menus = menus;
+                demo.windows = windows;
+                demo.dialogs = dialogs;
+                demo.width = frame.width;
+                demo.height = frame_height;
+                demo.crop_top = top;
+                demo.status = format!(
+                    "{} · Running · GPUI Kit UI demo",
+                    if prefer_powerpc { "PowerPC" } else { "68k" }
+                );
+                demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
+                    image::RgbaImage::from_raw(frame.width, frame_height, pixels).unwrap(),
+                )])));
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        visual
+            .capture_screenshot(window.into())
+            .unwrap()
+            .save(output)
+            .unwrap();
+        eprintln!("saved composed alert capture to {}", output.display());
+    }
+
     pub(super) fn main() {
         let args = Args::parse();
+        #[cfg(feature = "gpui-demo-test")]
+        if let Some(output) = args.capture_about_alert.as_ref() {
+            capture_about_alert(&args.game, output, args.prefer_powerpc, args.screen_depth);
+            return;
+        }
         let (commands, receiver) = mpsc::channel();
         let updates = Arc::new(Mutex::new(None));
         let worker_updates = updates.clone();
@@ -774,6 +888,7 @@ mod desktop {
                             .join("tests/toolbox-showcase/toolbox-showcase.sit"),
                         prefer_powerpc: false,
                         screen_depth: Some(8),
+                        capture_about_alert: None,
                     },
                     rx,
                     worker_updates,
