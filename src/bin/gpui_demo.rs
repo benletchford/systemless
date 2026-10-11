@@ -5867,6 +5867,12 @@ mod desktop {
                 activate(&mut session, FileAction::NewFolder);
                 let child = session.runner().standard_file_snapshot().unwrap();
                 assert_eq!(child.new_folder.as_ref().unwrap().selection, (0, 15));
+                for (mac_key, character, selection) in [(0x7e, 0x1e, (0, 0)), (0x7d, 0x1f, (15, 15))] {
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key, character });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key, character });
+                    step(&mut session);
+                    assert_eq!(session.runner().standard_file_snapshot().unwrap().new_folder.unwrap().selection, selection);
+                }
                 assert!(ControlActivation::begin_file(&mut session, original.guest_id, original.generation, FileAction::Accept).is_none());
                 assert!(ControlActivation::begin_file(&mut session, child.guest_id, child.generation, FileAction::Cancel).is_none());
                 activate(&mut session, FileAction::CancelNewFolder);
