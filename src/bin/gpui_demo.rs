@@ -1753,7 +1753,7 @@ mod desktop {
                             let Some(selected) = super::frames::popup_control_label(control, &self.menus) else {
                                 continue;
                             };
-                            let font_size = f32::from(control.popup_font.unwrap_or_default().point_size());
+                            let popup_font = control.popup_font.unwrap_or_default();
                             let title_width = i32::from(control.popup_title_width.unwrap_or(0))
                                 .clamp(0, source.width().saturating_sub(20));
                             overlay = overlay
@@ -1763,10 +1763,10 @@ mod desktop {
                                     div()
                                         .w(guest_px(title_width as f32))
                                         .overflow_hidden()
-                                        .text_ellipsis()
-                                        .text_size(guest_px(font_size))
-                                        .text_color(if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })
-                                        .child(control.title.clone()),
+                                        .h_full()
+                                        .child(super::text::classic_popup_control_label(
+                                            &control.title, popup_font, scene_scale,
+                                            if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
                                 )
                                 .child(
                                     div()
@@ -1783,11 +1783,11 @@ mod desktop {
                                                 .flex_1()
                                                 .min_w(guest_px(1.))
                                                 .overflow_hidden()
-                                                .text_ellipsis()
+                                                .h_full()
                                                 .px_1()
-                                                .text_size(guest_px(font_size))
-                                                .text_color(if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })
-                                                .child(selected.to_owned()),
+                                                .child(super::text::classic_popup_control_label(
+                                                    selected, popup_font, scene_scale,
+                                                    if control.enabled { cx.theme().foreground } else { cx.theme().muted_foreground })),
                                         )
                                         .child(div().w(guest_px(18.)).flex().items_center().justify_center().child("▾")),
                                 );
