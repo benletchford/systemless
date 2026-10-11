@@ -3728,8 +3728,8 @@ fn showhide_true_makes_target_visible_without_front_reorder_or_activate_events()
 
     let sp = TEST_SP - 6;
     cpu.write_reg(Register::A7, sp);
-    bus.write_byte(sp, 0);
-    bus.write_byte(sp + 1, 1); // showFlag occupies the low byte of its stack slot.
+    bus.write_byte(sp, 1); // MOVE.B #1,-(A7) writes the first byte.
+    bus.write_byte(sp + 1, 0); // Unused padding must not determine visibility.
     bus.write_long(sp + 2, target_window);
 
     let result = dispatch(&mut disp, 0x108, &mut cpu, &mut bus);
@@ -3788,8 +3788,8 @@ fn showhide_true_sets_global_update_region_for_revealed_window() {
 
     let sp = TEST_SP - 6;
     cpu.write_reg(Register::A7, sp);
-    bus.write_byte(sp, 0);
-    bus.write_byte(sp + 1, 1);
+    bus.write_byte(sp, 1);
+    bus.write_byte(sp + 1, 0);
     bus.write_long(sp + 2, window);
 
     let result = dispatch(&mut disp, 0x108, &mut cpu, &mut bus);
@@ -3837,8 +3837,8 @@ fn showhide_true_erases_content_and_recovers_stale_front_window_cache() {
 
     let sp = TEST_SP - 6;
     cpu.write_reg(Register::A7, sp);
-    bus.write_byte(sp, 0);
-    bus.write_byte(sp + 1, 1);
+    bus.write_byte(sp, 1);
+    bus.write_byte(sp + 1, 0);
     bus.write_long(sp + 2, window);
     dispatch(&mut disp, 0x108, &mut cpu, &mut bus)
         .unwrap()
@@ -3884,8 +3884,8 @@ fn showhide_false_makes_target_invisible_without_front_reorder_or_activate_event
 
     let sp = TEST_SP - 6;
     cpu.write_reg(Register::A7, sp);
-    bus.write_byte(sp, 1); // The unused high byte must be ignored.
-    bus.write_byte(sp + 1, 0); // showFlag = FALSE.
+    bus.write_byte(sp, 0); // CLR.B -(A7) writes FALSE here.
+    bus.write_byte(sp + 1, 0xA5); // Nonzero unused padding must be ignored.
     bus.write_long(sp + 2, target_window);
 
     let result = dispatch(&mut disp, 0x108, &mut cpu, &mut bus);
@@ -3975,6 +3975,7 @@ fn showhide_false_invalidates_visible_content_behind_target() {
     let sp = TEST_SP - 6;
     cpu.write_reg(Register::A7, sp);
     bus.write_byte(sp, 0);
+    bus.write_byte(sp + 1, 0xA5);
     bus.write_long(sp + 2, target);
     let result = dispatch(&mut disp, 0x108, &mut cpu, &mut bus);
 
@@ -4497,8 +4498,8 @@ fn front_window_returns_active_document_behind_custom_utility_layer() {
 
     let sp = TEST_SP - 6;
     cpu.write_reg(Register::A7, sp);
-    bus.write_byte(sp, 0);
-    bus.write_byte(sp + 1, 1);
+    bus.write_byte(sp, 1);
+    bus.write_byte(sp + 1, 0);
     bus.write_long(sp + 2, document);
 
     let result = dispatch(&mut disp, 0x108, &mut cpu, &mut bus);

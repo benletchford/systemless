@@ -5438,8 +5438,9 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-285
             (true, 0x108) => {
                 let sp = cpu.read_reg(Register::A7);
-                // A byte pushed to A7 occupies the low byte of its two-byte stack slot.
-                let show_flag = bus.read_byte(sp + 1) != 0;
+                // Byte predecrement through A7 reserves two bytes but writes at
+                // the new A7 address. The second byte is unused stack padding.
+                let show_flag = bus.read_byte(sp) != 0;
                 let the_window = bus.read_long(sp + 2);
                 if the_window != 0 {
                     let was_visible = self.window_visible(bus, the_window);
