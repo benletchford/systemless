@@ -7530,7 +7530,8 @@ impl super::TrapDispatcher {
                             );
                         }
                         if name_ptr != 0 {
-                            Self::write_pstring(bus, name_ptr, &entry.name);
+                            let name = Self::hfs_name_from_vfs_component(&entry.name);
+                            Self::write_pstring(bus, name_ptr, &name);
                         }
                         bus.write_word(pb + 22, resolved_vref as u16);
                         bus.write_word(pb + 16, 0);
