@@ -120,6 +120,26 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  gpui:
+    name: GPUI interactions (macOS, 68k and PowerPC)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gpui-interactions
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') }}
+
+      # The example is macOS-only. Building all targets on Linux does not
+      # compile or run its guest bridge and host interaction tests. These
+      # tests explicitly exercise monochrome/colour 68k and PowerPC guests.
+      - name: Run GPUI guest bridge and host interaction tests
+        env:
+          RUST_BACKTRACE: 1
+        run: cargo test --locked --no-default-features --features gpui-demo-test --example gpui-menu-demo
+
   checks:
     name: headless & package
     runs-on: ubuntu-latest
