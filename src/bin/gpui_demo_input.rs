@@ -198,12 +198,14 @@ pub(crate) struct Preedit {
 #[derive(Clone, Default)]
 pub(crate) struct GuestComposition {
     owner: Option<TextInputOwner>,
+    marked_base: Option<TextInputOwner>,
     pending_commits: Vec<(TextInputOwner, Vec<u8>, Option<TextInputOwner>, Option<usize>)>,
     pub preedit: Option<Preedit>,
 }
 
 impl GuestComposition {
     pub fn owner(&self) -> Option<&TextInputOwner> { self.owner.as_ref() }
+    pub fn marked_base(&self) -> Option<&TextInputOwner> { self.marked_base.as_ref() }
 
     /// Focus loss, modality changes, selection changes and disposal invalidate
     /// preedit. A recycled address cannot inherit another field's composition.
@@ -211,6 +213,10 @@ impl GuestComposition {
         let owner = owner.filter(|owner| owner.selection.start <= owner.selection.end
             && owner.selection.end <= owner.text.len());
         if let Some(actual) = &owner {
+            if self.preedit.is_some() && self.marked_base.as_ref() == Some(actual) {
+                self.pending_commits.clear();
+                return;
+            }
             if !self.pending_commits.is_empty() {
                 if self.owner.as_ref() == Some(actual) {
                     self.pending_commits.clear();
@@ -237,6 +243,7 @@ impl GuestComposition {
             }
         }
         self.pending_commits.clear();
+        self.marked_base = None;
         if self.owner != owner { self.preedit = None; }
         self.owner = owner;
     }
@@ -248,6 +255,7 @@ impl GuestComposition {
             self.pending_commits.clear();
             self.owner = None;
             self.preedit = None;
+            self.marked_base = None;
         }
     }
 
@@ -265,7 +273,33 @@ impl GuestComposition {
         true
     }
 
-    pub fn cancel(&mut self) { self.preedit = None; }
+    pub fn cancel(&mut self) {
+        self.preedit = None;
+        if let Some(base) = self.marked_base.take() { self.owner = Some(base); }
+    }
+
+    /// Stage an explicit virtual-document replacement without mutating the guest.
+    /// Keep the actual guest selection pinned until a guarded commit.
+    pub fn mark_range(&mut self, range: Option<&std::ops::Range<usize>>, text: &str,
+        selected: std::ops::Range<usize>) -> bool {
+        if selected.start > selected.end || selected.end > text.encode_utf16().count() { return false; }
+        if let Some((payload, offset)) = self.replacement_text(range, text) {
+            return self.mark(&payload, offset + selected.start..offset + selected.end);
+        }
+        let Some(range) = range else { return false; };
+        let Some(owner) = self.owner.clone() else { return false; };
+        if range.start > range.end { return false; }
+        // An existing stage may require multiple disjoint edits to preserve
+        // intervening style runs. Do not widen a single guest replacement.
+        if self.preedit.is_some() || range.end > owner.text.len() || range.end > i16::MAX as usize { return false; }
+        let mut candidate = self.clone();
+        let base = candidate.marked_base.clone().unwrap_or_else(|| owner.clone());
+        candidate.owner.as_mut().unwrap().selection = range.clone();
+        if !candidate.mark(text, selected) { return false; }
+        candidate.marked_base = (candidate.owner.as_ref() != Some(&base)).then_some(base);
+        *self = candidate;
+        true
+    }
 
     /// Map an untouched guest glyph position to the virtual UTF-16 document.
     /// Positions inside the replaced guest selection have no surrounding ink.
@@ -413,7 +447,8 @@ impl GuestComposition {
     /// Old frames remain valid while the guest consumes the selection request.
     pub fn commit_range(&mut self, range: std::ops::Range<usize>, text: &str)
         -> Option<(TextInputOwner, TextInputOwner, Vec<u8>)> {
-        let expected = self.owner.as_ref()?.clone();
+        let current = self.owner.as_ref()?.clone();
+        let expected = self.marked_base.clone().unwrap_or_else(|| current.clone());
         if self.preedit.is_some() || range.start > range.end || range.end > expected.text.len() || range.end > i16::MAX as usize {
             return None;
         }
@@ -421,7 +456,7 @@ impl GuestComposition {
         self.owner = Some(selected.clone());
         let pending = self.pending_commits.len();
         let Some((request, bytes)) = self.commit(text) else {
-            self.owner = Some(expected); return None;
+            self.owner = Some(current); return None;
         };
         if self.pending_commits.len() == pending {
             self.pending_commits.push((request.clone(), bytes.clone(), Some(expected.clone()), None));
@@ -441,12 +476,12 @@ impl GuestComposition {
             .collect::<Option<Vec<_>>>()?;
         if bytes.iter().any(|byte| *byte < 32 && !matches!(*byte, b'\r' | b'\t')) { return None; }
         self.preedit = None;
-        if bytes.is_empty() && owner.selection.is_empty() { return Some((owner, bytes)); }
+        if bytes.is_empty() && owner.selection.is_empty() && self.marked_base.is_none() { return Some((owner, bytes)); }
         let mut predicted = owner.clone();
         predicted.text.splice(owner.selection.clone(), bytes.iter().copied());
         let caret = owner.selection.start + bytes.len();
         predicted.selection = caret..caret;
-        self.pending_commits.push((owner.clone(), bytes.clone(), None, None));
+        self.pending_commits.push((owner.clone(), bytes.clone(), self.marked_base.take(), None));
         self.owner = Some(predicted);
         Some((owner, bytes))
     }
@@ -455,6 +490,36 @@ impl GuestComposition {
 #[cfg(test)]
 mod composition_tests {
     use super::{GuestComposition, TextInputOwner, TextInputTarget};
+
+    #[test]
+    fn explicit_mark_preserves_guest_baseline_and_cancel_restores_selection() {
+        let mut original = owner(); original.text = b"abcdef".to_vec(); original.selection = 3..3;
+        let mut state = GuestComposition::default(); state.synchronize(Some(original.clone()));
+        assert!(state.mark_range(Some(&(0..2)), "\u{1f600}", 2..2));
+        assert_eq!(state.owner().unwrap().selection, 0..2);
+        assert_eq!(state.marked_base(), Some(&original));
+        state.synchronize(Some(original.clone()));
+        assert_eq!(state.preedit.as_ref().unwrap().text, "\u{1f600}");
+        assert!(!state.mark_range(Some(&(1..3)), "bad", 0..0));
+        assert_eq!(state.owner().unwrap().selection, 0..2);
+        state.cancel(); assert_eq!(state.owner(), Some(&original)); assert!(state.marked_base().is_none());
+    }
+
+    #[test]
+    fn explicit_mark_commit_pins_original_selection_without_rewriting_surrounding_text() {
+        let mut original = owner(); original.text = b"abcdef".to_vec(); original.selection = 2..3;
+        let mut state = GuestComposition::default(); state.synchronize(Some(original.clone()));
+        assert!(state.mark_range(Some(&(0..1)), "Q", 1..1));
+        assert!(!state.mark_range(Some(&(2..3)), "other", 1..1));
+        assert_eq!(state.owner().unwrap().selection, 0..1);
+        assert_eq!(state.preedit.as_ref().unwrap().text, "Q");
+        assert_eq!(state.marked_base(), Some(&original));
+        let (request, bytes, caret) = state.commit_replacement(Some(&(0..1)), "R").unwrap();
+        assert_eq!(request.selection, 0..1); assert_eq!(bytes, b"R"); assert_eq!(caret, 1);
+        assert_eq!(state.owner().unwrap().text, b"Rbcdef");
+        state.synchronize(Some(original.clone())); assert_eq!(state.owner().unwrap().selection, 1..1);
+        state.reject(&original); assert!(state.owner().is_none());
+    }
 
     fn owner() -> TextInputOwner {
         TextInputOwner { identity: (42, 3), target: TextInputTarget::Document { port: 100 },

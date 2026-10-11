@@ -5153,3 +5153,26 @@ builds (9.19s). Evidence: `tests/toolbox-showcase/reference/gpui-demo/cursor-poi
 Physical pointer latency, actual warp lifecycle, host cursor hiding, inversion
 and the complete release gates remain open. Earlier release/package evidence
 continues to pin its recorded source; this is not a new optimized package run.
+
+
+### Initial explicit marked-text replacement ranges
+
+The GPUI handler now accepts an initial explicit replacement range different
+from the guest selection. It retains the actual guest baseline while presenting
+the transient stage at the requested range. Cancellation restores that baseline;
+commits use guarded ReplaceText through existing selection/event paths. Distinct
+queued commits and stale-owner rejection retain their predicted-state handling.
+
+Twelve state tests pass. Three focused state/platform checks cover document,
+dialog, Save and New Folder target types, cancellation, surrogate boundaries
+and guarded request ordering. The actual styled document worker passes all
+four CPU/depth modes (11.44s), checking committed text, caret and exact style
+runs. Existing modal/file platform regressions pass (28.99s), but do not prove
+new initial-range commits through those guest workers. The production compile
+check passes (2.50s). Evidence: `tests/toolbox-showcase/reference/gpui-demo/initial-explicit-mark`.
+
+Expansion beyond an existing stage remains open. A widened replacement prototype
+was discarded because reinserting untouched styled text could change formatting.
+That behavior needs separate guarded edits preserving intervening runs. Actual
+modal/file initial-range commits, composed geometry/cancellation captures,
+physical IME and complete production qualification remain open.
