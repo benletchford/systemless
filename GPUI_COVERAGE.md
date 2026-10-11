@@ -1,5 +1,9 @@
 # GPUI Kit system-interface coverage
 
+The [typography policy](GPUI_TYPOGRAPHY.md) records font-resource precedence,
+bitmap and outline fidelity, display-resolution synthetic styles, guest layout
+authority and the evidence required for text qualification.
+
 Qualification correction (2026-10-10): the styled ink, selection and caret
 capture helper initialized PPC at 8bpp when no explicit depth was supplied.
 Earlier compositor captures labelled PPC16 actually establish PPC8 raster
@@ -4360,3 +4364,5 @@ Four actual guest-loaded styled menu samples are archived losslessly in `guest-s
 Continuous display-resolution italic synthesis now replaces the higher-raster stair-step shear with the same native half-pixel slope and baseline/descent pivot, clamped to the existing native envelope. Half-device-pixel translations distribute coverage between adjacent samples. Raster1 retains exact native row placement; guest bitmap rendering, source font, insertion/paint advances, baseline, height and underline strokes remain unchanged. This is an explicit smooth presentation policy, not substitution of a host italic font or a claim of identical Apple bitmap appearance at higher resolution.
 
 All21 text regressions pass (6.24 s). The new opaque-bar test at raster2..8 requires fractional edges, unchanged native envelope/advance, conserved row coverage and no multi-pixel row jumps; CPU-specific styled tests retain exact raster1 masks and validate layout/coverage at higher resolution. The example build passes (7.54 s). Four reviewed captures in `continuous-italic-menu-samples` show smoother italic edges across mono68k0.75, colour68k1.5, PPC8/2 and PPC16/1. Lossless archival preserves RGBA, and metadata exactly matches the earlier samples. In PPC16/1, all8529 changed pixels lie inside the eight explicitly reviewed italic item bands; every other pixel is unchanged. Larger previews were resized. Source/binary/fixture/log/image hashes are recorded. Broader font/style fidelity, TextEdit composed state recaptures, interaction, lifecycle and performance qualification remain unfinished; earlier smooth-field captures document the previous renderer.
+
+The multiline guest editing regression passes against source9fee4404 (99.83 s), rechecking two-line selection, replacement and deletion, native paint qualification and original-font resolution at raster1..8 in mono68k, colour68k and PPC8/PPC16. Source/test-binary/fixture hashes were recorded before execution; the completed log and result are archived in `continuous-italic-multiline-edit`. Concurrent pointer/capture work makes duration unsuitable as a performance result. The current-source16-case multiline capture and actual GPUI pointer matrix remain running; their complete results are not yet established. The consolidated [typography policy](GPUI_TYPOGRAPHY.md) explicitly describes authentic-font precedence, bitmap-only fidelity and the continuous display-resolution italic policy.

@@ -1,0 +1,15 @@
+{
+  "source_commit": "9fee4404d585a04743ef1574cca0388d469562e8",
+  "sha256": {
+    "target/debug/examples/gpui_menu_demo-5b8d3de0cdbde419": "a9d351286b0fa98248cdcceb38245d2323c19bb65130b2deb4107200c47c5309",
+    "src/bin/gpui_demo.rs": "2f605954dd477c6dcbff01382d35c462fa0e18d0117ea5104fb6cd00a42624e3",
+    "src/bin/gpui_demo_text.rs": "f374c4d35d85271cb3cee69933a034865ca1efa9df37d2f20c7a37092f854b10",
+    "src/bin/gpui_demo_frames.rs": "b293ad66102ebdbc69a697b2bdc8d1ba01349a36a20c6a994b7e280eb14d814b",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8"
+  },
+  "log": "test.log",
+  "outcome": "passed",
+  "duration_seconds": 99.83,
+  "log_sha256": "e9f8ffcba7a7504196c97908f6ccd0cef369b4c4bd365bae5c5ce6a43b543e6f",
+  "scope": "All four CPU/depth modes: guest multiline selection, replacement/deletion, native field qualification and original-outline resolution at raster1..8. Not actual GPUI pointer dispatch, composed appearance oracle, host events or performance; concurrent captures/pointer test."
+}
