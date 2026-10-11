@@ -5850,7 +5850,12 @@ pub(super) fn ppc_close_window(
     };
     let window = params.window_ptr();
     // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 4-105.
-    event_queue.retain(|event| !(event.what == 6 && event.message == window));
+    event_queue.retain(|event| !(matches!(event.what, 6 | 8) && event.message == window));
+    for pending in [0x0A64, 0x0A68] {
+        if memory.read_u32_be(pending) == Some(window) {
+            let _ = memory.write_u32_be(pending, 0);
+        }
+    }
     let previous_front = ppc_front_visible_process_window(memory, window_list);
     let was_visible = ppc_window_is_visible(memory, window);
     let exposed = was_visible
@@ -5986,7 +5991,12 @@ pub(super) fn ppc_dispose_window(
 ) {
     // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 4-106:
     // pending update events must not survive removal of their window.
-    event_queue.retain(|event| !(event.what == 6 && event.message == window));
+    event_queue.retain(|event| !(matches!(event.what, 6 | 8) && event.message == window));
+    for pending in [0x0A64, 0x0A68] {
+        if memory.read_u32_be(pending) == Some(window) {
+            let _ = memory.write_u32_be(pending, 0);
+        }
+    }
     for control in ppc_window_control_handles(memory, window) {
         ppc_dispose_control(
             Some(allocator),
