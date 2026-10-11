@@ -33,6 +33,7 @@ pub enum PpcSystemCompatibilityOperation {
     IuMagString,
     IuMetric,
     IuScriptOrder,
+    IuStringOrder,
     IuTextOrder,
     Font2Script,
     FontScript,
@@ -555,6 +556,19 @@ pub(crate) fn ppc_dispatch_system_compatibility(
             let lang1 = cpu.gpr[3] as i16;
             let lang2 = cpu.gpr[4] as i16;
             let result = crate::text_utils::evaluate_lang_order(lang1, lang2);
+            PpcImportAction::Return(ppc_i16_result(result))
+        }
+        PpcSystemCompatibilityOperation::IuStringOrder => {
+            let a = ppc_read_pascal_string(memory, cpu.gpr[3]).unwrap_or_default();
+            let b = ppc_read_pascal_string(memory, cpu.gpr[4]).unwrap_or_default();
+            let result = crate::text_utils::evaluate_text_order(
+                &a,
+                &b,
+                cpu.gpr[5] as i16,
+                cpu.gpr[6] as i16,
+                cpu.gpr[7] as i16,
+                cpu.gpr[8] as i16,
+            );
             PpcImportAction::Return(ppc_i16_result(result))
         }
         PpcSystemCompatibilityOperation::IuTextOrder => {

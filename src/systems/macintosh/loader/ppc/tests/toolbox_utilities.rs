@@ -1393,3 +1393,17 @@ fn get_caret_time_reads_original_low_memory_interval_without_clobbering_argument
         }
     }
 }
+
+#[test]
+fn ppc_string_order_import_aliases_resolve() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        for name in ["StringOrder", "IUStringOrder"] {
+            assert_eq!(
+                dispatcher_target_for_import(library, name),
+                PpcImportDispatcherTarget::SystemCompatibility(
+                    crate::loader::ppc::PpcSystemCompatibilityOperation::IuStringOrder,
+                )
+            );
+        }
+    }
+}
