@@ -3,7 +3,7 @@
 use crate::mac_roman::decode_mac_roman;
 use crate::memory::SavedPixels;
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
-use crate::quickdraw::text::{get_glyph, QuickDrawTextStyle};
+use crate::quickdraw::text::QuickDrawTextStyle;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -120,14 +120,7 @@ pub(crate) fn is_standard_system_menu_title(title: &[u8]) -> bool {
 /// byte-oriented also preserves the MENU record's Mac Roman identity across
 /// both CPU gateways. Macintosh Toolbox Essentials (1992), pp. 3-10--3-13.
 pub(crate) fn standard_menu_text_advance(text: &[u8]) -> i16 {
-    let advance = text.iter().fold(0i32, |advance, byte| {
-        advance.saturating_add(
-            get_glyph(0, 12, char::from(*byte))
-                .map(|(glyph, _)| i32::from(glyph.advance))
-                .unwrap_or(6),
-        )
-    });
-    i16::try_from(advance).unwrap_or(i16::MAX)
+    crate::menu_model::GuestMenuFont::default().text_advance(text)
 }
 
 /// Measure one standard menu-bar title.

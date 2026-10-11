@@ -50,11 +50,54 @@ impl GuestMenuSnapshot {
     }
 }
 
+/// Guest font identity and point size used to lay out and present a menu.
+/// `popupUseWFont` must retain this context from its owner GrafPort; ordinary
+/// menus use the system font. Inside Macintosh VI (1991), p. 3-18.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuestMenuFont {
+    pub family: i16,
+    pub size: i16,
+}
+
+impl Default for GuestMenuFont {
+    fn default() -> Self {
+        Self { family: 0, size: 12 }
+    }
+}
+
+impl GuestMenuFont {
+    /// QuickDraw treats size zero as the system size.
+    pub fn point_size(self) -> i16 {
+        if self.size == 0 {
+            12
+        } else {
+            self.size.max(1)
+        }
+    }
+
+    pub(crate) fn text_advance(self, text: &[u8]) -> i16 {
+        let (face, numerator, denominator) =
+            crate::quickdraw::fonts::get_font_face_scale_ratio(self.family, self.point_size());
+        let advance = text.iter().fold(0i32, |advance, byte| {
+            let glyph = crate::quickdraw::text::get_glyph(self.family, face.size, char::from(*byte))
+                .map(|(glyph, _)| i32::from(glyph.advance))
+                .unwrap_or(6);
+            advance.saturating_add(glyph)
+        });
+        let scaled = advance
+            .saturating_mul(numerator)
+            .saturating_add(denominator / 2)
+            / denominator;
+        i16::try_from(scaled).unwrap_or(i16::MAX)
+    }
+}
+
 /// Read-only geometry of an open standard popup. Pointer input must still pass
 /// through the guest tracker; this snapshot never commits a menu selection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuestPopupSnapshot {
     pub menu: GuestMenu,
+    pub font: GuestMenuFont,
     /// Global guest coordinates: top, left, bottom, right.
     pub bounds: (i16, i16, i16, i16),
     /// Global top of the first row, including the guest's scrolling offset.
@@ -110,6 +153,21 @@ pub struct GuestMenuItem {
 #[cfg(test)]
 mod tests {
     use super::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
+
+    #[test]
+    fn menu_font_sizes_use_guest_metrics_and_quickdraw_zero_size() {
+        let text = b"Deep Field Archive";
+        let small = super::GuestMenuFont { family: 3, size: 9 };
+        let normal = super::GuestMenuFont { family: 3, size: 12 };
+        let large = super::GuestMenuFont { family: 3, size: 24 };
+        assert!(small.text_advance(text) < normal.text_advance(text));
+        assert!(large.text_advance(text) > normal.text_advance(text));
+        let zero = super::GuestMenuFont { family: 3, size: 0 };
+        assert_eq!(zero.point_size(), 12);
+        assert_eq!(zero.text_advance(text), normal.text_advance(text));
+        assert_eq!(small.text_advance(&[]), 0);
+        assert_eq!(large.text_advance(&vec![b'W'; 20_000]), i16::MAX);
+    }
 
     fn snapshot(menu_enabled: bool, item: GuestMenuItem) -> GuestMenuSnapshot {
         GuestMenuSnapshot {
