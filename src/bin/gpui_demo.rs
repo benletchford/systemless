@@ -193,6 +193,9 @@ mod desktop {
         #[arg(long, hide = true, requires = "capture_modeless_dialog", conflicts_with_all = ["capture_modeless_dialog_suspended", "capture_modeless_dialog_resumed"])]
         capture_modeless_dialog_dragged: bool,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_modeless_dialog_dragged")]
+        capture_modeless_dialog_dragged_edited: bool,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_nested_modal_dialog: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -3391,7 +3394,7 @@ mod desktop {
         ModalDialogCheckboxHeld,
         ModalDialogCheckboxCheckedHeld,
         ModalDialogCheckboxOutside,
-        ModelessDialog { suspended: bool, resumed: bool, dragged: bool },
+        ModelessDialog { suspended: bool, resumed: bool, dragged: bool, edited: bool },
         NestedModalDialog,
         Controls,
         ControlFonts,
@@ -4462,7 +4465,41 @@ mod desktop {
                     (before.number, &before.text, before.value, before.selection));
                 assert_eq!(after.bounds, translate(before.bounds));
             }
-            current
+            if matches!(capture, CaptureCase::ModelessDialog { edited: true, .. }) {
+                let field = dialog.items.iter().find(|item| item.number == 4).unwrap();
+                let layout = field.edit_text_layout.as_ref().unwrap();
+                let line = super::text::ClassicLine::unicode(&field.text, layout.font.0, layout.font.1);
+                let vertical = field.bounds.0 + 5;
+                let horizontal = field.bounds.1 + 1 + line.positions[1] as i16;
+                for input in [MacintoshInput::MouseDown { vertical, horizontal },
+                    MacintoshInput::MouseUp { vertical, horizontal }] {
+                    session.deliver_input(input);
+                    let tick = session.runner().guest_tick();
+                    assert!((0..100).any(|_| {
+                        session.runner_mut().run_steps(10_000, None);
+                        session.runner().guest_tick().wrapping_sub(tick) >= 2
+                    }));
+                }
+                let clicked = session.runner_mut().dialog_snapshot();
+                assert_eq!(clicked.iter().find(|item| item.guest_id == original.guest_id).unwrap()
+                    .items.iter().find(|item| item.number == 4).unwrap().selection, Some((1, 1)),
+                    "displayed relocated glyph must hit guest offset one");
+                session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x06, character: b'z' });
+                session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x06, character: b'z' });
+                let mut expected = field.text.clone();
+                expected.insert(1, 'z');
+                assert!((0..300).any(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    session.runner_mut().dialog_snapshot().iter().any(|dialog|
+                        dialog.guest_id == original.guest_id && dialog.items.iter().any(|item|
+                            item.number == 4 && item.text == expected && item.selection == Some((2, 2))))
+                }), "guest typing after title drag must preserve the clicked offset");
+                assert!((0..300).any(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0)
+                }));
+                session.runner_mut().dialog_snapshot()
+            } else { current }
         } else { dialogs };
         let windows = session.runner_mut().window_frame_snapshot();
         if matches!(
@@ -4988,7 +5025,7 @@ mod desktop {
                 .expect("recognized dialog title must reach the GPUI painter");
             std::fs::write(output.with_extension("dialog-state.json"), serde_json::to_vec_pretty(&serde_json::json!({
                 "definition": owner.definition_id, "identity": [owner.guest_id as u64, owner.generation],
-                "window": owner.window, "dialog_active": dialog.active, "suspended": modeless_host_suspended, "resumed": modeless_host_resumed, "dragged": modeless_dragged,
+                "window": owner.window, "dialog_active": dialog.active, "suspended": modeless_host_suspended, "resumed": modeless_host_resumed, "dragged": modeless_dragged, "edited_after_drag": matches!(capture, CaptureCase::ModelessDialog { edited: true, .. }),
                 "actual_depth": session.runner().presented_screen_depth(),
                 "title_position": [title.horizontal, title.baseline], "title_clip": title.clip,
                 "items": dialog.items.iter().map(|item| serde_json::json!({
@@ -6474,7 +6511,7 @@ mod desktop {
                 output,
                 args.prefer_powerpc,
                 args.screen_depth,
-                CaptureCase::ModelessDialog { suspended: args.capture_modeless_dialog_suspended, resumed: args.capture_modeless_dialog_resumed, dragged: args.capture_modeless_dialog_dragged },
+                CaptureCase::ModelessDialog { suspended: args.capture_modeless_dialog_suspended, resumed: args.capture_modeless_dialog_resumed, dragged: args.capture_modeless_dialog_dragged, edited: args.capture_modeless_dialog_dragged_edited },
                 args.capture_scale,
             );
             return;
@@ -7389,6 +7426,7 @@ mod desktop {
                         capture_modeless_dialog_suspended: false,
                         capture_modeless_dialog_resumed: false,
                         capture_modeless_dialog_dragged: false,
+                        capture_modeless_dialog_dragged_edited: false,
                         capture_nested_modal_dialog: None,
                         capture_controls: None,
                         capture_control_fonts: None,

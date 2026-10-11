@@ -1,0 +1,6 @@
+{
+  "base": "62539561",
+  "source_sha256": "10172e78e942b30a5f450e63f86f383c0987044fc59ee07af76f5b94f703e1f7",
+  "binary_sha256": "61b57bfd8eb4aa32684cb9dfb857e869cf29d083d1064390a91ef8c2ca59c74c",
+  "scope": "Guest/session mouse coordinates and editing; physical GPUI input unqualified"
+}
