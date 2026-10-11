@@ -1,0 +1,22 @@
+{
+  "base_head": "336dada418cfd38b732bdb69728abd28f284c8ba",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "22cc7216e3cae441cc3a9ee8d2ef215a8dc2359ced48d8fcff760b3f8c74a1c3",
+    "src/bin/gpui_demo_cursor.rs": "e5d14c9a75a6cbb43ef13888c1814059af16cd4fe1b160fdef700fe45fac1a37"
+  },
+  "scope": "Visual cursor coordinates separated from glyph-remapped guest input. Remapped-glyph platform regression passes (5.13s), including preservation of a distinct simulated guest warp. Actual New Folder pointer/selection test passes (398.23s) across mono68k, colour68k, PPC8/PPC16 and scales .75/1/1.5/2, short/scrolled names and held drags. Shared Demo colour68k scale1.5 cursor capture passes: simulated remapping leaves all active pixels identical; remapped image visually reviewed. Production default compile check passes (1m01s), capture frontend build passes (9.19s). Physical pointer/host hiding, inversion, actual guest warp lifecycle and latency remain open. Guest test compiled before additive capture-helper assertions, with identical production mapping code. No broad production gate closed.",
+  "sha256": {
+    "colour.clipped.png": "b5559186f129c664a20222fa407f1aae148aed448de8f4b97d0be1f836ac606b",
+    "run.log": "e466b5f91665cac34e885dcc230161e5f80ef674b1a82e89e90c43a5380b2d48",
+    "colour.capture.json": "04929d6e19682a43294c025463283478be00a7b9190fd502004c1a5ec7bae58c",
+    "guest-interaction-test.log": "3de61de4b24d747666f85c01b27001e749c3efafd3469645e2084e8ac7dba83d",
+    "colour.png": "e916fffae8926873917a8b3323ba878fc21000a2ef451d0cd9747e786aa94b7d",
+    "colour.outside.png": "e1a450f0f73c9df07aef82cc23d50a074a394f0c3910aa495051abd7449f1797",
+    "colour.hidden.png": "e1a450f0f73c9df07aef82cc23d50a074a394f0c3910aa495051abd7449f1797",
+    "production-check.log": "3ccde1c4d5e0f9ca5568b3babd8fe3c8a97e1f3a995e460fd8580e5caa411763",
+    "remapped-glyph-test.log": "f7acc73c253781241541d91521725dec5d15747a839c9db996d5302806d42075",
+    "colour.remapped.png": "e916fffae8926873917a8b3323ba878fc21000a2ef451d0cd9747e786aa94b7d",
+    "capture-build.log": "7b5a5a165e30bc9af075ede78b1926007bbdd0f1e8609513a0d5d55053d5e80e",
+    "colour.inactive.png": "e1a450f0f73c9df07aef82cc23d50a074a394f0c3910aa495051abd7449f1797"
+  }
+}
