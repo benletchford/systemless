@@ -1731,3 +1731,22 @@ collisions, content-only screenshot, managed-archive browser qualification,
 promotion, launch approval and independently verified public delivery remain
 pending. These inspections change neither catalogue entry count nor qualified
 live count.
+
+## Dark Castle original target and existing color demo
+
+[Identity correction #4643](https://github.com/benletchford/systemless/issues/4643),
+primary slot 38. Fresh inspection of the
+[discovery page](https://classicmacdemos.com/dark-castle) identifies Color Dark
+Castle and links Delta Tao's color remake. The existing baseline
+[Color Dark Castle entry](catalogue/color-dark-castle.md) already uses that page
+and its Dark Castle Demo.sit archive: 936,427 bytes, SHA-256
+`ddbb2489d358ea5d9c89b3df44f913facea71b6f1bc3bfe9dc23ad125cb7dcc4`.
+It cannot count again as a new distinct game.
+
+Slot 38 now explicitly researches the original 1986 B&W game. Its distinct exact
+archive, applicable redistribution grant and architecture/gameplay evidence remain
+pending; the color demo supplies none of those requirements. If that original
+cannot qualify, replace it with a distinct rights-qualified reserve and retain
+this identity finding. No new archive is hosted, no live count changes, and the
+812 intake slots and 1,000-distinct-game objective remain unchanged. This finding
+does not independently qualify the baseline entry's rights or runtime claims.
