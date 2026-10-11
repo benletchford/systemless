@@ -8215,8 +8215,8 @@ mod desktop {
                 if powerpc {
                     let first = selected.guest_styled_selection_rect(0).unwrap().unwrap();
                     let second = selected.guest_styled_selection_rect(1).unwrap().unwrap();
-                    assert!(first.0 < second.2 && second.0 < first.2,
-                        "mixed PPC line heights must exercise overlapping highlight boxes");
+                    assert_eq!(first.2, second.0,
+                        "mixed PPC line highlights follow cumulative glyph origins");
                 }
                 let frame = session.video_frame().unwrap();
                 let background = systemless::runner::TextEditInkSnapshot {
