@@ -124,7 +124,8 @@ pub(super) struct PaintedComposition {
 
 impl Demo {
     pub(super) fn synchronize_composition(&mut self, window: &Window, _: &mut Context<Self>) {
-        let eligible = self.focus.is_focused(window) && self.host_active != Some(false)
+        let eligible = self.notification_alert.is_none()
+            && self.focus.is_focused(window) && self.host_active != Some(false)
             && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none();
         let mut records = self.text_edits.iter().filter(|record| record.active && record.drawing_intact);
         let record = records.next();

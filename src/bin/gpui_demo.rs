@@ -3408,6 +3408,7 @@ mod desktop {
                     this.sync_host_modifiers(event.keystroke.modifiers);
                 }))
                 .on_modifiers_changed(cx.listener(|this, event: &ModifiersChangedEvent, _, _| {
+                    if this.notification_alert.is_some() { return; }
                     this.sync_caps_lock(event.capslock.on);
                     this.sync_host_modifiers(event.modifiers);
                 }))
@@ -16342,6 +16343,7 @@ mod desktop {
                 }).collect::<Vec<_>>());
             cx.update_window(window.into(), |_, window, cx| {
                 window.press("a", cx);
+                window.press("shift-a", cx);
                 window.press("enter", cx);
             }).unwrap();
             let commands = receiver.try_iter().collect::<Vec<_>>();
