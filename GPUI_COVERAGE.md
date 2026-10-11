@@ -5832,3 +5832,19 @@ ownership and current identity. The GPUI capture-feature compile check passes
 This establishes source/compile transport only. No renderer invokes acquisition
 yet: faithful alert font/layout, painting and modal input remain unfinished.
 No runtime worker/compositor acknowledgment or production gate is qualified.
+
+### Notification alert original-font layout recipe (2026-10-11)
+
+The new `gpui_demo_notification.rs` alert plan retains the exact request and raw
+Macintosh Roman message, wraps using ClassicLine system-font advances, and
+assigns message/button bounds in guest coordinates. Unreadable small viewports
+and unsupported mixed delivery stages decline the plan. The explicit Systemless
+system-alert recipe is not an independent native Macintosh geometry reference.
+The wrapped GPUI painter now accepts raw bytes directly for notifications;
+existing string callers retain their previous encoding behavior. Notification
+text uses original font0/12 advances, source-outline smoothing and strike fallback,
+with no host font substitution. The layout regression passes (0.01s), including
+accented bytes, CR breaks, clipping eligibility and message/button separation.
+Evidence: `reference/gpui-demo/notification-alert-layout`. Actual shared Demo paint,
+modal input, standard icon/frame fidelity, CPU/scale captures and native alert
+comparison remain unfinished. No production gate closes.

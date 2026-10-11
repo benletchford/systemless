@@ -80,6 +80,10 @@ mod choices;
 mod activation;
 
 #[cfg(target_os = "macos")]
+#[path = "gpui_demo_notification.rs"]
+mod notification;
+
+#[cfg(target_os = "macos")]
 #[path = "gpui_demo_clipboard.rs"]
 mod clipboard;
 
