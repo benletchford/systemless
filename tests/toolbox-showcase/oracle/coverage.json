@@ -102,7 +102,8 @@
       ],
       "native_scenarios": [
         "overview",
-        "textedit"
+        "textedit",
+        "modeless-text-activation"
       ],
       "contract": "Mouse selection, copy/private scrap, cut, paste, typing over selection, reset and paragraph justification agree with native readouts."
     },

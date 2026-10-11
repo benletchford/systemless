@@ -1976,15 +1976,65 @@ special cases:
   subsequently delivered. Regaining host focus must not unconditionally
   place a caret, toggle a control, or select a menu item.
 
-There is a fixture prerequisite as well: `showcase.r` declares
-`acceptSuspendResumeEvents`, `canBackground`, and `multiFinderAware`, but
-`showcase.c::DoEvent` has no `osEvt` arm. Its activateEvt arm only updates
-List Manager activation; the TextEdit page activates/deactivates on page
-changes rather than window activation. The fixture must implement those
-declared responsibilities before its inactive-caret output can be used as an
-oracle for a host activation bridge. Rebuild both slices and refresh affected
-native provenance when making that change; do not silently reinterpret old
-captures as activation evidence.
+The fixture now handles window activation for TextEdit and modeless dialogs,
+and implements the suspend/resume and private-scrap responsibilities declared
+by its SIZE flags. Both executable slices have been rebuilt. The new
+`oracle/modeless-text-activation.json` sequence retains a document selection
+while opening a modeless dialog and restores it on document activation.
+Fresh native runs on both CPUs show that selection lifecycle; this is window
+activation evidence, not host suspension or clipboard-conversion qualification.
+The TextEdit and window native reference sets have been refreshed against this
+fixture (18 and 14 checkpoints respectively), with changed images reviewed.
+Drawing, popup and list reference records have also been refreshed from new
+native runs: drawing images are byte-identical, popup selection is preserved,
+and reviewed list checkpoints retain selection, mutation, scrolling, resizing
+and inactive-state behaviour.
+The overview reference set is refreshed after its existing verifier passed
+59 checkpoints and 85 reviewed regions per CPU, state relationships, and
+isolated SysBeep output returning to silence. Fresh native sampled-audio
+extractions at full, 75% and 50% volume are byte-identical to all three retained
+259,733-sample waveforms on both CPUs. Reviewed status images and raw sample
+intervals confirm continued playback after Flush, silence after Quiet without
+normal completion, later normal completion, and disposal. The audio manifest
+now records the new PCM hashes, extraction offsets and cancelled lengths.
+Eight reviewed native modeless activation checkpoints are retained in
+`oracle/modeless-text-activation-capture.json`. Other affected native provenance
+still needs refreshing before the rebuilt fixture can be treated as fully qualified.
+
+This sequence exposed two runtime gaps: 68k ShowWindow omitted deactivation of
+the previous visible front window, and PPC SelectWindow changed window chrome
+without delivering activation events. Focused regressions now exercise those
+transitions. GPUI text rendering also now respects the guest TextEdit active
+state when painting selection highlighting. The reproducible capture flags
+`--capture-text-edit-inactive` and `--capture-text-edit-reactivated` exercise
+guest-owned selection and window changes and retain paired guest frames.
+The monochrome and colour 68k pairs have been visually reviewed: inactive text is unhighlighted,
+and activating the document restores its retained selection without moving it.
+PPC visual review exposed stale guest selection pixels after TEDeactivate and
+stale dialog pixels after selecting the covered document. These were invisible
+to the state assertions: the earlier 76-test GPUI suite passed. PPC activation
+now repaints TextEdit immediately, and SelectWindow requests a document update.
+A pixel regression verifies selection removal without TEUpdate/TEIdle, and the
+window regression verifies the update event. Fresh PPC composed and raw guest
+captures have been reviewed: inactive highlighting is removed and reactivation
+repaints the exposed document with its selection preserved. All 76 GPUI tests
+passed after the PPC repaint changes. Investigation of the modeless
+close-control difference found that 68k GetNewDialog discarded DLOG goAway
+and refCon values; PPC retained them correctly. The 68k creation path now
+passes both parsed fields through, with a resource-to-window regression;
+all 21 matching GetNewDialog tests pass across both adapters.
+After that change, all three GPUI modeless lifecycle/selection tests pass.
+The coverage verifier includes the new activation scenario and passes its
+16-page, eight-scenario inventory and capture identities; this does not qualify
+host activation or the other implementation gaps below.
+Refreshed monochrome and colour 68k composed/guest pairs now show the close
+control requested by the resource, matching PPC. Reviewed activation captures
+and their hashes are retained in `tests/toolbox-showcase/reference/gpui-demo/`
+under `16-text-edit-{inactive,reactivated}-{mono,colour,ppc}` and
+`text-activation-review.json`. The cross-mode
+guest-state regression passes in all three modes; the PPC import regression
+also verifies event order and that reselecting the active window posts no
+additional activation event.
 
 Required qualification is a matching native/Systemless sequence on 68k and
 PPC: activate an insertion point, switch away, observe suspend and any required

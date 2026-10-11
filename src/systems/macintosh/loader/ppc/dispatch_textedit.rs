@@ -301,14 +301,30 @@ pub(super) fn dispatch_textedit_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TEActivate { active } => {
-            // Inside Macintosh: Text (1993), pp. 2-49–2-50: activation changes
-            // the TERec's active state; selection/caret drawing is refreshed by
-            // TEUpdate and TEIdle.
+            // Inside Macintosh: Text (1993), pp. 2-79–2-80: activation
+            // immediately shows or removes the selection/caret. Applications
+            // need not issue TEUpdate or TEIdle after deactivation.
             if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[3]) {
                 let _ =
                     memory.write_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET, if active { 1 } else { 0 });
                 let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
                 let _ = memory.write_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET, 0);
+                let port = memory.read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
+                    .unwrap_or(current_gworld);
+                if let Some(view) = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET) {
+                    let background = ppc_port_rgb_colors(memory, port)
+                        .map_or(*quickdraw_back_color, |colors| colors.1);
+                    ppc_paint_rect_bounds(memory, gworlds, port, view, background, None);
+                }
+                ppc_te_draw(
+                    memory,
+                    handles,
+                    gworlds,
+                    cpu.gpr[3],
+                    current_gworld,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices,
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }

@@ -1,5 +1,5 @@
 {
-  "fixture_sha256": "b1218d2ce2273950fe30911c26cd1b0c0037f86c703cf7dce9906a79bcf4f381",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
   "scenario": "oracle/windows.json",
   "scenario_sha256": "0e574d9865fff550b2ff5103ecc4dd499f81bf8fa2cba534852e1c71504c4189",
   "capture_date": "2026-10-09",
@@ -47,7 +47,7 @@
         },
         {
           "file": "reference/basiliskii-68k/03-windows-moved.png",
-          "sha256": "b87cd20156f12dcb14e0b2a40d5aed19db0a0038d3cd5b895213f4d2ddec4f9f"
+          "sha256": "7745d5aade179aad688fd489a3168da6936f06c156a3824affd5c4c750ee0762"
         },
         {
           "file": "reference/basiliskii-68k/03-windows-resized.png",
@@ -59,17 +59,17 @@
         },
         {
           "file": "reference/basiliskii-68k/03-windows-promoted.png",
-          "sha256": "78def37c5691219a2be4c3029e3666b1470b3b2810746ccb61e2ad015e1d67f7"
+          "sha256": "fdf25e881314a828e572a7c93aaedba0ef1935cfd4161d16ac52d7813c7bf864"
         },
         {
           "file": "reference/basiliskii-68k/03-windows-main-promoted.png",
-          "sha256": "b34d0ef0cc9598ac73efb50d96127d40ed28fddea1c42424debe05659d30fb99"
+          "sha256": "771b2ab75135c8b390d24c14f630ecb83903cdf8c4bb9fe747d5eb188fa56f1a"
         }
       ],
       "clock_source": "live guest clock",
-      "source_capture_record_sha256": "d574cab1fca51f333daf3178deefef4754f4fae7e86c80d866d4a1abf237fd37",
-      "runner_sha256": "168848da1de6b2433500daf70711f998c57bfd3b5b0796663d7e5d55a01e18df",
-      "capture_recipe_sha256": "68589f5d3a4e72a5dc98ddd7a3b37d378836ad68c072d2a5c22177aa413c61b6",
+      "source_capture_record_sha256": "626113dac97da7005ac1c82d01c7a665666912bd56929e482378532cab14fcd8",
+      "runner_sha256": "85198ba255a5f0e830384e7706ec36d1f983ca0b714c7049be0b53f3a782b067",
+      "capture_recipe_sha256": "0738b6cea00dbcd7865e8a1a9126f5e33dda0d1f6ec52473d6466d7e9d5bc8fa",
       "rom_sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca",
       "system_disk_archive_sha256": "2a4985fec6b5b2a23f6141fd6de9a3066dcd87a6fe1412faefdd9d6c87876295",
       "preferences_sha256": "a3c1c62f438817267bce62afc9748921a21427fb2237677fc7434d2cbccab2be",
@@ -119,9 +119,9 @@
         }
       ],
       "clock_source": "60.15 Hz wall-clock pacing",
-      "source_capture_record_sha256": "f5fbca6520c70221709b0e3a5f42e1ceb4c670bad0789643928b59a4cd33def7",
-      "runner_sha256": "76bc0dd0f274d28da9e0f044cd0abcf7e60aa70a2b4c7814ce721b682cdde801",
-      "capture_recipe_sha256": "68589f5d3a4e72a5dc98ddd7a3b37d378836ad68c072d2a5c22177aa413c61b6",
+      "source_capture_record_sha256": "ccdb5bae0ecedbcdad3e3af3229bcc484dc67b9b92d1a7b985619def39f675fe",
+      "runner_sha256": "7d5edcfb7c24858bf803d7cc88c7e5ccd85cef03ca84fb25dd5c9d6cef958a4b",
+      "capture_recipe_sha256": "0738b6cea00dbcd7865e8a1a9126f5e33dda0d1f6ec52473d6466d7e9d5bc8fa",
       "rom_sha256": "fd13c05d678bbc7bbb527f7f418cd2dbada522af422a97452eee3bfc5010f032",
       "system_disk_archive_sha256": "797d3d28fc8aefcb67c53ea21af40692e89c52fdc10fe79d10c512e2df0018c6",
       "preferences_sha256": "307e437a99d6c2e56ce234d44e7c5386c0889513c407cd307ff7fff47e213436",

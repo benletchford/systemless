@@ -39,6 +39,7 @@
 #include <QDOffscreen.h>
 #include <Quickdraw.h>
 #include <Resources.h>
+#include <Scrap.h>
 #include <Sound.h>
 #include <StandardFile.h>
 #include <TextEdit.h>
@@ -791,6 +792,8 @@ cleanup:
 /* State variables */
 static short gPage = pageGraphics;
 static Boolean gQuit = false;
+static Boolean gInBackground = false;
+static Boolean gPrivateScrapDirty = false;
 static Boolean gButtonActivated = false;
 
 /* Preferences state */
@@ -4161,14 +4164,18 @@ static Boolean HandleModelessDialogEvent(EventRecord *event)
     Rect itemRect;
     WindowPtr window;
 
-    if (gModelessDialog == nil || FrontWindow() != (WindowPtr)gModelessDialog) {
+    if (gModelessDialog == nil) return false;
+    if (event->what == activateEvt) {
+        if ((WindowPtr)event->message != (WindowPtr)gModelessDialog) return false;
+    } else if (FrontWindow() != (WindowPtr)gModelessDialog) {
         return false;
     }
     if (event->what == mouseDown) {
         if (FindWindow(event->where, &window) != inContent ||
             window != (WindowPtr)gModelessDialog) return false;
-    } else if ((event->what != keyDown && event->what != autoKey) ||
-               (event->modifiers & cmdKey) != 0) {
+    } else if (event->what != activateEvt && event->what != nullEvent &&
+               ((event->what != keyDown && event->what != autoKey) ||
+                (event->modifiers & cmdKey) != 0)) {
         return false;
     }
     if (!IsDialogEvent(event)) return false;
@@ -4229,7 +4236,7 @@ static void SetPage(short page)
         ActivatePalette(gMainWindow);
     }
     if (page == pageTextEdit) {
-        if (gTE != nil) TEActivate(gTE);
+        if (gTE != nil && !gInBackground && FrontWindow() == gMainWindow) TEActivate(gTE);
     }
     if (page == pageLists && gInventoryList != nil) {
         gListActive = true;
@@ -4852,8 +4859,10 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
         SyncMenuState();
     } else if (control == gTEBtnCut) {
         TECut(gTE);
+        gPrivateScrapDirty = true;
     } else if (control == gTEBtnCopy) {
         TECopy(gTE);
+        gPrivateScrapDirty = true;
     } else if (control == gTEBtnPaste) {
         TEPaste(gTE);
     } else if (control == gTEBtnReset) {
@@ -4901,6 +4910,39 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
         PrepareSpriteScene();
     }
     DrawMainWindow();
+}
+
+/* The SIZE resource declares responsibility for foreground-switch
+ * activation. Toolbox Essentials (1992), pp. 2-51 and 2-59--2-61; Text
+ * (1993), pp. 2-35--2-37: deactivate the edit record without losing selection. */
+static void ActivateShowcaseWindow(WindowPtr window, Boolean active)
+{
+    GrafPtr savedPort;
+    EventRecord activation;
+
+    if (window == nil) return;
+    GetPort(&savedPort);
+    SetPort(window);
+    if (window == (WindowPtr)gModelessDialog) {
+        activation.what = activateEvt;
+        activation.message = (long)window;
+        activation.when = TickCount();
+        activation.where.h = 0;
+        activation.where.v = 0;
+        activation.modifiers = active ? activeFlag : 0;
+        HandleModelessDialogEvent(&activation);
+    } else if (window == gMainWindow) {
+        if (gPage == pageTextEdit && gTE != nil) {
+            if (active) TEActivate(gTE);
+            else TEDeactivate(gTE);
+        }
+        if (gInventoryList != nil) {
+            gListActive = gPage == pageLists && active;
+            LActivate(gListActive, gInventoryList);
+            if (gPage == pageLists) DrawMainWindow();
+        }
+    }
+    SetPort(savedPort);
 }
 
 static void DoEvent(EventRecord *event)
@@ -4989,12 +5031,28 @@ static void DoEvent(EventRecord *event)
             break;
 
         case activateEvt:
-            window = (WindowPtr)event->message;
-            if (window == gMainWindow && gInventoryList != nil) {
-                gListActive = gPage == pageLists &&
-                              (event->modifiers & activeFlag) != 0;
-                LActivate(gListActive, gInventoryList);
-                if (gPage == pageLists) DrawMainWindow();
+            ActivateShowcaseWindow((WindowPtr)event->message,
+                                   (event->modifiers & activeFlag) != 0);
+            break;
+
+        case osEvt:
+            if (((unsigned long)event->message >> 24) == suspendResumeMessage) {
+                gInBackground = (event->message & resumeFlag) == 0;
+                window = FrontWindow();
+                if (window != nil) {
+                    HiliteWindow(window, !gInBackground);
+                    ActivateShowcaseWindow(window, !gInBackground);
+                }
+                /* Text (1993), TEToScrap/TEFromScrap: monostyled TextEdit
+                 * uses a private scrap. Export only a new cut/copy; import
+                 * on resume only when the system requests conversion. */
+                if (gInBackground && gPrivateScrapDirty) {
+                    if (ZeroScrap() == noErr && TEToScrap() == noErr) {
+                        gPrivateScrapDirty = false;
+                    }
+                } else if (!gInBackground && (event->message & convertClipboardFlag) != 0) {
+                    if (TEFromScrap() == noErr) gPrivateScrapDirty = false;
+                }
             }
             break;
 
@@ -5036,7 +5094,9 @@ void main(void)
     while (!gQuit) {
         if (WaitNextEvent(everyEvent, &event, 1, nil)) {
             DoEvent(&event);
-        } else if (gPage == pageTextEdit && gTE != nil) {
+        } else if (gModelessDialog != nil && FrontWindow() == (WindowPtr)gModelessDialog) {
+            HandleModelessDialogEvent(&event);
+        } else if (!gInBackground && gPage == pageTextEdit && gTE != nil) {
             TEIdle(gTE);
         } else if (gPage == pageSound) {
             PollShowcaseSound();

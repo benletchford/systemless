@@ -3329,6 +3329,15 @@ fn showwindow_hidden_first_window_becomes_frontwindow_even_if_cached_front_was_b
             .any(|event| event.what == 8 && event.message == dialog && (event.modifiers & 1) == 1),
         "ShowWindow must queue an activate event for the newly visible frontmost window"
     );
+    assert_eq!(
+        bus.read_byte(document + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET),
+        0,
+        "revealing the hidden front window must unhilite the previous visible front"
+    );
+    let activation: Vec<_> = disp.event_queue.iter().filter(|event| event.what == 8)
+        .map(|event| (event.message, event.modifiers & 1)).collect();
+    assert_eq!(activation, vec![(document, 0), (dialog, 1)],
+        "the document must receive deactivation before the newly visible dialog activates");
 }
 
 // ---------------------------------------------------------------
