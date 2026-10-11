@@ -1,0 +1,28 @@
+{
+  "source_head": "d44b335fa9432c9e87ed269fd8ea862b3219ef8b",
+  "crate_sha256": "65fccb80378d0e2590db8ca931c3b3688a6a876cc7e961adda45a1a5456a340f",
+  "matching_rust_source_files": 399,
+  "required_sources": {
+    "src/bin/systemless.rs": "83e40f3c4246d7d1abbdcaec27596608fc2d9e09f416cf0ddddac74b0ba8cfc6",
+    "src/bin/gpui_demo.rs": "f7a93f0def199a963f0f87f8087cef6f92bb7347b06922c7250bbed586212fa3",
+    "src/bin/gpui_demo_cursor.rs": "6d6c7d13aff562a64bbfd2ca289c3c1812663cce521e0608d60f93cb2b7c6f78",
+    "src/bin/desktop/desktop_save_store.rs": "9481ddac58d01af25902a6781bb6f7757aab3c8d85aba1c871008dfdcaf3ecfc"
+  },
+  "commands": [
+    "cargo package --locked --offline --no-verify",
+    "cargo check --locked --offline --manifest-path /tmp/gpui-package-current-d44b335f/systemless-0.83.0/Cargo.toml --target-dir /Users/ben/.codex/worktrees/bfd9/systemless/target --no-default-features --lib",
+    "cargo check --locked --offline --manifest-path /tmp/gpui-package-current-d44b335f/systemless-0.83.0/Cargo.toml --target-dir /Users/ben/.codex/worktrees/bfd9/systemless/target --bin systemless"
+  ],
+  "exit_codes": [
+    0,
+    0,
+    0
+  ],
+  "scope": "Current-source crate creates offline; every packaged Rust source matches checkout; extracted no-default library and default GPUI application compile checks pass using cached dependencies/artifacts. No fresh-download, packaged link/runtime, published artifact or physical GUI qualification. Network-enabled attempt was explicitly interrupted after repeated DNS failures; local extractor initially used an unsupported Python API then safely validated tar paths before extraction. Warnings include cached yanked yoke-derive lock entry; no dependency change made. No broad gate closed.",
+  "sha256": {
+    "application-check.log": "2f6cd3d2eef82359b46493739fdf0abead1e3511e4571a1642e3e7ca5f5ca43a",
+    "offline-package.log": "1ea69b50e365cb005806e09eedcfbf3aeb08b07cdbf0122757e010b5a47fbb13",
+    "network-attempt-interrupted.log": "d5de013e7bc19c85c06a833aee9762d532dbe3280717c9d5676d385f46809ce0",
+    "library-check.log": "532c6563242451a28139ddea00ab6bb977fc29c28fa8212881b32fd41261b425"
+  }
+}
