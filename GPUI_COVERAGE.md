@@ -32,6 +32,31 @@ still failed native capture provenance validation against an older showcase
 archive, and its scripted checkbox trace required a release-event correction;
 those failures must be cleared separately.
 
+The native overview replay now targets the expanded preferences dialog's
+actual OK button and asserts that the dialog has disappeared before continuing.
+Fresh BasiliskII and SheepShaver runs both pass that assertion; their accepted
+screenshots show the application's confirmed-with-OK status. This repairs a
+replay error that otherwise left later page captures inside the modal dialog.
+The refreshed overview references now pass all 59 checkpoints, 85 reviewed
+outcome regions, state-transition relations and the isolated SysBeep checks on
+both emulators. Their manifest records the current fixture, scenario, emulator
+image, runner, ROM, system disk, preferences and PCM identities. Eighty regions
+matched the previous references; the remaining five were reviewed against the
+added modeless-menu entry and expanded preferences dialog. This qualifies the
+overview scenario only. The sound references have also been refreshed after
+verifying full-, 75%- and 50%-volume waveforms exactly against the existing
+native PCM references, flush retaining playback, quiet cancelling playback,
+and the displayed callback/status readouts on both CPUs. Sound-image changes
+were confined to pointer positions. Drawing and popup references are also
+refreshed: both drawing captures and all 22 popup checkpoints match their
+previous outcomes, with only reviewed pointer-position differences. All 16
+list checkpoints likewise retain their reviewed outcomes and now have current
+capture identities. The 14 window and 18 TextEdit checkpoints are refreshed as
+well, with differences confined to pointer positions and the blinking edit
+caret. The local coverage gate now passes all seven native scenario manifests
+across 16 fixture pages. Hosted CI still needs to confirm the staged refresh;
+this evidence repair does not qualify unfinished GPUI components.
+
 | System UI | Existing state and presentation path | Missing GPUI work | Status |
 | --- | --- | --- | --- |
 | Menu bar and standard menus | `menu_model.rs` supplies `GuestMenuSnapshot`, including live, resource-aware standard MDEF classification on both CPUs, the current menu list's MBDF ID, and each MenuHandle with a process-shared lifetime generation. GPUI menu button identity and queued command validation follow the handle and generation instead of the reusable menu ID; both CPU menu disposal, resource-release, and direct handle-disposal paths invalidate the generation. `gpui_demo.rs` retains a Systemless-owned GPUI Kit popup and reconciles its selected guest item when the menu snapshot changes, renders standard menu buttons and items, and dispatches selected items to the guest. A headless GPUI interaction test confirms live item text, dismissal/reopening, and removal when the guest menu disappears. Translatable Command-key presses and releases enter the guest KeyMap/event path instead of synthesizing a menu click; the showcase responds to Command+P on both CPUs, and a held-key test checks that both guest KeyMap bits remain set through further execution and clear on release. GPUI modifier changes and focus loss clear held keys, and host repeat callbacks do not duplicate guest keyDown events. A custom MDEF or MBDF selects the full guest framebuffer at original coordinates so GPUI chrome cannot cover it. Classic `InitProcMenu` retains the ID and loads its MBDF resource. A synthetic headless composed capture checks placement and pointer translation. Focused guest tests confirm fallback selection during a real 68K MDEF callback in a PowerPC app and during a native PowerPC MDEF invocation; the cross-CPU tracking test confirms live menu pixels and save-under restoration. | Custom MBDF message execution is not implemented: Inside Macintosh V-250 defines Draw, Hit, Calc, Init, Dispose, Hilite, Height, Save, Restore, Rect, SaveAlt, ResetAlt, and MenuRgn messages. Verify a real guest composed capture and standalone 68K custom MDEF tracking; qualify guest autoKey timing during real held shortcuts, submenus, and tracking order. Qualify submenu contents, hover selection, disabled-state transitions, focus, and menu scrolling in composed and interaction tests across real applications. | Demo only |
