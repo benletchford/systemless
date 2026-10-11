@@ -2583,6 +2583,7 @@ fn ppc_dispatch_dialog_compatibility(
             let _ = ppc_move_window_coordinates(
                 memory,
                 gworlds,
+                window_list,
                 params.dialog_ptr(),
                 new_bounds.1,
                 new_bounds.0,
@@ -2666,6 +2667,7 @@ fn ppc_dispatch_dialog_compatibility(
                     let _ = ppc_move_window_coordinates(
                         memory,
                         gworlds,
+                        window_list,
                         params.sheet_ptr(),
                         target.1,
                         target.0,

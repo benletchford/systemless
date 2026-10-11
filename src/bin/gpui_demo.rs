@@ -190,6 +190,9 @@ mod desktop {
         #[arg(long, hide = true, requires = "capture_modeless_dialog", conflicts_with = "capture_modeless_dialog_suspended")]
         capture_modeless_dialog_resumed: bool,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_modeless_dialog", conflicts_with_all = ["capture_modeless_dialog_suspended", "capture_modeless_dialog_resumed"])]
+        capture_modeless_dialog_dragged: bool,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_nested_modal_dialog: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -3388,7 +3391,7 @@ mod desktop {
         ModalDialogCheckboxHeld,
         ModalDialogCheckboxCheckedHeld,
         ModalDialogCheckboxOutside,
-        ModelessDialog { suspended: bool, resumed: bool },
+        ModelessDialog { suspended: bool, resumed: bool, dragged: bool },
         NestedModalDialog,
         Controls,
         ControlFonts,
@@ -4423,6 +4426,44 @@ mod desktop {
                 session.runner_mut().run_steps(100_000, None);
             }
         }
+        let modeless_dragged = matches!(capture, CaptureCase::ModelessDialog { dragged: true, .. });
+        let dialogs = if modeless_dragged {
+            let original = dialogs.iter().find(|dialog| dialog.visible && dialog.items.len() == 4).unwrap();
+            let owner = session.runner_mut().window_frame_snapshot().into_iter()
+                .find(|frame| frame.guest_id == original.guest_id).unwrap();
+            let title = owner.title_layout(session.runner().bus().read_word(MBAR_HEIGHT) as i16).unwrap();
+            let from = (title.baseline - title.ascent / 2, title.horizontal + title.width / 2);
+            for input in [
+                MacintoshInput::MouseDown { vertical: from.0, horizontal: from.1 },
+                MacintoshInput::MouseMove { vertical: from.0 + 12, horizontal: from.1 + 16 },
+                MacintoshInput::MouseUp { vertical: from.0 + 12, horizontal: from.1 + 16 },
+            ] {
+                session.deliver_input(input);
+                let tick = session.runner().guest_tick();
+                assert!((0..100).any(|_| {
+                    session.runner_mut().run_steps(10_000, None);
+                    session.runner().guest_tick().wrapping_sub(tick) >= 2
+                }), "guest must advance during movable title tracking");
+            }
+            assert!((0..300).any(|_| {
+                session.runner_mut().run_steps(10_000, None);
+                session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0)
+            }), "guest must finish the title drag");
+            let moved = session.runner_mut().window_frame_snapshot().into_iter()
+                .find(|frame| frame.guest_id == owner.guest_id).unwrap();
+            let translate = |rect: (i16, i16, i16, i16)| (rect.0 + 12, rect.1 + 16, rect.2 + 12, rect.3 + 16);
+            assert_eq!(moved.generation, owner.generation);
+            assert_eq!(moved.window.bounds, translate(owner.window.bounds));
+            let current = session.runner_mut().dialog_snapshot();
+            let dialog = current.iter().find(|dialog| dialog.guest_id == original.guest_id).unwrap();
+            assert_eq!((dialog.generation, dialog.bounds), (original.generation, translate(original.bounds)));
+            for (before, after) in original.items.iter().zip(&dialog.items) {
+                assert_eq!((after.number, &after.text, after.value, after.selection),
+                    (before.number, &before.text, before.value, before.selection));
+                assert_eq!(after.bounds, translate(before.bounds));
+            }
+            current
+        } else { dialogs };
         let windows = session.runner_mut().window_frame_snapshot();
         if matches!(
             capture,
@@ -4947,7 +4988,7 @@ mod desktop {
                 .expect("recognized dialog title must reach the GPUI painter");
             std::fs::write(output.with_extension("dialog-state.json"), serde_json::to_vec_pretty(&serde_json::json!({
                 "definition": owner.definition_id, "identity": [owner.guest_id as u64, owner.generation],
-                "window": owner.window, "dialog_active": dialog.active, "suspended": modeless_host_suspended, "resumed": modeless_host_resumed,
+                "window": owner.window, "dialog_active": dialog.active, "suspended": modeless_host_suspended, "resumed": modeless_host_resumed, "dragged": modeless_dragged,
                 "actual_depth": session.runner().presented_screen_depth(),
                 "title_position": [title.horizontal, title.baseline], "title_clip": title.clip,
                 "items": dialog.items.iter().map(|item| serde_json::json!({
@@ -6433,7 +6474,7 @@ mod desktop {
                 output,
                 args.prefer_powerpc,
                 args.screen_depth,
-                CaptureCase::ModelessDialog { suspended: args.capture_modeless_dialog_suspended, resumed: args.capture_modeless_dialog_resumed },
+                CaptureCase::ModelessDialog { suspended: args.capture_modeless_dialog_suspended, resumed: args.capture_modeless_dialog_resumed, dragged: args.capture_modeless_dialog_dragged },
                 args.capture_scale,
             );
             return;
@@ -7347,6 +7388,7 @@ mod desktop {
                         capture_modeless_dialog: None,
                         capture_modeless_dialog_suspended: false,
                         capture_modeless_dialog_resumed: false,
+                        capture_modeless_dialog_dragged: false,
                         capture_nested_modal_dialog: None,
                         capture_controls: None,
                         capture_control_fonts: None,

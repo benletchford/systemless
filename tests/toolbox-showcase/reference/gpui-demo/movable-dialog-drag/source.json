@@ -1,0 +1,13 @@
+{
+  "base": "4158e51b",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "2209def6b8a6b408d13ce40603ca71328e11ea8cd4f5aacf0e04d9abbe675561",
+    "src/systems/macintosh/loader/ppc/dispatch_window.rs": "a559743c51b79ed40a7160eaec9e2594843244f778bcd6a10e24343ee2f2a1aa",
+    "src/systems/macintosh/loader/ppc/dispatch_dialog.rs": "87b0124b7610d3b568045c2ef8a4b4cd82ae3661f3055bfdb3101d7897f3b47b",
+    "src/systems/macintosh/loader/ppc/quickdraw.rs": "3397943eb4eed4d2f43d23adebe023b336f3d386221d2d4988f479dc8aeb3f51",
+    "src/systems/macintosh/loader/ppc/tests/quickdraw.rs": "34915f45aa3911bdfa5f0ce9350bfe6241321796365ba20666c97dcf29e0e31c",
+    "src/systems/macintosh/loader/ppc/tests/window_manager.rs": "34c68eb9751c56b7d14d94c815d9a4036d23e94495e5a3b54959ea2b2917b54f"
+  },
+  "capture_executable_sha256": "571d70f0dba2db9cc2ebfc235b2777d4eeaf307fa242c7170b94652e679a5893",
+  "scope": "Selected guest title drag; not physical host drag or full release qualification"
+}

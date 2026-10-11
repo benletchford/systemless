@@ -143,3 +143,17 @@ performance or final-candidate qualification. Evidence is archived under
 The same candidate additionally passes styled halo editing across four modes
 (174.32s) and spacing-style editing across four modes (56.85s), with the combined
 log archived in `reference/gpui-demo/textedit-paint-recipe`.
+
+### Movable dialog drag correction (2026-10-11)
+
+Real guest title dragging now preserves dialog identity/text/selection and
+translates window/item bounds in four reviewed shared compositor captures:
+mono68k/0.75, colour68k/1, PPC8/2 and PPC16/1.5. PPC moving previously left
+native ink behind; visible content and drawing detail now transfer from a
+retained snapshot, preserving overlap and front-window occlusion. A second
+defect let background FrameRect drawing cross the dialog; both port clipping
+regions now apply. Final QuickDraw118 and the all-depth region regression pass;
+WindowManager104 passed before the FrameRect change. Failed, partial and final
+images/provenance are under `reference/gpui-demo/movable-dialog-drag`. Physical
+input, broader lifecycle, performance and final-candidate qualification remain
+open; no production gate is closed by this selected workflow.
