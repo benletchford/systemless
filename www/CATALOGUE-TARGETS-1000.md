@@ -147,7 +147,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 102 | 290 | Mahjong | Original 1.0.5 International CODE-only 68K | P | [Original noncommercial grant; native and browser discard/replies verified](CATALOGUE-SOURCES.md#mahjong-105--primary-102-original-sti3-installer-intake); [#4672](https://github.com/benletchford/systemless/issues/4672) |
 | 103 | 291 | MacTaipei | Original CODE-only 68K; pair removal verified | U | [Exact original intake; scoped archival request, broader hosting held](CATALOGUE-SOURCES.md#mactaipei-10--primary-103-original-package-intake); [#4670](https://github.com/benletchford/systemless/issues/4670) |
 | 104 | 292 | Pegged | 68K verified; native PPC absent | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
-| 105 | 293 | Powerball | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
+| 105 | 293 | Powerball | Original 1.3: actual 68K + PPC | P | [Original non-profit grant; seven files/fourteen forks matched; startup blockers](CATALOGUE-SOURCES.md#powerball-13--primary-105-original-fat-shareware-intake); [#4681](https://github.com/benletchford/systemless/issues/4681) |
 | 106 | 294 | Brickles Plus | Original 3.0: 68K only | U | [Original package and bounded probes; hosting grant unresolved](CATALOGUE-SOURCES.md#brickles-plus-30-original-package-and-bounded-probes) |
 | 107 | 295 | Brick Attack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
 | 108 | 296 | Bubbles | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
