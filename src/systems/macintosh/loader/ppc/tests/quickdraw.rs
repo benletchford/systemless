@@ -6921,3 +6921,69 @@ fn save_entries_supplied_source_can_alias_result_without_losing_entries() {
     }
     assert_eq!(*loaded.screen_clut, device_before);
 }
+
+#[test]
+fn copied_color_port_bitmap_proxy_resolves_pixels_and_colour_table() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(scratch, vec![0xff; 128]);
+    // Original-style 14-byte proxy: trailing bytes are deliberately not a PixMap.
+    loaded
+        .memory
+        .write_u32_be(scratch, PPC_MAIN_PIXMAP_HANDLE)
+        .unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 6, -1, -1, 0, 0).unwrap();
+    let expected = ppc_read_pixmap_handle_bits(&mut loaded.memory, PPC_MAIN_PIXMAP_HANDLE).unwrap();
+    for flags in [0xc000, 0xc001, 0xffff] {
+        loaded.memory.write_u16_be(scratch + 4, flags).unwrap();
+        let actual = ppc_resolve_pixmap_bits(&mut loaded.memory, &[], scratch).unwrap();
+        assert_eq!(actual.base_addr, expected.base_addr);
+        assert_eq!(actual.row_bytes, expected.row_bytes);
+        assert_eq!(actual.depth, expected.depth);
+        assert_eq!(
+            (actual.top, actual.left, actual.bottom, actual.right),
+            (expected.top, expected.left, expected.bottom, expected.right)
+        );
+        let table =
+            ppc_resolve_pixmap_ctable_handle_with_provenance(&mut loaded.memory, &[], scratch);
+        assert!(table.known);
+        assert_eq!(table.handle, Some(PPC_MAIN_CTABLE_HANDLE));
+    }
+    assert_eq!(expected.depth, 8);
+    let source_pixels = [47u8, 129, 213, 247];
+    for (x, pixel) in source_pixels.iter().enumerate() {
+        loaded
+            .memory
+            .write_u8(expected.base_addr + x as u32, *pixel)
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(expected.base_addr + expected.row_bytes + x as u32, 0)
+            .unwrap();
+    }
+    ppc_write_rect(&mut loaded.memory, scratch + 64, 0, 0, 1, 4).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 72, 1, 0, 2, 4).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = PPC_MAIN_PIXMAP;
+    loaded.cpu.gpr[5] = scratch + 64;
+    loaded.cpu.gpr[6] = scratch + 72;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyBits);
+    for (x, pixel) in source_pixels.iter().enumerate() {
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(expected.base_addr + expected.row_bytes + x as u32),
+            Some(*pixel)
+        );
+    }
+    for handle in [0, 0xffff_fff0] {
+        loaded.memory.write_u32_be(scratch, handle).unwrap();
+        assert!(ppc_resolve_pixmap_bits(&mut loaded.memory, &[], scratch).is_none());
+        let table =
+            ppc_resolve_pixmap_ctable_handle_with_provenance(&mut loaded.memory, &[], scratch);
+        assert!(!table.known);
+        assert!(table.handle.is_none());
+    }
+}
