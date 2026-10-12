@@ -989,7 +989,7 @@ human release and independently verified public replay before it is counted live
 
 | Reserve | Game | CPU evidence | Distribution | Qualification |
 | --- | --- | --- | --- | --- |
-| R101 | Spacestation Pheta 2.7 | 68K; no native PPC slice in original archive | Explicit conditional shareware-library grant; UNREGISTERED visibly verified; complete original package retained | [Native/browser walking and climbing, exact archive/forks and promoted screenshot](CATALOGUE-SOURCES.md#spacestation-pheta-27--additional-reserve-discovery); [catalogue PR #4629 merged](https://github.com/benletchford/systemless/pull/4629), human release/public replay pending |
+| R101 | Spacestation Pheta 2.7 | 68K; no native PPC slice in original archive | Explicit conditional shareware-library grant; UNREGISTERED visibly verified; complete original package retained | [Native/browser walking and climbing, exact archive/forks and promoted screenshot](CATALOGUE-SOURCES.md#spacestation-pheta-27--additional-reserve-discovery); [catalogue PR #4629 merged](https://github.com/benletchford/systemless/pull/4629); [qualified public v0.97.0 walking/climbing](CATALOGUE-SOURCES.md#spacestation-pheta-direct-public-replay--qualified-bounded-gameplay) |
 
 ## Existing catalogue inventory (188; baseline)
 

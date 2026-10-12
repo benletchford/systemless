@@ -1688,8 +1688,10 @@ notice visibly says UNREGISTERED. Once Screen 1 is fully painted, ordinary L
 walking and A ladder climbing pass sixteen measured before/after pixel checks;
 captures inspected. Launch approval is submitted through the ordinary catalogue
 PR, merged at `1463e21ee247d07ac223ba205df3fb50b5a25585` after all final checks
-passed. Human release and independent public replay remain pending. Full levels,
-jumping, saving and audio are unverified. No qualified-live increase.
+passed. Human v0.97.0 release and [direct public walking/climbing replay](#spacestation-pheta-direct-public-replay--qualified-bounded-gameplay)
+are now independently verified; this is the nineteenth qualified new live game.
+Full levels, jumping, saving, audio and known Options/help rendering faults remain
+unverified or unresolved.
 
 
 ## MacBrickout 4.1 original package and current startup
@@ -2225,7 +2227,7 @@ not LittleWing's Tristan pinball. The document requests $5 shareware registratio
 and supplies no affirmative redistribution grant. Do not use this archive for
 Tristan target 115 or infer hosting rights from the mirror listing.
 
-### Spacestation Pheta direct public replay — partial
+### Spacestation Pheta direct public replay — qualified bounded gameplay
 
 Direct [published player](https://systemless.org/spacestation-pheta/) replay on
 human-published v0.97.0 uses the actual immutable managed HQX, default 25 MHz,
@@ -2237,10 +2239,27 @@ before/after captures show walking. Two full-gameplay pacing probes pass the
 unchanged minimum 50 at **53.906 / 51.856 guest ticks/sec**, without console
 errors; a later longer-control probe also passes at 53.906.
 
-Climbing is not yet reproduced: A after those walks leaves the character at the
-first platform's height. No climbing assertion or broader gameplay claim. Early
-Command-N was a harness mistake (actual visible shortcut is Command-G), and its
-captures remained on the title screen. Title-screen samples fell below the
-unchanged 50 gate (42.722 / 42.713); preserve those failures separately from
-successful Screen 1 samples. Pixel assertions and repeatable ladder alignment
-remain pending. No qualified-live increment or intake closure yet.
+The aligned sequence holds L for 1.5 seconds to reach the actual first ladder,
+then A for two seconds to climb to the upper platform. Two fresh direct public
+runs pass **eight fixed measured before/after climbing pixel checks each**, at
+**52.824 / 51.787 guest ticks/sec**, with no console errors. Both actual captures
+are inspected. Initial sprite-free paint captures are excluded from assertions;
+only stable ladder-bottom and ladder-top captures qualify. Prior short walks
+stopped adjacent to the ladder, while two-second L overshot it: those were
+alignment probes, not evidence of a climbing defect.
+
+Early Command-N was a harness mistake (actual visible shortcut is Command-G),
+and its captures remained on the title screen. Title-screen samples fell below
+the unchanged 50 gate (42.722 / 42.713); preserve those failures separately from
+successful Screen 1 samples. Actual managed HQX GET independently matches
+281,913 bytes and the original SHA-256. The original conditional rights,
+fork/Finder parity, native walking/climbing, promotion and launch approval are
+recorded in [#4628](https://github.com/benletchford/systemless/issues/4628).
+Entry [#4629](https://github.com/benletchford/systemless/pull/4629) is merged as
+`1463e21ee247d07ac223ba205df3fb50b5a25585`. Human v0.97.0
+[release pipeline](https://github.com/benletchford/systemless/actions/runs/38246494927)
+passed website deployment, six native builds and binary upload. This is the
+**nineteenth independently qualified new live game**, one distinct original
+68K title; no native PPC slice. Full levels, jumping, saving, audio and the known
+Options/help/post-Options rendering faults remain unverified or unresolved.
+Intake stays open for those faults. No release action taken.
