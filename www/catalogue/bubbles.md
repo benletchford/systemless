@@ -81,6 +81,22 @@ compatibility:
       full-game, save and audio fidelity remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/pull/4719
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: v0.97.0
+    architecture: ppc
+    environment: >-
+      Direct public Chrome Worker replay on systemless.org/bubbles/ after the human
+      release. Actual deployed app and managed archive, no private preview bridge or
+      local archive fixture. Canvas2D at configured depth 8 and 25 MHz passes all ten
+      held-image, source-hole, five-ball-removal and score-50 checks at 59.978 guest
+      ticks/sec, above the unchanged minimum 50. Captures inspected; no console errors.
+      Fresh public archive GET matches all 815666 original bytes and pinned SHA-256.
+      The complete human release pipeline succeeds, including website deployment,
+      six native packages and twelve nonempty package/checksum assets. Bounded public
+      gameplay is qualified; full-game, save and audio fidelity remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4692
 runtime:
   executable_path: Bubbles 1.3/Bubbles1.3/Bubbles 1.3/Bubbles PPC
   screen_depth: 8
@@ -153,7 +169,7 @@ cell reachable through free spaces. Five matching balls in a line disappear and
 add to your score; new balls arrive after other turns.
 
 Ball movement, translucent drag feedback, line removal and scoring are verified
-in native and browser tests of the hosted archive. The original unregistered
+in native tests and the public browser player. The original unregistered
 shareware restrictions remain: score saving and GameField Manager require
 registration.
 
