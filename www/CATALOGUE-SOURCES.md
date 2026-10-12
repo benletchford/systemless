@@ -1259,6 +1259,60 @@ from the fixture bitmap, with no differences outside the blank icon pixels.
 Distribution delivery review, hosted browser qualification, catalogue approval,
 human release and public replay remain pending. No release was triggered. No hosted archive, catalogue entry or live-qualified increment.
 
+
+### Yahtzee! original delivery and hosted qualification — 13 October 2026
+
+[Delivery intake #4757](https://github.com/benletchford/systemless/issues/4757)
+and [catalogue PR #4758](https://github.com/benletchford/systemless/pull/4758).
+Fresh original download still matches 25,001 bytes and
+`a6918a4776377cfca37c9be377ccc0c79591fb8927b3a70098a7e400a8147c28`.
+Independent unar and production packing match both files, all four forks and
+Finder type/creator/flags; packed size is 48,098 bytes. Actual application is
+resource-only: CODE 0 is 64 bytes, CODE 1 is 19,824; no cfrg/PPC slice.
+The original conditional grant is retained in full: free, unchanged complete
+package distribution, separate from emulator binaries/native packages; no sale,
+product incorporation or commercial exploitation permission is inferred.
+
+Fresh native scoring replay passes 872 assertions at 1620 frontend / 2216
+guest ticks, zero exhaustion. Five checkpoints verify setup, die selection,
+two rerolls, category selection and Chance/Lower/Grand Total 15 for 3+5+1+3+3.
+Every pixel of all 25 dice images matches original ICON resource bits
+(25,600 pixels), including normal, selected and disabled variants. The later
+next-turn dice are separate from the scored roll. Actual captures inspected.
+
+Normal first promotion failed HTTP 403 at the original host. A temporary
+checksum-pinned transfer supplied the identical permitted archive, retaining
+original provenance. Successful normal run 38308357864 committed managed
+assets at `49e3045fdc97ebbf598cae0d7b0fddec1843b27f`. Fresh actual managed GETs
+match the original archive and the 3,584-byte content-only gameplay screenshot
+SHA-256 `d3aaac88295a62f0698b6c5ab24a94e71e816a59fc15ca973596658d23460663`.
+The transfer tunnel and server are stopped. Production validation passes 218
+staged records; neither that count nor asset promotion qualifies a live game.
+
+The initial hosted browser replay scores 21 with correct original faces but
+fails the unchanged pacing minimum 50 at 45.75961 ticks/sec. Native diagnosis
+shows repeated pure Secs2Date and HMGetBalloons calls cancel exact idle proofs.
+[Compatibility #4760](https://github.com/benletchford/systemless/pull/4760),
+tested head `937e47c9fc160e4c94753a947aea77a655d0e610`, admits only the pure
+conversion/status paths, retaining the input selector before returned D0
+replaces it. Setters/unknown selectors remain rejected. All 83 idle tests,
+six Pack14 tests and date roundtrip pass; original native 872 checks and all
+five complete captures remain unchanged. No game, randomness, scoring, CPU
+profile, slice size, time budget or threshold is modified.
+
+Two fresh settled private hosted-archive Chrome/Canvas2D replays pass at
+59.94473 / 60.04600 guest ticks/sec, default 25 MHz, no console errors. Selection
+and rerolls preserve the unselected dice. Original faces sum to 12 / 13 and
+inspected Chance/Lower/Grand totals match; next turns start. All 25 images per
+run match every original ICON bit. No archive fixture or security override.
+These are original-resource/Systemless comparisons, not independent ROM oracles.
+All nine checks passed on exact head 937e47c9; compatibility #4760 merged as
+`f80a8e4e565e60695c9a6bbe8f5bd1c56aa7d247`. Catalogue browser launch is approved
+for that merged fix; final entry CI/merge remains pending. Only a human may
+trigger the release; direct public qualification must follow.
+Full matches, Triple Yahtzee, multiplayer, saves and audio remain unverified.
+No qualified-live increment or agent release action.
+
 ## Bugdom — target 46, publisher free-use clarification
 
 Publisher-source recheck on 11 October 2026: [Pangea's registration page](https://www.pangeasoft.net/bug/register.html) announces the original Mac OS 9 game is now free and supplies its own registration instructions. Its older [download page](https://www.pangeasoft.net/bug/downloads.html) still describes demo-limited shareware. The free announcement supersedes an assumption that original Mac OS 9 use still requires purchase; it does not itself grant third-party archive hosting. Existing exact-package, distribution and PPC gameplay gates remain pending, and no key was entered in this follow-up.

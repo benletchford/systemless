@@ -12,6 +12,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -20,6 +21,30 @@ compatibility:
     systemless_version: 1440d1368794ee60ffcd82043f072438416bbc80
     architecture: 68k
     environment: "Optimized native source tree matches merged 1440d136; immutable binary b2254088fc7aed31eb9e32623a46baa53804ca3a5afd854213c9e79b60dc1a1a. Untouched original 3.2.0 archive, exact selector below, 68K and depth 8. Ordinary New Game, one-player setup, first-die selection and two rerolls reach category selection. Original disabled ICONs show 3+5+1+3+3; scoring Chance commits 15 to Chance, Lower Total and Grand Total, then starts the next turn. All 25 displayed 32x32 faces across five captures independently match their original ICON resource bits (25,600 pixels). Fresh replay passes 872 resource-derived dice and measured score checks at 1620 frontend / 2216 guest ticks with zero exhausted frames. Actual captures inspected. Both original files/four forks and Finder type/creator/flags match independent extraction and production packing. CODE 0/1 and no cfrg establish a 68K-only game. PlotIcon rendering fix #4662 is merged; no original game or random-number patch is supplied. Full matches, Triple Yahtzee, multiplayer, saving, audio, browser and public qualification remain unverified. Browser launch remains held."
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4757
+  - date: "2026-10-13"
+    tester: Catalogue maintainer
+    systemless_version: f80a8e4e565e60695c9a6bbe8f5bd1c56aa7d247
+    architecture: 68k
+    environment: >-
+      Browser launch approved after two fresh optimized Chrome 151 Worker/Canvas2D
+      staging replays of the actual managed original archive, default 25 MHz,
+      depth 8 and 800x600. Private frontend bridge only; no local archive fixture
+      or browser security override. Ordinary setup, one-die selection and two
+      rerolls retain unselected dice. Original disabled faces sum to 12 and 13;
+      inspected Chance, Lower Total, Grand Total and messages match, and next
+      turns start. All 25 die images per run match every original ICON bit
+      (25,600 pixels per run). Steady pacing is 59.945 / 60.046 guest ticks/sec,
+      above unchanged minimum 50, no console errors. Actual captures inspected.
+      Calendar/status idle-proof fix #4760 passed all nine exact-head checks and
+      merged f80a8e4e; tested source 937e47c9 is tree-identical to that merge.
+      Original archive/screenshot managed GETs match their pinned bytes/hashes.
+      The initial pre-fix 45.760 pacing failure remains recorded in #4759.
+      Native scoring still passes 872 checks with unchanged captures. Full
+      matches, Triple Yahtzee, multiplayer, saves, audio and independent ROM
+      fidelity remain unverified. Human release and direct public qualification
+      are pending; no release action performed.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4757
 runtime:
@@ -58,8 +83,8 @@ artifacts:
       independent extraction. No native PPC slice exists in this edition. Neither
       application nor README is edited. Original host rejected GitHub's download with HTTP 403; a
       temporary checksum-pinned HTTPS transfer supplies identical bytes for normal CI
-      promotion. Original provenance remains above; retire the transfer after managed
-      storage and its pinned bytes are verified.
+      promotion. Original provenance remains above; the transfer was retired after managed
+      storage and its pinned bytes were verified.
 - id: gameplay-screenshot
   role: screenshot
   format: png
@@ -90,9 +115,9 @@ rerolls, click an unused category in your player's score column to record the
 turn. **Chance** scores the sum of all five dice. The original instructions
 remain in the complete download and under **File → Open Help**.
 
-One native scoring turn and original dice rendering are verified. Browser
-launch, full games, Triple Yahtzee, multiplayer, saves and audio remain
-unverified. This free original package retains its complete redistribution
+One native scoring turn and hosted-browser scoring, controls and pacing are
+verified. Full games, Triple Yahtzee, multiplayer, saves and audio remain
+unverified. Human release and direct public qualification are pending. This free original package retains its complete redistribution
 terms and optional author-compensation notice; it is distributed separately
 from Systemless binaries.
 
