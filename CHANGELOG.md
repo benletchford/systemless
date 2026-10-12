@@ -1,5 +1,112 @@
 # Changelog
 
+## [0.97.0](https://github.com/benletchford/systemless/compare/v0.96.0...v0.97.0) (2026-10-12)
+
+
+### Features
+
+* add launch-approved original GPL Gryversi game ([08f2167](https://github.com/benletchford/systemless/commit/08f2167cb01f2a79fa38fe39466ab2ffcd2f50b3))
+* add Spacestation Pheta with verified 68K browser gameplay ([1463e21](https://github.com/benletchford/systemless/commit/1463e21ee247d07ac223ba205df3fb50b5a25585))
+* add verified Galactic Frontiers catalogue entry ([77ad8e8](https://github.com/benletchford/systemless/commit/77ad8e87b1700e640980df7072b43978da1d4958))
+* add verified Halma catalogue entry ([7d07636](https://github.com/benletchford/systemless/commit/7d076360fc53ac26ad74f63d2b0fb53c57f73db1))
+* add verified Lose Your Marbles catalogue entry ([df05f0d](https://github.com/benletchford/systemless/commit/df05f0dd9b93b9a82d1cd70a8329c47094ded8e3))
+* add verified NetHack PPC catalogue entry ([84b9dd6](https://github.com/benletchford/systemless/commit/84b9dd6e7213646fedcd4b0c54114d3a1a992d4c))
+* **catalogue:** add Mahjong with original installer support ([f396d6f](https://github.com/benletchford/systemless/commit/f396d6f4f4d191a8a1372d185b5f15cfc0ccf0e6))
+* **catalogue:** add On the Edge with verified 68K gameplay ([694b3ee](https://github.com/benletchford/systemless/commit/694b3ee324d39b2f86d21228d6df03fd41b096e5))
+* **catalogue:** add original Bubbles 1.3 shareware ([e67ddd7](https://github.com/benletchford/systemless/commit/e67ddd78b680f6ec01e31df2807ae7cd54c1a0e2))
+* **catalogue:** add playable original NS-SHAFT ([462e867](https://github.com/benletchford/systemless/commit/462e86784cea36bcfa3565f8ae893ced8650ac70))
+* **catalogue:** add playable original NS-TOWER ([#4481](https://github.com/benletchford/systemless/issues/4481)) ([75f9ee0](https://github.com/benletchford/systemless/commit/75f9ee06b47230091dea6237c34d119b2a59b707))
+* **catalogue:** add playable Re-Pete 2.2 ([3c29bd4](https://github.com/benletchford/systemless/commit/3c29bd40572c2c61cbe266d30646bf166c1b7cb5))
+* **catalogue:** add verified Rogue release 6 ([d06cd35](https://github.com/benletchford/systemless/commit/d06cd35e3aebf07165658b8e8c3352598543ef7a))
+* **catalogue:** approve verified NS-TOWER browser gameplay ([7112bed](https://github.com/benletchford/systemless/commit/7112bed62acfdf163c5665402b499bc0b4b92e00))
+* **drag:** support native DragLib tracking and image feedback ([f548363](https://github.com/benletchford/systemless/commit/f5483633a23f28ddf6bd2e55f8f712ce04a69b9d))
+* **quickdraw:** implement FillCRgn color pattern region filling across CFM and 68k ([83946a7](https://github.com/benletchford/systemless/commit/83946a71b1b5920cf6f50b8da02ef0b5d2134b72))
+
+
+### Bug Fixes
+
+* bind CarbonLib Apple-event object support ([bd5c0ca](https://github.com/benletchford/systemless/commit/bd5c0cab0826f6d8fc3e02a57bafbc7cb7b25004))
+* bind PowerPC current keyboard modifiers ([c92ddae](https://github.com/benletchford/systemless/commit/c92ddae66794e70acae79c228b8f648aab1976f2))
+* bind PowerPC global mouse coordinates ([b956aa3](https://github.com/benletchford/systemless/commit/b956aa33d3637ee4c63b9a1707dee8dab41be25f))
+* bind PowerPC grow-zone callback descriptors ([740f97f](https://github.com/benletchford/systemless/commit/740f97f86ffd44322094da1ab7b911134eed6d0b))
+* bind PowerPC menu item enabled queries ([8623cb0](https://github.com/benletchford/systemless/commit/8623cb0f6d819cefd6194fd18a97822dce15c07a))
+* bind PowerPC port bitmap accessor ([a6adf8a](https://github.com/benletchford/systemless/commit/a6adf8ae7623f9e974575c8a74e8da69d701955d))
+* constrain PowerPC windows to screen bounds ([37682a1](https://github.com/benletchford/systemless/commit/37682a1296177d20e4f36ad2d437bca07b8548a5))
+* copy live PowerPC QuickDraw white pattern globals ([3ed28e1](https://github.com/benletchford/systemless/commit/3ed28e1893c040ecf378ae14bdc83c01a1903a17))
+* copy PowerPC port visible regions ([e918577](https://github.com/benletchford/systemless/commit/e91857728753ced21efc789208a61375d91c07e9))
+* decode classic ShowHide byte arguments at the stack pointer ([abd4859](https://github.com/benletchford/systemless/commit/abd4859f940de50a5e3a5ec83216ad2c39a5593f))
+* **display:** construct native display-mode iterator callbacks ([455df53](https://github.com/benletchford/systemless/commit/455df53da0d6304010a617c2452a6309ccda6f3d))
+* **drawsprocket:** apply alternate-buffer invalidation to underlays ([cdc7ab1](https://github.com/benletchford/systemless/commit/cdc7ab13318688816770977c1041445c2e683d5b))
+* **drawsprocket:** return the context monitor frequency ([6b1adf9](https://github.com/benletchford/systemless/commit/6b1adf93134e9791a93278a69075df447c3e4503))
+* **drawsprocket:** support dirty rectangle grid queries and sizing ([816f960](https://github.com/benletchford/systemless/commit/816f96046924b6bd3709d1231351f1987f55a68f))
+* expose classic Carbon port buffering semantics ([3d7f685](https://github.com/benletchford/systemless/commit/3d7f685fd6cb286dda46218e9671297f5bc09a4c))
+* expose live QuickDraw global screen bitmaps ([bf32363](https://github.com/benletchford/systemless/commit/bf323636f5a44445445083aebdcfed72cffcfcb0))
+* expose PowerPC guest caret timing to applications ([c788112](https://github.com/benletchford/systemless/commit/c788112cffe0b3efaa9ff56d99ec6e5b743fbef4))
+* expose read-only classic ROM version metadata ([7ed117e](https://github.com/benletchford/systemless/commit/7ed117e06c7240b30c444409106e1e30e1cc4a56))
+* format PowerPC international date strings ([9c42a2a](https://github.com/benletchford/systemless/commit/9c42a2ad85ab56898ba01f9777e2a13d2c9ddad7))
+* **icons:** draw native resource icon families ([13c9e73](https://github.com/benletchford/systemless/commit/13c9e732d939000f868622dd2be97ccac0eb9c1c))
+* **icons:** render native color icon handles with mask options ([7b51aa1](https://github.com/benletchford/systemless/commit/7b51aa11af28f7d62f760b9392226d280d147f10))
+* implement PowerPC modal filter callback constructors ([58dcaa7](https://github.com/benletchford/systemless/commit/58dcaa72d34158d06c3b4f0d2955ccf4bdf827e4))
+* implement PowerPC user item callback constructors ([1798ec2](https://github.com/benletchford/systemless/commit/1798ec28d792495c83f6d8c7cd9c77885a0927d1))
+* implement the PowerPC Appearance theme colour query ([6d4abd4](https://github.com/benletchford/systemless/commit/6d4abd497327cdf19182d4a3a18a910e5d7cf458))
+* implement the PowerPC QuickDraw random seed setter ([2d0fb40](https://github.com/benletchford/systemless/commit/2d0fb40e7c5097baf2508a1d8864ec24d077ffa9))
+* pass live descriptor pointers to object accessors ([e315c41](https://github.com/benletchford/systemless/commit/e315c410df33d3d60578d257c45dc4794521e6f2))
+* **powerpc:** preserve signed QuickDraw Random results ([2cf2a6b](https://github.com/benletchford/systemless/commit/2cf2a6b8c4c8342f633b11dac26b5277d8405cdb))
+* **powerpc:** refresh globals when reselecting the current port ([dcbe776](https://github.com/benletchford/systemless/commit/dcbe77656f27abbfab08be77b70444121b08de54))
+* **ppc:** discard activation state for removed windows ([1b95f33](https://github.com/benletchford/systemless/commit/1b95f335c5c840bd6e6a5519a523f4560433614e))
+* **ppc:** dispatch Pascal string ordering with correct arguments ([38666a8](https://github.com/benletchford/systemless/commit/38666a8ebac3bdcfafd4bea1809c17b78157afc4))
+* **ppc:** expose classic low-memory accessors for Powerball ([32861fb](https://github.com/benletchford/systemless/commit/32861fbf9318930b68f55cb2045367483afe17df))
+* **ppc:** fill FillRect with its pattern through the shared raster core ([0a57aef](https://github.com/benletchford/systemless/commit/0a57aef5cece5de2ece73121b1cd4cf0d6c6e3e7))
+* preserve BinHex containers in general web packing ([1cec198](https://github.com/benletchford/systemless/commit/1cec198c0dda61f0be161e5000ec4ba3bca91f30))
+* preserve HFS basenames through catalogue lookups ([af265ee](https://github.com/benletchford/systemless/commit/af265ee7c7bd5bc3f8f6f6aac28acaa455e117e7))
+* preserve MacBinary game sources in web packs ([b230b6a](https://github.com/benletchford/systemless/commit/b230b6ac1271260d171a37946a6115e4a6400293))
+* preserve original StuffIt filename components ([f37139f](https://github.com/benletchford/systemless/commit/f37139f5f37b595f13eedaf5ca3955ccffcfed76))
+* preserve visible dialog content on first modal entry ([29bd029](https://github.com/benletchford/systemless/commit/29bd029d26a9d72c7b8a1c5f610e8667cbe69e09))
+* **quickdraw:** convert native 32-bit CopyBits pixels ([47f30b4](https://github.com/benletchford/systemless/commit/47f30b4c613cd10b73fb7472ec761af462cbe74c))
+* **quickdraw:** expose live native highlight-mode accessors ([8f691eb](https://github.com/benletchford/systemless/commit/8f691eba24614e614441eb7eccd3b507635a458f))
+* **quickdraw:** preserve background pattern colors when erasing pictures ([9a090c5](https://github.com/benletchford/systemless/commit/9a090c58f99892ae7959c228163b3eadcada1c52))
+* **quickdraw:** replace blank pixels when plotting icons ([186841d](https://github.com/benletchford/systemless/commit/186841d43e139d94a775986325f039973d20cb1b))
+* resolve PowerPC temporary memory boundary queries ([1ef89c4](https://github.com/benletchford/systemless/commit/1ef89c4c163b63a01f8c52acdad47588e7461298))
+* resolve working-directory references in PPC HCreate ([5feb74c](https://github.com/benletchford/systemless/commit/5feb74c5cb7aefd6abb966c615559104486f4a38))
+* retain updated control drawing in visible dialog snapshots ([2b1a2e0](https://github.com/benletchford/systemless/commit/2b1a2e03bcac15b41cc418659dde90cac197c00d))
+* return visible Roman text lengths for classic callers ([72a41d7](https://github.com/benletchford/systemless/commit/72a41d73706ad2fac832f754bcbbef90298fbcdc))
+* select front nonfloating windows by shared class ([729d855](https://github.com/benletchford/systemless/commit/729d8551d66e3e795a9cb43b260cf444c8ad2d65))
+* **sound:** drain square-wave notes before synchronous channel disposal ([d5b3864](https://github.com/benletchford/systemless/commit/d5b3864bc4f1f9d59e2493fd41f8489041a004ec))
+* **sound:** play direct SoundBase audio through a compatibility VIA ([f00d2ed](https://github.com/benletchford/systemless/commit/f00d2ed86599fbde1232dda4c000cc7a03bb760b))
+* support OSL callback routine descriptors ([6b804d3](https://github.com/benletchford/systemless/commit/6b804d31f5ccd3c08183257f48f0b78b16c25558))
+* support PowerPC Internet Config instance lifecycle ([def0a28](https://github.com/benletchford/systemless/commit/def0a28c488553b3843bf70eab52b06a3c2386f0))
+* support the PowerPC menu ID setter ([c2ca5a8](https://github.com/benletchford/systemless/commit/c2ca5a8abaf92a37377138e9966ed5d28039bde5))
+* **time:** implement Carbon absolute-time arithmetic and deadline waits ([1e613c5](https://github.com/benletchford/systemless/commit/1e613c5de0dbc0268a60f14f8b99c8f32b29ebe0))
+* **video:** read gamma records at guest address zero ([d5e6c9c](https://github.com/benletchford/systemless/commit/d5e6c9ce32f0dbe904834316edb8ff0090668ea8))
+* **video:** return gamma data for the installed display driver ([3405882](https://github.com/benletchford/systemless/commit/3405882741553d10ece4660ed904b90c47f3c06f))
+
+
+### Performance Improvements
+
+* **memory:** preserve native handle prefixes during in-place growth ([fcb0596](https://github.com/benletchford/systemless/commit/fcb0596b2cd7624f74ff69f486fbb6175c333e30))
+* **presentation:** test detail-free mirror runs a row at a time ([055cc3a](https://github.com/benletchford/systemless/commit/055cc3a26ba84d8aab9cc3f975987439f8664cf3))
+
+
+### Code Refactoring
+
+* **macintosh:** centralize binary-decimal conversion evaluation ([#4593](https://github.com/benletchford/systemless/issues/4593)) ([c2dfc2d](https://github.com/benletchford/systemless/commit/c2dfc2d385c88f3e3bfef78c1dde0ecdebacd376))
+* **macintosh:** centralize character mapping and text transformation evaluation ([#4590](https://github.com/benletchford/systemless/issues/4590)) ([bf144ca](https://github.com/benletchford/systemless/commit/bf144ca66ab01e1c679305bb034ba98fcbfc2b0c))
+* **macintosh:** centralize date and time formatting evaluation ([060d870](https://github.com/benletchford/systemless/commit/060d870652e9faa7f5c480539cab9ba9e1cb3cbb))
+* **macintosh:** centralize format ordering, character pixel measurement, and transliteration evaluation ([#4659](https://github.com/benletchford/systemless/issues/4659)) ([2547d4d](https://github.com/benletchford/systemless/commit/2547d4d476e4baf7086cc004b14dc40cc0255810))
+* **macintosh:** centralize long date/time formatting, text transformations, and international resources ([#4673](https://github.com/benletchford/systemless/issues/4673)) ([0fb0271](https://github.com/benletchford/systemless/commit/0fb0271d97f4bcaff04bf97d4f60570f8065ef1b))
+* **macintosh:** centralize Munger text utility evaluation ([a2d65cf](https://github.com/benletchford/systemless/commit/a2d65cf367a3f2fc09afb914353fe0624c25be1b))
+* **macintosh:** centralize OS Queue Utilities operations evaluation ([8107118](https://github.com/benletchford/systemless/commit/81071183b446def153e721aec62760fc54836856))
+* **macintosh:** centralize script inspection, character scanning, and carbon bindings ([#4683](https://github.com/benletchford/systemless/issues/4683)) ([04b46e8](https://github.com/benletchford/systemless/commit/04b46e82675438a8a3fbc2918b269388bf8a31f7))
+* **macintosh:** centralize Script Manager variable and system direction evaluation ([c3358c6](https://github.com/benletchford/systemless/commit/c3358c6bfc93b1612ddbdf095d15c4498945769e))
+* **macintosh:** centralize script parsing, run finding, and portion text evaluation ([c1866f0](https://github.com/benletchford/systemless/commit/c1866f0b654ae9c6c5263855a291520b6ac486d3))
+* **macintosh:** centralize string and text truncation evaluation ([#4572](https://github.com/benletchford/systemless/issues/4572)) ([a0afd9b](https://github.com/benletchford/systemless/commit/a0afd9b7c0931e6a1be083b1b0820043089bd90f))
+* **macintosh:** centralize string comparison and ordering evaluation ([#4583](https://github.com/benletchford/systemless/issues/4583)) ([32d3eb9](https://github.com/benletchford/systemless/commit/32d3eb93eb898f1731ba655b1f9e3a363f8aee52))
+* **macintosh:** centralize string formatting, intl table selection, and carbon bindings ([#4695](https://github.com/benletchford/systemless/issues/4695)) ([6de5b26](https://github.com/benletchford/systemless/commit/6de5b268205fd6537fed0ce52fcd35481df2e55b))
+* **macintosh:** centralize styled line break evaluation ([#4606](https://github.com/benletchford/systemless/issues/4606)) ([bae95fa](https://github.com/benletchford/systemless/commit/bae95fa5c6575bda477541a90bd33640b731fe72))
+* **macintosh:** centralize text ordering, string comparison, and international utilities ([#4666](https://github.com/benletchford/systemless/issues/4666)) ([22c450f](https://github.com/benletchford/systemless/commit/22c450fe5b8437bcec0249ed4aab7b95586900bc))
+* **macintosh:** centralize text replacement and visible length evaluation ([#4630](https://github.com/benletchford/systemless/issues/4630)) ([7a50f84](https://github.com/benletchford/systemless/commit/7a50f84e4377c66dea0c52a05e0f95ccb7df4bc2))
+* **macintosh:** centralize text selection and word boundary evaluation ([fdfcda8](https://github.com/benletchford/systemless/commit/fdfcda8291db9f81502e9f03d3af1f0594b585d9))
+
 ## [0.96.0](https://github.com/benletchford/systemless/compare/v0.95.2...v0.96.0) (2026-10-11)
 
 
