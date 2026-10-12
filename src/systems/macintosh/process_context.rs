@@ -11,6 +11,7 @@ use crate::display::{
     default_arrow_cursor_image, default_display_gamma, standard_mac_8bpp_clut, CursorImage,
     DisplayGamma,
 };
+use crate::drag_manager::DragManager;
 use crate::event_queue::{EventQueue, QueuedEvent};
 use crate::guest_call::{ExecutionMenuViews, SharedGuestCallStack};
 use crate::guest_procedure::GuestProcedure;
@@ -1787,6 +1788,34 @@ impl std::ops::Deref for SharedProcessCollectionManager {
         &self.0
     }
 }
+/// Drag records and callback descriptions share only through explicit process
+/// attachment. Ordinary clones remain detached snapshots.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SharedProcessDragManager(SharedProcessValue<DragManager>);
+
+impl SharedProcessDragManager {
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(self.0.shared_handle())
+    }
+
+    pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&DragManager) -> R) -> R {
+        self.0.with_ref(operation)
+    }
+
+    pub(crate) fn with_mut<R>(&self, operation: impl FnOnce(&mut DragManager) -> R) -> R {
+        self.0.with_mut(operation)
+    }
+
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        self.0.attach_to(&process_state.0, DragManager::is_pristine);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        self.0.ptr_eq(&other.0)
+    }
+}
+
 #[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessCursorState(SharedProcessValue<ProcessCursorState>);
 /// Host pacing snapshot for the wrapping Macintosh clock.
@@ -9944,6 +9973,7 @@ pub(crate) struct ProcessContext {
     control_manager: SharedProcessControlManager,
     list_manager: SharedProcessListManager,
     collection_manager: SharedProcessCollectionManager,
+    drag_manager: SharedProcessDragManager,
     text_edit_manager: SharedProcessTextEditManager,
     dialog_text: SharedProcessDialogText,
     cursor_state: SharedProcessCursorState,
@@ -10116,6 +10146,7 @@ impl Default for ProcessContext {
             control_manager: SharedProcessControlManager::default(),
             list_manager: SharedProcessListManager::default(),
             collection_manager: SharedProcessCollectionManager::default(),
+            drag_manager: SharedProcessDragManager::default(),
             text_edit_manager: SharedProcessTextEditManager::default(),
             dialog_text: SharedProcessDialogText::default(),
             cursor_state: SharedProcessCursorState::default(),
@@ -10375,6 +10406,10 @@ impl ProcessContext {
 
     pub(crate) fn attach_list_manager(&self, adapter: &mut SharedProcessListManager) {
         adapter.attach_to(&self.list_manager);
+    }
+
+    pub(crate) fn attach_drag_manager(&self, adapter: &mut SharedProcessDragManager) {
+        adapter.attach_to(&self.drag_manager);
     }
 
     pub(crate) fn attach_collection_manager(&self, adapter: &mut SharedProcessCollectionManager) {
@@ -14381,6 +14416,29 @@ mod tests {
                 .flatten(),
             Some(b"Detached".to_vec())
         );
+    }
+
+    #[test]
+    fn drag_managers_share_only_within_explicitly_attached_process() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessDragManager::default();
+        let mut native = SharedProcessDragManager::default();
+        context.attach_drag_manager(&mut classic);
+        context.attach_drag_manager(&mut native);
+        assert!(classic.ptr_eq(&native));
+        let reference = classic.with_mut(|manager| manager.new_drag().unwrap());
+        native.with_mut(|manager| manager.get_mut(reference).unwrap().attributes = 7);
+        assert_eq!(classic.with_ref(|manager| manager.get(reference).unwrap().attributes), 7);
+        let detached = native.clone();
+        detached.with_mut(|manager| manager.get_mut(reference).unwrap().attributes = 9);
+        assert_eq!(native.with_ref(|manager| manager.get(reference).unwrap().attributes), 7);
+        let mut other = SharedProcessDragManager::default();
+        ProcessContext::default().attach_drag_manager(&mut other);
+        assert!(!native.ptr_eq(&other));
+        assert!(other.with_ref(|manager| manager.get(reference).is_err()));
+        classic.with_mut(|manager| manager.dispose(reference).unwrap());
+        assert!(native.with_ref(|manager| manager.get(reference).is_err()));
+        assert_eq!(detached.with_ref(|manager| manager.get(reference).unwrap().attributes), 9);
     }
 
     #[test]

@@ -64,6 +64,7 @@ use crate::process_context::{
     ProcessWorkingDirectory, SharedProcessAppleEventDescriptors, SharedProcessAppleEventHandlers,
     SharedProcessAppleEventLaunchState, SharedProcessCallbackScheduling,
     SharedProcessCollectionManager, SharedProcessControlManager, SharedProcessCursorState,
+    SharedProcessDragManager,
     SharedProcessDialogText, SharedProcessDisplayClut, SharedProcessDisplayGamma,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessGraphicsDevice,
     SharedProcessGraphicsPort, SharedProcessInputState, SharedProcessMemoryManager,
@@ -111,6 +112,7 @@ mod dispatch_appearance;
 mod dispatch_appletalk;
 mod dispatch_bit_transfers;
 mod dispatch_collection;
+mod dispatch_drag;
 mod dispatch_color_tables;
 mod dispatch_control;
 mod dispatch_core_foundation;
@@ -162,6 +164,7 @@ mod dispatch_time;
 mod dispatch_toolbox;
 mod dispatch_window;
 pub(crate) use dispatch_collection::PpcCollectionCallbackState;
+pub(crate) use dispatch_drag::{PpcDragHilite, PpcDragTrackingState};
 use dispatch_control::*;
 pub(crate) use dispatch_dialog::PpcDialogCallbackState;
 use dispatch_dialog::*;
@@ -342,6 +345,7 @@ pub use dispatch_apple_events::PpcAppleEventCompatibilityOperation;
 pub use dispatch_event::PpcEventPollOperation;
 
 pub use dispatch_collection::PpcCollectionOperation;
+pub use dispatch_drag::PpcDragOperation;
 
 /// Backward-compatible native-loader name for the shared event record.
 pub type PpcQueuedEvent = QueuedEvent;

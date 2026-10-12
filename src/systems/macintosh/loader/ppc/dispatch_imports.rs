@@ -26,6 +26,7 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) stdc_qsort_stack: &'a mut Vec<PpcQsortState>,
     pub(crate) dialog_callback_stack: &'a mut Vec<PpcDialogCallbackState>,
     pub(crate) collection_callback_stack: &'a mut Vec<PpcCollectionCallbackState>,
+    pub(crate) drag_tracking_stack: &'a mut Vec<PpcDragTrackingState>,
     pub(crate) apple_events: &'a mut PpcAppleEventState,
     pub(crate) cfm_connections: &'a mut Vec<PpcCfmConnection>,
     pub(crate) cfm_library_fragments: &'a mut Vec<PpcCfmLibraryFragment>,
@@ -113,6 +114,7 @@ pub(crate) struct PpcDispatchContext<'a> {
     pub(crate) scrap: &'a mut PpcScrapState,
     pub(crate) list_manager: &'a mut ProcessListManagerState,
     pub(crate) collections: &'a SharedProcessCollectionManager,
+    pub(crate) drag_manager: &'a SharedProcessDragManager,
     pub(crate) input: PpcInputSnapshot,
     pub(crate) event_queue: &'a mut EventQueue,
     pub(crate) draw_sprocket: &'a mut PpcDrawSprocketState,
@@ -142,6 +144,7 @@ pub(crate) fn dispatch_supported_import(
         stdc_qsort_stack,
         dialog_callback_stack,
         collection_callback_stack,
+        drag_tracking_stack,
         apple_events,
         cfm_connections,
         cfm_library_fragments,
@@ -228,10 +231,19 @@ pub(crate) fn dispatch_supported_import(
         scrap,
         list_manager,
         collections,
+        drag_manager,
         input,
         event_queue,
         draw_sprocket,
     } = context;
+    if matches!(binding.dispatcher_target,
+        PpcImportDispatcherTarget::CloseWindow |
+        PpcImportDispatcherTarget::LegacyWindow(PpcLegacyWindowOperation::DisposeWindow)) {
+        if toolbox_startup.drag_hilite.as_ref().is_some_and(|hilite| hilite.port == cpu.gpr[3]) {
+            dispatch_drag::hide_drag_hilite(memory, toolbox_startup);
+        }
+        drag_manager.with_mut(|manager| manager.remove_window(cpu.gpr[3]));
+    }
     let _menu_root = (matches!(
         binding.dispatcher_target,
         PpcImportDispatcherTarget::MenuSelect | PpcImportDispatcherTarget::PopUpMenuSelect
@@ -1059,6 +1071,49 @@ pub(crate) fn dispatch_supported_import(
         return Some(action);
     }
 
+    if let PpcImportDispatcherTarget::Drag(operation @ (PpcDragOperation::ShowHilite | PpcDragOperation::HideHilite)) = binding.dispatcher_target {
+        let reference = cpu.gpr[3];
+        let result = drag_manager.with_ref(|manager| manager.get(reference).map(|_| ()));
+        let result = result.and_then(|_| {
+            if operation == PpcDragOperation::ShowHilite {
+                dispatch_drag::show_drag_hilite(memory, gworlds, *current_gworld,
+                    quickdraw_hilite_colors, toolbox_startup, reference, cpu.gpr[4], cpu.gpr[5] as u8 != 0)
+            } else {
+                if toolbox_startup.drag_hilite.as_ref().is_some_and(|hilite| hilite.reference == reference) {
+                    dispatch_drag::hide_drag_hilite(memory, toolbox_startup);
+                }
+                Ok(())
+            }
+        });
+        return Some(PpcImportAction::Return(ppc_i16_result(result.err().unwrap_or(0))));
+    }
+    if binding.dispatcher_target == PpcImportDispatcherTarget::Drag(PpcDragOperation::Dispose)
+        && toolbox_startup.drag_hilite.as_ref().is_some_and(|hilite| hilite.reference == cpu.gpr[3]) {
+        dispatch_drag::hide_drag_hilite(memory, toolbox_startup);
+    }
+    if binding.dispatcher_target == PpcImportDispatcherTarget::Drag(PpcDragOperation::WaitMouseMoved) {
+        let initial = ((cpu.gpr[3] >> 16) as u16 as i16, cpu.gpr[3] as u16 as i16);
+        return Some(match crate::drag_manager::wait_mouse_moved(initial, (input.mouse_v, input.mouse_h), input.mouse_button) {
+            crate::drag_manager::MouseMoveWaitResult::Moved => PpcImportAction::Return(1),
+            crate::drag_manager::MouseMoveWaitResult::Released => PpcImportAction::Return(0),
+            crate::drag_manager::MouseMoveWaitResult::Waiting => PpcImportAction::Yield(u64::MAX),
+        });
+    }
+    if binding.dispatcher_target == PpcImportDispatcherTarget::Drag(PpcDragOperation::SetImage) {
+        let result = dispatch_drag::set_drag_image(cpu, memory, drag_manager, gworlds, screen_clut);
+        return Some(PpcImportAction::Return(ppc_i16_result(
+            result.err().unwrap_or(0),
+        )));
+    }
+    if binding.dispatcher_target == PpcImportDispatcherTarget::Drag(PpcDragOperation::Track) {
+        return Some(dispatch_drag::track_drag(cpu, memory, drag_manager, drag_tracking_stack,
+            gworlds, window_list, input, event_queue, screen_clut));
+    }
+
+    if let Some(action) = dispatch_drag::dispatch_drag_import(binding, cpu, memory, drag_manager) {
+        return Some(action);
+    }
+
     if let Some(action) = dispatch_collection::dispatch_collection_import(
         dispatch_collection::PpcCollectionDispatchContext {
             binding,
@@ -1308,6 +1363,9 @@ pub(crate) fn dispatch_supported_import(
     }
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::Drag(_) => {
+            unreachable!("drag imports return through dispatch_drag_import")
+        }
         PpcImportDispatcherTarget::Collection(_) => {
             unreachable!("collection imports return through dispatch_collection_import")
         }

@@ -353,3 +353,18 @@ fn hle_import_runner_handles_sys_environs() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3] as i32, i32::from(PPC_PARAM_ERR));
 }
+
+#[test]
+fn gestalt_drag_reports_native_manager_and_images_without_floating_extensions() {
+    let mut loaded =
+        load_pef_application(&synthetic_pef_with_library_import(b"CarbonLib", b"Gestalt")).unwrap();
+    let output = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(output, vec![0xA5; 4]);
+    loaded.cpu.gpr[3] = u32::from_be_bytes(*b"drag");
+    loaded.cpu.gpr[4] = output;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(output), Some(13));
+}

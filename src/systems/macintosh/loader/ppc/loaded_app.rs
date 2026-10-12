@@ -30,6 +30,7 @@ pub struct PpcLoadedApp {
     pub(crate) stdc_qsort_stack: Vec<PpcQsortState>,
     pub(crate) dialog_callback_stack: Vec<PpcDialogCallbackState>,
     pub(crate) collection_callback_stack: Vec<PpcCollectionCallbackState>,
+    pub(crate) drag_tracking_stack: Vec<PpcDragTrackingState>,
     pub(crate) pending_file_completions: VecDeque<(u32, u32)>,
     /// A callback that exhausted its current runner slice, in queue-front
     /// order, with the stack pointer of its private callback frame.
@@ -116,6 +117,7 @@ pub struct PpcLoadedApp {
     pub scrap: PpcScrapState,
     pub(crate) list_manager: PpcListManagerState,
     pub(crate) collections: SharedProcessCollectionManager,
+    pub(crate) drag_manager: SharedProcessDragManager,
     pub halt_pc: u32,
     pub import_trap_base: u32,
     pub import_count: u32,

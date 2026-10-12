@@ -3296,6 +3296,16 @@ impl FixtureRunner {
         self.native.application().is_some()
     }
 
+    /// A retained Drag Manager wait has finished its callbacks and drawn feedback.
+    /// Present this state before another CPU slice resumes tracking and erases it.
+    pub fn is_drag_presentation_wait(&self) -> bool {
+        self.native.application().is_some_and(|app| {
+            app.drag_tracking_stack
+                .last()
+                .is_some_and(|state| state.is_presentation_wait(app.cpu.pc))
+        })
+    }
+
     /// Cap the per-WaitNextEvent-call sleep tick advance in headless mode.
     /// None (default) preserves the legacy drain-all behavior. Some(n) caps
     /// each WNE sleep to at most n tick advances, mirroring GUI mode.
@@ -8013,7 +8023,22 @@ impl FixtureRunner {
         let (vbl_probes, timer_probes) = if exited_via_ppc_exit_to_shell {
             (Vec::new(), Vec::new())
         } else {
-            let tick_advance = self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
+            // A retained drag wait consumes idle time through the next VBL,
+            // independently of the frontend's CPU batch size. Keep executed
+            // instruction accounting above unchanged, and use the ordinary
+            // tick callback path below for this elapsed wait time.
+            let drag_wait = foreground
+                && still_running
+                && tick_cap.is_some_and(|cap| self.guest_tick() < cap)
+                && ppc_app.drag_tracking_stack.last().is_some_and(|state| {
+                    state.is_presentation_wait(ppc_app.cpu.pc)
+                });
+            let clock_cycles = if drag_wait {
+                cycles.max(self.tick_budget.max(1) as u64)
+            } else {
+                cycles
+            };
+            let tick_advance = self.advance_ticks_for_ppc_cycles(clock_cycles, tick_cap);
             let native_callbacks_allowed = ppc_app.toolbox_startup.execution.calls().current_task_is_running()
                 && ppc_app.toolbox_startup.execution.calls().current_task() == ppc_task
                 && ExecutionTaskId::from_thread_id(

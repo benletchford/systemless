@@ -5,6 +5,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
     Collection(PpcCollectionOperation),
+    Drag(PpcDragOperation),
     InstallExceptionHandler,
     NewPtr { clear: bool },
     DisposePtr,
@@ -1394,6 +1395,28 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "MPDeleteSemaphore") => PpcImportDispatcherTarget::MpDeleteSemaphore,
         ("InterfaceLib", "MPSignalSemaphore") => PpcImportDispatcherTarget::MpSignalSemaphore,
         ("InterfaceLib", "MPWaitOnSemaphore") => PpcImportDispatcherTarget::MpWaitOnSemaphore,
+        ("DragLib" | "InterfaceLib", "GetDragItemReferenceNumber") => PpcImportDispatcherTarget::Drag(PpcDragOperation::GetItemReference),
+        ("DragLib" | "InterfaceLib", "GetDragItemBounds") => PpcImportDispatcherTarget::Drag(PpcDragOperation::GetItemBounds),
+        ("DragLib" | "InterfaceLib", "SetDragItemBounds") => PpcImportDispatcherTarget::Drag(PpcDragOperation::SetItemBounds),
+        ("DragLib" | "InterfaceLib", "InstallTrackingHandler") => PpcImportDispatcherTarget::Drag(PpcDragOperation::InstallTrackingHandler),
+        ("DragLib" | "InterfaceLib", "InstallReceiveHandler") => PpcImportDispatcherTarget::Drag(PpcDragOperation::InstallReceiveHandler),
+        ("DragLib" | "InterfaceLib", "RemoveTrackingHandler") => PpcImportDispatcherTarget::Drag(PpcDragOperation::RemoveTrackingHandler),
+        ("DragLib" | "InterfaceLib", "RemoveReceiveHandler") => PpcImportDispatcherTarget::Drag(PpcDragOperation::RemoveReceiveHandler),
+        ("DragLib" | "InterfaceLib", "GetDragAttributes") => PpcImportDispatcherTarget::Drag(PpcDragOperation::GetAttributes),
+        ("DragLib" | "InterfaceLib", "GetDragMouse") => PpcImportDispatcherTarget::Drag(PpcDragOperation::GetMouse),
+        ("DragLib" | "InterfaceLib", "SetDragImage") => PpcImportDispatcherTarget::Drag(PpcDragOperation::SetImage),
+        ("DragLib" | "InterfaceLib", "TrackDrag") => PpcImportDispatcherTarget::Drag(PpcDragOperation::Track),
+        ("DragLib" | "InterfaceLib", "WaitMouseMoved") => PpcImportDispatcherTarget::Drag(PpcDragOperation::WaitMouseMoved),
+        ("DragLib" | "InterfaceLib", "GetDropLocation") => PpcImportDispatcherTarget::Drag(PpcDragOperation::GetDropLocation),
+        ("DragLib" | "InterfaceLib", "ShowDragHilite") => PpcImportDispatcherTarget::Drag(PpcDragOperation::ShowHilite),
+        ("DragLib" | "InterfaceLib", "HideDragHilite") => PpcImportDispatcherTarget::Drag(PpcDragOperation::HideHilite),
+        ("DragLib" | "InterfaceLib", "NewDrag") => PpcImportDispatcherTarget::Drag(PpcDragOperation::New),
+        ("DragLib" | "InterfaceLib", "DisposeDrag") => PpcImportDispatcherTarget::Drag(PpcDragOperation::Dispose),
+        ("DragLib" | "InterfaceLib", "AddDragItemFlavor") => PpcImportDispatcherTarget::Drag(PpcDragOperation::AddFlavor),
+        ("DragLib" | "InterfaceLib", "CountDragItems") => PpcImportDispatcherTarget::Drag(PpcDragOperation::CountItems),
+        ("DragLib" | "InterfaceLib", "GetFlavorDataSize") => PpcImportDispatcherTarget::Drag(PpcDragOperation::GetFlavorSize),
+        ("DragLib" | "InterfaceLib", "GetFlavorFlags") => PpcImportDispatcherTarget::Drag(PpcDragOperation::GetFlavorFlags),
+        ("DragLib" | "InterfaceLib", "GetFlavorData") => PpcImportDispatcherTarget::Drag(PpcDragOperation::GetFlavorData),
         ("ColMgrLib", "getCollectionMgrLibVersion") => {
             PpcImportDispatcherTarget::Collection(PpcCollectionOperation::Version)
         }

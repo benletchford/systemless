@@ -253,6 +253,7 @@ impl PpcLoadedApp {
         let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
         let mut dialog_callback_stack = std::mem::take(&mut self.dialog_callback_stack);
         let mut collection_callback_stack = std::mem::take(&mut self.collection_callback_stack);
+        let mut drag_tracking_stack = std::mem::take(&mut self.drag_tracking_stack);
         let mut pending_file_completions = std::mem::take(&mut self.pending_file_completions);
         let mut apple_events = std::mem::take(&mut self.apple_events);
         let mut standalone_cfm = if process_cfm.is_none() {
@@ -360,6 +361,7 @@ impl PpcLoadedApp {
         let mut scrap = std::mem::take(&mut self.scrap);
         let list_manager = std::mem::take(&mut self.list_manager);
         let collections = self.collections.shared_handle();
+        let drag_manager = self.drag_manager.shared_handle();
         let mut draw_sprocket = std::mem::take(&mut self.draw_sprocket);
         let mut handled_import_count = 0u32;
         let mut last_import_index = None;
@@ -1834,6 +1836,7 @@ impl PpcLoadedApp {
                                             stdc_qsort_stack: &mut stdc_qsort_stack,
                                             dialog_callback_stack: &mut dialog_callback_stack,
                                             collection_callback_stack: &mut collection_callback_stack,
+                                            drag_tracking_stack: &mut drag_tracking_stack,
                                             apple_events: &mut apple_events,
                                             cfm_connections: &mut cfm_connections,
                                             cfm_library_fragments: &mut cfm_library_fragments,
@@ -1922,6 +1925,7 @@ impl PpcLoadedApp {
                                             scrap: &mut scrap,
                                             list_manager,
                                             collections: &collections,
+                                            drag_manager: &drag_manager,
                                             input,
                                             event_queue,
                                             draw_sprocket: &mut draw_sprocket,
@@ -2322,6 +2326,7 @@ impl PpcLoadedApp {
         self.stdc_qsort_stack = stdc_qsort_stack;
         self.dialog_callback_stack = dialog_callback_stack;
         self.collection_callback_stack = collection_callback_stack;
+        self.drag_tracking_stack = drag_tracking_stack;
         self.pending_file_completions = pending_file_completions;
         self.apple_events = apple_events;
         self.cfm = standalone_cfm;

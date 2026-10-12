@@ -632,7 +632,7 @@ impl Machine {
                 running = !self.runner.is_halted();
             }
 
-            if steps == 0 {
+            if steps == 0 || self.runner.is_drag_presentation_wait() {
                 break;
             }
         }
