@@ -732,6 +732,35 @@ impl super::TrapDispatcher {
             })
     }
 
+    #[cfg(feature = "wgpu-demo")]
+    pub(crate) fn comparison_menu_snapshot(&mut self, bus:&MacMemoryBus) -> Vec<crate::menu_model::ComparisonMenu> {
+        use crate::menu_model::{ComparisonMenu,ComparisonMenuRow};
+        let snapshot=self.guest_menu_snapshot(bus);
+        let Some(list)=self.current_menu_list(bus) else {return Vec::new();};
+        let bar_height=bus.read_word(addr::MBAR_HEIGHT) as i16;
+        if bar_height<=0 {return Vec::new();}
+        let (_,_,width,height,_)=self.get_screen_params();
+        let metrics=crate::quickdraw::text::get_font_metrics(0,12);
+        list.regular_title_regions().into_iter().filter_map(|region| {
+            let pointer=bus.read_long(region.handle);
+            if pointer==0 || !self.menu_uses_standard_definition(bus,pointer) || bus.read_byte(pointer+15)==0x14 {return None;}
+            let id=bus.read_word(pointer) as i16;
+            let menu=snapshot.menus.iter().find(|m|m.id==id && m.visible_in_menu_bar)?.clone();
+            let raw=menu_items_from_memory(bus,region.handle)?;
+            if raw.items.iter().any(|item|item.icon!=0 || item.style!=0 || hierarchical_menu_id(item.command,item.mark).is_some()) {return None;}
+            let layout=standard_pull_down_menu_layout(bus.read_word(pointer+2) as i16,bus.read_word(pointer+4) as i16,(width,height),region.left,bar_height)?;
+            let bounds=(layout.top,layout.left,layout.top+layout.height,layout.left+layout.width);
+            let mut top=layout.content_top;
+            let rows=raw.items.iter().map(|item|{
+                let height=if item.text==b"-" {STANDARD_MENU_SEPARATOR_HEIGHT}else{StandardMenuIconKind::None.row_height(QuickDrawTextStyle::from_bits(0))};
+                let geometry=standard_menu_item_layout((bounds.1,bounds.3),(top,height),StandardMenuIconKind::None,item.mark!=0,(metrics.ascent,metrics.descent),true);
+                let row=ComparisonMenuRow{top,height,text_origin:(geometry.text_left,geometry.text_baseline),command_left:geometry.command_left,mark_left:geometry.mark_left,separator_y:geometry.separator_y};top+=height;row
+            }).collect();
+            if top>bounds.2 {return None;}
+            Some(ComparisonMenu{handle:region.handle,pointer,menu,title_bounds:(0,region.left,bar_height,region.right),title_origin:(region.title_origin(),crate::menu_manager::standard_menu_bar_title_baseline(bar_height,metrics.ascent,metrics.descent)),bounds,rows})
+        }).collect()
+    }
+
     /// Validate and stage a host-native selection, returning a point inside
     /// the first visible title.  The frontend injects that point as a normal
     /// mouse click so the application follows its ordinary event loop.

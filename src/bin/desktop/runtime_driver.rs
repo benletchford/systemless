@@ -219,6 +219,10 @@ impl GuiDriver {
             }
             GuiCommand::KeyDown { key, character } => runner.push_key_down(key, character),
             GuiCommand::KeyUp { key, character } => runner.push_key_up(key, character),
+            #[cfg(feature = "wgpu-demo")]
+            GuiCommand::ComparisonMenu { expected, item } => {
+                if runner.comparison_menu_snapshot().contains(&expected) {runner.select_guest_menu_item(expected.menu.id,item);}
+            }
             GuiCommand::Menu { menu, item } => {
                 runner.select_guest_menu_item(menu, item);
             }
@@ -312,7 +316,7 @@ impl GuiDriver {
             runner.composite_frame();
         }
         #[cfg(feature = "wgpu-demo")]
-        { output.dialog = runner.comparison_dialog_snapshot(); }
+        { output.dialog = runner.comparison_dialog_snapshot(); output.menus = runner.comparison_menu_snapshot(); }
         let _timing = FramePhaseTimer::new("owned frame export");
         let mode = runner.dispatcher().screen_mode;
         let learning_crop = learning_crop || self.snapshot_screen_mode != Some(mode);

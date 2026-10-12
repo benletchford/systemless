@@ -18,10 +18,20 @@ Build the master-based demo; validate EV gameplay, pilot text/selection/caret, c
 
 ## Master-based evidence
 
-Build with `cargo build --locked --profile ci-test --no-default-features --features wgpu-demo,jit --bin wgpu-comparison`. The resolved normal dependency graph contains no GPUI packages. The demo target passed 34 tests covering the shared production owner, command mailbox, mouse-transition sequencing, save-store and frame-cache behavior.
+Build with `cargo build --locked --profile ci-test --no-default-features --features wgpu-demo,jit --bin wgpu-comparison`. The resolved normal dependency graph contains no GPUI packages. The demo target passed 37 tests covering the shared production owner, command mailbox, mouse-transition sequencing, save-store and frame-cache behavior.
 
 `wgpu-comparison GAME --offscreen --output DIR --script INPUTS.json --updates 920` exercises the same owner thread without a native surface. The initial EV image and corrected pilot image under `/tmp/wgpu-master-evidence` were inspected. Twenty-four ordinary mouse/key transitions opened New Pilot, typed `WGPU Pilot`, and checked Strict Play. The guest snapshot confirms text `WGPU Pilot`, selection `[10,10]`, visible caret and checkbox value `1`. A prior script swapped the first click’s horizontal/vertical coordinates and reached Preferences; that run is explicitly not a passing pilot test. Media and saves are isolated under `/tmp/wgpu-master-media`.
 
-This is functional evidence only. Custom menu presentation, native IME/accessibility, complete live instrumentation and equivalent comparison runs remain unfinished. The initial live window/input path has compiled but has not been qualified on an unlocked desktop.
+This is functional evidence only. Native IME/accessibility, complete live instrumentation and equivalent comparison runs remain unfinished. The initial live window/input path has compiled but has not been qualified on an unlocked desktop.
 
 The follow-up run `/tmp/wgpu-master-evidence/pilot-cancel-menu` captured the initial selected name (`[0,12]`), the edited/checked dialog, and a successful raw Cancel click leaving no dialog. A raw File-title click did not open a menu; menu interaction is therefore not qualified and needs an explicit presenter/command path. Producer hashes are recorded in `/tmp/wgpu-master-evidence/producer.json`. Master’s original `systemless` binary also passes `cargo check` after the shared-helper extraction.
+
+## Qualified standard-menu path
+
+The new presenter projects flat, unstyled, icon-free standard menu panes from guest MenuList title cells and MenuInfo dimensions, using the same Menu Manager row/anchor helpers as the guest painter. Unsupported definitions and rows remain on the framebuffer path. Both live and scripted inputs pass through the same presenter; commands carry the full expected snapshot back to the owner, which checks it against current guest state before calling master’s existing `select_guest_menu_item` route.
+
+Three added tests cover selection routing, changed-menu cancellation and Escape/key-up consumption. `/tmp/wgpu-master-evidence/menu-quit` shows the actual GPU menu and highlighted Quit row. Five scripted mouse actions selected File → Quit; EV executed trap `$A9F4` (`QuitApplication`) and the production owner stopped normally after observation 771. This supersedes the earlier unsuccessful raw-title probe. It is still headless interaction evidence, not native display latency.
+
+## Master-based gameplay
+
+`/tmp/wgpu-master-evidence/flight` completed sixteen raw mouse/key transitions over 2900 publications in 48.44 seconds: New Pilot, Return acceptance of pilot/ship dialogs, Enter Ship, departure, held thrust and turning. Final spaceflight and HUD were visually inspected. The actual GPU readback is byte-for-byte RGB identical to the separately exported guest image at scale 1. The run used master’s production audio/save/runtime path with isolated media and saves. This confirms framebuffer fidelity for the sampled gameplay scene, not native frame delivery or a performance advantage.

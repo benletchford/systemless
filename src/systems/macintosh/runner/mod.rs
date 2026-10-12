@@ -2997,6 +2997,12 @@ impl FixtureRunner {
     /// Native and web frontends can use this without exposing mutable Toolbox
     /// internals.
     #[cfg(feature = "wgpu-demo")]
+    pub fn comparison_menu_snapshot(&mut self) -> Vec<crate::menu_model::ComparisonMenu> {
+        if self.native.application().is_some() {return Vec::new();}
+        self.dispatcher.comparison_menu_snapshot(&self.bus)
+    }
+
+    #[cfg(feature = "wgpu-demo")]
     pub fn comparison_dialog_snapshot(&self) -> Option<ComparisonDialog> {
         if self.native.application().is_some() { return None; }
         self.dispatcher.comparison_dialog_snapshot(&self.bus)

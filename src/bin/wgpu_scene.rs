@@ -99,7 +99,9 @@ pub fn controls(dialog: Option<&ComparisonDialog>) -> Vec<Quad> {
         };
         match i.kind {
             4 => {
-                if i.number == d.default_item { rect(&mut out,(r.0-4,r.1-4,r.2+4,r.3+4),clip,WHITE); }
+                if i.number == d.default_item {
+                    rect(&mut out, (r.0 - 4, r.1 - 4, r.2 + 4, r.3 + 4), clip, WHITE);
+                }
                 rect(&mut out, r, clip, if i.pressed { BLACK } else { WHITE });
                 border(&mut out, r, clip, ink);
                 if i.number == d.default_item {
@@ -197,6 +199,99 @@ pub fn controls(dialog: Option<&ComparisonDialog>) -> Vec<Quad> {
                 }
             }
             _ => {}
+        }
+    }
+    out
+}
+
+pub fn menu(state: &crate::menu::MenuPresenter) -> Vec<Quad> {
+    let mut out = Vec::new();
+    let Some(m) = &state.open else {
+        return out;
+    };
+    let clip = (0, 0, i16::MAX, i16::MAX);
+    rect(&mut out, m.title_bounds, clip, BLACK);
+    label(
+        &mut out,
+        &m.menu.title,
+        (0, 12),
+        m.title_origin.0,
+        m.title_origin.1,
+        m.title_bounds,
+        None,
+        WHITE,
+    );
+    rect(&mut out, m.bounds, clip, WHITE);
+    border(&mut out, m.bounds, clip, BLACK);
+    for (item, row) in m.menu.items.iter().zip(&m.rows) {
+        if item.separator {
+            rect(
+                &mut out,
+                (
+                    row.separator_y,
+                    m.bounds.1 + 1,
+                    row.separator_y + 1,
+                    m.bounds.3 - 1,
+                ),
+                m.bounds,
+                [0.5, 0.5, 0.5, 1.],
+            );
+            continue;
+        }
+        let selected = item.number == state.selected;
+        if selected {
+            rect(
+                &mut out,
+                (
+                    row.top,
+                    m.bounds.1 + 1,
+                    row.top + row.height,
+                    m.bounds.3 - 1,
+                ),
+                m.bounds,
+                BLACK,
+            );
+        }
+        let ink = if selected {
+            WHITE
+        } else if item.enabled {
+            BLACK
+        } else {
+            [0.5, 0.5, 0.5, 1.]
+        };
+        label(
+            &mut out,
+            &item.text,
+            (0, 12),
+            row.text_origin.0,
+            row.text_origin.1,
+            m.bounds,
+            None,
+            ink,
+        );
+        if item.checked {
+            label(
+                &mut out,
+                "✓",
+                (0, 12),
+                row.mark_left,
+                row.text_origin.1,
+                m.bounds,
+                None,
+                ink,
+            );
+        }
+        if let Some(key) = item.key_equivalent {
+            label(
+                &mut out,
+                &format!("⌘{}", key.to_ascii_uppercase()),
+                (0, 12),
+                row.command_left,
+                row.text_origin.1,
+                m.bounds,
+                None,
+                ink,
+            );
         }
     }
     out

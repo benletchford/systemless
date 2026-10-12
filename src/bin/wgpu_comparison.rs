@@ -18,6 +18,8 @@ mod desktop_save_store;
 mod frame_metrics;
 #[path = "desktop/frame_snapshot.rs"]
 mod frame_snapshot;
+#[path = "wgpu_menu.rs"]
+mod menu;
 #[cfg(target_os = "macos")]
 #[path = "desktop/native_bundle.rs"]
 mod native_bundle;
@@ -51,6 +53,8 @@ struct Args {
     game: PathBuf,
     #[arg(long)]
     offscreen: bool,
+    #[arg(long, requires = "offscreen")]
+    expect_exit: bool,
     #[arg(long)]
     output: PathBuf,
     #[arg(long, default_value_t = 920)]
@@ -94,10 +98,13 @@ fn main() {
     )
     .unwrap();
     let mut renderer = pollster::block_on(renderer::Renderer::offscreen(800, 600));
+    let mut guest_exit = false;
     let mut observed = 0;
     let mut next = 0;
+    let mut input_delay=0u64;
     let mut samples = Vec::new();
     let mut argb = Vec::new();
+    let mut menus = menu::MenuPresenter::default();
     let started = Instant::now();
     while observed < args.updates {
         events
@@ -105,6 +112,10 @@ fn main() {
             .expect("guest publication timeout");
         let update = owner.mailbox.poll();
         if let runtime_mailbox::RuntimeStatus::Stopped { error, .. } = update.status {
+            if args.expect_exit && error.is_none() {
+                guest_exit = true;
+                break;
+            }
             panic!("guest stopped early: {error:?}");
         }
         if let Some(frame) = update.frame {
@@ -119,18 +130,21 @@ fn main() {
             if renderer.size() != size {
                 renderer.resize(size[0], size[1]);
             }
+            menus.reconcile(&frame.menus, frame.dialog.is_some());
             let now = Instant::now();
-            renderer.draw(
-                w.into(),
-                h.into(),
-                &pixels,
-                &scene::controls(frame.dialog.as_ref()),
-            );
+            let mut quads = scene::controls(frame.dialog.as_ref());
+            quads.extend(scene::menu(&menus));
+            renderer.draw(w.into(), h.into(), &pixels, &quads);
             samples.push(now.elapsed().as_secs_f64() * 1000.);
             while let Some(a) = actions
                 .get(next)
-                .filter(|a| a["after_updates"].as_u64().unwrap() <= observed)
+                .filter(|a| a["after_updates"].as_u64().unwrap()+input_delay <= observed)
             {
+                let ready=(!a["wait_for_no_dialog"].as_bool().unwrap_or(false)||frame.dialog.is_none())
+                    && a["wait_for_dialog_text"].as_str().is_none_or(|text|frame.dialog.as_ref().is_some_and(|d|d.items.iter().any(|i|i.text.contains(text))));
+                if !ready {assert!(observed<a["after_updates"].as_u64().unwrap()+input_delay+600,"guest readiness timeout: {a}");break;}
+                input_delay=observed-a["after_updates"].as_u64().unwrap();
+                eprintln!("[comparison-input] observed={observed} action={a}");
                 use runtime_protocol::GuiCommand::*;
                 let n = |k: &str| a[k].as_i64().unwrap();
                 let cmd = match a["type"].as_str().unwrap() {
@@ -156,15 +170,23 @@ fn main() {
                     },
                     other => panic!("unsupported action {other}"),
                 };
-                owner.mailbox.send(cmd).unwrap();
+                if let Some(cmd) = menus.route(cmd, &frame.menus, frame.dialog.is_some()) {
+                    owner.mailbox.send(cmd).unwrap();
+                }
                 next += 1;
             }
             if args.capture_at.contains(&observed) {
                 renderer.save_capture(&args.output.join(format!("frame-{observed}.png")));
-                std::fs::write(args.output.join(format!("dialog-{observed}.json")),serde_json::to_vec_pretty(&frame.dialog).unwrap()).unwrap();
+                std::fs::write(
+                    args.output.join(format!("dialog-{observed}.json")),
+                    serde_json::to_vec_pretty(&frame.dialog).unwrap(),
+                )
+                .unwrap();
             }
             if observed == args.updates {
                 renderer.save_capture(&args.output.join("frame.png"));
+                let rgba:Vec<u8>=argb.iter().flat_map(|p|[(p>>16) as u8,(p>>8) as u8,*p as u8,(p>>24) as u8]).collect();
+                image::save_buffer(args.output.join("guest.png"),&rgba,w.into(),h.into(),image::ColorType::Rgba8).unwrap();
                 std::fs::write(
                     args.output.join("dialog.json"),
                     serde_json::to_vec_pretty(&frame.dialog).unwrap(),
@@ -175,11 +197,15 @@ fn main() {
         }
     }
     assert_eq!(next, actions.len(), "not all scripted inputs delivered");
+    assert!(
+        !args.expect_exit || guest_exit,
+        "guest did not exit after menu selection"
+    );
     owner.mailbox.request_shutdown();
     while !owner.join_finished().unwrap() {
         events.recv_timeout(Duration::from_secs(1)).ok();
     }
-    std::fs::write(args.output.join("report.json"),serde_json::to_vec_pretty(&serde_json::json!({"scope":"master execution owner; headless GPU framebuffer presentation","observed":observed,"completed_actions":next,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"submit_cpu_ms":samples,"gpu_pass_ms":renderer.gpu_samples()})).unwrap()).unwrap();
+    std::fs::write(args.output.join("report.json"),serde_json::to_vec_pretty(&serde_json::json!({"scope":"master execution owner; headless GPU framebuffer presentation","observed":observed,"completed_actions":next,"guest_exit":guest_exit,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"submit_cpu_ms":samples,"gpu_pass_ms":renderer.gpu_samples()})).unwrap()).unwrap();
 }
 
 fn run_live(args: Args) {
@@ -199,14 +225,34 @@ fn run_live(args: Args) {
         pointer: (i16, i16),
         keys: std::collections::BTreeMap<u8, u8>,
         closing: bool,
+        menus: menu::MenuPresenter,
     }
     impl Live {
-        fn send(&self, c: runtime_protocol::GuiCommand) {
+        fn send(&mut self, c: runtime_protocol::GuiCommand) {
+            let menu_was_open=self.menus.open.is_some();
+            let c = if let Some(f) = &self.frame {
+                self.menus.route(c, &f.menus, f.dialog.is_some())
+            } else {
+                Some(c)
+            };
+            if !menu_was_open && self.menus.open.is_some() {
+                for (key,character) in std::mem::take(&mut self.keys) {
+                    let _=self.owner.mailbox.send(runtime_protocol::GuiCommand::KeyUp{key,character});
+                }
+            }
+            let Some(c) = c else {
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+                return;
+            };
             if let Err(e) = self.owner.mailbox.send(c) {
                 eprintln!("input rejected: {e:?}");
             }
         }
         fn release(&mut self) {
+            self.menus.open = None;
+            self.menus.selected = 0;
             for (key, character) in std::mem::take(&mut self.keys) {
                 self.send(runtime_protocol::GuiCommand::KeyUp { key, character });
             }
@@ -237,6 +283,7 @@ fn run_live(args: Args) {
         fn user_event(&mut self, e: &ActiveEventLoop, _: ()) {
             let update = self.owner.mailbox.poll();
             if let Some(frame) = update.frame {
+                self.menus.reconcile(&frame.menus, frame.dialog.is_some());
                 if let Some(old) = self.frame.replace(frame) {
                     self.owner.mailbox.recycle(old);
                 }
@@ -314,12 +361,9 @@ fn run_live(args: Args) {
                         let mut pixels = Vec::new();
                         f.screen.render_argb(&mut pixels);
                         let bytes: Vec<_> = pixels.iter().flat_map(|p| p.to_le_bytes()).collect();
-                        r.draw(
-                            w.into(),
-                            h.into(),
-                            &bytes,
-                            &scene::controls(f.dialog.as_ref()),
-                        );
+                        let mut quads = scene::controls(f.dialog.as_ref());
+                        quads.extend(scene::menu(&self.menus));
+                        r.draw(w.into(), h.into(), &bytes, &quads);
                     }
                 }
                 _ => {}
@@ -357,6 +401,7 @@ fn run_live(args: Args) {
         pointer: (0, 0),
         keys: Default::default(),
         closing: false,
+        menus: menu::MenuPresenter::default(),
     };
     event_loop.run_app(&mut app).unwrap();
 }

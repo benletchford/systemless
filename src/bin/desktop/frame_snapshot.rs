@@ -10,6 +10,8 @@ use systemless::trap::dispatch::ScreenCopyBitsRect;
 pub(super) struct GuiFrame {
     #[cfg(feature = "wgpu-demo")]
     pub dialog: Option<systemless::runner::ComparisonDialog>,
+    #[cfg(feature = "wgpu-demo")]
+    pub menus: Vec<systemless::menu_model::ComparisonMenu>,
     pub generation: u64,
     pub sequence: u64,
     pub display_generation: u64,

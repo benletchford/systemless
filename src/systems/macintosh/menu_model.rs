@@ -100,3 +100,26 @@ mod tests {
         assert_eq!(snapshot(true, parent).selectable_result(-120, 2), None);
     }
 }
+
+/// Qualified standard menu geometry copied from live guest MenuList/MenuInfo records.
+#[cfg(feature = "wgpu-demo")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComparisonMenu {
+    pub handle: u32,
+    pub pointer: u32,
+    pub menu: GuestMenu,
+    pub title_bounds: (i16,i16,i16,i16),
+    pub title_origin: (i16,i16),
+    pub bounds: (i16,i16,i16,i16),
+    pub rows: Vec<ComparisonMenuRow>,
+}
+#[cfg(feature = "wgpu-demo")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComparisonMenuRow {
+    pub top: i16,
+    pub height: i16,
+    pub text_origin: (i16,i16),
+    pub command_left: i16,
+    pub mark_left: i16,
+    pub separator_y: i16,
+}
