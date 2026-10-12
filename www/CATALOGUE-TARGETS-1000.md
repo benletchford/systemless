@@ -152,7 +152,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 107 | 295 | Brick Attack | Original 1.0: PPC only | P | [Original non-profit grant; exact package/forks; New Game exit held](CATALOGUE-SOURCES.md#brick-attack-10--primary-107-original-ppc-shareware-intake); [#4689](https://github.com/benletchford/systemless/issues/4689) |
 | 108 | 296 | Bubbles | Original 1.3: PPC verified | P | [Original Internet-distribution grant; DragLib startup held](CATALOGUE-SOURCES.md#bubbles-13--primary-108-original-ppc-shareware-intake); [#4692](https://github.com/benletchford/systemless/issues/4692) |
 | 109 | 297 | Airburst | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
-| 110 | 298 | DX Ball | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
+| 110 | 298 | DX Ball | Original Classic: PPC only | U | [Exact shareware archive; fifteen gameplay checks, hosting rights held](CATALOGUE-SOURCES.md#dx-ball--primary-110-original-classic-shareware-intake); [#4696](https://github.com/benletchford/systemless/issues/4696) |
 | 111 | 299 | 3-D Ultra Pinball: The Lost Continent | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-the-lost-continent) |
 | 112 | 300 | 3-D Ultra Pinball: Thrillride | PPC era; verify | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-thrillride) |
 | 113 | 301 | Pro Pinball: Big Race USA | PPC era; verify | D | [Demo index](https://classicmacdemos.com/pro-pinball-big-race-usa) |
