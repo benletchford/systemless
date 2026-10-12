@@ -1,5 +1,51 @@
 # GPUI Kit system-interface coverage
 
+### Stable completed-snapshot publication for EV (2026-10-12)
+
+Worker snapshots now publish at scheduled boundaries after guest work, rather
+than immediately at variable completion times followed by an idle wait.
+Overruns publish immediately and advance to the next future boundary without
+catch-up bursts. Guest clock advancement, command handling and audio servicing
+stay on their existing paths. Profiling excludes deliberate pre-publication
+waiting from measured conversion/publication work. Ready snapshots can wait
+for the remaining frame period; this may add publication latency compared
+with immediate completion, so physical/live input latency remains unqualified.
+
+Opt-in shared-slot diagnostics (`SYSTEMLESS_GPUI_PROFILE`) record publication
+sequence, coalesced snapshots and queue age in both async live and synchronous
+capture consumers. Live reports aggregate120 consumptions; captures expose
+per-observation data and separately time snapshot cloning/pre-render work.
+Normal live operation avoids extra diagnostic reads/timers. Eleven mailbox
+tests pass, including paired sync/async consumption identities, coalescing and
+disabled profiling. Seven cadence tests pass variable work, immediate overruns
+and phase recovery. The profiling-enabled live publication regression passes
+without advancing the poll clock.
+
+The phase baseline EV run passes14 actions/2900 observations/no readiness
+delays (48.59s). Steady flight queue age p95 is0.018ms, clone p95/max
+0.053/0.786ms and compositor p95/max0.347/0.866ms. Completed-render gap
+p95/max nevertheless reaches27.799/31.858ms: the largest consumption gap
+is31.811ms followed by only0.311ms pre-render/render work. Consecutive worker
+starts do not measure the variation in publication after guest work.
+
+The paced candidate passes the same workflow (48.63s), with steady flight
+gap mean/p95/max16.667/16.804/18.484ms. Queue age p95 is0.017ms; compositor
+CPU p95/max0.440/0.751ms. Its last consumed sequence is2913, with13 earlier
+coalesced snapshots; steady flight has no coalescing. Both full scenes were
+inspected, preserving original custom HUD/text and hidden menus. Maxima of
+worker timing cover reported120-cycle windows, not the final partial batch.
+
+All15 existing worker regressions pass (200.69s), covering document/modal/
+Standard File rapid commits, notification/cursor lifecycle, shortcuts/close,
+shutdown persistence and separate-process guest reads. Optimized capture and
+ordinary/public-library builds pass. Single adjacent runs have uncontrolled
+host load; peak process footprint226673672 bytes does not establish a causal
+memory change. Offscreen results support the narrower publication-pacing
+improvement; native display/GPU completion, physical input latency, host audio
+and broad production qualification remain open. Ignored immutable evidence:
+`target/gpui-qualification/escape-velocity/delivery-phase-flight-review.json`
+and `stable-publication-flight-review.json`.
+
 ### EV current pacing and publication-driven composed capture (2026-10-12)
 
 An optimized c106ad49 producer completes original EV flight:14 actions,2900

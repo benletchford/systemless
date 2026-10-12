@@ -17,6 +17,39 @@ struct State<T> {
     waiter: Option<(u64, Waker)>,
     next_waiter: u64,
     closed: bool,
+    delivery: Option<DeliveryProfile>,
+}
+
+/// Shared slot consumption evidence, not GPU completion or display latency.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DeliverySnapshot {
+    pub sequence: u64,
+    pub coalesced_since_previous: u64,
+    pub queued_ms: f64,
+}
+
+#[derive(Default)]
+struct DeliveryProfile {
+    published: u64,
+    consumed: u64,
+    queued_at: Option<std::time::Instant>,
+    last: Option<DeliverySnapshot>,
+}
+
+impl<T> State<T> {
+    fn take_value(&mut self) -> Option<T> {
+        let value = self.value.take()?;
+        if let Some(profile) = &mut self.delivery {
+            let queued_at = profile.queued_at.take().expect("profiled publication timestamp");
+            profile.last = Some(DeliverySnapshot {
+                sequence: profile.published,
+                coalesced_since_previous: profile.published - profile.consumed - 1,
+                queued_ms: queued_at.elapsed().as_secs_f64() * 1000.,
+            });
+            profile.consumed = profile.published;
+        }
+        Some(value)
+    }
 }
 
 impl<T> Default for Latest<T> {
@@ -29,6 +62,8 @@ impl<T> Default for Latest<T> {
                 waiter: None,
                 next_waiter: 0,
                 closed: false,
+                delivery: std::env::var_os("SYSTEMLESS_GPUI_PROFILE").is_some()
+                    .then(DeliveryProfile::default),
             }),
         }
     }
@@ -44,6 +79,10 @@ impl<T> Latest<T> {
                 drop(state);
                 return false;
             }
+            if let Some(profile) = &mut state.delivery {
+                profile.published = profile.published.checked_add(1).expect("publication identity exhausted");
+                profile.queued_at = Some(std::time::Instant::now());
+            }
             let previous = state.value.replace(value);
             (previous, state.waiter.take())
         };
@@ -58,7 +97,7 @@ impl<T> Latest<T> {
 
     /// Offscreen drivers consume the same publication slot synchronously.
     pub(crate) fn take(&self) -> Option<T> {
-        self.state.lock().unwrap().value.take()
+        self.state.lock().unwrap().take_value()
     }
 
     /// Capture drivers wait on the same slot without a periodic sleep. The
@@ -68,7 +107,11 @@ impl<T> Latest<T> {
         let state = self.state.lock().unwrap();
         let (mut state, _) = self.ready.wait_timeout_while(state, timeout,
             |state| state.value.is_none() && !state.closed).unwrap();
-        state.value.take()
+        state.take_value()
+    }
+
+    pub(crate) fn last_delivery(&self) -> Option<DeliverySnapshot> {
+        self.state.lock().unwrap().delivery.as_ref().and_then(|profile| profile.last)
     }
 
     /// One renderer awaits the next snapshot; no periodic timer is required.
@@ -121,7 +164,7 @@ impl<T> Future for Next<'_, T> {
         let waker = cx.waker().clone();
         let previous = {
             let mut state = self.mailbox.state.lock().unwrap();
-            if let Some(value) = state.value.take() {
+            if let Some(value) = state.take_value() {
                 return Poll::Ready(Some(value));
             }
             if state.closed {
@@ -166,6 +209,30 @@ mod tests {
         fn wake(self: Arc<Self>) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn delivery_identity_pairs_coalescing_with_both_consumers() {
+        let mailbox = Latest::default();
+        mailbox.state.lock().unwrap().delivery = Some(DeliveryProfile::default());
+        mailbox.publish(1); mailbox.publish(2);
+        assert_eq!(mailbox.take_timeout(std::time::Duration::ZERO), Some(2));
+        let first = mailbox.last_delivery().unwrap();
+        assert_eq!((first.sequence, first.coalesced_since_previous), (2, 1));
+        assert!(first.queued_ms.is_finite() && first.queued_ms >= 0.);
+        let waker = Waker::from(Arc::new(Count::default()));
+        let mut next = mailbox.next();
+        assert_eq!(Pin::new(&mut next).poll(&mut Context::from_waker(&waker)), Poll::Pending);
+        mailbox.publish(3);
+        assert_eq!(Pin::new(&mut next).poll(&mut Context::from_waker(&waker)), Poll::Ready(Some(3)));
+        let last = mailbox.last_delivery().unwrap();
+        assert_eq!((last.sequence, last.coalesced_since_previous), (3, 0));
+        drop(mailbox.publisher()); assert!(!mailbox.publish(4));
+        assert_eq!(mailbox.last_delivery().unwrap().sequence, 3);
+        let disabled = Latest::default();
+        disabled.state.lock().unwrap().delivery = None;
+        disabled.publish(5); assert_eq!(disabled.take(), Some(5));
+        assert!(disabled.last_delivery().is_none());
     }
 
     #[test]

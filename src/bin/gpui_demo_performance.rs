@@ -48,14 +48,17 @@ impl WorkerProfiler {
     pub fn enabled(&self) -> bool {
         self.enabled
     }
-    pub fn sleep(&mut self, requested: Duration) {
+    pub fn sleep_before_publication(&mut self, timing: &mut FrameTiming, requested: Duration) {
         if !self.enabled {
             super::cadence::sleep_worker(requested);
             return;
         }
         let start = Instant::now();
         super::cadence::sleep_worker(requested);
-        self.previous_wait = Some((requested.as_secs_f64() * 1000., start.elapsed().as_secs_f64() * 1000.));
+        let elapsed = start.elapsed();
+        self.previous_wait = Some((requested.as_secs_f64() * 1000., elapsed.as_secs_f64() * 1000.));
+        // Keep deliberate waiting out of the conversion/publication work phase.
+        if let Some(previous) = timing.previous.as_mut() { *previous += elapsed; }
     }
     pub fn begin(&mut self) -> FrameTiming {
         let now = self.enabled.then(Instant::now);

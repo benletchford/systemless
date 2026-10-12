@@ -1084,7 +1084,7 @@ mod desktop {
                 }
                 timing.checkpoint();
                 let frame = frame.map(|frame| (frame.width, frame.height, gpui_pixels(frame.pixels)));
-                updates.publish(Update {
+                let update = Update {
                     identity: identity.clone(),
                     clipboard_export: clipboard.export.clone(),
                     text_commit_rejection: text_commit_rejection.clone(),
@@ -1109,7 +1109,12 @@ mod desktop {
                         "{architecture} · {}",
                         if running { "Running" } else { "Guest stopped" }
                     ),
-                });
+                };
+                if running {
+                    profiler.sleep_before_publication(&mut timing,
+                        worker_cadence.publication_delay(Instant::now()));
+                }
+                updates.publish(update);
                 timing.checkpoint();
                 profiler.record(timing);
                 if !running {
@@ -1118,9 +1123,6 @@ mod desktop {
                     }
                     return Ok(());
                 }
-                // Preserve the original schedule after an overslept host timer;
-                // skip missed deadlines instead of accumulating wake-up delay.
-                profiler.sleep(worker_cadence.worker_delay(Instant::now()));
             }
         });
         let error = match result {
@@ -1420,8 +1422,29 @@ mod desktop {
             updates: Arc<Updates>,
             cx: &mut Context<Self>,
         ) -> Self {
+            let profile_delivery = std::env::var_os("SYSTEMLESS_GPUI_PROFILE").is_some();
             let updates_task = cx.spawn(async move |this, cx| {
+                let mut delivery_samples = Vec::new();
                 while let Some(update) = updates.next().await {
+                    if let Some(delivery) = profile_delivery.then(|| updates.last_delivery()).flatten() {
+                        delivery_samples.push(delivery);
+                        if delivery_samples.len() == 120 {
+                            let first = delivery_samples.first().unwrap().sequence;
+                            let last = delivery_samples.last().unwrap().sequence;
+                            let coalesced: u64 = delivery_samples.iter()
+                                .map(|sample| sample.coalesced_since_previous).sum();
+                            let mut ages: Vec<_> = delivery_samples.iter().map(|sample| sample.queued_ms).collect();
+                            let mean = ages.iter().sum::<f64>() / ages.len() as f64;
+                            ages.sort_by(f64::total_cmp);
+                            eprintln!("[GPUI-HANDOFF] {}", serde_json::json!({
+                                "consumed_snapshots": ages.len(), "first_sequence": first, "last_sequence": last,
+                                "coalesced_snapshots": coalesced, "queued_mean_ms": mean,
+                                "queued_p95_ms": ages[ages.len() * 95 / 100], "queued_max_ms": ages[ages.len() - 1],
+                                "scope": "Shared slot publication to live consumption; no GPU completion or native display latency."
+                            }));
+                            delivery_samples.clear();
+                        }
+                    }
                     if this
                         .update(cx, |this, cx| {
                             this.apply_guest_update(update, true, None, cx);
@@ -6914,16 +6937,20 @@ mod desktop {
             let pending_update = updates.take_timeout(observation_timeout
                 .saturating_sub(start.elapsed()).min(Duration::from_millis(100)));
             if let Some(update) = pending_update {
+                let consumed_at = Instant::now();
                 assert!(update.frame.is_some(), "application worker failed: {}", update.status);
                 observations += 1;
+                let delivery = updates.last_delivery();
                 if render_after.is_some_and(|after| observations >= after) {
                     let (width, height, _) = update.frame.as_ref().unwrap();
                     let (visual, view, window) = compositor.get_or_insert_with(||
                         new_compositor(worker.0.clone(), *width, *height, scale));
                     // A test-only clone retains the raw snapshot for evidence and
                     // scripted inputs. Exclude that copy from renderer timing.
+                    let clone_start = Instant::now();
                     let render_update = update.clone();
                     let render_start = Instant::now();
+                    let clone_ms = render_start.duration_since(clone_start).as_secs_f64() * 1000.;
                     visual.update_window((*window).into(), |_, window, cx| view.update(cx, |demo, cx| {
                         demo.host_active = Some(true);
                         demo.apply_guest_update(render_update, false, Some(window), cx);
@@ -6931,7 +6958,13 @@ mod desktop {
                     visual.run_until_parked();
                     rendered_updates.push(serde_json::json!({ "observed_worker_update": observations,
                         "elapsed_ms": start.elapsed().as_secs_f64() * 1000.,
-                        "render_ms": render_start.elapsed().as_secs_f64() * 1000. }));
+                        "render_ms": render_start.elapsed().as_secs_f64() * 1000.,
+                        "publication_sequence": delivery.map(|value| value.sequence),
+                        "coalesced_since_previous": delivery.map(|value| value.coalesced_since_previous),
+                        "publication_to_consumption_ms": delivery.map(|value| value.queued_ms),
+                        "consumed_elapsed_ms": consumed_at.duration_since(start).as_secs_f64() * 1000.,
+                        "pre_render_ms": render_start.duration_since(consumed_at).as_secs_f64() * 1000.,
+                        "snapshot_clone_ms": clone_ms }));
                 }
                 while let Some(entry) = scheduled_inputs.get(next_scheduled_input) {
                     if observations < entry.after_updates.saturating_add(input_delay)
@@ -7100,6 +7133,7 @@ mod desktop {
             "ui_inventory": ui_inventory,
             "headless_render_after_updates": render_after,
             "headless_update_wait": "publication notification on shared Latest slot",
+            "handoff_scope": "Opt-in shared live/capture slot sequence and publication-to-consumption time; no GPU completion or native display latency.",
             "headless_render_samples": rendered_updates,
             "headless_render_scope": "Shared live update consumption and Demo compositor with offscreen Metal scene rendering. Renderer CPU time excludes the harness snapshot clone, screenshot readback and GPU completion latency; observed-update cadence includes harness work. No native display presentation or physical-input latency qualification.",
             "input_after_updates": input_after, "release_after_updates": release_after,

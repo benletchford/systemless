@@ -62,6 +62,24 @@ impl Cadence {
         delay
     }
 
+    /// Deliver completed work on a stable phase. Overruns publish immediately;
+    /// advance to the next future boundary without replaying missed frames.
+    pub fn publication_delay(&mut self, now: Instant) -> Duration {
+        if now >= self.next {
+            let remainder = now.duration_since(self.next).as_nanos() % self.period.as_nanos();
+            let remaining = self.period - Duration::new(
+                (remainder / 1_000_000_000) as u64,
+                (remainder % 1_000_000_000) as u32,
+            );
+            self.next = now + remaining;
+            Duration::ZERO
+        } else {
+            let delay = self.next.duration_since(now);
+            self.next += self.period;
+            delay
+        }
+    }
+
     pub fn worker_delay(&mut self, now: Instant) -> Duration {
         // A worker that finishes slightly late has already delivered its
         // update. Do not add a whole idle interval to that overrun. Recover
@@ -79,6 +97,28 @@ impl Cadence {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn variable_work_finishes_at_stable_publication_boundaries() {
+        let start = Instant::now(); let ms = Duration::from_millis;
+        let mut cadence = Cadence::new(start, ms(16)); let mut now = start;
+        for (index, work) in [1, 12, 2, 14, 1, 8].into_iter().cycle().take(120).enumerate() {
+            now += ms(work);
+            now += cadence.publication_delay(now);
+            assert_eq!(now.duration_since(start), ms((index as u64 + 1) * 16));
+        }
+    }
+
+    #[test]
+    fn publication_overruns_are_immediate_then_recover_without_bursts() {
+        let start = Instant::now(); let ms = Duration::from_millis;
+        let mut cadence = Cadence::new(start, ms(16));
+        assert_eq!(cadence.publication_delay(start + ms(17)), Duration::ZERO);
+        assert_eq!(cadence.publication_delay(start + ms(18)), ms(14));
+        assert_eq!(cadence.publication_delay(start + ms(101)), Duration::ZERO);
+        assert_eq!(cadence.publication_delay(start + ms(102)), ms(10));
+        assert_eq!(cadence.publication_delay(start + ms(112)), ms(16));
+    }
+
     #[test]
     fn worker_deadlines_follow_each_guest_tick_without_duplicate_ticks() {
         let start = Instant::now();
