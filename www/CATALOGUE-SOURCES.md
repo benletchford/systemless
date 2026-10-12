@@ -1541,9 +1541,43 @@ pixel checks pass with the pointer outside the canvas. Captures inspected.
 [Catalogue #4613](https://github.com/benletchford/systemless/pull/4613) merged at
 `d06cd35e3aebf07165658b8e8c3352598543ef7a`, with all final checks passing on
 `8ed7ca559d4491710f02e32febdd9fb12ec52109`. Original archive and actual content-only
-screenshot are promoted; launch is approved. Human release and public replay
-remain pending. Broader dungeon progression, combat, saving and audio remain
-unverified. No qualified-live increment or agent release action.
+screenshot are promoted; launch is approved. Human v0.97.0 is published, but
+direct public Rogue pacing fails at about 27.4 guest ticks/sec against the
+unchanged minimum of 50. Public qualification remains held.
+
+### Rogue browser pacing candidate — 13 October 2026
+
+[Compatibility #4755](https://github.com/benletchford/systemless/pull/4755),
+tested head `de839eb9a90e4f1a3c8e7b8f4d7044fab3abdd07`, admits null,
+non-sleeping WaitNextEvent calls to exact CPU/memory identity proofs and retains
+bounded observations between the browser's existing 64-instruction slices.
+Host input/task changes and frame composition revoke unfinished observations;
+sleeping calls and delivered events reject the proof. CPU speed, slice length,
+time budget, original archive and pacing gate remain unchanged. All nine checks
+passed on that exact head; the ordinary squash merge is
+`1440d1368794ee60ffcd82043f072438416bbc80`.
+
+All 80 idle tests and 17 event tests pass. Final native replay passes eight
+movement pixels plus two full-image regression comparisons: 151 frontend /
+751 guest ticks, zero exhausted frames, both captures pixel-identical to the
+preserved Systemless baseline. The immutable native binary SHA-256 is
+`b2254088fc7aed31eb9e32623a46baa53804ca3a5afd854213c9e79b60dc1a1a`.
+This is a regression comparison, not an independent emulator oracle.
+
+Two fresh private Chrome 151 / Worker / Canvas2D runs fetch the unchanged hosted
+original HQX at default 25 MHz and pass at 60.00356 / 60.04722 guest ticks/sec,
+with no console errors. Both pass eight measured player-pixel checks and exact
+one-cell-left glyph matching on different dungeon layouts; captures inspected.
+The fixed browser glyph reference comes from the preserved human v0.97.0
+public replay. These private frontend bridges do not qualify the public site.
+
+The earlier native-only candidate still failed browser pacing at 26.441; its
+failure is retained. Galactic Frontiers still reaches Turn 2 but fails at
+30.51525 on the revised candidate, so [#4747](https://github.com/benletchford/systemless/issues/4747)
+stays open. The fix is merged; Rogue requires a human-triggered release and
+direct public pacing/gameplay verification. Broader dungeon progression,
+combat, saving and audio remain unverified. No qualified-live increment or
+agent release action.
 
 
 ## MacCheckers 1.0 — primary slot 779
