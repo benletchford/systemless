@@ -9,6 +9,7 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Puzzle
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -28,8 +29,7 @@ compatibility:
       reader. Original Finder flags are not recovered by that reference; original archive
       bytes remain unchanged. Full games, saves and audio fidelity remain unverified. The
       later verified source below fixes browser drag feedback and wait-clock pacing.
-      Production archive promotion, hosted-archive replay and launch approval remain
-      pending.
+      Subsequent verification below completes asset promotion and launch approval.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4692
   - date: "2026-10-12"
@@ -60,9 +60,27 @@ compatibility:
       No console errors; unchanged minimum 50 guest ticks/sec requirement passes.
       Browser-font reference is from a previously inspected replay, not an independent
       Macintosh emulator. All runs use a local fixture; production promotion, hosted-archive
-      replay, launch approval and human release remain pending. Launch stays disabled.
+      replay and approval are superseded by the hosted verification below.
     status: playable
     evidence: https://github.com/benletchford/systemless/pull/4722
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: 0bd171b0cd1fab9878501f213ac40868a36cfc34
+    architecture: ppc
+    environment: >-
+      Launch approved after Chrome Worker replay using the real managed archive with
+      no local archive fixture. Private preview app resources were served at the
+      production origin through a test bridge; asset requests and production CORS
+      remained unchanged. This is pre-release validation, not a live-site replay.
+      Current merged compatibility code uses m68k 0.14.4 / PPC 0.7.2. Canvas2D passes
+      all ten held-image, source-hole, removed-line and score-50 checks at 60.039 guest
+      ticks/sec. WebGL compositor captures confirm held image, drops, five-ball removal
+      and score 50 at 60.081. Both have no console errors and pass the unchanged
+      minimum 50 ticks/sec. Managed archive and screenshot return HTTP 200 with exact
+      pinned sizes and SHA-256 values. Human release and public replay remain pending;
+      full-game, save and audio fidelity remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/4719
 runtime:
   executable_path: Bubbles 1.3/Bubbles1.3/Bubbles 1.3/Bubbles PPC
   screen_depth: 8
@@ -97,9 +115,9 @@ artifacts:
       Actual game is PPC PEF/cfrg with no CODE; installer/registration CODE does not
       prove a 68K game slice. Gratis preservation delivery separately from emulator code.
       Original $10 shareware score saving and GameField Manager locks remain; no key or
-      patch. Temporary maintainer transfer URL serves the same checksum-pinned original
-      bytes for CI because the original host rejects GitHub downloads with 403. Normal
-      promotion replaces it with immutable managed storage. Edition year derives from
+      patch. A temporary maintainer transfer supplied the same checksum-pinned original
+      bytes to CI because the original host rejected GitHub downloads with 403. Normal
+      promotion stored immutable managed assets; the transfer was then shut down. Edition year derives from
       the original PEF build timestamp, 1998-08-01, not a claim about the game's first
       release.
 - id: gameplay-screenshot
@@ -135,7 +153,7 @@ cell reachable through free spaces. Five matching balls in a line disappear and
 add to your score; new balls arrive after other turns.
 
 Ball movement, translucent drag feedback, line removal and scoring are verified
-in native and local browser tests. Browser launching is pending approval. The original unregistered
+in native and browser tests of the hosted archive. The original unregistered
 shareware restrictions remain: score saving and GameField Manager require
 registration.
 
