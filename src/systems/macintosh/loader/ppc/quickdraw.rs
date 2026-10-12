@@ -2777,6 +2777,20 @@ pub(crate) fn ppc_pixmap_bits_from_record(record: PpcGWorldRecord) -> Option<Ppc
     })
 }
 
+// Imaging With QuickDraw, CopyBits: the high two rowBytes bits mark
+// CGrafPort.portBits, whose baseAddr slot holds a PixMapHandle. The proxy
+// may be copied onto the stack and need not belong to a tracked GWorld.
+fn ppc_is_color_port_bitmap_proxy(memory: &mut PpcSectionMem, bits: u32) -> bool {
+    bits.checked_add(4)
+        .and_then(|flags| memory.read_u16_be(flags))
+        .is_some_and(|flags| flags & 0xc000 == 0xc000)
+}
+
+fn ppc_color_port_bitmap_proxy_pixmap(memory: &mut PpcSectionMem, bits: u32) -> Option<u32> {
+    let handle = memory.read_u32_be(bits).filter(|handle| *handle != 0)?;
+    memory.read_u32_be(handle).filter(|pixmap| *pixmap != 0)
+}
+
 pub(crate) fn ppc_resolve_pixmap_bits(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -2849,6 +2863,14 @@ pub(crate) fn ppc_resolve_pixmap_bits_with_provenance(
                         && i16::try_from(record.width).is_ok(),
                 })
             });
+    }
+    if ppc_is_color_port_bitmap_proxy(memory, bits_ptr) {
+        let pixmap = ppc_color_port_bitmap_proxy_pixmap(memory, bits_ptr)?;
+        return ppc_read_pixmap_bits(memory, pixmap).map(|bits| PpcResolvedPixMapBits {
+            bits,
+            guest_bounds: true,
+            authoritative_bounds: true,
+        });
     }
     if let Some(bits) = ppc_read_pixmap_bits(memory, bits_ptr) {
         return Some(PpcResolvedPixMapBits {
@@ -3125,6 +3147,9 @@ pub(crate) fn ppc_resolve_pixmap_ctable_handle_with_provenance(
         None
     });
     let pixmap = tracked_pixmap.or_else(|| {
+        if ppc_is_color_port_bitmap_proxy(memory, bits_ptr) {
+            return ppc_color_port_bitmap_proxy_pixmap(memory, bits_ptr);
+        }
         let direct_is_pixmap = bits_ptr
             .checked_add(4)
             .and_then(|row_bytes| memory.read_u16_be(row_bytes))
