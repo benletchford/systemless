@@ -47,6 +47,26 @@ compatibility:
       audio fidelity remain unverified; human release and public replay are pending.
     status: playable
     evidence: https://github.com/benletchford/systemless/pull/4675
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: v0.97.0
+    architecture: 68k
+    environment: >-
+      Direct public Chrome 151 Worker/WebGL replay on systemless.org/mahjong/,
+      desktop viewport 1000 by 900, default 25 MHz and configured depth 8. Actual
+      deployed app and managed original archive, with no frontend or archive fixture
+      interception. Normal DEMO, Command-N, three computer players, deal and player
+      discard produce computer replies and a visible North-wind meld. All sixteen
+      unchanged setup/deal/discard pixel assertions pass; compositor captures inspected.
+      Pacing is 61.013 guest ticks/sec above the unchanged minimum 50, with no console
+      errors. Actual browser archive response is HTTP 200, 201942 bytes and the exact
+      original SHA-256. Published v0.97.0 deployment and all six native package jobs
+      succeed. An initial small-viewport probe compared guest coordinates against a
+      scaled screenshot; desktop capture at the intended assertion scale fixes that
+      test-method mismatch without changing expected pixels. Full hands/games, saves
+      and audio fidelity remain unverified; original trial restrictions remain intact.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4674
 runtime:
   executable_path: Mahjong 1.0.5/Mahjong 1.0.5/Mahjong 1.0.5 INT
   screen_depth: 8
