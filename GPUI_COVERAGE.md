@@ -1,5 +1,42 @@
 # GPUI Kit system-interface coverage
 
+### Rebased optimized EV flight and font compositor qualification (2026-10-12)
+
+Current producer `cffe18c270ceaa1cbe0383dea6fdbaa64e6e17fc` builds with the default
+optimized ci-test profile, one job and locked/offline dependencies (6m15s).
+Original EV colour68k completes14 held-input actions and2900 worker observations
+in49.70s, with zero readiness delays. The full1600x1200 composed flight image was
+inspected: ship, stars, asteroids, original HUD and bottom instructions remain;
+the800x600 guest scene uses scale1/origin0 and its menu stays hidden.
+Application-drawn text retains guest rendering.
+
+The614 final-flight scene samples have CPU mean/p95/max0.344/0.476/1.495ms.
+The last120 worker intervals have mean/p95/max16.64/22.51/24.49ms. Maximum RSS is
+139542528 bytes and peak footprint193332232 bytes (184.38MiB). Scene time excludes
+harness copying, screenshot readback and GPU completion; worker intervals include
+sleep and scheduling. These are current offscreen worker/compositor observations,
+not presented FPS, physical-input latency or proof that visible gameplay stutter
+is fixed. No matched current optimized before/after comparison is claimed.
+Producer, media/script and output hashes are retained in the ignored
+`target/gpui-qualification/escape-velocity/cffe18c2-optimized-flight-review.json`.
+
+The same optimized producer passes64 refreshed bold/italic plain-field composed
+captures across mono68k, colour68k, PPC8/PPC16, scales0.75/1/1.5/2 and active/
+suspended states. All64 field crops were inspected on8 CPU/face contact sheets;
+font intent, native wrapping and bounds remain stable. Selection stays0..14,
+with highlighting hidden on suspend. Saved states, output dimensions and smooth
+raster support were checked; hashes/review limits are in the ignored
+`target/gpui-qualification/plain-face-rendering/rebased-cffe18c2/matrix-results.json`.
+This is shared-compositor evidence rather than an independent Macintosh font
+oracle or physical host interaction. Other faces/backgrounds/transfer modes,
+caret/editing/scrolling matrices and complete modal ownership remain open.
+
+Rebased shared TextEdit and window-manager suites also pass44/137 tests (7.35s/
+9.81s), covering native measurements/editing and affected lifecycle behavior.
+The fresh locked/offline public library check without default features passes
+(46.84s). Native display/input/IME/accessibility, host audio continuity, saves/
+restart and broader release qualification remain unfinished; no broad gate closes.
+
 ### Refreshed master integration and regression qualification (2026-10-12)
 
 All639 branch commits were rebased onto master52e9a346. Fourteen conflicts were
@@ -24,8 +61,9 @@ master refresh. Its immutable executable and producer hashes were retained in
 the ignored EV qualification directory. No flight measurement was run with that
 executable, and it does not qualify the rebased source. Earlier composed images
 and native editing tests retain their original producer hashes. Rebased frontend
-visual/input matrices and optimized EV gameplay evidence remain to be gathered;
-the overall release gates remain open.
+visual/input matrices and optimized EV gameplay evidence were pending at this
+checkpoint; the newer optimized results are recorded above. Overall release
+gates remain open.
 
 ### Plain-face composed rendering and native editing qualification (2026-10-12)
 
