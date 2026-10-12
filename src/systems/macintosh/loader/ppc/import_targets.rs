@@ -1213,6 +1213,8 @@ pub enum PpcImportDispatcherTarget {
     ISpDevicesDeactivate,
     ISpConfigure,
     GlideSstQueryBoards,
+    QtBeginFullScreen,
+    QtEndFullScreen,
     QtEnterMovies,
     QtExitMovies,
     QtGetMoviesError,
@@ -1355,7 +1357,8 @@ pub(crate) fn dispatcher_target_for_import(
             | "StopMovie" | "GetMoviesError" | "MoviesTask" | "StartMovie" | "IsMovieDone"
             | "MCDoAction" | "GoToBeginningOfMovie" | "GetMovieTimeScale"
             | "GetMovieDuration" | "LoadMovieIntoRam" | "CloseMovieFile"
-            | "NewMovieFromFile" | "NewMovieController" | "OpenMovieFile",
+            | "NewMovieFromFile" | "NewMovieController" | "OpenMovieFile"
+            | "BeginFullScreen" | "EndFullScreen",
         ) => "QuickTimeLib",
         // CarbonLib exports these C math symbols with the same PowerPC
         // floating-point ABI as MathLib. Inside Macintosh: PowerPC Numerics
@@ -4529,6 +4532,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "GetMovieDuration") => PpcImportDispatcherTarget::QtGetMovieDuration,
         ("QuickTimeLib", "LoadMovieIntoRam") => PpcImportDispatcherTarget::QtLoadMovieIntoRam,
         ("QuickTimeLib", "CloseMovieFile") => PpcImportDispatcherTarget::QtCloseMovieFile,
+        ("QuickTimeLib", "BeginFullScreen") => PpcImportDispatcherTarget::QtBeginFullScreen,
+        ("QuickTimeLib", "EndFullScreen") => PpcImportDispatcherTarget::QtEndFullScreen,
         ("QuickTimeLib", "EnterMovies") => PpcImportDispatcherTarget::QtEnterMovies,
         ("QuickTimeLib", "ExitMovies") => PpcImportDispatcherTarget::QtExitMovies,
         ("QuickTimeLib", "GetMoviesError") => PpcImportDispatcherTarget::QtGetMoviesError,

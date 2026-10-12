@@ -81,7 +81,21 @@ pub(crate) struct PpcGrowWindowTrackingState {
     pub(crate) saved_pixels: crate::memory::SavedPixels<(i32, i32, u16)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PpcFullScreenState {
+    state_ptr: u32,
+    storage: Option<PpcOwnedWindowStorage>,
+    previous_port: u32,
+    previous_device: u32,
+    previous_menu_hidden: bool,
+    previous_menu_height: u16,
+    hide_cursor: bool,
+    front: PpcFrontBuffer,
+    saved_pixels: Vec<u8>,
+}
+
 pub(super) struct PpcWindowDispatchContext<'a> {
+    pub(super) cursor_state: &'a SharedProcessCursorState,
     pub(super) binding: &'a PpcImportBinding,
     pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
@@ -114,6 +128,7 @@ pub(super) fn dispatch_window_import(
     context: PpcWindowDispatchContext<'_>,
 ) -> Option<PpcImportAction> {
     let PpcWindowDispatchContext {
+        cursor_state,
         binding,
         cpu,
         memory,
@@ -143,6 +158,245 @@ pub(super) fn dispatch_window_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::QtBeginFullScreen => {
+            // QuickTime 2.5 Developer's Guide, Movie Toolbox, BeginFullScreen.
+            // The guest has one fixed display mode; choose that mode only when
+            // it contains the requested image. Never alter the host desktop.
+            let restore_out = cpu.gpr[3];
+            let device = if cpu.gpr[4] == 0 {
+                PPC_MAIN_GDEVICE
+            } else {
+                cpu.gpr[4]
+            };
+            let width_out = cpu.gpr[5];
+            let height_out = cpu.gpr[6];
+            let window_out = cpu.gpr[7];
+            let color_ptr = cpu.gpr[8];
+            let flags = cpu.gpr[9];
+            let preflight = flags & 8 != 0;
+            let writable = |memory: &mut PpcSectionMem, ptr, size| {
+                ptr == 0 || ppc_memory_can_write_bytes(memory, ptr, size)
+            };
+            if flags & !0x1f != 0
+                || device != PPC_MAIN_GDEVICE
+                || !writable(memory, width_out, 2)
+                || !writable(memory, height_out, 2)
+                || (!preflight
+                    && (restore_out == 0
+                        || !writable(memory, restore_out, 4)
+                        || !writable(memory, window_out, 4)
+                        || toolbox_startup.fullscreen.is_some()))
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let requested_width = if width_out == 0 {
+                0
+            } else {
+                memory.read_u16_be(width_out).unwrap_or(0) as i16
+            };
+            let requested_height = if height_out == 0 {
+                0
+            } else {
+                memory.read_u16_be(height_out).unwrap_or(0) as i16
+            };
+            if requested_width < 0
+                || requested_height < 0
+                || i32::from(requested_width) > front.width as i32
+                || i32::from(requested_height) > front.height as i32
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let color = if color_ptr == 0 {
+                PpcRgbColor {
+                    red: 0,
+                    green: 0,
+                    blue: 0,
+                }
+            } else if let Some(color) = ppc_read_rgb_color(memory, color_ptr) {
+                color
+            } else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            if preflight {
+                if width_out != 0 {
+                    let _ = memory.write_u16_be(width_out, front.width as u16);
+                }
+                if height_out != 0 {
+                    let _ = memory.write_u16_be(height_out, front.height as u16);
+                }
+                return Some(PpcImportAction::Return(0));
+            }
+            let Some(byte_count) = front.row_bytes.checked_mul(front.height) else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let Some(saved_pixels) = (0..byte_count)
+                .map(|offset| memory.read_u8(front.base_addr.checked_add(offset)?))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            };
+            let state_ptr = process_memory_manager.new_native_scratch(memory, 4);
+            if state_ptr == 0 {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
+            }
+            let previous_port = *current_gworld;
+            let previous_device = *current_gdevice;
+            let previous_menu_hidden = toolbox_startup.host_menu_bar_hidden;
+            let previous_menu_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20);
+            let bounds = (0, 0, front.height as i16, front.width as i16);
+            let storage = if window_out != 0 {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                let Some(storage) = ppc_new_owned_cwindow(
+                    PpcNewCWindowParameters {
+                        storage_ptr: 0,
+                        bounds,
+                        visible: true,
+                        proc_id: 2,
+                        behind: u32::MAX,
+                        go_away: false,
+                        ref_con: 0,
+                    },
+                    &mut allocator,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    gworlds,
+                    window_list,
+                    device,
+                ) else {
+                    process_memory_manager.release_native_scratch(state_ptr);
+                    ppc_apply_process_native_allocator(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        last_mem_error,
+                    );
+                    return Some(PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR)));
+                };
+                Some(storage)
+            } else {
+                None
+            };
+            if flags & 4 == 0 {
+                toolbox_startup.host_menu_bar_hidden = true;
+                let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 0);
+            }
+            let port = storage.map_or(PPC_MAIN_GWORLD, |storage| storage.window);
+            *current_gworld = port;
+            *current_gdevice = device;
+            ppc_recalculate_window_vis_regions(
+                process_memory_manager,
+                memory,
+                window_list,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+            );
+            // A null PixPat uses solid foreground; eraseColor defaults to black.
+            let _ = ppc_fill_color_rect(memory, gworlds, port, bounds, 0, color, None, color, None);
+            let hide_cursor = flags & 1 != 0;
+            if hide_cursor {
+                cursor_state.hide();
+            }
+            toolbox_startup.fullscreen = Some(PpcFullScreenState {
+                state_ptr,
+                storage,
+                previous_port,
+                previous_device,
+                previous_menu_hidden,
+                previous_menu_height,
+                hide_cursor,
+                front,
+                saved_pixels,
+            });
+            let _ = memory.write_u32_be(restore_out, state_ptr);
+            if window_out != 0 {
+                let _ = memory.write_u32_be(window_out, port);
+            }
+            if width_out != 0 {
+                let _ = memory.write_u16_be(width_out, front.width as u16);
+            }
+            if height_out != 0 {
+                let _ = memory.write_u16_be(height_out, front.height as u16);
+            }
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(0))
+        }
+        PpcImportDispatcherTarget::QtEndFullScreen => {
+            if cpu.gpr[4] != 0
+                || !toolbox_startup
+                    .fullscreen
+                    .as_ref()
+                    .is_some_and(|state| state.state_ptr == cpu.gpr[3])
+            {
+                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
+            }
+            let state = toolbox_startup.fullscreen.take().unwrap();
+            if let Some(storage) = state.storage {
+                let mut allocator = PpcProcessAllocatorView {
+                    memory_manager: process_memory_manager,
+                };
+                ppc_dispose_window(
+                    &mut allocator,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    controls,
+                    gworlds,
+                    window_list,
+                    event_queue,
+                    current_gworld,
+                    current_gdevice,
+                    storage.window,
+                );
+                storage.release(process_memory_manager);
+                quickdraw_fore_indices.remove(&storage.window);
+            }
+            *current_gworld = state.previous_port;
+            *current_gdevice = state.previous_device;
+            toolbox_startup.host_menu_bar_hidden = state.previous_menu_hidden;
+            let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, state.previous_menu_height);
+            for (offset, byte) in state.saved_pixels.into_iter().enumerate() {
+                let _ = memory.write_u8(state.front.base_addr + offset as u32, byte);
+            }
+            if state.hide_cursor {
+                cursor_state.show();
+            }
+            process_memory_manager.release_native_scratch(state.state_ptr);
+            ppc_recalculate_window_vis_regions(
+                process_memory_manager,
+                memory,
+                window_list,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+            );
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            Some(PpcImportAction::Return(0))
+        }
+
         PpcImportDispatcherTarget::InitWindows => {
             toolbox_startup.windows_initialized = true;
             Some(PpcImportAction::ReturnPreserve)
@@ -1326,6 +1580,133 @@ pub(super) fn ppc_new_cwindow(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn ppc_new_cwindow_with_parameters(
     params: PpcNewCWindowParameters,
+    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &SharedProcessWindowList,
+    current_gdevice: u32,
+) -> u32 {
+    ppc_new_cwindow_with_storage(
+        params,
+        None,
+        allocator,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        gworlds,
+        window_list,
+        current_gdevice,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PpcOwnedWindowStorage {
+    pub window: u32,
+    pub pixmap: u32,
+    pub pixmap_handle: u32,
+}
+
+impl PpcOwnedWindowStorage {
+    pub fn release(self, manager: &mut ProcessNativeMemoryManager) {
+        for pointer in [self.pixmap_handle, self.pixmap, self.window] {
+            manager.release_native_scratch(pointer);
+        }
+    }
+}
+
+pub(super) fn ppc_new_owned_cwindow(
+    mut params: PpcNewCWindowParameters,
+    allocator: &mut PpcProcessAllocatorView<'_>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &SharedProcessWindowList,
+    current_gdevice: u32,
+) -> Option<PpcOwnedWindowStorage> {
+    let storage = PpcOwnedWindowStorage {
+        window: allocator
+            .memory_manager
+            .new_native_scratch(memory, PPC_CGRAF_PORT_SIZE),
+        pixmap: allocator
+            .memory_manager
+            .new_native_scratch(memory, PPC_PIXMAP_SIZE),
+        pixmap_handle: allocator.memory_manager.new_native_scratch(memory, 4),
+    };
+    super::ppc_apply_process_native_allocator(
+        allocator.memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+    );
+    if [storage.window, storage.pixmap, storage.pixmap_handle].contains(&0) {
+        storage.release(allocator.memory_manager);
+        allocator
+            .memory_manager
+            .set_native_mem_error(PPC_MEM_FULL_ERR);
+        super::ppc_apply_process_native_allocator(
+            allocator.memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+        );
+        return None;
+    }
+    params.storage_ptr = storage.window;
+    let original_handles = handles.len();
+    let window = ppc_new_cwindow_with_storage(
+        params,
+        Some(storage),
+        Some(allocator),
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        gworlds,
+        window_list,
+        current_gdevice,
+    );
+    if window == 0 {
+        let error = *last_mem_error;
+        let allocated: Vec<_> = handles[original_handles..]
+            .iter()
+            .map(|record| record.handle)
+            .collect();
+        for handle in allocated {
+            allocator.dispose_handle(
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                handle,
+            );
+        }
+        storage.release(allocator.memory_manager);
+        allocator.memory_manager.set_native_mem_error(error);
+        super::ppc_apply_process_native_allocator(
+            allocator.memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+        );
+        return None;
+    }
+    Some(storage)
+}
+
+pub(super) fn ppc_new_cwindow_with_storage(
+    params: PpcNewCWindowParameters,
+    fixed: Option<PpcOwnedWindowStorage>,
     mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -1392,7 +1773,14 @@ pub(super) fn ppc_new_cwindow_with_parameters(
         return 0;
     }
 
-    let has_heap = if storage_ptr != 0 {
+    let has_heap = if fixed.is_some() {
+        ppc_heap_can_alloc_sequence(
+            memory,
+            *heap_cursor,
+            heap_limit,
+            &[4, 10, 4, 10, 4, 10, 4, 10, 4, 10, 4, 4],
+        )
+    } else if storage_ptr != 0 {
         ppc_heap_can_alloc_sequence(
             memory,
             *heap_cursor,
@@ -1428,33 +1816,38 @@ pub(super) fn ppc_new_cwindow_with_parameters(
         return 0;
     }
 
-    let pixmap = ppc_allocator_view_reserve_bytes(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        PPC_PIXMAP_SIZE,
-        true,
-    );
-    let pixmap_handle = ppc_allocator_view_reserve_bytes(
-        allocator.as_deref_mut(),
-        memory,
-        heap_cursor,
-        heap_limit,
-        4,
-        true,
-    );
-    let port = if storage_ptr != 0 {
-        storage_ptr
+    let (pixmap, pixmap_handle, port) = if let Some(storage) = fixed {
+        (storage.pixmap, storage.pixmap_handle, storage.window)
     } else {
-        ppc_allocator_view_reserve_bytes(
+        let pixmap = ppc_allocator_view_reserve_bytes(
             allocator.as_deref_mut(),
             memory,
             heap_cursor,
             heap_limit,
-            PPC_CGRAF_PORT_SIZE,
+            PPC_PIXMAP_SIZE,
             true,
-        )
+        );
+        let pixmap_handle = ppc_allocator_view_reserve_bytes(
+            allocator.as_deref_mut(),
+            memory,
+            heap_cursor,
+            heap_limit,
+            4,
+            true,
+        );
+        let port = if storage_ptr != 0 {
+            storage_ptr
+        } else {
+            ppc_allocator_view_reserve_bytes(
+                allocator.as_deref_mut(),
+                memory,
+                heap_cursor,
+                heap_limit,
+                PPC_CGRAF_PORT_SIZE,
+                true,
+            )
+        };
+        (pixmap, pixmap_handle, port)
     };
     let vis_rgn = ppc_allocator_view_new_rgn(
         allocator.as_deref_mut(),
