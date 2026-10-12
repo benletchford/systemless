@@ -2162,3 +2162,14 @@ DX Ball follow-up: ordinary Click Mouse to Continue reaches the original Classic
 DX Ball bounded gameplay: fresh replay from the same untouched archive passes **15 measured pixel assertions** at **1,279 frontend/guest ticks**, zero exhausted frames. Captures inspected: mouse launch moves the ball, a bottom brick disappears, score increases to 10, and the paddle follows ordinary mouse movement from the center to the right. The assertions cover ball positions, vacated pixels, old/new paddle locations, removed brick and changed score pixels. Full-board completion, audio, browser and rights remain unqualified.
 
 DX Ball package verification: production packer built from `f1110f94ca3f7492c360a0fa357659160b650504` emits **6,342,603 bytes / 54 files**. All **108 data/resource forks and supported Finder type/creator/flags** match independent unar extraction, including independently expanded original nested art archives. Original archive is unchanged. This completes the emitted-package comparison; distribution permission and browser/public gates remain open.
+
+
+## Royal Flush 1.2.1 — primary 116 original fat-game intake
+
+[Intake #4728](https://github.com/benletchford/systemless/issues/4728). The requested [R index](https://www.vintageapplemac.com/software/games/r/) links [Royal Flush 1.2.1](https://www.vintageapplemac.com/files/games/Royal%20Flush%201.2.1.sit): **1,436,717 bytes**, SHA-256 `caa905db15823f288da74943c55f3a2490523a6b7ba230147cde5dfb0e8c2caa`. Independent unar expands StuffIt 5 and its original ST46 self-extractor to the game, Read Me, three example settings and Icon. Actual game is **371,304-byte Joy!/peff/pwpc data** with a **2,760,819-byte resource fork**, 21 CODE resources and cfrg. Both actual game slices are present. Exact production selector: `Royal Flush 1.2.1/Royal Flush 1.2.1/Royal Flush 1.2.1`.
+
+Original Read Me describes the product as free but gives no explicit third-party Internet/archive redistribution grant. Its linked publisher history page could not be retrieved. Freeware naming and mirror availability are insufficient for hosting approval. Rights remain unresolved; no catalogue entry or managed upload is approved.
+
+Immutable native source `f5483633a23f28ddf6bd2e55f8f712ce04a69b9d`, m68k 0.14.4 / PPC 0.7.2: explicit 68K runs **120 frontend / 720 guest ticks**, zero exhausted frames, no assertions, but the inspected capture is entirely black. Explicit PPC, depth 8, halts after **four instructions** with a read memory fault at `2200064C`, PC `0100AEC8`, SP `07F6FF84`, LR zero. Neither establishes gameplay compatibility.
+
+Pending: authoritative redistribution permission; production inventory/fork/Finder comparison; fixes and bounded controls/scoring for both slices; browser checks and factual content screenshot; ordinary CI/promotion/hosting/launch approval/integration; human release and public replay.
