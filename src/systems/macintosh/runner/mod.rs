@@ -1315,6 +1315,12 @@ fn idle_cycle_trap_is_journal_complete(
 ) -> bool {
     match canonical_trap_number(opcode) {
         (true, 0x0170) | (true, 0x0171) => null_event,
+        // A null, non-sleeping WaitNextEvent has the same journaled event
+        // output as GetNextEvent. Its mouse region is guest RAM and mouse
+        // input belongs to the parked host snapshot; a mouse-moved event
+        // revokes the proof through the non-null result. The result classifier
+        // rejects pending sleep and retained SystemTask continuations.
+        (true, 0x0060) => null_event,
         // HLock/HUnlock (memory.rs) set or clear one host-mirrored lock bit
         // and write MemErr/D0 (journaled). Any sequence of them in a cycle
         // leaves the bit where its last call put it, so the journaled cycle
@@ -2868,6 +2874,9 @@ impl FixtureRunner {
     /// Synchronize deferred PPC visual/VFS state and composite chrome/dialog overlays.
     /// Call before reading raw pixels for screenshots.
     pub fn composite_frame(&mut self) {
+        // Presentation ends the outer CPU frame. Only a completed, separately
+        // guarded sleep may survive; an unfinished observation must re-prove.
+        self.cancel_idle_cycle_observation();
         if self.guest_work_is_suspended() && !self.halted {
             return;
         }
@@ -5502,10 +5511,11 @@ impl FixtureRunner {
         }
     }
 
-    /// Cancel only a same-slice observation. A proven sleep has its own write
-    /// guard and intentionally survives the frontend boundary.
+    /// Cancel an unfinished observation at a scheduling or presentation
+    /// boundary. A proven sleep has its own write guard and survives it.
     fn cancel_idle_cycle_observation(&mut self) {
-        // A recording, like an unfinished proof, never spans a slice.
+        // Virtual pass recordings do not span slices. Exact identity proofs
+        // may span guarded deferred slices, until their outer frame ends.
         self.cancel_pass_recording();
         if self.idle_cycle_probe.is_some() {
             self.bus.cancel_write_probe();
@@ -5664,6 +5674,7 @@ impl FixtureRunner {
             trap_pc,
             tick,
             cpu,
+            host: IdleCycleHostSnapshot::capture(&self.dispatcher),
             arrivals: 0,
             budget: self.tick_budget,
         });
@@ -5830,6 +5841,7 @@ impl FixtureRunner {
             && self.dispatcher.pending_launch_app.is_none()
             && !self.dispatcher.system_task_has_periodic_work(&self.bus);
         let event_stream_empty = can_observe_events
+            && !self.dispatcher.event_queue.menu_bar_is_invalid()
             && self
                 .dispatcher
                 .peek_toolbox_event(&self.bus, u16::MAX)
@@ -5879,15 +5891,22 @@ impl FixtureRunner {
     }
 
     /// Record whether a returned HLE trap remained quiescent during an exact
-    /// cycle probe. Null GetNextEvent/EventAvail calls are deterministic while
+    /// cycle probe. Null GetNextEvent/EventAvail and non-sleeping WaitNextEvent
+    /// calls are deterministic while
     /// the frontend is executing on its event thread: newly arrived host input
     /// cannot be injected until the slice returns. SystemTask is quiescent only
     /// while the HLE has no periodic desk-accessory or driver work.
     fn note_idle_cycle_trap_result(&mut self, opcode: u16) -> bool {
-        let null_event = matches!(
-            canonical_trap_number(opcode),
-            (true, 0x0170) | (true, 0x0171)
-        ) && self.bus.read_word(self.m68k.cpu.core.a(7)) == 0;
+        let null_event_poll = match canonical_trap_number(opcode) {
+            (true, 0x0170) | (true, 0x0171) => true,
+            (true, 0x0060) => {
+                self.dispatcher.pending_wait_sleep_ticks == 0
+                    && self.dispatcher.pending_wait_next_event_return.is_none()
+                    && self.dispatcher.system_task_wne_returns.is_empty()
+            }
+            _ => false,
+        };
+        let null_event = null_event_poll && self.bus.read_word(self.m68k.cpu.core.a(7)) == 0;
         if self.idle_cycle_probe.is_none() {
             return null_event;
         }
@@ -5937,6 +5956,12 @@ impl FixtureRunner {
             return false;
         }
         let cpu = CpuArchitecturalSnapshot::capture(&self.m68k.cpu.core);
+        if self.idle_cycle_probe.as_ref().is_some_and(|probe| {
+            probe.host != IdleCycleHostSnapshot::capture(&self.dispatcher)
+        }) {
+            self.cancel_idle_cycle_observation();
+            return false;
+        }
 
         if let Some(probe) = self.idle_cycle_probe.take() {
             // A counter verification lives exactly as long as the probe that
@@ -6735,11 +6760,19 @@ impl FixtureRunner {
             );
         }
 
-        // An unfinished proof may never span a frontend scheduling boundary.
-        // A *completed* proof is different: it remains parked behind a second
-        // memory-write journal and exact CPU/input/event guards, all checked
-        // before it can be reused below.
-        self.cancel_idle_cycle_observation();
+        // Deferred CPU slices belong to one outer presentation frame. Keep
+        // the bounded write journal across those small slices, but reject any
+        // changed host/task state before guest execution resumes. Ordinary
+        // frames and sound-only execution end the observation.
+        self.cancel_pass_recording();
+        if finish_frame != FrameFinalization::Deferred
+            || sound_work_only
+            || self.idle_cycle_probe.as_ref().is_some_and(|probe| {
+                probe.host != IdleCycleHostSnapshot::capture(&self.dispatcher)
+            })
+        {
+            self.cancel_idle_cycle_observation();
+        }
 
         // Freeze ticks while menu/control tracking is active. ModalDialog
         // refires still return to the GUI for intermediate rendering, but
@@ -7708,10 +7741,13 @@ impl FixtureRunner {
         // Code outside the slice loop reads and switches the CPU (a sound
         // callback entered between slices saves it as the context to
         // return to), so a slice never ends with the cursor virtual: the
-        // CPU is put where the counted steps left it, and the next slice
-        // observes the cycle afresh.
+        // CPU is put where the counted steps left it. Virtual recordings start
+        // afresh; guarded identity proofs may continue in a deferred slice.
         self.drop_kept_idle_recording();
-        self.cancel_idle_cycle_observation();
+        self.cancel_pass_recording();
+        if finish_frame != FrameFinalization::Deferred || sound_work_only {
+            self.cancel_idle_cycle_observation();
+        }
         self.keep_virtual_idle_cycle_across_slice();
         if finish_frame != FrameFinalization::Deferred {
             self.finish_host_frame(
