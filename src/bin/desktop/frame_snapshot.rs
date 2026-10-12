@@ -8,6 +8,8 @@ use systemless::trap::dispatch::ScreenCopyBitsRect;
 
 #[derive(Default)]
 pub(super) struct GuiFrame {
+    #[cfg(feature="wgpu-demo")]
+    pub input_receipt:Option<(u64,std::time::Instant)>,
     #[cfg(feature = "wgpu-demo")]
     pub dialog: Option<systemless::runner::ComparisonDialog>,
     #[cfg(feature = "wgpu-demo")]

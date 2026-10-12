@@ -38,10 +38,18 @@ pub(super) struct HostUpdate {
     pub status: RuntimeStatus,
 }
 
+struct QueuedCommand {
+    command: GuiCommand,
+    #[cfg(feature = "wgpu-demo")]
+    receipt: Option<(u64, Instant)>,
+}
+
 struct Shared {
     #[cfg(target_os = "macos")]
     native_bundle: Option<super::native_bundle::NativeBundle>,
-    commands: VecDeque<GuiCommand>,
+    commands: VecDeque<QueuedCommand>,
+    #[cfg(feature = "wgpu-demo")]
+    last_receipt: Option<(u64, Instant)>,
     shutdown: bool,
     presentation: Option<PresentationOptions>,
     frame: Option<Box<GuiFrame>>,
@@ -70,6 +78,8 @@ impl RuntimeMailbox {
                 #[cfg(target_os = "macos")]
                 native_bundle: None,
                 commands: VecDeque::with_capacity(COMMAND_CAPACITY),
+                #[cfg(feature = "wgpu-demo")]
+                last_receipt: None,
                 shutdown: false,
                 presentation: None,
                 frame: None,
@@ -86,22 +96,44 @@ impl RuntimeMailbox {
     /// Never wait for guest execution on the host. A full queue is an explicit
     /// error; callers must surface it rather than silently dropping a transition.
     pub fn send(&self, command: GuiCommand) -> Result<(), CommandError> {
+        self.enqueue(QueuedCommand {
+            command,
+            #[cfg(feature = "wgpu-demo")]
+            receipt: None,
+        })
+    }
+    #[cfg(feature = "wgpu-demo")]
+    pub fn send_measured(&self, command: GuiCommand) -> Result<(), CommandError> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.enqueue(QueuedCommand {
+            command,
+            receipt: Some((
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                Instant::now(),
+            )),
+        })
+    }
+    fn enqueue(&self, queued: QueuedCommand) -> Result<(), CommandError> {
         let mut shared = self.shared.lock().unwrap();
         if shared.shutdown || matches!(shared.status, RuntimeStatus::Stopped { .. }) {
-            return Err(CommandError::Closed(command));
+            return Err(CommandError::Closed(queued.command));
         }
-        if matches!(command, GuiCommand::MouseMove { .. }) {
-            if let Some(last @ GuiCommand::MouseMove { .. }) = shared.commands.back_mut() {
-                *last = command;
+        if matches!(queued.command, GuiCommand::MouseMove { .. }) {
+            if let Some(last) = shared
+                .commands
+                .back_mut()
+                .filter(|last| matches!(last.command, GuiCommand::MouseMove { .. }))
+            {
+                *last = queued;
                 drop(shared);
                 self.changed.notify_one();
                 return Ok(());
             }
         }
         if shared.commands.len() == COMMAND_CAPACITY {
-            return Err(CommandError::Full(command));
+            return Err(CommandError::Full(queued.command));
         }
-        shared.commands.push_back(command);
+        shared.commands.push_back(queued);
         drop(shared);
         self.changed.notify_one();
         Ok(())
@@ -132,7 +164,13 @@ impl RuntimeMailbox {
     }
 
     pub fn next_command(&self) -> Option<GuiCommand> {
-        self.shared.lock().unwrap().commands.pop_front()
+        let mut shared = self.shared.lock().unwrap();
+        let queued = shared.commands.pop_front()?;
+        #[cfg(feature = "wgpu-demo")]
+        if let Some(receipt) = queued.receipt {
+            shared.last_receipt = Some(receipt);
+        }
+        Some(queued.command)
     }
 
     /// Sleep only on the execution owner, waking promptly for input or shutdown.
@@ -182,7 +220,15 @@ impl RuntimeMailbox {
     pub fn publish(&self, frame: Option<Box<GuiFrame>>, state: GuiState) {
         let (discarded_frame, discarded_state, wake) = {
             let mut shared = self.shared.lock().unwrap();
-            let mut previous = frame.and_then(|frame| shared.frame.replace(frame));
+            let mut previous = frame.and_then(|frame| {
+                #[cfg(feature = "wgpu-demo")]
+                let frame = {
+                    let mut frame = frame;
+                    frame.input_receipt = shared.last_receipt;
+                    frame
+                };
+                shared.frame.replace(frame)
+            });
             if shared.recycled.len() < RECYCLED_FRAME_CAPACITY {
                 if let Some(frame) = previous.take() {
                     shared.recycled.push(frame);
@@ -250,8 +296,8 @@ impl RuntimeMailbox {
 mod tests {
     use super::*;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
     use std::time::Duration;
 
@@ -456,5 +502,46 @@ mod tests {
             mailbox.send(GuiCommand::MouseMove { v: 0, h: 0 }),
             Err(CommandError::Closed(_))
         ));
+    }
+}
+
+#[cfg(all(test, feature = "wgpu-demo"))]
+mod receipt_tests {
+    use super::*;
+    #[test]
+    fn receipts_follow_dequeue_and_preserve_motion_coalescing() {
+        let mailbox = RuntimeMailbox::new(|| {});
+        mailbox
+            .send_measured(GuiCommand::MouseMove { v: 1, h: 2 })
+            .unwrap();
+        mailbox
+            .send_measured(GuiCommand::MouseMove { v: 3, h: 4 })
+            .unwrap();
+        mailbox.publish(Some(Box::new(GuiFrame::default())), GuiState::default());
+        assert!(mailbox.poll().frame.unwrap().input_receipt.is_none());
+        assert_eq!(
+            mailbox.next_command(),
+            Some(GuiCommand::MouseMove { v: 3, h: 4 })
+        );
+        assert!(mailbox.next_command().is_none());
+        mailbox.publish(Some(Box::new(GuiFrame::default())), GuiState::default());
+        let first = mailbox.poll().frame.unwrap().input_receipt.unwrap();
+        mailbox
+            .send_measured(GuiCommand::KeyDown {
+                key: 0,
+                character: b'a',
+            })
+            .unwrap();
+        assert_eq!(
+            mailbox.next_command(),
+            Some(GuiCommand::KeyDown {
+                key: 0,
+                character: b'a'
+            })
+        );
+        mailbox.publish(Some(Box::new(GuiFrame::default())), GuiState::default());
+        let second = mailbox.poll().frame.unwrap().input_receipt.unwrap();
+        assert!(second.0 > first.0);
+        assert!(second.1 >= first.1);
     }
 }

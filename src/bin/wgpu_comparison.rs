@@ -35,6 +35,8 @@ mod runtime_owner;
 mod runtime_protocol;
 #[path = "wgpu_scene.rs"]
 mod scene;
+#[path = "wgpu_script.rs"]
+mod script;
 #[cfg(not(all(feature = "debug-server", unix)))]
 mod debug_server {
     pub struct DebugServer;
@@ -65,6 +67,10 @@ struct Args {
     script: Option<PathBuf>,
     #[arg(long, value_delimiter = ',')]
     capture_at: Vec<u64>,
+    #[arg(long, requires = "offscreen")]
+    resize_probe: bool,
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=3600))]
+    seconds: Option<u64>,
 }
 fn main() {
     let args = Args::parse();
@@ -74,11 +80,7 @@ fn main() {
         run_live(args);
         return;
     }
-    let actions: Vec<serde_json::Value> = args
-        .script
-        .as_ref()
-        .map(|p| serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap())
-        .unwrap_or_default();
+    let mut script = script::Script::load(args.script.as_deref());
     let (wake, events) = mpsc::channel();
     let mut owner = runtime_owner::RuntimeOwner::spawn(
         runtime_owner::RuntimeConfig {
@@ -100,8 +102,6 @@ fn main() {
     let mut renderer = pollster::block_on(renderer::Renderer::offscreen(800, 600));
     let mut guest_exit = false;
     let mut observed = 0;
-    let mut next = 0;
-    let mut input_delay=0u64;
     let mut samples = Vec::new();
     let mut argb = Vec::new();
     let mut menus = menu::MenuPresenter::default();
@@ -120,6 +120,7 @@ fn main() {
         }
         if let Some(frame) = update.frame {
             observed += 1;
+            script.observe(&frame, &owner.mailbox, &mut menus);
             let (_, _, w, h, _) = frame.screen.screen_mode;
             frame.screen.render_argb(&mut argb);
             let pixels: Vec<u8> = argb.iter().flat_map(|p| p.to_le_bytes()).collect();
@@ -136,45 +137,6 @@ fn main() {
             quads.extend(scene::menu(&menus));
             renderer.draw(w.into(), h.into(), &pixels, &quads);
             samples.push(now.elapsed().as_secs_f64() * 1000.);
-            while let Some(a) = actions
-                .get(next)
-                .filter(|a| a["after_updates"].as_u64().unwrap()+input_delay <= observed)
-            {
-                let ready=(!a["wait_for_no_dialog"].as_bool().unwrap_or(false)||frame.dialog.is_none())
-                    && a["wait_for_dialog_text"].as_str().is_none_or(|text|frame.dialog.as_ref().is_some_and(|d|d.items.iter().any(|i|i.text.contains(text))));
-                if !ready {assert!(observed<a["after_updates"].as_u64().unwrap()+input_delay+600,"guest readiness timeout: {a}");break;}
-                input_delay=observed-a["after_updates"].as_u64().unwrap();
-                eprintln!("[comparison-input] observed={observed} action={a}");
-                use runtime_protocol::GuiCommand::*;
-                let n = |k: &str| a[k].as_i64().unwrap();
-                let cmd = match a["type"].as_str().unwrap() {
-                    "mouse_down" => MouseDown {
-                        v: n("v") as i16,
-                        h: n("h") as i16,
-                    },
-                    "mouse_up" => MouseUp {
-                        v: n("v") as i16,
-                        h: n("h") as i16,
-                    },
-                    "mouse_move" => MouseMove {
-                        v: n("v") as i16,
-                        h: n("h") as i16,
-                    },
-                    "key_down" => KeyDown {
-                        key: n("key") as u8,
-                        character: n("ch") as u8,
-                    },
-                    "key_up" => KeyUp {
-                        key: n("key") as u8,
-                        character: n("ch") as u8,
-                    },
-                    other => panic!("unsupported action {other}"),
-                };
-                if let Some(cmd) = menus.route(cmd, &frame.menus, frame.dialog.is_some()) {
-                    owner.mailbox.send(cmd).unwrap();
-                }
-                next += 1;
-            }
             if args.capture_at.contains(&observed) {
                 renderer.save_capture(&args.output.join(format!("frame-{observed}.png")));
                 std::fs::write(
@@ -183,10 +145,59 @@ fn main() {
                 )
                 .unwrap();
             }
+            if observed == args.updates && args.resize_probe {
+                let mut results = Vec::new();
+                for (rw, rh) in [
+                    (800, 600),
+                    (1200, 900),
+                    (1600, 1200),
+                    (1000, 600),
+                    (600, 1000),
+                    (0, 0),
+                    (800, 600),
+                ] {
+                    renderer.resize(rw, rh);
+                    let rendered = renderer.draw(w.into(), h.into(), &pixels, &quads);
+                    assert_eq!(rendered, rw > 0 && rh > 0);
+                    if rendered {
+                        let (left, top, vw, vh) = renderer.viewport(w.into(), h.into());
+                        for (gx, gy) in [(0, 0), (w / 2, h / 2), (w - 1, h - 1)] {
+                            assert_eq!(
+                                renderer.guest_point(
+                                    (left + (f32::from(gx) + 0.5) * vw / f32::from(w)) as f64,
+                                    (top + (f32::from(gy) + 0.5) * vh / f32::from(h)) as f64,
+                                    w.into(),
+                                    h.into()
+                                ),
+                                (gy as i16, gx as i16)
+                            );
+                        }
+                        renderer.save_capture(&args.output.join(format!("resize-{rw}x{rh}.png")));
+                    }
+                    results.push(serde_json::json!({"size":[rw,rh],"rendered":rendered,"viewport":renderer.viewport(w.into(),h.into())}));
+                }
+                std::fs::write(
+                    args.output.join("resize.json"),
+                    serde_json::to_vec_pretty(&results).unwrap(),
+                )
+                .unwrap();
+                renderer.resize(size[0], size[1]);
+                renderer.draw(w.into(), h.into(), &pixels, &quads);
+            }
             if observed == args.updates {
                 renderer.save_capture(&args.output.join("frame.png"));
-                let rgba:Vec<u8>=argb.iter().flat_map(|p|[(p>>16) as u8,(p>>8) as u8,*p as u8,(p>>24) as u8]).collect();
-                image::save_buffer(args.output.join("guest.png"),&rgba,w.into(),h.into(),image::ColorType::Rgba8).unwrap();
+                let rgba: Vec<u8> = argb
+                    .iter()
+                    .flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, (p >> 24) as u8])
+                    .collect();
+                image::save_buffer(
+                    args.output.join("guest.png"),
+                    &rgba,
+                    w.into(),
+                    h.into(),
+                    image::ColorType::Rgba8,
+                )
+                .unwrap();
                 std::fs::write(
                     args.output.join("dialog.json"),
                     serde_json::to_vec_pretty(&frame.dialog).unwrap(),
@@ -196,7 +207,7 @@ fn main() {
             owner.mailbox.recycle(frame);
         }
     }
-    assert_eq!(next, actions.len(), "not all scripted inputs delivered");
+    assert!(script.complete(), "not all scripted inputs delivered");
     assert!(
         !args.expect_exit || guest_exit,
         "guest did not exit after menu selection"
@@ -205,7 +216,7 @@ fn main() {
     while !owner.join_finished().unwrap() {
         events.recv_timeout(Duration::from_secs(1)).ok();
     }
-    std::fs::write(args.output.join("report.json"),serde_json::to_vec_pretty(&serde_json::json!({"scope":"master execution owner; headless GPU framebuffer presentation","observed":observed,"completed_actions":next,"guest_exit":guest_exit,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"submit_cpu_ms":samples,"gpu_pass_ms":renderer.gpu_samples()})).unwrap()).unwrap();
+    std::fs::write(args.output.join("report.json"),serde_json::to_vec_pretty(&serde_json::json!({"scope":"master execution owner; headless GPU framebuffer presentation","observed":observed,"completed_actions":script.next,"guest_exit":guest_exit,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"submit_cpu_ms":samples,"gpu_pass_ms":renderer.gpu_samples(),"enqueue_to_acknowledged_snapshot_ms":script.latencies})).unwrap()).unwrap();
 }
 
 fn run_live(args: Args) {
@@ -225,19 +236,26 @@ fn run_live(args: Args) {
         pointer: (i16, i16),
         keys: std::collections::BTreeMap<u8, u8>,
         closing: bool,
+        script: script::Script,
+        started: Instant,
+        samples: Vec<serde_json::Value>,
+        last_present: Option<Instant>,
         menus: menu::MenuPresenter,
     }
     impl Live {
         fn send(&mut self, c: runtime_protocol::GuiCommand) {
-            let menu_was_open=self.menus.open.is_some();
+            let menu_was_open = self.menus.open.is_some();
             let c = if let Some(f) = &self.frame {
                 self.menus.route(c, &f.menus, f.dialog.is_some())
             } else {
                 Some(c)
             };
             if !menu_was_open && self.menus.open.is_some() {
-                for (key,character) in std::mem::take(&mut self.keys) {
-                    let _=self.owner.mailbox.send(runtime_protocol::GuiCommand::KeyUp{key,character});
+                for (key, character) in std::mem::take(&mut self.keys) {
+                    let _ = self
+                        .owner
+                        .mailbox
+                        .send(runtime_protocol::GuiCommand::KeyUp { key, character });
                 }
             }
             let Some(c) = c else {
@@ -246,7 +264,7 @@ fn run_live(args: Args) {
                 }
                 return;
             };
-            if let Err(e) = self.owner.mailbox.send(c) {
+            if let Err(e) = self.owner.mailbox.send_measured(c) {
                 eprintln!("input rejected: {e:?}");
             }
         }
@@ -263,6 +281,30 @@ fn run_live(args: Args) {
         }
     }
     impl ApplicationHandler<()> for Live {
+        fn new_events(&mut self, _: &ActiveEventLoop, _: winit::event::StartCause) {
+            if !self.closing
+                && self
+                    .args
+                    .seconds
+                    .is_some_and(|s| self.started.elapsed() >= Duration::from_secs(s))
+            {
+                self.release();
+                self.closing = true;
+                self.owner.mailbox.request_shutdown();
+            }
+        }
+        fn about_to_wait(&mut self, e: &ActiveEventLoop) {
+            if !self.closing {
+                if let Some(s) = self.args.seconds {
+                    e.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                        self.started + Duration::from_secs(s),
+                    ));
+                }
+            } else {
+                e.set_control_flow(winit::event_loop::ControlFlow::Wait);
+            }
+        }
+
         fn resumed(&mut self, e: &ActiveEventLoop) {
             if self.window.is_none() {
                 let w = Arc::new(
@@ -284,6 +326,10 @@ fn run_live(args: Args) {
             let update = self.owner.mailbox.poll();
             if let Some(frame) = update.frame {
                 self.menus.reconcile(&frame.menus, frame.dialog.is_some());
+                if !self.closing {
+                    self.script
+                        .observe(&frame, &self.owner.mailbox, &mut self.menus);
+                }
                 if let Some(old) = self.frame.replace(frame) {
                     self.owner.mailbox.recycle(old);
                 }
@@ -358,12 +404,18 @@ fn run_live(args: Args) {
                 WindowEvent::RedrawRequested => {
                     if let (Some(r), Some(f)) = (&mut self.renderer, &self.frame) {
                         let (_, _, w, h, _) = f.screen.screen_mode;
+                        let started = Instant::now();
                         let mut pixels = Vec::new();
                         f.screen.render_argb(&mut pixels);
                         let bytes: Vec<_> = pixels.iter().flat_map(|p| p.to_le_bytes()).collect();
                         let mut quads = scene::controls(f.dialog.as_ref());
                         quads.extend(scene::menu(&self.menus));
-                        r.draw(w.into(), h.into(), &bytes, &quads);
+                        if r.draw(w.into(), h.into(), &bytes, &quads)
+                            && self.samples.len() < 100_000
+                        {
+                            let end = Instant::now();
+                            self.samples.push(serde_json::json!({"elapsed_ms":self.started.elapsed().as_secs_f64()*1000.,"compose_submit_cpu_ms":end.duration_since(started).as_secs_f64()*1000.,"present_call_gap_ms":self.last_present.replace(end).map(|t|end.duration_since(t).as_secs_f64()*1000.),"surface":r.size(),"scale_factor":self.window.as_ref().unwrap().scale_factor(),"guest_sequence":f.sequence}));
+                        }
                     }
                 }
                 _ => {}
@@ -393,6 +445,10 @@ fn run_live(args: Args) {
     )
     .unwrap();
     let mut app = Live {
+        script: script::Script::load(args.script.as_deref()),
+        started: Instant::now(),
+        samples: Vec::new(),
+        last_present: None,
         args,
         window: None,
         renderer: None,
@@ -404,4 +460,5 @@ fn run_live(args: Args) {
         menus: menu::MenuPresenter::default(),
     };
     event_loop.run_app(&mut app).unwrap();
+    std::fs::write(app.args.output.join("live-report.json"),serde_json::to_vec_pretty(&serde_json::json!({"scope":"native wgpu present-call timing, not compositor delivery or input-to-photon","observed":app.script.observed,"completed_actions":app.script.next,"script_complete":app.script.complete(),"frames":app.samples,"gpu_pass_ms":app.renderer.as_ref().and_then(|r|r.gpu_samples()),"enqueue_to_acknowledged_snapshot_ms":app.script.latencies})).unwrap()).unwrap();
 }
