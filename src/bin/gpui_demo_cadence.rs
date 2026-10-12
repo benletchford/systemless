@@ -1,6 +1,26 @@
 //! Guest worker cadence, without catch-up bursts after a late update.
 use std::time::{Duration, Instant};
 
+pub(crate) fn sleep_worker(duration: Duration) {
+    #[cfg(target_os = "macos")]
+    {
+        // Long host sleeps can return ~8 ms late even at interactive QoS.
+        // Recheck an absolute deadline between progressively shorter sleeps.
+        // Every iteration sleeps; there is no busy wait or early publication.
+        let Some(deadline) = Instant::now().checked_add(duration) else {
+            std::thread::sleep(duration);
+            return;
+        };
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() { break; }
+            std::thread::sleep((remaining / 2).max(Duration::from_nanos(1)));
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    std::thread::sleep(duration);
+}
+
 // Use the same rate for worker deadlines and the elapsed-time guest clock.
 // A fixed 16 ms period publishes 62.5 updates per second against a 60 Hz clock,
 // periodically scheduling an update before the next guest tick is due.

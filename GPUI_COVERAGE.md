@@ -1,5 +1,31 @@
 # GPUI Kit system-interface coverage
 
+### Deadline-rechecked macOS worker waits (2026-10-12)
+
+The macOS worker now rechecks its absolute wait deadline between progressively
+shorter sleeps. It never busy-spins or intentionally publishes early; cadence,
+guest clocks and missed-deadline recovery remain unchanged. Other platforms
+retain their existing wait. Activity-policy probes first showed no benefit,
+so no NSProcessInfo/QoS assertions were added.
+
+An alternating120-sample probe using the actual source reduces16ms wait
+overshoot p95 from8.033ms to0.008ms (max8.042ms to0.153ms). All five standalone
+cadence tests pass. The optimized example builds (57.68s), and the ordinary desktop check passes
+(17.28s). Original EV completes
+14 actions/2900 observations with zero readiness delays in48.89s; all24 timing
+windows pass consistency checks and the complete flight scene/HUD was inspected.
+The final120 worker intervals have mean/p95/max16.667/16.676/16.686ms. The run's
+longest interval is29.822ms, attributable to29.819ms measured work/preemption
+and a zero sleep request; work/preemption stalls remain open.
+
+Whole-process time is14.93s user/0.60s system over49.80s wall, versus the earlier
+single-sleep run15.60s user/0.48s system over50.88s wall. These uncontrolled runs
+support the narrower timer improvement without qualifying power use or a causal
+CPU comparison. Immutable producer/capture/log evidence is in the ignored
+`target/gpui-qualification/escape-velocity/rechecked-wait-flight-review.json`.
+Actual frame delivery, visible gameplay smoothness, host audio and broader
+release qualification remain open.
+
 ### Rejected macOS pacing experiments (2026-10-12)
 
 Foreground user-interactive pthread QoS was tested, including native

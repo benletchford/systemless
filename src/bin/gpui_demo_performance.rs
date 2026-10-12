@@ -50,11 +50,11 @@ impl WorkerProfiler {
     }
     pub fn sleep(&mut self, requested: Duration) {
         if !self.enabled {
-            std::thread::sleep(requested);
+            super::cadence::sleep_worker(requested);
             return;
         }
         let start = Instant::now();
-        std::thread::sleep(requested);
+        super::cadence::sleep_worker(requested);
         self.previous_wait = Some((requested.as_secs_f64() * 1000., start.elapsed().as_secs_f64() * 1000.));
     }
     pub fn begin(&mut self) -> FrameTiming {
