@@ -1,5 +1,32 @@
 # GPUI Kit system-interface coverage
 
+### Refreshed master integration and regression qualification (2026-10-12)
+
+All639 branch commits were rebased onto master52e9a346. Fourteen conflicts were
+resolved while retaining upstream script/text evaluation, control snapshot
+refreshes and routing tests, plus the GPUI list/control/Standard File/notification
+changes. The range comparison maps every commit one-to-one, with no dropped
+commits; three additional patch differences change context only. The resolved
+regressions remain present exactly once. Source/docs whitespace checks pass;
+historical capture logs and patch snapshots remain unchanged.
+
+On rebased producer `feeef411aebd2001b20444d2e58dd8b775d06250`, the default locked/
+offline desktop check passes (62s). The fresh library executable passes all31
+notification,533 Toolbox,91 control and63 PPC process-service tests. These cover
+the resolved overlaps, including canonical script-manager behavior, shared
+notification queues/callbacks, list lifetimes/drawing, control release/snapshots,
+and Open/Save replacement/New Folder behavior. Library tests use functional
+root opt0/codegen16/incremental with the ci-test dependency profile; they are
+not GPU rendering, physical input or gameplay performance qualification.
+
+The prior optimized producer ee90113c built successfully (27m51s), before this
+master refresh. Its immutable executable and producer hashes were retained in
+the ignored EV qualification directory. No flight measurement was run with that
+executable, and it does not qualify the rebased source. Earlier composed images
+and native editing tests retain their original producer hashes. Rebased frontend
+visual/input matrices and optimized EV gameplay evidence remain to be gathered;
+the overall release gates remain open.
+
 ### Plain-face composed rendering and native editing qualification (2026-10-12)
 
 The renderer initialization failure below was resolved by running the same
