@@ -112,14 +112,18 @@ pub(super) fn dispatch_toolbox_import(
             ppc_string_to_num(cpu, memory);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetQDGlobalsRandomSeed => {
+            // Quickdraw.h: long GetQDGlobalsRandomSeed(void). A query must
+            // preserve all seed bits and must not advance Random's state.
+            let seed_addr = qd_random_seed_address(init_graf_global_ptr);
+            Some(PpcImportAction::Return(memory.read_u32_be(seed_addr).unwrap_or(0)))
+        }
         PpcImportDispatcherTarget::SetQDGlobalsRandomSeed => {
             // Quickdraw.h: void SetQDGlobalsRandomSeed(long randomSeed).
             // Share the live QDGlobals.randSeed location with Random, including
             // its existing pre-InitGraf storage. Do not overwrite LM RandSeed
             // once the application has installed its own QuickDraw globals.
-            let seed_addr = init_graf_global_ptr
-                .checked_sub(126)
-                .unwrap_or(PPC_RAND_SEED_ADDR);
+            let seed_addr = qd_random_seed_address(init_graf_global_ptr);
             if ppc_memory_can_write_bytes(memory, seed_addr, 4) {
                 let _ = memory.write_u32_be(seed_addr, cpu.gpr[3]);
             }
@@ -128,9 +132,7 @@ pub(super) fn dispatch_toolbox_import(
         PpcImportDispatcherTarget::Random => {
             // QuickDraw's randSeed lives 126 bytes before thePort, not at
             // the unrelated low-memory RandSeed global (Inside Macintosh I-195).
-            let seed_addr = init_graf_global_ptr
-                .checked_sub(126)
-                .unwrap_or(PPC_RAND_SEED_ADDR);
+            let seed_addr = qd_random_seed_address(init_graf_global_ptr);
             // IM:I I-194: Random returns a signed INTEGER. Preserve its sign
             // in r3 so native callers can take its magnitude before division.
             Some(PpcImportAction::Return(ppc_i16_result(
@@ -247,4 +249,8 @@ pub(crate) fn ppc_read_pstring_bytes(memory: &mut PpcSectionMem, addr: u32) -> O
         bytes.push(memory.read_u8(addr.checked_add(1 + offset as u32)?)?);
     }
     Some(bytes)
+}
+
+fn qd_random_seed_address(init_graf_global_ptr: u32) -> u32 {
+    init_graf_global_ptr.checked_sub(126).unwrap_or(PPC_RAND_SEED_ADDR)
 }

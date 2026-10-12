@@ -1673,3 +1673,56 @@ fn hle_import_runner_handles_draw_justified_and_measure_justified() {
     assert_eq!(probe_m.handled_import_count, 1);
     assert_eq!(probe_m.unsupported_import_index, None);
 }
+
+#[test]
+fn qd_random_seed_getter_observes_live_state_without_changing_draw_sequence() {
+    for library in ["InterfaceLib", "CarbonLib"] {
+        for symbol in ["GetQDGlobalsRandomSeed", "getqdglobalsrandomseed"] {
+            let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+                library.as_bytes(),
+                symbol.as_bytes(),
+            ))
+            .unwrap();
+            let getter = loaded.imports[0].dispatcher_target.clone();
+            assert_eq!(getter, PpcImportDispatcherTarget::GetQDGlobalsRandomSeed);
+            let scratch = PPC_DATA_BASE + 0x1800;
+            loaded.memory.add_region(scratch, vec![0xa5; 16]);
+            loaded.cpu.gpr[3] = 12345;
+            run_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::SetQDGlobalsRandomSeed,
+            );
+            loaded.cpu.gpr[3] = scratch;
+            run_test_import(&mut loaded, getter.clone());
+            assert_eq!(loaded.cpu.gpr[3], 12345);
+            assert_eq!(loaded.memory.read_u32_be(scratch), Some(0xa5a5a5a5));
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::Random);
+            run_test_import(&mut loaded, getter.clone());
+            assert_eq!(loaded.cpu.gpr[3], 207482415);
+            run_test_import(&mut loaded, getter.clone());
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::Random);
+            assert_eq!(
+                loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR),
+                Some(1790989824)
+            );
+            let globals = PPC_DATA_BASE + 0x2800;
+            loaded.memory.add_region(globals - 130, vec![0xa5; 134]);
+            loaded.cpu.gpr[3] = globals;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::InitGraf);
+            loaded.memory.write_u32_be(PPC_RAND_SEED_ADDR, 99).unwrap();
+            for seed in [0, 1, 12345, 0x80000000, u32::MAX] {
+                loaded.cpu.gpr[3] = seed;
+                run_test_import(
+                    &mut loaded,
+                    PpcImportDispatcherTarget::SetQDGlobalsRandomSeed,
+                );
+                loaded.cpu.gpr[3] = scratch;
+                run_test_import(&mut loaded, getter.clone());
+                assert_eq!(loaded.cpu.gpr[3], seed);
+                assert_eq!(loaded.memory.read_u32_be(globals - 126), Some(seed));
+                assert_eq!(loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR), Some(99));
+                assert_eq!(loaded.memory.read_u32_be(globals - 130), Some(0xa5a5a5a5));
+            }
+        }
+    }
+}
