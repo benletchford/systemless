@@ -1,5 +1,24 @@
 # GPUI Kit system-interface coverage
 
+### Current optimized EV flight check (2026-10-12, cd170d7d)
+
+The current default optimized CI capture executable builds in57.32s with one
+Cargo job and no opt-level overrides. An immutable copy/hash is retained in the
+ignored EV qualification directory. Original EV colour68k completes all14 held
+input actions over2900 observations in51.85s with zero readiness delays. The
+full composed flight image was inspected: ship, stars/asteroids, original HUD
+and instruction text remain intact with the guest menu hidden.
+
+For614 final-flight compositor samples, CPU mean/p95/max is
+0.882/1.316/5.981ms. The last120 worker intervals have mean/p95/max
+16.930/22.787/48.077ms; the long interval remains a pacing concern. Peak memory
+footprint is192.30MiB. These differ from the earlier cffe18c2 run, but separate
+runs under uncontrolled host load do not establish a causal regression or fix.
+Current logs, sidecar/image hashes and timings are in
+`target/gpui-qualification/escape-velocity/cd170d7d-optimized-flight-review.json`.
+This is offscreen worker/compositor evidence, not presented FPS, physical input,
+host audio continuity, save/restart persistence or proof that EV stutter is fixed.
+
 ### Suspend capture completion correction (2026-10-12)
 
 The apparent monochrome inactive-selection discrepancy below was a capture
