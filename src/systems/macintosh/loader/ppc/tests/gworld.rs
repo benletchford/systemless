@@ -2588,3 +2588,40 @@ fn port_bitmap_accessor_import_returns_live_basic_and_color_copybits_aliases() {
         }
     }
 }
+
+#[test]
+fn qd_globals_port_accessor_returns_selected_port_without_out_parameter() {
+    for library in [b"InterfaceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            library,
+            b"GetQDGlobalsThePort",
+        ))
+        .unwrap();
+        let accessor = loaded.imports[0].dispatcher_target.clone();
+        assert_eq!(accessor, PpcImportDispatcherTarget::GetQDGlobalsThePort);
+        let initial_port = *loaded.current_gworld;
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0x5a; 32]);
+        loaded.cpu.gpr[3] = scratch + 16;
+        run_test_import(&mut loaded, accessor.clone());
+        assert_eq!(loaded.cpu.gpr[3], initial_port);
+        assert_eq!(loaded.memory.read_u32_be(scratch + 16), Some(0x5a5a5a5a));
+        let window = super::window_manager::create_test_cwindow(
+            &mut loaded,
+            scratch,
+            (40, 50, 200, 300),
+            0,
+            true,
+            u32::MAX,
+        );
+        loaded.cpu.gpr[3] = window;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPortWindowPort);
+        loaded.cpu.gpr[3] = scratch + 16;
+        run_test_import(&mut loaded, accessor.clone());
+        assert_eq!(loaded.cpu.gpr[3], window);
+        assert_eq!(loaded.memory.read_u32_be(scratch + 16), Some(0x5a5a5a5a));
+        loaded.cpu.gpr[3] = scratch + 16;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetPort);
+        assert_eq!(loaded.memory.read_u32_be(scratch + 16), Some(window));
+    }
+}
