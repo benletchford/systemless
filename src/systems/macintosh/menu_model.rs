@@ -300,3 +300,11 @@ pub fn standard_scroll_indicator_pixels(up: bool) -> Vec<(i16, i16)> {
 
 /// Shared CDEF popup text truncation for frontend guest-glyph painters.
 pub use crate::control_manager::popup_display_text;
+
+/// Guest-owned hit cells and pane geometry for a supported standard menu.
+#[derive(Clone,Debug)]
+pub struct GuestMenuPresentation {
+    pub title_bounds:(i16,i16,i16,i16),
+    pub title_origin:(i16,i16),
+    pub pane:GuestPopupSnapshot,
+}

@@ -3496,6 +3496,14 @@ impl FixtureRunner {
         }
     }
 
+    /// Comparison-only standard-menu geometry. Unsupported native/custom
+    /// definitions deliberately retain guest drawing and tracking.
+    #[doc(hidden)]
+    pub fn comparison_menu_presentations(&mut self,snapshot:&GuestMenuSnapshot)->Vec<crate::menu_model::GuestMenuPresentation> {
+        if self.native.application_mut().is_some() {return Vec::new();}
+        self.dispatcher.comparison_menu_presentations(&self.bus,snapshot)
+    }
+
     /// Inspect an open standard popup without replacing its guest tracker.
     /// Custom definitions and open hierarchical chains retain guest rendering.
     #[doc(hidden)]
