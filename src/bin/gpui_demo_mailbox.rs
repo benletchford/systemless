@@ -8,6 +8,8 @@ use std::{
 
 pub(crate) struct Latest<T> {
     state: Mutex<State<T>>,
+    #[cfg(any(test, feature = "gpui-demo-test"))]
+    ready: std::sync::Condvar,
 }
 
 struct State<T> {
@@ -20,6 +22,8 @@ struct State<T> {
 impl<T> Default for Latest<T> {
     fn default() -> Self {
         Self {
+            #[cfg(any(test, feature = "gpui-demo-test"))]
+            ready: std::sync::Condvar::new(),
             state: Mutex::new(State {
                 value: None,
                 waiter: None,
@@ -43,6 +47,8 @@ impl<T> Latest<T> {
             let previous = state.value.replace(value);
             (previous, state.waiter.take())
         };
+        #[cfg(any(test, feature = "gpui-demo-test"))]
+        self.ready.notify_all();
         if let Some((_, waiter)) = waiter {
             waiter.wake();
         }
@@ -53,6 +59,16 @@ impl<T> Latest<T> {
     /// Offscreen drivers consume the same publication slot synchronously.
     pub(crate) fn take(&self) -> Option<T> {
         self.state.lock().unwrap().value.take()
+    }
+
+    /// Capture drivers wait on the same slot without a periodic sleep. The
+    /// predicate and publication use one mutex, preventing lost notifications.
+    #[cfg(any(test, feature = "gpui-demo-test"))]
+    pub(crate) fn take_timeout(&self, timeout: std::time::Duration) -> Option<T> {
+        let state = self.state.lock().unwrap();
+        let (mut state, _) = self.ready.wait_timeout_while(state, timeout,
+            |state| state.value.is_none() && !state.closed).unwrap();
+        state.value.take()
     }
 
     /// One renderer awaits the next snapshot; no periodic timer is required.
@@ -79,6 +95,8 @@ impl<T> Latest<T> {
             state.closed = true;
             state.waiter.take()
         };
+        #[cfg(any(test, feature = "gpui-demo-test"))]
+        self.ready.notify_all();
         if let Some((_, waiter)) = waiter {
             waiter.wake();
         }
@@ -147,6 +165,24 @@ mod tests {
     impl Wake for Count {
         fn wake(self: Arc<Self>) {
             self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn synchronous_capture_wait_handles_publication_races_and_close() {
+        for _ in 0..100 {
+            let mailbox = Arc::new(Latest::default());
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let reader = mailbox.clone(); let start = barrier.clone();
+            let consumer = std::thread::spawn(move || {
+                start.wait(); reader.take_timeout(std::time::Duration::from_secs(2))
+            });
+            barrier.wait(); assert!(mailbox.publish(42));
+            assert_eq!(consumer.join().unwrap(), Some(42));
+            assert_eq!(mailbox.take_timeout(std::time::Duration::ZERO), None);
+            mailbox.publish(99); drop(mailbox.publisher());
+            assert_eq!(mailbox.take_timeout(std::time::Duration::from_secs(2)), Some(99));
+            assert_eq!(mailbox.take_timeout(std::time::Duration::from_secs(2)), None);
         }
     }
 

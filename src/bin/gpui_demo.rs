@@ -6911,7 +6911,8 @@ mod desktop {
         let update = loop {
             // Consume the same publication slot as the live view. Rendering
             // and scripted input run after the mailbox releases its lock.
-            let pending_update = updates.take();
+            let pending_update = updates.take_timeout(observation_timeout
+                .saturating_sub(start.elapsed()).min(Duration::from_millis(100)));
             if let Some(update) = pending_update {
                 assert!(update.frame.is_some(), "application worker failed: {}", update.status);
                 observations += 1;
@@ -7067,7 +7068,6 @@ mod desktop {
                 }
                 panic!("application capture deadline exceeded: observed {observations} updates; completed {next_scheduled_input}/{} scheduled actions", scheduled_inputs.len());
             }
-            std::thread::sleep(Duration::from_millis(5));
         };
         let observed_ms = start.elapsed().as_secs_f64() * 1000.;
         let (width, height, pixels) = update.frame.as_ref().unwrap();
@@ -7099,6 +7099,7 @@ mod desktop {
             "notification_identity": notification_identity,
             "ui_inventory": ui_inventory,
             "headless_render_after_updates": render_after,
+            "headless_update_wait": "publication notification on shared Latest slot",
             "headless_render_samples": rendered_updates,
             "headless_render_scope": "Shared live update consumption and Demo compositor with offscreen Metal scene rendering. Renderer CPU time excludes the harness snapshot clone, screenshot readback and GPU completion latency; observed-update cadence includes harness work. No native display presentation or physical-input latency qualification.",
             "input_after_updates": input_after, "release_after_updates": release_after,

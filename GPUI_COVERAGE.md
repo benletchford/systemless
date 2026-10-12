@@ -1,5 +1,45 @@
 # GPUI Kit system-interface coverage
 
+### EV current pacing and publication-driven composed capture (2026-10-12)
+
+An optimized c106ad49 producer completes original EV flight:14 actions,2900
+observed updates and zero readiness delays (50.12s). Every observation renders
+through the shared Demo compositor. Final120 worker interval p95/max is
+16.673/16.678ms; steady flight compositor CPU p95 is0.354ms. Offscreen completed
+render gaps nonetheless reach p95/max30.368/30.611ms. The capture loop still
+slept5ms between slot checks, unlike the publication-driven live view. Its
+startup window also contains63.136ms elapsed interval with50.839ms measured
+in guest execution (including possible preemption).
+
+Composed application captures now wait for publication on the same Latest
+slot via a condition variable, preserving coalescing and wake/drop outside
+the slot lock. Waiting uses a bounded deadline, with publication and close
+notifications. This synchronous support is test/capture-only; the live
+renderer retains its existing async publication path. Ten standalone mailbox
+tests pass, including concurrent publication races and final-snapshot/closure.
+
+The candidate optimized EV run passes the same14 actions/2900 rendered
+observations with no readiness delays (48.65s). Steady flight compositor CPU
+mean/p95/max is0.298/0.363/1.286ms; completed-render gaps are
+16.668/19.049/28.387ms. Final worker interval p95/max is16.682/17.549ms.
+Reported-window longest interval is22.088ms, with21.193ms measured in guest
+execution. Both complete flight scenes/HUDs were inspected; menus remain
+hidden and custom application artwork/text stays guest-painted.
+
+Candidate capture/default/public-library builds pass; the optimized capture
+build takes8m07s and ordinary desktop check15.16s. Peak process footprint is
+220644336 bytes versus209077256 in the preceding single run. CI root codegen/
+incremental settings differ, host load is uncontrolled and a desktop check
+overlapped candidate startup. These results support removing capture polling,
+not a causal worker CPU/memory improvement or a live stutter fix. Profile
+maxima cover reported120-cycle windows; the last partial batch is omitted.
+Observation gaps include harness/renderer work and exclude actual native
+frame presentation and GPU completion. Native input, audio continuity, saves/
+restart and release qualification remain open. Immutable binary/source/log
+and capture evidence is in the ignored
+`target/gpui-qualification/escape-velocity/c106ad49-flight-review.json` and
+`publication-wait-flight-review.json`.
+
 ### Native font faces in plain source-copy TextEdit (2026-10-12)
 
 Plain source-copy now preserves native font faces, with glyph drawing pens
