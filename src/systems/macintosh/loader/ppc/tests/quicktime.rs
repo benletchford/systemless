@@ -4479,3 +4479,45 @@ fn quicktime_controller_idle_delivers_due_guest_callback_once() {
         assert_eq!(loaded.memory.read_u32_be(observed + 8), Some(0xdeadbeef));
     }
 }
+
+
+#[test]
+fn quicktime_callback_type_returns_signed_short_flags_and_preserves_time_base() {
+    use PpcQuickTimeCompatibilityOperation as Op;
+    for library in [
+        b"QuickTimeLib".as_slice(),
+        b"Apple;Carbon;Multimedia".as_slice(),
+    ] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_library_import(library, b"NewCallBack"))
+                .unwrap();
+        for (kind, result) in [(1, 1), (0x4001, 0x4001), (0x8001, 0xffff8001)] {
+            loaded.cpu.gpr[3] = PPC_QT_MOVIE + 0x10;
+            loaded.cpu.gpr[4] = kind;
+            run_quicktime_callback_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::QuickTimeCompatibility(Op::NewCallBack),
+            );
+            let callback = loaded.cpu.gpr[3];
+            assert_ne!(callback, 0);
+            loaded.cpu.gpr[3] = callback;
+            run_quicktime_callback_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::QuickTimeCompatibility(Op::GetCallBackType),
+            );
+            assert_eq!(loaded.cpu.gpr[3], result);
+            loaded.cpu.gpr[3] = callback;
+            run_quicktime_callback_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::QuickTimeCompatibility(Op::GetCallBackTimeBase),
+            );
+            assert_eq!(loaded.cpu.gpr[3], PPC_QT_MOVIE + 0x10);
+            loaded.cpu.gpr[3] = callback;
+            run_quicktime_callback_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::QuickTimeCompatibility(Op::DisposeCallBack),
+            );
+            assert!(loaded.quicktime.callbacks.get(callback).is_none());
+        }
+    }
+}

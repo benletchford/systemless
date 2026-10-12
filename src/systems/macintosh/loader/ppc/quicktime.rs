@@ -413,7 +413,7 @@ pub(super) fn dispatch_quicktime_compatibility(
             PpcImportAction::Return(ppc_i16_result(if armed { PPC_NO_ERR } else { PPC_PARAM_ERR }))
         }
         PpcQuickTimeCompatibilityOperation::GetCallBackType => {
-            PpcImportAction::Return(quicktime.callbacks.get(cpu.gpr[3]).map_or(0, |record| u32::from(record.kind)))
+            PpcImportAction::Return(quicktime.callbacks.get(cpu.gpr[3]).map_or(0, |record| ppc_i16_result(record.kind as i16)))
         }
         PpcQuickTimeCompatibilityOperation::GetCallBackTimeBase => {
             PpcImportAction::Return(quicktime.callbacks.get(cpu.gpr[3]).map_or(0, |record| record.time_base))
