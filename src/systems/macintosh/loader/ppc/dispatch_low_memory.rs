@@ -307,6 +307,18 @@ pub(super) fn dispatch_low_memory_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::LMGetHiliteMode => Some(
+            memory
+                .read_u8(crate::memory::globals::addr::HILITE_MODE)
+                .map_or(PpcImportAction::Halt, |value| {
+                    PpcImportAction::Return(u32::from(value))
+                }),
+        ),
+        PpcImportDispatcherTarget::LMSetHiliteMode => Some(
+            memory
+                .write_u8(crate::memory::globals::addr::HILITE_MODE, cpu.gpr[3] as u8)
+                .map_or(PpcImportAction::Halt, |_| PpcImportAction::ReturnPreserve),
+        ),
         PpcImportDispatcherTarget::LMGetRndSeed => Some(PpcImportAction::Return(
             memory.read_u32_be(PPC_RAND_SEED_ADDR).unwrap_or(1),
         )),

@@ -184,6 +184,8 @@ pub mod addr {
     /// DTQueue: deferred task queue header (qFlags, qHead, qTail).
     /// Inside Macintosh Volume V (1986), low-memory globals table, p. V-571.
     pub const DT_QUEUE: u32 = 0x0D92;
+    /// QuickDraw HiliteMode byte, shared by low-memory accessors.
+    pub const HILITE_MODE: u32 = 0x0938;
     /// System highlight RGBColor (three big-endian words).
     pub const HILITE_RGB: u32 = 0x0DA0;
 
