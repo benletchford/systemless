@@ -51,3 +51,21 @@ A fresh isolated pilot run (`/tmp/wgpu-master-evidence/receipts`) completed 920 
 Source inspection finds no winit IME event handling, composition state, candidate-window positioning or accessibility semantic tree in this master-based demo. Ordinary keyboard editing is therefore not evidence of IME or screen-reader support. A proper integration needs guest-owned selection/text mutation, composition cancellation and focus handling, candidate positioning through the viewport transform, and semantic nodes/actions whose state comes from guest snapshots. The locked Mac prevents a native behavioral probe; none is claimed here.
 
 Do not migrate on the present evidence. The prototype demonstrates direct control of rendering, guest geometry and framebuffer fallback with no GPUI dependency. It also exposes platform-service work that wgpu itself does not provide. Equivalent native measurements and platform integration validation remain required to decide whether that additional ownership yields enough simplicity or measurable improvement. The earlier PR-based experiment is not a substitute for this master-based comparison.
+
+## Preliminary equivalent pilot capture
+
+The GPUI reference binary also completed the same 24 raw inputs across 920 publications, with an inspected 800×600 GPU capture (`/tmp/wgpu-master-evidence/gpui-pilot.png`). Its snapshot reports the same dialog bounds `[237,266,382,534]` and item rectangles; the capture shows `WGPU Pilot`, caret and checked Strict Play. GPUI renders rounded themed controls and smoother text; this demo renders bitmap guest-font text and classic rectangular controls. Matching geometry and state does not mean pixel-identical custom-control styling.
+
+These individual process measurements include startup and final capture:
+
+| Metric | Master wgpu | GPUI reference |
+| --- | ---: | ---: |
+| User CPU seconds | 4.04 | 5.27 |
+| System CPU seconds | 0.86 | 0.27 |
+| Maximum RSS bytes | 153,927,680 | 167,460,864 |
+| Peak footprint bytes | 136,414,120 | 143,229,888 |
+| Wall seconds | 17.41 | 15.78 |
+
+Do not interpret this table as a renderer speedup. The GPUI capture disables host services, while master uses production audio and saves. The branches also have different guest-runtime implementations, startup paths and capture costs. Both use optimized `ci-test` builds and the same media/input script; the GPUI binary includes comparison instrumentation in addition to the reference PR. Binary and input identities accompany the captures. Repeated runs with controlled host services and equivalent timing scopes, followed by native presentation measurements, remain necessary.
+
+The GPUI reference source has composition range/marked-text/candidate-bounds handling in `gpui_demo_composition.rs` and semantic text runs, selection and action support in `gpui_demo_a11y.rs`. This establishes an integration surface that the current wgpu demo lacks; it does not establish that either implementation passes real OS IME or assistive-technology testing.
