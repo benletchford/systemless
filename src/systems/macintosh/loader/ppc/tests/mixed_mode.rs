@@ -4087,3 +4087,83 @@ fn get_keys_import_adapts_pointer_for_live_classic_trap_patch() {
     assert_eq!(loaded.memory.read_u32_be(pending.initial_sp + 4), Some(OUTPUT));
     assert_eq!(pending.final_sp, pending.initial_sp + 8);
 }
+
+#[test]
+fn display_mode_iterator_upp_constructs_calls_and_disposes_native_callback() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"CarbonLib",
+        b"NewDMDisplayModeListIteratorUPP",
+    ))
+    .unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::NewDMDisplayModeListIteratorUPP
+    );
+    let callback = PPC_CODE_BASE + 0x4000;
+    let vector = PPC_DATA_BASE + 0x1000;
+    let outputs = PPC_DATA_BASE + 0x1100;
+    let observed = PPC_DATA_BASE + 0x1200;
+    loaded.memory.add_region(
+        callback,
+        [0x90830000u32, 0x90A30004, 0x4E800020]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    loaded.memory.add_region(
+        vector,
+        [callback, PPC_DATA_BASE]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    loaded.memory.add_region(outputs, vec![0; 8]);
+    loaded.memory.add_region(observed, vec![0xA5; 8]);
+    loaded.cpu.gpr[3] = vector;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::NewDMDisplayModeListIteratorUPP,
+    );
+    let upp = loaded.cpu.gpr[3];
+    assert_ne!(upp, 0);
+    assert_ne!(upp, vector);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(upp + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE),
+        Some(dispatch_mixed_mode::PPC_DM_DISPLAY_MODE_ITERATOR_PROC_INFO)
+    );
+    loaded.cpu.gpr[3] = PPC_DSP_DISPLAY_ID;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = outputs;
+    loaded.cpu.gpr[7] = outputs + 4;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DMNewDisplayModeList);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let list = loaded.memory.read_u32_be(outputs + 4).unwrap();
+    loaded.cpu.gpr[3] = list;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = upp;
+    loaded.cpu.gpr[7] = observed;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target =
+        PpcImportDispatcherTarget::DMGetIndexedDisplayModeFromList;
+    let probe = loaded.run_with_hle_imports(512);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(observed), Some(0));
+    assert_eq!(
+        loaded.memory.read_u32_be(observed + 4),
+        Some(list + PPC_DM_MODE_LIST_ENTRY_OFFSET)
+    );
+    loaded.cpu.gpr[3] = upp;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::DisposeDMDisplayModeListIteratorUPP,
+    );
+    assert_eq!(loaded.cpu.gpr[3], upp);
+    assert!(!loaded.toolbox_startup.system_allocations.release(upp));
+    assert_eq!(loaded.memory.read_u32_be(vector), Some(callback));
+}
