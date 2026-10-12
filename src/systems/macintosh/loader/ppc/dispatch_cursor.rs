@@ -180,6 +180,26 @@ pub(super) fn dispatch_cursor_import(
             let result = ppc_plot_cicon_with_options(&params, cpu.gpr[4] as u16, cpu.gpr[5] as u16, memory, gworlds, current_gworld, screen_clut);
             Some(PpcImportAction::Return(ppc_i16_result(result.err().unwrap_or(0))))
         }
+        PpcImportDispatcherTarget::PlotIconID => {
+            let result = ppc_plot_icon_id(
+                cpu.gpr[3],
+                cpu.gpr[4] as u16,
+                cpu.gpr[5] as u16,
+                cpu.gpr[6] as u16 as i16,
+                memory,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                vfs_resources,
+                current_resource_refnum,
+                gworlds,
+                current_gworld,
+                screen_clut,
+            );
+            Some(PpcImportAction::Return(ppc_i16_result(
+                result.err().unwrap_or(0),
+            )))
+        }
         PpcImportDispatcherTarget::DisposeCIcon => {
             let params = crate::cursor_manager::evaluate_dispose_cicon_parameters(cpu.gpr[3]);
             ppc_dispose_cicon(
@@ -867,4 +887,134 @@ fn ppc_get_cursor(
         true,
         last_resource_error,
     )
+}
+
+// Icons.h: PlotIconID draws an icon family from the current resource chain.
+#[allow(clippy::too_many_arguments)]
+fn ppc_plot_icon_id(
+    rect: u32,
+    alignment: u16,
+    transform: u16,
+    id: i16,
+    memory: &mut PpcSectionMem,
+    allocator: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    resources: &[PpcVfsResourceRecord],
+    refnum: i16,
+    gworlds: &[PpcGWorldRecord],
+    port: u32,
+    screen_clut: &[[u16; 3]; 256],
+) -> Result<bool, i16> {
+    if alignment & !0xF != 0 || transform & !0x4703 != 0 {
+        return Err(PPC_PARAM_ERR);
+    }
+    let (t, l, b, r) = ppc_read_rect(memory, rect).ok_or(PPC_PARAM_ERR)?;
+    let surface = ppc_live_quickdraw_surface(memory, gworlds, port).ok_or(PPC_PARAM_ERR)?;
+    let small = i32::from(b) - i32::from(t) <= 16 && i32::from(r) - i32::from(l) <= 16;
+    let mini = small && i32::from(b) - i32::from(t) <= 12;
+    let families = if mini {
+        [2, 1, 0]
+    } else if small {
+        [1, 2, 0]
+    } else {
+        [0, 1, 2]
+    };
+    for family in families {
+        let (width, height, mono, color4, color8) = match family {
+            0 => (32usize, 32usize, *b"ICN#", *b"icl4", *b"icl8"),
+            1 => (16, 16, *b"ics#", *b"ics4", *b"ics8"),
+            _ => (16, 12, *b"icm#", *b"icm4", *b"icm8"),
+        };
+        let find = |kind: [u8; 4]| {
+            ppc_vfs_resource_index(resources, refnum, u32::from_be_bytes(kind), id, false)
+                .map(|index| resources[index].data.as_slice())
+        };
+        let Some(bitmap) = find(mono) else {
+            continue;
+        };
+        let plane = width * height / 8;
+        if bitmap.len() < plane * 2 {
+            return Err(PPC_PARAM_ERR);
+        }
+        let (depth, pixels) = if surface.front_buffer.depth >= 8 {
+            if let Some(data) = find(color8) {
+                (8u16, data)
+            } else if let Some(data) = find(color4) {
+                (4, data)
+            } else {
+                (1, &bitmap[..plane])
+            }
+        } else if surface.front_buffer.depth >= 4 {
+            if let Some(data) = find(color4) {
+                (4, data)
+            } else {
+                (1, &bitmap[..plane])
+            }
+        } else {
+            (1, &bitmap[..plane])
+        };
+        let pixel_len = plane * usize::from(depth);
+        if pixels.len() < pixel_len {
+            return Err(PPC_PARAM_ERR);
+        }
+        let (palette, count) =
+            crate::trap::TrapDispatcher::standard_mac_indexed_clut(depth).ok_or(PPC_PARAM_ERR)?;
+        let table_offset = 90 + plane;
+        let pixels_offset = table_offset + 8 + count * 8;
+        let mut bytes = vec![0u8; pixels_offset + pixel_len];
+        // Private live CIcon record plus inline master pointers, mask, CLUT and pixels.
+        bytes[4..6]
+            .copy_from_slice(&((width * usize::from(depth) / 8) as u16 | 0x8000).to_be_bytes());
+        bytes[10..12].copy_from_slice(&(height as u16).to_be_bytes());
+        bytes[12..14].copy_from_slice(&(width as u16).to_be_bytes());
+        bytes[32..34].copy_from_slice(&depth.to_be_bytes());
+        bytes[54..56].copy_from_slice(&((width / 8) as u16).to_be_bytes());
+        bytes[60..62].copy_from_slice(&(height as u16).to_be_bytes());
+        bytes[62..64].copy_from_slice(&(width as u16).to_be_bytes());
+        bytes[90..table_offset].copy_from_slice(&bitmap[plane..plane * 2]);
+        bytes[table_offset + 6..table_offset + 8]
+            .copy_from_slice(&((count - 1) as u16).to_be_bytes());
+        for (index, color) in palette.iter().take(count).enumerate() {
+            let offset = table_offset + 8 + index * 8;
+            bytes[offset..offset + 2].copy_from_slice(&(index as u16).to_be_bytes());
+            for (channel, value) in color.iter().enumerate() {
+                bytes[offset + 2 + channel * 2..offset + 4 + channel * 2]
+                    .copy_from_slice(&value.to_be_bytes());
+            }
+        }
+        bytes[pixels_offset..].copy_from_slice(&pixels[..pixel_len]);
+        let base = allocator.new_native_ptr(memory, bytes.len() as u32, true);
+        ppc_apply_process_native_allocator(allocator, memory, heap_cursor, last_mem_error);
+        if base == 0 {
+            return Err(PPC_MEM_FULL_ERR);
+        }
+        for (offset, pointer) in [
+            (0, base + pixels_offset as u32),
+            (42, base + 86),
+            (50, base + 90),
+            (82, base),
+            (86, base + table_offset as u32),
+        ] {
+            bytes[offset..offset + 4].copy_from_slice(&pointer.to_be_bytes());
+        }
+        let result = if memory.write_bytes(base, &bytes).is_some() {
+            let params = crate::cursor_manager::evaluate_plot_cicon_parameters(rect, base + 82);
+            ppc_plot_cicon_with_options(
+                &params,
+                alignment,
+                transform,
+                memory,
+                gworlds,
+                port,
+                screen_clut,
+            )
+        } else {
+            Err(PPC_MEM_FULL_ERR)
+        };
+        let _ = allocator.dispose_native_ptr(base);
+        ppc_apply_process_native_allocator(allocator, memory, heap_cursor, last_mem_error);
+        return result;
+    }
+    Err(PPC_RES_NOT_FOUND_ERR)
 }

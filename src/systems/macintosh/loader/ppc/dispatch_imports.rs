@@ -1628,6 +1628,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DisposeCCursor
         | PpcImportDispatcherTarget::GetCIcon
         | PpcImportDispatcherTarget::PlotCIcon
+        | PpcImportDispatcherTarget::PlotIconID
         | PpcImportDispatcherTarget::PlotCIconHandle
         | PpcImportDispatcherTarget::DisposeCIcon => {
             unreachable!("cursor and cicon imports return through dispatch_cursor_import")

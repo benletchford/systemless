@@ -6418,3 +6418,137 @@ fn hle_plot_cicon_handle_preserves_mask_and_applies_options() {
         Some(77)
     );
 }
+
+#[test]
+fn hle_plot_icon_id_uses_current_resource_mask_and_returns_errors() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PlotIconID")).unwrap();
+    loaded.set_current_resource_refnum(5);
+    for (refnum, index) in [(4, 0u8), (5, 255u8)] {
+        let mut mono = vec![0; 256];
+        mono[128] = 0x80;
+        for (kind, data) in [(*b"ICN#", mono), (*b"icl8", vec![index; 1024])] {
+            loaded
+                .process_file_system
+                .push_vfs_resource(PpcVfsResourceRecord {
+                    ref_num: refnum,
+                    path: format!("map{refnum}"),
+                    res_type: u32::from_be_bytes(kind),
+                    res_id: 128,
+                    name: vec![],
+                    data,
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                });
+        }
+    }
+    let rect = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rect, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect, 1, 2, 33, 34).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, *loaded.current_gworld).unwrap();
+    ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (2, 1), 17);
+    ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (3, 1), 17);
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = 128;
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let black = pict::closest_clut_index(0, 0, 0, &loaded.screen_clut);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+        Some(u16::from(black))
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (3, 1)),
+        Some(17)
+    );
+    assert_eq!(test_handle_records!(loaded).len(), 0);
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[6] = 129;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotIconID);
+    assert_eq!(loaded.cpu.gpr[3] as i32, i32::from(PPC_RES_NOT_FOUND_ERR));
+    loaded.cpu.gpr[3] = rect;
+    loaded.cpu.gpr[4] = 0x10;
+    loaded.cpu.gpr[6] = 128;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotIconID);
+    assert_eq!(loaded.cpu.gpr[3] as i32, i32::from(PPC_PARAM_ERR));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (3, 1)),
+        Some(17)
+    );
+}
+
+#[test]
+fn hle_plot_icon_id_monochrome_families_obey_port_clip_and_reject_short_masks() {
+    for (kind, width, height) in [
+        (*b"ICN#", 32usize, 32usize),
+        (*b"ics#", 16, 16),
+        (*b"icm#", 16, 12),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PlotIconID")).unwrap();
+        let plane = width * height / 8;
+        let mut data = vec![0xff; plane * 2];
+        data[plane] = 0xc0;
+        loaded.set_current_resource_refnum(5);
+        loaded
+            .process_file_system
+            .push_vfs_resource(PpcVfsResourceRecord {
+                ref_num: 5,
+                path: "family".into(),
+                res_type: u32::from_be_bytes(kind),
+                res_id: 128,
+                name: vec![],
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+        let rect = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(rect, vec![0; 8]);
+        ppc_write_rect(
+            &mut loaded.memory,
+            rect,
+            1,
+            2,
+            1 + height as i16,
+            2 + width as i16,
+        )
+        .unwrap();
+        let port = *loaded.current_gworld;
+        let clip = loaded
+            .memory
+            .read_u32_be(port + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+            .unwrap();
+        ppc_write_rgn_bbox(&mut loaded.memory, clip, 1, 2, 2, 3).unwrap();
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, port).unwrap();
+        for x in 2..4 {
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, 1), 17);
+        }
+        loaded.cpu.gpr[3] = rect;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = 128;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotIconID);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let black = pict::closest_clut_index(0, 0, 0, &loaded.screen_clut);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+            Some(u16::from(black))
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (3, 1)),
+            Some(17)
+        );
+        loaded
+            .process_file_system
+            .with_resource_manager_mut(|state| state.vfs_resources[0].data.truncate(plane));
+        loaded.cpu.gpr[3] = rect;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotIconID);
+        assert_eq!(loaded.cpu.gpr[3] as i32, i32::from(PPC_PARAM_ERR));
+    }
+}
