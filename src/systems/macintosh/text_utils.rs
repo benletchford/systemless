@@ -912,6 +912,22 @@ pub fn evaluate_text_order(
     }
 }
 
+/// Determines the sorting order of two Pascal strings with script and language codes (`StringOrder` / `IUStringOrder`).
+///
+/// References:
+/// - Inside Macintosh: Text (1993), p. 5-62, 5-85
+#[inline]
+pub fn evaluate_string_order(
+    a: &[u8],
+    b: &[u8],
+    a_script: i16,
+    b_script: i16,
+    a_lang: i16,
+    b_lang: i16,
+) -> i16 {
+    evaluate_text_order(a, b, a_script, b_script, a_lang, b_lang)
+}
+
 /// Returns whether the metric system is selected for the system script.
 ///
 /// Inside Macintosh Volume I, p. I-505. Defaults to false (U.S. standard measurement).
@@ -1018,6 +1034,57 @@ pub const PACK6_IU_SCRIPT_ORDER_SELECTOR: u16 = 0x001E;
 pub const PACK6_IU_LANG_ORDER_SELECTOR: u16 = 0x0020;
 pub const PACK6_IU_TEXT_ORDER_SELECTOR: u16 = 0x0022;
 pub const PACK6_IU_GET_INTL_TABLE_SELECTOR: u16 = 0x0024;
+
+/// International Utilities and Script Manager table selectors for GetIntlResourceTable / IUGetIntlTable
+/// (Inside Macintosh Volume VI, p. 14-135; Inside Macintosh: Text, p. 6-86).
+pub const SM_WORD_SELECT_TABLE: i16 = 0;
+pub const SM_WORD_WRAP_TABLE: i16 = 1;
+pub const SM_NUMBER_PARTS_TABLE: i16 = 2;
+pub const SM_UN_TOKEN_TABLE: i16 = 3;
+pub const SM_WHITE_SPACE_LIST: i16 = 4;
+
+pub const IU_WORD_SELECT_TABLE: i16 = SM_WORD_SELECT_TABLE;
+pub const IU_WORD_WRAP_TABLE: i16 = SM_WORD_WRAP_TABLE;
+pub const IU_NUMBER_PARTS_TABLE: i16 = SM_NUMBER_PARTS_TABLE;
+pub const IU_UN_TOKEN_TABLE: i16 = SM_UN_TOKEN_TABLE;
+pub const IU_WHITE_SPACE_LIST: i16 = SM_WHITE_SPACE_LIST;
+
+/// Target resource classification for international tables accessed via GetIntlResourceTable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntlResourceTableKind {
+    /// Word-break table in 'itl2'.
+    WordSelect,
+    /// Line-break table in 'itl2'.
+    WordWrap,
+    /// Number-parts table in 'itl4'.
+    NumberParts,
+    /// Untoken table in 'itl4'.
+    UnToken,
+    /// Whitespace list in 'itl4'.
+    WhiteSpace,
+}
+
+impl IntlResourceTableKind {
+    /// Resolves an international table selector code into its table kind.
+    pub fn from_table_code(table_code: i16) -> Option<Self> {
+        match table_code {
+            0 => Some(Self::WordSelect),
+            1 => Some(Self::WordWrap),
+            2 => Some(Self::NumberParts),
+            3 => Some(Self::UnToken),
+            4 => Some(Self::WhiteSpace),
+            _ => None,
+        }
+    }
+
+    /// Resource tag containing the requested table ('itl2' or 'itl4').
+    pub fn target_resource_tag(&self) -> &'static [u8; 4] {
+        match self {
+            Self::WordSelect | Self::WordWrap => b"itl2",
+            Self::NumberParts | Self::UnToken | Self::WhiteSpace => b"itl4",
+        }
+    }
+}
 
 /// Binary-Decimal Conversion Package (Pack7) trap word ($A9EE).
 pub const PACK7_TRAP: u16 = 0xA9EE;
@@ -1179,6 +1246,34 @@ pub const SM_CHAR_LEFT: i16 = 0;
 
 /// Right-to-left text direction for CharType (`smCharRight = 1`).
 pub const SM_CHAR_RIGHT: i16 = 1;
+
+/// CharacterType field masks and bit shifts (Inside Macintosh: Text, pp. 6-86 to 6-87).
+pub const SMC_TYPE_MASK: i16 = 0x000F;
+pub const SMC_RESERVED: i16 = 0x00F0;
+pub const SMC_CLASS_MASK: i16 = 0x0F00;
+pub const SMC_ORIENTATION_MASK: i16 = 0x1000;
+pub const SMC_RIGHT_MASK: i16 = 0x2000;
+pub const SMC_UPPER_MASK: i16 = 0x4000;
+pub const SMC_DOUBLE_MASK: i16 = -0x8000;
+
+/// Character types for CharacterType (Inside Macintosh: Text, pp. 6-28 to 6-29).
+pub const SM_CHAR_TYPE_PUNCT: i16 = 0x0000;
+pub const SM_CHAR_TYPE_ASCII: i16 = 0x0001;
+pub const SM_CHAR_TYPE_EXT_ASCII: i16 = 0x0007;
+
+/// Character classes for punctuation in CharacterType (Inside Macintosh: Text, p. 6-29).
+pub const SM_PUNCT_NORMAL: i16 = 0x0000;
+pub const SM_PUNCT_NUMBER: i16 = 0x0100;
+pub const SM_PUNCT_SYMBOL: i16 = 0x0200;
+pub const SM_PUNCT_BLANK: i16 = 0x0300;
+
+/// Character orientation, case, and size modifiers for CharacterType.
+pub const SM_CHAR_HORIZONTAL: i16 = 0x0000;
+pub const SM_CHAR_VERTICAL: i16 = 0x1000;
+pub const SM_CHAR_LOWER: i16 = 0x0000;
+pub const SM_CHAR_UPPER: i16 = 0x4000;
+pub const SM_CHAR_1BYTE: i16 = 0x0000;
+pub const SM_CHAR_2BYTE: i16 = -0x8000;
 
 /// GetEnvirons / GetScriptManagerVariable selector (8).
 pub const GET_ENVIRONS_SELECTOR: i32 = 8;
@@ -2975,6 +3070,102 @@ mod tests {
     }
 
     #[test]
+    fn test_string_order() {
+        assert_eq!(evaluate_string_order(b"abc", b"xyz", 0, 1, 0, 0), -1);
+        assert_eq!(evaluate_string_order(b"xyz", b"abc", 2, 1, 0, 0), 1);
+        assert_eq!(evaluate_string_order(b"abc", b"xyz", 0, 0, 0, 1), -1);
+        assert_eq!(evaluate_string_order(b"xyz", b"abc", 0, 0, 2, 1), 1);
+        assert_eq!(evaluate_string_order(b"apple", b"banana", 0, 0, 0, 0), -1);
+        assert_eq!(evaluate_string_order(b"apple", b"apple", 0, 0, 0, 0), 0);
+        assert_eq!(evaluate_string_order(b"banana", b"apple", 0, 0, 0, 0), 1);
+    }
+
+    #[test]
+    fn test_intl_resource_table_kind_and_selectors() {
+        assert_eq!(SM_WORD_SELECT_TABLE, 0);
+        assert_eq!(SM_WORD_WRAP_TABLE, 1);
+        assert_eq!(SM_NUMBER_PARTS_TABLE, 2);
+        assert_eq!(SM_UN_TOKEN_TABLE, 3);
+        assert_eq!(SM_WHITE_SPACE_LIST, 4);
+
+        assert_eq!(IU_WORD_SELECT_TABLE, 0);
+        assert_eq!(IU_WORD_WRAP_TABLE, 1);
+        assert_eq!(IU_NUMBER_PARTS_TABLE, 2);
+        assert_eq!(IU_UN_TOKEN_TABLE, 3);
+        assert_eq!(IU_WHITE_SPACE_LIST, 4);
+
+        assert_eq!(
+            IntlResourceTableKind::from_table_code(0),
+            Some(IntlResourceTableKind::WordSelect)
+        );
+        assert_eq!(
+            IntlResourceTableKind::from_table_code(1),
+            Some(IntlResourceTableKind::WordWrap)
+        );
+        assert_eq!(
+            IntlResourceTableKind::from_table_code(2),
+            Some(IntlResourceTableKind::NumberParts)
+        );
+        assert_eq!(
+            IntlResourceTableKind::from_table_code(3),
+            Some(IntlResourceTableKind::UnToken)
+        );
+        assert_eq!(
+            IntlResourceTableKind::from_table_code(4),
+            Some(IntlResourceTableKind::WhiteSpace)
+        );
+        assert_eq!(IntlResourceTableKind::from_table_code(5), None);
+
+        assert_eq!(
+            IntlResourceTableKind::WordSelect.target_resource_tag(),
+            b"itl2"
+        );
+        assert_eq!(
+            IntlResourceTableKind::WordWrap.target_resource_tag(),
+            b"itl2"
+        );
+        assert_eq!(
+            IntlResourceTableKind::NumberParts.target_resource_tag(),
+            b"itl4"
+        );
+        assert_eq!(
+            IntlResourceTableKind::UnToken.target_resource_tag(),
+            b"itl4"
+        );
+        assert_eq!(
+            IntlResourceTableKind::WhiteSpace.target_resource_tag(),
+            b"itl4"
+        );
+    }
+
+    #[test]
+    fn test_character_classification_constants_and_masks() {
+        assert_eq!(SMC_TYPE_MASK, 0x000F);
+        assert_eq!(SMC_RESERVED, 0x00F0);
+        assert_eq!(SMC_CLASS_MASK, 0x0F00);
+        assert_eq!(SMC_ORIENTATION_MASK, 0x1000);
+        assert_eq!(SMC_RIGHT_MASK, 0x2000);
+        assert_eq!(SMC_UPPER_MASK, 0x4000);
+        assert_eq!(SMC_DOUBLE_MASK, -0x8000);
+
+        assert_eq!(SM_CHAR_TYPE_PUNCT, 0x0000);
+        assert_eq!(SM_CHAR_TYPE_ASCII, 0x0001);
+        assert_eq!(SM_CHAR_TYPE_EXT_ASCII, 0x0007);
+
+        assert_eq!(SM_PUNCT_NORMAL, 0x0000);
+        assert_eq!(SM_PUNCT_NUMBER, 0x0100);
+        assert_eq!(SM_PUNCT_SYMBOL, 0x0200);
+        assert_eq!(SM_PUNCT_BLANK, 0x0300);
+
+        assert_eq!(SM_CHAR_HORIZONTAL, 0x0000);
+        assert_eq!(SM_CHAR_VERTICAL, 0x1000);
+        assert_eq!(SM_CHAR_LOWER, 0x0000);
+        assert_eq!(SM_CHAR_UPPER, 0x4000);
+        assert_eq!(SM_CHAR_1BYTE, 0x0000);
+        assert_eq!(SM_CHAR_2BYTE, -0x8000);
+    }
+
+    #[test]
     fn test_pack6_constants() {
         assert_eq!(PACK6_TRAP, 0xA9ED);
         assert_eq!(PACK6_TRAP_OFFSET, 0x01ED);
@@ -2987,5 +3178,6 @@ mod tests {
         assert_eq!(PACK6_IU_SCRIPT_ORDER_SELECTOR, 0x001E);
         assert_eq!(PACK6_IU_LANG_ORDER_SELECTOR, 0x0020);
         assert_eq!(PACK6_IU_TEXT_ORDER_SELECTOR, 0x0022);
+        assert_eq!(PACK6_IU_GET_INTL_TABLE_SELECTOR, 0x0024);
     }
 }

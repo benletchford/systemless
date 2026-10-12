@@ -587,8 +587,7 @@ impl super::TrapDispatcher {
             let anchor = bus.alloc_synthetic(14);
             if anchor != 0 {
                 bus.write_word(anchor + 4, 1); // vType
-                self.callback_scheduling
-                    .set_system_vbl_queue_anchor(anchor);
+                self.callback_scheduling.set_system_vbl_queue_anchor(anchor);
             }
         }
 
@@ -700,14 +699,14 @@ impl super::TrapDispatcher {
         } else {
             0
         };
-        match notification_manager::evaluate_nm_remove(
-            nm_rec,
-            q_type,
-            &self.notification_requests,
-        ) {
+        match notification_manager::evaluate_nm_remove(nm_rec, q_type, &self.notification_requests)
+        {
             Ok(action) => {
                 self.notification_requests.remove(action.queue_index);
-                bus.write_long(action.clear_link_ptr + notification_manager::Q_LINK_OFFSET, 0);
+                bus.write_long(
+                    action.clear_link_ptr + notification_manager::Q_LINK_OFFSET,
+                    0,
+                );
                 if let Some((previous, next)) = action.update_link {
                     bus.write_long(previous + notification_manager::Q_LINK_OFFSET, next);
                 }
@@ -728,8 +727,7 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let trampoline =
-            bus.alloc(notification_manager::NOTIFICATION_TRAMPOLINE_SIZE as u32);
+        let trampoline = bus.alloc(notification_manager::NOTIFICATION_TRAMPOLINE_SIZE as u32);
         if trampoline == 0 {
             return;
         }
@@ -816,9 +814,13 @@ impl super::TrapDispatcher {
                 self.current_tick(), task_ptr, q_type, vbl_addr, vbl_count, vbl_phase, slot
             );
         }
-        let eval = crate::time_manager::evaluate_v_install(task_ptr, q_type, vbl_count, vbl_phase, slot);
+        let eval =
+            crate::time_manager::evaluate_v_install(task_ptr, q_type, vbl_count, vbl_phase, slot);
         if eval.result == crate::time_manager::NO_ERR {
-            bus.write_word(task_ptr + crate::time_manager::VBL_COUNT_OFFSET, eval.initial_count);
+            bus.write_word(
+                task_ptr + crate::time_manager::VBL_COUNT_OFFSET,
+                eval.initial_count,
+            );
             self.vbl_tasks.with_mut(|vbl_tasks| {
                 vbl_tasks.retain(|task| task.task_ptr != task_ptr);
                 vbl_tasks.push(super::dispatch::VblTask {
@@ -938,23 +940,14 @@ impl super::TrapDispatcher {
         memory_manager.process_ptr_size(bus, ptr)
     }
 
-    fn set_process_ptr_size(
-        &mut self,
-        bus: &mut MacMemoryBus,
-        ptr: u32,
-        new_size: u32,
-    ) -> u32 {
+    fn set_process_ptr_size(&mut self, bus: &mut MacMemoryBus, ptr: u32, new_size: u32) -> u32 {
         let memory_manager = self.process_memory_manager();
         let mut memory_manager = memory_manager.borrow_mut();
         memory_manager.attach_classic_memory_bus(bus);
         memory_manager.set_process_ptr_size(bus, ptr, new_size) as i32 as u32
     }
 
-    fn process_handle_size(
-        &self,
-        bus: &mut MacMemoryBus,
-        handle: u32,
-    ) -> Option<u32> {
+    pub(crate) fn process_handle_size(&self, bus: &mut MacMemoryBus, handle: u32) -> Option<u32> {
         let memory_manager = self.process_memory_manager();
         memory_manager.borrow_mut().attach_classic_memory_bus(bus);
         let memory_manager = memory_manager.borrow();
@@ -1234,11 +1227,8 @@ impl super::TrapDispatcher {
                     // Classic disposal retains the stale reverse index until
                     // the freed master-pointer slot is reused, matching the
                     // RecoverHandle scan described in IM:V V-579.
-                    let disposal = self.dispose_process_handle(
-                        bus,
-                        handle,
-                        resource_backing.is_none(),
-                    );
+                    let disposal =
+                        self.dispose_process_handle(bus, handle, resource_backing.is_none());
                     if let Err(error) = disposal {
                         write_memory_result(cpu, bus, error);
                         return Some(Ok(()));
@@ -1939,7 +1929,8 @@ impl super::TrapDispatcher {
                                             {
                                                 file.loaded.insert((res_type, res_id), new_ptr);
                                             }
-                                            for ((named_type, _), (named_id, ptr)) in &mut file.named
+                                            for ((named_type, _), (named_id, ptr)) in
+                                                &mut file.named
                                             {
                                                 if *named_type == res_type
                                                     && *named_id == res_id
@@ -2106,9 +2097,7 @@ impl super::TrapDispatcher {
                 let memory_manager = self.process_memory_manager();
                 let handle = memory_manager
                     .borrow()
-                    .recover_handle_from_master_pointer(ptr, |handle| {
-                        Some(bus.read_long(handle))
-                    })
+                    .recover_handle_from_master_pointer(ptr, |handle| Some(bus.read_long(handle)))
                     .unwrap_or(0);
                 cpu.write_reg(Register::A0, handle);
                 cpu.write_reg(Register::D0, 0);
@@ -2167,7 +2156,9 @@ impl super::TrapDispatcher {
                 );
                 let action = crate::time_manager::evaluate_ins_time(task_ptr, q_type, extended);
                 if action.is_valid() {
-                    if !action.extended || bus.read_long(task_ptr + crate::time_manager::TM_WAKE_UP_OFFSET) == 0 {
+                    if !action.extended
+                        || bus.read_long(task_ptr + crate::time_manager::TM_WAKE_UP_OFFSET) == 0
+                    {
                         self.callback_scheduling.remove_extended_wakeup(task_ptr);
                     }
                     self.timer_tasks.with_mut(|timer_tasks| {
@@ -2184,7 +2175,10 @@ impl super::TrapDispatcher {
                         });
                     });
                     self.sync_time_task_links(bus);
-                    bus.write_word(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET, action.cleared_q_type);
+                    bus.write_word(
+                        task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET,
+                        action.cleared_q_type,
+                    );
                 }
                 Ok(())
             }
@@ -2212,11 +2206,18 @@ impl super::TrapDispatcher {
                     active_fire_at,
                 );
                 if eval.is_valid() {
-                    self.timer_tasks
-                        .with_mut(|timer_tasks| timer_tasks.retain(|task| task.task_ptr != task_ptr));
+                    self.timer_tasks.with_mut(|timer_tasks| {
+                        timer_tasks.retain(|task| task.task_ptr != task_ptr)
+                    });
                     self.sync_time_task_links(bus);
-                    bus.write_long(task_ptr + crate::time_manager::TM_COUNT_OFFSET, eval.remaining_count as u32);
-                    bus.write_word(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET, eval.cleared_q_type);
+                    bus.write_long(
+                        task_ptr + crate::time_manager::TM_COUNT_OFFSET,
+                        eval.remaining_count as u32,
+                    );
+                    bus.write_word(
+                        task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET,
+                        eval.cleared_q_type,
+                    );
                 }
                 Ok(())
             }
@@ -2237,7 +2238,9 @@ impl super::TrapDispatcher {
                     .find(|task| task.task_ptr == task_ptr)
                     .map(|task| task.extended)
                     .unwrap_or(false);
-                let prior_wakeup = if is_extended && bus.read_long(task_ptr + crate::time_manager::TM_WAKE_UP_OFFSET) != 0 {
+                let prior_wakeup = if is_extended
+                    && bus.read_long(task_ptr + crate::time_manager::TM_WAKE_UP_OFFSET) != 0
+                {
                     self.callback_scheduling.extended_wakeup(task_ptr)
                 } else {
                     None
@@ -2252,19 +2255,27 @@ impl super::TrapDispatcher {
                     prior_wakeup,
                 );
                 if eval.is_valid() {
-                    if let (Some(intended), Some(opaque)) = (eval.intended_wakeup, eval.opaque_wakeup) {
-                        self.callback_scheduling.set_extended_wakeup(task_ptr, intended);
+                    if let (Some(intended), Some(opaque)) =
+                        (eval.intended_wakeup, eval.opaque_wakeup)
+                    {
+                        self.callback_scheduling
+                            .set_extended_wakeup(task_ptr, intended);
                         bus.write_long(task_ptr + crate::time_manager::TM_WAKE_UP_OFFSET, opaque);
                     }
                     self.timer_tasks.with_mut(|timer_tasks| {
-                        if let Some(task) = timer_tasks.iter_mut().find(|t| t.task_ptr == task_ptr) {
+                        if let Some(task) = timer_tasks.iter_mut().find(|t| t.task_ptr == task_ptr)
+                        {
                             task.active = true;
                             task.fire_at_tick = eval.fire_at_tick;
                             task.fire_at_subtick = eval.fire_at_subtick;
-                            task.callback = bus.read_long(task_ptr + crate::time_manager::TASK_ADDR_OFFSET);
+                            task.callback =
+                                bus.read_long(task_ptr + crate::time_manager::TASK_ADDR_OFFSET);
                         }
                     });
-                    bus.write_word(task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET, eval.primed_q_type);
+                    bus.write_word(
+                        task_ptr + crate::time_manager::TASK_Q_TYPE_OFFSET,
+                        eval.primed_q_type,
+                    );
                 }
                 Ok(())
             }
@@ -4690,8 +4701,6 @@ impl super::TrapDispatcher {
         Some(result)
     }
 }
-
-pub(crate) use crate::text_utils::mac_roman_to_upper;
 
 #[cfg(test)]
 mod tests;

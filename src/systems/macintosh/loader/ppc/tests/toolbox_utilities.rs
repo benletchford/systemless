@@ -338,7 +338,9 @@ fn iu_equal_pstring_uses_primary_roman_order_for_default_script() {
     loaded.cpu.gpr[4] = right_ptr;
     loaded.cpu.gpr[5] = PPC_HEAP_BASE;
     let probe = loaded.run_with_hle_imports(64);
-    assert_eq!(probe.unsupported_import_index, Some(0));
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 1);
 }
 
 #[test]
@@ -796,189 +798,250 @@ fn import_bindings_classify_timing_and_date_imports() {
 
 #[test]
 fn import_bindings_classify_text_and_conversion_imports() {
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "SysEnvirons"),
-        PpcImportDispatcherTarget::SysEnvirons
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "TextWidth"),
-        PpcImportDispatcherTarget::TextWidth
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "StringWidth"),
-        PpcImportDispatcherTarget::StringWidth
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "EqualString"),
-        PpcImportDispatcherTarget::EqualString
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "X2Fix"),
-        PpcImportDispatcherTarget::X2Fix
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "NumToString"),
-        PpcImportDispatcherTarget::NumToString
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "StringToNum"),
-        PpcImportDispatcherTarget::StringToNum
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "Random"),
-        PpcImportDispatcherTarget::Random
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "p2cstr"),
-        PpcImportDispatcherTarget::P2CStr
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "c2pstr"),
-        PpcImportDispatcherTarget::C2PStr
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "ParseTable"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::ParseTable
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "PortionText"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::PortionText
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "FindScriptRun"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::FindScriptRun
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "FindWordBreaks"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::FindWordBreaks,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "GetFormatOrder"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::GetFormatOrder,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("CarbonLib", "GetFormatOrder"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::GetFormatOrder,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "Char2Pixel"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::Char2Pixel,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "Pixel2Char"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::Pixel2Char,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "DrawJust"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::DrawJust,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "MeasureJust"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::MeasureJust,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "Transliterate"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::Transliterate,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "CompareString"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::CompareString,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("CarbonLib", "CompareString"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::CompareString,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "IdenticalString"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::IdenticalString,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "CompareText"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::CompareText,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "IdenticalText"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::IdenticalText,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "IUMagString"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::IuMagString,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "IUMagIDString"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::IuMagIdString,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "ScriptOrder"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::IuScriptOrder,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "LanguageOrder"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::IuLangOrder,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "TextOrder"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::IuTextOrder,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "IUMetric"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::IuMetric,
-        )
-    );
-    assert_eq!(
-        dispatcher_target_for_import("InterfaceLib", "IUClearCache"),
-        PpcImportDispatcherTarget::SystemCompatibility(
-            crate::loader::ppc::PpcSystemCompatibilityOperation::IuClearCache,
-        )
-    );
     for (symbol, target) in [
+        ("SysEnvirons", PpcImportDispatcherTarget::SysEnvirons),
+        ("X2Fix", PpcImportDispatcherTarget::X2Fix),
+        ("Random", PpcImportDispatcherTarget::Random),
+        (
+            "CompareText",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::CompareText,
+            ),
+        ),
+        (
+            "IdenticalText",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IdenticalText,
+            ),
+        ),
+        (
+            "ScriptOrder",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuScriptOrder,
+            ),
+        ),
+        (
+            "LanguageOrder",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuLangOrder,
+            ),
+        ),
+        (
+            "TextOrder",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuTextOrder,
+            ),
+        ),
+    ] {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", symbol),
+            target,
+            "{symbol} in InterfaceLib"
+        );
+    }
+    for (symbol, target) in [
+        ("TextWidth", PpcImportDispatcherTarget::TextWidth),
+        ("StringWidth", PpcImportDispatcherTarget::StringWidth),
+        ("CharWidth", PpcImportDispatcherTarget::CharWidth),
+        ("MeasureText", PpcImportDispatcherTarget::MeasureText),
+        ("GetFontInfo", PpcImportDispatcherTarget::GetFontInfo),
+        ("FontMetrics", PpcImportDispatcherTarget::FontMetrics),
+        ("GetFNum", PpcImportDispatcherTarget::GetFNum),
+        ("GetSysFont", PpcImportDispatcherTarget::GetSysFont),
+        ("GetAppFont", PpcImportDispatcherTarget::GetAppFont),
+        ("GetDefFontSize", PpcImportDispatcherTarget::GetDefFontSize),
+        ("GetFontName", PpcImportDispatcherTarget::GetFontName),
+        ("EqualString", PpcImportDispatcherTarget::EqualString),
+        ("RelString", PpcImportDispatcherTarget::RelString),
+        ("IUEqualPString", PpcImportDispatcherTarget::IUEqualPString),
+        ("NumToString", PpcImportDispatcherTarget::NumToString),
+        ("StringToNum", PpcImportDispatcherTarget::StringToNum),
+        ("p2cstr", PpcImportDispatcherTarget::P2CStr),
+        ("P2CStr", PpcImportDispatcherTarget::P2CStr),
+        ("c2pstr", PpcImportDispatcherTarget::C2PStr),
+        ("C2PStr", PpcImportDispatcherTarget::C2PStr),
+        (
+            "CopyCStringToPascal",
+            PpcImportDispatcherTarget::CopyCStringToPascal,
+        ),
+        (
+            "CopyPascalStringToC",
+            PpcImportDispatcherTarget::CopyPascalStringToC,
+        ),
+        ("IsMetric", PpcImportDispatcherTarget::IsMetric),
+        (
+            "IUMetric",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuMetric,
+            ),
+        ),
+        (
+            "IUClearCache",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuClearCache,
+            ),
+        ),
+        (
+            "ClearIntlResourceCache",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuClearCache,
+            ),
+        ),
+        (
+            "IUDatePString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuDatePString,
+            ),
+        ),
+        (
+            "DateString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuDatePString,
+            ),
+        ),
+        (
+            "IUDateString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuDateString,
+            ),
+        ),
+        (
+            "IUTimePString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuTimePString,
+            ),
+        ),
+        (
+            "TimeString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuTimePString,
+            ),
+        ),
+        (
+            "IUTimeString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuTimeString,
+            ),
+        ),
+        (
+            "Char2Pixel",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::Char2Pixel,
+            ),
+        ),
+        (
+            "CharToPixel",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::Char2Pixel,
+            ),
+        ),
+        (
+            "Pixel2Char",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::Pixel2Char,
+            ),
+        ),
+        (
+            "PixelToChar",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::Pixel2Char,
+            ),
+        ),
+        (
+            "GetSysDirection",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::GetSysDirection,
+            ),
+        ),
+        (
+            "SetSysDirection",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::SetSysDirection,
+            ),
+        ),
+        (
+            "DrawJust",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::DrawJust,
+            ),
+        ),
+        (
+            "DrawJustified",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::DrawJust,
+            ),
+        ),
+        (
+            "MeasureJust",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::MeasureJust,
+            ),
+        ),
+        (
+            "MeasureJustified",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::MeasureJust,
+            ),
+        ),
+        (
+            "Transliterate",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::Transliterate,
+            ),
+        ),
+        (
+            "TransliterateText",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::Transliterate,
+            ),
+        ),
+        (
+            "UpperString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::UpperString,
+            ),
+        ),
+        (
+            "CompareString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::CompareString,
+            ),
+        ),
+        (
+            "IdenticalString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IdenticalString,
+            ),
+        ),
+        (
+            "IUMagString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuMagString,
+            ),
+        ),
+        (
+            "IUMagIDString",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::IuMagIdString,
+            ),
+        ),
+        (
+            "GetFormatOrder",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::GetFormatOrder,
+            ),
+        ),
         ("LowerText", PpcImportDispatcherTarget::LowerText),
+        ("LowercaseText", PpcImportDispatcherTarget::LowerText),
         ("StripText", PpcImportDispatcherTarget::StripText),
+        ("StripDiacritics", PpcImportDispatcherTarget::StripText),
         ("UpperText", PpcImportDispatcherTarget::UpperText),
+        ("UppercaseText", PpcImportDispatcherTarget::UpperText),
         ("StripUpperText", PpcImportDispatcherTarget::StripUpperText),
+        (
+            "UppercaseStripDiacritics",
+            PpcImportDispatcherTarget::StripUpperText,
+        ),
         (
             "GetIntlResource",
             PpcImportDispatcherTarget::GetIntlResource,
@@ -1125,7 +1188,19 @@ fn import_bindings_classify_text_and_conversion_imports() {
             ),
         ),
         (
+            "FillParseTable",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::ParseTable,
+            ),
+        ),
+        (
             "PortionText",
+            PpcImportDispatcherTarget::SystemCompatibility(
+                crate::loader::ppc::PpcSystemCompatibilityOperation::PortionText,
+            ),
+        ),
+        (
+            "PortionLine",
             PpcImportDispatcherTarget::SystemCompatibility(
                 crate::loader::ppc::PpcSystemCompatibilityOperation::PortionText,
             ),
@@ -1555,4 +1630,46 @@ fn ppc_string_order_import_aliases_resolve() {
             );
         }
     }
+}
+
+#[test]
+fn hle_import_runner_handles_clear_intl_resource_cache() {
+    let pef = synthetic_pef_with_import(b"ClearIntlResourceCache");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+}
+
+#[test]
+fn hle_import_runner_handles_is_metric() {
+    let pef = synthetic_pef_with_import(b"IsMetric");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn hle_import_runner_handles_draw_justified_and_measure_justified() {
+    let pef = synthetic_pef_with_import(b"DrawJustified");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+
+    let pef_m = synthetic_pef_with_import(b"MeasureJustified");
+    let mut loaded_m = load_pef_application(&pef_m).unwrap();
+    let text_ptr = PPC_DATA_BASE + 0x1000;
+    let locs_ptr = PPC_DATA_BASE + 0x2000;
+    loaded_m.memory.add_region(text_ptr, b"hello".to_vec());
+    loaded_m.memory.add_region(locs_ptr, vec![0; 12]);
+    loaded_m.cpu.gpr[3] = text_ptr;
+    loaded_m.cpu.gpr[4] = 5;
+    loaded_m.cpu.gpr[5] = 0;
+    loaded_m.cpu.gpr[6] = locs_ptr;
+    let probe_m = loaded_m.run_with_hle_imports(64);
+    assert_eq!(probe_m.handled_import_count, 1);
+    assert_eq!(probe_m.unsupported_import_index, None);
 }

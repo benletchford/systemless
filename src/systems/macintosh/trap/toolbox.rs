@@ -13321,6 +13321,23 @@ impl super::TrapDispatcher {
                             self.get_or_create_resource_handle_in_file(
                                 bus, *b"INTL", id, ptr, refnum,
                             )
+                        } else if let Some((refnum, ptr)) = match id {
+                            0 => self.find_or_load_resource_any(bus, *b"itl0", 0),
+                            1 => self.find_or_load_resource_any(bus, *b"itl1", 0),
+                            2 => self.find_or_load_resource_any(bus, *b"itl2", 0),
+                            4 => self.find_or_load_resource_any(bus, *b"itl4", 0),
+                            5 => self.find_or_load_resource_any(bus, *b"itl5", 0),
+                            _ => None,
+                        } {
+                            let tag = match id {
+                                0 => *b"itl0",
+                                1 => *b"itl1",
+                                2 => *b"itl2",
+                                4 => *b"itl4",
+                                5 => *b"itl5",
+                                _ => *b"INTL",
+                            };
+                            self.get_or_create_resource_handle_in_file(bus, tag, id, ptr, refnum)
                         } else if let Some(ptr) = self.synthesize_system_intl(bus, id) {
                             self.get_or_create_resource_handle_in_file(bus, *b"INTL", id, ptr, 0)
                         } else {
@@ -13615,14 +13632,38 @@ impl super::TrapDispatcher {
                         let length_ptr = bus.read_long(sp + 2);
                         let offset_ptr = bus.read_long(sp + 6);
                         let handle_ptr = bus.read_long(sp + 10);
+                        let table_code = bus.read_word(sp + 14) as i16;
+                        let script = bus.read_word(sp + 16) as i16;
+                        let (handle, offset, length) = if let Some(kind) =
+                            crate::text_utils::IntlResourceTableKind::from_table_code(table_code)
+                        {
+                            let tag = kind.target_resource_tag();
+                            let res_id = if script < 0 { 0 } else { script };
+                            if let Some((refnum, ptr)) =
+                                self.find_or_load_resource_any(bus, *tag, res_id)
+                            {
+                                let h = self.get_or_create_resource_handle_in_file(
+                                    bus, *tag, res_id, ptr, refnum,
+                                );
+                                let len = self
+                                    .process_handle_size(bus, h)
+                                    .or_else(|| bus.get_alloc_size(ptr))
+                                    .unwrap_or(0);
+                                (h, 0, len)
+                            } else {
+                                (0, 0, 0)
+                            }
+                        } else {
+                            (0, 0, 0)
+                        };
                         if handle_ptr != 0 {
-                            bus.write_long(handle_ptr, 0);
+                            bus.write_long(handle_ptr, handle);
                         }
                         if offset_ptr != 0 {
-                            bus.write_long(offset_ptr, 0);
+                            bus.write_long(offset_ptr, offset);
                         }
                         if length_ptr != 0 {
-                            bus.write_long(length_ptr, 0);
+                            bus.write_long(length_ptr, length);
                         }
                         cpu.write_reg(Register::A7, sp + 18);
                         cpu.write_reg(Register::D0, 0);
