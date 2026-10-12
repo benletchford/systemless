@@ -35,10 +35,10 @@ compatibility:
     evidence: https://github.com/benletchford/systemless/issues/4692
   - date: "2026-10-12"
     tester: Catalogue maintainer
-    systemless_version: 1fbc1a9b7c078562231459faf50c1ff0122d037f
+    systemless_version: f5483633a23f28ddf6bd2e55f8f712ce04a69b9d
     architecture: ppc
     environment: >-
-      Fresh optimized native build from the committed drag-feedback/clock fix,
+      Fresh optimized native build from merged master with m68k 0.14.4 / PPC 0.7.2,
       configured depth 8, untouched original archive and exact selector. Continue
       at the original colour advisory, then normal New Game/OK, held translucent
       image, ball drops, five-ball removal and score 50 pass thirty measured pixel
@@ -75,7 +75,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://www.vintageapplemac.com/files/games/Bubbles%201.3.sit
+    url: https://provincial-pacific-determines-unexpected.trycloudflare.com/bubbles-13.sit
     expected_sha256: 70d596f6522355282494fa6f53927f800b3971facd7ff004a96f892bcd1be677
     expected_size: 815666
   provenance:
@@ -101,6 +101,9 @@ artifacts:
       with no CODE; installer/registration CODE does not prove a 68K game slice.
       Gratis preservation delivery separately from emulator code. Original $10
       shareware score saving and GameField Manager locks remain; no key or patch.
+      Temporary maintainer transfer URL serves the same checksum-pinned original
+      bytes for CI because the original host rejects GitHub downloads with 403.
+      Normal promotion replaces it with immutable managed storage.
       Edition year derives from the original PEF build timestamp, 1998-08-01,
       not a claim about the game's first release.
 - id: gameplay-screenshot
