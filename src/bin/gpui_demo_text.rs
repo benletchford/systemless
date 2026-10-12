@@ -620,7 +620,7 @@ mod tests {
             geometry: TextEditLineGeometry { top: 0, left: 0, height: 16, ascent: 12 },
             baseline: 12, selection: None,
             runs: vec![StyledTextEditRun { bytes: 0..1, left: 0,
-                measured_positions: vec![0, 10], glyphs, ink: ink.clone() }],
+                measured_positions: vec![0, 10], glyphs, ink: ink.clone(), opaque_cell: None }],
         };
         let original = line.pixels().unwrap();
         let &(x, y) = original.keys().next().unwrap();
@@ -1526,6 +1526,7 @@ pub(crate) struct StyledTextEditRun {
     pub measured_positions: Vec<i16>,
     pub glyphs: ClassicLine,
     pub ink: systemless::runner::TextEditInkSnapshot,
+    pub opaque_cell: Option<((i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot)>,
 }
 
 /// Native standard-LDEF layout inputs. CPU painters supply their own inset,
@@ -1820,12 +1821,27 @@ impl StyledTextEditPaintPlan {
         let mut pairs = InkPairs::new();
         let mut ops = Vec::new();
         let mut selections = Vec::new();
+        let mut paired_cells = 0usize;
+        let opaque_map = if record.paint.as_ref()?.mode == 0 {
+            Some(StyledTextEditLine::opaque_cell_map(record)?)
+        } else { None };
         for index in 0..record.line_count {
             let geometry = record.guest_line_geometry(index)?;
             if record.line_layout_policy == TextEditLineLayoutPolicy::CumulativeGuestMetrics
                 && (geometry.top.saturating_add(geometry.height) <= view.0 || geometry.top >= view.2) { continue; }
-            let line = StyledTextEditLine::from_guest(record, index)?;
+            let line = if let Some(cells) = opaque_map.as_ref() {
+                StyledTextEditLine::from_plain_source_copy(record, index, cells)?
+            } else { StyledTextEditLine::from_guest(record, index)? };
             for run in &line.runs {
+                if let Some((rect, ink)) = &run.opaque_cell {
+                    let native = record.paint.as_ref()?.opaque_cells.as_ref()?.get(paired_cells)?;
+                    if native.0 != *rect || native.1 != *ink { return None; }
+                    paired_cells += 1;
+                    ops.push(StyledTextEditPaintOp::Erase(*rect, ink.clone()));
+                    for y in rect.0..rect.2 { for x in rect.1..rect.3 {
+                        if inside(&(x, y)) { pairs.insert((x, y), (ink.rgb, ink.inverted_rgb)); }
+                    } }
+                }
                 ops.push(StyledTextEditPaintOp::Run { glyphs: run.glyphs.clone(),
                     left: run.left, baseline: line.baseline, ink: run.ink.clone() });
                 for &(x, y, count) in &run.glyphs.ink {
@@ -1844,6 +1860,9 @@ impl StyledTextEditPaintPlan {
                     ops.push(StyledTextEditPaintOp::Invert(rect));
                 } else { selections.push(rect); }
             }
+        }
+        if record.paint.as_ref()?.mode == 0 && paired_cells != record.paint.as_ref()?.opaque_cells.as_ref()?.len() {
+            return None;
         }
         // Classic highlights after all visible line ink. Every inversion
         // swaps the actual current physical ink pair, including prior highlights.
@@ -1896,7 +1915,7 @@ impl StyledTextEditLine {
             };
             let next = left.checked_add(i16::try_from(advance).ok()?)?;
             runs.push(StyledTextEditRun { bytes, left, measured_positions, glyphs,
-                ink: paint.style_ink.get(style_index)?.clone() });
+                ink: paint.style_ink.get(style_index)?.clone(), opaque_cell: None });
             left = next;
         }
         let baseline = geometry.top.saturating_add(geometry.ascent);
@@ -1906,6 +1925,9 @@ impl StyledTextEditLine {
     fn from_plain_guest(record: &systemless::runner::TextEditSnapshot, index: usize) -> Option<Self> {
         use systemless::runner::TextEditLineLayoutPolicy;
         let paint = record.paint.as_ref()?;
+        if paint.mode == 0 {
+            return Self::from_plain_source_copy(record, index, &Self::opaque_cell_map(record)?);
+        }
         if !paint.supports_zero_spacing_src_or() || paint.style_ink.len() != 1 { return None; }
         let geometry = record.guest_line_geometry(index)?;
         let starts = record.line_starts.as_ref()?;
@@ -1928,7 +1950,54 @@ impl StyledTextEditLine {
         Some(Self { baseline: geometry.top.saturating_add(geometry.ascent),
             selection: record.guest_selection_rect(index)?,
             runs: vec![StyledTextEditRun { bytes, left: geometry.left, measured_positions,
-                glyphs, ink: paint.style_ink[0].clone() }], geometry })
+                glyphs, ink: paint.style_ink[0].clone(), opaque_cell: None }], geometry })
+    }
+
+    fn opaque_cell_map(record: &systemless::runner::TextEditSnapshot) -> Option<std::collections::BTreeMap<(i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot>> {
+        let cells = record.paint.as_ref()?.opaque_cells.as_ref()?;
+        let map = cells.iter().cloned().collect::<std::collections::BTreeMap<_, _>>();
+        (map.len() == cells.len()).then_some(map)
+    }
+
+    fn from_plain_source_copy(record: &systemless::runner::TextEditSnapshot, index: usize,
+        cells: &std::collections::BTreeMap<(i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot>) -> Option<Self> {
+        use systemless::{runner::TextEditLineLayoutPolicy, quickdraw::{fonts, text}};
+        let paint = record.paint.as_ref()?;
+        if record.styled || record.face != 0 || !paint.supports_zero_spacing_src_copy() || paint.style_ink.len() != 1 { return None; }
+        let size = if record.size == 0 { 12 } else { record.size.max(1) };
+        let (strike, scale) = fonts::get_font_face_scaled(record.font, size);
+        if record.line_layout_policy == TextEditLineLayoutPolicy::PpcRunMetrics {
+            let (_, numerator, denominator) = fonts::get_font_face_scale_ratio(record.font, size);
+            if numerator != denominator { return None; }
+        }
+        let metrics = text::get_font_metrics(record.font, size);
+        let factor = if record.line_layout_policy == TextEditLineLayoutPolicy::CumulativeGuestMetrics { scale } else { 1 };
+        let geometry = record.guest_line_geometry(index)?;
+        let baseline = geometry.top.checked_add(geometry.ascent)?;
+        let starts = record.line_starts.as_ref()?;
+        let start = *starts.get(index)?;
+        let mut end = *starts.get(index + 1)?;
+        record.text.get(start..end)?;
+        while end > start && matches!(record.text[end - 1], b' ' | b'\r' | b'\n') { end -= 1; }
+        let positions = record.guest_plain_insertion_positions(start..end)?;
+        let mut runs = Vec::new();
+        for (offset, &byte) in record.text.get(start..end)?.iter().enumerate() {
+            let (glyph, _) = text::get_glyph(record.font, strike.size, byte as char)?;
+            let left = geometry.left.checked_add(positions[offset])?;
+            let rect = (baseline.checked_sub(metrics.ascent.checked_mul(factor)?)?, left,
+                baseline.checked_add(metrics.descent.checked_mul(factor)?)?,
+                left.checked_add(i16::from(glyph.advance).checked_mul(factor)?)?);
+            let cell = (rect, cells.get(&rect)?.clone());
+            let advance = positions[offset + 1].checked_sub(positions[offset])?;
+            let glyphs = match record.line_layout_policy {
+                TextEditLineLayoutPolicy::CumulativeGuestMetrics => ClassicLine::classic_textedit_run(&[byte], record.font, size, 0, vec![0, i32::from(advance)])?,
+                TextEditLineLayoutPolicy::PpcRunMetrics => ClassicLine::ppc_styled_run(&[byte], record.font, size, 0, vec![0, i32::from(advance)])?,
+            };
+            runs.push(StyledTextEditRun { bytes: start + offset..start + offset + 1, left,
+                measured_positions: vec![left, left.checked_add(advance)?], glyphs,
+                ink: paint.style_ink[0].clone(), opaque_cell: Some(cell) });
+        }
+        Some(Self { geometry, baseline, selection: record.guest_selection_rect(index)?, runs })
     }
 
     /// Apply classic pixel inversion after ordered run ink. Background ink
@@ -1941,6 +2010,9 @@ impl StyledTextEditLine {
         let baseline = self.baseline;
         let mut inverse_ink = std::collections::BTreeMap::new();
         for run in &self.runs {
+            if let Some((rect, ink)) = &run.opaque_cell {
+                for y in rect.0..rect.2 { for x in rect.1..rect.3 { inverse_ink.insert((x, y), ink.inverted_rgb); } }
+            }
             for &(x, y, width) in &run.glyphs.ink {
                 let y = i16::try_from(i32::from(baseline).checked_add(y)?).ok()?;
                 for dx in 0..width {
@@ -1982,6 +2054,9 @@ impl StyledTextEditLine {
         let mut pixels = std::collections::BTreeMap::new();
         let baseline = self.baseline;
         for run in &self.runs {
+            if let Some((rect, ink)) = &run.opaque_cell {
+                for y in rect.0..rect.2 { for x in rect.1..rect.3 { pixels.insert((x, y), ink.rgb); } }
+            }
             for &(x, y, width) in &run.glyphs.ink {
                 let top = i16::try_from(i32::from(baseline).checked_add(y)?).ok()?;
                 for dx in 0..width {

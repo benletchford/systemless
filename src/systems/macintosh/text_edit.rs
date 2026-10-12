@@ -672,7 +672,13 @@ impl TextEditPaintSnapshot {
     /// Eligibility of the currently verified zero-spacing binary run recipes.
     /// PPC draws ignore SpaceExtra; classic draw_char uses its integer part.
     pub fn supports_zero_spacing_src_or(&self) -> bool {
-        self.mode == 1 && match self.char_extra {
+        self.mode == 1 && self.supports_zero_spacing()
+    }
+    pub fn supports_zero_spacing_src_copy(&self) -> bool {
+        self.mode == 0 && self.supports_zero_spacing()
+    }
+    fn supports_zero_spacing(&self) -> bool {
+        match self.char_extra {
             TextEditCharExtraSnapshot::ClassicFixed(value) => value >> 16 == 0 && self.space_extra >> 16 == 0,
             TextEditCharExtraSnapshot::PpcPacked(value) => value == 0,
         }

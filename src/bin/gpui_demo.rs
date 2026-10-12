@@ -10997,8 +10997,30 @@ mod desktop {
                         assert!(!cells.is_empty());
                         assert!(cells.iter().all(|(rect, ink)| rect.0 < rect.2 && rect.1 < rect.3 && ink.rgb == [255; 3]));
                         let frame = session.video_frame().unwrap();
-                        assert!(super::qualify_styled_text_fields(std::slice::from_ref(&current),
+
+                        let plan = super::qualify_styled_text_fields(std::slice::from_ref(&current),
+                            &frame.pixels, frame.width, frame.height).remove(0)
+                            .expect("plain source-copy cells and glyph ink must qualify");
+                        for scale in [0.75, 1., 1.5, 2.] {
+                            assert!(super::super::text::classic_styled_text_edit_field(plan.clone(), scale, (0., 0.)).is_some());
+                        }
+                        let mut stale = current.clone();
+                        stale.paint.as_mut().unwrap().opaque_cells.as_mut().unwrap().pop();
+                        assert!(super::qualify_styled_text_fields(std::slice::from_ref(&stale),
                             &frame.pixels, frame.width, frame.height)[0].is_none());
+                        for duplicate in [false, true] {
+                            let mut invalid = current.clone();
+                            let cells = invalid.paint.as_mut().unwrap().opaque_cells.as_mut().unwrap();
+                            if duplicate { cells.push(cells[0].clone()); } else { cells.swap(0, 1); }
+                            assert!(super::qualify_styled_text_fields(std::slice::from_ref(&invalid),
+                                &frame.pixels, frame.width, frame.height)[0].is_none());
+                        }
+                        let mut changed = frame.pixels.clone();
+                        let view = current.global_view_rect.unwrap();
+                        changed[((view.0 as u32 * frame.width + view.1 as u32) * 4) as usize] ^= 1;
+                        assert!(super::qualify_styled_text_fields(std::slice::from_ref(&current),
+                            &changed, frame.width, frame.height)[0].is_none());
+
                     } else { assert!(paint.opaque_cells.is_none(), "new srcOr drawing must clear old cell evidence"); }
                 }
             }

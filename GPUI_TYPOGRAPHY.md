@@ -151,12 +151,14 @@ font substitution or rendering change.
 
 Canonical `TERec.txMode` is retained in each editor snapshot and its recorded
 paint identity. Structural plain-field candidates admit modes0/1 for ownership
-and text services, but the current whole-field paint recipe requires zero-spacing
-srcOr (mode1). Source-copy mode0 and other unqualified transfer recipes retain
-guest pixels. The compositor has a tested ordered opaque-cell clear primitive;
-native cell clears are now retained from actual drawing, while matching them
-with ordered glyph ink and whole-field mode0 qualification remains unfinished. Structural eligibility alone does not grant paint replacement. This gate does not qualify every
-simple Dialog Manager item paint path or native transfer-mode appearance.
+and text services. Whole-field paint supports zero-spacing srcOr (mode1), plus
+plain unstyled source-copy (mode0) when every native clear cell can be uniquely
+paired with its original glyph in native order. The complete field must match
+native pixels before replacement. PPC fractional-strike and styled/faced
+source-copy recipes remain guest-painted pending faithful phase/style ordering.
+Composed mode0 images and mode0 interaction qualification remain open; structural
+eligibility alone does not grant paint replacement. This gate does not qualify
+every simple Dialog Manager item paint path or native transfer-mode appearance.
 Guest font resolution, advances, wrapping and input positions stay authoritative.
 
 ### Qualified guest backgrounds and current interaction scope
