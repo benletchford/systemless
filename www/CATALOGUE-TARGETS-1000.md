@@ -149,7 +149,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 104 | 292 | Pegged | 68K verified; native PPC absent | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 105 | 293 | Powerball | Original 1.3: actual 68K + PPC | P | [Original non-profit grant; seven files/fourteen forks matched; startup blockers](CATALOGUE-SOURCES.md#powerball-13--primary-105-original-fat-shareware-intake); [#4681](https://github.com/benletchford/systemless/issues/4681) |
 | 106 | 294 | Brickles Plus | Original 3.0: 68K only | U | [Original package and bounded probes; hosting grant unresolved](CATALOGUE-SOURCES.md#brickles-plus-30-original-package-and-bounded-probes) |
-| 107 | 295 | Brick Attack | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 107 | 295 | Brick Attack | Original 1.0: PPC only | P | [Original non-profit grant; exact package/forks; New Game exit held](CATALOGUE-SOURCES.md#brick-attack-10--primary-107-original-ppc-shareware-intake); [#4689](https://github.com/benletchford/systemless/issues/4689) |
 | 108 | 296 | Bubbles | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
 | 109 | 297 | Airburst | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
 | 110 | 298 | DX Ball | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
