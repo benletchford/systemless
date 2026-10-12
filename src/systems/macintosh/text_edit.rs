@@ -286,7 +286,7 @@ mod tests {
         use super::{TextEditPaintSnapshot, TextEditCharExtraSnapshot};
         let mut paint = TextEditPaintSnapshot { depth: 8, mode: 1,
             char_extra: TextEditCharExtraSnapshot::ClassicFixed(0x8000),
-            space_extra: 0x8000, style_ink: Vec::new(), solid_caret: None };
+            space_extra: 0x8000, style_ink: Vec::new(), solid_caret: None, background_ink: None };
         assert!(paint.supports_zero_spacing_src_or());
         paint.space_extra = -0x8000;
         assert!(!paint.supports_zero_spacing_src_or());
@@ -654,6 +654,9 @@ pub struct TextEditPaintSnapshot {
     pub mode: i16,
     pub char_extra: TextEditCharExtraSnapshot,
     pub space_extra: i32,
+    /// Current guest port background candidate. Replacement still requires
+    /// complete native pixel agreement; the port may have changed since drawing.
+    pub background_ink: Option<TextEditInkSnapshot>,
     /// One ink per canonical style run, or the retained foreground for a
     /// plain editor. Plain ink requires actual native drawing evidence.
     pub style_ink: Vec<TextEditInkSnapshot>,

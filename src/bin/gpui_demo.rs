@@ -6038,7 +6038,9 @@ mod desktop {
                 rgb: [255, 255, 255], inverted_rgb: [0, 0, 0],
             };
             let caret = (0..record.line_count).find_map(|index| styled_caret_paint(record, index));
-            super::text::StyledTextEditPaintPlan::qualify(record, &background, caret, native, width, height)
+            super::text::StyledTextEditPaintPlan::qualify(record, &background, caret.clone(), native, width, height)
+                .or_else(|| super::text::StyledTextEditPaintPlan::qualify(record,
+                    record.paint.as_ref()?.background_ink.as_ref()?, caret, native, width, height))
         }).collect()
     }
 
@@ -10905,6 +10907,46 @@ mod desktop {
                         "edited field must still qualify: face={face}, PPC={powerpc}, depth={depth}");
                     eprintln!("PASS plain-face-plan-and-edit powerpc={powerpc} depth={depth} face={face}");
                 }
+            }
+        }
+
+        #[test]
+        fn text_edit_port_background_candidate_matches_native_selection_redraw() {
+            for (powerpc, depth) in [(false, 8u16), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(8));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true); settle(&mut session);
+                let record = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| !record.styled && record.active && record.drawing_intact).unwrap();
+                assert!(session.runner_mut().set_text_edit_background_for_test(&record, [0xcccc; 3]));
+                assert!(session.runner_mut().select_text_edit_range(&record, 0..0));
+                let current = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|current| current.guest_id == record.guest_id).unwrap();
+                let background = current.paint.as_ref().unwrap().background_ink.as_ref().unwrap();
+                assert_ne!(background.rgb, [255; 3]);
+                let frame = session.video_frame().unwrap();
+                let plans = super::qualify_styled_text_fields(std::slice::from_ref(&current),
+                    &frame.pixels, frame.width, frame.height);
+                assert_eq!(plans[0].as_ref().expect("native coloured background must qualify").background, background.rgb);
+                for scale in [0.75, 1., 1.5, 2.] {
+                    assert!(super::super::text::classic_styled_text_edit_field(plans[0].as_ref().unwrap().clone(),
+                        scale, (0., 0.)).is_some());
+                }
+                let mut stale = current.clone();
+                stale.paint.as_mut().unwrap().background_ink.as_mut().unwrap().rgb = [255; 3];
+                assert!(super::qualify_styled_text_fields(std::slice::from_ref(&stale),
+                    &frame.pixels, frame.width, frame.height)[0].is_none());
+                let mut changed = frame.pixels.clone();
+                let view = current.global_view_rect.unwrap();
+                changed[((view.0 as u32 * frame.width + view.1 as u32) * 4) as usize] ^= 1;
+                assert!(super::qualify_styled_text_fields(std::slice::from_ref(&current),
+                    &changed, frame.width, frame.height)[0].is_none());
+                assert_eq!(current.text, record.text); assert_eq!(current.selection, (0, 0));
             }
         }
 

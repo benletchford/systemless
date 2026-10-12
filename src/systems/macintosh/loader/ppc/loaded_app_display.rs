@@ -235,7 +235,11 @@ impl PpcLoadedApp {
             style_ink.push(TextEditInkSnapshot { pixel, rgb: rgb_at(pixel),
                 inverted_rgb: rgb_at(pixel ^ if depth == 16 { 0xffff } else { 0xff }) });
         }
-        Some(TextEditPaintSnapshot { depth: front.depth as u16, mode,
+        let background_ink = ppc_port_rgb_colors(&mut self.memory, record.owner_port)
+            .and_then(|(_, color)| ppc_quickdraw_surface_color_pixel(&mut self.memory, surface, color))
+            .map(|pixel| TextEditInkSnapshot { pixel, rgb: rgb_at(pixel),
+                inverted_rgb: rgb_at(pixel ^ if front.depth == 16 { 0xffff } else { 0xff }) });
+        Some(TextEditPaintSnapshot { depth: front.depth as u16, mode, background_ink,
             char_extra: TextEditCharExtraSnapshot::PpcPacked(ppc_port_char_extra_packed(&mut self.memory, record.owner_port)),
             space_extra: self.memory.read_u32_be(record.owner_port.checked_add(76)?)? as i32,
             solid_caret: None, style_ink })

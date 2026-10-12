@@ -1,5 +1,26 @@
 # GPUI Kit system-interface coverage
 
+### Guest port background candidates for TextEdit (2026-10-12)
+
+TextEdit paint snapshots now expose an optional guest port background ink.
+Classic colour ports use resolved bkColor destination pixels; PPC uses the live
+surface colour mapping. The GPUI qualifier retains its existing white candidate
+and tries the port candidate only after rejection. Both require full native
+field pixel agreement, including glyphs, background, caret and selection.
+Stale port intent, unsupported patterns or transfer recipes therefore retain
+guest rendering. Font resolution, advances and text ownership are unchanged.
+
+A real native TextEdit selection redraw regression passes colour68k/PPC8/PPC16
+(1 test,1.96s), with coloured backgrounds, unchanged text, selection/caret[0,0],
+four-scale component construction, stale-background rejection and altered-pixel
+rejection. Its test-only preparation mirrors RGBBackColor port/dispatcher
+resolution before the existing guest selection operation; it is not independent
+Macintosh oracle evidence. The final-source36 face/CPU native-paint/edit recipes
+also pass (69.79s), retaining mono68k coverage. The ordinary desktop check
+passes (22.42s), as does the public library without default features (9.36s).
+Composed coloured-field images,
+physical input and general background/font/transfer matrices remain open.
+
 ### Current original EV pilot dialog interaction (2026-10-12, ae655224)
 
 The immutable current optimized producer passes five inspected captures:

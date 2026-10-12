@@ -3646,6 +3646,33 @@ impl FixtureRunner {
         }
     }
 
+    /// Prepare CGrafPort background intent; painting still uses guest TextEdit operations.
+    #[doc(hidden)]
+    #[cfg(any(feature = "test-support", feature = "gpui-demo-test"))]
+    pub fn set_text_edit_background_for_test(&mut self, expected: &TextEditSnapshot, rgb: [u16; 3]) -> bool {
+        if !self.text_edit_snapshot().records.iter().any(|record|
+            (record.guest_id, record.generation, record.owner_port)
+                == (expected.guest_id, expected.generation, expected.owner_port)) { return false; }
+        let port = expected.owner_port;
+        if let Some(app) = self.native.application_mut() {
+            if app.memory.read_u16_be(port + 6).is_none_or(|version| version & 0xc000 != 0xc000) { return false; }
+            for (index, value) in rgb.into_iter().enumerate() {
+                if app.memory.write_u16_be(port + 42 + index as u32 * 2, value).is_none() { return false; }
+            }
+        } else {
+            if !self.bus.is_guest_address_mapped(port, 88) || self.bus.read_word(port + 6) & 0xc000 != 0xc000 { return false; }
+            for (index, value) in rgb.into_iter().enumerate() { self.bus.write_word(port + 42 + index as u32 * 2, value); }
+            // Mirror RGBBackColor's active dispatcher state as well as the ABI
+            // port fields; the fixture is not switching ports before selection.
+            if *self.dispatcher.current_port != port { return false; }
+            self.dispatcher.bg_color = (rgb[0], rgb[1], rgb[2]);
+            self.dispatcher.pm_bg_color = None;
+            self.dispatcher.sync_current_port_draw_state(&mut self.bus);
+            self.dispatcher.resolve_current_port_color_pixels(&mut self.bus, false, true, true);
+        }
+        true
+    }
+
     pub fn select_text_edit_range(&mut self, expected: &TextEditSnapshot, range: std::ops::Range<usize>) -> bool {
         if range.start > range.end || range.end > expected.text.len() || range.end > i16::MAX as usize
             || self.is_ui_tracking_active() || self.standard_file_snapshot().is_some()

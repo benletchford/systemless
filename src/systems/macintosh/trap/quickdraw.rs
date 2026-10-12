@@ -20246,7 +20246,7 @@ impl super::TrapDispatcher {
         })
     }
 
-    pub(super) fn sync_current_port_draw_state(&mut self, bus: &mut MacMemoryBus) {
+    pub(crate) fn sync_current_port_draw_state(&mut self, bus: &mut MacMemoryBus) {
         if *self.current_port == 0 {
             return;
         }
@@ -20258,7 +20258,7 @@ impl super::TrapDispatcher {
         self.sync_port_draw_state(bus, *self.current_port);
     }
 
-    pub(super) fn resolve_current_port_color_pixels(
+    pub(crate) fn resolve_current_port_color_pixels(
         &mut self,
         bus: &mut MacMemoryBus,
         foreground: bool,
@@ -25977,7 +25977,14 @@ impl super::TrapDispatcher {
             style_ink.push(TextEditInkSnapshot { pixel, rgb: rgb_at(pixel as u8),
                 inverted_rgb: rgb_at(pixel as u8 ^ if depth == 1 { 1 } else { 255 }) });
         }
-        Some(TextEditPaintSnapshot { depth, mode,
+        let background_ink = color.then(|| {
+            // bkColor is the resolved destination pixel; a second RGB lookup
+            // could disagree with the guest's inverse-table mapping.
+            let pixel = (bus.read_long(port + 84) & if depth == 1 { 1 } else { 255 }) as u8;
+            TextEditInkSnapshot { pixel: u16::from(pixel), rgb: rgb_at(pixel),
+                inverted_rgb: rgb_at(pixel ^ if depth == 1 { 1 } else { 255 }) }
+        });
+        Some(TextEditPaintSnapshot { depth, mode, background_ink,
             char_extra: TextEditCharExtraSnapshot::ClassicFixed(self.char_extra),
             space_extra: bus.read_long(port + 76) as i32, style_ink,
             solid_caret: bus.text_edit_solid_caret(record.guest_id)
