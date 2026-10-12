@@ -150,7 +150,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 105 | 293 | Powerball | Original 1.3: actual 68K + PPC | P | [Original non-profit grant; seven files/fourteen forks matched; startup blockers](CATALOGUE-SOURCES.md#powerball-13--primary-105-original-fat-shareware-intake); [#4681](https://github.com/benletchford/systemless/issues/4681) |
 | 106 | 294 | Brickles Plus | Original 3.0: 68K only | U | [Original package and bounded probes; hosting grant unresolved](CATALOGUE-SOURCES.md#brickles-plus-30-original-package-and-bounded-probes) |
 | 107 | 295 | Brick Attack | Original 1.0: PPC only | P | [Original non-profit grant; exact package/forks; New Game exit held](CATALOGUE-SOURCES.md#brick-attack-10--primary-107-original-ppc-shareware-intake); [#4689](https://github.com/benletchford/systemless/issues/4689) |
-| 108 | 296 | Bubbles | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
+| 108 | 296 | Bubbles | Original 1.3: PPC verified | P | [Original Internet-distribution grant; DragLib startup held](CATALOGUE-SOURCES.md#bubbles-13--primary-108-original-ppc-shareware-intake); [#4692](https://github.com/benletchford/systemless/issues/4692) |
 | 109 | 297 | Airburst | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
 | 110 | 298 | DX Ball | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
 | 111 | 299 | 3-D Ultra Pinball: The Lost Continent | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-the-lost-continent) |
