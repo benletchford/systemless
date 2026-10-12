@@ -249,6 +249,7 @@ mod device_manager;
 mod native_exceptions;
 
 mod collection_manager;
+mod drag_manager;
 
 mod draw_sprocket;
 

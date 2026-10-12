@@ -33,6 +33,7 @@ use crate::process_context::{
     SharedProcessAppleEventDescriptors, SharedProcessAppleEventHandlers,
     SharedProcessAppleEventLaunchState,
     SharedProcessCollectionManager, SharedProcessControlManager, SharedProcessCursorState,
+    SharedProcessDragManager,
     SharedProcessDialogText, SharedProcessDisplayClut,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessGraphicsDevice,
     SharedProcessGraphicsPort, SharedProcessInputState,
@@ -2323,6 +2324,7 @@ pub struct TrapDispatcher {
     /// Process-owned List Manager state shared with native execution.
     pub(crate) list_states: SharedProcessListManager,
     pub(crate) collections: SharedProcessCollectionManager,
+    pub(crate) drag_manager: SharedProcessDragManager,
     /// Process-owned TextEdit feature state shared with native execution.
     pub(crate) textedit_states: SharedProcessTextEditManager,
     /// Process-owned Control Manager metadata shared with native execution.
@@ -2758,6 +2760,7 @@ impl TrapDispatcher {
         context.attach_control_manager(&mut self.control_manager);
         context.attach_list_manager(&mut self.list_states);
         context.attach_collection_manager(&mut self.collections);
+        context.attach_drag_manager(&mut self.drag_manager);
         context.attach_text_edit_manager(&mut self.textedit_states);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
@@ -4118,6 +4121,7 @@ impl TrapDispatcher {
             saved_vis_regions: HashMap::default(),
             list_states: SharedProcessListManager::default(),
             collections: SharedProcessCollectionManager::default(),
+            drag_manager: SharedProcessDragManager::default(),
             textedit_states: SharedProcessTextEditManager::default(),
             control_manager: SharedProcessControlManager::default(),
             last_inserted_menu_id: None,

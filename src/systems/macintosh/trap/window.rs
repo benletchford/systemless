@@ -3174,6 +3174,7 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn untrack_window(&mut self, bus: &mut MacMemoryBus, window_ptr: u32) {
+        self.drag_manager.with_mut(|manager| manager.remove_window(window_ptr));
         self.window_list.remove_window(window_ptr);
         self.sync_window_list_links(bus);
         self.dialog_visible_snapshots.remove(&window_ptr);
