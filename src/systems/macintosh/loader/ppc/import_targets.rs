@@ -433,6 +433,7 @@ pub enum PpcImportDispatcherTarget {
     InitCPort,
     CloseCPort,
     SetPortBits { color: bool },
+    PixMap32Bit,
     GetPixBaseAddr,
     GetPixRowBytes,
     LockPixels,
@@ -3434,6 +3435,7 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "SetPortBits") => PpcImportDispatcherTarget::SetPortBits { color: false },
         ("InterfaceLib", "SetPortPix") => PpcImportDispatcherTarget::SetPortBits { color: true },
+        ("InterfaceLib" | "CarbonLib", "PixMap32Bit") => PpcImportDispatcherTarget::PixMap32Bit,
         ("InterfaceLib", "GetPixBaseAddr") => PpcImportDispatcherTarget::GetPixBaseAddr,
         ("InterfaceLib", "GetPixRowBytes") => PpcImportDispatcherTarget::GetPixRowBytes,
         ("InterfaceLib", "LockPixels") => PpcImportDispatcherTarget::LockPixels,

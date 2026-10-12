@@ -2680,3 +2680,26 @@ fn port_pixmap_accessor_returns_argument_ports_live_handle_and_rejects_invalid_p
         }
     }
 }
+
+#[test]
+fn pixmap32bit_reports_live_addressing_version_independent_of_depth() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"PixMap32Bit")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    let pointer = scratch + 16;
+    loaded.memory.write_u32_be(scratch, pointer).unwrap();
+    for depth in [1u16, 8, 16, 32] {
+        loaded.memory.write_u16_be(pointer + 32, depth).unwrap();
+        for version in [0u16, 1, 4, 5] {
+            loaded.memory.write_u16_be(pointer + 14, version).unwrap();
+            loaded.cpu.gpr[3] = scratch;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::PixMap32Bit);
+            assert_eq!(loaded.cpu.gpr[3], u32::from(version == 4));
+        }
+    }
+    for handle in [0, scratch + 4, 0xffff_fff0] {
+        loaded.cpu.gpr[3] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PixMap32Bit);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+}
