@@ -6552,3 +6552,181 @@ fn hle_plot_icon_id_monochrome_families_obey_port_clip_and_reject_short_masks() 
         assert_eq!(loaded.cpu.gpr[3] as i32, i32::from(PPC_PARAM_ERR));
     }
 }
+
+#[test]
+fn native_copybits_converts_direct_32_bit_colors_and_preserves_transparent_padding() {
+    for (source_depth, destination_depth, source_pixel, expected) in [
+        (32, 16, 0x80ff0000, 0x7c00),
+        (16, 32, 0x001f, 0x000000ff),
+        (32, 32, 0x80112233, 0x80112233),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let base = PPC_HEAP_BASE + 0x13000;
+        loaded.memory.add_region(base, vec![0; 256]);
+        let source = base + 16;
+        let destination = base + 80;
+        let rect = base + 144;
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            source,
+            base,
+            4,
+            0,
+            0,
+            1,
+            1,
+            source_depth,
+        )
+        .unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            destination,
+            base + 8,
+            4,
+            0,
+            0,
+            1,
+            1,
+            destination_depth,
+        )
+        .unwrap();
+        if source_depth == 32 {
+            loaded.memory.write_u32_be(base, source_pixel).unwrap();
+        } else {
+            loaded
+                .memory
+                .write_u16_be(base, source_pixel as u16)
+                .unwrap();
+        }
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 1).unwrap();
+        loaded.cpu.gpr[3] = source;
+        loaded.cpu.gpr[4] = destination;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyBits);
+        let actual = if destination_depth == 32 {
+            loaded.memory.read_u32_be(base + 8).unwrap()
+        } else {
+            u32::from(loaded.memory.read_u16_be(base + 8).unwrap())
+        };
+        assert_eq!(actual, expected, "{source_depth} to {destination_depth}");
+        if source_depth == 32 {
+            loaded.memory.write_u32_be(base, 0x80ffffff).unwrap();
+            loaded.memory.write_u32_be(base + 8, 0x12345678).unwrap();
+            loaded.cpu.gpr[3] = source;
+            loaded.cpu.gpr[7] = 36;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyBits);
+            assert_eq!(loaded.memory.read_u32_be(base + 8), Some(0x12345678));
+        }
+    }
+}
+
+#[test]
+fn native_copybits_direct_depth_converts_indexed_black_and_white() {
+    for (source_depth, destination_depth, source_pixel, expected) in [
+        (32, 8, 0u32, 255u32),
+        (8, 32, 255, 0),
+        (32, 8, 0x00ffffff, 0),
+        (8, 32, 0, 0x00ffffff),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+        let base = PPC_HEAP_BASE + 0x14000;
+        loaded.memory.add_region(base, vec![0; 256]);
+        let source = base + 16;
+        let destination = base + 80;
+        let rect = base + 144;
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            source,
+            base,
+            4,
+            0,
+            0,
+            1,
+            1,
+            source_depth,
+        )
+        .unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            destination,
+            base + 8,
+            4,
+            0,
+            0,
+            1,
+            1,
+            destination_depth,
+        )
+        .unwrap();
+        if source_depth == 32 {
+            loaded.memory.write_u32_be(base, source_pixel).unwrap();
+        } else {
+            loaded.memory.write_u8(base, source_pixel as u8).unwrap();
+        }
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 1).unwrap();
+        loaded.cpu.gpr[3] = source;
+        loaded.cpu.gpr[4] = destination;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyBits);
+        let actual = if destination_depth == 32 {
+            loaded.memory.read_u32_be(base + 8).unwrap()
+        } else {
+            u32::from(loaded.memory.read_u8(base + 8).unwrap())
+        };
+        assert_eq!(actual, expected, "{source_depth} to {destination_depth}");
+    }
+}
+
+#[test]
+fn native_copybits_direct_depth_scales_and_clips_to_mask_region() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+    let base = PPC_HEAP_BASE + 0x15000;
+    loaded.memory.add_region(base, vec![0; 256]);
+    let source = base + 32;
+    let destination = base + 88;
+    let source_rect = base + 144;
+    let destination_rect = base + 152;
+    let region = base + 164;
+    let region_data = base + 168;
+    ppc_write_pixmap(&mut loaded.memory, source, base, 8, 0, 0, 1, 2, 32).unwrap();
+    ppc_write_pixmap(
+        &mut loaded.memory,
+        destination,
+        base + 16,
+        8,
+        0,
+        0,
+        1,
+        4,
+        16,
+    )
+    .unwrap();
+    loaded.memory.write_u32_be(base, 0x00ff0000).unwrap();
+    loaded.memory.write_u32_be(base + 4, 0x0000ff00).unwrap();
+    loaded
+        .memory
+        .write_bytes(base + 16, &[0x12, 0x34, 0x12, 0x34, 0x12, 0x34, 0x12, 0x34])
+        .unwrap();
+    ppc_write_rect(&mut loaded.memory, source_rect, 0, 0, 1, 2).unwrap();
+    ppc_write_rect(&mut loaded.memory, destination_rect, 0, 0, 1, 4).unwrap();
+    loaded.memory.write_u32_be(region, region_data).unwrap();
+    loaded.memory.write_u16_be(region_data, 10).unwrap();
+    ppc_write_rect(&mut loaded.memory, region_data + 2, 0, 1, 1, 3).unwrap();
+    loaded.cpu.gpr[3] = source;
+    loaded.cpu.gpr[4] = destination;
+    loaded.cpu.gpr[5] = source_rect;
+    loaded.cpu.gpr[6] = destination_rect;
+    loaded.cpu.gpr[7] = 0;
+    loaded.cpu.gpr[8] = region;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::CopyBits);
+    assert_eq!(loaded.memory.read_u16_be(base + 16), Some(0x1234));
+    assert_eq!(loaded.memory.read_u16_be(base + 18), Some(0x7c00));
+    assert_eq!(loaded.memory.read_u16_be(base + 20), Some(0x03e0));
+    assert_eq!(loaded.memory.read_u16_be(base + 22), Some(0x1234));
+}
