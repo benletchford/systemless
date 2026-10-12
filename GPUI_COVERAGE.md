@@ -1,5 +1,25 @@
 # GPUI Kit system-interface coverage
 
+### Current original EV pilot dialog interaction (2026-10-12, ae655224)
+
+The immutable current optimized producer passes five inspected captures:
+selected initial pilot field at scale1; committed name and checked Strict Play
+at scales0.75/1.5/2; edited/checked then Cancel at scale1. Scripts use the existing
+guest commit, held mouse and semantic dialog-button paths. Every action completes
+with zero readiness delays. Sidecars confirm `GPUI Pilot` with selection/caret
+[10,10] after editing; Cancel leaves no dialog or Standard File panel and returns
+to the main scene. All output dimensions and scales match requested values.
+
+Standard dialog text, field, checkbox and buttons use GPUI presentation. The
+Strict Play explanatory text is a Picture item in the DITL and retains resource
+pixels, as do the icon and main-scene artwork. These are intentionally bounded
+resource fallbacks, not proof that application/resource-drawn text has faithful
+GPUI replacement ownership. Producer/artifact hashes and state checks are in the
+ignored `target/gpui-qualification/escape-velocity/ae655224-pilot-dialog-review.json`.
+This evidence is original EV colour68k, scripted input and the shared offscreen
+compositor; it does not qualify physical input, independent original-font fidelity,
+host audio, restart persistence, other CPUs or overall production readiness.
+
 ### Deadline-rechecked macOS worker waits (2026-10-12)
 
 The macOS worker now rechecks its absolute wait deadline between progressively
