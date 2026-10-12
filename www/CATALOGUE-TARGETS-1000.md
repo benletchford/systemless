@@ -102,7 +102,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 57 | 245 | Pillars of Garendall | PPC lead | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 58 | 246 | Gubble | PPC era; verify | D | [Demo index](https://classicmacdemos.com/gubble); [Archive index](https://www.vintageapplemac.com/software/games/g/) |
 | 59 | 247 | MacSki | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 60 | 248 | Pararena | 68K lead | D | [Demo index](https://classicmacdemos.com/pararena-20) |
+| 60 | 248 | Pararena | Original demo 2.01: 68K lead | D | [Author MIT-source correspondence; complete demo rights/runtime pending](CATALOGUE-SOURCES.md#pararena-author-source-rights-lead--primary-60); [#4750](https://github.com/benletchford/systemless/issues/4750) |
 | 61 | 249 | Bonkheads | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
 | 62 | 250 | Bonkheads Deluxe | 68K lead | D | [Demo index](https://classicmacdemos.com/bonkheads-deluxe) |
 | 63 | 251 | Monkey Shines | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/monkey-shines.md) |
