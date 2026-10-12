@@ -17583,6 +17583,53 @@ fn copy_bits_converts_between_direct_color_depths() {
     }
 
     #[test]
+    fn nsetpalette_preserves_lower_depth_device_table_extent_and_adjacent_records() {
+        for depth in [1u16, 2, 4, 8] {
+            let (mut d, mut cpu, mut bus) = setup();
+            d.set_screen_mode_for_test(0x500000, 800 * u32::from(depth) / 8, 800, 600, depth);
+            let gdh = d.ensure_main_gdevice(&mut bus);
+            let gd = bus.read_long(gdh);
+            let pm = bus.read_long(bus.read_long(gd + 22));
+            let ctab_handle = bus.read_long(pm + 42);
+            let ctab = bus.read_long(ctab_handle);
+            let entries = 1u32 << depth;
+            assert_eq!(bus.read_word(ctab + 6), (entries - 1) as u16);
+            let window = 0x204100;
+            d.front_window = window;
+            let palette = d.create_palette_from_ctab(
+                &mut bus,
+                1,
+                0,
+                super::PM_TOLERANT | super::PM_EXPLICIT,
+                0,
+            );
+            let palette_ptr = bus.read_long(palette);
+            bus.write_word(palette_ptr + 16, 0x1234);
+            bus.write_word(palette_ptr + 18, 0x5678);
+            bus.write_word(palette_ptr + 20, 0x9ABC);
+            let device_before = bus.read_bytes(gd, 50);
+            let pixmap_before = bus.read_bytes(pm, 50);
+            let adjacent_before = bus.read_bytes(ctab + 8 + entries * 8, 64);
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, 0); // pmNoUpdates
+            bus.write_long(TEST_SP + 2, palette);
+            bus.write_long(TEST_SP + 6, window);
+            assert!(d
+                .dispatch_quickdraw(true, 0x295, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+            assert_eq!(bus.read_word(ctab + 6), (entries - 1) as u16);
+            assert_eq!(bus.read_word(ctab + 10), 0x1234);
+            assert_eq!(bus.read_word(ctab + 12), 0x5678);
+            assert_eq!(bus.read_word(ctab + 14), 0x9ABC);
+            assert_eq!(bus.read_bytes(gd, 50), device_before);
+            assert_eq!(bus.read_bytes(pm, 50), pixmap_before);
+            assert_eq!(bus.read_bytes(ctab + 8 + entries * 8, 64), adjacent_before);
+        }
+    }
+
+    #[test]
     fn activatepalette_consumes_windowptr_argument_and_updates_device_clut() {
         let (mut d, mut cpu, mut bus) = setup();
         let window = 0x0020_4100u32;
