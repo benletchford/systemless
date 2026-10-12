@@ -158,7 +158,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 113 | 301 | Pro Pinball: Big Race USA | PPC era; verify | D | [Demo index](https://classicmacdemos.com/pro-pinball-big-race-usa) |
 | 114 | 302 | Crystal Caliburn | Original 1.02 demo: 68K only | D | [Exact original demo; twelve plunger checks, broader hosting held](CATALOGUE-SOURCES.md#crystal-caliburn-102-interactive-demo--primary-114-original-intake); [#4677](https://github.com/benletchford/systemless/issues/4677) |
 | 115 | 303 | Tristan | 68K lead | D | [Demo index](https://classicmacdemos.com/tristan) |
-| 116 | 304 | Royal Flush | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/r/) |
+| 116 | 304 | Royal Flush | Original 1.2.1: actual 68K + PPC | U | [Exact fat package; rights, black 68K capture and PPC startup fault held](CATALOGUE-SOURCES.md#royal-flush-121--primary-116-original-fat-game-intake); [#4728](https://github.com/benletchford/systemless/issues/4728) |
 | 117 | 305 | F/A-18 Korea | PPC lead | D | [Demo index](https://classicmacdemos.com/fa-18-korea) |
 | 118 | 306 | Chuck Yeager's Air Combat | 68K era; verify | D | [Demo index](https://classicmacdemos.com/chuck-yeagers-air-combat) |
 | 119 | 307 | X-Plane | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/x-plane); [Archive index](https://www.vintageapplemac.com/software/games/x/) |

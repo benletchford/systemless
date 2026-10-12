@@ -162,7 +162,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 113 | Pro Pinball: Big Race USA | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 114 | Crystal Caliburn | Genuine original restricted demo; broader hosting held | [1.02: one file/two forks/Finder match](CATALOGUE-SOURCES.md#crystal-caliburn-102-interactive-demo--primary-114-original-intake) | [Original plunger response; twelve checks](https://github.com/benletchford/systemless/issues/4677) | N/A: CODE-only original edition, no cfrg | Pending | No entry/hosting; rights and further gameplay pending | Pending |
 | 115 | Tristan | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 116 | Royal Flush | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 116 | Royal Flush | Read Me says free; explicit hosting permission unresolved | Exact outer archive; independent two-layer extraction; production parity pending | 120 frontend / 720 guest ticks, but black capture; unqualified | Four-instruction startup read fault; unqualified | Pending | [Intake #4728](https://github.com/benletchford/systemless/issues/4728); no entry or upload | Pending |
 | 117 | F/A-18 Korea | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 118 | Chuck Yeager's Air Combat | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 119 | X-Plane | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
