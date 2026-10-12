@@ -2396,3 +2396,13 @@ sprite artifacts remain unresolved. Complete historical demo redistribution
 applicability of the author's MIT source release remains under assessment;
 source-resource correspondence does not automatically clear the entire archive.
 No catalogue entry, managed upload, browser approval or live increment is claimed.
+
+## Brick Attack 1.0 original PowerPC intake
+
+Target 107, rank 295. [Original archive](https://www.vintageapplemac.com/files/games/Brick%20Attack%201.0.sit): **1,244,481 bytes**, SHA-256 `abc9aea8dc3b7356abfe755dc27e0e293becd34b6bb82567bc5c1e0f7905d396`. Independent extraction and production packing agree on all five files, ten forks and supported Finder metadata. The game has a PowerPC PEF and cfrg, with no CODE resources; the separate registration helper does not establish a 68K game slice.
+
+The original readme permits complete unchanged nonprofit redistribution, retains the five-level unregistered limit and prohibits game disassembly. Apple DrawSprocketLib 1.1.2 is included; its distribution scope remains unverified. Preserve the entire archive and original restrictions. No hosting clearance, registration bypass, game modification or author contact is claimed.
+
+[Compatibility defect #4762](https://github.com/benletchford/systemless/issues/4762): the indexed-only PixPat decoder fell back to unrelated monochrome bytes for the original 16/32-bit colour patterns, producing white stripes. The proposed direct-colour decoder renders the original texture: **84,600 background pixels independently match original ppat 1000** after RGB555 conversion. The older blank black background is not an independent oracle. Existing gameplay checks now use original-resource background values while retaining ball-flight and struck-brick assertions. The candidate passes **11 assertions**, at **1,725 frontend/guest ticks**, zero exhaustion; final captures show a launched ball, a removed red brick and score 10. **134 native QuickDraw tests pass**, including padded-row, tiling, xRGB padding and indexed/16-bit destination checks.
+
+Tested native SHA-256 `820508c7a36cd1d5576802bde0d13cf34abb36ccefc10ee3d19577db288b9be6`; explicit PowerPC, literal arrows, default 640×480/16-bit display. This is bounded gameplay and original-resource rendering evidence, not complete game qualification. Paddle-control causality, browser pacing, bundled-library rights, catalogue CI/promotion/launch approval and public qualification remain pending in [intake #4689](https://github.com/benletchford/systemless/issues/4689). No live increment or release action.

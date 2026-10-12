@@ -6730,3 +6730,79 @@ fn native_copybits_direct_depth_scales_and_clips_to_mask_region() {
     assert_eq!(loaded.memory.read_u16_be(base + 20), Some(0x03e0));
     assert_eq!(loaded.memory.read_u16_be(base + 22), Some(0x1234));
 }
+
+#[test]
+fn fillcrect_tiles_direct_colour_pixpat_with_padding_and_xrgb() {
+    for source_depth in [16u16, 32] {
+        for destination_depth in [8u32, 16] {
+            let mut loaded = load_pef_application_with_config(
+                &synthetic_pef_with_import(b"FillCRect"),
+                PpcLoadConfig {
+                    screen_depth: destination_depth,
+                    ..PpcLoadConfig::default()
+                },
+            )
+            .unwrap();
+            let scratch = PPC_DATA_BASE + 0x5000;
+            loaded.memory.add_region(scratch, vec![0; 0x1000]);
+            let pattern = scratch + 16;
+            let map = pattern + 28;
+            loaded.memory.write_u32_be(scratch, pattern).unwrap();
+            loaded.memory.write_u16_be(pattern, 1).unwrap();
+            loaded.memory.write_u32_be(pattern + 2, 28).unwrap();
+            loaded.memory.write_u32_be(pattern + 6, 78).unwrap();
+            loaded.memory.write_bytes(pattern + 20, &[0xaa; 8]).unwrap();
+            let stride = source_depth / 4 + 4;
+            loaded
+                .memory
+                .write_u16_be(map + 4, 0x8000 | stride)
+                .unwrap();
+            loaded.memory.write_u16_be(map + 10, 2).unwrap();
+            loaded.memory.write_u16_be(map + 12, 2).unwrap();
+            loaded.memory.write_u16_be(map + 32, source_depth).unwrap();
+            let bytes: &[u8] = if source_depth == 16 {
+                &[0x7f, 0xff, 0, 0]
+            } else {
+                &[0x12, 0xff, 0xff, 0xff, 0xee, 0, 0, 0]
+            };
+            for row in 0..2 {
+                loaded
+                    .memory
+                    .write_bytes(pattern + 78 + row * u32::from(stride), bytes)
+                    .unwrap();
+            }
+            let rect = scratch + 0x200;
+            loaded.memory.write_u16_be(rect + 4, 4).unwrap();
+            loaded.memory.write_u16_be(rect + 6, 4).unwrap();
+            loaded.cpu.gpr[3] = rect;
+            loaded.cpu.gpr[4] = scratch;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::FillCRect);
+            let front =
+                ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                    .unwrap()
+                    .front_buffer;
+            for y in 0..4 {
+                for x in 0..4 {
+                    let expected = if destination_depth == 16 {
+                        if x % 2 == 0 {
+                            0x7fff
+                        } else {
+                            0
+                        }
+                    } else {
+                        if x % 2 == 0 {
+                            0
+                        } else {
+                            255
+                        }
+                    };
+                    assert_eq!(
+                        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                        Some(expected),
+                        "source={source_depth} destination={destination_depth} x={x} y={y}"
+                    );
+                }
+            }
+        }
+    }
+}
