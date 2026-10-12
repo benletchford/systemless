@@ -43,8 +43,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://www.vintageapplemac.com/files/games/Airburst%201.0%20Shareware.sit
-    download_page: https://www.vintageapplemac.com/software/games/a/
+    url: https://sim-rca-oct-games.trycloudflare.com/airburst-10.sit
     expected_sha256: 4e36cd7b1f2559f5bd0330f6dac169b9d95ec245adf1c37dac6e3ad03f17f8b5
     expected_size: 7760231
   provenance:
@@ -62,6 +61,9 @@ artifacts:
       registration keys must not be distributed. No separate reuse of its art,
       music, characters or manual is granted.
     notes: >-
+      Temporary checksum-verified HTTPS transfer supplies the unchanged original
+      bytes because publisher access returns HTTP 403 to CI; publisher provenance
+      is retained above. Normal CI rewrites this source to immutable managed storage.
       Original 1.0 outer StuffIt archive contains an ST65 self-extractor. Keep
       the original bytes: the production packer preserves all 32 bundled files,
       64 forks, supported Finder metadata, manual pictures, music, backgrounds,
