@@ -63,12 +63,16 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 # Pure-Rust math library for cross-platform deterministic transcendentals
 libm = "0.2"
 
+wgpu = { version = "29.0.4", optional = true }
+pollster = { version = "0.4", optional = true }
+
 [features]
+wgpu-demo = ["dep:wgpu", "dep:pollster", "dep:winit", "dep:cpal"]
 default = ["gui", "jit"]
 gui = [
-    "winit",
+    "dep:winit",
     "softbuffer",
-    "cpal",
+    "dep:cpal",
     "dep:objc2",
     "dep:objc2-foundation",
     "dep:objc2-app-kit",
@@ -162,3 +166,8 @@ debug = "line-tables-only"
 debug-assertions = true
 overflow-checks = true
 incremental = false
+
+[[bin]]
+name = "wgpu-comparison"
+path = "src/bin/wgpu_comparison.rs"
+required-features = ["wgpu-demo"]

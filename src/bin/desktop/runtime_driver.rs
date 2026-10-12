@@ -311,6 +311,8 @@ impl GuiDriver {
             let _timing = FramePhaseTimer::new("window compositing");
             runner.composite_frame();
         }
+        #[cfg(feature = "wgpu-demo")]
+        { output.dialog = runner.comparison_dialog_snapshot(); }
         let _timing = FramePhaseTimer::new("owned frame export");
         let mode = runner.dispatcher().screen_mode;
         let learning_crop = learning_crop || self.snapshot_screen_mode != Some(mode);
