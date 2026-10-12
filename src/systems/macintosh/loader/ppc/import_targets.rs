@@ -1253,6 +1253,8 @@ pub enum PpcImportDispatcherTarget {
     DisposeAEEventHandlerUPP,
     NewEventHandlerUPP,
     DisposeEventHandlerUPP,
+    NewQTCallBackUPP,
+    DisposeQTCallBackUPP,
     NewEventLoopTimerUPP,
     DisposeEventLoopTimerUPP,
     NewGrowZoneUPP,
@@ -1348,6 +1350,8 @@ pub(crate) fn dispatcher_target_for_import(
     // supported Toolbox APIs. An exact symbol match uses the same PPC ABI.
     // Carbon Porting Guide (2002), pp. 42–43 and 53–54.
     let library_name = match (library_name, symbol_name) {
+        ("Apple;Carbon;Multimedia", "NewQTCallBackUPP" | "DisposeQTCallBackUPP" | "NewCallBack" | "DisposeCallBack"
+            | "CancelCallBack" | "CallMeWhen" | "GetCallBackType" | "GetCallBackTimeBase" | "GetMovieTimeBase") => "QuickTimeLib",
         // Carbon's Multimedia CFM namespace exposes the same movie toolbox
         // entry points as QuickTimeLib. Bind only the operations implemented
         // below so other weak imports retain their unresolved state.
@@ -4522,6 +4526,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("QuickTimeLib", "SetMovieGWorld") => PpcImportDispatcherTarget::QtSetMovieGWorld,
         ("QuickTimeLib", "StartMovie") => PpcImportDispatcherTarget::QtStartMovie,
         ("QuickTimeLib", "StopMovie") => PpcImportDispatcherTarget::QtStopMovie,
+        ("QuickTimeLib", "NewCallBack") => PpcImportDispatcherTarget::QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation::NewCallBack),
+        ("QuickTimeLib", "DisposeCallBack") => PpcImportDispatcherTarget::QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation::DisposeCallBack),
+        ("QuickTimeLib", "CancelCallBack") => PpcImportDispatcherTarget::QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation::CancelCallBack),
+        ("QuickTimeLib", "CallMeWhen") => PpcImportDispatcherTarget::QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation::CallMeWhen),
+        ("QuickTimeLib", "GetCallBackType") => PpcImportDispatcherTarget::QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation::GetCallBackType),
+        ("QuickTimeLib", "GetCallBackTimeBase") => PpcImportDispatcherTarget::QuickTimeCompatibility(PpcQuickTimeCompatibilityOperation::GetCallBackTimeBase),
+        ("QuickTimeLib", "NewQTCallBackUPP") => PpcImportDispatcherTarget::NewQTCallBackUPP,
+        ("QuickTimeLib", "DisposeQTCallBackUPP") => PpcImportDispatcherTarget::DisposeQTCallBackUPP,
         ("QuickTimeLib", "MoviesTask") => PpcImportDispatcherTarget::QtMoviesTask,
         ("QuickTimeLib", "DisposeMovie") => PpcImportDispatcherTarget::QtDisposeMovie,
         ("QuickTimeLib", "IsMovieDone") => PpcImportDispatcherTarget::QtIsMovieDone,

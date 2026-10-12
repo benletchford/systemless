@@ -15,6 +15,8 @@ pub(super) const PPC_EVENT_HANDLER_PROC_INFO: u32 = 0x0FF0;
 // CarbonEvents.h (QuickTime 6.0.2): void EventLoopTimerProcPtr(
 // EventLoopTimerRef, void *). Pascal stack, void result, two pointers.
 pub(super) const PPC_EVENT_LOOP_TIMER_PROC_INFO: u32 = 0x03C0;
+// Movies.h: Pascal void QTCallBackProcPtr(QTCallBack, long refCon).
+pub(super) const PPC_QT_CALLBACK_PROC_INFO: u32 = 0x03C0;
 // Displays.h: Pascal void callback with userData, UInt32 index, entry pointer.
 pub(super) const PPC_DM_DISPLAY_MODE_ITERATOR_PROC_INFO: u32 = 0x0FC0;
 // Inside Macintosh: PowerPC System Software (1994), pp. 1-15--1-16:
@@ -210,6 +212,18 @@ pub(super) fn dispatch_mixed_mode_import(
                 &mut toolbox_startup.system_allocations,
             ))))
         }
+        PpcImportDispatcherTarget::NewQTCallBackUPP => {
+            Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                PPC_QT_CALLBACK_PROC_INFO,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            ))))
+        }
         PpcImportDispatcherTarget::NewDMDisplayModeListIteratorUPP => {
             Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
                 cpu.gpr[3],
@@ -322,6 +336,7 @@ pub(super) fn dispatch_mixed_mode_import(
         | PpcImportDispatcherTarget::DisposeAEEventHandlerUPP
         | PpcImportDispatcherTarget::DisposeEventHandlerUPP
         | PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
+        | PpcImportDispatcherTarget::DisposeQTCallBackUPP
         | PpcImportDispatcherTarget::DisposeDMDisplayModeListIteratorUPP
         | PpcImportDispatcherTarget::DisposeGrowZoneUPP
         | PpcImportDispatcherTarget::DisposeModalFilterUPP

@@ -41,6 +41,19 @@ pub(super) fn dispatch_quicktime_import(
         sound,
     } = context;
 
+    // Native continuations return to the import with LR equal to its PC.
+    // A nested guest import has its ordinary caller LR and starts a new frame.
+    if quicktime
+        .callback_frames
+        .last()
+        .is_some_and(|frame| frame.import_pc == cpu.pc && cpu.lr == cpu.pc)
+    {
+        let frame = quicktime.callback_frames.pop().unwrap();
+        return Some(deliver_quicktime_callbacks(
+            cpu, memory, quicktime, sound, frame,
+        ));
+    }
+
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::QtEnterMovies => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_qt_enter_movies(quicktime),
@@ -153,28 +166,89 @@ pub(super) fn dispatch_quicktime_import(
             )))
         }
         PpcImportDispatcherTarget::QtStartMovie => {
+            let before = quicktime_callback_rate(quicktime);
             let error = ppc_qt_start_movie(cpu, memory, gworlds, current_gworld, quicktime, sound);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
+            if error == PPC_NO_ERR {
+                let after = quicktime_callback_rate(quicktime);
+                quicktime.callbacks.mark_event(
+                    PPC_QT_MOVIE + 0x10,
+                    quicktime::callbacks::Event::Rate { before, after },
+                );
+            }
+            Some(finish_quicktime_callbacks(
+                cpu, memory, quicktime, sound, error, false, false,
+            ))
         }
         PpcImportDispatcherTarget::QtStopMovie => {
+            let before = quicktime_callback_rate(quicktime);
             let error = ppc_qt_stop_movie(cpu, quicktime, sound);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
+            if error == PPC_NO_ERR {
+                quicktime.callbacks.mark_event(
+                    PPC_QT_MOVIE + 0x10,
+                    quicktime::callbacks::Event::Rate { before, after: 0 },
+                );
+            }
+            Some(finish_quicktime_callbacks(
+                cpu, memory, quicktime, sound, error, false, false,
+            ))
         }
         PpcImportDispatcherTarget::QtMoviesTask => {
+            let before = quicktime_callback_time(quicktime);
+            let playing = quicktime.movie_started;
+            let rate_before = quicktime_callback_rate(quicktime);
             let error = ppc_qt_movies_task(cpu, memory, gworlds, current_gworld, quicktime, sound);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
+            if error == PPC_NO_ERR && playing {
+                let after = quicktime_callback_time(quicktime);
+                quicktime.callbacks.mark_time_due(
+                    PPC_QT_MOVIE + 0x10,
+                    before,
+                    after,
+                    quicktime.movie_time_scale,
+                );
+            }
+            if error == PPC_NO_ERR && playing {
+                let rate_after = quicktime_callback_rate(quicktime);
+                quicktime.callbacks.mark_event(
+                    PPC_QT_MOVIE + 0x10,
+                    quicktime::callbacks::Event::Rate {
+                        before: rate_before,
+                        after: rate_after,
+                    },
+                );
+                if !quicktime.movie_started {
+                    quicktime.callbacks.mark_event(
+                        PPC_QT_MOVIE + 0x10,
+                        quicktime::callbacks::Event::Extremes {
+                            start: false,
+                            stop: true,
+                        },
+                    );
+                }
+            }
+            Some(finish_quicktime_callbacks(
+                cpu, memory, quicktime, sound, error, false, false,
+            ))
         }
         PpcImportDispatcherTarget::QtDisposeMovie => {
-            let error = ppc_qt_dispose_movie(cpu, quicktime, sound);
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_qt_record_error(quicktime, error),
-            )))
+            let error = if cpu.gpr[3] == PPC_QT_MOVIE {
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            if error == PPC_NO_ERR && !quicktime.movie_disposed {
+                quicktime
+                    .callbacks
+                    .mark_event(PPC_QT_MOVIE + 0x10, quicktime::callbacks::Event::Disposed);
+            }
+            Some(finish_quicktime_callbacks(
+                cpu,
+                memory,
+                quicktime,
+                sound,
+                error,
+                false,
+                error == PPC_NO_ERR,
+            ))
         }
         PpcImportDispatcherTarget::QtIsMovieDone => {
             let (error, done) = ppc_qt_is_movie_done(cpu, quicktime);
@@ -182,14 +256,42 @@ pub(super) fn dispatch_quicktime_import(
             Some(PpcImportAction::Return(u32::from(done)))
         }
         PpcImportDispatcherTarget::QtGoToBeginningOfMovie => {
+            let before = quicktime_callback_time(quicktime);
             let error = ppc_qt_go_to_beginning_of_movie(cpu, quicktime, sound);
-            let _ = ppc_qt_record_error(quicktime, error);
-            Some(PpcImportAction::ReturnPreserve)
+            if error == PPC_NO_ERR && before != quicktime_callback_time(quicktime) {
+                quicktime
+                    .callbacks
+                    .mark_event(PPC_QT_MOVIE + 0x10, quicktime::callbacks::Event::Jump);
+                quicktime.callbacks.mark_event(
+                    PPC_QT_MOVIE + 0x10,
+                    quicktime::callbacks::Event::Extremes {
+                        start: true,
+                        stop: false,
+                    },
+                );
+            }
+            Some(finish_quicktime_callbacks(
+                cpu, memory, quicktime, sound, error, true, false,
+            ))
         }
         PpcImportDispatcherTarget::QtGoToEndOfMovie => {
+            let before = quicktime_callback_time(quicktime);
             let error = ppc_qt_go_to_end_of_movie(cpu, quicktime, sound);
-            let _ = ppc_qt_record_error(quicktime, error);
-            Some(PpcImportAction::ReturnPreserve)
+            if error == PPC_NO_ERR && before != quicktime_callback_time(quicktime) {
+                quicktime
+                    .callbacks
+                    .mark_event(PPC_QT_MOVIE + 0x10, quicktime::callbacks::Event::Jump);
+                quicktime.callbacks.mark_event(
+                    PPC_QT_MOVIE + 0x10,
+                    quicktime::callbacks::Event::Extremes {
+                        start: false,
+                        stop: true,
+                    },
+                );
+            }
+            Some(finish_quicktime_callbacks(
+                cpu, memory, quicktime, sound, error, true, false,
+            ))
         }
         PpcImportDispatcherTarget::QtGetMovieDuration => {
             let (error, duration) = ppc_qt_get_movie_duration(cpu, quicktime);
@@ -210,4 +312,149 @@ pub(super) fn dispatch_quicktime_import(
         }
         _ => None,
     }
+}
+
+fn quicktime_callback_time(quicktime: &PpcQuickTimeState) -> i64 {
+    let duration = if quicktime.movie_file_duration == 0 {
+        600
+    } else {
+        quicktime.movie_file_duration
+    };
+    let tasks = u64::from(quicktime.movie_tasks_until_done.max(1));
+    i64::try_from(
+        u64::from(quicktime.movie_task_count)
+            .min(tasks)
+            .saturating_mul(duration)
+            / tasks,
+    )
+    .unwrap_or(i64::MAX)
+}
+
+fn quicktime_callback_rate(quicktime: &PpcQuickTimeState) -> i32 {
+    if quicktime.movie_started {
+        quicktime.movie_preferred_rate
+    } else {
+        0
+    }
+}
+
+pub(super) fn quicktime_callback_progress(quicktime: &PpcQuickTimeState) -> (i64, i32, bool) {
+    (
+        quicktime_callback_time(quicktime),
+        quicktime_callback_rate(quicktime),
+        quicktime.movie_started,
+    )
+}
+
+pub(super) fn finish_controller_callbacks(
+    action: PpcImportAction,
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    quicktime: &mut PpcQuickTimeState,
+    sound: &mut PpcSoundState,
+    before: (i64, i32, bool),
+) -> PpcImportAction {
+    if !matches!(action, PpcImportAction::Return(0)) {
+        return action;
+    }
+    let (before_time, before_rate, was_playing) = before;
+    let (after_time, after_rate, is_playing) = quicktime_callback_progress(quicktime);
+    if was_playing {
+        quicktime.callbacks.mark_time_due(
+            PPC_QT_MOVIE + 0x10,
+            before_time,
+            after_time,
+            quicktime.movie_time_scale,
+        );
+        if !is_playing {
+            quicktime.callbacks.mark_event(
+                PPC_QT_MOVIE + 0x10,
+                quicktime::callbacks::Event::Extremes {
+                    start: false,
+                    stop: true,
+                },
+            );
+        }
+    }
+    quicktime.callbacks.mark_event(
+        PPC_QT_MOVIE + 0x10,
+        quicktime::callbacks::Event::Rate {
+            before: before_rate,
+            after: after_rate,
+        },
+    );
+    finish_quicktime_callbacks(cpu, memory, quicktime, sound, PPC_NO_ERR, false, false)
+}
+
+fn finish_quicktime_callbacks(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    quicktime: &mut PpcQuickTimeState,
+    sound: &mut PpcSoundState,
+    error: i16,
+    preserve: bool,
+    dispose_movie: bool,
+) -> PpcImportAction {
+    ppc_qt_record_error(quicktime, error);
+    let result = if preserve {
+        cpu.gpr[3]
+    } else {
+        ppc_i16_result(error)
+    };
+    let frame = quicktime::callbacks::DeliveryFrame {
+        import_pc: cpu.pc,
+        final_pc: cpu.lr,
+        restore_rtoc: cpu.gpr[2],
+        result,
+        dispose_movie,
+    };
+    if error != PPC_NO_ERR {
+        return PpcImportAction::Return(result);
+    }
+    deliver_quicktime_callbacks(cpu, memory, quicktime, sound, frame)
+}
+
+fn deliver_quicktime_callbacks(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    quicktime: &mut PpcQuickTimeState,
+    sound: &mut PpcSoundState,
+    frame: quicktime::callbacks::DeliveryFrame,
+) -> PpcImportAction {
+    while let Some((address, registration)) = quicktime.callbacks.take_ready() {
+        let Some(target) =
+            ppc_resolve_callback_target(memory, registration.procedure, registration.rtoc, None)
+        else {
+            continue;
+        };
+        if install_powerpc_call_arguments(cpu, memory, &[address, registration.refcon]).is_none() {
+            break;
+        }
+        quicktime.callback_frames.push(frame);
+        return GuestCallEffect::call_guest(
+            GuestCallRequest::new(GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: target.entry,
+                rtoc: target.rtoc,
+            }),
+            GuestCallContinuation::to_powerpc(
+                PPC_GUEST_CALL_RETURN_PC,
+                frame.import_pc,
+                frame.restore_rtoc,
+                PpcNativeReturnGpr3::Set(frame.result),
+            ),
+        )
+        .into_ppc_import_action()
+        .unwrap();
+    }
+    cpu.lr = frame.final_pc;
+    cpu.gpr[2] = frame.restore_rtoc;
+    if frame.dispose_movie {
+        quicktime.callbacks.retire_time_base(PPC_QT_MOVIE + 0x10);
+        let saved = cpu.gpr[3];
+        cpu.gpr[3] = PPC_QT_MOVIE;
+        ppc_qt_dispose_movie(cpu, quicktime, sound);
+        cpu.gpr[3] = saved;
+    }
+    PpcImportAction::Return(frame.result)
 }

@@ -2709,6 +2709,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DisposeEventHandlerUPP
         | PpcImportDispatcherTarget::NewDMDisplayModeListIteratorUPP
         | PpcImportDispatcherTarget::DisposeDMDisplayModeListIteratorUPP
+        | PpcImportDispatcherTarget::NewQTCallBackUPP
+        | PpcImportDispatcherTarget::DisposeQTCallBackUPP
         | PpcImportDispatcherTarget::NewEventLoopTimerUPP
         | PpcImportDispatcherTarget::DisposeEventLoopTimerUPP
         | PpcImportDispatcherTarget::NewGrowZoneUPP
@@ -2874,7 +2876,13 @@ pub(crate) fn dispatch_supported_import(
             Some(ppc_dispatch_speech_compatibility(operation, cpu, memory))
         }
         PpcImportDispatcherTarget::QuickTimeCompatibility(operation) => {
-            Some(dispatch_quicktime_compatibility(
+            let service_callbacks = matches!(
+                operation,
+                PpcQuickTimeCompatibilityOperation::MCIdle
+                    | PpcQuickTimeCompatibilityOperation::MCDoAction
+            );
+            let before = dispatch_quicktime::quicktime_callback_progress(quicktime);
+            let action = dispatch_quicktime_compatibility(
                 operation,
                 cpu,
                 memory,
@@ -2888,7 +2896,14 @@ pub(crate) fn dispatch_supported_import(
                 sound,
                 files.as_slice(),
                 vfs_files.as_slice(),
-            ))
+            );
+            Some(if service_callbacks {
+                dispatch_quicktime::finish_controller_callbacks(
+                    action, cpu, memory, quicktime, sound, before,
+                )
+            } else {
+                action
+            })
         }
         PpcImportDispatcherTarget::InputSprocketCompatibility(_) => {
             unreachable!(
