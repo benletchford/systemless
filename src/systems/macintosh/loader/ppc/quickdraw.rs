@@ -469,6 +469,521 @@ pub(crate) fn ppc_paint_region(
     wrote
 }
 
+enum PpcPixPatKind {
+    ColorIndexed {
+        data: Vec<u8>,
+        row_bytes: u32,
+        pixel_size: u16,
+        src_to_dst: [u16; 256],
+    },
+    Mono {
+        pat1: [u8; 8],
+        fore_pixel: u16,
+        back_pixel: u16,
+    },
+}
+
+struct PpcPixPatSampler {
+    width: i32,
+    height: i32,
+    kind: PpcPixPatKind,
+}
+
+impl PpcPixPatSampler {
+    fn sample(&self, x: i16, y: i16) -> u16 {
+        match &self.kind {
+            PpcPixPatKind::ColorIndexed {
+                data,
+                row_bytes,
+                pixel_size,
+                src_to_dst,
+            } => {
+                let tile_x = i32::from(x).rem_euclid(self.width) as u32;
+                let tile_y = i32::from(y).rem_euclid(self.height) as u32;
+                let row_offset = (tile_y.saturating_mul(*row_bytes)) as usize;
+                let src_val = match *pixel_size {
+                    1 => {
+                        let byte = data
+                            .get(row_offset.saturating_add((tile_x / 8) as usize))
+                            .copied()
+                            .unwrap_or(0);
+                        (byte >> (7 - (tile_x & 7))) & 1
+                    }
+                    2 => {
+                        let byte = data
+                            .get(row_offset.saturating_add((tile_x / 4) as usize))
+                            .copied()
+                            .unwrap_or(0);
+                        (byte >> (6 - 2 * (tile_x & 3))) & 3
+                    }
+                    4 => {
+                        let byte = data
+                            .get(row_offset.saturating_add((tile_x / 2) as usize))
+                            .copied()
+                            .unwrap_or(0);
+                        if tile_x & 1 == 0 {
+                            byte >> 4
+                        } else {
+                            byte & 0x0F
+                        }
+                    }
+                    8 => data
+                        .get(row_offset.saturating_add(tile_x as usize))
+                        .copied()
+                        .unwrap_or(0),
+                    _ => 0,
+                };
+                src_to_dst[usize::from(src_val)]
+            }
+            PpcPixPatKind::Mono {
+                pat1,
+                fore_pixel,
+                back_pixel,
+            } => {
+                let tile_x = (i32::from(x).rem_euclid(8)) as u32;
+                let tile_y = (i32::from(y).rem_euclid(8)) as usize;
+                let bit = (pat1[tile_y] >> (7 - tile_x)) & 1;
+                if bit != 0 {
+                    *fore_pixel
+                } else {
+                    *back_pixel
+                }
+            }
+        }
+    }
+}
+
+fn ppc_decode_pixpat_sampler(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    ppat_handle: u32,
+    fore_pixel: u16,
+    back_pixel: u16,
+) -> PpcPixPatSampler {
+    let fallback = PpcPixPatSampler {
+        width: 8,
+        height: 8,
+        kind: PpcPixPatKind::Mono {
+            pat1: [0xFF; 8],
+            fore_pixel,
+            back_pixel,
+        },
+    };
+    if ppat_handle == 0 {
+        return fallback;
+    }
+    let Some(pp_ptr) = memory.read_u32_be(ppat_handle) else {
+        return fallback;
+    };
+    if pp_ptr == 0 {
+        return fallback;
+    }
+
+    let pat_type = memory.read_u16_be(pp_ptr).unwrap_or(0);
+    let mut pat1 = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+    for (i, b) in pat1.iter_mut().enumerate() {
+        if let Some(byte) = memory.read_u8(pp_ptr + 20 + i as u32) {
+            *b = byte;
+        }
+    }
+
+    if pat_type == 0 {
+        return PpcPixPatSampler {
+            width: 8,
+            height: 8,
+            kind: PpcPixPatKind::Mono {
+                pat1,
+                fore_pixel,
+                back_pixel,
+            },
+        };
+    }
+
+    let pat_map_raw = memory.read_u32_be(pp_ptr + 2).unwrap_or(0);
+    let pat_data_raw = memory.read_u32_be(pp_ptr + 6).unwrap_or(0);
+
+    let compiled_candidate = if (28..=0x10000).contains(&pat_map_raw)
+        && (pat_map_raw + 50..=0x200000).contains(&pat_data_raw)
+    {
+        let pat_map_ptr = pp_ptr + pat_map_raw;
+        let pat_data_ptr = pp_ptr + pat_data_raw;
+        let mut read_map = |base_offset: u32| {
+            let row_bytes =
+                u32::from(memory.read_u16_be(pat_map_ptr + base_offset).unwrap_or(0) & 0x3FFF);
+            let top = memory.read_u16_be(pat_map_ptr + base_offset + 2).unwrap_or(0) as i16;
+            let left = memory.read_u16_be(pat_map_ptr + base_offset + 4).unwrap_or(0) as i16;
+            let bottom = memory.read_u16_be(pat_map_ptr + base_offset + 6).unwrap_or(0) as i16;
+            let right = memory.read_u16_be(pat_map_ptr + base_offset + 8).unwrap_or(0) as i16;
+            let pixel_size = memory.read_u16_be(pat_map_ptr + base_offset + 28).unwrap_or(0);
+            let table_offset = memory.read_u32_be(pat_map_ptr + base_offset + 38).unwrap_or(0);
+            (row_bytes, top, left, bottom, right, pixel_size, table_offset)
+        };
+        let map_valid = |candidate: &(u32, i16, i16, i16, i16, u16, u32)| {
+            let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = *candidate;
+            row_bytes != 0
+                && i32::from(bottom) > i32::from(top)
+                && i32::from(right) > i32::from(left)
+                && matches!(pixel_size, 1 | 2 | 4 | 8)
+                && table_offset != 0
+                && table_offset <= 0x200000
+        };
+        let raw_map = read_map(0);
+        let live_map = read_map(4);
+        let chosen = if map_valid(&raw_map) {
+            Some(raw_map)
+        } else if map_valid(&live_map) {
+            Some(live_map)
+        } else {
+            None
+        };
+        chosen.map(|(row_bytes, top, left, bottom, right, pixel_size, table_offset)| {
+            (
+                row_bytes,
+                i32::from(right) - i32::from(left),
+                i32::from(bottom) - i32::from(top),
+                pixel_size,
+                pat_data_ptr,
+                pp_ptr + table_offset,
+            )
+        })
+    } else {
+        None
+    };
+
+    let parsed = compiled_candidate.or_else(|| {
+        let pat_map_ptr = memory.read_u32_be(pat_map_raw)?;
+        if pat_map_ptr == 0 {
+            return None;
+        }
+        let row_bytes = u32::from(memory.read_u16_be(pat_map_ptr + 4)? & 0x3FFF);
+        let top = memory.read_u16_be(pat_map_ptr + 6)? as i16;
+        let left = memory.read_u16_be(pat_map_ptr + 8)? as i16;
+        let bottom = memory.read_u16_be(pat_map_ptr + 10)? as i16;
+        let right = memory.read_u16_be(pat_map_ptr + 12)? as i16;
+        let pixel_size = memory.read_u16_be(pat_map_ptr + 32)?;
+        let pm_table = memory.read_u32_be(pat_map_ptr + 42)?;
+        let pat_data_ptr = memory.read_u32_be(pat_data_raw)?;
+        let table_ptr = if pm_table != 0 {
+            memory.read_u32_be(pm_table).unwrap_or(0)
+        } else {
+            0
+        };
+        if row_bytes != 0
+            && i32::from(bottom) > i32::from(top)
+            && i32::from(right) > i32::from(left)
+            && matches!(pixel_size, 1 | 2 | 4 | 8)
+            && pat_data_ptr != 0
+        {
+            Some((
+                row_bytes,
+                i32::from(right) - i32::from(left),
+                i32::from(bottom) - i32::from(top),
+                pixel_size,
+                pat_data_ptr,
+                table_ptr,
+            ))
+        } else {
+            None
+        }
+    });
+
+    if let Some((row_bytes, width, height, pixel_size, data_ptr, table_ptr)) = parsed {
+        let data_len = (height as usize).saturating_mul(row_bytes as usize);
+        let mut data = vec![0u8; data_len];
+        if memory.read_bytes_into(data_ptr, &mut data).is_some() {
+            let mut src_clut = TrapDispatcher::standard_mac_8bpp_clut();
+            if table_ptr != 0 {
+                let count = usize::from(memory.read_u16_be(table_ptr + 6).unwrap_or(0))
+                    .saturating_add(1);
+                let uses_implicit =
+                    (memory.read_u16_be(table_ptr + 4).unwrap_or(0) & 0x8000) != 0;
+                for ordinal in 0..count.min(256) {
+                    let entry = table_ptr + 8 + ordinal as u32 * 8;
+                    let value = if uses_implicit {
+                        ordinal
+                    } else {
+                        usize::from(memory.read_u16_be(entry).unwrap_or(0))
+                    };
+                    if value < 256 {
+                        if let (Some(r), Some(g), Some(b)) = (
+                            memory.read_u16_be(entry + 2),
+                            memory.read_u16_be(entry + 4),
+                            memory.read_u16_be(entry + 6),
+                        ) {
+                            src_clut[value] = [r, g, b];
+                        }
+                    }
+                }
+            }
+
+            let dst_fallback =
+                TrapDispatcher::standard_mac_indexed_clut(surface.front_buffer.depth as u16)
+                    .map(|(clut, _)| clut)
+                    .unwrap_or_else(TrapDispatcher::standard_mac_8bpp_clut);
+            let dst_clut = if let Some(handle) = surface.ctable_handle {
+                ppc_read_ctable_clut(memory, handle, &dst_fallback).unwrap_or(dst_fallback)
+            } else if surface.front_buffer.base_addr == PPC_MAIN_SCREEN_BASE {
+                ppc_read_ctable_clut(memory, PPC_MAIN_CTABLE_HANDLE, &dst_fallback)
+                    .unwrap_or(dst_fallback)
+            } else {
+                dst_fallback
+            };
+
+            let mut src_to_dst = [0u16; 256];
+            for (value, dst) in src_to_dst.iter_mut().enumerate() {
+                let rgb = src_clut[value];
+                *dst = match surface.front_buffer.depth {
+                    depth @ (1 | 2 | 4 | 8) => {
+                        let entry_count = ppc_indexed_depth_entry_count(depth).unwrap_or(256);
+                        u16::from(pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &dst_clut))
+                            & (entry_count as u16 - 1)
+                    }
+                    16 => ppc_rgb_color_to_rgb555(PpcRgbColor {
+                        red: rgb[0],
+                        green: rgb[1],
+                        blue: rgb[2],
+                    }),
+                    _ => 0,
+                };
+            }
+
+            return PpcPixPatSampler {
+                width,
+                height,
+                kind: PpcPixPatKind::ColorIndexed {
+                    data,
+                    row_bytes,
+                    pixel_size,
+                    src_to_dst,
+                },
+            };
+        }
+    }
+
+    PpcPixPatSampler {
+        width: 8,
+        height: 8,
+        kind: PpcPixPatKind::Mono {
+            pat1,
+            fore_pixel,
+            back_pixel,
+        },
+    }
+}
+
+fn ppc_fill_rows_with_pixpat(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    top: i16,
+    bottom: i16,
+    mut rows: Vec<Vec<i16>>,
+    sampler: &PpcPixPatSampler,
+) -> bool {
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
+
+    for storage in [vis_storage.as_deref(), clip_storage.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        let Some(clip_rows) = ppc_region_rows_for_band(storage, top, bottom) else {
+            return false;
+        };
+        for (row, clip) in rows.iter_mut().zip(clip_rows) {
+            *row = ppc_region_intersect_rows(row, &clip);
+        }
+    }
+
+    let surf_top = surface.top;
+    let surf_left = surface.left;
+    let surf_bottom = surface.top.saturating_add(surface.front_buffer.height as i16);
+    let surf_right = surface.left.saturating_add(surface.front_buffer.width as i16);
+    let front_buffer = surface.front_buffer;
+
+    let mut wrote = false;
+    for (row_idx, endpoints) in rows.iter().enumerate() {
+        let y = top.saturating_add(row_idx as i16);
+        if y < surf_top || y >= surf_bottom {
+            continue;
+        }
+        let buf_y = i32::from(y) - i32::from(surf_top);
+        for interval in endpoints.chunks_exact(2) {
+            let seg_left = interval[0].max(surf_left);
+            let seg_right = interval[1].min(surf_right);
+            if seg_right <= seg_left {
+                continue;
+            }
+            for x in seg_left..seg_right {
+                let buf_x = i32::from(x) - i32::from(surf_left);
+                let pixel = sampler.sample(x, y);
+                wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (buf_x, buf_y), pixel);
+            }
+        }
+    }
+    wrote
+}
+
+pub(crate) fn ppc_fill_color_region(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    region_handle: u32,
+    ppat_handle: u32,
+    quickdraw_fore_color: PpcRgbColor,
+    quickdraw_fore_index: Option<u8>,
+    quickdraw_back_color: PpcRgbColor,
+    quickdraw_back_index: Option<u8>,
+) -> bool {
+    let Some(storage) = ppc_region_storage(memory, region_handle) else {
+        return false;
+    };
+    let Some((top, _, bottom, _)) = ppc_region_storage_bbox(&storage) else {
+        return true;
+    };
+    let Some(rows) = ppc_region_rows_for_band(&storage, top, bottom) else {
+        return false;
+    };
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let fore_pixel = ppc_quickdraw_surface_fore_pixel(
+        memory,
+        surface,
+        quickdraw_fore_color,
+        quickdraw_fore_index,
+    )
+    .unwrap_or(1);
+    let back_pixel = ppc_quickdraw_surface_fore_pixel(
+        memory,
+        surface,
+        quickdraw_back_color,
+        quickdraw_back_index,
+    )
+    .unwrap_or(0);
+    let sampler =
+        ppc_decode_pixpat_sampler(memory, surface, ppat_handle, fore_pixel, back_pixel);
+    ppc_fill_rows_with_pixpat(
+        memory,
+        gworlds,
+        current_gworld,
+        top,
+        bottom,
+        rows,
+        &sampler,
+    )
+}
+
+pub(crate) fn ppc_fill_color_rect(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    ppat_handle: u32,
+    quickdraw_fore_color: PpcRgbColor,
+    quickdraw_fore_index: Option<u8>,
+    quickdraw_back_color: PpcRgbColor,
+    quickdraw_back_index: Option<u8>,
+) -> bool {
+    let (top, left, bottom, right) = rect;
+    if bottom <= top || right <= left {
+        return true;
+    }
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let rows = vec![vec![left, right]; (bottom as i32 - top as i32).max(0) as usize];
+    let fore_pixel = ppc_quickdraw_surface_fore_pixel(
+        memory,
+        surface,
+        quickdraw_fore_color,
+        quickdraw_fore_index,
+    )
+    .unwrap_or(1);
+    let back_pixel = ppc_quickdraw_surface_fore_pixel(
+        memory,
+        surface,
+        quickdraw_back_color,
+        quickdraw_back_index,
+    )
+    .unwrap_or(0);
+    let sampler =
+        ppc_decode_pixpat_sampler(memory, surface, ppat_handle, fore_pixel, back_pixel);
+    ppc_fill_rows_with_pixpat(
+        memory,
+        gworlds,
+        current_gworld,
+        top,
+        bottom,
+        rows,
+        &sampler,
+    )
+}
+
+pub(crate) fn ppc_fill_region_with_mono_pattern(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    region_handle: u32,
+    pattern: Option<[u8; 8]>,
+    quickdraw_fore_color: PpcRgbColor,
+    quickdraw_fore_index: Option<u8>,
+    quickdraw_back_color: PpcRgbColor,
+    quickdraw_back_index: Option<u8>,
+) -> bool {
+    let Some(storage) = ppc_region_storage(memory, region_handle) else {
+        return false;
+    };
+    let Some((top, _, bottom, _)) = ppc_region_storage_bbox(&storage) else {
+        return true;
+    };
+    let Some(rows) = ppc_region_rows_for_band(&storage, top, bottom) else {
+        return false;
+    };
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let fore_pixel = ppc_quickdraw_surface_fore_pixel(
+        memory,
+        surface,
+        quickdraw_fore_color,
+        quickdraw_fore_index,
+    )
+    .unwrap_or(1);
+    let back_pixel = ppc_quickdraw_surface_fore_pixel(
+        memory,
+        surface,
+        quickdraw_back_color,
+        quickdraw_back_index,
+    )
+    .unwrap_or(0);
+    let sampler = PpcPixPatSampler {
+        width: 8,
+        height: 8,
+        kind: PpcPixPatKind::Mono {
+            pat1: pattern.unwrap_or([0xFF; 8]),
+            fore_pixel,
+            back_pixel,
+        },
+    };
+    ppc_fill_rows_with_pixpat(
+        memory,
+        gworlds,
+        current_gworld,
+        top,
+        bottom,
+        rows,
+        &sampler,
+    )
+}
+
 pub(crate) fn ppc_frame_region(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],

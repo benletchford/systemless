@@ -9872,6 +9872,80 @@
     }
 
     #[test]
+    fn fillcrgn_tiles_raw_color_pixpat_resource_on_8bpp_cgrafport() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let row_bytes = 64u32;
+        let screen_base = bus.alloc(row_bytes * 64);
+        bus.fill_zeros(screen_base, row_bytes * 64);
+        d.screen_mode = (screen_base, row_bytes, 64, 64, 8);
+        d.device_clut.replace([[0, 0, 0]; 256]);
+        d.device_clut.set_entry(7, [0x1111, 0x0000, 0x0000]);
+        d.device_clut.set_entry(8, [0x0000, 0x2222, 0x0000]);
+        d.device_clut.set_entry(9, [0x0000, 0x0000, 0x3333]);
+        d.color_manager_clut.replace(*d.device_clut);
+
+        let port = bus.alloc(128);
+        let pixmap_handle = bus.alloc(4);
+        let pixmap = bus.alloc(50);
+        bus.write_long(pixmap_handle, pixmap);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        bus.write_long(pixmap, screen_base);
+        bus.write_word(pixmap + 4, 0x8000 | row_bytes as u16);
+        bus.write_word(pixmap + 6, 0);
+        bus.write_word(pixmap + 8, 0);
+        bus.write_word(pixmap + 10, 64);
+        bus.write_word(pixmap + 12, 64);
+        bus.write_word(pixmap + 32, 8);
+
+        let vis = bus.alloc(10);
+        bus.write_word(vis, 10);
+        bus.write_word(vis + 6, 64);
+        bus.write_word(vis + 8, 64);
+        let vis_handle = bus.alloc(4);
+        bus.write_long(vis_handle, vis);
+        bus.write_long(port + 24, vis_handle);
+
+        let clip = bus.alloc(10);
+        bus.write_word(clip, 10);
+        bus.write_word(clip + 6, 64);
+        bus.write_word(clip + 8, 64);
+        let clip_handle = bus.alloc(4);
+        bus.write_long(clip_handle, clip);
+        bus.write_long(port + 28, clip_handle);
+
+        d
+            .current_port
+            .with_mut(|current_port| *current_port = port);
+        let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
+        bus.write_long(globals_ptr, port);
+
+        // Non-rectangular region: row 0 has [0, 4), row 1 has [2, 4)
+        let rgn = bus.alloc(4);
+        let rows = vec![vec![0, 4], vec![2, 4]];
+        assert!(TrapDispatcher::write_region_from_rows(&mut bus, rgn, 0, &rows));
+
+        let pp_handle = make_raw_color_pixpat_handle(&mut bus);
+
+        // PROCEDURE FillCRgn(rgn: RgnHandle; pp: PixPatHandle);
+        // SP+0: pp, SP+4: rgn
+        bus.write_long(TEST_SP, pp_handle);
+        bus.write_long(TEST_SP + 4, rgn);
+        let result = d.dispatch_quickdraw(true, 0x212, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 0, 0), 7);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 1, 0), 8);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 2, 0), 9);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 3, 0), 8);
+
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 0, 1), 0);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 1, 1), 0);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 2, 1), 7);
+        assert_eq!(read_surface_pixel(&bus, screen_base, row_bytes, 3, 1), 8);
+    }
+
+    #[test]
     fn fillcrect_raw_pixpat_uses_logical_screen_table_during_hardware_fade() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let (screen_base, row_bytes) = setup_color_polygon_surface(&mut d, &cpu, &mut bus);

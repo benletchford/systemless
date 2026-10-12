@@ -14107,16 +14107,22 @@ impl super::TrapDispatcher {
                 let pp_handle = bus.read_long(sp);
                 let rgn_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
-                if let Some((pat, generated_rgb)) = self.pixpat_fill_pattern(bus, pp_handle) {
-                    let saved_fg = self.fg_color;
-                    let saved_bg = self.bg_color;
-                    if let Some(rgb) = generated_rgb {
-                        self.fg_color = rgb;
-                        self.bg_color = rgb;
+                if self.extend_recording_region_from_rgn(bus, rgn_handle) {
+                    return Some(Ok(()));
+                }
+                let raw_filled = self.fill_rgn_with_raw_pixpat(bus, rgn_handle, pp_handle);
+                if !raw_filled {
+                    if let Some((pat, generated_rgb)) = self.pixpat_fill_pattern(bus, pp_handle) {
+                        let saved_fg = self.fg_color;
+                        let saved_bg = self.bg_color;
+                        if let Some(rgb) = generated_rgb {
+                            self.fg_color = rgb;
+                            self.bg_color = rgb;
+                        }
+                        self.draw_rgn(cpu, bus, rgn_handle, ShapeOp::Fill(pat));
+                        self.fg_color = saved_fg;
+                        self.bg_color = saved_bg;
                     }
-                    self.draw_rgn(cpu, bus, rgn_handle, ShapeOp::Fill(pat));
-                    self.fg_color = saved_fg;
-                    self.bg_color = saved_bg;
                 }
                 Ok(())
             }
@@ -25485,6 +25491,219 @@ impl super::TrapDispatcher {
                 );
             }
         }
+        if is_screen_port {
+            self.refresh_dialog_saved_pixels_after_screen_draw(
+                bus,
+                port,
+                (
+                    top.saturating_sub(bounds_top),
+                    left.saturating_sub(bounds_left),
+                    bottom.saturating_sub(bounds_top),
+                    right.saturating_sub(bounds_left),
+                ),
+            );
+        }
+        true
+    }
+
+    fn fill_rgn_with_raw_pixpat(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        rgn_handle: u32,
+        pp_handle: u32,
+    ) -> bool {
+        macro_rules! reject {
+            ($($arg:tt)*) => {{
+                if trace_qd_colors_enabled() {
+                    eprintln!(
+                        "[QD-COLOR] FillCRgn raw PixPat reject pp=${:08X}: {}",
+                        pp_handle,
+                        format_args!($($arg)*),
+                    );
+                }
+                return false;
+            }};
+        }
+
+        if self.pn_vis < 0 || pp_handle == 0 || rgn_handle == 0 {
+            return self.pn_vis < 0;
+        }
+        let Some(pixpat) = self.decode_raw_pixpat(bus, pp_handle) else {
+            return false;
+        };
+
+        let rgn_ptr = bus.read_long(rgn_handle);
+        if rgn_ptr == 0 {
+            reject!("nil region pointer");
+        }
+        let rgn_size = bus.read_word(rgn_ptr) as u32;
+        let bbox = Rect {
+            top: bus.read_word(rgn_ptr + 2) as i16,
+            left: bus.read_word(rgn_ptr + 4) as i16,
+            bottom: bus.read_word(rgn_ptr + 6) as i16,
+            right: bus.read_word(rgn_ptr + 8) as i16,
+        };
+        if bbox.bottom <= bbox.top || bbox.right <= bbox.left {
+            return true;
+        }
+
+        let port = *self.current_port;
+        if port == 0 {
+            reject!("no current port");
+        }
+        let port_version = bus.read_word(port.wrapping_add(6));
+        if (port_version & 0xC000) == 0 {
+            reject!(
+                "current port ${:08X} is not a CGrafPort version=${:04X}",
+                port,
+                port_version
+            );
+        }
+        let pix_map_handle = bus.read_long(port.wrapping_add(2));
+        if pix_map_handle == 0 {
+            reject!("current port has nil PixMap handle");
+        }
+        let pix_map_ptr = bus.read_long(pix_map_handle);
+        if pix_map_ptr == 0 {
+            reject!("current port PixMap handle has nil master pointer");
+        }
+        let dst_base = Self::offscreen_pixmap_base_ptr(bus, pix_map_ptr);
+        let dst_row_bytes = u32::from(bus.read_word(pix_map_ptr + 4) & 0x3FFF);
+        let bounds_top = bus.read_word(pix_map_ptr + 6) as i16;
+        let bounds_left = bus.read_word(pix_map_ptr + 8) as i16;
+        let bounds_bottom = bus.read_word(pix_map_ptr + 10) as i16;
+        let bounds_right = bus.read_word(pix_map_ptr + 12) as i16;
+        let dst_pixel_size = bus.read_word(pix_map_ptr + 32);
+        if dst_pixel_size != 8 || dst_base == 0 || dst_row_bytes == 0 {
+            reject!(
+                "unsupported destination base=${:08X} rowBytes={} pixelSize={}",
+                dst_base,
+                dst_row_bytes,
+                dst_pixel_size
+            );
+        }
+
+        let is_screen_port = dst_base == self.screen_mode.0
+            && dst_row_bytes == self.screen_mode.1
+            && dst_pixel_size == self.screen_mode.4;
+
+        let mut clip_top = bounds_top;
+        let mut clip_left = bounds_left;
+        let mut clip_bottom = bounds_bottom;
+        let mut clip_right = bounds_right;
+        let vis_rgn_handle = bus.read_long(port.wrapping_add(24));
+        if vis_rgn_handle != 0 {
+            let vis_rgn_ptr = bus.read_long(vis_rgn_handle);
+            if vis_rgn_ptr != 0 {
+                let vt = bus.read_word(vis_rgn_ptr + 2) as i16;
+                let vl = bus.read_word(vis_rgn_ptr + 4) as i16;
+                let vb = bus.read_word(vis_rgn_ptr + 6) as i16;
+                let vr = bus.read_word(vis_rgn_ptr + 8) as i16;
+                clip_top = clip_top.max(vt);
+                clip_left = clip_left.max(vl);
+                clip_bottom = clip_bottom.min(vb);
+                clip_right = clip_right.min(vr);
+            }
+        }
+        let clip_rgn_handle = bus.read_long(port.wrapping_add(28));
+        if clip_rgn_handle != 0 {
+            let clip_rgn_ptr = bus.read_long(clip_rgn_handle);
+            if clip_rgn_ptr != 0 {
+                let ct = bus.read_word(clip_rgn_ptr + 2) as i16;
+                let cl = bus.read_word(clip_rgn_ptr + 4) as i16;
+                let cb = bus.read_word(clip_rgn_ptr + 6) as i16;
+                let cr = bus.read_word(clip_rgn_ptr + 8) as i16;
+                clip_top = clip_top.max(ct);
+                clip_left = clip_left.max(cl);
+                clip_bottom = clip_bottom.min(cb);
+                clip_right = clip_right.min(cr);
+            }
+        }
+
+        let dst_clut = self.read_port_clut(bus, bus.read_long(pix_map_ptr + 42));
+        let mut src_to_dst = [0u8; 256];
+        for (value, dst) in src_to_dst.iter_mut().enumerate() {
+            let rgb = pixpat.clut[value];
+            *dst = super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &dst_clut);
+        }
+
+        let top = bbox.top.max(clip_top);
+        let left = bbox.left.max(clip_left);
+        let bottom = bbox.bottom.min(clip_bottom);
+        let right = bbox.right.min(clip_right);
+        if bottom <= top || right <= left {
+            return true;
+        }
+
+        if is_screen_port {
+            self.ensure_dialog_background_saved_for_screen_port(bus, port);
+        }
+
+        let cache = if rgn_size > 10 {
+            Self::build_region_membership_cache(bus, rgn_handle, bbox.top, bbox.bottom)
+        } else {
+            None
+        };
+
+        for y in top..bottom {
+            let dy = (y - bounds_top) as u32;
+            let tile_y = i32::from(y).rem_euclid(pixpat.height) as u32;
+
+            if let Some(cache) = &cache {
+                let row_idx = (y - cache.top) as usize;
+                if row_idx >= cache.rows.len() {
+                    continue;
+                }
+                for interval in cache.rows[row_idx].chunks_exact(2) {
+                    let seg_left = interval[0].max(left);
+                    let seg_right = interval[1].min(right);
+                    for x in seg_left..seg_right {
+                        let dx = (x - bounds_left) as u32;
+                        if dx >= dst_row_bytes {
+                            continue;
+                        }
+                        let tile_x = i32::from(x).rem_euclid(pixpat.width) as u32;
+                        let Some(src_value) = Self::raw_pixpat_pixel_value(
+                            bus,
+                            pixpat.data_ptr,
+                            pixpat.row_bytes,
+                            pixpat.pixel_size,
+                            tile_x,
+                            tile_y,
+                        ) else {
+                            continue;
+                        };
+                        bus.write_byte(
+                            dst_base + dy * dst_row_bytes + dx,
+                            src_to_dst[usize::from(src_value)],
+                        );
+                    }
+                }
+            } else {
+                for x in left..right {
+                    let dx = (x - bounds_left) as u32;
+                    if dx >= dst_row_bytes {
+                        continue;
+                    }
+                    let tile_x = i32::from(x).rem_euclid(pixpat.width) as u32;
+                    let Some(src_value) = Self::raw_pixpat_pixel_value(
+                        bus,
+                        pixpat.data_ptr,
+                        pixpat.row_bytes,
+                        pixpat.pixel_size,
+                        tile_x,
+                        tile_y,
+                    ) else {
+                        continue;
+                    };
+                    bus.write_byte(
+                        dst_base + dy * dst_row_bytes + dx,
+                        src_to_dst[usize::from(src_value)],
+                    );
+                }
+            }
+        }
+
         if is_screen_port {
             self.refresh_dialog_saved_pixels_after_screen_draw(
                 bus,

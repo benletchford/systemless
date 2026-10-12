@@ -812,17 +812,19 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        // FillCRect keeps the solid fill until the PowerPC path can decode
-        // a PixPat.
         PpcImportDispatcherTarget::FillCRect => {
             if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
-                let _ = ppc_paint_rect_bounds(
+                let pp_handle = cpu.gpr[4];
+                let _ = ppc_fill_color_rect(
                     memory,
                     gworlds,
                     current_gworld,
                     rect,
+                    pp_handle,
                     *quickdraw_fore_color,
                     quickdraw_fore_indices.get(&current_gworld).copied(),
+                    *quickdraw_back_color,
+                    None,
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -1059,7 +1061,7 @@ pub(super) fn dispatch_quickdraw_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::PaintRgn | PpcImportDispatcherTarget::FillRgn => {
+        PpcImportDispatcherTarget::PaintRgn => {
             if toolbox_startup.open_region_port == current_gworld {
                 ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
             } else {
@@ -1070,6 +1072,55 @@ pub(super) fn dispatch_quickdraw_import(
                     cpu.gpr[3],
                     *quickdraw_fore_color,
                     quickdraw_fore_indices.get(&current_gworld).copied(),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FillRgn => {
+            if toolbox_startup.open_region_port == current_gworld {
+                ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let rgn_handle = cpu.gpr[3];
+                let pat_ptr = cpu.gpr[4];
+                let pat = if pat_ptr != 0 {
+                    let mut p = [0u8; 8];
+                    for (i, b) in p.iter_mut().enumerate() {
+                        *b = memory.read_u8(pat_ptr + i as u32).unwrap_or(0xFF);
+                    }
+                    Some(p)
+                } else {
+                    None
+                };
+                let _ = ppc_fill_region_with_mono_pattern(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    rgn_handle,
+                    pat,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                    *quickdraw_back_color,
+                    None,
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FillCRgn => {
+            if toolbox_startup.open_region_port == current_gworld {
+                ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let rgn_handle = cpu.gpr[3];
+                let pp_handle = cpu.gpr[4];
+                let _ = ppc_fill_color_region(
+                    memory,
+                    gworlds,
+                    current_gworld,
+                    rgn_handle,
+                    pp_handle,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(&current_gworld).copied(),
+                    *quickdraw_back_color,
+                    None,
                 );
             }
             Some(PpcImportAction::ReturnPreserve)

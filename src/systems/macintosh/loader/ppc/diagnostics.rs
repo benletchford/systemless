@@ -340,6 +340,7 @@ pub(crate) fn ppc_import_extra_cycles_for_target(target: &PpcImportDispatcherTar
         | PpcImportDispatcherTarget::PaintRect
         | PpcImportDispatcherTarget::PaintRoundRect
         | PpcImportDispatcherTarget::FillCRect
+        | PpcImportDispatcherTarget::FillCRgn
         | PpcImportDispatcherTarget::FillRgn
         | PpcImportDispatcherTarget::EraseOval
         | PpcImportDispatcherTarget::EraseRect
