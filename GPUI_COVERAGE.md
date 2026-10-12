@@ -1,5 +1,33 @@
 # GPUI Kit system-interface coverage
 
+### Font-face wrapped dialog text-input ownership (2026-10-12)
+
+Plain dialog fields with a nonzero face now retain text-input ownership when
+their actual TERec wraps. The renderer classified these fields through the
+styled paint-plan candidate route, while the ownership helper only inspected
+ordinary plain pieces. The real Showcase reproduction qualified the bold
+native field pixels, then failed because no text-input owner was admitted.
+The helper now includes font-faced plain candidates under the same structural,
+visibility, selection, lifetime and drawing guards. The dialog remains the
+event target; whole-field pixel replacement qualification remains separate.
+
+The final real-guest regression passes8 cases: bold/italic across mono68k,
+colour68k, PPC8 and PPC16 (1 test,35.50s). A test-only ABI face change is followed
+by real guest typing/wrapping. It checks native paint qualification, owner
+admission, guest text commit, preserved face/caret, refreshed ownership and
+post-edit paint qualification. Inactive dialogs, stale window generations,
+overwritten drawing, unsupported transfer modes and hidden fields are rejected;
+stale commits are rejected after the actual edit. No guest bytes are written
+through a new editing shortcut.
+
+Existing wrapped-field interaction across four modes/four scales passes
+(39.02s), as does modal platform composition (5.27s). The locked/offline default
+desktop check passes (19.38s). Tests use the functional root-opt0 CI configuration;
+these results are not physical IME/accessibility or composed post-edit image
+qualification. The cffe18c2 optimized flight and font captures below predate this
+input ownership fix and retain their producer identity. Broader modal/style/
+background/transfer-mode and native release gates remain open.
+
 ### Rebased optimized EV flight and font compositor qualification (2026-10-12)
 
 Current producer `cffe18c270ceaa1cbe0383dea6fdbaa64e6e17fc` builds with the default

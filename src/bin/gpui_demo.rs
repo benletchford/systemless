@@ -16223,6 +16223,86 @@ mod desktop {
         }
 
         #[cfg(feature = "gpui-demo-test")]
+        #[test]
+        fn plain_face_wrapped_dialog_retains_guest_text_input_owner() {
+            for (powerpc, depth, face) in [(false, 1u16, 1u8), (false, 1, 2), (false, 8, 1), (false, 8, 2),
+                (true, 8, 1), (true, 8, 2), (true, 16, 1), (true, 16, 2)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app);
+                wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(132, 6));
+                settle(&mut session);
+                let dialog = session.runner_mut().dialog_snapshot().into_iter()
+                    .find(|dialog| dialog.visible && dialog.items.len() == 10).unwrap();
+                let bounds = dialog.items[8].bounds;
+                session.deliver_input(MacintoshInput::MouseDown { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 });
+                session.deliver_input(MacintoshInput::MouseUp { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 });
+                settle(&mut session);
+                let original = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.active && record.owner_port == dialog.guest_id).unwrap();
+                assert!(session.runner_mut().set_plain_text_edit_face_for_test(&original, face));
+                for &character in b"a long bold guest dialog field with enough text to wrap across several lines " {
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character });
+                    let tick = session.runner().guest_tick().saturating_add(1);
+                    session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
+                }
+                settle(&mut session);
+                let dialogs = session.runner_mut().dialog_snapshot();
+                let records = session.runner_mut().text_edit_snapshot().records;
+                let windows = session.runner_mut().window_frame_snapshot();
+                let record = records.iter().find(|record| record.guest_id == original.guest_id).unwrap();
+                assert_eq!(record.face, face); assert!(record.line_count > 1 && record.drawing_intact);
+                let frame = session.video_frame().unwrap();
+                let plans = super::qualify_styled_text_fields(&records, &frame.pixels, frame.width, frame.height);
+                let index = records.iter().position(|record| record.guest_id == original.guest_id).unwrap();
+                assert!(plans[index].is_some(), "native font-face wrapped field must qualify: PPC={powerpc}, depth={depth}");
+                let owner = super::super::input::dialog_text_owner_with_records(&dialogs, &windows, &records, &[])
+                    .expect("qualified font-face wrapped field must retain guest text-input ownership");
+                assert_eq!(owner.text, record.text);
+                assert!(dialogs.iter().find(|current| current.guest_id == dialog.guest_id).unwrap()
+                    .items[8].edit_text_layout.is_none());
+                let mut inactive = dialogs.clone();
+                inactive.iter_mut().find(|current| current.guest_id == dialog.guest_id).unwrap().active = false;
+                assert!(super::super::input::dialog_text_owner_with_records(&inactive, &windows, &records, &[]).is_none());
+                let mut stale = windows.clone();
+                stale.iter_mut().find(|window| window.guest_id == dialog.guest_id).unwrap().generation += 1;
+                assert!(super::super::input::dialog_text_owner_with_records(&dialogs, &stale, &records, &[]).is_none());
+                let mut overwritten = records.clone(); overwritten[index].drawing_intact = false;
+                assert!(super::super::input::dialog_text_owner_with_records(&dialogs, &windows, &overwritten, &[]).is_none());
+                let mut unsupported = records.clone(); unsupported[index].text_mode = 2;
+                assert!(super::super::input::dialog_text_owner_with_records(&dialogs, &windows, &unsupported, &[]).is_none());
+                let mut hidden = dialogs.clone();
+                hidden.iter_mut().find(|current| current.guest_id == dialog.guest_id).unwrap().items[8].visible = false;
+                assert!(super::super::input::dialog_text_owner_with_records(&hidden, &windows, &records, &[]).is_none());
+                let mut expected = record.text.clone();
+                expected.splice(owner.selection.clone(), [b'Z']);
+                let inputs = super::super::input::guest_dialog_commit_inputs(&mut session, &owner, b"Z").unwrap();
+                for input in inputs { session.deliver_input(input); settle(&mut session); }
+                let edited = session.runner_mut().text_edit_snapshot().records.into_iter()
+                    .find(|record| record.guest_id == original.guest_id).unwrap();
+                assert_eq!(edited.text, expected); assert_eq!(edited.face, face);
+                assert_eq!(edited.selection, (owner.selection.start + 1, owner.selection.start + 1));
+                let edited_frame = session.video_frame().unwrap();
+                assert!(super::qualify_styled_text_fields(std::slice::from_ref(&edited),
+                    &edited_frame.pixels, edited_frame.width, edited_frame.height)[0].is_some(),
+                    "edited font-face dialog field must retain GPUI paint qualification");
+                let current_dialogs = session.runner_mut().dialog_snapshot();
+                let current_records = session.runner_mut().text_edit_snapshot().records;
+                let current_windows = session.runner_mut().window_frame_snapshot();
+                let current = super::super::input::dialog_text_owner_with_records(
+                    &current_dialogs, &current_windows, &current_records, &[]).unwrap();
+                assert_eq!(current.identity, owner.identity); assert_eq!(current.text, edited.text);
+                assert!(super::super::input::guest_dialog_commit_inputs(&mut session, &owner, b"x").is_none());
+                eprintln!("PASS plain-face-wrapped-dialog-owner PPC={powerpc}, depth={depth}, face={face}");
+            }
+        }
+
+        #[cfg(feature = "gpui-demo-test")]
         #[gpui_kit::test]
         fn active_multiline_dialog_uses_guest_textedit_candidates(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{AppContext, EntityInputHandler, Bounds, point, px};

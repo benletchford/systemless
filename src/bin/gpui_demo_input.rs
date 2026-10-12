@@ -1184,7 +1184,12 @@ pub(crate) fn dialog_text_owner_with_records(
     if let Some(owner) = dialog_text_owner(dialogs, windows) { return Some(owner); }
     let viewport = super::frames::Rect { top: i16::MIN as i32, left: i16::MIN as i32,
         bottom: i16::MAX as i32, right: i16::MAX as i32 };
-    let pieces = super::frames::text_edit_pieces(records, dialogs, controls, windows, viewport);
+    let mut pieces = super::frames::text_edit_pieces(records, dialogs, controls, windows, viewport);
+    // Font-faced plain fields use the styled paint-plan candidate route.
+    // Input ownership still targets the dialog through the same structural
+    // guards; the compositor separately qualifies replacement pixels.
+    pieces.extend(super::frames::styled_text_edit_candidates(records, dialogs, controls, windows, viewport)
+        .into_iter().filter(|piece| !records[piece.record].styled && records[piece.record].face != 0));
     let mut candidates = pieces.iter().filter_map(|piece| {
         let record = &records[piece.record];
         let dialog = dialogs.iter().find(|dialog| dialog.guest_id == record.owner_port)?;
