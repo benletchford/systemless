@@ -45,6 +45,25 @@ compatibility:
       and post-release public replay remain unverified. Browser launch approved.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4584
+  - date: "2026-10-13"
+    tester: Catalogue maintainer
+    systemless_version: v0.97.0
+    architecture: 68k
+    environment: >-
+      Direct public Chrome Worker/Canvas2D replay on systemless.org/gryversi/,
+      default 25 MHz and configured depth 8. Actual deployed app and managed original
+      ZIP, with no preview frontend or local archive fixture. Normal Time, 1 Second;
+      White plays zero-based row 2, column 4 and flips Black at row 3, column 4.
+      Computer Black replies at row 4, column 5 and flips row 4, column 4. All eight
+      fixed before/after pixel checks pass; raw game captures inspected. Pacing is
+      58.438 guest ticks/sec above the unchanged minimum 50, with no console errors.
+      Fresh public ZIP GET is 45947 bytes with the exact original SHA-256. Published
+      v0.97.0 deployment and all six native package jobs succeed. Colour references
+      are inspected game pixels and the documented native move, not an independent
+      Macintosh emulator oracle. Full matches, saving, audio and HyperCard
+      documentation rendering remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4584
 runtime:
   executable_path: Gryversi/Gryversi
   screen_depth: 8
