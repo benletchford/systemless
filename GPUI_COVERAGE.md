@@ -1,5 +1,47 @@
 # GPUI Kit system-interface coverage
 
+### Plain-face composed rendering and native editing qualification (2026-10-12)
+
+The renderer initialization failure below was resolved by running the same
+capture executable with access to macOS rendering services. No renderer or
+pixel oracle was replaced. All64 composed captures exit0: bold and italic plain
+TERec fields across mono68k, colour68k, PPC8 and PPC16, each at scales0.75/1/1.5/2
+in active and suspended states. The full initial capture and all64 field crops
+were inspected using eight CPU/face contact sheets. Font-face intent, canonical
+line breaks and field bounds remain stable; selection highlighting hides on
+suspend while the canonical selected range remains0..14. Output dimensions,
+actual activation state, preserved selection/view/line starts and smooth-raster
+support were checked against the saved capture JSON. Artifact hashes and the
+explicit evidence limits are in the ignored
+`target/gpui-qualification/plain-face-rendering/matrix-results.json`.
+
+The real Showcase regression now also clicks byte1, types `Z`, checks the
+resulting byte2 caret and unchanged face, and requalifies the edited native
+pixels for all32 CPU/face recipes. The final run passes (1 test,103.29s).
+Preparation waits for completed guest tracking/null events, and single-click
+cases advance beyond the native `DoubleTime` interval; the earlier PPC word
+selection was the expected double-click path. This exercises guest TEClick/TEKey
+and the replacement geometry, not physical host event delivery. The test uses
+root opt0/codegen16/incremental with cached ci-test dependencies; its elapsed
+time includes deliberate guest-clock waits and is not gameplay performance.
+
+Reproduce one composed case with the existing capture executable:
+
+```sh
+target/ci-test/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit \
+  --screen-depth 1 --capture-plain-text-edit-ink /tmp/plain-bold.png \
+  --capture-plain-text-edit-face 1 --capture-scale 1
+```
+
+Use face2 for italic, screen-depth8 for colour68k, `--prefer-powerpc` with
+depth8/16 for PPC, and `--capture-plain-text-edit-inactive` for suspend. On a
+restricted host, this command needs access to macOS rendering services.
+These are functional-profile shared-compositor captures, not native Macintosh
+font-oracle or physical-host input evidence. The recipe retains guest metrics
+and font/face intent; it does not replace them with unqualified host typography.
+Other font faces, caret/editing matrices, paint modes/backgrounds, ownership
+boundaries and EV visible gameplay qualification remain open.
+
 ### Qualified GPUI painting for plain TextEdit font faces (2026-10-12)
 
 Plain TERec fields with a nonzero face now enter the same whole-field paint-plan

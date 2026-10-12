@@ -10842,6 +10842,7 @@ mod desktop {
 
         #[test]
         fn plain_face_text_edit_plans_match_guest_paint_across_cpu_modes() {
+            use systemless::memory::MemoryBus;
             for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
                 let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
                 session.runner_mut().set_prefer_powerpc_executables(powerpc);
@@ -10854,6 +10855,12 @@ mod desktop {
                 wait_for_menu(&mut session, 129, 7, true);
                 settle(&mut session);
                 for face in [1, 2, 4, 8, 16, 32, 64, 31] {
+                    assert!((0..300).any(|_| {
+                        session.runner_mut().run_steps(10_000, None);
+                        !session.runner().is_ui_tracking_active()
+                            && session.runner().event_manager_snapshot().last_record
+                                .is_some_and(|event| event.what == 0)
+                    }), "previous guest text interaction must complete before Reset: PPC={powerpc}, depth={depth}, next face={face}");
                     let original = session.runner_mut().text_edit_snapshot().records.into_iter()
                         .find(|record| !record.styled && record.drawing_intact).unwrap();
                     assert!(session.runner_mut().set_plain_text_edit_face_for_test(&original, face));
@@ -10890,7 +10897,46 @@ mod desktop {
                     let at = ((view.0 as u32 * frame.width + view.1 as u32) * 4) as usize;
                     changed[at] ^= 1;
                     assert!(super::qualify_styled_text_fields(&records, &changed, frame.width, frame.height)[index].is_none());
-                    eprintln!("PASS plain-face-plan powerpc={powerpc} depth={depth} face={face}");
+                    // Native TEClick and TEKey must keep the same byte position
+                    // as the replacement field's font-face geometry.
+                    let geometry = record.guest_line_geometry(0).unwrap();
+                    let dest = record.global_dest_rect.unwrap();
+                    let x = dest.1.saturating_sub(record.dest_rect.1)
+                        .saturating_add(geometry.left)
+                        .saturating_add(record.guest_plain_range_width(0..1).unwrap());
+                    let y = dest.0.saturating_sub(record.dest_rect.0)
+                        .saturating_add(geometry.top).saturating_add(geometry.ascent);
+                    let original_text = record.text.clone();
+                    // Repeated same-byte clicks within DoubleTime correctly
+                    // select a word on PPC. This case checks single-click input.
+                    let double_time = session.runner().bus().read_long(
+                        systemless::memory::globals::addr::DOUBLE_TIME);
+                    let click_wait_start = session.runner().guest_tick();
+                    assert!((0..300).any(|_| {
+                        settle(&mut session);
+                        session.runner().guest_tick().wrapping_sub(click_wait_start) > double_time
+                    }), "single-click interval must elapse through the guest clock");
+                    for input in [MacintoshInput::MouseDown { vertical: y, horizontal: x },
+                        MacintoshInput::MouseUp { vertical: y, horizontal: x }] {
+                        session.deliver_input(input); settle(&mut session);
+                    }
+                    let clicked = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|current| current.guest_id == original.guest_id).unwrap();
+                    assert_eq!(clicked.selection, (1, 1), "face={face}, PPC={powerpc}, depth={depth}");
+                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0x06, character: b'Z' });
+                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0x06, character: b'Z' });
+                    settle(&mut session);
+                    let edited = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|current| current.guest_id == original.guest_id).unwrap();
+                    let mut expected = original_text; expected.insert(1, b'Z');
+                    assert_eq!(edited.text, expected);
+                    assert_eq!(edited.selection, (2, 2));
+                    assert_eq!(edited.face, face);
+                    let edited_frame = session.video_frame().unwrap();
+                    assert!(super::qualify_styled_text_fields(std::slice::from_ref(&edited),
+                        &edited_frame.pixels, edited_frame.width, edited_frame.height)[0].is_some(),
+                        "edited field must still qualify: face={face}, PPC={powerpc}, depth={depth}");
+                    eprintln!("PASS plain-face-plan-and-edit powerpc={powerpc} depth={depth} face={face}");
                 }
             }
         }
