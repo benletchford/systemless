@@ -3436,8 +3436,8 @@ pub(crate) fn ppc_copy_bits(
         let src_bits = src_resolved.bits;
         let dst_bits = dst_resolved.bits;
         let transparent = mode == 36;
-        let supported_source = matches!(src_bits.depth, 1 | 2 | 4 | 8 | 16);
-        let supported_destination = matches!(dst_bits.depth, 1 | 2 | 4 | 8 | 16);
+        let supported_source = matches!(src_bits.depth, 1 | 2 | 4 | 8 | 16 | 32);
+        let supported_destination = matches!(dst_bits.depth, 1 | 2 | 4 | 8 | 16 | 32);
         let compatible_depths = if transparent || mode == 0 {
             // Imaging With QuickDraw (1994), p. 3-117 and pp. 4-27--4-28:
             // CopyBits converts source colors into the destination device's
@@ -3707,6 +3707,11 @@ pub(crate) fn ppc_copy_bits(
                 ))
             }
             16 => u32::from(ppc_rgb_color_to_rgb555(back_color)),
+            32 => ppc_rgb_to_pixmap_pixel(
+                src_bits,
+                [back_color.red, back_color.green, back_color.blue],
+                None,
+            )?,
             _ => return None,
         };
         let bitmap_fore_pixel = match dst_bits.depth {
@@ -3723,6 +3728,11 @@ pub(crate) fn ppc_copy_bits(
                 ))
             }
             16 => u32::from(ppc_rgb_color_to_rgb555(fore_color)),
+            32 => ppc_rgb_to_pixmap_pixel(
+                dst_bits,
+                [fore_color.red, fore_color.green, fore_color.blue],
+                None,
+            )?,
             _ => return None,
         };
         let bitmap_back_pixel = match dst_bits.depth {
@@ -3739,6 +3749,11 @@ pub(crate) fn ppc_copy_bits(
                 ))
             }
             16 => u32::from(ppc_rgb_color_to_rgb555(back_color)),
+            32 => ppc_rgb_to_pixmap_pixel(
+                dst_bits,
+                [back_color.red, back_color.green, back_color.blue],
+                None,
+            )?,
             _ => return None,
         };
         let mut writes = Vec::new();
@@ -3764,7 +3779,13 @@ pub(crate) fn ppc_copy_bits(
                 }) {
                     continue;
                 }
-                if transparent && src_pixel == transparent_back_pixel {
+                // The high byte of a classic 32-bit xRGB pixel is padding.
+                let transparent_source = if src_bits.depth == 32 {
+                    src_pixel & 0x00ff_ffff
+                } else {
+                    src_pixel
+                };
+                if transparent && transparent_source == transparent_back_pixel {
                     continue;
                 }
                 let pixel = if dst_bits.depth == 1 && matches!(mode, 32 | 33 | 34 | 35 | 37 | 38 | 39) {
@@ -3844,6 +3865,11 @@ pub(crate) fn ppc_copy_bits(
                         dst_clut.as_ref()?,
                         ppc_indexed_depth_entry_count(dst_bits.depth)?,
                     ))
+                } else if src_bits.depth != dst_bits.depth
+                    && (src_bits.depth == 32 || dst_bits.depth == 32)
+                {
+                    let rgb = ppc_pixmap_pixel_rgb(src_bits, src_pixel, src_clut.as_ref())?;
+                    ppc_rgb_to_pixmap_pixel(dst_bits, rgb, dst_clut.as_ref())?
                 } else {
                     src_pixel
                 };
