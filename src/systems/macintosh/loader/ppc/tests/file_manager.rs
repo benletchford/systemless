@@ -1,6 +1,93 @@
 use super::*;
 
 #[test]
+fn notification_direct_m68k_response_parks_then_restores_native_foreground() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
+    let request = PPC_DATA_BASE + 0x1800;
+    let output = request + 64;
+    let descriptor = PPC_HEAP_BASE + 0x1000;
+    let callback = PPC_HEAP_BASE + 0x2000;
+    loaded.memory.add_region(request, vec![0; 128]);
+    install_test_m68k_callback(&mut loaded, descriptor, callback,
+        test_stack_proc_info(0, &[PPC_PROCINFO_SIZE_FOUR]), 0,
+        &[0x202f, 4, 0x23c0, (output >> 16) as u16, output as u16, 0x4e74, 4]);
+    loaded.memory.write_u16_be(request + 4, 8).unwrap();
+    loaded.memory.write_u32_be(request + 24, request + 96).unwrap();
+    loaded.memory.write_u32_be(request + 28, descriptor).unwrap();
+    loaded.cpu.gpr[3] = request;
+    loaded.run_with_hle_imports(64);
+    let instance = loaded.toolbox_startup.notification_requests.instance_id(request).unwrap();
+    assert!(loaded.guest_calls().bind_task_entry_isa(
+        crate::guest_call::ExecutionTaskId::APPLICATION, GuestIsa::PowerPc));
+    assert!(loaded.guest_calls().current_native_task_owns_cpu());
+    let foreground = loaded.cpu.capture_execution_context();
+    let mut cfm = loaded.cfm.take().unwrap();
+    let manager_handle = loaded.process_memory_manager.0.clone();
+    let probe = loaded.run_notification_response_with_process_services(request, instance,
+        descriptor, 64, false, false, &mut manager_handle.borrow_mut(), &mut cfm).unwrap();
+    assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+    assert!(loaded.parked_interrupt_callback.is_some());
+    assert!(!loaded.interrupts_masked());
+    loaded.cfm = Some(cfm);
+    drain_test_m68k_guest_calls(&mut loaded);
+    loaded.run_with_hle_imports(64);
+    assert_eq!(loaded.memory.read_u32_be(output), Some(request));
+    assert!(loaded.parked_interrupt_callback.is_none());
+    assert!(loaded.guest_calls().is_empty());
+    assert_eq!(loaded.cpu.capture_execution_context().architectural(), foreground.architectural());
+}
+
+#[test]
+fn notification_native_response_resumes_slices_and_restores_foreground_context() {
+    for remove_queue in [false, true] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NMInstall")).unwrap();
+        let request = PPC_DATA_BASE + 0x1000;
+        let callback = PPC_DATA_BASE + 0x2000;
+        let descriptor = PPC_DATA_BASE + 0x3000;
+        loaded.memory.add_region(request, vec![0; 128]);
+        loaded.memory.add_region(callback, vec![0; 128]);
+        loaded.memory.add_region(descriptor, vec![0; 8]);
+        loaded.memory.write_u16_be(request + 4, 8).unwrap();
+        loaded.memory.write_u32_be(request + 24, request + 64).unwrap();
+        loaded.memory.write_u32_be(request + 28, descriptor).unwrap();
+        loaded.memory.write_u32_be(request + 32, u32::MAX).unwrap();
+        loaded.memory.write_u32_be(descriptor, callback).unwrap();
+        loaded.memory.write_u32_be(descriptor + 4, loaded.rtoc).unwrap();
+        for (index, instruction) in [0x3c80_0002u32, 0x3884_ffff, 0x2c04_0000,
+            0x4082_fff8, 0x9083_0020, 0x9023_0024, 0x9061_0020, 0x4e80_0020].into_iter().enumerate() {
+            loaded.memory.write_u32_be(callback + index as u32 * 4, instruction).unwrap();
+        }
+        loaded.cpu.gpr[3] = request;
+        loaded.run_with_hle_imports(64);
+        let instance = loaded.toolbox_startup.notification_requests.instance_id(request).unwrap();
+        let foreground = loaded.cpu.capture_execution_context();
+        let mut cfm = loaded.cfm.take().unwrap();
+        let mut manager = ProcessMemoryManager::default();
+        assert!(loaded.run_notification_response_with_process_services(request, instance + 1,
+            descriptor, 250_000, false, false, &mut manager, &mut cfm).is_none());
+        let first = loaded.run_notification_response_with_process_services(request, instance,
+            descriptor, 250_000, false, false, &mut manager, &mut cfm).unwrap();
+        assert!(matches!(first.result, PpcRunResult::CycleLimit { .. }));
+        assert!(loaded.notification_response_context.is_some());
+        assert_eq!(loaded.cpu.capture_execution_context().architectural(), foreground.architectural());
+        assert_eq!(loaded.memory.read_u32_be(request + 32), Some(u32::MAX));
+        // Queue removal cannot strand a response that already owns a continuation.
+        if remove_queue { loaded.toolbox_startup.notification_requests.remove(0); }
+        let second = loaded.run_notification_response_with_process_services(request, instance,
+            descriptor, 250_000, false, false, &mut manager, &mut cfm).unwrap();
+        assert!(matches!(second.result, PpcRunResult::Halted { .. }));
+        assert!(loaded.notification_response_context.is_none());
+        assert_eq!(loaded.cpu.capture_execution_context().architectural(), foreground.architectural());
+        assert_eq!(loaded.memory.read_u32_be(request + 32), Some(0));
+        assert!(loaded.run_notification_response_with_process_services(request, instance,
+            descriptor, 250_000, false, false, &mut manager, &mut cfm).is_none());
+        let private_sp = loaded.memory.read_u32_be(request + 36).unwrap();
+        assert_eq!(loaded.memory.read_u32_be(private_sp + 32), Some(request),
+            "duplicate completion must not overwrite the prior callback frame");
+    }
+}
+
+#[test]
 fn long_file_completion_resumes_without_changing_foreground_context() {
     let pef = synthetic_pef_with_import(b"PBReadAsync");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -1941,6 +2028,65 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn hle_import_runner_dir_create_preserves_literal_slash_and_failed_reply() {
+        for import in [b"DirCreate".as_slice(), b"FSpDirCreate".as_slice()] {
+            let pef = synthetic_pef_with_import(import);
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let scratch = PPC_HEAP_BASE;
+            loaded.memory.add_region(scratch, vec![0; 128]);
+            write_ppc_pstring(&mut loaded.memory, scratch, b"Audio/Video");
+            write_ppc_fsspec(
+                &mut loaded.memory,
+                scratch + 32,
+                PPC_BOOT_VOLUME_REF_NUM,
+                PPC_PREFERENCES_DIR_ID,
+                b"Audio/Video",
+            );
+            let original_count = loaded.vfs_directories.len();
+            for (reply, expected) in [(0xffff_fff0, PPC_PARAM_ERR), (scratch + 112, PPC_NO_ERR)] {
+                loaded.cpu.pc = loaded.entry_pc;
+                loaded.cpu.lr = PPC_HALT_PC;
+                if import == b"DirCreate" {
+                    loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+                    loaded.cpu.gpr[4] = PPC_PREFERENCES_DIR_ID;
+                    loaded.cpu.gpr[5] = scratch;
+                    loaded.cpu.gpr[6] = reply;
+                } else {
+                    loaded.cpu.gpr[3] = scratch + 32;
+                    loaded.cpu.gpr[4] = 0;
+                    loaded.cpu.gpr[5] = reply;
+                }
+                let probe = loaded.run_with_hle_imports(64);
+                assert_eq!(probe.handled_import_count, 1);
+                assert_eq!(probe.unsupported_import_index, None);
+                assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(expected));
+                let created = usize::from(expected == PPC_NO_ERR);
+                assert_eq!(loaded.vfs_directories.len(), original_count + created);
+                assert_eq!(
+                    loaded.next_vfs_dir_id,
+                    PPC_FIRST_DYNAMIC_DIR_ID + created as u32
+                );
+            }
+            assert_eq!(
+                loaded.memory.read_u32_be(scratch + 112),
+                Some(PPC_FIRST_DYNAMIC_DIR_ID)
+            );
+            let directory = loaded
+                .vfs_directories
+                .iter()
+                .find(|directory| directory.dir_id == PPC_FIRST_DYNAMIC_DIR_ID)
+                .unwrap();
+            assert_eq!(directory.parent_dir_id, PPC_PREFERENCES_DIR_ID);
+            let encoded =
+                crate::trap::dispatch::TrapDispatcher::encode_hfs_component_for_vfs("Audio/Video");
+            assert_eq!(
+                directory.path,
+                format!("System Folder/Preferences/{encoded}")
+            );
+        }
+    }
+
+    #[test]
     fn hle_import_runner_reports_missing_parent_for_dir_create() {
         let pef = synthetic_pef_with_import(b"DirCreate");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -2473,6 +2619,69 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn custom_get_file_filter_receives_mounted_volume_after_popup_switch() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CustomGetFile")).unwrap();
+        let callback = PPC_DATA_BASE + 0x2000;
+        let reply = PPC_DATA_BASE + 0x2100;
+        let observed = PPC_DATA_BASE + 0x2200;
+        loaded.memory.add_region(callback, vec![0; 24]);
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(observed, vec![0; 2]);
+        // Guest callback records ioVRefNum and includes every candidate.
+        for (offset, instruction) in [
+            0x3c80_0000 | (observed >> 16), // lis r4, address high
+            0x6084_0000 | (observed & 0xffff), // ori r4, r4, address low
+            0xa8a3_0016, // lha r5, ioVRefNum(r3)
+            0xb0a4_0000, // sth r5, 0(r4)
+            0x3860_0000, // li r3, false
+            0x4e80_0020, // blr
+        ].into_iter().enumerate() {
+            loaded.memory.write_u32_be(callback + offset as u32 * 4, instruction).unwrap();
+        }
+        loaded.seed_vfs_volumes(vec![PpcVfsVolumeRecord {
+            ref_num: -42, name: "Archive".into(), root_dir_id: 42000, attributes: 0x8080,
+            file_count: 1, allocation_block_count: 100, allocation_block_size: 2048,
+            clump_size: 2048, free_blocks: 0, bitmap_start: 0, allocation_pointer: 0,
+            allocation_start: 0, next_catalog_id: 42001, created_date: 0, modified_date: 0,
+        }]);
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id: 42000, parent_dir_id: 1, path: "Archive".into(), creator: 0,
+            file_type: 0, finder_flags: 0, dirty: false,
+        });
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Archive/Mounted.txt".into(), data: b"mounted".to_vec().into(), creator: 0,
+            file_type: u32::from_be_bytes(*b"TEXT"), finder_flags: 0, dirty: false,
+        });
+        loaded.cpu.gpr[3] = callback;
+        loaded.cpu.gpr[4] = u32::MAX;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = reply;
+        loaded.run_with_hle_imports(1024);
+        assert_eq!(loaded.memory.read_u16_be(observed), Some(PPC_BOOT_VOLUME_REF_NUM as u16));
+        let bounds = loaded.toolbox_startup.standard_file_get_tracking.as_ref().unwrap().bounds;
+        let event = |what, message, where_v, where_h| PpcQueuedEvent {
+            what, message, when: 0, where_v, where_h, modifiers: 0,
+        };
+        loaded.set_event_queue([event(1, 0, bounds.0 + PPC_STANDARD_FILE_GET_VOLUME_RECT.0 + 5,
+            bounds.1 + PPC_STANDARD_FILE_GET_VOLUME_RECT.1 + 5)]);
+        loaded.run_with_hle_imports(128);
+        assert!(loaded.toolbox_startup.standard_file_get_tracking.as_ref().unwrap().volume_popup.is_some());
+        loaded.set_event_queue([event(3, 0x77 << 8, 0, 0)]);
+        loaded.run_with_hle_imports(128);
+        let popup = loaded.toolbox_startup.standard_file_get_tracking.as_ref().unwrap().volume_popup.as_ref().unwrap();
+        assert_eq!(popup.choices[popup.highlighted.unwrap()].ref_num, -42);
+        loaded.set_event_queue([event(3, (0x24 << 8) | 13, 0, 0)]);
+        loaded.run_with_hle_imports(2048);
+        let tracking = loaded.toolbox_startup.standard_file_get_tracking.as_ref().unwrap();
+        assert_eq!(tracking.current_dir_id, 42000);
+        assert_eq!(tracking.volume.ref_num, -42);
+        assert_eq!(tracking.entries.len(), 1);
+        assert_eq!(tracking.entries[0].name, b"Mounted.txt");
+        assert_eq!(loaded.memory.read_u16_be(observed), Some((-42i16) as u16));
+        assert_eq!(loaded.memory.read_u8(reply), Some(0xaa), "filter callback must retain the modal caller");
+    }
+
+    #[test]
     fn hle_import_runner_custom_get_file_excludes_true_filter_results_and_resumes_caller() {
         let pef = synthetic_pef_with_import(b"CustomGetFile");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -2948,6 +3157,269 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     }
 
     #[test]
+    fn hle_standard_put_file_new_folder_modal_create_and_cancel() {
+        let pef = synthetic_pef_with_import(b"StandardPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1400;
+        let default_name = PPC_DATA_BASE + 0x1500;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(default_name, vec![0; 64]);
+        write_ppc_pstring(&mut loaded.memory, default_name, b"Untitled");
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = default_name;
+        loaded.cpu.gpr[5] = reply;
+        loaded.run_with_hle_imports(64);
+        let original = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap()
+            .clone();
+        for (message, modifiers) in [(u32::from(b'n'), 0x100), (27, 0)] {
+            loaded.set_event_queue([PpcQueuedEvent {
+                what: 3,
+                message,
+                when: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers,
+            }]);
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        }
+        let tracking = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap();
+        assert!(tracking.new_folder.is_none());
+        assert!(tracking.generation > original.generation);
+        assert_eq!(tracking.dir_id, original.dir_id);
+        assert_eq!(tracking.name, b"Untitled");
+        assert_eq!((tracking.sel_start, tracking.sel_end), (0, 8));
+        let mut keys = vec![(u32::from(b'n'), 0x100)];
+        keys.extend(b"gpui folder".iter().map(|byte| (u32::from(*byte), 0)));
+        keys.push((13, 0));
+        for (message, modifiers) in keys {
+            loaded.set_event_queue([PpcQueuedEvent {
+                what: 3,
+                message,
+                when: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers,
+            }]);
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        }
+        let tracking = loaded
+            .toolbox_startup
+            .standard_file_put_tracking
+            .as_ref()
+            .unwrap();
+        assert!(tracking.new_folder.is_none());
+        let created = tracking.dir_id;
+        assert_ne!(created, original.dir_id);
+        assert_eq!(tracking.directory_name, b"gpui folder");
+        assert_eq!(tracking.name, b"Untitled");
+        assert_eq!((tracking.sel_start, tracking.sel_end), (0, 8));
+        assert!(tracking.entries.is_empty());
+        // Standard File has not returned; preserve the caller-owned reply.
+        assert_eq!(loaded.memory.read_u8(reply), Some(0xaa));
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: 27,
+            when: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert!(loaded.toolbox_startup.standard_file_put_tracking.is_none());
+        assert_eq!(loaded.memory.read_u8(reply), Some(0));
+        assert!(
+            loaded
+                .vfs_directories
+                .iter()
+                .any(|directory| directory.dir_id == created
+                    && directory.parent_dir_id == original.dir_id)
+        );
+    }
+
+    #[test]
+    fn hle_standard_put_file_navigates_directory_before_writing_reply() {
+        let pef = synthetic_pef_with_import(b"StandardPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1a00;
+        let default_name = PPC_DATA_BASE + 0x1b00;
+        let fixtures_dir = 42;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(default_name, vec![0; 64]);
+        write_ppc_pstring(&mut loaded.memory, default_name, b"New Document");
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id: fixtures_dir,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Fixtures".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.push_test_vfs_file(PpcVfsFileRecord {
+            path: "Fixtures/Old Document".to_string(),
+            data: b"old".to_vec().into(),
+            creator: u32::from_be_bytes(*b"SHWC"),
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = default_name;
+        loaded.cpu.gpr[5] = reply;
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let tracking = loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap();
+        assert!(tracking.entries.iter().any(|entry| entry.dir_id == fixtures_dir));
+        let bounds = tracking.bounds;
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 10,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().selected,
+            Some(0)
+        );
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_snapshot().unwrap().name_has_focus,
+            Some(false)
+        );
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 40,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().dir_id,
+            PPC_ROOT_DIR_ID,
+            "clicks outside DoubleTime must not enter the folder"
+        );
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 45,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let tracking = loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap();
+        assert_eq!(tracking.dir_id, fixtures_dir);
+        assert_eq!(tracking.directory_name, b"Fixtures");
+        assert!(tracking.entries.iter().any(|entry| entry.name == b"Old Document"));
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: u32::from(0x7e_u8) << 8,
+            when: 20,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0x0100,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().dir_id,
+            PPC_ROOT_DIR_ID
+        );
+        loaded.set_event_queue([
+            PpcQueuedEvent {
+                what: 1,
+                message: 0,
+                when: 50,
+                where_v: bounds.0 + PPC_STANDARD_FILE_PUT_LIST_RECT.0 + 5,
+                where_h: bounds.1 + PPC_STANDARD_FILE_PUT_LIST_RECT.1 + 5,
+                modifiers: 0,
+            },
+            PpcQueuedEvent {
+                what: 3,
+                message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+                when: 51,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            },
+        ]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_put_tracking.as_ref().unwrap().dir_id,
+            fixtures_dir
+        );
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 60,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_NAME_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_NAME_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        assert_eq!(
+            loaded.toolbox_startup.standard_file_snapshot().unwrap().name_has_focus,
+            Some(true)
+        );
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            when: 0,
+            where_v: bounds.0 + PPC_STANDARD_FILE_PUT_SAVE_RECT.0 + 5,
+            where_h: bounds.1 + PPC_STANDARD_FILE_PUT_SAVE_RECT.1 + 5,
+            modifiers: 0,
+        }]);
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::Halted { .. }
+        ));
+        assert_eq!(loaded.memory.read_u8(reply), Some(1));
+        assert_eq!(loaded.memory.read_u32_be(reply + 8), Some(fixtures_dir));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, reply + 12),
+            Some(b"New Document".to_vec())
+        );
+    }
+
+    #[test]
     fn hle_import_runner_sf_put_file_gui_cancel_uses_legacy_reply_abi() {
         let pef = synthetic_pef_with_import(b"SFPutFile");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -2980,6 +3452,12 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
     #[test]
     fn standard_file_name_edit_at_maximum_length_is_safe() {
         let mut tracking = PpcStandardFilePutTrackingState {
+            pointer_anchor: None,
+            caret: crate::standard_file_ui::StandardFileCaret::default(),
+            new_folder: None,
+            confirming_replace: false,
+            generation: 1,
+            standard_entry_point: true,
             call: PpcStandardFileCall {
                 mode: PpcStandardFileMode::PutModern,
                 reply: 0,
@@ -2987,6 +3465,11 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
             },
             vref: PPC_BOOT_VOLUME_REF_NUM,
             dir_id: PPC_ROOT_DIR_ID,
+            directory_name: b"Macintosh HD".to_vec(),
+            entries: Vec::new(),
+            selected: None,
+            list_has_focus: false,
+            last_list_click: None,
             prompt: Vec::new(),
             name: vec![b'x'; 63],
             sel_start: 63,
@@ -3011,6 +3494,24 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(tracking.name.len(), 62);
         assert_eq!(tracking.sel_start, 62);
         assert_eq!(tracking.sel_end, 62);
+
+        tracking.name = vec![0x8e, 0xa3, b'S'];
+        tracking.sel_start = 1;
+        tracking.sel_end = 2;
+        let bounds = (10, 20, 30, 326);
+        let rect = ppc_standard_file_name_selection_rect(&tracking, bounds).unwrap();
+        let advance = |bytes: &[u8]| ppc_text_width_bytes(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM, 0, bytes);
+        assert_eq!(rect, (12, 20 + advance(&[0x8e]), 28, 20 + advance(&[0x8e, 0xa3])));
+        assert!(rect.1 > bounds.1 && rect.3 < bounds.3, "partial selection must not highlight the whole field");
+        tracking.list_has_focus = true;
+        assert_eq!(ppc_standard_file_name_selection_rect(&tracking, bounds), None);
+        tracking.list_has_focus = false;
+        tracking.confirming_replace = true;
+        assert_eq!(ppc_standard_file_name_selection_rect(&tracking, bounds), None);
+        tracking.confirming_replace = false;
+        tracking.new_folder = Some(Default::default());
+        assert_eq!(ppc_standard_file_name_selection_rect(&tracking, bounds), None);
+
     }
 
     #[test]
@@ -7642,6 +8143,9 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         let released_handle = loaded.cpu.gpr[3];
+        let generation = loaded.process_file_system.resource_manager.with_mut(|resources| {
+            resources.menu_generation(released_handle)
+        });
         let released_ptr = loaded.memory.read_u32_be(released_handle).unwrap();
         let allocated_heap_cursor = loaded.heap_cursor();
         assert_ne!(released_handle, 0);
@@ -7666,6 +8170,10 @@ fn pb_h_rename_sync_moves_both_forks_and_preserves_open_paths() {
         assert_eq!(loaded.cpu.gpr[3], released_handle);
         assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].handle, 0);
+        loaded.process_file_system.resource_manager.with_mut(|resources| {
+            assert!(!resources.menu_generations.contains_key(&released_handle));
+            assert_ne!(resources.menu_generation(released_handle), generation);
+        });
         assert!(loaded
             .handles()
             .iter()

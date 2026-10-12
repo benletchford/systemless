@@ -1,0 +1,226 @@
+[
+  {
+    "name": "mono-0.75",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--screen-depth",
+      "1",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/mono-0.75.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "0.75"
+    ]
+  },
+  {
+    "name": "mono-1",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--screen-depth",
+      "1",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/mono-1.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "1"
+    ]
+  },
+  {
+    "name": "mono-1.5",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--screen-depth",
+      "1",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/mono-1.5.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "1.5"
+    ]
+  },
+  {
+    "name": "mono-2",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--screen-depth",
+      "1",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/mono-2.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "2"
+    ]
+  },
+  {
+    "name": "colour-0.75",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--screen-depth",
+      "8",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/colour-0.75.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "0.75"
+    ]
+  },
+  {
+    "name": "colour-1",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--screen-depth",
+      "8",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/colour-1.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "1"
+    ]
+  },
+  {
+    "name": "colour-1.5",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--screen-depth",
+      "8",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/colour-1.5.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "1.5"
+    ]
+  },
+  {
+    "name": "colour-2",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--screen-depth",
+      "8",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/colour-2.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "2"
+    ]
+  },
+  {
+    "name": "ppc8-0.75",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--prefer-powerpc",
+      "--screen-depth",
+      "8",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/ppc8-0.75.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "0.75"
+    ]
+  },
+  {
+    "name": "ppc8-1",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--prefer-powerpc",
+      "--screen-depth",
+      "8",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/ppc8-1.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "1"
+    ]
+  },
+  {
+    "name": "ppc8-1.5",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--prefer-powerpc",
+      "--screen-depth",
+      "8",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/ppc8-1.5.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "1.5"
+    ]
+  },
+  {
+    "name": "ppc8-2",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--prefer-powerpc",
+      "--screen-depth",
+      "8",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/ppc8-2.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "2"
+    ]
+  },
+  {
+    "name": "ppc16-0.75",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--prefer-powerpc",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/ppc16-0.75.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "0.75"
+    ]
+  },
+  {
+    "name": "ppc16-1",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--prefer-powerpc",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/ppc16-1.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "1"
+    ]
+  },
+  {
+    "name": "ppc16-1.5",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--prefer-powerpc",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/ppc16-1.5.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "1.5"
+    ]
+  },
+  {
+    "name": "ppc16-2",
+    "command": [
+      "target/ci-test/examples/gpui-menu-demo",
+      "tests/toolbox-showcase/toolbox-showcase.sit",
+      "--prefer-powerpc",
+      "--capture-standard-menu",
+      "target/gpui-qualification/styled-menu-probes/ppc16-2.png",
+      "--capture-standard-menu-styled",
+      "--capture-scale",
+      "2"
+    ]
+  }
+]

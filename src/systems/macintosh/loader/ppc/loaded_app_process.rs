@@ -98,6 +98,7 @@ impl PpcLoadedApp {
         context.attach_control_manager(&mut self.controls);
         context.attach_list_manager(&mut self.list_manager);
         context.attach_collection_manager(&mut self.collections);
+        context.attach_notification_queue(&mut self.toolbox_startup.notification_requests);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
@@ -143,6 +144,7 @@ impl PpcLoadedApp {
             .attach_native_menu_selection(&mut self.toolbox_startup.pending_native_menu_selection);
         context.attach_mixed_mode_m68k_state(&mut self.toolbox_startup.mixed_mode_m68k);
         context.attach_apple_event_handlers(&mut self.apple_events.handlers);
+        context.attach_application_size(&mut self.application_size);
         context.attach_apple_event_launch_state(&mut self.apple_events.apple_event_launch_state);
         context.attach_apple_event_descriptors(&mut self.apple_events.descriptors);
     }

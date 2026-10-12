@@ -661,6 +661,79 @@ pub enum DialogItemKind {
     Unknown(u8),
 }
 
+/// Frontend-neutral, read-only description of a live Dialog Manager item.
+/// The item number is the Toolbox's 1-based identity within its dialog.
+/// Macintosh Toolbox Essentials (1992), pp. 6-13--6-14, 6-120--6-124.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogItemSnapshot {
+    /// Live ControlHandle and lifetime, when the item is backed by a known control.
+    /// SetDialogItem may replace this independently of the DialogPtr lifetime.
+    pub control_identity: Option<(u32, u64)>,
+    pub static_text_layout: Option<DialogStaticTextLayout>,
+    /// Geometry of the guest painter for this editText item. Absent when
+    /// faithful replacement needs unsupported TextEdit layout or font scaling.
+    pub edit_text_layout: Option<DialogEditTextLayout>,
+    /// Current guest-owned button tracking highlight.
+    pub pressed: bool,
+    pub number: i16,
+    pub kind: DialogItemKind,
+    pub bounds: (i16, i16, i16, i16),
+    pub text: String,
+    pub enabled: bool,
+    pub visible: bool,
+    /// Only populated when the live control value is known.
+    pub value: Option<i16>,
+    /// Only populated for editable text with a known guest selection.
+    pub selection: Option<(i16, i16)>,
+    /// Blink phase of the dialog-owned active TERec, when available.
+    pub caret_visible: Option<bool>,
+}
+
+/// Resolved guest statText layout, relative to the item display rectangle.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogStaticTextLayout {
+    /// Wrapping measures the current port face, independently of item style.
+    pub wrap_advance_extra: i16,
+    pub face: u8,
+    pub font: (i16, i16),
+    pub origin: (i16, i16),
+    pub line_height: i16,
+    pub inclusive_bottom: bool,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogEditTextLayout {
+    pub font: (i16, i16),
+    pub baseline: i16,
+    pub line_height: i16,
+    /// PPC inactive fields use the Dialog Manager's wrapped text painter.
+    pub wrap: bool,
+    /// PPC active fields use TERec selection/caret geometry; 68k's dialog
+    /// painter extends an end-of-text selection to the display rectangle edge.
+    pub text_edit_geometry: bool,
+}
+
+/// A live dialog's semantic state, separate from its guest-rendered pixels.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogSnapshot {
+    /// Advances when SetDialogItem replaces content, even with identical values.
+    pub content_revision: u64,
+    pub guest_id: u32,
+    /// Matches the owning WindowRecord lifetime, even when its pointer is reused.
+    pub generation: u64,
+    pub bounds: (i16, i16, i16, i16),
+    pub visible: bool,
+    pub active: bool,
+    pub default_item: Option<i16>,
+    pub cancel_item: Option<i16>,
+    pub edit_field: Option<i16>,
+    pub items: Vec<DialogItemSnapshot>,
+}
+
 #[allow(dead_code)]
 impl DialogItemKind {
     /// Decode the base item kind, masking out the disabled flag bit (0x80).
@@ -7547,9 +7620,11 @@ pub fn is_dialog_event(
 /// Validates whether a character is an editable character accepted by dialog edit fields.
 ///
 /// Macintosh Toolbox Essentials (1992), p. 6-139:
-/// Accepts backspace (0x08) and printable ASCII / Mac Roman characters (0x20..=0x7E).
+/// Accepts backspace, caret-navigation arrows, printable ASCII and Mac Roman.
+/// Arrow movement follows Inside Macintosh: Text (1993), pp. 2-12--2-13.
+/// Return, Escape, Tab and ASCII DEL remain modal/control actions.
 pub fn is_dialog_edit_text_character(character: u8) -> bool {
-    matches!(character, 0x08 | 0x20..=0x7E)
+    matches!(character, 0x08 | 0x1C..=0x1F | 0x20..=0x7E | 0x80..=0xFF)
 }
 
 /// Describes the action that the host environment must take in response to a `DialogSelect` event.
@@ -7830,6 +7905,16 @@ pub fn textedit_key_result(
     let s = sel_start.min(text_len);
     let e = sel_end.min(text_len);
     let (s, e) = if s > e { (e, s) } else { (s, e) };
+
+    match key {
+        0x1c => return (existing.to_vec(), if s != e { s } else { s.saturating_sub(1) }),
+        0x1d => return (existing.to_vec(), if s != e { e } else { e.saturating_add(1).min(text_len) }),
+        // This recordless editor is a single line. Wrapped fields resolve
+        // vertical movement through their owning TERec gateway instead.
+        0x1e => return (existing.to_vec(), 0),
+        0x1f => return (existing.to_vec(), text_len),
+        _ => {}
+    }
 
     if key == 0x08 {
         if s != e {
@@ -9142,6 +9227,13 @@ mod tests {
 
         // is_dialog_edit_text_character tests
         assert!(is_dialog_edit_text_character(0x08)); // backspace
+        for arrow in 0x1c..=0x1f { assert!(is_dialog_edit_text_character(arrow)); }
+        assert!(!is_dialog_edit_text_character(0x09)); // Tab stays modal navigation
+        for (key, expected) in [(0x1c, 2), (0x1d, 4), (0x1e, 0), (0x1f, 6)] {
+            let (text, caret) = textedit_key_result(b"abcdef", 3, 3, key);
+            assert_eq!(text, b"abcdef");
+            assert_eq!(caret, expected);
+        }
         assert!(is_dialog_edit_text_character(b' ')); // space (0x20)
         assert!(is_dialog_edit_text_character(b'A'));
         assert!(is_dialog_edit_text_character(b'~')); // 0x7E
@@ -9149,7 +9241,9 @@ mod tests {
         assert!(!is_dialog_edit_text_character(0x0D)); // CR
         assert!(!is_dialog_edit_text_character(0x1B)); // ESC
         assert!(!is_dialog_edit_text_character(0x7F)); // DEL
-        assert!(!is_dialog_edit_text_character(0x80));
+        assert!(is_dialog_edit_text_character(0x80));
+        assert!(is_dialog_edit_text_character(0x8E)); // Mac Roman é
+        assert!(is_dialog_edit_text_character(0xFF));
 
         // textedit_key_result tests
         let initial = b"Hello World";

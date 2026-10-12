@@ -1,0 +1,212 @@
+{
+  "scope": "macOS source-outline raster correction; does not qualify original Apple fonts, other host platforms, physical input or production release",
+  "diagnosis": "Thresholded antialiasing omitted small-font strokes. Static monochrome scan conversion preserves them; simple rather than invented smart dropout control matches sampled source glyph instructions.",
+  "source": "NimbusMonoPS-Regular.ttf resolved by the existing Monaco alias policy",
+  "source_sha256": "bf749d47bf69f4bf6963833afb66a3a5b6e62185bfffaf068b7a1b3f0276ba82",
+  "independent_comparison": "FreeType monochrome rendering of the same font, not a native Macintosh oracle",
+  "sampled_outlines_equal": [
+    "A",
+    "M",
+    "4",
+    "S"
+  ],
+  "exact_pixel_regression": "monaco9_preserves_independent_source_monochrome_strokes: 1 passed, 0 failed, 0.02s",
+  "font_suite_before_stronger_regression": "26 passed, 0 failed, 1.68s",
+  "gameplay_capture": {
+    "compositor": "shared Demo renderer",
+    "worker": "production run_guest with host services disabled",
+    "archive": "target/gpui-qualification/marathon.sit",
+    "prefer_powerpc": false,
+    "requested_depth": 8,
+    "observed_worker_updates": 1350,
+    "observation_elapsed_ms": 68804.126125,
+    "guest_key_input": [
+      49,
+      32
+    ],
+    "guest_mouse_input_v_h": [
+      220,
+      400
+    ],
+    "notification_identity": null,
+    "input_after_updates": 800,
+    "release_after_updates": 802,
+    "key_after_updates": 1100,
+    "key_release_after_updates": 1102,
+    "observation_timeout_seconds": 120,
+    "status": "68k \u00b7 Running",
+    "guest_dimensions": [
+      800,
+      600
+    ],
+    "scene_scale": 1.0,
+    "scene_origin": [
+      0.0,
+      0.0
+    ],
+    "menu_presented": false,
+    "menu_height": 0,
+    "scope": "Real application worker snapshot, optionally after held guest key or mouse input. Observed updates are not frontend ticks or frame latency. No physical input, live frame delivery, audio continuity or persistence qualification."
+  },
+  "ink_comparison": {
+    "scope": "Same bundled source; exterior blank padding normalized; bearings and Apple font fidelity excluded",
+    "glyphs": [
+      {
+        "character": ".",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "4",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": " ",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "M",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "A",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "G",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "N",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "U",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "E",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "C",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "L",
+        "same_trimmed_ink": true
+      },
+      {
+        "character": "S",
+        "same_trimmed_ink": true
+      }
+    ]
+  },
+  "visual_review": "Shared composition inspected; source text remains application-drawn and tiny. All twelve sampled ink shapes match after exterior-padding normalization. Original guest bearings/advances remain authoritative.",
+  "runtime_dependencies": "Static converter; linked-library audit found no dynamic FreeType or Homebrew dependency",
+  "capture_source_note": "Capture used temporary debug-only HUD trace, subsequently removed; formatting-only edits to the two small new Rust files occurred after its build. Critical raster policy is unchanged.",
+  "artifact_sha256": {
+    "simple-mono.png": "ea084901427d2fc5620f714bd8b6b3d300b6697515c6aa15f9a7f79f84c51efd",
+    "simple-mono.guest.png": "1c3d24f7e45402c8629b9c1e4ae02df78ca9148cc5acf84cbd0e08aa74555327",
+    "simple-mono.capture.json": "2e87d578d331f64f1e5db76d1f06aa4067a2bd48f289cb3c6cc48603669861f8",
+    "simple-mono.log": "479bce9dc665f4db3bb901aa12033de42fa1714a00baefd12f376e615fe0c840",
+    "simple-mono-input-hashes.txt": "b65c6657603132cdc8bbca2e9429ebd4a030eb52bde6ae9011dfbcc32427c069"
+  },
+  "ordinary_library_build": "cargo check --locked --no-default-features --lib passed, 46.92s",
+  "textedit_geometry_and_interaction": "plain_guest_text_service_geometry_uses_actual_field passed all twelve CPU/depth/alignment cases, 31.24s, after temporary tracing removal",
+  "unified_unicode_followup": {
+    "font_suite": "27 passed, 0 failed, 2.03s",
+    "regression": "unicode_and_roman_paths_preserve_identical_source_glyphs compares complete pixels, bounds, bearings and advances",
+    "example_build": "passed, 55.35s",
+    "captures": [
+      {
+        "name": "mono68k",
+        "command": [
+          "target/debug/examples/gpui-menu-demo",
+          "tests/toolbox-showcase/toolbox-showcase.sit",
+          "--screen-depth",
+          "1",
+          "--capture-standard-menu",
+          "target/gpui-qualification/unified-mono-menu/mono68k.png",
+          "--capture-standard-menu-id",
+          "129",
+          "--capture-scale",
+          "0.75"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 8.908787833
+      },
+      {
+        "name": "colour68k",
+        "command": [
+          "target/debug/examples/gpui-menu-demo",
+          "tests/toolbox-showcase/toolbox-showcase.sit",
+          "--screen-depth",
+          "8",
+          "--capture-standard-menu",
+          "target/gpui-qualification/unified-mono-menu/colour68k.png",
+          "--capture-standard-menu-id",
+          "129",
+          "--capture-scale",
+          "1"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 6.156229416999999
+      },
+      {
+        "name": "ppc8",
+        "command": [
+          "target/debug/examples/gpui-menu-demo",
+          "tests/toolbox-showcase/toolbox-showcase.sit",
+          "--screen-depth",
+          "8",
+          "--capture-standard-menu",
+          "target/gpui-qualification/unified-mono-menu/ppc8.png",
+          "--capture-standard-menu-id",
+          "129",
+          "--capture-scale",
+          "1.5",
+          "--prefer-powerpc"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 5.107276791999999
+      },
+      {
+        "name": "ppc16",
+        "command": [
+          "target/debug/examples/gpui-menu-demo",
+          "tests/toolbox-showcase/toolbox-showcase.sit",
+          "--screen-depth",
+          "16",
+          "--capture-standard-menu",
+          "target/gpui-qualification/unified-mono-menu/ppc16.png",
+          "--capture-standard-menu-id",
+          "129",
+          "--capture-scale",
+          "2",
+          "--prefer-powerpc"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 5.516767541
+      }
+    ],
+    "review": "All four active menu captures inspected. Smooth labels/checkmark fit popup. Mono original full image, colour full image and PPC original-resolution upper-left crops reviewed. Selected CPU/scale pairings only; inactive/native activation/physical input not qualified.",
+    "executable_sha256": "60ed2dba4275b57d991bbb482db806afb9c190cd5b586b865603c1e0b750099c",
+    "artifacts_sha256": {
+      "mono68k.png": "c7c454d474c492b5509210ba674fbb92487c1c3eefa893a8657c688a7007ba6e",
+      "ppc16.log": "f860edd087ad7fa6e9a35d10af32befc00c8f479754272e3b00953ad2d2c6453",
+      "mono68k.json": "57c25fc2d89d6583571ab825c4918b3f9aa0d7e54f7f0edccc873cd51282f38b",
+      "colour68k.png": "bd21c3ac96c1309e56269041aaedf24d6203da2c97002b00e8d91bdfb1ab598a",
+      "ppc8.png": "0339b2e51d4852837410c1df847209d2c0f80649817e560fbe194d178dd862f7",
+      "ppc8-menu-crop.png": "a3cb8c50a94686af8cfca80cd57bf9e16d59452825258ee25a00f4d07fa6c1e7",
+      "ppc8.json": "5105d7012bd6052780d9cb8533d053d22ac37d2df2824f1016ab2d9a3041a39c",
+      "ppc8.log": "f7b46eba0a11f7fb6a80c959eb9a6a2dd9f98ddf75da73e380d18f45e5913ae4",
+      "ppc16.json": "da498ecdb7797518330fbb83d2699e5aca68f68a0b11c0d258a7bbf64823df92",
+      "mono68k.log": "175644888341260ba6ca3415bbec3d634aaf6536cfba7c80a04063060947d0c9",
+      "ppc16.png": "571afd7e8fa79b23cb26876327686626243ec6ca0c3e6dca7fc7d92dafb7acbb",
+      "runs.json": "6c2a154a382a23341e0b9518394ea43873858cb80800972459e37466f8fd11be",
+      "colour68k.log": "225db17ee2b4a739a276f184a60e22f67990d4accf0470f2ab4c3a60b00c2499",
+      "ppc16-menu-crop.png": "1c11d8162350e0259c523615a9bc2539db558925c9a13dbb8a6ea4556aec6737",
+      "colour68k.json": "61fc9cd3aa5df92d75165b72891225a8f2d41a0661d121e1e07aacdeb4977487"
+    }
+  }
+}

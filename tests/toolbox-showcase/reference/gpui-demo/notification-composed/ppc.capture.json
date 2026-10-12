@@ -1,0 +1,36 @@
+{
+  "compositor": "shared Demo renderer",
+  "worker": "production run_guest with host services disabled",
+  "archive": "tests/toolbox-showcase/toolbox-showcase.sit",
+  "prefer_powerpc": true,
+  "requested_depth": null,
+  "observed_worker_updates": 80,
+  "observation_elapsed_ms": 5287.462166,
+  "guest_key_input": [
+    45,
+    110
+  ],
+  "guest_mouse_input_v_h": null,
+  "notification_identity": [
+    33569424,
+    1
+  ],
+  "input_after_updates": 10,
+  "release_after_updates": 11,
+  "key_after_updates": 10,
+  "key_release_after_updates": 11,
+  "observation_timeout_seconds": 30,
+  "status": "PowerPC · Running",
+  "guest_dimensions": [
+    800,
+    600
+  ],
+  "scene_scale": 2.0,
+  "scene_origin": [
+    0.0,
+    0.0
+  ],
+  "menu_presented": true,
+  "menu_height": 20,
+  "scope": "Real application worker snapshot, optionally after held guest key or mouse input. Observed updates are not frontend ticks or frame latency. No physical input, live frame delivery, audio continuity or persistence qualification."
+}

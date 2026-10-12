@@ -1,0 +1,17 @@
+{
+  "source_commit": "39fbd0cfeb5ac2f8d34ba250f828b51a9a8e69cf",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "b6fb36044f7c6210d221f62f3f0707ddc12f91e9a387a86e9653502fdd618fd8",
+    "src/bin/gpui_demo_text.rs": "f374c4d35d85271cb3cee69933a034865ca1efa9df37d2f20c7a37092f854b10",
+    "src/bin/gpui_demo_frames.rs": "b293ad66102ebdbc69a697b2bdc8d1ba01349a36a20c6a994b7e280eb14d814b",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8"
+  },
+  "outcome": "passed",
+  "scope": "Existing guest nested-modal keyboard isolation and modeless focus restoration regression; colour68k and PPC default depth only. No GPUI semantic dispatch or physical host observer qualification.",
+  "test_binary_sha256": "b297e52e18741cd0ee88a4e553f9d3022ba43aaf66050b8da8d7e6bf809c7a8b",
+  "binary_hash_timing": "Recorded after compilation; terminal result observed in subsequent handle poll. No rebuild occurred between execution and hashing.",
+  "session_id": 51124,
+  "duration_seconds": 3.79,
+  "log": "test.log",
+  "log_sha256": "b2fd7310750bb06b3df6fc3384d06c6680d649bc02a11157058b0fa7b58204bb"
+}

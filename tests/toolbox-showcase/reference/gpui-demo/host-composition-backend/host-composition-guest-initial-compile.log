@@ -1,0 +1,41 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6187:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6187 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+error[E0609]: no field `modal` on type `&systemless::runner::DialogSnapshot`
+   --> src/bin/gpui_demo_input.rs:320:78
+    |
+320 |         || session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.modal) {
+    |                                                                              ^^^^^ unknown field
+    |
+    = note: available fields are: `guest_id`, `generation`, `bounds`, `visible`, `active` ... and 4 others
+
+warning: unused variable: `cx`
+    --> src/bin/gpui_demo.rs:8840:65
+     |
+8840 |                     cx.update_window(window.into(), |_, window, cx| window.remove_window()).unwrap();
+     |                                                                 ^^ help: if this is intentional, prefix it with an underscore: `_cx`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0609`.
+warning: `systemless` (example "gpui-menu-demo" test) generated 1 warning
+error: could not compile `systemless` (example "gpui-menu-demo" test) due to 1 previous error; 1 warning emitted

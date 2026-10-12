@@ -1,0 +1,28 @@
+{
+  "scope": "Four inactive single-line shared Demo captures at scene scale0.75; all four images explicitly visually reviewed.",
+  "source_policy": "Existing capture code qualifies the full native field, saves guest.png, erases its source view, and presents the qualified plan through Demo. Preflight flags are diagnostics, not independent proof of visible rendering.",
+  "density": "1200x900 composed versus800x600 guest at scale0.75 implies device density2; inferred from dimensions, not a platform observer measurement.",
+  "reviews": [
+    {
+      "case": "mono",
+      "reviewed_image": "mono.png",
+      "observations": "Mixed plain/bold/italic/underlined field appears smooth with native colours and single-line bounds retained; application-drawn panel labels retain guest pixels. Monochrome custom panels remain native black."
+    },
+    {
+      "case": "colour68k",
+      "reviewed_image": "colour68k.png",
+      "observations": "Mixed plain/bold/italic/underlined field appears smooth with native colours and single-line bounds retained; application-drawn panel labels retain guest pixels."
+    },
+    {
+      "case": "ppc8",
+      "reviewed_image": "ppc8.png",
+      "observations": "Mixed plain/bold/italic/underlined field appears smooth with native colours and single-line bounds retained; application-drawn panel labels retain guest pixels."
+    },
+    {
+      "case": "ppc16",
+      "reviewed_image": "ppc16.png",
+      "observations": "Mixed plain/bold/italic/underlined field appears smooth with native colours and single-line bounds retained; application-drawn panel labels retain guest pixels."
+    }
+  ],
+  "limitations": "Does not establish all scales, active selection/caret, multiline, all styles/font fidelity, host input, lifecycle or performance."
+}

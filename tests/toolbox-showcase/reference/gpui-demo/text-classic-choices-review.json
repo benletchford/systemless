@@ -1,0 +1,46 @@
+{
+  "scope": "Checkbox and radio label wrappers share left-aligned guest system-font glyphs and vertically centered guest baseline. Existing indicators and interaction retained.",
+  "capture_flag": "--capture-controls",
+  "modes": [
+    "--screen-depth 1",
+    "--screen-depth 8",
+    "--prefer-powerpc"
+  ],
+  "review": "Three actual shared-compositor captures reviewed. Checkbox label uses guest glyphs. Fixture page contains no radio; no radio visual qualification claimed.",
+  "tests": {
+    "themed_checkbox_forwards_one_guest_press_and_release": "pass 0.07s",
+    "themed_dialog_checkbox_and_edit_field_forward_guest_clicks": "pass 0.15s"
+  },
+  "limitations": [
+    "No radio capture evidence.",
+    "One viewport and unchecked checkbox state; scale/activation/state matrix remains unfinished.",
+    "Small-height controls still need indicator-dependent label origin snapshot geometry.",
+    "Appearance and dialog font overrides remain unfinished."
+  ],
+  "outputs": [
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-choices-mono.png",
+      "sha256": "795afd06025097f8462d2e107f42832e7acb3a33d1b6cbd3fd0a81b19a5952fa"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-choices-mono.guest.png",
+      "sha256": "0baac99f71b9be9906bf498c375c22d57f4345b7a9cdc3a12ca04a52b9059608"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-choices-colour.png",
+      "sha256": "cfd5f8bfe4d6236733b91d91601daae84056b8e5a296c66bfb216273b4a9578c"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-choices-colour.guest.png",
+      "sha256": "c760e184fa31337cc602aeb16ec9d983177149155655d19f9cc365133ac828d0"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-choices-ppc.png",
+      "sha256": "cfd5f8bfe4d6236733b91d91601daae84056b8e5a296c66bfb216273b4a9578c"
+    },
+    {
+      "path": "tests/toolbox-showcase/reference/gpui-demo/text-classic-choices-ppc.guest.png",
+      "sha256": "c760e184fa31337cc602aeb16ec9d983177149155655d19f9cc365133ac828d0"
+    }
+  ]
+}

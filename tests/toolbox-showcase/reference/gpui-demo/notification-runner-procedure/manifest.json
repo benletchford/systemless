@@ -1,0 +1,12 @@
+{
+  "source_hashes": {
+    "src/systems/macintosh/runner/mod.rs": "01c92266e0d920ac32759e0da8804a3370a5c0a548c8e828dd55fbc59219d370",
+    "src/systems/macintosh/runner/tests/trap_dispatch.rs": "6966055808bd2af0fd5f82a9e867d971c5808948e676c95d8e7b36b7c947f8c5"
+  },
+  "result": {
+    "passed": 18,
+    "failed": 0,
+    "seconds": 0.18
+  },
+  "scope": "Native response scheduling and foreground exclusion through runner live single-slice API; no visible GPUI acknowledgment or direct Mixed Mode runner qualification."
+}

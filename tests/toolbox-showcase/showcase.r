@@ -15,6 +15,7 @@ type 'DATA' {
 #define rMainWindow 128
 #define rPrefDialog 129
 #define rAboutAlert 130
+#define rModelessDialog 131
 #define rShowcaseIcon 128
 #define rShowcasePalette 150
 #define rShowcaseSound 151
@@ -216,7 +217,8 @@ resource 'MENU' (mOptions, preload) {
         "Renderer Style", noIcon, hierarchicalMenu, "\216", plain;
         "-", noIcon, noKey, noMark, plain;
         "Reset All Preferences", noIcon, "R", noMark, plain;
-        "Launch Modal Dialog…", noIcon, "D", noMark, plain
+        "Launch Modal Dialog…", noIcon, "D", noMark, plain;
+        "Launch Modeless Dialog…", noIcon, noKey, noMark, plain
     }
 };
 
@@ -282,6 +284,26 @@ resource 'DITL' (rPrefDialog, preload) {
         {125, 105, 145, 300}, EditText { enabled, "Maverick" };
         /* Nova keeps inactive edit items beyond the dialog portRect. */
         {300, 105, 320, 300}, EditText { disabled, "Hidden Edit Text" }
+    }
+};
+
+resource 'DLOG' (rModelessDialog, preload) {
+    {90, 120, 260, 430},
+    noGrowDocProc,
+    invisible,
+    goAway,
+    0x0,
+    rModelessDialog,
+    "Modeless Settings",
+    noAutoCenter
+};
+
+resource 'DITL' (rModelessDialog, preload) {
+    {
+        {125, 220, 145, 290}, Button { enabled, "Close" };
+        {60, 20, 80, 280}, CheckBox { enabled, "Enable modeless option" };
+        {20, 20, 40, 280}, StaticText { disabled, "Edit this field, then switch windows." };
+        {90, 20, 110, 280}, EditText { enabled, "Pilot" }
     }
 };
 

@@ -1,0 +1,32 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index f49b1384..7f281941 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -11805,6 +11805,27 @@ mod desktop {
+                     super::super::frames::Rect::from((0, 0, 600, 800)));
+                 assert!(pieces.iter().any(|piece| records[piece.record].guest_id == record.guest_id),
+                     "actual guest multiline field must reach shared renderer: PPC={powerpc} depth={depth}");
++                let geometry = super::composition::text_line_geometry(record, 0).unwrap();
++                let dest = record.global_dest_rect.unwrap();
++                let line = super::super::text::ClassicLine::plain(
++                    &record.text[..record.line_starts.as_ref().unwrap()[1]], record.font, record.size);
++                let identity = (record.guest_id, record.generation);
++                let original_text = record.text.clone();
++                for offset in [3usize, 10, 20] {
++                    let horizontal = dest.1 - record.dest_rect.1 + geometry.left
++                        + i16::try_from(line.positions[offset]).unwrap();
++                    let vertical = dest.0 - record.dest_rect.0 + geometry.top + geometry.ascent;
++                    session.deliver_input(MacintoshInput::MouseDown { vertical, horizontal });
++                    settle(&mut session);
++                    session.deliver_input(MacintoshInput::MouseUp { vertical, horizontal });
++                    settle(&mut session);
++                    let clicked = session.runner_mut().text_edit_snapshot().records.into_iter()
++                        .find(|current| (current.guest_id, current.generation) == identity).unwrap();
++                    assert_eq!(clicked.selection, (offset, offset),
++                        "wrapped dialog glyph boundary must match guest TEClick: depth={depth}, offset={offset}");
++                    assert_eq!(clicked.text, original_text);
++                    assert!(clicked.drawing_intact);
++                }
+             }
+         }
+ 

@@ -1,0 +1,19 @@
+{
+  "source_commit": "716378c4b72ff07db16e60943e5ae898cc0b140d",
+  "scope": "Representative visual review of isolated whole-field canvas captures; not all 16 visuals or production Demo qualification",
+  "reviewed": [
+    {
+      "rendered": "multiline-mono-1.5.png",
+      "sha256": "c5fc8e4fa94f02b276934aa6902f6337955a88ab1b279ce4e01bcbea3289f713"
+    },
+    {
+      "rendered": "multiline-colour-0.75.png",
+      "sha256": "b53302094e097d1bfc807fa58687e04bb27ad962530878a221589f612bb6cb06"
+    },
+    {
+      "rendered": "multiline-ppc8-2.png",
+      "sha256": "421f653c5bdf6320bca15d954c4f157c9536c3cd201d630cd45892b7515ee857"
+    }
+  ],
+  "observations": "Selected mixed-style first line and underlined second line remain in field bounds. Monochrome application-drawn black panels are retained; malformed diagnostic bold labels outside the field are not qualified."
+}

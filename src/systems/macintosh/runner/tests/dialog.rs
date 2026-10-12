@@ -1068,3 +1068,26 @@ fn dialog_draw_proc_pascal_stack_places_item_number_before_window_pointer() {
     assert_eq!(runner.bus.read_word(seen_item_addr) as i16, item_no);
     assert_eq!(runner.bus.read_long(seen_dialog_addr), dialog_ptr);
 }
+
+#[test]
+fn modal_snapshot_owns_input_without_changing_window_hilite() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let dialog = runner.bus.alloc(170);
+    runner.dispatcher.init_cgraf_window(&mut runner.bus, &mut runner.m68k.cpu,
+        dialog, 0, 100, 120, 220, 360, "", 1, true, false, false, 0);
+    runner.dispatcher.dialog_items.insert(dialog, Vec::new());
+    runner.bus.write_byte(dialog + crate::window_manager::WINDOW_HILITED_FLAG_OFFSET, 0);
+    assert!(!runner.dialog_snapshot()[0].active);
+    let mut tracking = dialog_tracking_for_test(0, 0);
+    tracking.dialog_ptr = dialog;
+    runner.dispatcher.dialog_tracking = Some(tracking);
+    assert!(runner.dialog_snapshot()[0].active, "explicit modal input ownership survives a cleared hilite flag");
+    assert!(!runner.window_frame_snapshot()[0].window.active);
+    assert_eq!(runner.bus.read_byte(dialog + crate::window_manager::WINDOW_HILITED_FLAG_OFFSET), 0);
+    runner.bus.write_byte(dialog + crate::window_manager::WINDOW_VISIBLE_FLAG_OFFSET, 0);
+    let hidden = runner.dialog_snapshot();
+    assert!(!hidden[0].visible && !hidden[0].active);
+    runner.bus.write_byte(dialog + crate::window_manager::WINDOW_VISIBLE_FLAG_OFFSET, 1);
+    runner.dispatcher.dialog_tracking = None;
+    assert!(!runner.dialog_snapshot()[0].active, "ending tracking must relinquish modal ownership");
+}

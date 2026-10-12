@@ -1,0 +1,8 @@
+{
+  "base_head": "9ade0462",
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "abc3f93e51842231676773a04e21896c7c986150478acbf46b1a9549785d4c18",
+    "src/bin/gpui_demo_activation.rs": "a997280ad30183f5e1f31144891d2e9aa089b14badb24f101716e172fddd7e64"
+  },
+  "scope": "Actual guest entry-action backend tests for Open4 and Save4 CPU/depth cases exit0. Expected entry equality, visibility, selection and directory preservation. Production compile passes before test-only additions. Accessibility Click callbacks registered in production rows; native AccessKit action dispatch and host accessibility remain unqualified."
+}

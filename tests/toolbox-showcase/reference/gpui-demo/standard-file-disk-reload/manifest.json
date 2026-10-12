@@ -1,0 +1,13 @@
+{
+  "source_base": "afb425ae2612c00761882ffadfcbfa3f7d99dc91",
+  "fixture_sha256": "ec8eed690135f1b4f1244897474dde188b17caba7a29e8f34d129d8a990916b4",
+  "patch_sha256": "5a8f4c14c5c408dfea5897f13ab148b1d1b8a38ce637ea4caa5496467fac3772",
+  "result": "Save and disk reload PASS 7.22s; New Folder regression PASS 14.60s",
+  "modes": [
+    "mono68k",
+    "colour68k",
+    "PPC8",
+    "PPC16"
+  ],
+  "scope": "Actual guest-written new-name Save retained, persisted through production DesktopSaveStore, original store/session dropped, disk reloaded into fresh initialized session; exact forks and metadata compared. Same host process; no separate process restart, guest read after restore, real-game saves or physical GPUI workflow claim."
+}

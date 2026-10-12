@@ -1,0 +1,882 @@
+{
+  "binary_sha256": "64b70880a9c45ba113827871727ebcddb4230d86a28c6994e8657c0cf21db184",
+  "surface": "popup",
+  "fixture_sha256": "4eed70717459def6f4761ec9a0fe3aafa238e00ac6cc09bedde8c08b2d6a356d",
+  "scope": "Shared GPUI compositor and guest session API; not native host observer or native Macintosh qualification.",
+  "visual_review": "All twelve full composed captures reviewed: titles visible, selected text contained, guest-mode ink preserved. Large previews were resized; pixel comparisons use original PNGs.",
+  "captures": [
+    {
+      "mode": "mono",
+      "state": "disabled",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-disabled-canonical-scales/popup-selected-scale-mono-disabled-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-disabled-canonical-mono-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "0fb0fa927251f2acb28a3c221adf23750a6a5d08a6323d2d259e0ed161e3b12b",
+          "original_file": "popup-selected-scale-mono-disabled-075.png"
+        },
+        {
+          "file": "popup-disabled-canonical-mono-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "500628e63d1e3060fd4174acae311d04bbb2536471bedab553c20ab1960ab840",
+          "original_file": "popup-selected-scale-mono-disabled-075.guest.png"
+        }
+      ],
+      "selected_text_comparison": [
+        {
+          "name": "loadout",
+          "guest_region": [
+            305,
+            153,
+            419,
+            169
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 298,
+          "missing": 0,
+          "extra": 0
+        },
+        {
+          "name": "theme",
+          "guest_region": [
+            295,
+            189,
+            370,
+            205
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 68,
+          "missing": 0,
+          "extra": 0
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "disabled",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-disabled-canonical-scales/popup-selected-scale-mono-disabled-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-disabled-canonical-mono-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "1fff0b7fd72720477be52ad8fa7e08501d88a2bb372e3d856b095f54f8f04fea",
+          "original_file": "popup-selected-scale-mono-disabled-100.png"
+        },
+        {
+          "file": "popup-disabled-canonical-mono-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "500628e63d1e3060fd4174acae311d04bbb2536471bedab553c20ab1960ab840",
+          "original_file": "popup-selected-scale-mono-disabled-100.guest.png"
+        }
+      ],
+      "selected_text_comparison": [
+        {
+          "name": "loadout",
+          "guest_region": [
+            305,
+            153,
+            419,
+            169
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 596,
+          "missing": 0,
+          "extra": 0
+        },
+        {
+          "name": "theme",
+          "guest_region": [
+            295,
+            189,
+            370,
+            205
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 136,
+          "missing": 0,
+          "extra": 0
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "disabled",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-disabled-canonical-scales/popup-selected-scale-mono-disabled-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-disabled-canonical-mono-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "35f0dcbafe0369acd9a35389281d8063227cd1afa6d7b26dac43499246a3b362",
+          "original_file": "popup-selected-scale-mono-disabled-150.png"
+        },
+        {
+          "file": "popup-disabled-canonical-mono-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "500628e63d1e3060fd4174acae311d04bbb2536471bedab553c20ab1960ab840",
+          "original_file": "popup-selected-scale-mono-disabled-150.guest.png"
+        }
+      ],
+      "selected_text_comparison": [
+        {
+          "name": "loadout",
+          "guest_region": [
+            305,
+            153,
+            419,
+            169
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 1341,
+          "missing": 0,
+          "extra": 0
+        },
+        {
+          "name": "theme",
+          "guest_region": [
+            295,
+            189,
+            370,
+            205
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 306,
+          "missing": 0,
+          "extra": 0
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "disabled",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-disabled-canonical-scales/popup-selected-scale-mono-disabled-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-disabled-canonical-mono-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "a41ef7411f4e45b5dd42af8cc4dc8491f763b03f5ba9dcc992f4547d838a91dd",
+          "original_file": "popup-selected-scale-mono-disabled-200.png"
+        },
+        {
+          "file": "popup-disabled-canonical-mono-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "500628e63d1e3060fd4174acae311d04bbb2536471bedab553c20ab1960ab840",
+          "original_file": "popup-selected-scale-mono-disabled-200.guest.png"
+        }
+      ],
+      "selected_text_comparison": [
+        {
+          "name": "loadout",
+          "guest_region": [
+            305,
+            153,
+            419,
+            169
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 2384,
+          "missing": 0,
+          "extra": 0
+        },
+        {
+          "name": "theme",
+          "guest_region": [
+            295,
+            189,
+            370,
+            205
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 544,
+          "missing": 0,
+          "extra": 0
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "disabled",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-disabled-canonical-scales/popup-selected-scale-colour-disabled-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-disabled-canonical-colour-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "dfe54771fe98b4a329e19f4d7ab279d1e995f44cd31901f59de9f63d9ca7d499",
+          "original_file": "popup-selected-scale-colour-disabled-075.png"
+        },
+        {
+          "file": "popup-disabled-canonical-colour-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "09ff0704a238d1983671e8f22832cec4c88cfa96a03c284156393ba3e7106f0a",
+          "original_file": "popup-selected-scale-colour-disabled-075.guest.png"
+        }
+      ],
+      "selected_text_comparison": [
+        {
+          "name": "loadout",
+          "guest_region": [
+            305,
+            153,
+            419,
+            169
+          ],
+          "rgb": [
+            150,
+            150,
+            150
+          ],
+          "physical_ink_pixels": 602,
+          "missing": 0,
+          "extra": 0
+        },
+        {
+          "name": "theme",
+          "guest_region": [
+            295,
+            189,
+            370,
+            205
+          ],
+          "rgb": [
+            150,
+            150,
+            150
+          ],
+          "physical_ink_pixels": 167,
+          "missing": 0,
+          "extra": 0
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "disabled",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-disabled-canonical-scales/popup-selected-scale-colour-disabled-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-disabled-canonical-colour-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "f4c6c84a2ff84c70835c49591dae190fa56161c6b39275ebab4f1d9d228e6ba4",
+          "original_file": "popup-selected-scale-colour-disabled-100.png"
+        },
+        {
+          "file": "popup-disabled-canonical-colour-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "09ff0704a238d1983671e8f22832cec4c88cfa96a03c284156393ba3e7106f0a",
+          "original_file": "popup-selected-scale-colour-disabled-100.guest.png"
+        }
+      ],
+      "selected_text_comparison": [
+        {
+          "name": "loadout",
+          "guest_region": [
+            305,
+            153,
+            419,
+            169
+          ],
+          "rgb": [
+            150,
+            150,
+            150
+          ],
+          "physical_ink_pixels": 1164,
+          "missing": 0,
+          "extra": 0
+        },
+        {
+          "name": "theme",
+          "guest_region": [
+            295,
+            189,
+            370,
+            205
+          ],
+          "rgb": [
+            150,
+            150,
+            150
+          ],
+          "physical_ink_pixels": 256,
+          "missing": 0,
+          "extra": 0
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "disabled",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-disabled-canonical-scales/popup-selected-scale-colour-disabled-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-disabled-canonical-colour-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "aefca85ef023bf2052aa161c15a5123af9aa19c89e51dba0e986ca3ba5e3aeb3",
+          "original_file": "popup-selected-scale-colour-disabled-150.png"
+        },
+        {
+          "file": "popup-disabled-canonical-colour-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "09ff0704a238d1983671e8f22832cec4c88cfa96a03c284156393ba3e7106f0a",
+          "original_file": "popup-selected-scale-colour-disabled-150.guest.png"
+        }
+      ],
+      "selected_text_comparison": [
+        {
+          "name": "loadout",
+          "guest_region": [
+            305,
+            153,
+            419,
+            169
+          ],
+          "rgb": [
+            150,
+            150,
+            150
+          ],
+          "physical_ink_pixels": 2619,
+          "missing": 0,
+          "extra": 0
+        },
+        {
+          "name": "theme",
+          "guest_region": [
+            295,
+            189,
+            370,
+            205
+          ],
+          "rgb": [
+            150,
+            150,
+            150
+          ],
+          "physical_ink_pixels": 576,
+          "missing": 0,
+          "extra": 0
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "disabled",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-disabled-canonical-scales/popup-selected-scale-colour-disabled-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-disabled-canonical-colour-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "45e0e603f7fbd521d1939016ebb00b669df78f65f9d170ccf90bf9454be33572",
+          "original_file": "popup-selected-scale-colour-disabled-200.png"
+        },
+        {
+          "file": "popup-disabled-canonical-colour-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "09ff0704a238d1983671e8f22832cec4c88cfa96a03c284156393ba3e7106f0a",
+          "original_file": "popup-selected-scale-colour-disabled-200.guest.png"
+        }
+      ],
+      "selected_text_comparison": [
+        {
+          "name": "loadout",
+          "guest_region": [
+            305,
+            153,
+            419,
+            169
+          ],
+          "rgb": [
+            150,
+            150,
+            150
+          ],
+          "physical_ink_pixels": 4656,
+          "missing": 0,
+          "extra": 0
+        },
+        {
+          "name": "theme",
+          "guest_region": [
+            295,
+            189,
+            370,
+            205
+          ],
+          "rgb": [
+            150,
+            150,
+            150
+          ],
+          "physical_ink_pixels": 1024,
+          "missing": 0,
+          "extra": 0
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "disabled",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-disabled-canonical-scales/popup-selected-scale-ppc-disabled-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-disabled-canonical-ppc-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "68870cc77b9ac5e1e3845357b555c81e582a5176f7daa24341d34d01ed16ca93",
+          "original_file": "popup-selected-scale-ppc-disabled-075.png"
+        },
+        {
+          "file": "popup-disabled-canonical-ppc-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312",
+          "original_file": "popup-selected-scale-ppc-disabled-075.guest.png"
+        }
+      ],
+      "selected_text_comparison": [
+        {
+          "name": "loadout",
+          "guest_region": [
+            295,
+            153,
+            419,
+            169
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 662,
+          "missing": 0,
+          "extra": 0
+        },
+        {
+          "name": "theme",
+          "guest_region": [
+            285,
+            189,
+            370,
+            205
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 167,
+          "missing": 0,
+          "extra": 0
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "disabled",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-disabled-canonical-scales/popup-selected-scale-ppc-disabled-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-disabled-canonical-ppc-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "0f6f16ffc3638fa338719ce37aa321fdf6132eb54dfbed9d32c9a96c3f992f9e",
+          "original_file": "popup-selected-scale-ppc-disabled-100.png"
+        },
+        {
+          "file": "popup-disabled-canonical-ppc-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312",
+          "original_file": "popup-selected-scale-ppc-disabled-100.guest.png"
+        }
+      ],
+      "selected_text_comparison": [
+        {
+          "name": "loadout",
+          "guest_region": [
+            295,
+            153,
+            419,
+            169
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 1272,
+          "missing": 0,
+          "extra": 0
+        },
+        {
+          "name": "theme",
+          "guest_region": [
+            285,
+            189,
+            370,
+            205
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 256,
+          "missing": 0,
+          "extra": 0
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "disabled",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-disabled-canonical-scales/popup-selected-scale-ppc-disabled-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-disabled-canonical-ppc-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "4649eb4f3d2885d55df727f25c1cacf12a17ee67db67c503f09d2a9449835560",
+          "original_file": "popup-selected-scale-ppc-disabled-150.png"
+        },
+        {
+          "file": "popup-disabled-canonical-ppc-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312",
+          "original_file": "popup-selected-scale-ppc-disabled-150.guest.png"
+        }
+      ],
+      "selected_text_comparison": [
+        {
+          "name": "loadout",
+          "guest_region": [
+            295,
+            153,
+            419,
+            169
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 2862,
+          "missing": 0,
+          "extra": 0
+        },
+        {
+          "name": "theme",
+          "guest_region": [
+            285,
+            189,
+            370,
+            205
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 576,
+          "missing": 0,
+          "extra": 0
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "disabled",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-disabled-canonical-scales/popup-selected-scale-ppc-disabled-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-disabled-canonical-ppc-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "f087c62819bc6e3178fb2f036f802d0c9f1fec6144b5e46c694e1204f72bd6ff",
+          "original_file": "popup-selected-scale-ppc-disabled-200.png"
+        },
+        {
+          "file": "popup-disabled-canonical-ppc-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312",
+          "original_file": "popup-selected-scale-ppc-disabled-200.guest.png"
+        }
+      ],
+      "selected_text_comparison": [
+        {
+          "name": "loadout",
+          "guest_region": [
+            295,
+            153,
+            419,
+            169
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 5088,
+          "missing": 0,
+          "extra": 0
+        },
+        {
+          "name": "theme",
+          "guest_region": [
+            285,
+            189,
+            370,
+            205
+          ],
+          "rgb": [
+            0,
+            0,
+            0
+          ],
+          "physical_ink_pixels": 1024,
+          "missing": 0,
+          "extra": 0
+        }
+      ]
+    }
+  ],
+  "source_commit": "297ab5b2",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "1185389926e27d44c043676baa53cbdf1149d9f6e6d41f110c45089cc66b133f",
+    "src/bin/gpui_demo_text.rs": "a6179229be0519f9ed6c6e6c5671dc46248105f66be457637ad49f17ad6a572f",
+    "src/systems/macintosh/runner/mod.rs": "591816c0f018d39493f4bd4a0fff688d6303a6ecabae9413869e52e0a714e237",
+    "src/systems/macintosh/control_manager.rs": "178cd6e90fc7523011dc476fe842d00663d858494c4a7e14ce1e92bfb83e9902",
+    "src/systems/macintosh/trap/control.rs": "c454f9bcf03373ebb142395536f9ed965d3defa0c2f048a5de7bd5c37c6873c6",
+    "src/systems/macintosh/loader/ppc/dispatch_control.rs": "e14d4da7907ffb720a1cbc38c4a2352d119d40a1305c9536cd59f6dd495bc80d",
+    "tests/toolbox-showcase/showcase.c": "f2c0842757530f143685a5d739cf152d896b248e727e6fda0dd24732c4ced192",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "4eed70717459def6f4761ec9a0fe3aafa238e00ac6cc09bedde8c08b2d6a356d"
+  },
+  "qualification": "Internal shared-compositor evidence for these selected-label regions only; not native Macintosh font parity, arrow/chrome fidelity, custom palettes, clipping/letterboxing or overall production qualification.",
+  "comparison_method": "Exact RGB ink mask from raw guest selected-text regions expanded with independent edge mapping ceil(v * scene_scale * 2 - 0.5), compared to composed ink inside mapped region. Arrow and border ink excluded."
+}

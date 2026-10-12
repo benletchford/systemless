@@ -1,0 +1,29 @@
+{
+  "base": "239fd306448b0d91edade19544a46978f46e0864",
+  "scope": "Actual guest Return/drag selection, Option-V invokes guest TEScroll(0,-12), verifies text/styles/selection/view/identity unchanged, then guest click on scrolled second-line boundary selects byte28. Full-field guest-pixel qualification and shared GPUI capture pass mono68k/colour68k/PPC8 scale1 and PPC16 scale1.5. Fixture rebuild --verify passes; existing four-mode multiline selection/replacement/deletion/reflow regression passes 53.97s. PPC16 and mono images visually reviewed.",
+  "limitations": "No physical GPUI pointer, host IME, automatic selection reveal, scroll restoration, inactive scrolled capture, broader scale matrix, independent native Macintosh oracle or performance qualification. App-drawn content stays guest-rendered.",
+  "fixture_sha256": "9576f3efa7b98973d0e48aefb2e017f64a7db878e8d642c2acefe01e9d05b258",
+  "sha256": {
+    "styled-scroll-ppc16-scale1_5.guest.png": "e6efba0fb032d24df1361993daedf1e418c53013600e5ba79bbe07b58c91ecfa",
+    "styled-scroll-ppc8-scale1.png": "fea09c8529fa542e5bd00bd1b3bb45ff457673c7033d54d427455f15df8a0b35",
+    "styled-scroll-ppc8-scale1.guest.png": "dd21823db82d70e0fdc3bdabceaecef5ff5cb0b102e7d35c0e351814807506b1",
+    "styled-scroll-ppc16-scale1_5.log": "81b7b5257df624ff74111ad9a13881e96347009e8dac94e71fe58930265a124f",
+    "styled-scroll-mono68k-scale1.guest.png": "004dabe0edf79e30c236c0b895df376cd53c1c54f2ec3c471db2f4ffbd307ad9",
+    "styled-scroll-compositor-build.log": "6532909fda3dcd309d77a6679d4726bb5cf4f128b2555e9289b4f11ad8dbefc6",
+    "styled-scroll-colour68k-scale1.log": "71345cb22d66cc997aa0cb7ffe99fc7d3961fda0c7c279fed69743c5609f8bb8",
+    "source.patch": "7e9a36f22555984465c13c493054ad32385371dc698908e6f26e0f8328ba251e",
+    "styled-scroll-mono68k-scale1.png": "2bb4871eec3682ca34d4a618f256fd0ced6be8a298d7b9db9677e13646661cc0",
+    "styled-scroll-colour68k-scale1.json": "a00e3d097f9e1bf537d4f7ac4b3de03276e62df37278bee776c94d6576407638",
+    "styled-scroll-mono68k-scale1.log": "56c536cbc4d7b58fbb42678cd73540ea0653eb59376215b2db45d7f0f14fb972",
+    "styled-scroll-ppc8-scale1.json": "b1233605dd03dd1840c762fd08835eeb77c4b47589a9d5adbc6d8c91f19a6e3a",
+    "styled-scroll-fixture-build.log": "9c50e7d23608c4fd0214164ef31cc188eb5df27db4f51caf7062de10a5cd0c56",
+    "styled-scroll-fixture-verify.log": "c0636937266220cd9b6a5d0aa9f668609c96ed65fb64ea74d876154c78bd58c6",
+    "styled-scroll-mono68k-scale1.json": "b82d5589fbcb835f8657c821d43c030412b8bf96f81631fc96a632a98b80f643",
+    "styled-scroll-editing-integration.log": "798639f97d6660d991844df0187d33bfbc88c76a87148d0433c058ebccaa0351",
+    "styled-scroll-ppc8-scale1.log": "6ccd8eabf38a360da9c332c2ee8a21c1d54a1b7dd072db431ba2d9e72820b2cf",
+    "styled-scroll-ppc16-scale1_5.png": "7a7c6cb14e274d57fbf0486ef8647ec7059fec8bdb3f280f8f0d68c3f6b67d0d",
+    "styled-scroll-ppc16-scale1_5.json": "954791de6427c218fb313ecb568a5e54bde06905101e934d0daec2559bcc47d6",
+    "styled-scroll-colour68k-scale1.png": "0edcaf5db7ffb66d8f4383950d2bc37d0401e07b5f8f7fe519b43a01a08678cb",
+    "styled-scroll-colour68k-scale1.guest.png": "cea5621dde892bdc11e6d32c1f3401c6956aa3110e6a1819bb7eb6f09bc582f6"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "src/systems/macintosh/process_context.rs": "c7f18ce3527f6ba746a5597dc837badb5e1a0a17480d5a6e7e94769fa8fe8def",
+  "src/systems/macintosh/runner/mod.rs": "4e4c41c5ab61db8caec77d0c0132e19219ec8919091bbf0bc8f8f8d410aafd6f",
+  "src/systems/macintosh/loader/ppc/tests/process_services.rs": "7d53a88a857bf534a628a3d980cfc95043ce39bc225e59243503334be6748fd6"
+}

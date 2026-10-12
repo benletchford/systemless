@@ -1,0 +1,458 @@
+{
+  "architecture": "ppc",
+  "boot_delay_ticks": 0,
+  "show_menu_bar": true,
+  "sheepshaver_color_depth": 32,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 203,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 203,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "00-file-page.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 266,
+      "h": 400
+    },
+    {
+      "type": "mouse_down",
+      "v": 266,
+      "h": 400
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 266,
+      "h": 400
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "01-save.png"
+    },
+    {
+      "type": "key_down",
+      "key": "shift"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "-"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "-"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "shift"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "p"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "p"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "l"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "l"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "a"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "a"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "y"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "y"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "t"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "t"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "a"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "a"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "r"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "r"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "g"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "g"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "e"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "e"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_down",
+      "key": "t"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "t"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "02-existing-name.png"
+    },
+    {
+      "type": "key_down",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "03-replace-confirmation.png"
+    },
+    {
+      "type": "key_down",
+      "key": "escape"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "escape"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "04-cancel-back-to-save.png"
+    },
+    {
+      "type": "key_down",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "05-reopened-confirmation.png"
+    },
+    {
+      "type": "key_down",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "06-default-cancels.png"
+    },
+    {
+      "type": "key_down",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 3
+    },
+    {
+      "type": "key_up",
+      "key": "return"
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "screenshot",
+      "path": "07-explicit-replace.png"
+    },
+    {
+      "type": "mouse_move",
+      "v": 230,
+      "h": 456
+    },
+    {
+      "type": "mouse_down",
+      "v": 230,
+      "h": 456
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 230,
+      "h": 456
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "screenshot",
+      "path": "08-confirmed-result.png"
+    }
+  ]
+}

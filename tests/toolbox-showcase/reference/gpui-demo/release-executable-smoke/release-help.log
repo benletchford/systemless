@@ -1,0 +1,54 @@
+High-Level Emulation for classic Macintosh applications
+
+Usage: systemless [OPTIONS] <GAME>
+
+Arguments:
+  <GAME>  Application or game archive to launch
+
+Options:
+      --headless
+          Run without opening a window
+      --no-native-integrations
+          Disable host-native desktop integrations
+      --arrows-as-numpad
+          Map arrow keys to the numeric keypad
+      --literal-arrows
+          Keep arrow keys mapped as literal arrow keys [alias: --no-arrows-as-numpad]
+      --max-instructions <N>
+          Stop a headless run after this many instructions
+      --max-ticks <MAX_TICKS>
+          Run headlessly for this many simulated frontend ticks (60.15 Hz), using GUI wait/callback scheduling. Defaults to 600 without legacy options
+      --tick-input-script <FILE>
+          Input script timestamped in elapsed frontend ticks, not instructions
+      --headless-start-time <HEADLESS_START_TIME>
+          Deterministic Mac-epoch startup seconds for simulated-time headless runs
+      --play-script <PLAY_SCRIPT>
+          Execute a structured JSON scenario using simulated frontend ticks
+      --play-output <DIR>
+          New or empty directory for play captures and report.json
+      --play-reference <DIR>
+          Directory of independently captured, exactly named reference PNGs
+      --prefer-powerpc
+          Prefer a native PowerPC slice when a classic 68K slice is also available (the default) [alias: --prefer-ppc]
+      --prefer-classic-68k
+          Prefer the classic 68K slice of a fat application [alias: --prefer-68k]
+      --addressing-24-bit
+          Start with classic 24-bit guest address translation
+      --screen-depth <BITS>
+          Override the guest framebuffer depth (defaults to 8-bit for 68K and 16-bit for PPC)
+      --display-scale <N>
+          Override automatic window sizing with an integer physical-pixel scale
+      --reset-preferences
+          Delete this game's persisted System Folder preferences before launch
+      --ui-theme <THEME>
+          Guest chrome theme [default: classic-system7]
+      --fullscreen
+          Start in a borderless fullscreen space. On systems where macOS selects direct scan-out for the fullscreen surface this measurably reduced pointer-to-screen latency in testing; the benefit depends on the machine and compositor state
+      --input-script <FILE>
+          Legacy diagnostic input script timestamped in retired instructions. Not a matched-time workload: wait optimizations change when inputs land
+      --debug-socket <PATH>
+          Expose the debugger over a Unix-domain socket. One controlling client sends one JSON request per line and receives one JSON reply per line; requests are applied on the runner thread between frames. Headless runs start paused until the client resumes or steps execution
+  -h, --help
+          Print help
+  -V, --version
+          Print version

@@ -1,0 +1,14 @@
+{
+  "base": "d80a77e4dd818e370af9cb6a11dcfc624a7dc391",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "7c83a0436e5eefaf3698ac6f92b882a6524230109823eac04032a750ccb5c8e1",
+    "src/bin/gpui_demo_input.rs": "ebae414bfb9af0ced7f5f18c52cd2f8f7970dc7695a988c5bdd3b88c05d5ef9f",
+    "src/bin/gpui_demo_composition.rs": "d53eb2bc767b812adc40ebd4b30de7e612b6c17f746a403baa73fb5c577d7e1b",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "41cf3aa93f2b41d0ce1d49b2bace8572140e9692d37239a749a471744ca5c09f"
+  },
+  "scope": "Actual worker New Folder guest modal open/cancel/return, rapid Mac Roman commits, generation changes, disposed owner rejection, typing after return across four CPU/depth modes. No native physical IME, GPUI pixels, folder creation/persistence or native-oracle claim.",
+  "test_binaries": {
+    "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e": "f427f92ff2de864a2ace757cf32e1a971aa2128b4d746507594f4ee7cb89db78",
+    "target/ci-test/examples/gpui_menu_demo-9e8a8abfde68f05d": "1210293933b5b733c41a68a5aece9d2e21e4fe77daf28887fc746b1cf8f9d6e4"
+  }
+}

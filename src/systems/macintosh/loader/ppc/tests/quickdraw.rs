@@ -2138,6 +2138,79 @@ fn rectangle_fill_respects_disjoint_clip_spans_at_every_depth() {
 }
 
 #[test]
+fn rectangle_frame_respects_disjoint_clip_and_visibility_at_every_depth() {
+    for depth in [1, 2, 4, 8, 16] {
+        let mut loaded = load_pef_application_with_config(
+            &synthetic_pef(),
+            PpcLoadConfig {
+                screen_depth: depth,
+                ..PpcLoadConfig::default()
+            },
+        )
+        .unwrap();
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (0, 0, 8, 10),
+            PPC_RGB_WHITE,
+            None
+        ));
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 512]);
+        let clip = ppc_region_storage_from_rows(2, &vec![vec![1, 3, 5, 9]; 3]).unwrap();
+        let vis = ppc_region_storage_from_rows(1, &vec![vec![2, 8]; 5]).unwrap();
+        for (handle, ptr, bytes, field) in [
+            (scratch, scratch + 16, clip, PPC_CGRAF_PORT_CLIP_RGN_OFFSET),
+            (
+                scratch + 4,
+                scratch + 128,
+                vis,
+                PPC_CGRAF_PORT_VIS_RGN_OFFSET,
+            ),
+        ] {
+            loaded.memory.write_u32_be(handle, ptr).unwrap();
+            loaded.memory.write_bytes(ptr, &bytes).unwrap();
+            loaded
+                .memory
+                .write_u32_be(PPC_MAIN_GWORLD + field, handle)
+                .unwrap();
+        }
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let front = surface.front_buffer;
+        let before: Vec<_> = (0..8)
+            .flat_map(|y| (0..10).map(move |x| (x, y)))
+            .map(|point| ppc_quickdraw_read_pixel(&mut loaded.memory, front, point).unwrap())
+            .collect();
+        let color =
+            ppc_quickdraw_surface_fore_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK, None)
+                .unwrap();
+        ppc_write_rect(&mut loaded.memory, scratch + 400, 2, 1, 5, 9).unwrap();
+        loaded.cpu.gpr[3] = scratch + 400;
+        loaded.memory.write_u16_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 1).unwrap();
+        loaded.memory.write_u16_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2, 1).unwrap();
+        assert!(ppc_frame_rect(&loaded.cpu, &mut loaded.memory, &loaded.gworlds,
+            PPC_MAIN_GWORLD, PPC_RGB_BLACK, None));
+        for y in 0..8 {
+            for x in 0..10 {
+                let painted = (y == 2 || y == 4) && (x == 2 || (5..8).contains(&x));
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                    Some(if painted {
+                        color
+                    } else {
+                        before[(y * 10 + x) as usize]
+                    }),
+                    "depth {depth}, pixel ({x}, {y})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn frame_round_rect_respects_the_current_port_clip_region() {
     let pef = synthetic_pef_with_import(b"ClipRect");
     let mut loaded = load_pef_application(&pef).unwrap();
@@ -5873,6 +5946,38 @@ fn classic_carbon_port_buffering_weak_imports_use_documented_mac_os_9_contract()
 }
 
 #[test]
+fn shared_ppc_styled_run_ink_matches_src_or_guest_pixels_at_font_ratios() {
+    use std::collections::BTreeSet;
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CharExtra")).unwrap();
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert_eq!(front.depth, 8);
+    let bytes = b"A i\x8e";
+    for font in [3, 4] {
+        for size in [9, 10, 12, 14, 24] {
+            for style in 0..128 {
+                assert!(ppc_paint_rect_bounds(&mut loaded.memory, &loaded.gworlds,
+                    PPC_MAIN_GWORLD, (0, 0, 120, 160), PPC_RGB_WHITE, Some(0)));
+                let advance = ppc_draw_text_bytes_styled(&mut loaded.memory, &loaded.gworlds,
+                    // Ink masks exclude srcCopy character-cell background erasure.
+                    PPC_MAIN_GWORLD, (30, 60), font, size, PPC_QD_TEXT_MODE_SRC_OR, PPC_RGB_BLACK, Some(1), style, bytes);
+                let (shared_advance, pixels) = crate::quickdraw::text::ppc_styled_run_ink(font, size, style, bytes);
+                assert_eq!(advance, shared_advance);
+                let expected: BTreeSet<_> = pixels.into_iter().map(|(x, y)| (x + 30, y + 60)).collect();
+                assert!(expected.iter().all(|&(x, y)| (0..160).contains(&x) && (0..120).contains(&y)));
+                let mut painted = BTreeSet::new();
+                for y in 0..120 { for x in 0..160 {
+                    if ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)) == Some(1) {
+                        painted.insert((x, y));
+                    }
+                } }
+                assert_eq!(painted, expected, "font {font}, size {size}, style {style}");
+            }
+
+        }
+    }
+}
+
+#[test]
 fn classic_port_drawing_is_visible_without_a_quartz_flush() {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"InvertRect")).unwrap();
     let rect = PPC_DATA_BASE + 0x1400;
@@ -6017,4 +6122,23 @@ fn port_visible_region_weak_import_copies_complete_live_shape_into_caller_handle
             assert!(ppc_point_in_region(&mut loaded.memory, destination, 1, 6));
         }
     }
+}
+
+#[test]
+fn shared_ppc_font_pixel_bounds_preserve_native_floor_and_saturation() {
+    use crate::quickdraw::text::ppc_font_source_pixel_bounds as bounds;
+    for value in [-10000i32, -17, -1, 0, 1, 17, 1000000] {
+        for (n, d) in [(1, 2), (2, 3), (5, 4), (3, 1), (10000, 3)] {
+            if value.saturating_mul(n) == i32::MIN { continue; }
+            let (left, top, right, bottom) = bounds(value, value, n, d).unwrap();
+            let expected = ppc_scale_font_floor(value, n, d);
+            let end = ppc_scale_font_floor(value + 1, n, d).max(expected + 1);
+            assert_eq!((left, top, right, bottom), (expected, expected, end, end));
+        }
+    }
+    assert_eq!(bounds(-3, -7, 1, 2), Some((-2, -4, -1, -3)));
+    assert_eq!(bounds(0, 0, 0, 1), None);
+    assert_eq!(bounds(0, 0, 1, 0), None);
+    assert_eq!(bounds(i32::MAX, 0, 1, 1), None);
+
 }

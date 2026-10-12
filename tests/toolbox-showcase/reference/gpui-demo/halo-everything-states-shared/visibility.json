@@ -1,0 +1,869 @@
+{
+  "checks": [
+    {
+      "kind": "selection",
+      "mode": "mono",
+      "scale": 0.75,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        358,
+        27
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "scale": 0.75,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        1,
+        0,
+        3,
+        27
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "scale": 0.75,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        357,
+        0,
+        358,
+        27
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "mono",
+      "scale": 1,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        478,
+        36
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "scale": 1,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        2,
+        0,
+        4,
+        36
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "scale": 1,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        476,
+        0,
+        478,
+        36
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "mono",
+      "scale": 1.5,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        717,
+        54
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "scale": 1.5,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        3,
+        0,
+        6,
+        54
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "scale": 1.5,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        714,
+        0,
+        717,
+        54
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "mono",
+      "scale": 2,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        956,
+        72
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "scale": 2,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        4,
+        0,
+        8,
+        72
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "mono",
+      "scale": 2,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        952,
+        0,
+        956,
+        72
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "colour",
+      "scale": 0.75,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        358,
+        27
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "scale": 0.75,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        1,
+        0,
+        3,
+        27
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "scale": 0.75,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        357,
+        0,
+        358,
+        27
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "colour",
+      "scale": 1,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        478,
+        36
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "scale": 1,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        2,
+        0,
+        4,
+        36
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "scale": 1,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        476,
+        0,
+        478,
+        36
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "colour",
+      "scale": 1.5,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        717,
+        54
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "scale": 1.5,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        3,
+        0,
+        6,
+        54
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "scale": 1.5,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        714,
+        0,
+        717,
+        54
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "colour",
+      "scale": 2,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        956,
+        72
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "scale": 2,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        4,
+        0,
+        8,
+        72
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "colour",
+      "scale": 2,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        952,
+        0,
+        956,
+        72
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc8",
+      "scale": 0.75,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        358,
+        27
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "scale": 0.75,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        1,
+        0,
+        3,
+        27
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "scale": 0.75,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        357,
+        0,
+        358,
+        27
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc8",
+      "scale": 1,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        478,
+        36
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "scale": 1,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        2,
+        0,
+        4,
+        36
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "scale": 1,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        476,
+        0,
+        478,
+        36
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc8",
+      "scale": 1.5,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        717,
+        54
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "scale": 1.5,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        3,
+        0,
+        6,
+        54
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "scale": 1.5,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        714,
+        0,
+        717,
+        54
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc8",
+      "scale": 2,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        956,
+        72
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "scale": 2,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        4,
+        0,
+        8,
+        72
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc8",
+      "scale": 2,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        952,
+        0,
+        956,
+        72
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc16",
+      "scale": 0.75,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        358,
+        27
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "scale": 0.75,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        1,
+        0,
+        3,
+        27
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "scale": 0.75,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        357,
+        0,
+        358,
+        27
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc16",
+      "scale": 1,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        478,
+        36
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "scale": 1,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        2,
+        0,
+        4,
+        36
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "scale": 1,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        476,
+        0,
+        478,
+        36
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc16",
+      "scale": 1.5,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        717,
+        54
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "scale": 1.5,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        3,
+        0,
+        6,
+        54
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "scale": 1.5,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        714,
+        0,
+        717,
+        54
+      ]
+    },
+    {
+      "kind": "selection",
+      "mode": "ppc16",
+      "scale": 2,
+      "offset": null,
+      "native_change_bounds": [
+        0,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        0,
+        0,
+        956,
+        72
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "scale": 2,
+      "offset": 0,
+      "native_change_bounds": [
+        1,
+        0,
+        2,
+        18
+      ],
+      "composed_change_bounds": [
+        4,
+        0,
+        8,
+        72
+      ]
+    },
+    {
+      "kind": "caret",
+      "mode": "ppc16",
+      "scale": 2,
+      "offset": 26,
+      "native_change_bounds": [
+        238,
+        0,
+        239,
+        18
+      ],
+      "composed_change_bounds": [
+        952,
+        0,
+        956,
+        72
+      ]
+    }
+  ],
+  "scope": "Check caret/selection visibility against native fixture change bounds.\n\nAntialiased glyphs are not compared with a binary font oracle. This verifies\nstate changes and hidden-state consistency within the shared field only.\n"
+}

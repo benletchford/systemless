@@ -724,14 +724,17 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         nm_rec: u32,
         response: u32,
-    ) {
-        if !Self::looks_like_callable_proc(bus, response) {
-            return;
+    ) -> bool {
+        // A valid leaf procedure need not have a LINK/MOVEM/JMP prologue.
+        // Validate the address, then let the guest CPU execute its instructions.
+        if response == 0 || response & 1 != 0
+            || bus.translate_guest_address(response) > bus.ram_size().saturating_sub(2) {
+            return false;
         }
 
         let trampoline = bus.alloc(notification_manager::NOTIFICATION_TRAMPOLINE_SIZE as u32);
         if trampoline == 0 {
-            return;
+            return false;
         }
         let return_slot = cpu.read_reg(Register::A7).wrapping_sub(4);
         let saved_regs_sp = return_slot.wrapping_sub(32);
@@ -750,6 +753,7 @@ impl super::TrapDispatcher {
         bus.write_long(return_slot, cpu.read_reg(Register::PC));
         cpu.write_reg(Register::A7, return_slot);
         cpu.write_reg(Register::PC, trampoline);
+        true
     }
 
     fn install_notification_request<C: CpuOps>(
@@ -763,16 +767,17 @@ impl super::TrapDispatcher {
         } else {
             0
         };
-        let nm_resp = if nm_rec != 0 {
-            bus.read_long(nm_rec + notification_manager::NM_RESP_OFFSET)
-        } else {
-            0
-        };
+        // Responses wait for alert acknowledgement and sound completion.
+        let pending_delivery = nm_rec != 0
+            && (bus.read_word(nm_rec + notification_manager::NM_MARK_OFFSET) != 0
+                || bus.read_long(nm_rec + notification_manager::NM_ICON_OFFSET) != 0
+                || bus.read_long(nm_rec + notification_manager::NM_SOUND_OFFSET) != 0
+                || bus.read_long(nm_rec + notification_manager::NM_STR_OFFSET) != 0);
         match notification_manager::evaluate_nm_install(
             nm_rec,
             q_type,
             &self.notification_requests,
-            nm_resp,
+            0,
         ) {
             Ok(action) => {
                 match action {
@@ -782,15 +787,16 @@ impl super::TrapDispatcher {
                     }
                     notification_manager::NmInstallAction::Enqueued {
                         previous_tail,
-                        arm_response,
+                        arm_response: _,
                     } => {
                         if let Some(tail) = previous_tail {
                             bus.write_long(tail + notification_manager::Q_LINK_OFFSET, nm_rec);
                         }
                         bus.write_long(nm_rec + notification_manager::Q_LINK_OFFSET, 0);
                         self.notification_requests.push(nm_rec);
-                        if let Some(response) = arm_response {
-                            self.arm_notification_response(cpu, bus, nm_rec, response);
+                        if !pending_delivery {
+                            let instance = self.notification_requests.instance_id(nm_rec).unwrap();
+                            self.complete_notification_delivery(cpu, bus, nm_rec, instance);
                         }
                     }
                 }
@@ -798,6 +804,24 @@ impl super::TrapDispatcher {
             }
             Err(err) => err,
         }
+    }
+
+    /// Called only after all requested notice stages have actually completed.
+    /// Guest removal/reinstallation invalidates stale delivery completions.
+    pub(crate) fn complete_notification_delivery<C: CpuOps>(
+        &mut self, cpu: &mut C, bus: &mut MacMemoryBus,
+        nm_rec: u32, instance: u64,
+    ) -> bool {
+        if self.notification_requests.instance_id(nm_rec) != Some(instance) { return false; }
+        if bus.read_word(nm_rec + 4) != 8
+            || self.notification_requests.response_started(nm_rec, instance) { return false; }
+        let response = bus.read_long(nm_rec + 28);
+        if !matches!(response, 0 | u32::MAX)
+            && !self.arm_notification_response(cpu, bus, nm_rec, response) { return false; }
+        let started = self.notification_requests.begin_response(nm_rec, instance);
+        debug_assert!(started, "serialized notification ownership changed during entry");
+        if response == u32::MAX { self.remove_notification_request(bus, nm_rec); }
+        true
     }
 
     fn install_vbl_task(
@@ -1239,6 +1263,7 @@ impl super::TrapDispatcher {
                 self.forget_resource_residency_for_handle(handle);
                 self.forget_resource_handle_index_for_handle(handle);
                 self.with_resource_manager_mut(|resource_manager| {
+                    resource_manager.forget_menu_generation(handle);
                     resource_manager.detached_handles.remove(&handle);
                     resource_manager.loaded_handles.remove(&handle);
                     resource_manager.resource_handle_files.remove(&handle);

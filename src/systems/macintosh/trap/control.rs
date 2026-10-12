@@ -68,6 +68,26 @@ impl super::TrapDispatcher {
             .map_or(255, |(index, _)| index as u8)
     }
 
+    pub(crate) fn popup_indicator_rgb(&self, bus: &MacMemoryBus) -> [u8; 3] {
+        if self.screen_mode.4 != 8 { return [0; 3]; }
+        // Resolve the same logical black index as fb_hline/fb_set_pixel.
+        let palette = crate::display::rgba_palette_from_clut_with_gamma(
+            &self.device_clut, &self.display_gamma.table());
+        let [r, g, b, _] = palette[usize::from(Self::logical_black_pixel_index(bus))].to_le_bytes();
+        [r, g, b]
+    }
+
+    pub(crate) fn popup_text_ink(&self, enabled: bool) -> crate::control_manager::ControlTextInk {
+        use crate::control_manager::ControlTextInk;
+        if enabled { return ControlTextInk::Solid([0; 3]); }
+        if self.screen_mode.4 != 8 { return ControlTextInk::Checker; }
+        let index = usize::from(self.inactive_control_title_index());
+        let palette = crate::display::rgba_palette_from_clut_with_gamma(
+            &self.device_clut, &self.display_gamma.table());
+        let [r, g, b, _] = palette[index].to_le_bytes();
+        ControlTextInk::Solid([r, g, b])
+    }
+
     // The drawCntl contract defines invisibility as contrlVis == 0; callers
     // that write the packed ControlRecord directly may use another nonzero
     // Boolean representation instead of ShowControl's canonical 255.
@@ -577,7 +597,8 @@ impl super::TrapDispatcher {
         true
     }
 
-    const SCROLLBAR_ACTION_REPEAT_TICKS: u32 = 3;
+    const SCROLLBAR_ACTION_REPEAT_TICKS: u32 =
+        crate::systems::macintosh::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS;
 
     fn scrollbar_tracking_part(&self, bus: &MacMemoryBus) -> u16 {
         let Some(tracking) = self.control_tracking.as_ref() else {
@@ -779,6 +800,21 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(super) fn popup_control_font(&self, bus: &MacMemoryBus, ctrl_ptr: u32) -> crate::menu_model::GuestMenuFont {
+        let proc_id = self.control_manager.proc_id(ctrl_ptr);
+        let owner = bus.read_long(ctrl_ptr + 4);
+        // popupUseWFont applies to the active menu as well as its title.
+        // Inside Macintosh VI (1991), p. 3-18.
+        if proc_id & 8 != 0 && owner != 0 {
+            crate::menu_model::GuestMenuFont {
+                family: bus.read_word(owner + 68) as i16,
+                size: bus.read_word(owner + 74) as i16,
+            }
+        } else {
+            Default::default()
+        }
+    }
+
     pub(crate) fn popup_control_dropdown_rect(
         &self,
         bus: &MacMemoryBus,
@@ -794,19 +830,30 @@ impl super::TrapDispatcher {
         };
         let r_top = bus.read_word(ctrl_ptr + 8) as i16;
         let r_left = bus.read_word(ctrl_ptr + 10) as i16;
-        let r_right = bus.read_word(ctrl_ptr + 14) as i16;
         let selected_value = bus.read_word(ctrl_ptr + 18) as i16;
         let selected_index = selected_value.max(0) as usize;
         let abs_top = owner_top + r_top;
-        let abs_left = owner_left + r_left;
+        // The popup title precedes the selection box; only the box anchors
+        // the open menu. The fixed-width CDEF also excludes its arrow area
+        // from the dropdown. Macintosh Toolbox Essentials (1992),
+        // pp. 5-25--5-27.
+        let title_width =
+            self.popup_control_title_width(ctrl_ptr, bus.read_word(ctrl_ptr + 22) as i16);
+        let abs_left = owner_left
+            .saturating_add(r_left)
+            .saturating_add(title_width.max(0));
 
-        let mut width = (r_right - r_left).max(80);
+        let font = self.popup_control_font(bus, ctrl_ptr);
+        let mut width = 80;
         if let Some(menu) = self.menus.get(menu_idx) {
-            width = width.max(self.standard_menu_width(bus, &menu.items));
+            width = crate::control_manager::fixed_popup_menu_width(
+                self.control_manager.proc_id(ctrl_ptr), r_left,
+                bus.read_word(ctrl_ptr + 14) as i16, title_width,
+            ).unwrap_or_else(|| self.standard_menu_width_with_font(bus, &menu.items, font));
             // The standard popup CDEF opens the live menu with the current
             // value's item aligned to the popup box, matching the Menu
             // Manager's PopUpMenuSelect(top, left, popUpItem) convention.
-            let rows = self.menu_rows(bus, &menu.items);
+            let rows = self.menu_rows_with_font(bus, &menu.items, font);
             if let Some(layout) = standard_popup_menu_layout(
                 &rows,
                 width,
@@ -851,7 +898,7 @@ impl super::TrapDispatcher {
         let Some(menu) = self.menus.get(active_menu) else {
             return 0;
         };
-        let rows = self.menu_rows(bus, &menu.items);
+        let rows = self.menu_rows_with_font(bus, &menu.items, self.control_tracking.as_ref().unwrap().popup_font);
         let Some(update) = self.control_tracking.as_mut().map(|tracking| {
             rows.track_pointer(
                 dropdown_rect,
@@ -923,6 +970,30 @@ impl super::TrapDispatcher {
         );
         bus.write_word(tracking.stack_ptr + 12, part);
         cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+    }
+
+    pub(crate) fn popup_control_snapshot(
+        &self,
+        bus: &MacMemoryBus,
+        menus: &crate::menu_model::GuestMenuSnapshot,
+    ) -> Option<crate::menu_model::GuestPopupSnapshot> {
+        let tracking = self.control_tracking.as_ref().filter(|state| state.popup_tracking)?;
+        let tracked_menu = self.menus.get(tracking.active_menu)?;
+        if tracked_menu.items.iter().any(|item| item.icon != 0 || item.style != 0) {
+            return None;
+        }
+        let menu = menus.menus.iter().find(|menu| {
+            menu.guest_id == tracked_menu.handle && menu.standard_definition
+        })?.clone();
+        let rows = self.menu_rows_with_font(bus, &tracked_menu.items, tracking.popup_font);
+        Some(crate::menu_model::GuestPopupSnapshot {
+            font: tracking.popup_font,
+            menu,
+            bounds: tracking.dropdown_rect,
+            content_top: tracking.popup_content_top,
+            row_heights: (1..=rows.len()).map(|item| rows.height(item as i16, 0)).collect(),
+            highlighted_item: tracking.highlighted_item,
+        })
     }
 
     fn simple_control_tracking_inside(&self, bus: &MacMemoryBus) -> bool {
@@ -1030,14 +1101,16 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         highlighted: bool,
     ) {
-        let Some((ctrl_ptr, saved_hilite)) = self
+        let Some((ctrl_ptr, saved_hilite, part)) = self
             .control_tracking
             .as_ref()
-            .map(|tracking| (tracking.ctrl_ptr, tracking.saved_hilite))
+            .map(|tracking| (tracking.ctrl_ptr, tracking.saved_hilite, tracking.simple_part))
         else {
             return;
         };
-        bus.write_byte(ctrl_ptr + 17, if highlighted { 1 } else { saved_hilite });
+        // contrlHilite contains the tracked part code, not a boolean.
+        // Macintosh Toolbox Essentials (1992), pp. 5-73--5-74, 5-89.
+        bus.write_byte(ctrl_ptr + 17, if highlighted { part as u8 } else { saved_hilite });
         self.draw_control(cpu, bus, ctrl_ptr);
         if let Some(tracking) = self.control_tracking.as_mut() {
             tracking.simple_highlighted = highlighted;
@@ -1488,6 +1561,7 @@ impl super::TrapDispatcher {
         let title = decode_mac_roman(&title_bytes);
 
         let proc_id = self.control_manager.proc_id(ctrl_ptr);
+        let title_style = self.control_manager.control_title_style(ctrl_ptr);
 
         // Save pen state, set to defaults (PenNormal)
         let saved_pn_size = self.pn_size;
@@ -1511,6 +1585,13 @@ impl super::TrapDispatcher {
         let abs_left = scr_left + r_left;
         let abs_bottom = scr_top + r_bottom;
         let abs_right = scr_left + r_right;
+        let paint_slot = matches!(proc_id, 0 | 1 | 2).then(||
+            self.control_manager.with_ref(|manager| manager.iter()
+                .find(|record| record.pointer == ctrl_ptr)
+                .map(|record| (record.generation, record.paint.clone())))).flatten();
+        let paint_before = paint_slot.as_ref().and_then(|(generation, _)|
+            self.capture_standard_control_pixels(bus, window_ptr, *generation, ctrl_ptr,
+                (abs_top, abs_left, abs_bottom, abs_right)));
         let occluded_pixels = self.save_control_pixels_outside_owner_visibility(
             bus,
             window_ptr,
@@ -1521,7 +1602,7 @@ impl super::TrapDispatcher {
             0 => {
                 // pushButProc — push button
                 self.draw_push_button_control(
-                    cpu, bus, &r, abs_top, abs_left, abs_bottom, abs_right, hilite, &title,
+                    cpu, bus, &r, abs_top, abs_left, abs_bottom, abs_right, hilite, &title, title_style,
                 );
             }
             1 => {
@@ -1547,7 +1628,7 @@ impl super::TrapDispatcher {
                     scr_top + box_top + box_size,
                     scr_left + box_left + box_size,
                     hilite != 255,
-                    hilite == 1,
+                    matches!(hilite, 1 | 11),
                     checked,
                     false,
                 ) {
@@ -1563,8 +1644,8 @@ impl super::TrapDispatcher {
                 }
 
                 // Draw label text to the right of the checkbox
-                let font_id = 0i16;
-                let font_size = 12i16;
+                let font_id = title_style.font;
+                let font_size = title_style.size;
                 let metrics = get_font_metrics(font_id, font_size);
                 let text_x = scr_left + layout.label_left;
                 let text_y = scr_top
@@ -1575,7 +1656,7 @@ impl super::TrapDispatcher {
                         metrics.descent,
                     )
                     .1;
-                self.draw_control_label_text(
+                self.draw_control_label_text_with_face(
                     bus,
                     abs_top,
                     scr_left + box_left + box_size + 1,
@@ -1587,9 +1668,10 @@ impl super::TrapDispatcher {
                     font_id,
                     font_size,
                     hilite == 255,
+                    title_style.face,
                 );
 
-                if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && hilite == 1 {
+                if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && matches!(hilite, 1 | 11) {
                     // Pressed: invert the checkbox box area
                     self.draw_rect(cpu, bus, &box_r, ShapeOp::Invert);
                 }
@@ -1617,7 +1699,7 @@ impl super::TrapDispatcher {
                     scr_top + circle_top + circle_size,
                     scr_left + circle_left + circle_size,
                     hilite != 255,
-                    hilite == 1,
+                    matches!(hilite, 1 | 11),
                     selected,
                     false,
                 ) {
@@ -1639,8 +1721,8 @@ impl super::TrapDispatcher {
                 }
 
                 // Draw label text to the right of the circle
-                let font_id = 0i16;
-                let font_size = 12i16;
+                let font_id = title_style.font;
+                let font_size = title_style.size;
                 let metrics = get_font_metrics(font_id, font_size);
                 let text_x = scr_left + layout.label_left;
                 let text_y = scr_top
@@ -1651,7 +1733,7 @@ impl super::TrapDispatcher {
                         metrics.descent,
                     )
                     .1;
-                self.draw_control_label_text(
+                self.draw_control_label_text_with_face(
                     bus,
                     abs_top,
                     scr_left + circle_left + circle_size + 1,
@@ -1663,9 +1745,10 @@ impl super::TrapDispatcher {
                     font_id,
                     font_size,
                     hilite == 255,
+                    title_style.face,
                 );
 
-                if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && hilite == 1 {
+                if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 && matches!(hilite, 1 | 11) {
                     // Pressed: invert the circle area
                     self.draw_oval(cpu, bus, &circle_r, ShapeOp::Invert);
                 }
@@ -1679,6 +1762,7 @@ impl super::TrapDispatcher {
             proc_id if Self::is_popup_menu_proc_id(proc_id) => {
                 // popupMenuProc — draw the CNTL-backed popup button using
                 // the selected MENU resource item.
+                let font = self.popup_control_font(bus, ctrl_ptr);
                 let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                 let selected = value.max(1) as usize;
                 let item_title = self.popup_menu_item_title(bus, menu_id, selected);
@@ -1693,7 +1777,7 @@ impl super::TrapDispatcher {
                     title_width,
                     proc_id,
                 );
-                self.draw_popup_control_label(
+                self.draw_popup_control_label_with_font(
                     bus,
                     abs_top,
                     abs_left,
@@ -1701,13 +1785,14 @@ impl super::TrapDispatcher {
                     draw_left,
                     &title,
                     hilite != 255,
+                    font,
                 );
                 // HIG 1992 p. 87 describes the closed pop-up menu as the
                 // rectangle/triangle control; MTE 1992 p. 6-98 says
                 // HiliteControl dims inactive pop-up menus. Keep part-code
                 // and menu tracking behavior unchanged while routing that
                 // semantic state to non-classic theme chrome.
-                self.draw_popup_control_with_state(
+                self.draw_popup_control_with_font(
                     bus,
                     draw_top,
                     draw_left,
@@ -1716,6 +1801,7 @@ impl super::TrapDispatcher {
                     &item_title.unwrap_or_default(),
                     hilite != 255,
                     hilite == 1,
+                    font,
                 );
             }
             _ => {
@@ -1741,6 +1827,7 @@ impl super::TrapDispatcher {
                 ) {
                     self.draw_push_button_control(
                         cpu, bus, &r, abs_top, abs_left, abs_bottom, abs_right, hilite, &title,
+                        crate::control_manager::resolve_control_title_style(proc_id, None),
                     );
                 }
             }
@@ -1760,9 +1847,43 @@ impl super::TrapDispatcher {
             window_ptr,
             (abs_top, abs_left, abs_bottom, abs_right),
         );
+        if let Some((generation, slot)) = paint_slot {
+            let after = self.capture_standard_control_pixels(bus, window_ptr, generation, ctrl_ptr,
+                (abs_top, abs_left, abs_bottom, abs_right));
+            if let (Some((identity, before)), Some((after_identity, completed))) = (paint_before, after) {
+                if identity == after_identity { slot.record(identity, before, completed); }
+                else { slot.clear(); }
+            } else { slot.clear(); }
+        }
         if *self.current_port != saved_port || *self.current_gdevice != saved_gdevice {
             self.set_current_port_state(bus, cpu, saved_port, Some(saved_gdevice));
         }
+    }
+
+    /// Retain actual screen pixels around a standard draw. Subpixel detail
+    /// needs its own lossless adapter; never collapse it to palette indices.
+    pub(crate) fn capture_standard_control_pixels(
+        &self, bus: &MacMemoryBus, owner: u32, generation: u64, pointer: u32,
+        bounds: (i16, i16, i16, i16),
+    ) -> Option<(crate::control_manager::paint::ControlPaintIdentity, Vec<u8>)> {
+        let (surface, _, _, _, depth) = self.get_screen_params();
+        if !matches!(depth, 1 | 8) { return None; }
+        let (top, left, width, height, pixels) = self.save_screen_rect_pixels(bus, bounds)?;
+        if (top, left, top + height, left + width) != bounds
+            || pixels.has_detail_in(0..pixels.len()) { return None; }
+        let mut rgba = Vec::with_capacity(pixels.len().checked_mul(4)?);
+        for pixel in pixels.iter() {
+            if depth == 1 {
+                let value = if *pixel == 0 { 255 } else { 0 };
+                rgba.extend_from_slice(&[value, value, value, 255]);
+            } else { rgba.extend_from_slice(&[*pixel, 0, 0, 255]); }
+        }
+        Some((crate::control_manager::paint::ControlPaintIdentity {
+            owner, generation, surface, bounds, depth, palette: 0,
+            recipe: crate::control_manager::paint::control_recipe(pointer, |address| Some(bus.read_byte(address)))?,
+            format: if depth == 8 { crate::control_manager::paint::ControlPaintFormat::Indexed8 }
+                else { crate::control_manager::paint::ControlPaintFormat::Rgba },
+        }, rgba))
     }
 
     fn draw_picture_title_control(
@@ -1836,6 +1957,7 @@ impl super::TrapDispatcher {
         abs_right: i16,
         hilite: u8,
         title: &str,
+        title_style: crate::control_manager::ControlTitleStyle,
     ) {
         if self.draw_theme_push_button_chrome(
             bus,
@@ -1844,10 +1966,10 @@ impl super::TrapDispatcher {
             abs_bottom,
             abs_right,
             hilite != 255,
-            hilite == 1,
+            matches!(hilite, 1 | 10),
             false,
         ) {
-            self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title);
+            self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title, title_style);
             if hilite == 255 {
                 self.dim_rect(bus, abs_top, abs_left, abs_bottom, abs_right);
             }
@@ -1922,9 +2044,9 @@ impl super::TrapDispatcher {
         self.draw_round_rect(cpu, bus, r, oval, oval, ShapeOp::Frame);
         slot.finish_rounded_control(detail, |address| bus.read_byte(address));
 
-        self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title);
+        self.draw_control_text(bus, abs_top, abs_left, abs_bottom, abs_right, title, title_style);
 
-        if hilite == 1 {
+        if matches!(hilite, 1 | 10) {
             // Pressed: invert the interior.
             let inv = Rect {
                 top: r.top + 1,
@@ -1949,13 +2071,25 @@ impl super::TrapDispatcher {
         abs_bottom: i16,
         abs_right: i16,
         title: &str,
+        title_style: crate::control_manager::ControlTitleStyle,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let font_id = 0i16; // Chicago (system font)
-        let font_size = 12i16;
+        let font_id = title_style.font;
+        let font_size = title_style.size;
+        let clip = (font_id != 0 || !matches!(font_size, 0 | 12) || title_style.face != 0)
+            .then_some((abs_top, abs_left, abs_bottom, abs_right));
         let metrics = get_font_metrics(font_id, font_size);
-        let text_w = Self::fb_measure_string(title, font_id, font_size);
+        let text_style = crate::quickdraw::text::QuickDrawTextStyle::from_bits(title_style.face);
+        let text_w = if title_style.face == 0 {
+            Self::fb_measure_string(title, font_id, font_size)
+        } else {
+            title.chars().map(|ch| {
+                let advance = crate::quickdraw::text::get_glyph(font_id, font_size, ch)
+                    .map_or(6, |(glyph, _)| i32::from(glyph.advance));
+                text_style.glyph_advance(advance)
+            }).sum::<i32>().clamp(0, i32::from(i16::MAX)) as i16
+        };
         let (text_x, text_y) = crate::control_manager::centered_control_label_origin(
             (abs_top, abs_left, abs_bottom, abs_right),
             text_w,
@@ -1977,7 +2111,7 @@ impl super::TrapDispatcher {
             // low-level `cscSetEntries` palette animation does not update.
             // For a screen-backed draw the hardware CLUT is the authority.
             let ink = super::pict::closest_clut_index(0, 0, 0, &self.device_clut);
-            Self::fb_draw_string_styled_index(
+            Self::fb_draw_string_styled_with_index(
                 bus,
                 screen_base,
                 row_bytes,
@@ -1989,13 +2123,15 @@ impl super::TrapDispatcher {
                 title,
                 font_id,
                 font_size,
-                0,
-                ink,
+                title_style.face,
+                Some(ink),
+                true,
+                clip,
             );
             return;
         }
 
-        Self::fb_draw_string(
+        Self::fb_draw_string_styled_with_index(
             bus,
             screen_base,
             row_bytes,
@@ -2007,6 +2143,10 @@ impl super::TrapDispatcher {
             title,
             font_id,
             font_size,
+            title_style.face,
+            None,
+            true,
+            clip,
         );
     }
 
@@ -2024,15 +2164,36 @@ impl super::TrapDispatcher {
         font_size: i16,
         inactive: bool,
     ) {
+        self.draw_control_label_text_with_face(bus, label_top, label_left, label_bottom,
+            label_right, text_x, text_y, title, font_id, font_size, inactive, 0);
+    }
+
+    pub(crate) fn draw_control_label_text_with_face(
+        &self,
+        bus: &mut MacMemoryBus,
+        label_top: i16,
+        label_left: i16,
+        label_bottom: i16,
+        label_right: i16,
+        text_x: i16,
+        text_y: i16,
+        title: &str,
+        font_id: i16,
+        font_size: i16,
+        inactive: bool,
+        face: u8,
+    ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
+        let clip = (font_id != 0 || !matches!(font_size, 0 | 12) || face != 0)
+            .then_some((label_top, label_left, label_bottom, label_right));
         if inactive && pixel_size == 8 {
             // Control drawing writes directly to the screen framebuffer, so
             // resolve against the same live device CLUT used by screenshots
             // instead of TheGDevice, which games may leave on an offscreen
             // palette while redrawing dialogs.
             let ink = self.inactive_control_title_index();
-            Self::fb_draw_string_styled_index(
+            Self::fb_draw_string_styled_with_index(
                 bus,
                 screen_base,
                 row_bytes,
@@ -2044,13 +2205,15 @@ impl super::TrapDispatcher {
                 title,
                 font_id,
                 font_size,
-                0,
-                ink,
+                face,
+                Some(ink),
+                true,
+                clip,
             );
             return;
         }
 
-        Self::fb_draw_string(
+        Self::fb_draw_string_styled_with_index(
             bus,
             screen_base,
             row_bytes,
@@ -2062,6 +2225,10 @@ impl super::TrapDispatcher {
             title,
             font_id,
             font_size,
+            face,
+            None,
+            true,
+            clip,
         );
         if inactive {
             // MTE 1992 p. 5-13 describes inactive controls as dimmed; when
@@ -3833,13 +4000,42 @@ impl super::TrapDispatcher {
                             self.finish_popup_control_tracking(cpu, bus, selected_item);
                         }
                     } else {
+                        // DisposeControl releases the record; never restore tracking
+                        // feedback into it or a subsequent control at the same address.
+                        // Inside Macintosh Volume I, I-332.
+                        let tracking = self.control_tracking.as_ref().unwrap();
+                        let generation = self.control_manager.with_ref(|manager| {
+                            manager.iter()
+                                .find(|record| record.pointer == tracking.ctrl_ptr)
+                                .map(|record| record.generation)
+                        });
+                        if bus.read_long(tracking.ctrl_handle) != tracking.ctrl_ptr
+                            || generation != tracking.simple_generation
+                        {
+                            let stack_ptr = tracking.stack_ptr;
+                            self.control_tracking = None;
+                            bus.write_word(stack_ptr + 12, 0);
+                            cpu.write_reg(Register::A7, stack_ptr + 12);
+                            return Some(Ok(()));
+                        }
                         let ctrl_handle = self
                             .control_tracking
                             .as_ref()
                             .map(|tracking| tracking.ctrl_handle)
                             .unwrap_or(0);
-                        let inside = self.simple_control_tracking_inside(bus);
-                        if self.control_tracking_button_down(bus) {
+                        let release_index = self.event_queue.iter().position(|event| event.what == 2);
+                        let inside = if let Some(index) = release_index {
+                            let release = self.event_queue.remove(index).unwrap();
+                            let (top, left, bottom, right) =
+                                self.control_tracking.as_ref().unwrap().simple_screen_rect;
+                            release.where_v >= top
+                                && release.where_v < bottom
+                                && release.where_h >= left
+                                && release.where_h < right
+                        } else {
+                            self.simple_control_tracking_inside(bus)
+                        };
+                        if release_index.is_none() && self.control_tracking_button_down(bus) {
                             let highlighted = self
                                 .control_tracking
                                 .as_ref()
@@ -4008,9 +4204,11 @@ impl super::TrapDispatcher {
                                             callback_return_pc,
                                         ) {
                                             self.control_tracking = Some(ControlTrackingState {
+                                                simple_generation: None,
                                                 ctrl_handle,
                                                 ctrl_ptr,
                                                 popup_tracking: false,
+                                                popup_font: Default::default(),
                                                 active_menu: 0,
                                                 highlighted_item: 0,
                                                 saved_pixels: Default::default(),
@@ -4106,6 +4304,7 @@ impl super::TrapDispatcher {
                                     if let Some(menu_idx) =
                                         self.menus.iter().rposition(|menu| menu.id == menu_id)
                                     {
+                                        let popup_font = self.popup_control_font(bus, ctrl_ptr);
                                         let dropdown_rect = self
                                             .popup_control_dropdown_rect(bus, ctrl_ptr, menu_idx);
                                         let popup_content_top = {
@@ -4115,7 +4314,7 @@ impl super::TrapDispatcher {
                                             let anchor_top = owner_top
                                                 .saturating_add(bus.read_word(ctrl_ptr + 8) as i16);
                                             let selected = bus.read_word(ctrl_ptr + 18) as i16;
-                                            let rows = self.menu_rows(bus, &self.menus[menu_idx].items);
+                                            let rows = self.menu_rows_with_font(bus, &self.menus[menu_idx].items, popup_font);
                                             if rows.total_height()
                                                 > dropdown_rect.2.saturating_sub(dropdown_rect.0)
                                             {
@@ -4126,9 +4325,11 @@ impl super::TrapDispatcher {
                                         };
                                         let saved = self.save_dropdown_pixels(bus, dropdown_rect);
                                         self.control_tracking = Some(ControlTrackingState {
+                                            simple_generation: None,
                                             ctrl_handle,
                                             ctrl_ptr,
                                             popup_tracking: true,
+                                            popup_font,
                                             active_menu: menu_idx,
                                             highlighted_item: 0,
                                             saved_pixels: saved,
@@ -4161,12 +4362,36 @@ impl super::TrapDispatcher {
                                     }
                                 }
 
-                                // IM:I I-323: TrackControl follows mouse
-                                // movement, highlights simple controls, and
-                                // returns the part code only after mouse-up.
-                                // Preserve the old immediate path when the
-                                // mouse is already up; scripted callers that
-                                // model a real mouse-down take the refire path.
+                                // Use the mouse-up location even if host input advanced
+                                // before the guest entered TrackControl.
+                                // Macintosh Toolbox Essentials (1992), pp. 5-90--5-92.
+                                if action_proc == 0 && matches!(proc_id, 0 | 1 | 2) {
+                                    let release_index = self.event_queue.iter()
+                                        .position(|event| event.what == 2);
+                                    if let Some(index) = release_index {
+                                        let release = self.event_queue.remove(index).unwrap();
+                                        let window_ptr = bus.read_long(ctrl_ptr + 4);
+                                        let (top, left, _, _) = Self::dialog_screen_bounds(bus, window_ptr);
+                                        let inside = release.where_v >= top + r_top
+                                            && release.where_v < top + r_bottom
+                                            && release.where_h >= left + r_left
+                                            && release.where_h < left + r_right;
+                                        let part = if inside {
+                                            self.standard_testcontrol_part_code(ctrl_ptr)
+                                        } else {
+                                            0
+                                        };
+                                        self.record_trackcontrol_input_trace(
+                                            bus, "start", ctrl_handle,
+                                            Some((pt_v, pt_h)), action_proc,
+                                            Some(part), None, "simple_early_release",
+                                        );
+                                        bus.write_word(sp + 12, part);
+                                        cpu.write_reg(Register::A7, sp + 12);
+                                        return Some(Ok(()));
+                                    }
+                                }
+
                                 if self.input_state.mouse_button_pressed()
                                     && action_proc == 0
                                     && (matches!(proc_id, 0 | 1 | 2) || Self::is_popup_menu_proc_id(proc_id))
@@ -4181,10 +4406,17 @@ impl super::TrapDispatcher {
                                         scr_top + r_bottom,
                                         scr_left + r_right,
                                     );
+                                    let simple_generation = self.control_manager.with_ref(|manager| {
+                                        manager.iter()
+                                            .find(|record| record.pointer == ctrl_ptr)
+                                            .map(|record| record.generation)
+                                    });
                                     self.control_tracking = Some(ControlTrackingState {
+                                        simple_generation,
                                         ctrl_handle,
                                         ctrl_ptr,
                                         popup_tracking: false,
+                                        popup_font: Default::default(),
                                         active_menu: 0,
                                         highlighted_item: 0,
                                         saved_pixels: Default::default(),
@@ -4216,9 +4448,9 @@ impl super::TrapDispatcher {
                                     return Some(Ok(()));
                                 }
 
-                                // Return inButton (10) for simple controls.
-                                // Inside Macintosh Volume I, I-316
-                                part = 10;
+                                // Standard buttons return 10; checkboxes and radios return 11.
+                                // Macintosh Toolbox Essentials (1992), p. 5-89.
+                                part = self.standard_testcontrol_part_code(ctrl_ptr);
                                 outcome = "visible_active_hit";
                             }
                         }

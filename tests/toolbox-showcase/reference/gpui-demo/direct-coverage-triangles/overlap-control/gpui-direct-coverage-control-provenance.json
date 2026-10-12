@@ -1,0 +1,6 @@
+{
+  "baseline_text_sha256": "df846e59883e367d22b838677262c145c35be82b7cac80c30c6392104c0cd382",
+  "current_text_sha256": "33543dcec39551662c56954afe3bf6dc8fbefe498c6f436058174b8abbd0522f",
+  "control_executable_sha256": "1bef346bcead07634c345e0b12f23373752833a0a81af10698fd0d39885aebdf",
+  "scope": "Only gpui_demo_text.rs restored from pre-optimization snapshot; all other source unchanged from b9e1deeb. Production source restored in finally."
+}

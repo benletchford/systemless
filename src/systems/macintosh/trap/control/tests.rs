@@ -76,6 +76,110 @@ fn appearance_control_data_round_trips_tag_and_actual_size() {
 }
 
 #[test]
+fn reregistered_control_definition_declines_completed_guest_ink() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    let window = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
+    let base = bus.read_long(window + 2);
+    let rows = u32::from(bus.read_word(window + 6) & 0x3fff);
+    disp.set_screen_mode_for_test(base, rows, 512, 342, 1);
+    let pointer = bus.alloc(296);
+    let handle = bus.alloc(4);
+    bus.write_long(handle, pointer);
+    let bounds = (30, 30, 70, 240);
+    disp.initialize_control_record(&mut bus, pointer, window, bounds,
+        b"Sound", true, 0, 0, 1, 0, 0);
+    disp.control_manager.register(handle, pointer, 0, 0);
+    clear_1bpp_screen(&mut bus, base, rows, 342);
+    disp.draw_control(&mut cpu, &mut bus, pointer);
+    let (generation, paint) = disp.control_manager.with_ref(|manager| {
+        let record = manager.iter().find(|record| record.pointer == pointer).unwrap();
+        (record.generation, record.paint.clone())
+    });
+    let (top, left, _, _) = TrapDispatcher::dialog_screen_bounds(&bus, window);
+    let global = (bounds.0 + top, bounds.1 + left, bounds.2 + top, bounds.3 + left);
+    let (identity, pixels) = disp.capture_standard_control_pixels(&bus, window, generation, pointer, global).unwrap();
+    let backdrop = paint.backdrop(identity, &pixels).expect("actual guest draw owns its ink");
+    disp.control_manager.register(handle, pointer, 0, 0);
+    assert_eq!(paint.backdrop(identity, &pixels), Some(backdrop));
+    disp.control_manager.register(handle, pointer, 1, 0);
+    disp.control_manager.with_ref(|manager| {
+        let record = manager.iter().find(|record| record.pointer == pointer).unwrap();
+        assert_eq!(record.generation, generation);
+        assert_eq!(record.proc_id, 1);
+    });
+    let (unchanged_identity, unchanged_pixels) = disp.capture_standard_control_pixels(&bus, window, generation, pointer, global).unwrap();
+    assert_eq!(unchanged_identity, identity);
+    assert_eq!(unchanged_pixels, pixels, "registration must not alter guest raster");
+    assert!(paint.backdrop(unchanged_identity, &unchanged_pixels).is_none(),
+        "the new definition cannot claim the old guest button ink");
+}
+
+#[test]
+fn appearance_control_font_overrides_change_classic_ink_and_restore_default() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    let window = bus.read_long(bus.read_long(cpu.read_reg(Register::A5)));
+    let base = bus.read_long(window + 2);
+    let rows = u32::from(bus.read_word(window + 6) & 0x3fff);
+    assert!(base != 0 && rows != 0);
+    disp.set_screen_mode_for_test(base, rows, 512, 342, 1);
+    for proc_id in [0, 1, 2] {
+        let pointer = bus.alloc(296);
+        let handle = bus.alloc(4);
+        bus.write_long(handle, pointer);
+        let bounds = (30, 30, 70, 240);
+        disp.initialize_control_record(&mut bus, pointer, window, bounds,
+            b"Sound", true, 0, 0, 1, proc_id, 0);
+        disp.control_manager.register(handle, pointer, proc_id, 0);
+        let mut captures = Vec::new();
+        for style in [None, Some((18, 0)), Some((18, 1)), Some((72, 1)), None] {
+            disp.control_manager.set_font_style(pointer, style.map(|(size, face)|
+                crate::control_manager::ControlFontStyle {
+                    flags: 7, font: 3, size, style: face, mode: 0,
+                    justification: 0, foreground: [0; 3], background: [0; 3],
+                }));
+            clear_1bpp_screen(&mut bus, base, rows, 342);
+            disp.draw_control(&mut cpu, &mut bus, pointer);
+            let (generation, paint) = disp.control_manager.with_ref(|manager| {
+                let record = manager.iter().find(|record| record.pointer == pointer).unwrap();
+                (record.generation, record.paint.clone())
+            });
+            let (origin_top, origin_left, _, _) = TrapDispatcher::dialog_screen_bounds(&bus, window);
+            let global = (bounds.0 + origin_top, bounds.1 + origin_left,
+                bounds.2 + origin_top, bounds.3 + origin_left);
+            let (identity, painted) = disp.capture_standard_control_pixels(&bus, window, generation, pointer, global).unwrap();
+            let backdrop = paint.backdrop(identity, &painted).expect("completed guest draw must retain its backdrop");
+            assert!(backdrop.iter().all(|byte| *byte == 255),
+                "control draw must retain the original white background without bitmap ink");
+            bus.write_word(pointer + 18, 1);
+            let (changed, unchanged_ink) = disp.capture_standard_control_pixels(&bus, window, generation, pointer, global).unwrap();
+            assert_eq!(unchanged_ink, painted, "raw value mutation must not repaint guest ink");
+            assert!(paint.backdrop(changed, &unchanged_ink).is_none(),
+                "new control values cannot reuse old painter ownership");
+            bus.write_word(pointer + 18, 0);
+            captures.push((0..rows * 342).map(|offset| bus.read_byte(base + offset))
+                .collect::<Vec<_>>());
+            assert_eq!((bus.read_word(pointer + 8) as i16, bus.read_word(pointer + 10) as i16,
+                bus.read_word(pointer + 12) as i16, bus.read_word(pointer + 14) as i16), bounds);
+            assert_eq!(bus.read_word(pointer + 18), 0);
+        }
+        assert!(captures[0] != captures[1], "proc {proc_id} ignored font/size override");
+        assert!(captures[1] != captures[2], "proc {proc_id} ignored face override");
+        assert!(captures[0] == captures[4], "proc {proc_id} failed to restore original ink");
+        assert!(captures[3].iter().any(|byte| *byte != 0), "oversized font must still paint");
+        for y in 0..342usize {
+            for x in 0..512usize {
+                if y >= bounds.0 as usize && y < bounds.2 as usize
+                    && x >= bounds.1 as usize && x < bounds.3 as usize { continue; }
+                let offset = y * rows as usize + x / 8;
+                let mask = 0x80 >> (x % 8);
+                assert_eq!(captures[3][offset] & mask, captures[0][offset] & mask,
+                    "proc {proc_id} oversized font escaped control at {x},{y}");
+            }
+        }
+    }
+}
+
+#[test]
 fn appearance_handle_control_click_tracks_button_across_release() {
     let (mut disp, mut cpu, mut bus) = setup_with_port();
     let window = *disp.current_port;
@@ -1550,6 +1654,12 @@ fn inactive_popup_label_and_selected_title_use_live_device_palette() {
         bus.write_byte(screen_base + offset, 0);
     }
 
+    let palette = crate::display::rgba_palette_from_clut_with_gamma(
+        &disp.device_clut, &disp.display_gamma.table());
+    let [r, g, b, _] = palette[1].to_le_bytes();
+    assert_eq!(disp.popup_text_ink(false), crate::control_manager::ControlTextInk::Solid([r, g, b]),
+        "frontend ink must match the palette entry written by the disabled CDEF below");
+
     let window_ptr = *disp.current_port;
     bus.write_word(window_ptr + 8, 0);
     bus.write_word(window_ptr + 10, 0);
@@ -1843,7 +1953,7 @@ fn track_control_button_systemless_theme_tracks_pressed_state_until_release() {
     );
     assert!(disp.control_tracking.is_some());
     assert_eq!(bus.read_word(sp + 12), 0xBEEF);
-    assert_eq!(bus.read_byte(ctrl_ptr + 17), 1);
+    assert_eq!(bus.read_byte(ctrl_ptr + 17), 10);
     assert!(
         screen_pixel_is_set(&bus, base, row_bytes, probe_x, probe_y),
         "held simple TrackControl should route pressed button chrome through the provider"
@@ -1864,7 +1974,7 @@ fn track_control_button_systemless_theme_tracks_pressed_state_until_release() {
     disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
         .unwrap()
         .unwrap();
-    assert_eq!(bus.read_byte(ctrl_ptr + 17), 1);
+    assert_eq!(bus.read_byte(ctrl_ptr + 17), 10);
     assert!(
         screen_pixel_is_set(&bus, base, row_bytes, probe_x, probe_y),
         "dragging back inside should restore provider pressed chrome"
@@ -2151,6 +2261,7 @@ fn track_control_popup_menu_samples_final_release_point() {
     bus.write_word(ctrl_ptr + 20, 900); // popupMenuProc stores MENU id in min
     bus.write_word(ctrl_ptr + 22, 0);
     disp.control_manager.set_proc_id(ctrl_ptr, 1009);
+    disp.control_manager.set_popup_title_width(ctrl_ptr, 52);
     bus.write_long(ctrl_ptr + 32, u32::MAX);
     disp.menus.push(Menu {
         id: 900,
@@ -2205,9 +2316,14 @@ fn track_control_popup_menu_samples_final_release_point() {
     let (dropdown_top, dropdown_left, dropdown_bottom, _) = dropdown_rect;
     assert_eq!(
         (dropdown_top, dropdown_left, dropdown_bottom),
-        (10, 20, 42),
+        (10, 72, 42),
         "popup tracking should align selected item 1 with the control box, \
              not open below the control bottom"
+    );
+    assert_eq!(
+        dropdown_rect.3 - dropdown_left,
+        40,
+        "fixed popup excludes its 52-pixel title and 18-pixel arrow area"
     );
     assert_eq!(bus.read_word(sp + 12), 0xBEEF);
 
@@ -4357,4 +4473,118 @@ fn setctlvalue_preserves_updated_checkbox_in_visible_dialog_snapshot() {
         "visible snapshot restoration must retain the updated checkbox and other artwork"
     );
     assert_eq!(bus.read_byte(base + 300 * row_bytes + 60), 0xA5);
+}
+
+#[test]
+fn track_control_standard_controls_consume_queued_release_position() {
+    for proc_id in [0, 1, 2] {
+        for release_before_entry in [false, true] {
+            for release_inside in [false, true] {
+                let (mut disp, mut cpu, mut bus) = setup_with_port();
+                let window = *disp.current_port;
+                let (handle, ptr) =
+                    alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 80));
+                disp.control_manager.set_proc_id(ptr, proc_id);
+                bus.write_word(ptr + 18, 1);
+                let sp = 0x300000;
+                cpu.write_reg(Register::A7, sp);
+                bus.write_long(sp, 0);
+                bus.write_word(sp + 4, 30);
+                bus.write_word(sp + 6, 30);
+                bus.write_long(sp + 8, handle);
+                bus.write_word(sp + 12, 0xBEEF);
+                disp.input_state.set_mouse_button_for_test(true);
+                disp.input_state.set_mouse_position_for_test((30, 30));
+                if !release_before_entry {
+                    disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(cpu.read_reg(Register::A7), sp);
+                    assert_eq!(bus.read_word(sp + 12), 0xBEEF);
+                    assert_eq!(bus.read_byte(ptr + 17), if proc_id == 0 { 10 } else { 11 });
+                }
+                disp.input_state.set_mouse_button_for_test(false);
+                // The pointer may have moved again after the release was queued.
+                disp.input_state
+                    .set_mouse_position_for_test(if release_inside { (10, 10) } else { (30, 30) });
+                disp.event_queue
+                    .push_back(crate::trap::dispatch::QueuedEvent {
+                        what: 2,
+                        message: 0,
+                        when: 0,
+                        where_v: if release_inside { 30 } else { 10 },
+                        where_h: 30,
+                        modifiers: 0,
+                    });
+                disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+                assert_eq!(
+                    bus.read_word(sp + 12),
+                    if release_inside {
+                        if proc_id == 0 {
+                            10
+                        } else {
+                            11
+                        }
+                    } else {
+                        0
+                    },
+                    "proc={proc_id}, early={release_before_entry}, inside={release_inside}"
+                );
+                assert_eq!(bus.read_byte(ptr + 17), 0);
+                assert_eq!(
+                    bus.read_word(ptr + 18),
+                    1,
+                    "TrackControl must leave the value to the caller"
+                );
+                assert!(disp.control_tracking.is_none());
+                assert!(!disp.event_queue.iter().any(|event| event.what == 2));
+            }
+        }
+    }
+}
+
+#[test]
+fn track_control_standard_controls_reject_disposed_or_replaced_records() {
+    for mutation in ["dispose", "generation", "pointer"] {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let window = *disp.current_port;
+        let (handle, ptr) = alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 80));
+        disp.control_manager.set_proc_id(ptr, 2);
+        let sp = 0x300000;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0);
+        bus.write_word(sp + 4, 30);
+        bus.write_word(sp + 6, 30);
+        bus.write_long(sp + 8, handle);
+        disp.input_state.set_mouse_button_for_test(true);
+        disp.input_state.set_mouse_position_for_test((30, 30));
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_byte(ptr + 17), 11);
+        match mutation {
+            "dispose" => disp.dispose_control_handle(&mut bus, handle),
+            "generation" => {
+                disp.control_manager.remove_pointer(ptr);
+                disp.control_manager.register(handle, ptr, 2, 0);
+            }
+            _ => bus.write_long(handle, ptr + 4),
+        }
+        let before: Vec<_> = (0..48).map(|offset| bus.read_byte(ptr + offset)).collect();
+        disp.input_state.set_mouse_button_for_test(false);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_word(sp + 12), 0, "{mutation}");
+        assert!(disp.control_tracking.is_none());
+        let after: Vec<_> = (0..48).map(|offset| bus.read_byte(ptr + offset)).collect();
+        assert_eq!(
+            before, after,
+            "must not restore highlight into stale record: {mutation}"
+        );
+    }
 }

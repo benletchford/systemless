@@ -1,0 +1,16 @@
+{
+  "scope": "Eight production worker + shared GPUI test-window cases: guest keyboard triggers NMInstall, automatic acquisition, rendered OK click, autoremove or compiled response, response-once and background menu exclusion. No reviewed images, physical UI, mixed icon/sound delivery or final release qualification.",
+  "modes": [
+    "mono68k",
+    "colour68k",
+    "PPC8",
+    "PPC16 default launch"
+  ],
+  "cases": 8,
+  "elapsed_seconds": 9.96,
+  "sha256": {
+    "src/bin/gpui_demo.rs": "1b5d1bd21bce1d7fc9ef610d72ad56f5a9a586ec0da37debfac5b7c55d348e8a",
+    "tests/toolbox-showcase/showcase.c": "27c3cd322e27b919c6e51f052d4925276ff3dce1cea04a6d0f9ac23b1ab52c53",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "f11709e86e439a67894dccedf7913231db6ae4aa12c6bcd7684cd9631f90e600"
+  }
+}

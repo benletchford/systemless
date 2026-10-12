@@ -5,6 +5,335 @@ use crate::process_context::PendingFileCompletion;
 use crate::trap::dispatch::TrapTableProfile;
 
 #[test]
+fn notification_sound_only_waits_for_its_channel_before_auto_removal() {
+    for native_mode in [false, true] { for muted in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        if native_mode { runner.init_app(&halted_ppc_app_with_sound(PpcSoundState::default())); }
+        if muted { runner.dispatcher.sound_manager.set_sys_beep_volume(0); }
+        let request = if native_mode { PPC_DATA_BASE + 0x6000 } else { runner.bus.alloc(128) };
+        if native_mode {
+            let native = runner.native.application_mut().unwrap();
+            native.memory.add_region(request, vec![0; 128]);
+            native.memory.write_u16_be(request + 4, 8).unwrap();
+            native.memory.write_u32_be(request + 20, u32::MAX).unwrap();
+            native.memory.write_u32_be(request + 28, u32::MAX).unwrap();
+            native.toolbox_startup.notification_requests.push(request);
+        } else {
+            runner.bus.write_word(request + 4, 8);
+            runner.bus.write_long(request + 20, u32::MAX);
+            runner.bus.write_long(request + 28, u32::MAX);
+            runner.dispatcher.notification_requests.push(request);
+        }
+        runner.advance_notification_system_sounds();
+        assert!(!runner.guest_work_is_suspended());
+        assert!(runner.notification_alert_snapshot().is_none());
+        if !muted {
+            assert_eq!(runner.notification_snapshot().len(), 1);
+            runner.mix_audio(128);
+            assert!(runner.drain_audio().iter().any(|sample| *sample != 0x80));
+            runner.advance_notification_system_sounds();
+            assert!(!runner.notification_snapshot()[0].response_started);
+            runner.mix_audio(crate::sound::synth_sys_beep_samples().len());
+            runner.advance_notification_system_sounds();
+        }
+        assert!(runner.notification_snapshot().is_empty());
+        runner.advance_notification_system_sounds();
+        assert!(runner.notification_snapshot().is_empty());
+    } }
+}
+
+#[test]
+fn notification_system_sound_plays_while_alert_retains_foreground_on_both_cpus() {
+    for native_mode in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        if native_mode { runner.init_app(&halted_ppc_app_with_sound(PpcSoundState::default())); }
+        let request = if native_mode { PPC_DATA_BASE + 0x6000 } else { runner.bus.alloc(128) };
+        if native_mode {
+            let native = runner.native.application_mut().unwrap();
+            native.memory.add_region(request, vec![0; 128]);
+            native.memory.write_u16_be(request + 4, 8).unwrap();
+            native.memory.write_u32_be(request + 24, request + 64).unwrap();
+            native.memory.write_u32_be(request + 20, u32::MAX).unwrap();
+            native.toolbox_startup.notification_requests.push(request);
+        } else {
+            runner.bus.write_word(request + 4, 8);
+            runner.bus.write_long(request + 24, request + 64);
+            runner.bus.write_long(request + 20, u32::MAX);
+            runner.dispatcher.notification_requests.push(request);
+        }
+        let notice = runner.notification_snapshot().pop().unwrap();
+        let classic_pc = runner.cpu().read_reg(Register::PC);
+        let native_context = runner.native.application().map(|app| app.cpu.capture_execution_context());
+        assert!(runner.begin_notification_alert(&notice));
+        assert!(!runner.begin_notification_alert(&notice));
+        runner.mix_gui_audio_slice(128);
+        let audio = runner.drain_audio();
+        assert_eq!(audio.len(), 128);
+        assert!(audio.iter().any(|sample| *sample != 0x80));
+        assert!(runner.guest_work_is_suspended());
+        assert_eq!(runner.cpu().read_reg(Register::PC), classic_pc);
+        if let Some(context) = native_context {
+            assert_eq!(runner.native.application().unwrap().cpu.capture_execution_context().architectural(), context.architectural());
+        }
+        assert!(!runner.notification_snapshot()[0].response_started);
+        assert!(runner.dismiss_notification_alert(&notice));
+    }
+}
+
+#[test]
+fn notification_rejected_procedure_retains_alert_without_marking_response_started() {
+    for response in [1, 8 * 1024 * 1024 + 2] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let request = runner.bus.alloc(128);
+        runner.bus.write_word(request + 4, 8);
+        runner.bus.write_long(request + 24, request + 64);
+        runner.bus.write_long(request + 28, response);
+        runner.dispatcher.notification_requests.push(request);
+        let notice = runner.notification_snapshot().pop().unwrap();
+        let pc = runner.m68k.cpu.read_reg(Register::PC);
+        let sp = runner.m68k.cpu.read_reg(Register::A7);
+        assert!(runner.begin_notification_alert(&notice));
+        assert!(!runner.dismiss_notification_alert(&notice));
+        assert_eq!(runner.notification_alert_snapshot(), Some(notice));
+        assert!(!runner.notification_snapshot().pop().unwrap().response_started);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::PC), pc);
+        assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
+    }
+}
+
+#[test]
+fn notification_alert_owns_foreground_until_exact_acknowledgment_on_both_cpus() {
+    for native_mode in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let request;
+        if native_mode {
+            runner.init_app(&halted_ppc_app_with_sound(PpcSoundState::default()));
+            request = PPC_DATA_BASE + 0x6000;
+            let native = runner.native.application_mut().unwrap();
+            native.memory.add_region(request, vec![0; 128]);
+            native.memory.write_u16_be(request + 4, 8).unwrap();
+            native.memory.write_u32_be(request + 24, request + 64).unwrap();
+            native.toolbox_startup.notification_requests.push(request);
+        } else {
+            request = runner.bus.alloc(128);
+            runner.bus.write_word(request + 4, 8);
+            runner.bus.write_long(request + 24, request + 64);
+            runner.dispatcher.notification_requests.push(request);
+        }
+        let notice = runner.notification_snapshot().pop().unwrap();
+        assert!(runner.begin_notification_alert(&notice));
+        assert!(!runner.begin_notification_alert(&notice));
+        assert_eq!(runner.run_realtime_steps_with_audio(32, 0), (0, true));
+        assert!(!runner.complete_notification_delivery(&notice));
+        assert!(!runner.notification_snapshot().pop().unwrap().response_started);
+        let mut stale = notice.clone();
+        stale.instance_id += 1;
+        assert!(!runner.dismiss_notification_alert(&stale));
+        assert!(runner.guest_work_is_suspended());
+        assert!(runner.dismiss_notification_alert(&notice));
+        assert!(!runner.guest_work_is_suspended());
+        assert!(!runner.dismiss_notification_alert(&notice));
+        assert!(runner.notification_snapshot().pop().unwrap().response_started);
+    }
+}
+
+#[test]
+fn notification_alert_removal_releases_foreground_without_delivering_response() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let request = runner.bus.alloc(128);
+    runner.bus.write_word(request + 4, 8);
+    runner.bus.write_long(request + 24, request + 64);
+    runner.dispatcher.notification_requests.push(request);
+    let notice = runner.notification_snapshot().pop().unwrap();
+    assert!(runner.begin_notification_alert(&notice));
+    runner.dispatcher.notification_requests.remove(0);
+    assert_eq!(runner.run_realtime_steps_with_audio(0, 0), (0, true));
+    assert!(runner.notification_alert_snapshot().is_none());
+    assert!(!runner.guest_work_is_suspended());
+    assert!(!runner.dismiss_notification_alert(&notice));
+}
+
+#[test]
+fn notification_runner_delivers_direct_m68k_response_and_restores_native_context() {
+    use crate::guest_procedure::*;
+    use crate::mixed_mode::proc_info;
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&halted_ppc_app_with_sound(PpcSoundState::default()));
+    let request = PPC_DATA_BASE + 0x6000;
+    let descriptor = PPC_HEAP_BASE + 0x1000;
+    let callback = PPC_HEAP_BASE + 0x2000;
+    let output = request + 40;
+    let foreground;
+    {
+        let native = runner.native.application_mut().unwrap();
+        native.memory.add_region(request, vec![0; 128]);
+        native.memory.add_region(descriptor, vec![0; 128]);
+        let mut code = Vec::new();
+        for word in [0x202fu16, 4, 0x23c0, (output >> 16) as u16,
+            output as u16, 0x4e74, 4] { code.extend_from_slice(&word.to_be_bytes()); }
+        native.memory.add_region(callback, code);
+        native.set_heap_cursor(native.heap_cursor().max(callback + 128));
+        native.memory.write_u16_be(descriptor, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP).unwrap();
+        native.memory.write_u8(descriptor + 2, ROUTINE_DESCRIPTOR_VERSION).unwrap();
+        let record = descriptor + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        native.memory.write_u32_be(record, proc_info::PASCAL_STACK_BASED
+            | (proc_info::SIZE_FOUR << proc_info::STACK_PARAMETER_PHASE)).unwrap();
+        native.memory.write_u8(record + ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_M68K_ISA).unwrap();
+        native.memory.write_u32_be(record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET, callback).unwrap();
+        native.memory.write_u16_be(request + 4, 8).unwrap();
+        native.memory.write_u32_be(request + 24, request + 64).unwrap();
+        native.memory.write_u32_be(request + 28, descriptor).unwrap();
+        native.memory.write_u32_be(request + 96, 0x4800_0000).unwrap();
+        native.cpu.pc = request + 96;
+        native.toolbox_startup.notification_requests.push(request);
+        foreground = native.cpu.capture_execution_context();
+    }
+    let notice = runner.notification_snapshot().pop().unwrap();
+    assert!(runner.complete_notification_delivery(&notice));
+    assert!(!runner.complete_notification_delivery(&notice));
+    assert!(runner.native.application_mut().unwrap().parked_interrupt_callback.is_some());
+    let mut completed = false;
+    for _ in 0..100 {
+        assert!(runner.run_realtime_steps_with_audio(32, 0).1);
+        let native = runner.native.application_mut().unwrap();
+        if native.parked_interrupt_callback.is_none() {
+            assert_eq!(native.memory.read_u32_be(output), Some(request));
+            assert_eq!(native.cpu.capture_execution_context().architectural(), foreground.architectural());
+            completed = true;
+            break;
+        }
+    }
+    assert!(completed, "direct Mixed Mode response did not return to native foreground");
+}
+
+#[test]
+fn notification_native_runner_finishes_response_before_foreground_instructions() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&halted_ppc_app_with_sound(PpcSoundState::default()));
+    let request = PPC_DATA_BASE + 0x6000;
+    let callback = request + 128;
+    let descriptor = callback + 128;
+    let foreground_code = descriptor + 128;
+    let foreground;
+    {
+        let native = runner.native.application_mut().unwrap();
+        native.memory.add_region(request, vec![0; 512]);
+        native.memory.write_u16_be(request + 4, 8).unwrap();
+        native.memory.write_u32_be(request + 24, request + 64).unwrap();
+        native.memory.write_u32_be(request + 28, descriptor).unwrap();
+        native.memory.write_u32_be(request + 32, u32::MAX).unwrap();
+        native.memory.write_u32_be(descriptor, callback).unwrap();
+        native.memory.write_u32_be(descriptor + 4, native.rtoc).unwrap();
+        for (index, instruction) in [0x3880_00c8u32, 0x3884_ffff, 0x2c04_0000,
+            0x4082_fff8, 0x9083_0020, 0x4e80_0020].into_iter().enumerate() {
+            native.memory.write_u32_be(callback + index as u32 * 4, instruction).unwrap();
+        }
+        // Foreground code changes a separate marker as soon as it executes.
+        for (index, instruction) in [0x38a0_0001u32, 0x90a6_0000, 0x4800_0000]
+            .into_iter().enumerate() {
+            native.memory.write_u32_be(foreground_code + index as u32 * 4, instruction).unwrap();
+        }
+        native.cpu.pc = foreground_code;
+        native.cpu.gpr[6] = request + 40;
+        native.toolbox_startup.notification_requests.push(request);
+        foreground = native.cpu.capture_execution_context();
+    }
+    let notice = runner.notification_snapshot().pop().unwrap();
+    assert!(runner.complete_notification_delivery(&notice));
+    assert!(!runner.complete_notification_delivery(&notice));
+    assert!(runner.native.application_mut().unwrap().notification_response_context.is_some());
+    let mut completed = false;
+    for _ in 0..100 {
+        let (_, running) = runner.run_realtime_steps_with_audio(32, 0);
+        assert!(running);
+        let native = runner.native.application_mut().unwrap();
+        assert_eq!(native.memory.read_u32_be(request + 40), Some(0));
+        assert_eq!(native.cpu.capture_execution_context().architectural(), foreground.architectural());
+        if native.notification_response_context.is_none() {
+            assert_eq!(native.memory.read_u32_be(request + 32), Some(0));
+            completed = true;
+            break;
+        }
+    }
+    assert!(completed, "bounded notification response did not finish");
+    assert!(runner.run_realtime_steps_with_audio(32, 0).1);
+    assert_eq!(runner.native.application_mut().unwrap().memory.read_u32_be(request + 40), Some(1));
+}
+
+#[test]
+fn notification_native_runner_completes_null_and_auto_remove_without_cpu_changes() {
+    for response in [0, u32::MAX] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        runner.init_app(&app);
+        let request = PPC_DATA_BASE + 0x6000;
+        let foreground;
+        {
+            let native = runner.native.application_mut().unwrap();
+            native.memory.add_region(request, vec![0; 128]);
+            native.memory.write_u16_be(request + 4, 8).unwrap();
+            native.memory.write_u32_be(request + 24, request + 64).unwrap();
+            native.memory.write_u32_be(request + 28, response).unwrap();
+            native.toolbox_startup.notification_requests.push(request);
+            foreground = native.cpu.capture_execution_context();
+        }
+        let notice = runner.notification_snapshot().pop().unwrap();
+        let mut stale = notice.clone();
+        stale.instance_id += 1;
+        assert!(!runner.complete_notification_delivery(&stale));
+        assert!(!runner.notification_snapshot().pop().unwrap().response_started);
+        assert!(runner.complete_notification_delivery(&notice));
+        assert!(!runner.complete_notification_delivery(&notice));
+        if response == 0 {
+            assert!(runner.notification_snapshot().pop().unwrap().response_started);
+        } else { assert!(runner.notification_snapshot().is_empty()); }
+        let native = runner.native.application_mut().unwrap();
+        assert_eq!(native.cpu.capture_execution_context().architectural(), foreground.architectural());
+        assert_eq!(native.memory.read_u32_be(request), Some(0));
+    }
+}
+
+#[test]
+fn notification_delivery_restores_full_guest_registers_and_condition_codes() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let resume_pc = 0x10000;
+    let resume_sp = 0x7fffc0;
+    for offset in (0..80).step_by(2) { runner.bus.write_word(resume_pc + offset, 0x4e71); }
+    let request = runner.bus.alloc(36);
+    let text = runner.bus.alloc(8);
+    let callback = runner.bus.alloc(24);
+    runner.bus.write_word(request + 4, 8);
+    runner.bus.write_long(request + 24, text);
+    runner.bus.write_long(request + 28, callback);
+    for (index, word) in [0x4e56, 0, 0x2e3c, 0x1122, 0x3344,
+        0x287c, 0x5566, 0x7788, 0x7000, 0x4e5e, 0x4e74, 4].into_iter().enumerate() {
+        runner.bus.write_word(callback + index as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, resume_pc);
+    runner.m68k.cpu.write_reg(Register::A7, resume_sp);
+    runner.m68k.cpu.write_reg(Register::A0, request);
+    runner.dispatcher.dispatch_memory(false, 0x5e, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap().unwrap();
+    runner.m68k.cpu.write_reg(Register::D7, 0xabcdef12);
+    runner.m68k.cpu.write_reg(Register::A4, 0x12345678);
+    runner.m68k.cpu.core.set_sr_noint_nosp(0x2015);
+    let notice = runner.notification_snapshot().pop().unwrap();
+    assert!(!notice.response_started);
+    assert!(runner.complete_notification_delivery(&notice));
+    assert!(runner.notification_snapshot().pop().unwrap().response_started);
+    assert!(!runner.callback_suspends_guest_clock());
+    assert!(!runner.complete_notification_delivery(&notice));
+    let (_, running) = runner.run_steps(24, None);
+    assert!(running);
+    assert!(runner.active_interrupt_callback.is_none());
+    assert_eq!(runner.m68k.cpu.read_reg(Register::A7), resume_sp);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::D7), 0xabcdef12);
+    assert_eq!(runner.m68k.cpu.read_reg(Register::A4), 0x12345678);
+    assert_eq!(runner.m68k.cpu.core.get_sr(), 0x2015);
+    assert!(!runner.complete_notification_delivery(&notice));
+}
+
+#[test]
 fn file_completion_callback_uses_documented_registers_and_restores_foreground() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     let interrupted_pc = 0x0001_0000;

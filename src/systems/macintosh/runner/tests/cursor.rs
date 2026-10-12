@@ -26,6 +26,12 @@ fn cursor_state_is_immediately_shared_between_cpu_adapters() {
     assert!(!runner.dispatcher.cursor_visible());
     assert_eq!(runner.dispatcher.cursor_data(), Some((data, mask, 3, 4)));
 
+    let hidden = runner.cursor_snapshot();
+    assert_eq!(hidden.image, Some(crate::display::CursorImage::mono(data, mask, 3, 4)));
+    assert_eq!(hidden.level, -1);
+    assert!(!hidden.visible);
+    assert_eq!(hidden.position, runner.dispatcher.mouse_position());
+
     runner.dispatcher.cursor_state.show();
     assert_eq!(
         runner
@@ -35,6 +41,11 @@ fn cursor_state_is_immediately_shared_between_cpu_adapters() {
             .cursor_level(),
         0
     );
+    let visible = runner.cursor_snapshot();
+    assert_eq!(visible.image, hidden.image);
+    assert!(visible.visible);
+    assert_eq!(visible.level, 0);
+
 }
 
 fn cursor_warp_runner() -> FixtureRunner {
@@ -587,4 +598,24 @@ fn adb_mouse_callback_uses_documented_registers_and_restores_foreground() {
     assert_eq!(runner.m68k.cpu.read_reg(Register::A2), 0x3333_3333);
     assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0x4444_4444);
     assert!(!runner.is_halted());
+}
+
+#[test]
+fn cursor_snapshot_retains_colour_image_and_mask_when_hidden() {
+    let app = halted_ppc_app_with_sound(PpcSoundState::default());
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&app);
+    let image = crate::display::CursorImage::Color {
+        width: 2, height: 2, pixels_argb: vec![0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffffff],
+        mask: [0xa5; 32], hot_v: 1, hot_h: 2, mono_data: [0x81; 32], mono_mask: [0x42; 32],
+    };
+    let ppc = runner.native.application_mut().unwrap();
+    ppc.cursor_state.install(image.clone()); ppc.cursor_state.hide();
+    let snapshot = runner.cursor_snapshot();
+    assert_eq!(snapshot.image, Some(image.clone()));
+    assert!(!snapshot.visible); assert_eq!(snapshot.level, -1);
+    runner.dispatcher.cursor_state.show();
+    let snapshot = runner.cursor_snapshot();
+    assert_eq!(snapshot.image, Some(image));
+    assert!(snapshot.visible); assert_eq!(snapshot.level, 0);
 }

@@ -1,0 +1,34 @@
+[
+  {
+    "name": "mono-0.75",
+    "dimensions": [
+      1200,
+      900
+    ],
+    "decoded_rgba_equal": false
+  },
+  {
+    "name": "colour-1.5",
+    "dimensions": [
+      2400,
+      1800
+    ],
+    "decoded_rgba_equal": false
+  },
+  {
+    "name": "ppc8-2",
+    "dimensions": [
+      3200,
+      2400
+    ],
+    "decoded_rgba_equal": false
+  },
+  {
+    "name": "ppc16-1",
+    "dimensions": [
+      1600,
+      1200
+    ],
+    "decoded_rgba_equal": false
+  }
+]

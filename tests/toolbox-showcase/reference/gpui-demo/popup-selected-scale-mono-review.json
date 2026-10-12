@@ -1,0 +1,47 @@
+{
+  "scope": "Closed selected popup monochrome 68k scales; exact CDEF chrome/native parity and inactive states remain unqualified",
+  "captures": [
+    {
+      "image": "popup-selected-scale-mono-active-075.png",
+      "scale": 0.75,
+      "dimensions": [
+        1200,
+        900
+      ],
+      "sha256": "2e4e4739f2c73c026678579b6499e9f60a32f04cccbc70dde3e4ec96f34eabe6",
+      "review": "Full composition visually reviewed; titles and labels fit, ellipsis before arrow; guest custom black panels retained"
+    },
+    {
+      "image": "popup-selected-scale-mono-active-100.png",
+      "scale": 1,
+      "dimensions": [
+        1600,
+        1200
+      ],
+      "sha256": "e0b33865828bb0929ba4a47ec6383ffd056a105eb3e760dea0243e57f95b12ae",
+      "review": "Full composition visually reviewed; titles and labels fit, ellipsis before arrow; guest custom black panels retained"
+    },
+    {
+      "image": "popup-selected-scale-mono-active-150.png",
+      "scale": 1.5,
+      "dimensions": [
+        2400,
+        1800
+      ],
+      "sha256": "00ab52b24cd0d1e9d321600629a1a6d0bac99f1edf73c7d1643d5508df340ece",
+      "review": "Full composition visually reviewed; titles and labels fit, ellipsis before arrow; guest custom black panels retained"
+    },
+    {
+      "image": "popup-selected-scale-mono-active-200.png",
+      "scale": 2,
+      "dimensions": [
+        3200,
+        2400
+      ],
+      "sha256": "6d0ecbfbdef55a055b62bbf7b6930022b2a49185cf5b4cd8004ccbd4133b7dd5",
+      "review": "Full composition visually reviewed; titles and labels fit, ellipsis before arrow; guest custom black panels retained"
+    }
+  ],
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "binary_sha256_recorded_after_capture": "6e39bb8cb971a0b17ecbdff8cbae483b4bc0ca1c039c406545f4ee8f05d53556"
+}

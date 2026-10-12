@@ -285,8 +285,40 @@ fn native_list_manager_stores_cells_rows_selection_and_geometry_in_public_record
         Some(3)
     );
 
+    // Disposal must remove transient feedback before dropping its saved pixels.
+    let front = ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (2, 2), 99));
+    loaded.list_manager.with_mut(|manager| manager.scroll_tracking = Some(crate::list_manager::ListScrollbarTracking {
+        list, generation: 1, control: vertical_scroll, pointer: vertical_scroll_ptr,
+        control_generation: 1, vertical: true, classic: false, frame: (0, 0),
+        bounds: (10, 220, 90, 236), part: 129, last_tick: 0,
+        start_mouse: (30, 228), start_limits: (0, 0, 3),
+        outline: Some(crate::list_manager::ListScrollbarOutline {
+            rect: (2, 2, 3, 3), surface: (front.base_addr, front.row_bytes, front.width, front.height, front.depth),
+            pixels: crate::list_manager::ListScrollbarPixels::Samples(vec![(2, 2, 42)].into()),
+        }),
+    }));
+    let retained = loaded.list_manager.with_ref(|manager| manager.scroll_tracking.clone());
+    loaded.list_manager.with_mut(|manager| {
+        manager.with_record_mut(list, |record| record.definition_id = 1);
+        // synthetic_code calls the import with bctrl at entry + 12.
+        manager.scroll_tracking.as_mut().unwrap().frame = (loaded.cpu.gpr[1], loaded.entry_pc + 16);
+    });
+    let selected_before = loaded.list_manager.get_record(list).unwrap().selected;
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = list;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::LClick);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 2)), Some(42));
+    assert!(loaded.list_manager.with_ref(|manager| manager.scroll_tracking.is_none()));
+    assert_eq!(loaded.list_manager.get_record(list).unwrap().selected, selected_before);
+    loaded.list_manager.with_mut(|manager| manager.scroll_tracking = retained);
+    assert!(ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (2, 2), 99));
     loaded.cpu.gpr[3] = list;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::LDispose);
+    assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 2)), Some(42));
+    assert!(loaded.list_manager.with_ref(|manager| manager.scroll_tracking.is_none()));
     assert_eq!(loaded.memory.read_u32_be(vertical_scroll), Some(0));
     assert!(!loaded.controls.contains_handle(vertical_scroll));
 }
@@ -299,7 +331,7 @@ fn native_list_manager_draws_cell_backgrounds_in_port_coordinates() {
     let view_ptr = scratch;
     let bounds_ptr = scratch + 8;
     loaded.memory.add_region(scratch, vec![0; 24]);
-    ppc_write_rect(&mut loaded.memory, view_ptr, 10, 20, 50, 120).unwrap();
+    ppc_write_rect(&mut loaded.memory, view_ptr, 10, 20, 55, 120).unwrap();
     ppc_write_rect(&mut loaded.memory, bounds_ptr, 0, 0, 3, 1).unwrap();
     loaded.cpu.gpr[3] = view_ptr;
     loaded.cpu.gpr[4] = bounds_ptr;
@@ -324,6 +356,7 @@ fn native_list_manager_draws_cell_backgrounds_in_port_coordinates() {
         .list_manager
         .with_record_mut(list, |record| {
             record.selected.insert((0, 0));
+            record.cells.insert((2, 0), b"MMMMMMMMMMMM".to_vec());
         })
         .unwrap();
 
@@ -360,6 +393,15 @@ fn native_list_manager_draws_cell_backgrounds_in_port_coordinates() {
         Some(white),
         "selected list background must not remain at port-local screen coordinates"
     );
+    for y in 95..105 {
+        for x in 170..270 {
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                Some(white),
+                "text in a partially visible final row must stay inside rView"
+            );
+        }
+    }
 }
 
 #[test]
@@ -484,6 +526,8 @@ fn cloned_native_adapter_detaches_list_manager_state() {
         0x0032_1000,
         PpcListRecord {
             handle: 0x0032_1000,
+            generation: crate::list_manager::new_list_generation(),
+            definition_id: 0,
             cells_handle: 0x0032_2000,
             view_rect: (0, 0, 40, 100),
             data_bounds: (0, 0, 2, 1),
@@ -496,6 +540,7 @@ fn cloned_native_adapter_detaches_list_manager_state() {
             selected: [(0, 0)].into(),
             last_click: (0, 0),
             last_click_tick: 10,
+            standard_cell_drawings: Default::default(),
         },
     );
     let detached = original.clone();
@@ -510,6 +555,8 @@ fn cloned_native_adapter_detaches_list_manager_state() {
         0x0032_3000,
         PpcListRecord {
             handle: 0x0032_3000,
+            generation: crate::list_manager::new_list_generation(),
+            definition_id: 0,
             cells_handle: 0x0032_4000,
             view_rect: (0, 0, 20, 100),
             data_bounds: (0, 0, 1, 1),
@@ -522,6 +569,7 @@ fn cloned_native_adapter_detaches_list_manager_state() {
             selected: Default::default(),
             last_click: (-1, -1),
             last_click_tick: 0,
+            standard_cell_drawings: Default::default(),
         },
     );
 

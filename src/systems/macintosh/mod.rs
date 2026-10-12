@@ -30,7 +30,7 @@ pub(crate) mod guest_call;
 pub(crate) mod guest_procedure;
 pub(crate) mod list_manager;
 pub mod loader;
-pub(crate) mod mac_roman;
+pub mod mac_roman;
 pub mod machine_profile;
 pub mod managers;
 pub mod memory;
@@ -45,6 +45,7 @@ pub(crate) mod queue_utilities;
 pub mod quickdraw;
 pub mod runner;
 pub(crate) mod scrap_manager;
+pub(crate) mod standard_file_ui;
 #[cfg(feature = "test-support")]
 pub mod scripted_traces;
 pub mod sound;

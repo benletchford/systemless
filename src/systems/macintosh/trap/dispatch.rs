@@ -741,7 +741,7 @@ pub struct DialogTrackingState {
     pub popup_draws: Vec<DialogPopupDraw>,
     /// Active popup-menu control tracking inside ModalDialog.
     pub active_popup: Option<DialogPopupTrackingState>,
-    /// Active push-button tracking inside ModalDialog.
+    /// Active push-button, checkbox or radio-button tracking inside ModalDialog.
     pub active_button: Option<DialogButtonTrackingState>,
     /// Active plain userItem tracking inside ModalDialog.
     pub active_user_item: Option<DialogUserItemTrackingState>,
@@ -756,6 +756,12 @@ pub struct DialogTrackingState {
 /// Inside Macintosh: Files (1992), pp. 3-13, 3-45 to 3-47.
 #[derive(Clone, Debug)]
 pub(crate) struct StandardFilePutTrackingState {
+    pub(crate) pointer_anchor: Option<usize>,
+    pub(crate) caret: crate::standard_file_ui::StandardFileCaret,
+    pub(crate) new_folder: Option<crate::standard_file_ui::StandardFileNewFolderState>,
+    pub(crate) confirming_replace: bool,
+    pub generation: u64,
+    pub standard_entry_point: bool,
     pub modern_reply: bool,
     pub reply_ptr: u32,
     pub stack_ptr: u32,
@@ -791,6 +797,9 @@ pub(crate) struct StandardFileGetEntry {
 /// picks a visible file or cancels.
 #[derive(Clone, Debug)]
 pub(crate) struct StandardFileGetTrackingState {
+    pub(crate) volume_popup: Option<crate::standard_file_ui::StandardFileVolumePopup>,
+    pub generation: u64,
+    pub standard_entry_point: bool,
     pub modern_reply: bool,
     pub reply_ptr: u32,
     pub stack_ptr: u32,
@@ -814,7 +823,7 @@ pub struct DialogPopupTrackingState {
     pub dropdown_rect: (i16, i16, i16, i16),
 }
 
-/// Push-button tracking owned by an active ModalDialog loop.
+/// Standard button/control tracking owned by an active ModalDialog loop.
 pub struct DialogButtonTrackingState {
     /// The initiating event retained so a delayed release cannot consume an
     /// unrelated queued mouse-down if the dialog is disposed while tracking.
@@ -857,9 +866,11 @@ pub(crate) struct PersistentDialogSnapshot {
 /// TrackControl blocks until mouse-up, so HLE keeps the trap active across
 /// refires in the same style as MenuSelect and ModalDialog.
 pub(crate) struct ControlTrackingState {
+    pub simple_generation: Option<u64>,
     pub ctrl_handle: u32,
     pub ctrl_ptr: u32,
     pub popup_tracking: bool,
+    pub popup_font: crate::menu_model::GuestMenuFont,
     pub active_menu: usize,
     pub highlighted_item: i16,
     pub saved_pixels: SavedPixels,
@@ -1389,6 +1400,8 @@ pub struct TrapDispatcher {
     pub(crate) segment_map: HashMap<i16, u32>,
     /// Process-owned application and system AppleEvent dispatch tables.
     pub(crate) ae_handlers: SharedProcessAppleEventHandlers,
+    /// SIZE selected at launch, shared with the native CPU gateway.
+    pub(crate) application_size: crate::process_context::SharedProcessApplicationSize,
     /// Process-owned launch awareness and one-shot synthetic OAPP state.
     pub(crate) apple_event_launch_state: SharedProcessAppleEventLaunchState,
     /// Process-owned AppleEvent event, descriptor, and shared-handle backing.
@@ -1474,7 +1487,7 @@ pub struct TrapDispatcher {
     pub(crate) defer_user_fn_trampoline: u32,
     /// Notification Manager requests in queue order. Each entry is the guest
     /// address of its static NMRec; qLink mirrors this order in guest memory.
-    pub(crate) notification_requests: Vec<u32>,
+    pub(crate) notification_requests: crate::process_context::SharedProcessNotificationQueue,
     pub(crate) collection_callback_stack: Vec<super::collection::CollectionCallbackState>,
     pub(crate) collection_callback_trampoline: u32,
     /// Ports that have already been queried through QDDone. BasiliskII
@@ -2234,6 +2247,7 @@ pub struct TrapDispatcher {
     pub(crate) standard_file_put_tracking: Option<StandardFilePutTrackingState>,
     /// Active Standard File Package open dialog tracking state.
     pub(crate) standard_file_get_tracking: Option<StandardFileGetTrackingState>,
+    pub(crate) next_standard_file_generation: u64,
     /// The screen mark taken when a Standard File dialog was last drawn. An
     /// idle pass that consumed no event redraws the dialog only when the
     /// screen under its frame changed since.
@@ -2758,6 +2772,7 @@ impl TrapDispatcher {
         context.attach_control_manager(&mut self.control_manager);
         context.attach_list_manager(&mut self.list_states);
         context.attach_collection_manager(&mut self.collections);
+        context.attach_notification_queue(&mut self.notification_requests);
         context.attach_text_edit_manager(&mut self.textedit_states);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
@@ -2789,6 +2804,7 @@ impl TrapDispatcher {
         self.attach_memory_manager_handle(memory_manager);
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
         context.attach_apple_event_handlers(&mut self.ae_handlers);
+        context.attach_application_size(&mut self.application_size);
         context.attach_apple_event_launch_state(&mut self.apple_event_launch_state);
         context.attach_apple_event_descriptors(&mut self.ae_descriptor_state);
     }
@@ -3808,6 +3824,7 @@ impl TrapDispatcher {
             dialogs_drawn_by_app: std::collections::HashSet::default(),
             segment_map: HashMap::default(),
             ae_handlers: SharedProcessAppleEventHandlers::default(),
+            application_size: Default::default(),
             apple_event_launch_state: SharedProcessAppleEventLaunchState::default(),
             ae_descriptor_state: SharedProcessAppleEventDescriptors::default(),
             ae_object_accessors: HashMap::default(),
@@ -3829,7 +3846,7 @@ impl TrapDispatcher {
             control_def_trampoline_chain: Vec::new(),
             control_callback_stack: Vec::new(),
             defer_user_fn_trampoline: 0,
-            notification_requests: Vec::new(),
+            notification_requests: crate::process_context::SharedProcessNotificationQueue::default(),
             collection_callback_stack: Vec::new(),
             collection_callback_trampoline: 0,
             qddone_seen_ports: HashSet::default(),
@@ -4093,6 +4110,7 @@ impl TrapDispatcher {
             standard_file_put_tracking: None,
             standard_file_drawn: None,
             standard_file_get_tracking: None,
+            next_standard_file_generation: 0,
             external_host_overlay_rects: Vec::new(),
             dialog_items: HashMap::default(),
             hidden_dialog_item_rects: HashMap::default(),
@@ -4242,7 +4260,9 @@ impl TrapDispatcher {
         let is_track_box_refire = trap_no_autopop == 0xA83B;
         let is_grow_window_refire = trap_no_autopop == 0xA92B;
         let is_region_refire = matches!(trap_no_autopop, 0xA905 | 0xA926);
-        (is_dialog_refire && self.is_dialog_tracking())
+        (trap_no_autopop == 0xA9E7 && self.list_states.with_ref(|manager|
+            manager.scroll_tracking.as_ref().is_some_and(|tracking| tracking.classic)))
+            || (is_dialog_refire && self.is_dialog_tracking())
             || (is_standard_file_refire
                 && (self.is_standard_file_put_tracking() || self.is_standard_file_get_tracking()))
             || (is_control_refire
@@ -4252,7 +4272,7 @@ impl TrapDispatcher {
             || (is_track_box_refire && self.zoom_box_tracking.is_some())
             || (is_grow_window_refire && self.is_grow_window_tracking())
             || (is_region_refire && self.is_region_tracking())
-            || (trap_no_autopop == 0xA9D4
+            || (matches!(trap_no_autopop, 0xA9D4 | 0xA980)
                 && self.textedit_states.has_classic_click_tracking())
     }
 
@@ -4872,6 +4892,54 @@ impl TrapDispatcher {
                     .ends_with(&suffix)
             })
             .cloned()
+    }
+
+    /// Create a directory using File Manager validation, shared with Standard File.
+    /// Inside Macintosh: Files (1992), p. 2-158, FSpDirCreate.
+    pub(crate) fn create_vfs_child_directory(
+        &mut self,
+        parent_dir_id: u32,
+        name: &str,
+    ) -> std::result::Result<u32, i16> {
+        if name.is_empty() {
+            return Err(-37); // bdNamErr
+        }
+        let parent_path = self
+            .directory_path_for_id(parent_dir_id)
+            .map(str::to_string)
+            .ok_or(-120i16)?; // dirNFErr
+        if self.vfs_path_is_read_only(&parent_path) {
+            return Err(-44); // wPrErr
+        }
+        let child_name = Self::normalize_hfs_path(name);
+        if child_name.is_empty() {
+            return Err(-37);
+        }
+        let child_path = if parent_path.is_empty() {
+            child_name
+        } else {
+            format!("{parent_path}/{child_name}")
+        };
+        if self
+            .vfs_directories
+            .iter()
+            .any(|directory| directory.path.eq_ignore_ascii_case(&child_path))
+            || self
+                .vfs
+                .keys()
+                .any(|path| path.eq_ignore_ascii_case(&child_path))
+            || self
+                .vfs_rsrc
+                .keys()
+                .any(|path| path.eq_ignore_ascii_case(&child_path))
+        {
+            return Err(-48); // dupFNErr
+        }
+        let dir_id = self.ensure_vfs_directory(&child_path);
+        if let Some(ref directory) = self.output_dir {
+            let _ = std::fs::create_dir_all(directory.join(&child_path));
+        }
+        Ok(dir_id)
     }
 
     pub(crate) fn ensure_vfs_directory(&mut self, path: &str) -> u32 {

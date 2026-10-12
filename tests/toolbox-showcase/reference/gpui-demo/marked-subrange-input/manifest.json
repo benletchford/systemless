@@ -1,0 +1,24 @@
+{
+  "base_commit": "76c10f3e802aff2c36d24d591e902d2a7537dc08",
+  "scope": "Marked Unicode subrange correction through shared Demo entity input callbacks; document, dialog, Save and New Folder guest event-path commits across mono68k, colour68k, PPC8, PPC16. UTF-16 surrogate safety, retained prefix/suffix and relative inserted selection. Guest state unchanged until commit.",
+  "results": {
+    "composition_tests": 4,
+    "document_test": "1 passed, all four CPU/depth modes, 7.12s",
+    "modal_and_file_tests": "2 passed, modal four modes plus Save/New Folder eight cases, 26.78s",
+    "frontend_build": "passed 5.69s",
+    "default_application_check": "passed 40.60s"
+  },
+  "earlier_failures": "Missing EntityInputHandler trait import repaired in test. Extended document test stopped PPC between EraseRect and TEUpdate and rejected commit2; final test waits at most100 settle calls for null-event and qualified paint completion, without weakening ownership guards. Failure logs retained.",
+  "limitations": "Platform test-window callbacks plus actual guest events are not physical macOS IME qualification. No new screenshot/native oracle. Replacement outside marked stage, composition scrolling and full release qualification remain open.",
+  "files": {
+    "gpui-marked-range-unit-final.log": "8d8d063610a95807e7a9130612317d972efda0762fab95a40dc0d15af9d012fd",
+    "source.patch": "7983b00e548a0f89104a3455e0887335aa23a0d957b79364fa2376353dc2b921",
+    "gpui-marked-range-platform-final.log": "ffbb1c6cc7d21283f9758120638b861cce92fe703b252470013f9cbbca20da5b",
+    "gpui-marked-range-document-rejected-commit.log": "246f8a1c678cacfec0f6f4733981f6c70a422f3e4a48c7b1ae55732c903bc032",
+    "gpui-marked-range-document.log": "6c049734412acbd66ca5aed38ecbdfdeaf0bf9e605ad6c6cb96a7ab8199f807a",
+    "gpui-marked-range-default-check.log": "cef306d5b226234033664952a69c0895b6d035408f36e00ecae0437f71c8b05f",
+    "gpui-marked-range-document-mid-redraw.log": "4f3144f335558b5ab2cc3b4337619ee06db3b3765a027de118ade3e5ea9e90da",
+    "gpui-marked-range-build.log": "af430892479079d4dbc671075fd907534ea633da22f42be47c944370e4c5534c",
+    "gpui-marked-range-document-missing-trait.log": "066d9b91e97f3b0bf4a7b4a4df6ded00784b33eb5400a584f5b203463426f7b8"
+  }
+}

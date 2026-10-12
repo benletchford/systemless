@@ -1,0 +1,3885 @@
+{
+  "binary_sha256": "ebf51eded5ead5b737e450ecd51ac7bdc65fb4a2310b669f03547ddf6f2a7f91",
+  "surface": "popup",
+  "fixture_sha256": "4eed70717459def6f4761ec9a0fe3aafa238e00ac6cc09bedde8c08b2d6a356d",
+  "scope": "Shared live/headless compositor selected label and classic indicator ink; not native Macintosh typography, full chrome, palettes, letterboxing or release qualification.",
+  "visual_review": "All 36 popup-region crops reviewed in three mode contact sheets; full compositions not reviewed for this matrix.",
+  "captures": [
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-mono-active-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-mono-active-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "8ad70f0a1c1336a9fa9c7917ca322cde3590fa17d6669d53c360175cf7cb878e"
+        },
+        {
+          "file": "popup-classic-indicator-mono-active-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-mono-active-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-mono-active-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "d418aa95b9f0c991557a69f65a2ac3d94c4daf5e19e755397a650c52abdcd9a8"
+        },
+        {
+          "file": "popup-classic-indicator-mono-active-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-mono-active-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-mono-active-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "7a433cab9e68e6b413d8e9d60e2365c07b51171705f2c946ac529fe18bdc746c"
+        },
+        {
+          "file": "popup-classic-indicator-mono-active-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "active",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-mono-active-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-mono-active-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "76d0fe2d198dc607fb949b7c21f1e4167edbd02f420b65036d5c34ba4823a86a"
+        },
+        {
+          "file": "popup-classic-indicator-mono-active-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "9c04b8ffbba1c2bda24d6c459efe64a86619902d0b8068a3bb3976f637afef5e"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "host-suspended",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-host-suspended",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-mono-host-suspended-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-mono-host-suspended-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "c8a1e25f3f6235756db43dfbbd5d634d211e1914abc37e3fd5dced2df627fd64"
+        },
+        {
+          "file": "popup-classic-indicator-mono-host-suspended-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "d8692084219e5551909dfa2f16c3be5b3712aa92efebdb3b26b1eaf0d71c2fc9"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "host-suspended",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-host-suspended",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-mono-host-suspended-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-mono-host-suspended-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "2a83467dc47a225f588d76172d122234b10bf2ad2bc52df0dc631869e468f551"
+        },
+        {
+          "file": "popup-classic-indicator-mono-host-suspended-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "d8692084219e5551909dfa2f16c3be5b3712aa92efebdb3b26b1eaf0d71c2fc9"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "host-suspended",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-host-suspended",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-mono-host-suspended-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-mono-host-suspended-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "44d250e711a42b3b7f8cef15386890e610e763653c64accd4d8197827152bff8"
+        },
+        {
+          "file": "popup-classic-indicator-mono-host-suspended-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "d8692084219e5551909dfa2f16c3be5b3712aa92efebdb3b26b1eaf0d71c2fc9"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "host-suspended",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-host-suspended",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-mono-host-suspended-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-mono-host-suspended-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "643d34a188d8811201c71410647af39133565a768f8d1d79ac5338f744796761"
+        },
+        {
+          "file": "popup-classic-indicator-mono-host-suspended-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "d8692084219e5551909dfa2f16c3be5b3712aa92efebdb3b26b1eaf0d71c2fc9"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "disabled",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-mono-disabled-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-mono-disabled-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "9b828427526b78ef3a2e65cfe8886e74a8116ffb6b39fef891ec814d707557be"
+        },
+        {
+          "file": "popup-classic-indicator-mono-disabled-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "500628e63d1e3060fd4174acae311d04bbb2536471bedab553c20ab1960ab840"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "disabled",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-mono-disabled-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-mono-disabled-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "7be20bb48c823e0d8bff9d0017c0d8f36efa45fbfd8cafb127b8b0b7e8aade58"
+        },
+        {
+          "file": "popup-classic-indicator-mono-disabled-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "500628e63d1e3060fd4174acae311d04bbb2536471bedab553c20ab1960ab840"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "disabled",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-mono-disabled-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-mono-disabled-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "9b604988421433b39a03ca9be6696f74ea038cc3614a9d5d7858603612155e74"
+        },
+        {
+          "file": "popup-classic-indicator-mono-disabled-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "500628e63d1e3060fd4174acae311d04bbb2536471bedab553c20ab1960ab840"
+        }
+      ]
+    },
+    {
+      "mode": "mono",
+      "state": "disabled",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "1",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-mono-disabled-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-mono-disabled-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "80e0a9b865dcae7c646c421a9607a7e3bc3f9cb177420a0f0277bd712720014b"
+        },
+        {
+          "file": "popup-classic-indicator-mono-disabled-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "500628e63d1e3060fd4174acae311d04bbb2536471bedab553c20ab1960ab840"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-colour-active-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-colour-active-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "62bba6d8880cc4e4b8820ee90ed74a1659db2dafba72700bca496d0c3cae6875"
+        },
+        {
+          "file": "popup-classic-indicator-colour-active-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-colour-active-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-colour-active-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "2dd2751161616d2c3c06704849095ab3b455e8ba1c93b423128db7a644250a78"
+        },
+        {
+          "file": "popup-classic-indicator-colour-active-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-colour-active-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-colour-active-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "2e80c9a356d650a061f75124673f2025577cc566b4832bdf85d5cb4fa00aad40"
+        },
+        {
+          "file": "popup-classic-indicator-colour-active-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "active",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-colour-active-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-colour-active-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "95386df07b82f196dfedb3600aa350146f2e2bfa73535b90a54c6b18c50e6c06"
+        },
+        {
+          "file": "popup-classic-indicator-colour-active-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "c9f090aeb75ba2e8300f62d6e52a0a76f3a0342709b6f9af8a9bb56bc62633d9"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "host-suspended",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-host-suspended",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-colour-host-suspended-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-colour-host-suspended-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "4f8fbfdd44ead6bc06e8d0f8c1db20df3bb15a689c3e602d5fa410dac5e23ff3"
+        },
+        {
+          "file": "popup-classic-indicator-colour-host-suspended-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "f61f04e46b4e61be883ea1645cb83ffa8ed1c3ca851310882fca8bb38894a76a"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "host-suspended",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-host-suspended",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-colour-host-suspended-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-colour-host-suspended-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "84572c0d26bf7fb7d6dc62f48bb216609468d7bae3c79f3cd3f72ea50414328b"
+        },
+        {
+          "file": "popup-classic-indicator-colour-host-suspended-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "f61f04e46b4e61be883ea1645cb83ffa8ed1c3ca851310882fca8bb38894a76a"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "host-suspended",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-host-suspended",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-colour-host-suspended-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-colour-host-suspended-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "d455be1d6510d114feb3f286f1623247e4f78bce11039a790642b68ae5f44fe5"
+        },
+        {
+          "file": "popup-classic-indicator-colour-host-suspended-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "f61f04e46b4e61be883ea1645cb83ffa8ed1c3ca851310882fca8bb38894a76a"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "host-suspended",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-host-suspended",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-colour-host-suspended-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-colour-host-suspended-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "a9d9d1e99f7a8928607e20c6252169946b56d66bdf7f6f0a63334b8fd80a561c"
+        },
+        {
+          "file": "popup-classic-indicator-colour-host-suspended-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "f61f04e46b4e61be883ea1645cb83ffa8ed1c3ca851310882fca8bb38894a76a"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "disabled",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-colour-disabled-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-colour-disabled-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "e55d86e1488b71b4e8e6977051e62e99193c47d8fb0a8f5e2ede9b05aff18b79"
+        },
+        {
+          "file": "popup-classic-indicator-colour-disabled-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "09ff0704a238d1983671e8f22832cec4c88cfa96a03c284156393ba3e7106f0a"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "disabled",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-colour-disabled-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-colour-disabled-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "28c223a7e066d0c9c0121fe86fa7d46e5858ef16197d1df16dc9cc0a7ee516f6"
+        },
+        {
+          "file": "popup-classic-indicator-colour-disabled-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "09ff0704a238d1983671e8f22832cec4c88cfa96a03c284156393ba3e7106f0a"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "disabled",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-colour-disabled-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-colour-disabled-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "4e12e0c7f7ca61a958dde650b7674b38b4e5ec7ae9e81a681b679dcfb201f4a7"
+        },
+        {
+          "file": "popup-classic-indicator-colour-disabled-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "09ff0704a238d1983671e8f22832cec4c88cfa96a03c284156393ba3e7106f0a"
+        }
+      ]
+    },
+    {
+      "mode": "colour",
+      "state": "disabled",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--screen-depth",
+        "8",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-colour-disabled-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-colour-disabled-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "d89ef2512828e47f9082fc4c37a4a835669bce3f32c63605d5ae07a54736ae2f"
+        },
+        {
+          "file": "popup-classic-indicator-colour-disabled-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "09ff0704a238d1983671e8f22832cec4c88cfa96a03c284156393ba3e7106f0a"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-ppc-active-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-ppc-active-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "724b7ee0a3c4a8c6e96985e2d368722c796d4e197918bb6313b8a391eb5ebf8f"
+        },
+        {
+          "file": "popup-classic-indicator-ppc-active-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-ppc-active-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-ppc-active-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "d9ff722589666325712ca7647c256e70fe6a1287d19ff97828162110acea3030"
+        },
+        {
+          "file": "popup-classic-indicator-ppc-active-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-ppc-active-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-ppc-active-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "b50a9da7773eaf2c61716dce9ba50a71baddf536e72dd35c0ece517c3a026ba7"
+        },
+        {
+          "file": "popup-classic-indicator-ppc-active-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "active",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-selected",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-ppc-active-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-ppc-active-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "9c47d0b9857abf24dfe93ae71d73228b8cdbc67f3d8f209d622ccebc24900b2b"
+        },
+        {
+          "file": "popup-classic-indicator-ppc-active-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "host-suspended",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-host-suspended",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-ppc-host-suspended-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-ppc-host-suspended-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "a74fd93f6e68b32f785bf36dd53c240ba53dac8d3c47767c7e3acd92d686d6df"
+        },
+        {
+          "file": "popup-classic-indicator-ppc-host-suspended-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "2ec162123a4aefad6b23fb8279c6a9488eab448593eb93976b83a693482d3d5b"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "host-suspended",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-host-suspended",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-ppc-host-suspended-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-ppc-host-suspended-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "5845b4b287c5a93b571b57ef1b937c7fb1f883116ab432a649c9330b0ff03bcb"
+        },
+        {
+          "file": "popup-classic-indicator-ppc-host-suspended-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "2ec162123a4aefad6b23fb8279c6a9488eab448593eb93976b83a693482d3d5b"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "host-suspended",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-host-suspended",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-ppc-host-suspended-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-ppc-host-suspended-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "b7b6e16a532d804185b3ea8ef214399da7bc60ae4be0c0cd53ea8f14fdc8eea5"
+        },
+        {
+          "file": "popup-classic-indicator-ppc-host-suspended-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "2ec162123a4aefad6b23fb8279c6a9488eab448593eb93976b83a693482d3d5b"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "host-suspended",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-host-suspended",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-ppc-host-suspended-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-ppc-host-suspended-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "51960ac15cd8f219c3707eec210b039cd6310e38a32508e3f0cf0fa1838d1d91"
+        },
+        {
+          "file": "popup-classic-indicator-ppc-host-suspended-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "2ec162123a4aefad6b23fb8279c6a9488eab448593eb93976b83a693482d3d5b"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "disabled",
+      "scale": 0.75,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "0.75",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-ppc-disabled-075.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-ppc-disabled-075.png",
+          "dimensions": [
+            1200,
+            900
+          ],
+          "sha256": "724b7ee0a3c4a8c6e96985e2d368722c796d4e197918bb6313b8a391eb5ebf8f"
+        },
+        {
+          "file": "popup-classic-indicator-ppc-disabled-075.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "disabled",
+      "scale": 1.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.0",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-ppc-disabled-100.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-ppc-disabled-100.png",
+          "dimensions": [
+            1600,
+            1200
+          ],
+          "sha256": "d9ff722589666325712ca7647c256e70fe6a1287d19ff97828162110acea3030"
+        },
+        {
+          "file": "popup-classic-indicator-ppc-disabled-100.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "disabled",
+      "scale": 1.5,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "1.5",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-ppc-disabled-150.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-ppc-disabled-150.png",
+          "dimensions": [
+            2400,
+            1800
+          ],
+          "sha256": "b50a9da7773eaf2c61716dce9ba50a71baddf536e72dd35c0ece517c3a026ba7"
+        },
+        {
+          "file": "popup-classic-indicator-ppc-disabled-150.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312"
+        }
+      ]
+    },
+    {
+      "mode": "ppc",
+      "state": "disabled",
+      "scale": 2.0,
+      "command": [
+        "/Users/ben/.codex/worktrees/bfd9/systemless/target/debug/examples/gpui-menu-demo",
+        "/Users/ben/.codex/worktrees/bfd9/systemless/tests/toolbox-showcase/toolbox-showcase.sit",
+        "--prefer-powerpc",
+        "--capture-scale",
+        "2.0",
+        "--capture-popup-controls-disabled",
+        "/private/tmp/gpui-popup-indicator-scales/popup-selected-scale-ppc-disabled-200.png"
+      ],
+      "host_pixel_density": 2.0,
+      "artifacts": [
+        {
+          "file": "popup-classic-indicator-ppc-disabled-200.png",
+          "dimensions": [
+            3200,
+            2400
+          ],
+          "sha256": "9c47d0b9857abf24dfe93ae71d73228b8cdbc67f3d8f209d622ccebc24900b2b"
+        },
+        {
+          "file": "popup-classic-indicator-ppc-disabled-200.guest.png",
+          "dimensions": [
+            800,
+            600
+          ],
+          "sha256": "66f12929081d81ff05c4a6ff69bebe6b064f533941fadf043491cc35b2ec8312"
+        }
+      ]
+    }
+  ],
+  "source_commit": "d46a9f65",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "a7384579b6097d615bd032be7e836b718bb324c378390d29342a062a47d5231e",
+    "src/bin/gpui_demo_frames.rs": "8f70048f60bcaf04a596b6df697c6f44fde750fbe6b3379c474a72d1682c1462",
+    "src/bin/gpui_demo_text.rs": "d9f57d3953d0eed8c139349b29b196a3be6dc7f8b860c194a5cf7cd7cb15fad6",
+    "src/systems/macintosh/control_manager.rs": "b7542a3eeb907f589cb9f6c4142824b50eb0235ffd0666ef719229d25bbc6ba9",
+    "src/systems/macintosh/runner/mod.rs": "0916ef33f3586cad47f0a62579b0a0876dd33cf8a160d6147e803cc36ffb69fd",
+    "src/systems/macintosh/loader/ppc/dispatch_control.rs": "6d998430f24d5f4f457969b837c1f8bdcbe2c8e2573f293b136aa2a34f6ae77c",
+    "src/systems/macintosh/trap/control.rs": "d7aa9fef0736212a4446f2bd33087323aa91ca8bea8250cf4ec546093547d183",
+    "src/systems/macintosh/trap/dialog.rs": "4a074af9f1eeee2ea2a3f1a7944d1e41f3344c3a0b2e2347d5d4b4a4f9fa4842",
+    "src/systems/macintosh/trap/framebuffer.rs": "8710a5d5f3dac663380fa605fdacefa28ce9b70ffb7e095aa158535368219ec0",
+    "tests/toolbox-showcase/showcase.c": "f2c0842757530f143685a5d739cf152d896b248e727e6fda0dd24732c4ced192",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "4eed70717459def6f4761ec9a0fe3aafa238e00ac6cc09bedde8c08b2d6a356d",
+    "src/systems/macintosh/loader/ppc/mod.rs": "c908f556c4d656858abf806c88cce43082466e8f520255b7cdfe0f26cf916f2c"
+  },
+  "pixel_verification": {
+    "source_commit": "d46a9f65",
+    "source_sha256": {
+      "src/bin/gpui_demo.rs": "a7384579b6097d615bd032be7e836b718bb324c378390d29342a062a47d5231e",
+      "src/bin/gpui_demo_frames.rs": "8f70048f60bcaf04a596b6df697c6f44fde750fbe6b3379c474a72d1682c1462",
+      "src/bin/gpui_demo_text.rs": "d9f57d3953d0eed8c139349b29b196a3be6dc7f8b860c194a5cf7cd7cb15fad6",
+      "src/systems/macintosh/control_manager.rs": "b7542a3eeb907f589cb9f6c4142824b50eb0235ffd0666ef719229d25bbc6ba9",
+      "src/systems/macintosh/runner/mod.rs": "0916ef33f3586cad47f0a62579b0a0876dd33cf8a160d6147e803cc36ffb69fd",
+      "src/systems/macintosh/loader/ppc/dispatch_control.rs": "6d998430f24d5f4f457969b837c1f8bdcbe2c8e2573f293b136aa2a34f6ae77c",
+      "src/systems/macintosh/trap/control.rs": "d7aa9fef0736212a4446f2bd33087323aa91ca8bea8250cf4ec546093547d183",
+      "src/systems/macintosh/trap/dialog.rs": "4a074af9f1eeee2ea2a3f1a7944d1e41f3344c3a0b2e2347d5d4b4a4f9fa4842",
+      "src/systems/macintosh/trap/framebuffer.rs": "8710a5d5f3dac663380fa605fdacefa28ce9b70ffb7e095aa158535368219ec0",
+      "tests/toolbox-showcase/showcase.c": "f2c0842757530f143685a5d739cf152d896b248e727e6fda0dd24732c4ced192",
+      "tests/toolbox-showcase/toolbox-showcase.sit": "4eed70717459def6f4761ec9a0fe3aafa238e00ac6cc09bedde8c08b2d6a356d",
+      "src/systems/macintosh/loader/ppc/mod.rs": "c908f556c4d656858abf806c88cce43082466e8f520255b7cdfe0f26cf916f2c"
+    },
+    "scope": "Selected text and classic popup indicator ink only; no native typography or full chrome qualification.",
+    "artifact_count": 72,
+    "results": [
+      {
+        "file": "popup-classic-indicator-mono-active-075.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 602,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 167,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 84,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 84,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-mono-active-100.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1164,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 256,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 144,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 144,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-mono-active-150.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 2619,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 324,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 324,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-mono-active-200.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 4656,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1024,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-mono-host-suspended-075.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 602,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 167,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 84,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 84,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-mono-host-suspended-100.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1164,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 256,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 144,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 144,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-mono-host-suspended-150.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 2619,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 324,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 324,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-mono-host-suspended-200.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 4656,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1024,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-mono-disabled-075.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 298,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 68,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 18,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 18,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-mono-disabled-100.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 596,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 136,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 36,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 36,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-mono-disabled-150.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1341,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 306,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 81,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 81,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-mono-disabled-200.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 2384,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 544,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 144,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 144,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-colour-active-075.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 602,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 167,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 84,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 84,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-colour-active-100.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1164,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 256,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 144,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 144,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-colour-active-150.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 2619,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 324,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 324,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-colour-active-200.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 4656,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1024,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-colour-host-suspended-075.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 602,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 167,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 84,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 84,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-colour-host-suspended-100.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1164,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 256,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 144,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 144,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-colour-host-suspended-150.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 2619,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 324,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 324,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-colour-host-suspended-200.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 4656,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1024,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-colour-disabled-075.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              150,
+              150,
+              150
+            ],
+            "ink_pixels": 602,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              150,
+              150,
+              150
+            ],
+            "ink_pixels": 167,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 18,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 18,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-colour-disabled-100.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              150,
+              150,
+              150
+            ],
+            "ink_pixels": 1164,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              150,
+              150,
+              150
+            ],
+            "ink_pixels": 256,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 36,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 36,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-colour-disabled-150.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              150,
+              150,
+              150
+            ],
+            "ink_pixels": 2619,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              150,
+              150,
+              150
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 81,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 81,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-colour-disabled-200.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              305,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              150,
+              150,
+              150
+            ],
+            "ink_pixels": 4656,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              295,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              150,
+              150,
+              150
+            ],
+            "ink_pixels": 1024,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 144,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 144,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-ppc-active-075.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              295,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 662,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              285,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 167,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 36,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 36,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-ppc-active-100.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              295,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1272,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              285,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 256,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 72,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 72,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-ppc-active-150.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              295,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 2862,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              285,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 162,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 162,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-ppc-active-200.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              295,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 5088,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              285,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1024,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 288,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 288,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-ppc-host-suspended-075.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              295,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 662,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              285,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 167,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 36,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 36,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-ppc-host-suspended-100.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              295,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1272,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              285,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 256,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 72,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 72,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-ppc-host-suspended-150.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              295,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 2862,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              285,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 162,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 162,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-ppc-host-suspended-200.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              295,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 5088,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              285,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1024,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 288,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 288,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-ppc-disabled-075.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              295,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 662,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              285,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 167,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 36,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 36,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-ppc-disabled-100.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              295,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1272,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              285,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 256,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 72,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 72,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-ppc-disabled-150.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              295,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 2862,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              285,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 576,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 162,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 162,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      },
+      {
+        "file": "popup-classic-indicator-ppc-disabled-200.png",
+        "comparisons": [
+          {
+            "name": "loadout-text",
+            "guest_region": [
+              295,
+              153,
+              419,
+              169
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 5088,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-text",
+            "guest_region": [
+              285,
+              189,
+              370,
+              205
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 1024,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "loadout-arrow",
+            "guest_region": [
+              422,
+              153,
+              437,
+              170
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 288,
+            "missing": 0,
+            "extra": 0
+          },
+          {
+            "name": "theme-arrow",
+            "guest_region": [
+              422,
+              189,
+              437,
+              206
+            ],
+            "rgb": [
+              0,
+              0,
+              0
+            ],
+            "ink_pixels": 288,
+            "missing": 0,
+            "extra": 0
+          }
+        ]
+      }
+    ]
+  }
+}

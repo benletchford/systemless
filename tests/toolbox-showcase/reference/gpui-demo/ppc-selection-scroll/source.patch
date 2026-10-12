@@ -1,0 +1,223 @@
+diff --git a/src/systems/macintosh/loader/ppc/dispatch_imports.rs b/src/systems/macintosh/loader/ppc/dispatch_imports.rs
+index 2ab59a96..260a6068 100644
+--- a/src/systems/macintosh/loader/ppc/dispatch_imports.rs
++++ b/src/systems/macintosh/loader/ppc/dispatch_imports.rs
+@@ -1502,6 +1502,7 @@ pub(crate) fn dispatch_supported_import(
+         | PpcImportDispatcherTarget::TEGetHeight
+         | PpcImportDispatcherTarget::TEGetPoint
+         | PpcImportDispatcherTarget::TEScroll { .. }
++        | PpcImportDispatcherTarget::TESelView
+         | PpcImportDispatcherTarget::TEAutoView
+         | PpcImportDispatcherTarget::TEFeatureFlag
+         | PpcImportDispatcherTarget::TECopy { .. }
+diff --git a/src/systems/macintosh/loader/ppc/dispatch_textedit.rs b/src/systems/macintosh/loader/ppc/dispatch_textedit.rs
+index 218e45bf..f05416e9 100644
+--- a/src/systems/macintosh/loader/ppc/dispatch_textedit.rs
++++ b/src/systems/macintosh/loader/ppc/dispatch_textedit.rs
+@@ -749,20 +749,36 @@ pub(super) fn dispatch_textedit_import(
+             cpu.gpr[4],
+             cpu.gpr[3] as u16,
+         ))),
+-        PpcImportDispatcherTarget::TEScroll { pinned } => {
++        PpcImportDispatcherTarget::TEScroll { .. } | PpcImportDispatcherTarget::TESelView => {
++            let (te_handle, dh, dv, pinned) = match binding.dispatcher_target {
++                PpcImportDispatcherTarget::TEScroll { pinned } => (cpu.gpr[5], cpu.gpr[3] as u16 as i16, cpu.gpr[4] as u16 as i16, pinned),
++                _ => {
++                    let handle = cpu.gpr[3];
++                    if !scrap.text_edit.feature_bit(handle, 0) { return Some(PpcImportAction::ReturnPreserve); }
++                    let Some((dh, dv)) = ppc_te_selection_scroll_delta(memory, handles, handle) else {
++                        return Some(PpcImportAction::ReturnPreserve);
++                    };
++                    (handle, dh, dv, false)
++                }
++            };
+             let moved = ppc_te_scroll(
+                 memory,
+-                cpu.gpr[5],
+-                cpu.gpr[3] as u16 as i16,
+-                cpu.gpr[4] as u16 as i16,
++                te_handle,
++                dh,
++                dv,
+                 pinned,
+             );
++            // TESelView has no painting effect when the selection is already
++            // visible; redrawing could invert an existing selection twice.
++            if !moved && matches!(binding.dispatcher_target, PpcImportDispatcherTarget::TESelView) {
++                return Some(PpcImportAction::ReturnPreserve);
++            }
+             // Text (1993), p. 2-89: TEScroll scrolls the text within the
+             // viewRect, leaving uncovered areas in the background color as
+             // ScrollRect does. Erasing the viewRect before redrawing gives
+             // the same image; redrawing over the old pixels would accumulate
+             // srcOr text at every previous position.
+-            if let Some(te_ptr) = ppc_te_record_ptr(memory, cpu.gpr[5]).filter(|_| moved) {
++            if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle).filter(|_| moved) {
+                 let port = memory
+                     .read_u32_be(te_ptr + PPC_TE_IN_PORT_OFFSET)
+                     .filter(|port| *port != 0 && gworlds.iter().any(|g| g.port == *port))
+@@ -782,7 +798,7 @@ pub(super) fn dispatch_textedit_import(
+                 memory,
+                 handles,
+                 gworlds,
+-                cpu.gpr[5],
++                te_handle,
+                 current_gworld,
+                 *quickdraw_fore_color,
+                 quickdraw_fore_indices,
+diff --git a/src/systems/macintosh/loader/ppc/import_targets.rs b/src/systems/macintosh/loader/ppc/import_targets.rs
+index effd09c1..302ac380 100644
+--- a/src/systems/macintosh/loader/ppc/import_targets.rs
++++ b/src/systems/macintosh/loader/ppc/import_targets.rs
+@@ -672,6 +672,7 @@ pub enum PpcImportDispatcherTarget {
+     TEGetPoint,
+     TEScroll { pinned: bool },
+     TEAutoView,
++    TESelView,
+     TEFeatureFlag,
+     TECopy { cut: bool, dialog: bool },
+     TEPaste { dialog: bool },
+@@ -3942,6 +3943,7 @@ pub(crate) fn dispatcher_target_for_import(
+         ("InterfaceLib", "TEScroll") => PpcImportDispatcherTarget::TEScroll { pinned: false },
+         ("InterfaceLib", "TEPinScroll") => PpcImportDispatcherTarget::TEScroll { pinned: true },
+         ("InterfaceLib", "TEAutoView") => PpcImportDispatcherTarget::TEAutoView,
++        ("InterfaceLib", "TESelView") => PpcImportDispatcherTarget::TESelView,
+         ("InterfaceLib", "TEFeatureFlag") => PpcImportDispatcherTarget::TEFeatureFlag,
+         ("InterfaceLib", "TECopy") => PpcImportDispatcherTarget::TECopy {
+             cut: false,
+diff --git a/src/systems/macintosh/loader/ppc/tests/text_edit.rs b/src/systems/macintosh/loader/ppc/tests/text_edit.rs
+index 2e1fc3da..71702b3e 100644
+--- a/src/systems/macintosh/loader/ppc/tests/text_edit.rs
++++ b/src/systems/macintosh/loader/ppc/tests/text_edit.rs
+@@ -1257,3 +1257,87 @@ fn styled_snapshot_advances_match_ppc_quickdraw_widths() {
+         }
+     }
+ }
++
++#[test]
++fn te_sel_view_respects_auto_scroll_and_reveals_selection() {
++    let pef = synthetic_pef_with_import(b"TESelView");
++    let mut loaded = load_pef_application(&pef).unwrap();
++    let scratch = PPC_DATA_BASE + 0x1000;
++    let dest_rect = scratch;
++    let view_rect = scratch + 8;
++    loaded.memory.add_region(scratch, vec![0; 0x20]);
++    ppc_write_rect(&mut loaded.memory, dest_rect, 60, 10, 200, 100).unwrap();
++    ppc_write_rect(&mut loaded.memory, view_rect, 60, 10, 120, 100).unwrap();
++    loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
++    let mut last_mem_error = PPC_NO_ERR;
++    let te_handle = ppc_te_initialize_record(
++        None,
++        &mut loaded.memory,
++        test_heap_cursor!(loaded),
++        test_heap_limit!(loaded),
++        &mut last_mem_error,
++        test_handles!(loaded),
++        dest_rect,
++        view_rect,
++        PPC_MAIN_GWORLD,
++        0,
++        PPC_QD_TEXT_MODE_SRC_OR,
++        12,
++        loaded.quickdraw_fore_color,
++        false,
++    );
++    assert_eq!(
++        ppc_te_set_text(
++            None,
++            &mut loaded.memory,
++            test_heap_cursor!(loaded),
++            test_heap_limit!(loaded),
++            &mut last_mem_error,
++            test_handles!(loaded),
++            te_handle,
++            b"0\r0\r0\r0\r0\r0\r0\r0",
++        ),
++        PPC_NO_ERR
++    );
++    let ptr = ppc_te_record_ptr(&mut loaded.memory, te_handle).unwrap();
++    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_START_OFFSET, 14).unwrap();
++    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_END_OFFSET, 14).unwrap();
++    let before = ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET).unwrap();
++    loaded.cpu.gpr[3] = te_handle;
++    // Exercise the actual imported symbol, not only the geometry helper.
++    let probe = loaded.run_with_hle_imports(64);
++    assert_eq!(probe.unsupported_import_index, None);
++    assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET), Some(before));
++    loaded.cpu.gpr[3] = 1;
++    loaded.cpu.gpr[4] = te_handle;
++    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEAutoView);
++    loaded.cpu.gpr[3] = te_handle;
++    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESelView);
++    let after = ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET).unwrap();
++    assert!(after.0 < before.0, "last-line selection must move into the view");
++    assert_eq!(after.2 - after.0, before.2 - before.0);
++    let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), te_handle, 14);
++    let top = (point >> 16) as i16;
++    let height = ppc_te_line_height(&mut loaded.memory, ptr, 7);
++    assert!(top >= 60 && top.saturating_add(height) <= 120);
++    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
++    let pixels = |memory: &mut PpcSectionMem| {
++        let mut result = Vec::new();
++        for y in 60..120 {
++            for x in 10..100 { result.push(ppc_quickdraw_read_pixel(memory, front, (x, y))); }
++        }
++        result
++    };
++    let painted = pixels(&mut loaded.memory);
++    loaded.cpu.gpr[3] = te_handle;
++    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESelView);
++    assert_eq!(pixels(&mut loaded.memory), painted, "visible selection must not repaint existing ink");
++    assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET), Some(after),
++        "already visible selection must not keep scrolling");
++    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_START_OFFSET, 0).unwrap();
++    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_END_OFFSET, 0).unwrap();
++    loaded.cpu.gpr[3] = te_handle;
++    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESelView);
++    assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET), Some(before),
++        "revealing the first line must restore the original scroll origin");
++}
+diff --git a/src/systems/macintosh/loader/ppc/textedit.rs b/src/systems/macintosh/loader/ppc/textedit.rs
+index 3f054154..077211c6 100644
+--- a/src/systems/macintosh/loader/ppc/textedit.rs
++++ b/src/systems/macintosh/loader/ppc/textedit.rs
+@@ -1876,6 +1876,39 @@ pub(super) fn ppc_te_get_point(
+     (u32::from(v as u16) << 16) | u32::from(h as u16)
+ }
+ 
++/// Inside Macintosh: Text (1993), p. 2-92: reveal the selection's
++/// top-left when it exceeds the view; leave feature policy to the caller.
++pub(super) fn ppc_te_selection_scroll_delta(
++    memory: &mut PpcSectionMem, handles: &[PpcHandleRecord], te_handle: u32,
++) -> Option<(i16, i16)> {
++    fn delta(start: i16, stop: i16, view_start: i16, view_stop: i16) -> i16 {
++        if start < view_start { view_start.saturating_sub(start) }
++        else if stop > view_stop {
++            if stop.saturating_sub(start) > view_stop.saturating_sub(view_start) {
++                view_start.saturating_sub(start)
++            } else { view_stop.saturating_sub(stop) }
++        } else { 0 }
++    }
++    let ptr = ppc_te_record_ptr(memory, te_handle)?;
++    let view = ppc_read_rect(memory, ptr + PPC_TE_VIEW_RECT_OFFSET)?;
++    let start = memory.read_u16_be(ptr + PPC_TE_SEL_START_OFFSET)?;
++    let end = memory.read_u16_be(ptr + PPC_TE_SEL_END_OFFSET)?;
++    let first = ppc_te_get_point(memory, handles, te_handle, start);
++    let last = ppc_te_get_point(memory, handles, te_handle, end);
++    let count = usize::from(memory.read_u16_be(ptr + PPC_TE_N_LINES_OFFSET)?);
++    let mut line = 0;
++    for candidate in 1..count {
++        if memory.read_u16_be(ptr + PPC_TE_LINE_STARTS_OFFSET + candidate as u32 * 2)? <= end {
++            line = candidate;
++        } else { break; }
++    }
++    let (_, _, fallback_height, _) = ppc_te_metrics(memory, ptr);
++    let height = ppc_te_line_height(memory, ptr, line);
++    let height = if height > 0 { height } else { fallback_height };
++    Some((delta(first as u16 as i16, last as u16 as i16, view.1, view.3),
++        delta((first >> 16) as i16, ((last >> 16) as i16).saturating_add(height), view.0, view.2)))
++}
++
+ /// Moves destRect by (dh, dv), pinned to the text when requested. Returns
+ /// whether destRect actually moved.
+ pub(super) fn ppc_te_scroll(memory: &mut PpcSectionMem, te_handle: u32, dh: i16, dv: i16, pinned: bool) -> bool {

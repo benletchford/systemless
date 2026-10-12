@@ -1,0 +1,30 @@
+{
+  "base_head": "8f7e7e09d7947c1ccf6aa9bc5b042ebc109509b7",
+  "scale": 1.5,
+  "cases_passed": 20,
+  "failure": "first visible virtual offset84 rather than1 on mono68k with regression assertion before painter fix",
+  "scope": "document Unicode stage: long noncaret row preserves beginning; long caret row reveals selection and offscreen caret has no bounds; existing bounds/hit/suffix/state/cancellation assertions",
+  "image_review": "PPC16 long inactive and long caret row images reviewed; other modes assertion evidence",
+  "physical_ime_qualified": false,
+  "hashes": {
+    "capture.log": "c66b3ad5e62fe5b09ed54f0f510b7dfb6bd9727997aa8ba50b5210a18cd62cc3",
+    "failure.log": "ec16a6ed9e1a27d2c81afbb21c41e569d892add9df9be910e8735d7ca2e67114",
+    "true-8-long-inactive-row-marked.png": "1b4c06e82a6d13bcfc65efa1de9ea0387029150861a85a7a6098892638c33feb",
+    "false-8-long-caret-row-marked.png": "71c8d2f440fd9fe33eee2b4dca05ce0d0250725506b704555a18cdfe78478ef9",
+    "false-1-long-caret-row.json": "4e5942b46789133255a8d819cb06b53e5e9362456068ffd8aa2a8cc53126f41b",
+    "true-16-long-caret-row.json": "c1cbb15f5173760edf9b010d2cda41903c51f97d4ddc7ff336fddabcd8206dae",
+    "true-16-long-caret-row-marked.png": "5a1bad86942c41620bf8d6e997dfbf6eb384c2d647bbd763f992f332aea21d8b",
+    "true-8-long-caret-row-marked.png": "ee01310d9ad0ae9ade62e003dcb6dab0182843fe764ec7d1f40a55a5a3ddf31d",
+    "true-8-long-caret-row.json": "9cad7396681b626d6e4f6ca249e1698d409dfe46dc764d21468b2cd67134b93d",
+    "true-16-long-inactive-row-marked.png": "689ea591bdd85b66d81d6e4b468092a97edf1f39e4f090e560fe74cdbfaddea4",
+    "false-8-long-caret-row.json": "f508fc992e414c6b96bd4ca596f9408671706b9016642bb806b340e6d0b7d1dd",
+    "false-1-long-inactive-row-marked.png": "0f9e74fe19a9a53b35a9193c12fa9bb958a2206fc3faaea9db8ce3ee4d40710e",
+    "false-8-long-inactive-row.json": "75ba1b770c4b892613d7e0c8e3a179362e2f5808dfbaa9d6e3b062db63c45fba",
+    "true-16-long-inactive-row.json": "1a9741448c0b825b82549e080a9c2ede3560817f6fd17f7ccd518ea4707a7afe",
+    "false-1-long-inactive-row.json": "ae2f0ee5df82c100b9b8041aa854152a62524bc715fc7427e429228b4e5058c1",
+    "true-8-long-inactive-row.json": "21198ad51da5a53e32419964356e8e339dae955e85758ea5608873abeb8020b3",
+    "false-8-long-inactive-row-marked.png": "99522827c68e2938ee44275e60cb13a30d9b76970c75a3555f40e4899dc1a853",
+    "false-1-long-caret-row-marked.png": "3f7b07ecef040863dcaa9b563d6d89e77f60e0e901dd92832a2886cf1db315a1",
+    "build.log": "e8d7d1a40ea4798e37bf4b736751a8aa4468ba5c4630eab25abf1d2f2f4071ed"
+  }
+}

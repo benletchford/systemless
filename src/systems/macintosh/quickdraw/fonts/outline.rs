@@ -2,6 +2,9 @@
 use super::bundled::bytes;
 use super::*;
 
+#[cfg(target_os = "macos")]
+mod monochrome;
+
 type Faces = (&'static FontFace, &'static MacRomanFace);
 static FACES: LazyLock<Mutex<HashMap<(i16, i16), Faces>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -15,7 +18,7 @@ struct Source {
 }
 static SOURCES: LazyLock<Mutex<HashMap<usize, Source>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static MASKS: LazyLock<Mutex<HashMap<(usize, u32), crate::memory::presentation::OutlineGlyph>>> =
+static MASKS: LazyLock<Mutex<HashMap<(usize, u32, u32, u32), crate::memory::presentation::OutlineGlyph>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub(super) fn face(font_id: i16, size: i16) -> Option<Faces> {
@@ -118,6 +121,8 @@ pub(super) fn rasterize(
     // stem positions and therefore loses strokes when thresholded. Mono fits
     // both axes to the pixel grid and returns matching adjusted advances.
     let hinter = HintingInstance::new(&outlines, ppem, location, Target::Mono).ok()?;
+    #[cfg(target_os = "macos")]
+    let mono = monochrome::Rasterizer::new();
     let mut data = Vec::new();
     let mut ids = Vec::new();
     let mut glyph = |ch: char| {
@@ -162,6 +167,9 @@ pub(super) fn rasterize(
             result.height = u8::try_from(placement.height).ok()?;
             result.origin_x = i8::try_from(placement.left).ok()?;
             result.origin_y = i8::try_from(-placement.top).ok()?;
+            #[cfg(target_os = "macos")]
+            data.extend(monochrome::pixels(mono.as_ref(), &path, &placement, &coverage));
+            #[cfg(not(target_os = "macos"))]
             data.extend(coverage.iter().map(|&alpha| {
                 if alpha >= MONO_COVERAGE_THRESHOLD {
                     255
@@ -258,7 +266,13 @@ pub(crate) fn presentation_glyph(
     data: &[u8],
     scale: u32,
 ) -> Option<crate::memory::presentation::OutlineGlyph> {
-    let key = (glyph as *const Glyph as usize, scale);
+    presentation_glyph_ratio(glyph, data, scale, 1, 0)
+}
+
+pub(crate) fn presentation_glyph_ratio(glyph: &Glyph, data: &[u8], numerator: u32, denominator: u32, phase: u32)
+    -> Option<crate::memory::presentation::OutlineGlyph> {
+    if numerator == 0 || denominator == 0 || phase >= denominator { return None; }
+    let key = (glyph as *const Glyph as usize, numerator, denominator, phase);
     let _ = data;
     let mut masks = MASKS.lock().ok()?;
     if let Some(mask) = masks.get(&key) {
@@ -274,7 +288,7 @@ pub(crate) fn presentation_glyph(
     let outlines = font.outline_glyphs();
     let hint = HintingInstance::new(
         &outlines,
-        Size::new(source.size as f32 * scale as f32),
+        Size::new(source.size as f32 * numerator as f32 / denominator as f32),
         LocationRef::default(),
         Target::from(SmoothMode::Normal),
     )
@@ -284,6 +298,17 @@ pub(crate) fn presentation_glyph(
         .get(source.id)?
         .draw(DrawSettings::hinted(&hint, false), &mut path)
         .ok()?;
+    if phase != 0 {
+        let offset = phase as f32 / denominator as f32;
+        for command in &mut path.0 {
+            match command {
+                zeno::Command::MoveTo(point) | zeno::Command::LineTo(point) => point.x += offset,
+                zeno::Command::QuadTo(control, point) => { control.x += offset; point.x += offset; },
+                zeno::Command::CurveTo(first, second, point) => { first.x += offset; second.x += offset; point.x += offset; },
+                zeno::Command::Close => {},
+            }
+        }
+    }
     let mut pixels = Vec::new();
     let placement = zeno::Mask::new(path.0.as_slice())
         .origin(zeno::Origin::BottomLeft)
@@ -348,6 +373,12 @@ pub(crate) fn unicode_glyph(font_id: i16, size: i16, ch: char) -> Option<Unicode
         .origin(zeno::Origin::BottomLeft)
         .inspect(|format, w, h| pixels.resize(format.buffer_size(w, h), 0))
         .render_into(&mut pixels, None);
+    #[cfg(target_os = "macos")]
+    {
+        let raster = monochrome::Rasterizer::new();
+        pixels = monochrome::pixels(raster.as_ref(), &path, &placement, &pixels);
+    }
+    #[cfg(not(target_os = "macos"))]
     pixels.iter_mut().for_each(|p| {
         *p = if *p >= MONO_COVERAGE_THRESHOLD {
             255
@@ -517,6 +548,29 @@ mod tests {
         assert_eq!(bundled.metrics.wid_max, i16::from(expected_wid_max));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn monaco9_preserves_independent_source_monochrome_strokes() {
+        let (face, _) = super::rasterize(FONT_MONACO, 9, super::bytes(FONT_MONACO).unwrap(), None, None).unwrap();
+        // Independent FreeType monochrome rendering of the same bundled
+        // Nimbus Mono source, not an original Macintosh font oracle. Keep
+        // Systemless's existing exterior padding, bearings and advances.
+        for (ch, expected) in [
+            ('A', vec![".##...", ".#.#..", ".###..", "#...#.", "##.##."]),
+            ('M', vec![".#..#.", ".####.", ".####.", ".##.#.", "######"]),
+            ('4', vec![".##.", "#.#.", "#.#.", "####", ".###"]),
+            ('S', vec!["##.", "#..", "#..", ".##", "..#", "###"]),
+        ] {
+            let glyph = &face.glyphs[ch as usize - usize::from(b' ')];
+            let pixels = &face.data[glyph.data_offset..glyph.data_offset
+                + usize::from(glyph.width) * usize::from(glyph.height)];
+            let rows: Vec<String> = pixels.chunks_exact(usize::from(glyph.width))
+                .map(|row| row.iter().map(|&pixel| if pixel == 0 { '.' } else { '#' }).collect())
+                .collect();
+            assert_eq!(rows, expected, "source monochrome strokes for {ch}");
+        }
+    }
+
     #[test]
     fn monaco_compatibility_changes_only_the_selected_maximum_advance() {
         let bytes = super::bytes(FONT_MONACO).expect("bundled Monaco bytes");
@@ -585,6 +639,23 @@ mod tests {
                 .all(|pair| pair[0].advance == pair[1].advance),
             "a guest sfnt registered as Geneva 9 must retain its monospaced metrics"
         );
+    }
+
+    #[test]
+    fn unicode_and_roman_paths_preserve_identical_source_glyphs() {
+        let (face, _) = super::rasterize(
+            FONT_MONACO, 9, super::bytes(FONT_MONACO).unwrap(), None, None,
+        ).unwrap();
+        for ch in ['A', 'M', '4', 'S'] {
+            let roman = &face.glyphs[ch as usize - usize::from(b' ')];
+            let (unicode, pixels) = unicode_glyph(FONT_MONACO, 9, ch).unwrap();
+            assert_eq!((roman.width, roman.height, roman.origin_x, roman.origin_y, roman.advance),
+                (unicode.width, unicode.height, unicode.origin_x, unicode.origin_y, unicode.advance),
+                "source layout for {ch}");
+            assert_eq!(&face.data[roman.data_offset..roman.data_offset
+                + usize::from(roman.width) * usize::from(roman.height)], pixels,
+                "source pixels for {ch}");
+        }
     }
 
     #[test]

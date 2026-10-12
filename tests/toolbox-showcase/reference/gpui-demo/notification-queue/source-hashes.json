@@ -1,0 +1,7 @@
+{
+  "src/systems/macintosh/process_context.rs": "87a2515d4b61d8f6cac79cb76375a73e1bda18aa27ecd37e4055d6582839d659",
+  "src/systems/macintosh/trap/memory.rs": "b0acdcaeef7353cee0848418564a6746e3e0ab7651055fdf2358b29357ee016d",
+  "src/systems/macintosh/trap/memory/tests.rs": "26fdd2947f3cbd37f9edf6b15b78123b403e842daac1efafcbce97273cda8d5d",
+  "src/systems/macintosh/loader/ppc/dispatch_system.rs": "61ed0eb97c0417e1682c3b00a4fac6c8a11425210c6f397edc7ebbf1a3b1c69e",
+  "src/systems/macintosh/loader/ppc/tests/process_services.rs": "58bdff7f358326d10316c7af11312c9a3b24457e601bdcce49d8bd59753c875f"
+}

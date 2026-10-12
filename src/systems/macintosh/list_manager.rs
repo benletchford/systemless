@@ -1,6 +1,56 @@
 //! Architecture-neutral List Manager records.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_LIST_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn new_list_generation() -> u64 {
+    NEXT_LIST_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            next.checked_add(1)
+        })
+        .expect("list lifetime generation exhausted")
+}
+
+/// Text recipe retained only after the built-in standard LDEF paints a cell.
+/// Captured bytes and anchors belong to that draw, not later caller port state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StandardListCellDrawing {
+    pub(crate) generation: u64,
+    pub(crate) font: i16,
+    pub(crate) size: i16,
+    pub(crate) left: i16,
+    pub(crate) baseline: i16,
+    pub(crate) clip: (i16, i16, i16, i16),
+    pub(crate) stop_before: Option<i16>,
+    pub(crate) char_extra: crate::text_edit::TextEditCharExtraSnapshot,
+    pub(crate) space_extra: i32,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) source_bytes: Vec<u8>,
+    pub(crate) selected: bool,
+    pub(crate) pixels: crate::text_edit::TextEditDrawing,
+}
+
+/// Draw-time standard LDEF text inputs with current raster evidence.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StandardListCellPaintSnapshot {
+    /// Actual backing bitmap depth retained at native draw time.
+    pub depth: u16,
+    pub font: i16,
+    pub size: i16,
+    pub left: i16,
+    pub baseline: i16,
+    pub clip: (i16, i16, i16, i16),
+    pub stop_before: Option<i16>,
+    pub char_extra: crate::text_edit::TextEditCharExtraSnapshot,
+    pub space_extra: i32,
+    pub bytes: Vec<u8>,
+    pub selected: bool,
+    pub drawing_intact: bool,
+    pub painted_regions: Vec<(i16, i16, i16, i16)>,
+}
 
 /// Canonical host-side state for one guest `ListRec`.
 ///
@@ -11,6 +61,8 @@ use std::collections::{BTreeSet, HashMap};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProcessListRecord {
     pub(crate) handle: u32,
+    pub(crate) generation: u64,
+    pub(crate) definition_id: i16,
     pub(crate) cells_handle: u32,
     pub(crate) view_rect: (i16, i16, i16, i16),
     pub(crate) data_bounds: (i16, i16, i16, i16),
@@ -23,9 +75,36 @@ pub struct ProcessListRecord {
     pub(crate) selected: BTreeSet<(i16, i16)>,
     pub(crate) last_click: (i16, i16),
     pub(crate) last_click_tick: u32,
+    pub(crate) standard_cell_drawings: std::rc::Rc<std::cell::RefCell<HashMap<(i16, i16), StandardListCellDrawing>>>,
 }
 
 impl ProcessListRecord {
+    pub(crate) fn standard_cell_paint_snapshot(
+        &self, mut read: impl FnMut(u32) -> Option<u8>,
+    ) -> std::collections::BTreeMap<(i16, i16), StandardListCellPaintSnapshot> {
+        if self.definition_id != 0 { return Default::default(); }
+        self.standard_cell_drawings.borrow().iter().map(|(&cell, held)| {
+            let top = self.view_rect.0.saturating_add(cell.0.saturating_sub(self.visible.0).saturating_mul(self.cell_size.0));
+            let left = self.view_rect.1.saturating_add(cell.1.saturating_sub(self.visible.1).saturating_mul(self.cell_size.1));
+            let clip = (top, left, top.saturating_add(self.cell_size.0).min(self.view_rect.2),
+                left.saturating_add(self.cell_size.1).min(self.view_rect.3));
+            let selected = self.active && self.selected.contains(&cell);
+            let eligible = self.generation == held.generation && self.draw_enabled && clip == held.clip
+                && selected == held.selected
+                && self.cells.get(&cell).map(Vec::as_slice).unwrap_or(&[]) == held.source_bytes;
+            let current = eligible.then(|| crate::text_edit::TextEditDrawing::capture(self.port, held.clip, &mut read)).flatten();
+            let intact = current.as_ref().is_some_and(|current| held.pixels.same_pixels(current));
+            let painted_regions = current.as_ref().map(|current| held.pixels.unchanged_painted_regions(current)).unwrap_or_default();
+            (cell, StandardListCellPaintSnapshot {
+                depth: held.pixels.depth,
+                font: held.font, size: held.size, left: held.left, baseline: held.baseline,
+                clip: held.clip, stop_before: held.stop_before, char_extra: held.char_extra.clone(),
+                space_extra: held.space_extra, bytes: held.bytes.clone(), selected: held.selected,
+                drawing_intact: intact, painted_regions,
+            })
+        }).collect()
+    }
+
     /// LScroll is bounded by fully visible cells; a clipped last row must
     /// still be scrollable into full view. More Macintosh Toolbox, pp. 4-89--4-90;
     /// confirmed with 150-pixel views and 18-pixel rows on Mac OS 8.1.
@@ -70,12 +149,201 @@ impl ProcessListRecord {
             self.view_rect.3.saturating_sub(self.view_rect.1),
             self.cell_size.1,
         );
+        // Visible describes the viewport capacity, including a clipped cell beyond
+        // dataBounds. More Macintosh Toolbox, pp. 4-6--4-7; native Mac OS 8.1
+        // reports rows 6..13 for a 114-pixel view of twelve 18-pixel rows.
         self.visible = (
             top,
             left,
-            top.saturating_add(rows).min(self.data_bounds.2),
-            left.saturating_add(columns).min(self.data_bounds.3),
+            top.saturating_add(rows),
+            left.saturating_add(columns),
         );
+    }
+}
+
+/// Saved raster feedback belongs to the retained call, never to guest values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ListScrollbarPixels {
+    IndexedStrips(Vec<(i16, i16, i16, i16, super::memory::SavedPixels)>),
+    Samples(super::memory::SavedPixels<(i32, i32, u16)>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ListScrollbarOutline {
+    pub rect: (i16, i16, i16, i16),
+    pub surface: (u32, u32, u32, u32, u32),
+    pub pixels: ListScrollbarPixels,
+}
+
+/// Retained standard list-scrollbar tracking. LClick owns the
+/// call until release and scrolls without changing selection.
+/// More Macintosh Toolbox (1993), pp. 4-84--4-85.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ListScrollbarTracking {
+    pub list: u32,
+    pub generation: u64,
+    pub control: u32,
+    pub pointer: u32,
+    pub control_generation: u64,
+    pub vertical: bool,
+    pub classic: bool,
+    pub frame: (u32, u32),
+    pub bounds: (i16, i16, i16, i16),
+    pub part: u8,
+    pub last_tick: u32,
+    pub start_mouse: (i16, i16),
+    pub start_limits: (i16, i16, i16),
+    pub outline: Option<ListScrollbarOutline>,
+}
+
+impl ListScrollbarTracking {
+    pub(crate) fn part(
+        bounds: (i16, i16, i16, i16),
+        point: (i16, i16),
+        vertical: bool,
+        limits: (i16, i16, i16),
+    ) -> Option<u8> {
+        let (top, left, bottom, right) = bounds;
+        if point.0 < top || point.0 >= bottom || point.1 < left || point.1 >= right {
+            return None;
+        }
+        let (start, end, axis) = if vertical {
+            (top, bottom, point.0)
+        } else {
+            (left, right, point.1)
+        };
+        let (start, end, axis) = (i32::from(start), i32::from(end), i32::from(axis));
+        let (value, minimum, maximum) = limits;
+        if end - start < 48 || minimum >= maximum {
+            return None;
+        }
+        // Standard CDEF arrows and scroll boxes occupy sixteen pixels.
+        // Macintosh Toolbox Essentials (1992), pp. 5-10--5-12, 5-57--5-61.
+        if axis < start + 16 {
+            return Some(20);
+        }
+        if axis >= end - 16 {
+            return Some(21);
+        }
+        let range = i32::from(maximum) - i32::from(minimum);
+        let value = i32::from(value.clamp(minimum, maximum)) - i32::from(minimum);
+        let thumb =
+            start + 16 + (i64::from(value) * i64::from(end - start - 48) / i64::from(range)) as i32;
+        if axis < thumb {
+            Some(22)
+        } else if axis >= thumb + 16 {
+            Some(23)
+        } else {
+            Some(129)
+        }
+    }
+
+    pub(crate) fn hit(&self, point: (i16, i16), record: &ProcessListRecord) -> bool {
+        if self.part == 129 {
+            return self.release_delta(point, record).is_some();
+        }
+        Self::part(
+            self.bounds,
+            point,
+            self.vertical,
+            record.scrollbar_limits(self.vertical),
+        ) == Some(self.part)
+    }
+
+    pub(crate) fn outline_rect(
+        &self,
+        point: (i16, i16),
+        record: &ProcessListRecord,
+    ) -> Option<(i16, i16, i16, i16)> {
+        if self.part != 129 || record.scrollbar_limits(self.vertical) != self.start_limits {
+            return None;
+        }
+        let offset = super::control_manager::scrollbar_drag_position(
+            self.bounds,
+            self.vertical,
+            self.start_limits,
+            self.start_mouse,
+            point,
+        )?;
+        let (top, left, bottom, right) = self.bounds;
+        Some(if self.vertical {
+            let position = (i32::from(top) + offset) as i16;
+            (position, left, position.saturating_add(16), right)
+        } else {
+            let position = (i32::from(left) + offset) as i16;
+            (top, position, bottom, position.saturating_add(16))
+        })
+    }
+
+    /// Commit a scroll-box drag only on release. MTE (1992), pp. 5-89--5-90;
+    /// native Mac OS 8.1 PPC LClick preserves list content during the drag.
+    pub(crate) fn release_delta(
+        &self,
+        point: (i16, i16),
+        record: &ProcessListRecord,
+    ) -> Option<i32> {
+        if self.part != 129 || record.scrollbar_limits(self.vertical) != self.start_limits {
+            return None;
+        }
+        let position = super::control_manager::scrollbar_drag_position(
+            self.bounds,
+            self.vertical,
+            self.start_limits,
+            self.start_mouse,
+            point,
+        )? - 16;
+        let travel = if self.vertical {
+            i32::from(self.bounds.2) - i32::from(self.bounds.0) - 48
+        } else {
+            i32::from(self.bounds.3) - i32::from(self.bounds.1) - 48
+        };
+        let (value, minimum, maximum) = self.start_limits;
+        let range = i32::from(maximum) - i32::from(minimum);
+        let target = i32::from(minimum)
+            + ((i64::from(position) * i64::from(range) + i64::from(travel / 2)) / i64::from(travel))
+                as i32;
+        Some(target - i32::from(value))
+    }
+
+    pub(crate) fn step(
+        &mut self,
+        point: (i16, i16),
+        tick: u32,
+        record: &ProcessListRecord,
+    ) -> Option<i16> {
+        if self.part == 129
+            || !self.hit(point, record)
+            || tick.wrapping_sub(self.last_tick)
+                < super::control_manager::SCROLLBAR_ACTION_REPEAT_TICKS
+        {
+            return None;
+        }
+        self.last_tick = tick;
+        let units = if self.part >= 22 {
+            // Page by visible capacity less one cell, keeping the overlap even
+            // when the final page has fewer cells. MTE, pp. 5-57--5-61;
+            // More Macintosh Toolbox, pp. 4-21--4-22, 4-84--4-85.
+            let (pixels, cell) = if self.vertical {
+                (
+                    i32::from(record.view_rect.2) - i32::from(record.view_rect.0),
+                    record.cell_size.0,
+                )
+            } else {
+                (
+                    i32::from(record.view_rect.3) - i32::from(record.view_rect.1),
+                    record.cell_size.1,
+                )
+            };
+            ((pixels.max(0) + i32::from(cell.max(1)) - 1) / i32::from(cell.max(1)) - 1)
+                .clamp(1, i32::from(i16::MAX)) as i16
+        } else {
+            1
+        };
+        Some(if matches!(self.part, 20 | 22) {
+            -units
+        } else {
+            units
+        })
     }
 }
 
@@ -83,6 +351,7 @@ impl ProcessListRecord {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProcessListManagerState {
     records: HashMap<u32, ProcessListRecord>,
+    pub(crate) scroll_tracking: Option<ListScrollbarTracking>,
 }
 
 impl ProcessListManagerState {
@@ -95,6 +364,13 @@ impl ProcessListManagerState {
     }
 
     pub(crate) fn remove_record(&mut self, handle: u32) -> Option<ProcessListRecord> {
+        if self
+            .scroll_tracking
+            .as_ref()
+            .is_some_and(|tracking| tracking.list == handle)
+        {
+            self.scroll_tracking = None;
+        }
         self.records.remove(&handle)
     }
 
@@ -140,6 +416,7 @@ impl ProcessListManagerState {
     #[allow(dead_code)]
     pub(crate) fn clear(&mut self) {
         self.records.clear();
+        self.scroll_tracking = None;
     }
 }
 
@@ -148,9 +425,210 @@ mod tests {
     use super::*;
 
     #[test]
+    fn standard_cell_evidence_rejects_mutation_and_custom_definitions() {
+        let mut memory = vec![0u8; 512];
+        let port = 16usize;
+        memory[port + 2..port + 6].copy_from_slice(&256u32.to_be_bytes());
+        memory[port + 6..port + 8].copy_from_slice(&2u16.to_be_bytes());
+        memory[port + 12..port + 14].copy_from_slice(&4u16.to_be_bytes());
+        memory[port + 14..port + 16].copy_from_slice(&16u16.to_be_bytes());
+        for (offset, handle, region) in [(24, 144usize, 160usize), (28, 148, 176)] {
+            memory[port + offset..port + offset + 4].copy_from_slice(&(handle as u32).to_be_bytes());
+            memory[handle..handle + 4].copy_from_slice(&(region as u32).to_be_bytes());
+            memory[region..region + 2].copy_from_slice(&10u16.to_be_bytes());
+            memory[region + 6..region + 8].copy_from_slice(&4u16.to_be_bytes());
+            memory[region + 8..region + 10].copy_from_slice(&16u16.to_be_bytes());
+        }
+        let clip = (0, 0, 2, 16);
+        let pixels = crate::text_edit::TextEditDrawing::capture(port as u32, clip,
+            |address| memory.get(address as usize).copied()).unwrap();
+        let mut record = ProcessListRecord {
+            handle: 1, generation: 1, definition_id: 0, cells_handle: 0,
+            view_rect: clip, data_bounds: (0, 0, 1, 1), cell_size: (2, 16), visible: (0, 0, 1, 1),
+            port: port as u32, draw_enabled: true, active: true,
+            cells: [((0, 0), b"A".to_vec())].into(), selected: Default::default(),
+            last_click: (0, 0), last_click_tick: 0, standard_cell_drawings: Default::default(),
+        };
+        record.standard_cell_drawings.borrow_mut().insert((0, 0), StandardListCellDrawing {
+            generation: 1, font: 3, size: 9, left: 3, baseline: 1, clip, stop_before: Some(13),
+            char_extra: crate::text_edit::TextEditCharExtraSnapshot::ClassicFixed(0), space_extra: 0,
+            bytes: b"A".to_vec(), source_bytes: b"A".to_vec(), selected: false, pixels,
+        });
+        let intact = |record: &ProcessListRecord, memory: &[u8]| record.standard_cell_paint_snapshot(
+            |address| memory.get(address as usize).copied())[&(0, 0)].drawing_intact;
+        assert!(intact(&record, &memory));
+        memory[256] ^= 1;
+        assert!(!intact(&record, &memory), "application drawing invalidates retained raster");
+        let changed = record.standard_cell_paint_snapshot(|address| memory.get(address as usize).copied());
+        let regions = &changed[&(0, 0)].painted_regions;
+        assert!(!regions.is_empty(), "unchanged pixels retain standard painter ownership");
+        assert!(!regions.iter().any(|&(t, l, b, r)| 0 >= t && 0 < b && 7 >= l && 7 < r),
+            "the modified pixel remains native");
+        memory[256] ^= 1;
+        record.cells.insert((0, 0), b"B".to_vec());
+        assert!(!intact(&record, &memory), "changed bytes require a new native draw");
+        record.cells.insert((0, 0), b"A".to_vec());
+        record.selected.insert((0, 0));
+        assert!(!intact(&record, &memory), "selection changes require native paint");
+        record.selected.clear();
+        record.visible.0 = 1;
+        assert!(!intact(&record, &memory), "scrolling invalidates the old cell anchor");
+        record.visible.0 = 0;
+        record.definition_id = 128;
+        assert!(record.standard_cell_paint_snapshot(|_| panic!("custom LDEF must not sample paint")).is_empty());
+        record.definition_id = 0;
+        record.generation = 2;
+        assert!(!intact(&record, &memory), "reused identities cannot inherit old paint");
+        record.standard_cell_drawings = Default::default();
+        assert!(record.standard_cell_paint_snapshot(|_| None).is_empty(), "new lifetimes start without ownership");
+    }
+
+    #[test]
+    fn retained_list_arrow_uses_ticks_and_exposed_hit_region() {
+        let mut tracking = ListScrollbarTracking {
+            list: 1,
+            generation: 1,
+            control: 2,
+            pointer: 3,
+            control_generation: 1,
+            vertical: true,
+            classic: true,
+            frame: (4, 0),
+            bounds: (10, 20, 110, 36),
+            part: 21,
+            last_tick: u32::MAX - 2,
+            start_mouse: (0, 0),
+            start_limits: (0, 0, 10),
+            outline: None,
+        };
+        let record = ProcessListRecord {
+            handle: 1,
+            generation: 1,
+            definition_id: 0,
+            cells_handle: 0,
+            view_rect: (0, 0, 100, 100),
+            data_bounds: (0, 0, 20, 20),
+            cell_size: (10, 10),
+            visible: (0, 0, 10, 10),
+            port: 0,
+            draw_enabled: true,
+            active: true,
+            cells: HashMap::new(),
+            selected: BTreeSet::new(),
+            last_click: (0, 0),
+            last_click_tick: 0,
+            standard_cell_drawings: Default::default(),
+        };
+        assert_eq!(tracking.step((102, 28), 0, &record), Some(1));
+        assert_eq!(tracking.step((102, 28), 1, &record), None);
+        assert_eq!(tracking.step((102, 28), 3, &record), Some(1));
+        assert_eq!(tracking.step((102, 40), 6, &record), None);
+        assert_eq!(tracking.step((18, 28), 6, &record), None);
+        assert_eq!(tracking.step((102, 28), 6, &record), Some(1));
+        assert_eq!(
+            ListScrollbarTracking::part((20, 10, 36, 110), (28, 102), false, (0, 0, 10)),
+            Some(21)
+        );
+        let mut manager = ProcessListManagerState::default();
+        manager.scroll_tracking = Some(tracking);
+        manager.remove_record(1);
+        assert!(manager.scroll_tracking.is_none());
+    }
+
+    #[test]
+    fn list_page_tracks_current_thumb_and_keeps_one_cell_overlap() {
+        let mut record = ProcessListRecord {
+            handle: 1,
+            generation: 1,
+            definition_id: 0,
+            cells_handle: 0,
+            view_rect: (0, 0, 100, 100),
+            data_bounds: (0, 0, 20, 20),
+            cell_size: (10, 10),
+            visible: (0, 0, 10, 10),
+            port: 0,
+            draw_enabled: true,
+            active: true,
+            cells: HashMap::new(),
+            selected: BTreeSet::new(),
+            last_click: (0, 0),
+            last_click_tick: 0,
+            standard_cell_drawings: Default::default(),
+        };
+        record.view_rect = (0, 0, 114, 450);
+        record.cell_size = (18, 450);
+        record.data_bounds = (0, 0, 12, 1);
+        record.set_visible_origin(0, 0);
+        let mut tracking = ListScrollbarTracking {
+            list: 1,
+            generation: 1,
+            control: 2,
+            pointer: 3,
+            control_generation: 1,
+            vertical: true,
+            classic: true,
+            frame: (4, 0),
+            bounds: (128, 514, 242, 530),
+            part: 23,
+            last_tick: 0,
+            start_mouse: (150, 522),
+            start_limits: (0, 0, 6),
+            outline: None,
+        };
+        let mut thumb = tracking.clone();
+        thumb.part = 129;
+        assert_eq!(
+            ListScrollbarTracking::part(thumb.bounds, (150, 522), true, (0, 0, 6)),
+            Some(129)
+        );
+        assert_eq!(thumb.step((218, 522), 3, &record), None);
+        assert_eq!(thumb.release_delta((218, 522), &record), Some(6));
+        assert_eq!(thumb.outline_rect((218, 522), &record), Some((210, 514, 226, 530)));
+        assert_eq!(thumb.outline_rect((218, 650), &record), None);
+        assert_eq!(thumb.release_delta((150, 522), &record), Some(0));
+        assert_eq!(thumb.release_delta((218, 650), &record), None);
+        let mut mutated = record.clone();
+        mutated.set_visible_origin(1, 0);
+        assert_eq!(thumb.release_delta((218, 522), &mutated), None);
+        let mut wide = record.clone();
+        wide.data_bounds = (i16::MIN, 0, i16::MAX, 1);
+        wide.set_visible_origin(i16::MIN, 0);
+        thumb.start_limits = wide.scrollbar_limits(true);
+        assert_eq!(thumb.release_delta((218, 522), &wide), Some(65529));
+        thumb.start_limits = record.scrollbar_limits(true);
+        thumb.vertical = false;
+        thumb.bounds = (514, 128, 530, 242);
+        thumb.start_mouse = (522, 150);
+        let mut horizontal = record.clone();
+        horizontal.view_rect = (0, 0, 450, 114);
+        horizontal.cell_size = (450, 18);
+        horizontal.data_bounds = (0, 0, 1, 12);
+        horizontal.set_visible_origin(0, 0);
+        assert_eq!(thumb.release_delta((522, 218), &horizontal), Some(6));
+        assert_eq!(tracking.step((208, 522), 3, &record), Some(6));
+        record.set_visible_origin(6, 0);
+        assert_eq!(tracking.step((208, 522), 6, &record), None);
+        tracking.part = 22;
+        assert_eq!(tracking.step((160, 522), 6, &record), Some(-6));
+        record.set_visible_origin(0, 0);
+        assert_eq!(tracking.step((160, 522), 9, &record), None);
+        assert_eq!(
+            ListScrollbarTracking::part(
+                (i16::MIN, 0, i16::MAX, 16),
+                (0, 8),
+                true,
+                (i16::MAX, i16::MIN, i16::MAX)
+            ),
+            Some(22)
+        );
+    }
+
+    #[test]
     fn clipped_cells_can_scroll_fully_into_view_and_back() {
         let mut list = ProcessListRecord {
             handle: 0,
+            generation: new_list_generation(),
+            definition_id: 0,
             cells_handle: 0,
             view_rect: (78, 24, 228, 528),
             data_bounds: (0, 0, 12, 1),
@@ -163,12 +641,13 @@ mod tests {
             selected: BTreeSet::new(),
             last_click: (0, 0),
             last_click_tick: 0,
+            standard_cell_drawings: Default::default(),
         };
         assert_eq!(list.scrollbar_limits(true), (0, 0, 4));
         list.set_visible_origin(4, 0);
-        assert_eq!(list.visible, (4, 0, 12, 1));
+        assert_eq!(list.visible, (4, 0, 13, 1));
         list.set_visible_origin(100, 0);
-        assert_eq!(list.visible, (4, 0, 12, 1));
+        assert_eq!(list.visible, (4, 0, 13, 1));
         list.set_visible_origin(0, 0);
         assert_eq!(list.visible, (0, 0, 9, 1));
         list.view_rect = (78, 24, 192, 474);
@@ -176,7 +655,7 @@ mod tests {
         assert_eq!(list.visible, (4, 0, 11, 1));
         assert_eq!(list.scrollbar_limits(true), (4, 0, 6));
         list.set_visible_origin(100, 100);
-        assert_eq!(list.visible, (6, 0, 12, 1));
+        assert_eq!(list.visible, (6, 0, 13, 1));
     }
 
     #[test]
@@ -188,6 +667,8 @@ mod tests {
 
         let record = ProcessListRecord {
             handle: 0x1000,
+            generation: new_list_generation(),
+            definition_id: 0,
             cells_handle: 0x2000,
             view_rect: (0, 0, 40, 100),
             data_bounds: (0, 0, 2, 1),
@@ -200,6 +681,7 @@ mod tests {
             selected: BTreeSet::new(),
             last_click: (0, 0),
             last_click_tick: 0,
+            standard_cell_drawings: Default::default(),
         };
         state.insert_record(0x1000, record.clone());
         assert!(!state.is_pristine());

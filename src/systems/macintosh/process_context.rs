@@ -26,6 +26,22 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::hash::Hash;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_WINDOW_GENERATION: AtomicU64 = AtomicU64::new(1);
+static NEXT_MENU_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn new_window_generation() -> u64 {
+    NEXT_WINDOW_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .expect("window lifetime generation exhausted")
+}
+
+fn new_menu_generation() -> u64 {
+    NEXT_MENU_GENERATION
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .expect("menu lifetime generation exhausted")
+}
 
 #[derive(Debug)]
 struct ProcessMemoryRegion {
@@ -823,6 +839,8 @@ pub(crate) struct ProcessLoadedResources {
 /// Process-owned Resource Manager bookkeeping used by CPU adapters.
 #[derive(Clone, Debug, Default)]
 pub struct ProcessResourceManagerState {
+    /// Presentation lifetimes for guest MenuHandles, shared across CPU adapters.
+    pub(crate) menu_generations: HashMap<u32, u64>,
     /// Current resource file for the process, shared by every CPU adapter.
     /// `ProcessLoadedResources::current_file` remains the classic file-chain
     /// cursor, while this is the architecture-neutral `CurResFile` value.
@@ -922,9 +940,21 @@ fn process_resource_manager_runtime_is_empty(manager: &ProcessResourceManagerSta
         && manager.resource_backing_data.is_empty()
         && manager.resident_resources.is_empty()
         && manager.resource_files.is_empty()
+        && manager.menu_generations.is_empty()
 }
 
 impl ProcessResourceManagerState {
+    pub(crate) fn menu_generation(&mut self, handle: u32) -> u64 {
+        *self
+            .menu_generations
+            .entry(handle)
+            .or_insert_with(new_menu_generation)
+    }
+
+    pub(crate) fn forget_menu_generation(&mut self, handle: u32) {
+        self.menu_generations.remove(&handle);
+    }
+
     pub(crate) fn is_pristine(&self) -> bool {
         process_resource_manager_runtime_is_empty(self)
             && *self.current_resource_file == 0
@@ -975,6 +1005,7 @@ impl ProcessResourceManagerState {
         }
 
         if target_runtime_is_empty && !source_runtime_is_empty {
+            self.menu_generations = std::mem::take(&mut source.menu_generations);
             self.loaded_handles = std::mem::take(&mut source.loaded_handles);
             self.resource_handles_by_key = std::mem::take(&mut source.resource_handles_by_key);
             self.detached_handles = std::mem::take(&mut source.detached_handles);
@@ -1770,11 +1801,98 @@ impl std::ops::Deref for SharedProcessSoundManager {
         &self.0
     }
 }
-/// Detached-by-default attachment handle for process-owned Collection Manager state.
+/// Detached-by-default attachment handle for process-owned Notification Manager state.
 ///
 /// Ordinary clones are snapshots so cloning an adapter cannot couple two
 /// processes. Adapters share only through `attach_to`, under the same
 /// serialized runner ownership used for guest RAM and the Memory Manager.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ProcessNotificationQueue {
+    requests: Vec<u32>,
+    instances: std::collections::BTreeMap<u32, u64>,
+    next_instance: u64,
+    completed_responses: std::collections::BTreeSet<u64>,
+    delivered_sounds: std::collections::BTreeSet<u64>,
+    sound_channels: std::collections::BTreeMap<u64, Option<u32>>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SharedProcessNotificationQueue(SharedProcessValue<ProcessNotificationQueue>);
+impl std::ops::Deref for SharedProcessNotificationQueue {
+    type Target = Vec<u32>;
+    fn deref(&self) -> &Self::Target { &self.0.requests }
+}
+impl PartialEq<Vec<u32>> for SharedProcessNotificationQueue {
+    fn eq(&self, other: &Vec<u32>) -> bool { self.0.with_ref(|queue| queue.requests == *other) }
+}
+impl SharedProcessNotificationQueue {
+    pub(crate) fn push(&self, request: u32) {
+        self.0.with_mut(|queue| {
+            if queue.instances.contains_key(&request) { return; }
+            queue.next_instance = queue.next_instance.checked_add(1)
+                .expect("notification installation identity exhausted");
+            queue.instances.insert(request, queue.next_instance);
+            queue.requests.push(request);
+        });
+    }
+    pub(crate) fn remove(&self, index: usize) -> u32 {
+        self.0.with_mut(|queue| {
+            let request = queue.requests.remove(index);
+            if let Some(instance) = queue.instances.remove(&request) {
+                queue.completed_responses.remove(&instance);
+                queue.delivered_sounds.remove(&instance);
+                queue.sound_channels.remove(&instance);
+            }
+            request
+        })
+    }
+    pub(crate) fn instance_id(&self, request: u32) -> Option<u64> {
+        self.0.with_ref(|queue| queue.instances.get(&request).copied())
+    }
+    pub(crate) fn response_started(&self, request: u32, instance: u64) -> bool {
+        self.0.with_ref(|queue| queue.instances.get(&request) == Some(&instance)
+            && queue.completed_responses.contains(&instance))
+    }
+    pub(crate) fn begin_response(&self, request: u32, instance: u64) -> bool {
+        self.0.with_mut(|queue| {
+            queue.instances.get(&request) == Some(&instance)
+                && queue.completed_responses.insert(instance)
+        })
+    }
+    pub(crate) fn begin_sound(&self, request: u32, instance: u64) -> bool {
+        self.0.with_mut(|queue| queue.instances.get(&request) == Some(&instance)
+            && queue.delivered_sounds.insert(instance))
+    }
+    pub(crate) fn set_sound_channel(&self, request: u32, instance: u64, channel: Option<u32>) {
+        self.0.with_mut(|queue| {
+            if queue.instances.get(&request) == Some(&instance) {
+                queue.sound_channels.insert(instance, channel);
+            }
+        });
+    }
+    pub(crate) fn sound_channel(&self, request: u32, instance: u64) -> Option<Option<u32>> {
+        self.0.with_ref(|queue| (queue.instances.get(&request) == Some(&instance))
+            .then(|| queue.sound_channels.get(&instance).copied()).flatten())
+    }
+    pub(crate) fn clear(&self) {
+        self.0.with_mut(|queue| { queue.requests.clear(); queue.instances.clear(); queue.completed_responses.clear(); queue.delivered_sounds.clear(); queue.sound_channels.clear(); });
+    }
+    pub(crate) fn attach_to(&mut self, process_state: &Self) {
+        if self.0.ptr_eq(&process_state.0) { return; }
+        let requests = self.0.with_ref(|queue| queue.requests.clone());
+        assert!(requests.is_empty() || process_state.is_empty(),
+            "cannot attach two populated notification queues");
+        // Preserve the process counter even when its request list is empty.
+        // Imported requests acquire identities from that counter; adapter
+        // snapshots must never rewind a running process's installation IDs.
+        for request in requests { process_state.push(request); }
+        self.0 = process_state.0.shared_handle();
+    }
+}
+
+/// Detached-by-default attachment handle for process-owned Collection Manager state.
+///
+/// Ordinary clones are snapshots; adapters share only through explicit attachment
+/// under serialized runner ownership.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SharedProcessCollectionManager(
     SharedProcessValue<ProcessCollectionManagerState>,
@@ -1895,7 +2013,12 @@ pub(crate) struct SharedProcessEventQueue(SharedProcessValue<EventQueue>);
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct SharedProcessMenuTracking(crate::guest_call::SharedMenuTracking);
 #[derive(Clone, Default)]
-pub(crate) struct SharedProcessWindowList(SharedProcessValue<ProcessWindowListState>);
+pub(crate) struct SharedProcessWindowList(
+    SharedProcessValue<ProcessWindowListState>,
+    SharedProcessValue<HashMap<u32, u64>>,
+    SharedProcessValue<HashMap<u32, (u64, crate::window_manager::WindowRect)>>,
+    SharedProcessValue<HashMap<u32, u64>>,
+);
 
 #[derive(Clone, Default)]
 struct ProcessWindowListState {
@@ -2837,6 +2960,10 @@ impl SharedProcessCursorState {
         self.0.ptr_eq(&other.0)
     }
 
+    pub(crate) fn installed_image(&self) -> Option<&CursorImage> {
+        self.0.image.as_ref()
+    }
+
     pub(crate) fn visible_image(&self) -> Option<&CursorImage> {
         let state = &*self.0;
         if state.visible() {
@@ -3324,6 +3451,9 @@ impl SharedProcessSoundManager {
 
     pub(crate) fn play_sys_beep(&self, volume: u32) {
         self.with_mut(|manager| manager.play_sys_beep(volume));
+    }
+    pub(crate) fn queue_sys_beep(&self, volume: u32) -> Option<u32> {
+        self.with_mut(|manager| manager.queue_sys_beep(volume))
     }
 
     pub(crate) fn play_file_buffer(
@@ -3861,6 +3991,16 @@ impl SharedProcessControlManager {
         self.with_ref(|manager| manager.contains_pointer(pointer))
     }
 
+    pub(crate) fn control_title_style(&self, pointer: u32) -> crate::control_manager::ControlTitleStyle {
+        self.with_ref(|manager| {
+            let record = manager.iter().find(|record| record.pointer == pointer);
+            crate::control_manager::resolve_control_title_style(
+                record.map_or(0, |record| record.proc_id),
+                record.and_then(|record| record.font_style.as_ref()),
+            )
+        })
+    }
+
     pub(crate) fn set_font_style(
         &self,
         pointer: u32,
@@ -3931,8 +4071,13 @@ impl SharedProcessTextEditManager {
         self.with_mut(|manager| manager.register(handle));
     }
 
+    #[cfg(test)]
     pub(crate) fn handles(&self) -> Vec<u32> {
         self.with_ref(ProcessTextEditManagerState::handles)
+    }
+
+    pub(crate) fn identities(&self) -> Vec<(u32, u64)> {
+        self.with_ref(ProcessTextEditManagerState::identities)
     }
 
     pub(crate) fn feature_bit(&self, handle: u32, feature: u16) -> bool {
@@ -4496,19 +4641,93 @@ impl SharedProcessWindowList {
         Self(SharedProcessValue::from_value(ProcessWindowListState {
             windows,
             classes: HashMap::new(),
-        }))
+        }), Default::default(), Default::default(), Default::default())
     }
 
     pub(crate) fn shared_handle(&self) -> Self {
-        Self(self.0.shared_handle())
+        Self(
+            self.0.shared_handle(),
+            self.1.shared_handle(),
+            self.2.shared_handle(),
+            self.3.shared_handle(),
+        )
     }
 
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        self.0.ptr_eq(&other.0)
+        self.0.ptr_eq(&other.0) && self.1.ptr_eq(&other.1) && self.2.ptr_eq(&other.2) && self.3.ptr_eq(&other.3)
     }
 
     pub(crate) fn attach_to(&mut self, process_state: &Self) {
         self.0.attach_to(&process_state.0, |state| state.windows.is_empty());
+        self.1.attach_to(&process_state.1, HashMap::is_empty);
+        self.2.attach_to(&process_state.2, HashMap::is_empty);
+        self.3.attach_to(&process_state.3, HashMap::is_empty);
+    }
+
+    /// Register a newly created WindowRecord, including caller-supplied
+    /// storage that may reuse an earlier WindowPtr. The guest address remains
+    /// authoritative; this token is presentation identity only.
+    pub(crate) fn register_new_window(&self, window: u32) -> u64 {
+        let generation = new_window_generation();
+        self.1.with_mut(|lifetimes| lifetimes.insert(window, generation));
+        self.2.with_mut(|icons| icons.remove(&window));
+        self.3.with_mut(|revisions| revisions.remove(&window));
+        generation
+    }
+
+    /// Record an actual guest DrawGrowIcon call, scoped to this window lifetime
+    /// and the bounds it painted. A resized or reused window needs a fresh call.
+    /// Macintosh Toolbox Essentials (1992), pp. 4-111--4-112.
+    pub(crate) fn record_grow_icon(&self, window: u32, bounds: crate::window_manager::WindowRect) {
+        let generation = self.generation_for_window(window);
+        self.2.with_mut(|icons| icons.insert(window, (generation, bounds)));
+    }
+
+    /// Geometry changes erase the old size box even if a later change restores
+    /// the same bounds before the presentation thread samples the window.
+    /// Macintosh Toolbox Essentials (1992), pp. 4-57--4-58, 4-111--4-112.
+    pub(crate) fn invalidate_grow_icon(&self, window: u32) {
+        self.2.with_mut(|icons| icons.remove(&window));
+    }
+
+    pub(crate) fn grow_icon_drawn_at(
+        &self,
+        window: u32,
+        bounds: crate::window_manager::WindowRect,
+    ) -> bool {
+        let generation = self.generation_for_window(window);
+        self.2.with_mut(|icons| {
+            if icons.get(&window) == Some(&(generation, bounds)) {
+                true
+            } else {
+                icons.remove(&window);
+                false
+            }
+        })
+    }
+
+    /// Seed windows installed by tests or older paths before snapshotting.
+    pub(crate) fn generation_for_window(&self, window: u32) -> u64 {
+        self.1.with_mut(|lifetimes| {
+            *lifetimes.entry(window).or_insert_with(new_window_generation)
+        })
+    }
+
+    pub(crate) fn dialog_content_revision(&self, window: u32) -> u64 {
+        self.3.with_ref(|revisions| revisions.get(&window).copied().unwrap_or(0))
+    }
+
+    pub(crate) fn invalidate_dialog_content(&self, window: u32) {
+        self.3.with_mut(|revisions| { revisions.insert(window, new_window_generation()); });
+    }
+
+    fn prune_window_generations(&self) {
+        let windows = self.windows();
+        self.1
+            .with_mut(|lifetimes| lifetimes.retain(|window, _| windows.contains(window)));
+        self.2
+            .with_mut(|icons| icons.retain(|window, _| windows.contains(window)));
+        self.3.with_mut(|revisions| revisions.retain(|window, _| windows.contains(window)));
     }
 
     pub(crate) fn with_ref<R>(&self, operation: impl FnOnce(&[u32]) -> R) -> R {
@@ -4596,25 +4815,36 @@ impl SharedProcessWindowList {
 
     pub(crate) fn clear(&self) {
         self.with_mut(Vec::clear);
+        self.1.with_mut(HashMap::clear);
+        self.2.with_mut(HashMap::clear);
     }
 
     pub(crate) fn replace(&self, windows: Vec<u32>) {
         self.with_mut(|current| *current = windows);
+        self.prune_window_generations();
     }
 
     pub(crate) fn remove(&self, index: usize) -> u32 {
-        self.with_mut(|windows| windows.remove(index))
+        let removed = self.with_mut(|windows| windows.remove(index));
+        self.prune_window_generations();
+        removed
     }
 
     pub(crate) fn remove_window(&self, window: u32) -> bool {
-        self.with_mut(|windows| {
+        let removed = self.with_mut(|windows| {
             if let Some(pos) = windows.iter().position(|&w| w == window) {
                 windows.remove(pos);
                 true
             } else {
                 false
             }
-        })
+        });
+        if removed {
+            self.1.with_mut(|lifetimes| lifetimes.remove(&window));
+            self.2.with_mut(|icons| icons.remove(&window));
+            self.3.with_mut(|revisions| revisions.remove(&window));
+        }
+        removed
     }
 
     pub(crate) fn retain<F>(&self, predicate: F)
@@ -4622,10 +4852,15 @@ impl SharedProcessWindowList {
         F: FnMut(&u32) -> bool,
     {
         self.with_mut(|windows| windows.retain(predicate));
+        self.prune_window_generations();
     }
 
     pub(crate) fn pop(&self) -> Option<u32> {
-        self.with_mut(Vec::pop)
+        let removed = self.with_mut(Vec::pop);
+        if removed.is_some() {
+            self.prune_window_generations();
+        }
+        removed
     }
 
     pub(crate) fn swap(&self, a: usize, b: usize) {
@@ -9914,6 +10149,12 @@ impl ProcessNativeMemoryManager {
     }
 }
 
+/// SIZE policy captured at launch and shared across CPU gateways. Guest
+/// resource edits do not change the running process's scheduling capabilities.
+/// Inside Macintosh: Processes (1994), ProcessInfoRec and Process Scheduling.
+pub(crate) type SharedProcessApplicationSize =
+    SharedProcessValue<Option<crate::loader::ApplicationSizeResource>>;
+
 /// Canonical owner for state that belongs to one emulated process rather than
 /// to either of its CPU ABI adapters.
 ///
@@ -9932,6 +10173,7 @@ pub(crate) struct ProcessContext {
     pending_native_menu_selection: SharedNativeMenuSelection,
     guest_calls: SharedGuestCallStack,
     apple_event_handlers: SharedProcessAppleEventHandlers,
+    application_size: SharedProcessApplicationSize,
     apple_event_launch_state: SharedProcessAppleEventLaunchState,
     apple_event_descriptors: SharedProcessAppleEventDescriptors,
     file_system: SharedProcessFileSystem,
@@ -9944,6 +10186,7 @@ pub(crate) struct ProcessContext {
     control_manager: SharedProcessControlManager,
     list_manager: SharedProcessListManager,
     collection_manager: SharedProcessCollectionManager,
+    notification_requests: SharedProcessNotificationQueue,
     text_edit_manager: SharedProcessTextEditManager,
     dialog_text: SharedProcessDialogText,
     cursor_state: SharedProcessCursorState,
@@ -10104,6 +10347,7 @@ impl Default for ProcessContext {
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             guest_calls,
             apple_event_handlers: SharedProcessAppleEventHandlers::default(),
+            application_size: SharedProcessApplicationSize::default(),
             apple_event_launch_state: SharedProcessAppleEventLaunchState::default(),
             apple_event_descriptors: SharedProcessAppleEventDescriptors::default(),
             file_system: SharedProcessFileSystem::default(),
@@ -10116,6 +10360,7 @@ impl Default for ProcessContext {
             control_manager: SharedProcessControlManager::default(),
             list_manager: SharedProcessListManager::default(),
             collection_manager: SharedProcessCollectionManager::default(),
+            notification_requests: SharedProcessNotificationQueue::default(),
             text_edit_manager: SharedProcessTextEditManager::default(),
             dialog_text: SharedProcessDialogText::default(),
             cursor_state: SharedProcessCursorState::default(),
@@ -10365,6 +10610,26 @@ impl ProcessContext {
         adapter.attach_to(&self.mixed_mode_m68k);
     }
 
+    /// Replace the global TEXT scrap after an external clipboard change.
+    /// Private application scrap is converted by the guest on resume, not here.
+    /// Macintosh Toolbox Essentials (1992), pp. 2-58--2-61.
+    pub(crate) fn import_clipboard_text(&self, text: Vec<u8>) {
+        self.scrap_state.zero();
+        self.scrap_state.initialize_and_append_entry(*b"TEXT", text);
+        self.event_queue().with_mut(|queue| queue.activation.clipboard_changed());
+    }
+
+    /// Export only after the application has handled suspend and yielded.
+    /// Its handler may first convert private scrap with TEToScrap (Macintosh
+    /// Toolbox Essentials (1992), pp. 2-58--2-61). A delivered notification
+    /// alone does not establish that conversion has completed.
+    pub(crate) fn clipboard_text_after_suspend(&self) -> Option<Option<Vec<u8>>> {
+        let ready = self.event_queue().with_ref(|queue| {
+            !queue.activation.is_foreground() && !queue.activation.needs_event_service()
+        });
+        ready.then(|| self.scrap_state.flavor(*b"TEXT").map(|flavor| flavor.data))
+    }
+
     pub(crate) fn attach_scrap_state(&self, adapter: &mut SharedProcessScrapState) {
         adapter.attach_to(&self.scrap_state);
     }
@@ -10375,6 +10640,16 @@ impl ProcessContext {
 
     pub(crate) fn attach_list_manager(&self, adapter: &mut SharedProcessListManager) {
         adapter.attach_to(&self.list_manager);
+    }
+
+    pub(crate) fn reset_notifications_for_launch(&self) {
+        // Request pointers belong to the previous guest address space. Never
+        // dereference them or run responses after replacing that application.
+        self.notification_requests.clear();
+    }
+
+    pub(crate) fn attach_notification_queue(&self, adapter: &mut SharedProcessNotificationQueue) {
+        adapter.attach_to(&self.notification_requests);
     }
 
     pub(crate) fn attach_collection_manager(&self, adapter: &mut SharedProcessCollectionManager) {
@@ -10690,6 +10965,15 @@ impl ProcessContext {
         adapter: &mut SharedProcessAppleEventHandlers,
     ) {
         adapter.attach_to(&self.apple_event_handlers);
+    }
+
+    pub(crate) fn attach_application_size(&self, adapter: &mut SharedProcessApplicationSize) {
+        adapter.attach_copy_to(&self.application_size, Option::is_none);
+    }
+
+    pub(crate) fn reset_application_size(&self, size: Option<crate::loader::ApplicationSizeResource>) {
+        self.application_size.with_mut(|current| *current = size);
+        self.event_queue.with_mut(|queue| queue.activation.reset_for_launch(size));
     }
 
     pub(crate) fn attach_apple_event_launch_state(
@@ -13085,6 +13369,27 @@ mod tests {
     }
 
     #[test]
+    fn application_size_policy_is_shared_and_reset_between_launches() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessApplicationSize::default();
+        let mut native =
+            SharedProcessApplicationSize::from_value(Some(crate::loader::ApplicationSizeResource {
+                flags: 0x5a40,
+                preferred_size: 2 * 1024 * 1024,
+                minimum_size: 1024 * 1024,
+            }));
+        context.attach_application_size(&mut native);
+        context.attach_application_size(&mut classic);
+        assert!(classic.ptr_eq(&native));
+        assert_eq!(classic.with_ref(|size| size.unwrap().flags), 0x5a40);
+        let snapshot = native.clone();
+        context.reset_application_size(None);
+        assert!(classic.with_ref(Option::is_none));
+        assert!(native.with_ref(Option::is_none));
+        assert_eq!(snapshot.with_ref(|size| size.unwrap().flags), 0x5a40);
+    }
+
+    #[test]
     fn attached_apple_event_launch_state_shares_one_shot_claim_while_clones_detach() {
         let context = ProcessContext::default();
         let mut classic = SharedProcessAppleEventLaunchState::default();
@@ -13684,6 +13989,7 @@ mod tests {
                 .resource_backing_data
                 .insert((7, *b"TEST", 128), b"before".to_vec());
         });
+        let first_menu_generation = first.with_mut(|resources| resources.menu_generation(0x1234));
         let mut second = SharedProcessResourceManager::default();
 
         context.attach_resource_manager(&mut first);
@@ -13718,6 +14024,19 @@ mod tests {
         });
 
         assert!(first.ptr_eq(&second));
+        assert_eq!(
+            second.with_mut(|resources| resources.menu_generation(0x1234)),
+            first_menu_generation
+        );
+        second.with_mut(|resources| resources.forget_menu_generation(0x1234));
+        assert_ne!(
+            first.with_mut(|resources| resources.menu_generation(0x1234)),
+            first_menu_generation
+        );
+        assert_eq!(
+            detached.with_ref(|resources| resources.menu_generations[&0x1234]),
+            first_menu_generation
+        );
         assert_eq!(*first.current_resource_file, 9);
         assert_eq!(*native.current_resource_file, 9);
         assert_eq!(
@@ -13920,6 +14239,100 @@ mod tests {
     }
 
     #[test]
+    fn external_clipboard_import_updates_both_gateways_and_resume_conversion() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessScrapState::default();
+        let mut native = SharedProcessScrapState::default();
+        context.attach_scrap_state(&mut classic);
+        context.attach_scrap_state(&mut native);
+        classic.initialize_and_append_entry(*b"PICT", vec![1, 2]);
+        let policy = Some(crate::loader::ApplicationSizeResource {
+            flags: 0x4800, preferred_size: 0, minimum_size: 0,
+        });
+        context.event_queue().with_mut(|queue| {
+            queue.activation.request(false);
+            queue.activation.begin_event_call(policy, true, true);
+            assert_eq!(queue.activation.consume().unwrap().os_message(), Some(0x0100_0000));
+            queue.activation.begin_event_call(policy, true, true);
+        });
+        let text = vec![b'A', 0x8e, b'\r', b'B'];
+        context.import_clipboard_text(text.clone());
+        for adapter in [&classic, &native] {
+            assert_eq!(adapter.flavor(*b"TEXT").unwrap().data, text);
+            assert!(adapter.flavor(*b"PICT").is_none());
+            assert_eq!(adapter.summary().count, 1);
+            assert!(adapter.summary().handle_dirty);
+        }
+        context.event_queue().with_mut(|queue| {
+            queue.activation.request(true);
+            queue.activation.begin_event_call(policy, true, true);
+            assert_eq!(queue.activation.consume().unwrap().os_message(), Some(0x0100_0003));
+            queue.activation.begin_event_call(policy, true, true);
+            queue.activation.request(false);
+            queue.activation.begin_event_call(policy, true, true);
+            queue.activation.consume();
+            queue.activation.begin_event_call(policy, true, true);
+            queue.activation.request(true);
+            queue.activation.begin_event_call(policy, true, true);
+            assert_eq!(queue.activation.consume().unwrap().os_message(), Some(0x0100_0001));
+        });
+    }
+
+    #[test]
+    fn clipboard_export_requires_handled_suspend_and_following_yield() {
+        let context = ProcessContext::default();
+        let policy = Some(crate::loader::ApplicationSizeResource {
+            flags: 0x4800, preferred_size: 0, minimum_size: 0,
+        });
+        context.scrap_state.initialize_and_append_entry(*b"TEXT", b"old".to_vec());
+        assert_eq!(context.clipboard_text_after_suspend(), None);
+        context.event_queue().with_mut(|queue| {
+            queue.activation.request(false);
+            queue.activation.begin_event_call(policy, true, true);
+            queue.activation.consume();
+        });
+        assert_eq!(context.clipboard_text_after_suspend(), None);
+        // The guest handler converts private text after consuming osEvt.
+        context.scrap_state.zero();
+        context.scrap_state.initialize_and_append_entry(*b"TEXT", b"guest copy".to_vec());
+        assert_eq!(context.clipboard_text_after_suspend(), None);
+        context.event_queue().with_mut(|queue| queue.activation.begin_event_call(policy, true, true));
+        assert_eq!(context.clipboard_text_after_suspend(), Some(Some(b"guest copy".to_vec())));
+        context.event_queue().with_mut(|queue| queue.activation.request(true));
+        assert_eq!(context.clipboard_text_after_suspend(), None);
+    }
+
+    #[test]
+    fn attached_event_queues_share_activation_across_gateways_and_reset_at_launch() {
+        use crate::process_manager::activation::ActivationNotification;
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessEventQueue::default();
+        let mut native = SharedProcessEventQueue::default();
+        context.attach_event_queue(&mut classic);
+        context.attach_event_queue(&mut native);
+        let policy = Some(crate::loader::ApplicationSizeResource {
+            flags: 0x4000, preferred_size: 0, minimum_size: 0,
+        });
+        classic.with_mut(|queue| {
+            queue.activation.request(false);
+            queue.activation.begin_event_call(policy, true, true);
+        });
+        let detached = native.clone();
+        let suspend = ActivationNotification::OperatingSystem { resume: false, convert_clipboard: false };
+        assert_eq!(native.with_ref(|queue| queue.activation.peek()), Some(suspend));
+        native.replace_events(Default::default());
+        assert_eq!(native.with_mut(|queue| queue.activation.consume()), Some(suspend));
+        classic.with_mut(|queue| queue.activation.begin_event_call(policy, true, true));
+        assert!(!native.with_ref(|queue| queue.activation.is_foreground()));
+        assert_eq!(native.with_ref(|queue| queue.activation.peek()), Some(ActivationNotification::Window { active: false }));
+        assert_eq!(detached.with_ref(|queue| queue.activation.peek()), Some(suspend));
+        context.reset_application_size(None);
+        assert!(classic.with_ref(|queue| queue.activation.is_foreground()));
+        assert_eq!(native.with_ref(|queue| queue.activation.peek()), None);
+        assert_eq!(detached.with_ref(|queue| queue.activation.peek()), Some(suspend));
+    }
+
+    #[test]
     fn attached_event_queues_share_fifo_and_invalidation_while_clones_detach() {
         let context = ProcessContext::default();
         let mut classic = SharedProcessEventQueue::default();
@@ -14018,6 +14431,34 @@ mod tests {
     }
 
     #[test]
+    fn dialog_content_revisions_share_across_gateways_and_reset_on_window_reuse() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessWindowList::from_value(vec![0x1000]);
+        let mut native = SharedProcessWindowList::default();
+        context.attach_window_list(&mut classic);
+        context.attach_window_list(&mut native);
+        let lifetime = classic.generation_for_window(0x1000);
+        classic.invalidate_dialog_content(0x1000);
+        let revision = native.dialog_content_revision(0x1000);
+        assert_ne!(revision, 0);
+        assert_eq!(native.generation_for_window(0x1000), lifetime);
+        let detached = native.clone();
+        native.invalidate_dialog_content(0x1000);
+        assert_ne!(classic.dialog_content_revision(0x1000), revision);
+        assert_eq!(detached.dialog_content_revision(0x1000), revision);
+        native.register_new_window(0x1000);
+        assert_eq!(classic.dialog_content_revision(0x1000), 0);
+        assert_ne!(classic.generation_for_window(0x1000), lifetime);
+        classic.invalidate_dialog_content(0x1000);
+        assert!(native.remove_window(0x1000));
+        assert_eq!(classic.dialog_content_revision(0x1000), 0);
+        classic.push(0x1000);
+        let fresh = classic.generation_for_window(0x1000);
+        assert_ne!(fresh, lifetime);
+        assert_eq!(native.dialog_content_revision(0x1000), 0);
+    }
+
+    #[test]
     fn attached_window_lists_share_order_immediately_while_clones_detach() {
         let context = ProcessContext::default();
         let mut classic = SharedProcessWindowList::from_value(vec![0x1000, 0x2000]);
@@ -14057,6 +14498,36 @@ mod tests {
         assert_eq!(classic.window_class(0x1000), None);
         native.clear();
         assert_eq!(classic.window_class(0x2000), None);
+    }
+
+    #[test]
+    fn window_generations_survive_reordering_and_change_on_reuse() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessWindowList::default();
+        let mut native = SharedProcessWindowList::default();
+        context.attach_window_list(&mut classic);
+        context.attach_window_list(&mut native);
+
+        classic.push(0x1000);
+        let first = classic.register_new_window(0x1000);
+        let bounds = (40, 50, 180, 270);
+        assert!(!native.grow_icon_drawn_at(0x1000, bounds));
+        classic.record_grow_icon(0x1000, bounds);
+        assert!(native.grow_icon_drawn_at(0x1000, bounds));
+        native.invalidate_grow_icon(0x1000);
+        assert!(!classic.grow_icon_drawn_at(0x1000, bounds));
+        classic.record_grow_icon(0x1000, bounds);
+        assert!(!native.grow_icon_drawn_at(0x1000, (40, 50, 200, 300)));
+        assert!(!classic.grow_icon_drawn_at(0x1000, bounds));
+        native.bring_to_front(0x1000);
+        assert_eq!(native.generation_for_window(0x1000), first);
+
+        native.remove_window(0x1000);
+        native.push(0x1000);
+        let second = native.register_new_window(0x1000);
+        assert_ne!(first, second);
+        assert_eq!(classic.generation_for_window(0x1000), second);
+        assert!(!classic.grow_icon_drawn_at(0x1000, bounds));
     }
 
     #[test]
@@ -14339,6 +14810,8 @@ mod tests {
             0x1000,
             crate::list_manager::ProcessListRecord {
                 handle: 0x1000,
+                generation: crate::list_manager::new_list_generation(),
+                definition_id: 0,
                 cells_handle: 0x2000,
                 view_rect: (0, 0, 40, 100),
                 data_bounds: (0, 0, 2, 1),
@@ -14351,6 +14824,7 @@ mod tests {
                 selected: [(0, 0)].into(),
                 last_click: (0, 0),
                 last_click_tick: 10,
+                standard_cell_drawings: Default::default(),
             },
         );
         context.attach_list_manager(&mut native);

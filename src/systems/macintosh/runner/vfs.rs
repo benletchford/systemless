@@ -46,3 +46,12 @@ pub(crate) fn vfs_fork_hash(bytes: &[u8]) -> u64 {
     }
     hash
 }
+
+/// Durable directory identity is its path; guest directory IDs are rebuilt on import.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VfsDirectorySnapshot {
+    pub path: String,
+    pub creator: u32,
+    pub file_type: u32,
+    pub finder_flags: u16,
+}

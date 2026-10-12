@@ -1,0 +1,33 @@
+{
+  "commands": [
+    {
+      "command": "cargo check --locked --no-default-features",
+      "exit_code": 0,
+      "scope": "macOS checkout headless library"
+    },
+    {
+      "command": "cargo package --locked --offline --allow-dirty --no-verify",
+      "exit_code": 0,
+      "scope": "442-file package creation; this command alone performs no build verification"
+    },
+    {
+      "command": "cargo check --locked --offline --no-default-features --manifest-path EXTRACTED/Cargo.toml --target-dir REPOSITORY/target",
+      "exit_code": 0,
+      "scope": "Extracted package headless library"
+    },
+    {
+      "command": "cargo check --locked --offline --manifest-path EXTRACTED/Cargo.toml --target-dir REPOSITORY/target",
+      "exit_code": 0,
+      "scope": "Extracted package default macOS GPUI library and production binary"
+    }
+  ],
+  "scope": "Compilation checks using available crates.io dependencies offline; shared cache, no release or publishing. No packaged test-suite, clean-room dependency download, other host, native UI execution or performance qualification is implied. The artifact includes the explicitly archived pending pointer-test patch; those tests are not executed by these checks.",
+  "logs": {
+    "package-headless.log": "657a825ffd2f8cabf822df7fbc5abac9960c34505da105febefcab3cff3cf21a",
+    "source.patch": "ec00d3ba11554978449be0901ee0a006fe04e19579f404bd8f936a5ac6ecc9ca",
+    "package-default.log": "7dd41bb897cd06cfa9512b1eaed24d795ba1b88866b9c7b5c521e3d8cde996da",
+    "checkout-headless.log": "28dca4f27666e1c91f9de43be016551ecb07fe1fab9c9fc723d6f7c03ffcd363",
+    "package.log": "5a94583a74bb6cde939c5b967e412b26ce84f2b058ffb07f77bc06fedf93bf42",
+    "artifact.json": "bd151c386c99344118d7c25a0bd69e6c1d18c6e1fe4036c6ec3e34467a4c7038"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "sources": {
+    "src/bin/gpui_demo.rs": "d57ac557c4108847292bc4502bded7f383118134229af9a68e07f8b19202e7a9",
+    "src/bin/gpui_demo_a11y.rs": "68085aac1cb46ace101437a80c9f1e27465a092022d11c00dd3c35af57f2cc0f"
+  },
+  "scope": "Frontend single-line dialog TextRun/SetTextSelection; backend dialog6 incl wrapped PPC selection/text preservation/stale rejection. Wrapped frontend multi-run actions remain unimplemented; no native AX or composed node geometry qualification.",
+  "result": "1 passed44.86s; production check2.64s"
+}

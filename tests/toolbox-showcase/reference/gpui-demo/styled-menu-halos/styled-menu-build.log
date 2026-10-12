@@ -1,0 +1,166 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6187:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6187 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+warning: fields `game`, `prefer_powerpc`, `screen_depth`, and `debug_socket` are never read
+  --> src/bin/gpui_demo.rs:4:9
+   |
+ 3 | pub(crate) struct LaunchOptions {
+   |                   ------------- fields in this struct
+ 4 |     pub game: std::path::PathBuf,
+   |         ^^^^
+ 5 |     pub prefer_powerpc: bool,
+   |         ^^^^^^^^^^^^^^
+ 6 |     pub screen_depth: Option<u16>,
+   |         ^^^^^^^^^^^^
+...
+12 |     pub debug_socket: Option<std::path::PathBuf>,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `launch` is never used
+  --> src/bin/gpui_demo.rs:17:15
+   |
+17 | pub(crate) fn launch(options: LaunchOptions) {
+   |               ^^^^^^
+
+warning: associated functions `classic_textedit_run` and `ppc_styled_run` are never used
+    --> src/bin/gpui_demo_text.rs:963:12
+     |
+ 904 | impl ClassicLine {
+     | ---------------- associated functions in this implementation
+...
+ 963 |     pub fn classic_textedit_run(
+     |            ^^^^^^^^^^^^^^^^^^^^
+...
+1025 |     pub fn ppc_styled_run(
+     |            ^^^^^^^^^^^^^^
+
+warning: field `geometry` is never read
+    --> src/bin/gpui_demo_text.rs:1277:9
+     |
+1276 | pub(crate) struct StyledTextEditLine {
+     |                   ------------------ field in this struct
+1277 |     pub geometry: systemless::runner::TextEditLineGeometry,
+     |         ^^^^^^^^
+     |
+     = note: `StyledTextEditLine` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: fields `bytes` and `measured_positions` are never read
+    --> src/bin/gpui_demo_text.rs:1285:9
+     |
+1284 | pub(crate) struct StyledTextEditRun {
+     |                   ----------------- fields in this struct
+1285 |     pub bytes: std::ops::Range<usize>,
+     |         ^^^^^
+1286 |     pub left: i16,
+1287 |     pub measured_positions: Vec<i16>,
+     |         ^^^^^^^^^^^^^^^^^^
+     |
+     = note: `StyledTextEditRun` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: associated function `qualify` is never used
+    --> src/bin/gpui_demo_text.rs:1375:12
+     |
+1313 | impl ClassicListCellPaintPlan {
+     | ----------------------------- associated function in this implementation
+...
+1375 |     pub fn qualify(
+     |            ^^^^^^^
+
+warning: methods `pixels_with_selection`, `pixels_with_solid_caret`, and `pixels` are never used
+    --> src/bin/gpui_demo_text.rs:1669:12
+     |
+1631 | impl StyledTextEditLine {
+     | ----------------------- methods in this implementation
+...
+1669 |     pub fn pixels_with_selection(
+     |            ^^^^^^^^^^^^^^^^^^^^^
+...
+1695 |     pub fn pixels_with_solid_caret(
+     |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1714 |     pub fn pixels(&self) -> Option<std::collections::BTreeMap<(i16, i16), [u8; 3]>> {
+     |            ^^^^^^
+
+warning: function `classic_styled_text_edit_ink` is never used
+    --> src/bin/gpui_demo_text.rs:1732:15
+     |
+1732 | pub(crate) fn classic_styled_text_edit_ink(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1738:15
+     |
+1738 | pub(crate) fn classic_styled_text_edit_selection(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_solid_caret` is never used
+    --> src/bin/gpui_demo_text.rs:1747:15
+     |
+1747 | pub(crate) fn classic_styled_text_edit_solid_caret(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels` is never used
+    --> src/bin/gpui_demo_text.rs:1765:4
+     |
+1765 | fn classic_styled_text_pixels(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels_with_background` is never used
+    --> src/bin/gpui_demo_text.rs:1772:4
+     |
+1772 | fn classic_styled_text_pixels_with_background(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `smooth_halo_mask` is never used
+    --> src/bin/gpui_demo_text.rs:2095:4
+     |
+2095 | fn smooth_halo_mask(
+     |    ^^^^^^^^^^^^^^^^
+
+warning: associated items `reset_preferences` and `root` are never used
+   --> src/bin/desktop/desktop_save_store.rs:94:12
+    |
+ 77 | impl DesktopSaveStore {
+    | --------------------- associated items in this implementation
+...
+ 94 |     pub fn reset_preferences(game_path: &Path) -> io::Result<usize> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+106 |     pub fn root(&self) -> &Path {
+    |            ^^^^
+
+warning: function `matching_child_dirs` is never used
+   --> src/bin/desktop/desktop_save_store.rs:426:4
+    |
+426 | fn matching_child_dirs(dir: &Path, lower_name: &str) -> io::Result<Vec<PathBuf>> {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `launch` is never used
+    --> src/bin/gpui_demo.rs:4693:19
+     |
+4693 |     pub(super) fn launch(options: super::LaunchOptions) {
+     |                   ^^^^^^
+
+warning: `systemless` (example "gpui-menu-demo") generated 16 warnings
+    Finished `ci-test` profile [optimized + debuginfo] target(s) in 15.91s

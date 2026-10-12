@@ -1,0 +1,22 @@
+{
+  "base_source_commit": "6ca31ec9bf315fb527c98d31efe73a8ba070bf8a",
+  "outcome": "All4-mode guest spacing/style/typing scenario passed in70.64s; focused classic getter and both existing setters passed; native PPC getter and existing styled measurement test passed0.14s; fixture --verify rebuilt byte-for-byte. Exact per-test timings are in the successful logs.",
+  "source_sha256": {
+    "src/systems/macintosh/trap/dialog.rs": "7e67541103ba33a756d58f2eb2607369dcfcde35a8101e069bc3ba05b2d36dd9",
+    "src/systems/macintosh/trap/dialog/tests.rs": "6ce1ce82befd183c17562d0d5220f626364b3f719a56108f54ca008f7767ae17",
+    "src/systems/macintosh/loader/ppc/dispatch_textedit.rs": "5c4d64b44a5b0b1b4b272cac882b990aec1522e1200f7e5cf61f5225701f6eaa",
+    "src/systems/macintosh/loader/ppc/dispatch_imports.rs": "ff9cc81cec7a98156bba0d43e1f9057d3d165b0389f1126d4401babb7e86a08b",
+    "src/systems/macintosh/loader/ppc/import_targets.rs": "6a7be4a95bba68d5dd4f415543762fb854dbe1aa8cca8c8b8d3049b4b804945d",
+    "src/systems/macintosh/loader/ppc/tests/text_edit.rs": "8e9bfb0dd04bbe3296ff060a8bd1c8018321e26aa496c63d3a0d0490a5c6318b",
+    "tests/toolbox-showcase/showcase.c": "9d38bd23c3ab0253f099ad82a7bc37c20cd382704c0d1b63e9d3800e5c3b2dea",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "ab6ea5665bb0e3743122b51b7035475275ce88c48c040f3e52b536a581123bbc",
+    "tests/macintosh_styled_spacing.rs": "cab51ed5ffbfabff2851c2e027cf76ea0156e66633b3d5233cfa9c51b14534d2"
+  },
+  "source_hash_timing": "Pinned while final PPC/guest jobs ran and verified after terminal success. All implementation/fixture/test changes uncommitted at execution. PPC test source was extended after guest job launched; this unit-only module is absent from the ordinary guest test library build.",
+  "test_executables_sha256": {
+    "target/debug/deps/systemless-05ca615472fa3f01": "40e18ef1e89e8372e90f4a58970e33b42364cd3853d595edc25248272ccdf368",
+    "target/debug/deps/macintosh_styled_spacing-b51d1581e96d504f": "53a5b91fc6eb9802a42a3c6413608412c5e3695db91c27390b75988185165f78"
+  },
+  "binary_hash_timing": "After successful final tests; no rebuild before hashing.",
+  "scope": "Guest Option-C/E/B/N uses TEGetStyle/TESetStyle to preserve mixed font/size/colour/non-spacing faces and selection. Real guest mouse and Q/backspace typing in condensed/extended fields across mono68k, colour68k, PPC8, PPC16 with runtime assertions. Classic getter correct offset and Style-byte ABI/padding/metrics/stack; PPC import native argument registers, run boundary/metrics/padding/register preservation. Before logs expose classic face loss and missing PPC import. Not actual GPUI composed new-style appearance, shared GPUI hit-testing, independent original-font oracle or live performance. Fixture change does not retroactively qualify older archive fixture hashes."
+}

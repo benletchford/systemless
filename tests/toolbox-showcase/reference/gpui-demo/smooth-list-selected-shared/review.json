@@ -1,0 +1,26 @@
+{
+  "source_commit": "4f6da9eefdc6d0edb6a3a5990915cc14e5d534b9",
+  "scope": "16 selected-list appearance captures; provenance/geometry checks only, retained source cannot prove full replacement, no lifecycle/performance qualification",
+  "visually_reviewed": [
+    {
+      "rendered": "mono-selected-0.75.png",
+      "observations": "Smooth selected white text and system chrome; existing native black list panel retained; application labels remain binary"
+    },
+    {
+      "rendered": "mono-selected-1.5.png",
+      "observations": "Smooth selected row, title, menus and buttons; black native panel retained"
+    },
+    {
+      "rendered": "colour-selected-1.png",
+      "observations": "Smooth normal and selected white-on-green rows; last visible row clipped at lower list border"
+    },
+    {
+      "rendered": "ppc8-selected-0.75.png",
+      "observations": "Smooth normal and white-on-black selected labels; lower row clipped at native view border"
+    },
+    {
+      "rendered": "ppc16-selected-2.png",
+      "observations": "Smooth normal and selected labels, native lower-edge clipping; reviewed display was resized from3200x2400"
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "compiled_source_head": "e6690b212ee03d875d50f9576afbeebc2426aa9c",
+  "recording_head": "7829afcbeff160152cc4d7e9fceda55041809b67",
+  "build_command": "cargo build --locked --release --bin systemless",
+  "build_exit": 0,
+  "release_binary_sha256": "cd22ad396e09f084d950bc992c1c15a51024d7035e208a9db989b226497731c4",
+  "scope": "Optimized production binary links; --help succeeds; existing public graphics-to-Controls guest workflow passes colour68k and PPC with requested depth8, two assertions each and zero exhausted frames. Both Controls images reviewed. Report proves actual CPU; depth configuration confirmed by launcher source but report does not independently sample depth. Guest-runtime images are not shared GPUI compositor or physical GUI evidence. Package listing only, no new packaged build. No broad release gate closed.",
+  "source_sha256": {
+    "Cargo.toml": "00d125ba30b454d914051b0cabca25f931dd811c04ae0225a1ea774bec7827c2",
+    "Cargo.lock": "d39c8347abf84d2272d4942db42b7ade3fb9ebefacc7395b41673b9dd1060a5f",
+    "src/bin/systemless.rs": "83e40f3c4246d7d1abbdcaec27596608fc2d9e09f416cf0ddddac74b0ba8cfc6",
+    "src/bin/gpui_demo.rs": "f7a93f0def199a963f0f87f8087cef6f92bb7347b06922c7250bbed586212fa3",
+    "src/bin/gpui_demo_cursor.rs": "6d6c7d13aff562a64bbfd2ca289c3c1812663cce521e0608d60f93cb2b7c6f78",
+    "src/bin/desktop/play.rs": "a4e5b39ecf57fa97df372d3f1c4cf19f980aecd9adccea565572c39e4868e48b",
+    "src/systems/macintosh/game/launch.rs": "05e719164645dc8a9857f7d4c78aade52753b4c573f88b45cf29311bacfc8f0e",
+    "tests/play/toolbox-showcase.json": "771cb2e7b7181f577e90ef796d9b2fc976edcc04a5c801e60f64be6b570cb76d",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "28433983ced239f85c319718528a19c558adb0b355c5e28e0daf9b1a1e824aa8"
+  },
+  "evidence_sha256": {
+    "package-list.log": "415898a608915cdc7e0ce14b3aa65eb8bd12a510878fc29cd194e22979e5bdca",
+    "package-inclusion.json": "b0176a3eeb9c38aa16bcd3f08071f31b043ef974b5def02a9592a5c1b8aac445",
+    "release-build.log": "e34ced33960e238d730ae3e03b5ce05237453fe11e2f5e157ce82a99db380916",
+    "release-help.log": "65634e5435ef2be51c9e3c2a566fdd8761802b3fc00610f1b9cd4a960db5abd7",
+    "ppc8/report.json": "50b0338aa06e15d6e9e97eb6ca7dfd4ad0be3509c91c6cafa53b3f8f2eb70542",
+    "ppc8/run.log": "1d3972f4564c11b80eef0e2f4423f93a281e82fccf2579d51fbb82020ce58d2d",
+    "ppc8/graphics.png": "0bc29dbfc79d08bf681c55feb869763a264943dd934551192045f3a6acf65bd5",
+    "ppc8/controls.png": "2748ba43d1f9a4b381aea3676ac762f842815781ac84c3eed993d6fcc33603be",
+    "colour/report.json": "903e2f77aaaac0847aebf51102590fdd3231f3b9521b352eedf10ece81fafb99",
+    "colour/run.log": "0222f57eb3f1f23472a32617eb4e41bbd374b205cd0b533a4c9995fbdc7a07e1",
+    "colour/graphics.png": "0bc29dbfc79d08bf681c55feb869763a264943dd934551192045f3a6acf65bd5",
+    "colour/controls.png": "2748ba43d1f9a4b381aea3676ac762f842815781ac84c3eed993d6fcc33603be"
+  },
+  "run_commands": {
+    "colour": "target/release/systemless tests/toolbox-showcase/toolbox-showcase.sit --headless --prefer-classic-68k --screen-depth 8 --play-script tests/play/toolbox-showcase.json --play-output /tmp/gpui-release-colour-workflow",
+    "ppc8": "target/release/systemless tests/toolbox-showcase/toolbox-showcase.sit --headless --prefer-powerpc --screen-depth 8 --play-script tests/play/toolbox-showcase.json --play-output /tmp/gpui-release-ppc8-workflow"
+  },
+  "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "binary_format": "target/release/systemless: Mach-O 64-bit executable arm64"
+}

@@ -99,6 +99,7 @@ impl PpcLoadedApp {
 
     fn refresh_apple_event_launch_capability(&mut self) {
         let size_resource = self.launch_size_resource();
+        self.application_size.with_mut(|current| *current = size_resource);
         let high_level_event_aware =
             size_resource.is_some_and(ApplicationSizeResource::is_high_level_event_aware);
         self.apple_events

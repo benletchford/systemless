@@ -443,10 +443,14 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn play_sys_beep(&mut self, bus: &mut MacMemoryBus) {
+    pub(crate) fn play_sys_beep(&mut self, bus: &mut MacMemoryBus) {
+        let _ = self.queue_sys_beep(bus);
+    }
+
+    pub(crate) fn queue_sys_beep(&mut self, bus: &mut MacMemoryBus) -> Option<u32> {
         let volume = self.sound_manager.sys_beep_volume();
         if volume & 0xFFFF == 0 && (volume >> 16) & 0xFFFF == 0 {
-            return;
+            return None;
         }
 
         let guest_ptr = bus.alloc(GUEST_SND_CHANNEL_SIZE);
@@ -460,6 +464,7 @@ impl super::TrapDispatcher {
             0,
         );
         self.sound_manager.add_channel(chan);
+        Some(guest_ptr)
     }
 
     pub(crate) fn dispatch_sound<C: CpuOps>(

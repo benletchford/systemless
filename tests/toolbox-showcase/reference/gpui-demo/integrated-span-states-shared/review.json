@@ -1,0 +1,40 @@
+{
+  "scope": "Five directly viewed composed fields across all4 CPU/depth modes, scales0.75/1/2, selection/suspended/caret. Other cases not directly visually reviewed. Pixel equivalence separate from native font fidelity.",
+  "images": [
+    {
+      "file": "selection-ppc16-selected-none-1.png",
+      "sha256": "a00ec44f7e572a4048dbc338f3b55f52cee89a78d4228fe2bae61698e76c87df",
+      "observations": "Smooth styled replacement field retains guest selection clipping and mixed font styles; menus/title crisp. Application-drawn explanatory text remains guest bitmap rendering; native monochrome custom panels retained.",
+      "preview_note": "Full-scene tool preview resized from original1600x1200.",
+      "capture_sha256": "3577a66227e6fb52f0d2f6dd8e07cce0ac2f02b5749698d65a385c81aa5b375a"
+    },
+    {
+      "file": "selection-mono-selected-none-1.png",
+      "sha256": "25567216f8803d86a8f308fc50e8d638baf030142f6ae8065fa2b81f4a0a8008",
+      "observations": "Smooth styled replacement field retains guest selection clipping and mixed font styles; menus/title crisp. Application-drawn explanatory text remains guest bitmap rendering; native monochrome custom panels retained.",
+      "preview_note": "Full-scene tool preview resized from original1600x1200.",
+      "capture_sha256": "b2e2eaaad73fb96278dd2772f76e09b12da8673c849cd03ab65589ce42f01536"
+    },
+    {
+      "file": "selection-colour-selected-none-1.png",
+      "sha256": "f9bce240745e7540c96ff079ee60668232ee43bd35b249c2dd254e59b56a6b27",
+      "observations": "Smooth styled replacement field retains guest selection clipping and mixed font styles; menus/title crisp. Application-drawn explanatory text remains guest bitmap rendering; native monochrome custom panels retained.",
+      "preview_note": "Full-scene tool preview resized from original1600x1200.",
+      "capture_sha256": "46a2550b4a6072a9fea956c3568e8592206006660d7f18439a7a96e51b848160"
+    },
+    {
+      "file": "selection-ppc8-suspended-none-0.75.png",
+      "sha256": "b5c594d51fab68e0479866f7fca2e5a80219eb812578eda54cc90d4c589c91b3",
+      "observations": "Suspended selected field shows smooth mixed-style text without selection; inactive title and field geometry retained.",
+      "preview_note": "1200x900 preview.",
+      "capture_sha256": "3247d60c75d46c2d8210d9d608c1daa210e881177577fb6dd4422de63cfe270f"
+    },
+    {
+      "file": "caret-mono-visible-26-2.png",
+      "sha256": "69a06db7b7fb0f8040c596c5674d73847ef85e680bb5ba305f87630659ec40e9",
+      "observations": "Visible insertion caret stays at guest boundary between italic Size and underlined Font; smooth mixed-style text and native monochrome custom panels retained.",
+      "preview_note": "Tool resized original3200x2400 to1824x1368.",
+      "capture_sha256": "ecccccb23413af82c94ebb12e424e410e691bcdecfb2668ca4a8ed2de716be95"
+    }
+  ]
+}

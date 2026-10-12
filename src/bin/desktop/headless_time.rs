@@ -143,9 +143,7 @@ pub(super) fn run(
     runner.set_app_start_time(start_time);
     let app = game::load_game_from_path(&mut runner, path).expect("Failed to load game");
     let mut saves = DesktopSaveStore::for_loaded_archive(path, &mut runner);
-    for file in saves.load_saved_files() {
-        runner.import_vfs_file(&file);
-    }
+    saves.restore_saved_state(&mut runner);
     game::init_game(&mut runner, &app);
     runner.prepare_text_presentation();
     let instructions_per_tick = configure_realtime_execution_rate(&mut runner);
@@ -447,36 +445,67 @@ mod tests {
     }
 
     #[test]
-    fn retained_modal_wait_matches_desktop_tick_scheduling_without_a_window() {
-        use super::super::{runtime_driver::GuiDriver, FRAME_DURATION};
-        let mut timed = modal_runner();
-        let start = timed.guest_tick();
-        let mut driver = GuiDriver::new(
-            "dummy".into(),
-            false,
-            true,
-            false,
-            Some(8),
-            systemless::ui_theme::UiThemeId::ClassicSystem7,
+    fn live_modal_slice_finishes_long_sound_refill_before_yielding() {
+        let mut runner = modal_runner();
+        let callback = 0x40000;
+        let marker = 0x50000;
+        let header = 0x60000;
+        let buffer = 0x61000;
+        // A finite refill longer than a single live CPU batch. Its side effect
+        // must be visible before the retained modal loop yields this frame.
+        runner.bus_mut().write_word(callback, 0x203C); // MOVE.L #15000,D0
+        runner.bus_mut().write_long(callback + 2, 15000);
+        runner.bus_mut().write_word(callback + 6, 0x5380); // SUBQ.L #1,D0
+        runner.bus_mut().write_word(callback + 8, 0x66FC); // BNE.S loop
+        runner.bus_mut().write_word(callback + 10, 0x13FC); // MOVE.B #$A5,marker
+        runner.bus_mut().write_word(callback + 12, 0x00A5);
+        runner.bus_mut().write_long(callback + 14, marker);
+        runner.bus_mut().write_word(callback + 18, 0x4E75); // RTS
+        runner.bus_mut().write_long(header + 12, buffer);
+        runner.dispatcher_mut().queue_sound_doubleback_callback(
+            systemless::sound::PendingDoubleBackCallback {
+                callback_addr: callback,
+                chan_ptr: 0x62000,
+                header_ptr: header,
+                exhausted_buffer_index: 0,
+            },
         );
-        driver.runner = Some(modal_runner());
-        let origin = std::time::Instant::now();
-        driver.start_time = Some(GuiDriver::wall_clock_origin_for_guest_tick(origin, start));
+        let deadline = runner.guest_tick() + 1;
+        let steps = super::super::cpu_frame::advance(
+            &mut runner, super::super::CPU_BATCH_INSTRUCTIONS, deadline,
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert!(steps > super::super::CPU_BATCH_INSTRUCTIONS);
+        assert_eq!(runner.bus().read_byte(marker), 0xA5);
+        assert!(!runner.has_pending_sound_work());
+        assert!(runner.is_ui_tracking_active());
+        assert_eq!(runner.cpu().read_reg(Register::PC), 0x10000);
+        assert_eq!(runner.cpu().read_reg(Register::A7), 0x100000);
+        assert_eq!(runner.guest_tick(), deadline);
+    }
+
+    #[test]
+    fn retained_modal_wait_matches_desktop_tick_scheduling_without_a_window() {
+        let mut timed = modal_runner();
+        let mut live = modal_runner();
+        let start = timed.guest_tick();
+        let mut instructions = 0;
         for elapsed in 0..10 {
-            let now = origin + FRAME_DURATION * elapsed;
-            driver.next_frame_time = Some(now + FRAME_DURATION);
-            driver.step_frame_with_clock(|| now);
             let work = frame(&mut timed, 366);
             assert_eq!(work.foreground, 1, "one modal refire per frontend tick");
             assert!(!work.budget_exhausted);
-            let gui = driver.runner.as_ref().unwrap();
+            instructions += super::super::cpu_frame::advance(
+                &mut live, super::super::CPU_BATCH_INSTRUCTIONS,
+                start + elapsed + 1, std::time::Instant::now() + std::time::Duration::from_secs(1),
+            );
+            live.finish_gui_frame();
             assert_eq!(timed.guest_tick(), start + elapsed + 1);
-            assert_eq!(timed.guest_tick(), gui.guest_tick());
+            assert_eq!(timed.guest_tick(), live.guest_tick());
             for register in [Register::PC, Register::A7] {
-                assert_eq!(timed.cpu().read_reg(register), gui.cpu().read_reg(register));
+                assert_eq!(timed.cpu().read_reg(register), live.cpu().read_reg(register));
             }
         }
-        assert_eq!(driver.total_instructions, 10);
+        assert_eq!(instructions, 10);
     }
 
     #[test]

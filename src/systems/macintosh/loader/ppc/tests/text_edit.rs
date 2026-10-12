@@ -341,6 +341,29 @@ fn native_styled_textedit_styles_runs_and_reports_real_measurements() {
     assert_eq!(runs[1].style.size, 10);
     assert_eq!(runs[1].style.color.blue, 0xffff);
 
+    // Query both sides of the run boundary using native PPC argument registers.
+    for offset in [0u32, 2, 3, 5] {
+        let expected = ppc_te_style_at_offset(&runs, offset as usize);
+        loaded.memory.write_u8(result_style_ptr + 3, 0x56).unwrap();
+        loaded.cpu.gpr[3] = offset;
+        loaded.cpu.gpr[4] = result_style_ptr;
+        loaded.cpu.gpr[5] = mode_ptr;
+        loaded.cpu.gpr[6] = mode_ptr + 2;
+        loaded.cpu.gpr[7] = te_handle;
+        let registers = loaded.cpu.gpr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TEGetStyle);
+        assert_eq!(loaded.cpu.gpr, registers);
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr), Some(expected.font as u16));
+        assert_eq!(loaded.memory.read_u8(result_style_ptr + 2), Some(expected.face));
+        assert_eq!(loaded.memory.read_u8(result_style_ptr + 3), Some(0x56));
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr + 4), Some(expected.size as u16));
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr + 6), Some(expected.color.red));
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr + 8), Some(expected.color.green));
+        assert_eq!(loaded.memory.read_u16_be(result_style_ptr + 10), Some(expected.color.blue));
+        assert_eq!(loaded.memory.read_u16_be(mode_ptr), Some(expected.line_height as u16));
+        assert_eq!(loaded.memory.read_u16_be(mode_ptr + 2), Some(expected.ascent as u16));
+    }
+
     loaded.cpu.gpr[3] = te_handle;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::TECalText);
     let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
@@ -557,6 +580,63 @@ fn native_styled_textedit_styles_runs_and_reports_real_measurements() {
     loaded.cpu.gpr[4] = 12;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::RealFont);
     assert_eq!(loaded.cpu.gpr[3], 0);
+}
+
+#[test]
+fn native_textedit_vertical_arrows_preserve_text_and_follow_guest_lines() {
+    let pef = synthetic_pef_with_import(b"TEKey");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let rects = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rects, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, rects, 10, 20, 80, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, rects + 8, 10, 20, 80, 220).unwrap();
+    let mut last_mem_error = PPC_NO_ERR;
+    let te_handle = ppc_te_initialize_record(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        rects,
+        rects + 8,
+        PPC_MAIN_GWORLD,
+        1,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        12,
+        PpcRgbColor {
+            red: 0,
+            green: 0,
+            blue: 0,
+        },
+        false,
+    );
+    assert_eq!(
+        ppc_te_set_text(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            te_handle,
+            b"MMM\rMMM",
+        ),
+        PPC_NO_ERR
+    );
+
+    let ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_START_OFFSET, 2).unwrap();
+    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_END_OFFSET, 2).unwrap();
+    for (key, expected) in [(0x1f, 6), (0x1e, 2), (0x1e, 0), (0x1f, 4), (0x1f, 7)] {
+        loaded.cpu.pc = loaded.entry_pc; loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = key; loaded.cpu.gpr[4] = te_handle;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle), Some(b"MMM\rMMM".to_vec()));
+        assert_eq!(loaded.memory.read_u16_be(ptr + PPC_TE_SEL_START_OFFSET), Some(expected));
+        assert_eq!(loaded.memory.read_u16_be(ptr + PPC_TE_SEL_END_OFFSET), Some(expected));
+    }
 }
 
 #[test]
@@ -1205,5 +1285,388 @@ fn textedit_idle_uses_the_same_guest_caret_interval_as_get_caret_time() {
             loaded.memory.read_u32_be(record + PPC_TE_CARET_TIME_OFFSET),
             Some(previous + interval)
         );
+    }
+}
+
+#[test]
+fn text_edit_activation_repaints_selection_without_update_or_idle() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TENew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 32]);
+    ppc_write_rect(&mut loaded.memory, scratch, 20, 10, 60, 120).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+    let handle = loaded.cpu.gpr[3];
+    loaded.memory.write_u8(scratch + 16, b'M').unwrap();
+    loaded.cpu.gpr[3] = scratch + 16;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 1;
+    loaded.cpu.gpr[5] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let pixels = |memory: &mut PpcSectionMem| {
+        let mut result = Vec::new();
+        for y in 20..60 {
+            for x in 10..120 { result.push(ppc_quickdraw_read_pixel(memory, front, (x, y))); }
+        }
+        result
+    };
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: false });
+    let inactive = pixels(&mut loaded.memory);
+    let glyph_ink = loaded.memory.presentation().text_edit_plain_ink(handle);
+    assert!(glyph_ink.is_some(), "completed native paint must retain plain glyph ink");
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: true });
+    let active = pixels(&mut loaded.memory);
+    assert_eq!(loaded.memory.presentation().text_edit_plain_ink(handle), glyph_ink,
+        "selection inversion must not become the retained foreground");
+    assert_ne!(active, inactive, "activation must paint the selection immediately");
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: false });
+    assert_eq!(pixels(&mut loaded.memory), inactive, "deactivation must remove selection pixels");
+    assert_eq!(loaded.memory.presentation().text_edit_plain_ink(handle), glyph_ink);
+    let snapshot = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+        &mut |addr| loaded.memory.read_u8(addr));
+    assert_eq!(snapshot.records[0].selection, (0, 1));
+    assert!(!snapshot.records[0].active);
+}
+
+#[test]
+fn text_edit_snapshot_follows_guest_idle_blink_phase() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TENew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 16]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 100, 200).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 0, 0, 100, 200).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+    let handle = loaded.cpu.gpr[3];
+    loaded.set_tick_count(100);
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: true });
+    assert_eq!(loaded.memory.read_u32_be(crate::memory::globals::addr::CARET_TIME), Some(32));
+    // Text (1993), p. 2-84: only guest idle calls advance the blink phase.
+    // The setting may change while the edit record remains active. The new
+    // interval is measured from the previous blink, not from the setting write.
+    for (interval, tick, visible) in [(32, 131, true), (32, 132, false), (32, 163, false),
+        (32, 164, true), (64, 227, true), (64, 228, false), (5, 232, false), (5, 233, true)] {
+        loaded.memory.write_u32_be(crate::memory::globals::addr::CARET_TIME, interval).unwrap();
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetCaretTime);
+        assert_eq!(loaded.cpu.gpr[3], interval);
+        loaded.set_tick_count(tick);
+        loaded.cpu.gpr[3] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TEIdle);
+        let snapshot = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+            &mut |addr| loaded.memory.read_u8(addr));
+        assert_eq!(snapshot.records[0].caret_visible, visible, "tick {tick}");
+        assert_eq!(snapshot.records[0].selection, (0, 0));
+        assert!(snapshot.records[0].active);
+    }
+}
+
+#[test]
+fn styled_snapshot_advances_match_ppc_quickdraw_widths() {
+    use crate::text_edit::{styled_byte_advance, TextEditLineLayoutPolicy};
+    for font in [0, 1, 3, 4, 128] {
+        for size in [0, 9, 10, 12, 14, 17, 24, 36] {
+            for face in 0..128 {
+                for byte in 0..=255 {
+                    assert_eq!(styled_byte_advance(TextEditLineLayoutPolicy::PpcRunMetrics,
+                        font, size, face, byte), ppc_text_width_bytes(font, size, face, &[byte]),
+                        "font {font}, size {size}, face {face}, Mac Roman {byte}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn te_sel_view_respects_auto_scroll_and_reveals_selection() {
+    let pef = synthetic_pef_with_import(b"TESelView");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    let dest_rect = scratch;
+    let view_rect = scratch + 8;
+    loaded.memory.add_region(scratch, vec![0; 0x20]);
+    ppc_write_rect(&mut loaded.memory, dest_rect, 60, 10, 200, 100).unwrap();
+    ppc_write_rect(&mut loaded.memory, view_rect, 60, 10, 120, 100).unwrap();
+    loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+    let mut last_mem_error = PPC_NO_ERR;
+    let te_handle = ppc_te_initialize_record(
+        None,
+        &mut loaded.memory,
+        test_heap_cursor!(loaded),
+        test_heap_limit!(loaded),
+        &mut last_mem_error,
+        test_handles!(loaded),
+        dest_rect,
+        view_rect,
+        PPC_MAIN_GWORLD,
+        0,
+        PPC_QD_TEXT_MODE_SRC_OR,
+        12,
+        loaded.quickdraw_fore_color,
+        false,
+    );
+    assert_eq!(
+        ppc_te_set_text(
+            None,
+            &mut loaded.memory,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            &mut last_mem_error,
+            test_handles!(loaded),
+            te_handle,
+            b"0\r0\r0\r0\r0\r0\r0\r0",
+        ),
+        PPC_NO_ERR
+    );
+    let ptr = ppc_te_record_ptr(&mut loaded.memory, te_handle).unwrap();
+    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_START_OFFSET, 14).unwrap();
+    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_END_OFFSET, 14).unwrap();
+    let before = ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET).unwrap();
+    loaded.cpu.gpr[3] = te_handle;
+    // Exercise the actual imported symbol, not only the geometry helper.
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET), Some(before));
+    loaded.cpu.gpr[3] = 1;
+    loaded.cpu.gpr[4] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEAutoView);
+    loaded.cpu.gpr[3] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESelView);
+    let after = ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET).unwrap();
+    assert!(after.0 < before.0, "last-line selection must move into the view");
+    assert_eq!(after.2 - after.0, before.2 - before.0);
+    let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), te_handle, 14);
+    let top = (point >> 16) as i16;
+    let height = ppc_te_line_height(&mut loaded.memory, ptr, 7);
+    assert!(top >= 60 && top.saturating_add(height) <= 120);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    let pixels = |memory: &mut PpcSectionMem| {
+        let mut result = Vec::new();
+        for y in 60..120 {
+            for x in 10..100 { result.push(ppc_quickdraw_read_pixel(memory, front, (x, y))); }
+        }
+        result
+    };
+    let painted = pixels(&mut loaded.memory);
+    loaded.cpu.gpr[3] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESelView);
+    assert_eq!(pixels(&mut loaded.memory), painted, "visible selection must not repaint existing ink");
+    assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET), Some(after),
+        "already visible selection must not keep scrolling");
+    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_START_OFFSET, 0).unwrap();
+    loaded.memory.write_u16_be(ptr + PPC_TE_SEL_END_OFFSET, 0).unwrap();
+    loaded.cpu.gpr[3] = te_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESelView);
+    assert_eq!(ppc_read_rect(&mut loaded.memory, ptr + PPC_TE_DEST_RECT_OFFSET), Some(before),
+        "revealing the first line must restore the original scroll origin");
+}
+
+#[test]
+fn styled_mixed_line_heights_match_guest_points_and_shared_geometry() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TEStyleNew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 0x100]);
+    ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 160, 220).unwrap();
+    ppc_write_rect(&mut loaded.memory, scratch + 8, 10, 20, 160, 220).unwrap();
+    loaded.cpu.gpr[3] = scratch; loaded.cpu.gpr[4] = scratch + 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEStyleNew);
+    let handle = loaded.cpu.gpr[3];
+    loaded.memory.write_bytes(scratch + 0x20, b"A\rB\rC").unwrap();
+    loaded.cpu.gpr[3] = scratch + 0x20; loaded.cpu.gpr[4] = 5; loaded.cpu.gpr[5] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+    let style = scratch + 0x40;
+    for (start, end, size) in [(0, 2, 9), (2, 4, 24), (4, 5, 12)] {
+        loaded.memory.write_u16_be(style, 3).unwrap();
+        loaded.memory.write_u8(style + 2, 0).unwrap();
+        loaded.memory.write_u16_be(style + 4, size).unwrap();
+        loaded.cpu.gpr[3] = start; loaded.cpu.gpr[4] = end; loaded.cpu.gpr[5] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+        loaded.cpu.gpr[3] = 0x000f; loaded.cpu.gpr[4] = style;
+        loaded.cpu.gpr[5] = 0; loaded.cpu.gpr[6] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetStyle);
+    }
+    // Inside Macintosh TextEdit p. 2-102: TESetStyle(false) intentionally
+    // retains line breaks/heights until TECalText. Shared presentation must
+    // not silently replace those stored origins with newly resolved metrics.
+    let mut deferred = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+        &mut |address| loaded.memory.read_u8(address)).records;
+    deferred[0].line_layout_policy = crate::text_edit::TextEditLineLayoutPolicy::PpcRunMetrics;
+    for (line, offset) in [(0, 0), (1, 2), (2, 4)] {
+        let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), handle, offset);
+        assert_eq!(deferred[0].guest_styled_line_geometry(line).unwrap().0.top,
+            (point >> 16) as i16, "deferred style layout must retain guest line origin {line}");
+    }
+    // Batch style updates deliberately skipped redraw; finish guest layout
+    // before comparing the point table with painting and shared geometry.
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TECalText);
+    let mut records = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+        &mut |address| loaded.memory.read_u8(address)).records;
+    let record = &mut records[0];
+    record.line_layout_policy = crate::text_edit::TextEditLineLayoutPolicy::PpcRunMetrics;
+    assert_eq!(record.line_count, 3);
+    for (line, offset) in [(0, 0), (1, 2), (2, 4)] {
+        let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), handle, offset);
+        let geometry = record.guest_styled_line_geometry(line).unwrap().0;
+        assert_eq!(geometry.top, (point >> 16) as i16,
+            "mixed-size displayed line must match the guest point/click origin: line {line}");
+    }
+    loaded.cpu.gpr[3] = 3; loaded.cpu.gpr[4] = 3; loaded.cpu.gpr[5] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetSelect);
+    loaded.cpu.gpr[3] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TEActivate { active: true });
+    let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), handle, 3);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+    ppc_paint_rect_bounds(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD,
+        (150, 200, 151, 201), loaded.quickdraw_fore_color, None);
+    let black = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (200, 150));
+    assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front,
+        (i32::from(point as u16 as i16) - 1, i32::from((point >> 16) as i16) + 1)), black,
+        "native caret ink must use the same cumulative line origin");
+}
+
+#[test]
+fn plain_textedit_uses_record_face_for_paint_layout_and_hit_testing() {
+    for depth in [8, 16] {
+        let mut loaded = load_pef_application_with_config(&synthetic_pef_with_import(b"TENew"),
+            PpcLoadConfig { screen_depth: depth, ..PpcLoadConfig::default() }).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 128]);
+        ppc_write_rect(&mut loaded.memory, scratch, 10, 20, 150, 80).unwrap();
+        loaded.cpu.gpr[3] = scratch;
+        loaded.cpu.gpr[4] = scratch;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+        let handle = loaded.cpu.gpr[3];
+        let text = b"HELLO WORLD HELLO WORLD";
+        loaded.memory.write_bytes(scratch + 16, text).unwrap();
+        loaded.cpu.gpr[3] = scratch + 16;
+        loaded.cpu.gpr[4] = text.len() as u32;
+        loaded.cpu.gpr[5] = handle;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+        let ptr = ppc_te_record_ptr(&mut loaded.memory, handle).unwrap();
+        loaded.memory.write_u16_be(ptr + PPC_TE_TX_FONT_OFFSET, 4).unwrap();
+        loaded.memory.write_u16_be(ptr + PPC_TE_TX_SIZE_OFFSET, 10).unwrap();
+        loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        ppc_paint_rect_bounds(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD,
+            (160, 200, 161, 201), loaded.quickdraw_fore_color, Some(103));
+        let ink = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (200, 160));
+        let mut plain_pixels = None;
+        let mut bold_pixels = None;
+        for face in [0, 1, 2, 4, 8, 16, 32, 64, 31] {
+            loaded.memory.write_u8(ptr + PPC_TE_TX_FACE_OFFSET, face).unwrap();
+            for alignment in [0i16, 1, -1] {
+                loaded.memory.write_u16_be(ptr + PPC_TE_JUST_OFFSET, alignment as u16).unwrap();
+                let mut expected = None;
+                for caller_face in [0, 1, 31, 64] {
+                    loaded.memory.write_u8(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FACE_OFFSET,
+                        caller_face).unwrap();
+                    loaded.cpu.gpr[3] = handle;
+                    run_test_import(&mut loaded, PpcImportDispatcherTarget::TECalText);
+                    let snapshot = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+                        &mut |address| loaded.memory.read_u8(address));
+                    let starts = snapshot.records[0].line_starts.clone();
+                    let points = (0..=text.len()).map(|offset| ppc_te_get_point(
+                        &mut loaded.memory, test_handles!(loaded), handle, offset as u16)).collect::<Vec<_>>();
+                    let point = points[1];
+                    assert_eq!(ppc_te_point_to_offset(&mut loaded.memory, test_handles!(loaded),
+                        handle, (point >> 16) as i16, point as u16 as i16), Some(1));
+                    ppc_paint_rect_bounds(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD,
+                        (10, 20, 150, 80), PpcRgbColor { red: 0xffff, green: 0xffff, blue: 0xffff },
+                        Some(0));
+                    ppc_te_draw(&mut loaded.memory, test_handles!(loaded), &loaded.gworlds,
+                        handle, PPC_MAIN_GWORLD, loaded.quickdraw_fore_color,
+                        &loaded.quickdraw_fore_indices);
+                    let captured = crate::text_edit::TextEditDrawing::capture_editor(
+                        handle, PPC_MAIN_GWORLD, (10, 20, 150, 80), |address| loaded.memory.read_u8(address));
+                    let mut record = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+                        &mut |address| loaded.memory.read_u8(address)).records.remove(0);
+                    record.drawing_intact = !loaded.memory.presentation().text_edit_drawing_regions(
+                        handle, captured, front.base_addr).is_empty();
+                    assert!(record.drawing_intact);
+                    let saved_foreground = loaded.quickdraw_fore_color;
+                    loaded.quickdraw_fore_color = PPC_RGB_WHITE;
+                    loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 0);
+                    let paint = loaded.text_edit_paint_snapshot(&record).unwrap();
+                    assert_eq!(paint.style_ink.len(), 1);
+                    assert_eq!(Some(paint.style_ink[0].pixel), ink);
+                    loaded.quickdraw_fore_color = saved_foreground;
+                    loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+                    record.drawing_intact = false;
+                    assert!(loaded.text_edit_paint_snapshot(&record).is_none(), "stale plain ink must not qualify");
+                    record.drawing_intact = true;
+                    loaded.memory.presentation().forget_text_edit_drawing(handle);
+                    assert!(loaded.text_edit_paint_snapshot(&record).is_none(), "forgotten ink must not qualify");
+                    let mut pixels = Vec::new();
+                    for y in 10..150 {
+                        for x in 20..80 {
+                            pixels.push(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)));
+                        }
+                    }
+                    assert!(pixels.iter().any(|pixel| *pixel == ink), "must paint actual ink");
+                    if caller_face == 0 && alignment == 0 {
+                        if face == 0 { plain_pixels = Some(pixels.clone()); }
+                        if face == 1 { bold_pixels = Some(pixels.clone()); }
+                    }
+                    let actual = (starts, points, pixels);
+                    if let Some(expected) = &expected {
+                        assert_eq!(&actual, expected, "face {face}, alignment {alignment}, caller {caller_face}");
+                    } else { expected = Some(actual); }
+                    assert_eq!(loaded.memory.read_u8(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FACE_OFFSET),
+                        Some(caller_face), "TextEdit must preserve the caller's style");
+                }
+            }
+        }
+        assert_ne!(plain_pixels, bold_pixels, "canonical bold must change painted glyphs");
+    }
+}
+
+#[test]
+fn plain_textedit_shared_widths_match_guest_points_across_faces_and_sizes() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TENew")).unwrap();
+    let scratch = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(scratch, vec![0; 128]);
+    ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 200, 20000).unwrap();
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = scratch;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TENew);
+    let handle = loaded.cpu.gpr[3];
+    let text = b"Hello WORLD 123 \x8e";
+    loaded.memory.write_bytes(scratch + 16, text).unwrap();
+    loaded.cpu.gpr[3] = scratch + 16;
+    loaded.cpu.gpr[4] = text.len() as u32;
+    loaded.cpu.gpr[5] = handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::TESetText);
+    let ptr = ppc_te_record_ptr(&mut loaded.memory, handle).unwrap();
+    for font in [0, 3, 4] {
+        for size in [0, 9, 10, 14, 17, 20, 24, 192] {
+            for face in [0u8, 1, 2, 4, 8, 16, 32, 64, 31] {
+                loaded.memory.write_u16_be(ptr + PPC_TE_TX_FONT_OFFSET, font as u16).unwrap();
+                loaded.memory.write_u16_be(ptr + PPC_TE_TX_SIZE_OFFSET, size as u16).unwrap();
+                loaded.memory.write_u8(ptr + PPC_TE_TX_FACE_OFFSET, face).unwrap();
+                loaded.cpu.gpr[3] = handle;
+                run_test_import(&mut loaded, PpcImportDispatcherTarget::TECalText);
+                let mut record = crate::text_edit::snapshot_guest_records(&[(handle, 1)],
+                    &mut |address| loaded.memory.read_u8(address)).records.remove(0);
+                record.line_layout_policy = crate::text_edit::TextEditLineLayoutPolicy::PpcRunMetrics;
+                let positions = record.guest_plain_insertion_positions(0..text.len()).unwrap();
+                let origin = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), handle, 0) as u16 as i16;
+                for offset in 0..=text.len() {
+                    let point = ppc_te_get_point(&mut loaded.memory, test_handles!(loaded), handle, offset as u16) as u16 as i16;
+                    assert_eq!(record.guest_plain_range_width(0..offset), Some(point - origin),
+                        "font {font}, size {size}, face {face}, offset {offset}");
+                    assert_eq!(positions[offset], point - origin);
+                }
+            }
+        }
     }
 }

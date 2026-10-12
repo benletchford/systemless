@@ -1,0 +1,160 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6187:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6187 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+warning: fields `game`, `prefer_powerpc`, `screen_depth`, and `debug_socket` are never read
+  --> src/bin/gpui_demo.rs:4:9
+   |
+ 3 | pub(crate) struct LaunchOptions {
+   |                   ------------- fields in this struct
+ 4 |     pub game: std::path::PathBuf,
+   |         ^^^^
+ 5 |     pub prefer_powerpc: bool,
+   |         ^^^^^^^^^^^^^^
+ 6 |     pub screen_depth: Option<u16>,
+   |         ^^^^^^^^^^^^
+...
+12 |     pub debug_socket: Option<std::path::PathBuf>,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `launch` is never used
+  --> src/bin/gpui_demo.rs:17:15
+   |
+17 | pub(crate) fn launch(options: LaunchOptions) {
+   |               ^^^^^^
+
+warning: associated functions `classic_textedit_run` and `ppc_styled_run` are never used
+   --> src/bin/gpui_demo_text.rs:845:12
+    |
+788 | impl ClassicLine {
+    | ---------------- associated functions in this implementation
+...
+845 |     pub fn classic_textedit_run(
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+901 |     pub fn ppc_styled_run(
+    |            ^^^^^^^^^^^^^^
+
+warning: field `geometry` is never read
+    --> src/bin/gpui_demo_text.rs:1143:9
+     |
+1142 | pub(crate) struct StyledTextEditLine {
+     |                   ------------------ field in this struct
+1143 |     pub geometry: systemless::runner::TextEditLineGeometry,
+     |         ^^^^^^^^
+     |
+     = note: `StyledTextEditLine` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: fields `bytes` and `measured_positions` are never read
+    --> src/bin/gpui_demo_text.rs:1151:9
+     |
+1150 | pub(crate) struct StyledTextEditRun {
+     |                   ----------------- fields in this struct
+1151 |     pub bytes: std::ops::Range<usize>,
+     |         ^^^^^
+1152 |     pub left: i16,
+1153 |     pub measured_positions: Vec<i16>,
+     |         ^^^^^^^^^^^^^^^^^^
+     |
+     = note: `StyledTextEditRun` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: associated function `qualify` is never used
+    --> src/bin/gpui_demo_text.rs:1241:12
+     |
+1179 | impl ClassicListCellPaintPlan {
+     | ----------------------------- associated function in this implementation
+...
+1241 |     pub fn qualify(
+     |            ^^^^^^^
+
+warning: methods `pixels_with_selection`, `pixels_with_solid_caret`, and `pixels` are never used
+    --> src/bin/gpui_demo_text.rs:1535:12
+     |
+1497 | impl StyledTextEditLine {
+     | ----------------------- methods in this implementation
+...
+1535 |     pub fn pixels_with_selection(
+     |            ^^^^^^^^^^^^^^^^^^^^^
+...
+1561 |     pub fn pixels_with_solid_caret(
+     |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1580 |     pub fn pixels(&self) -> Option<std::collections::BTreeMap<(i16, i16), [u8; 3]>> {
+     |            ^^^^^^
+
+warning: function `classic_styled_text_edit_ink` is never used
+    --> src/bin/gpui_demo_text.rs:1598:15
+     |
+1598 | pub(crate) fn classic_styled_text_edit_ink(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_selection` is never used
+    --> src/bin/gpui_demo_text.rs:1604:15
+     |
+1604 | pub(crate) fn classic_styled_text_edit_selection(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_edit_solid_caret` is never used
+    --> src/bin/gpui_demo_text.rs:1613:15
+     |
+1613 | pub(crate) fn classic_styled_text_edit_solid_caret(
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels` is never used
+    --> src/bin/gpui_demo_text.rs:1631:4
+     |
+1631 | fn classic_styled_text_pixels(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `classic_styled_text_pixels_with_background` is never used
+    --> src/bin/gpui_demo_text.rs:1638:4
+     |
+1638 | fn classic_styled_text_pixels_with_background(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `reset_preferences` and `root` are never used
+   --> src/bin/desktop/desktop_save_store.rs:94:12
+    |
+ 77 | impl DesktopSaveStore {
+    | --------------------- associated items in this implementation
+...
+ 94 |     pub fn reset_preferences(game_path: &Path) -> io::Result<usize> {
+    |            ^^^^^^^^^^^^^^^^^
+...
+106 |     pub fn root(&self) -> &Path {
+    |            ^^^^
+
+warning: function `matching_child_dirs` is never used
+   --> src/bin/desktop/desktop_save_store.rs:426:4
+    |
+426 | fn matching_child_dirs(dir: &Path, lower_name: &str) -> io::Result<Vec<PathBuf>> {
+    |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `launch` is never used
+    --> src/bin/gpui_demo.rs:4650:19
+     |
+4650 |     pub(super) fn launch(options: super::LaunchOptions) {
+     |                   ^^^^^^
+
+warning: `systemless` (example "gpui-menu-demo") generated 15 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 18s

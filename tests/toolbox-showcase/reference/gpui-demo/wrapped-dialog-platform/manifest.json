@@ -1,0 +1,16 @@
+{
+  "base": "ce7e6c62b3759d32fb25529f1806423a46c2950c",
+  "results": {
+    "platform": "PASS 2.08s; actual PPC8/PPC16 wrapped field, scales .75/1/1.5/2",
+    "geometry": "4 passed 9.93s; existing plain/styled/dialog geometry regressions",
+    "dialog": "14 passed 2.71s; before final GPUI test extension"
+  },
+  "scope": "GPUI input interface recognizes dialog ownership, reports guest-font caret bounds and point index, rejects off-view range, creates Unicode marked surface, cancels without guest mutation. Actual guest commits remain DialogSelect-owned.",
+  "limits": "Marked surface construction only: no new painted-cache screenshot, physical IME, wrapped worker rapid commits, scrolling or native oracle qualification.",
+  "sha256": {
+    "geometry.log": "dc9026c63b7b34873d091fc216c79354ea785c8aad8cd6f7b1bf1dc0d2489199",
+    "source.patch": "b8a5bfb40431b909af9bc45ff71699cc4741e053193db684896478e60eefcf22",
+    "dialog.log": "974c71ac585259568489bd837a14ddb15b705ec1e874eaea9d8545c0add1465c",
+    "platform.log": "f827f7816738be72ed55c9be902c62f9674911422dfe22834d6f161324c27350"
+  }
+}

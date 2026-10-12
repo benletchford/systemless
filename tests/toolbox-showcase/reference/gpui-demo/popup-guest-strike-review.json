@@ -1,0 +1,46 @@
+{
+  "base_commit": "c9cdb705dd9150079383686cba03ab7d57bedf66",
+  "source_sha256": {
+    "src/bin/gpui_demo_popup.rs": "ad3a7e668fc02f2beff03271b2bd8e4e7476f93975c2e2acb7d2eaa34f49cc24",
+    "src/bin/gpui_demo_text.rs": "f90bfcdcd53642e180846a2109b8bb2a7429cb1f67e024803b326366e996558d",
+    "src/systems/macintosh/menu_model.rs": "c558fde1c8c96fbf1c0f39842949b7bf1501f7c1adb15e3b719cd59501fa8e07"
+  },
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "records": [
+    {
+      "mode": "mono",
+      "file": "popup-guest-strike-mono.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "78d22376866524f9246eb8f483d0250b9bfc05a1bb7e82a52d243b49ce34f6ff",
+      "file_sha256": "7b3799a2d98e2f9fa010ba04994a903b991e0cbfa52562f03d19c0b6bb2e7d05",
+      "pixel_sha256": "49edd97620128b6a0c12183085ed9b0b94e74ac15e909e60bc96fe56b6146e7a"
+    },
+    {
+      "mode": "colour",
+      "file": "popup-guest-strike-colour.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "39246b12886ec2100c85a48ecd8a2fb999bdab26d5d0105fad3636a9a155fb02",
+      "file_sha256": "2dc579debb916d4cf1a673756f0f1e17bf10d38c6e2687615e1c1a9f80bc3f50",
+      "pixel_sha256": "0ce1ea97e684684ca714c4e17c7b2443efdbdfb8a1f231651e1685aa787358c4"
+    },
+    {
+      "mode": "ppc",
+      "file": "popup-guest-strike-ppc.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "capture_sha256": "39246b12886ec2100c85a48ecd8a2fb999bdab26d5d0105fad3636a9a155fb02",
+      "file_sha256": "2dc579debb916d4cf1a673756f0f1e17bf10d38c6e2687615e1c1a9f80bc3f50",
+      "pixel_sha256": "0ce1ea97e684684ca714c4e17c7b2443efdbdfb8a1f231651e1685aa787358c4"
+    }
+  ],
+  "review": "All three full compositions reviewed: readable guest-strike popup rows, selected long row and disabled row. No native oracle, icon, command, mark, scrolling, font variants or scale matrix qualification.",
+  "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit [--screen-depth 1|--screen-depth 8|--prefer-powerpc] --capture-popup-controls-open OUTPUT"
+}

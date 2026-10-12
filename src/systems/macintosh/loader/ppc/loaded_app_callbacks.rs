@@ -6,6 +6,115 @@
 use super::*;
 
 impl PpcLoadedApp {
+    pub(crate) fn complete_notification_without_procedure(
+        &mut self, request: u32, instance: u64, response: u32,
+    ) -> bool {
+        let Some(type_address) = request.checked_add(4) else { return false; };
+        let Some(response_address) = request.checked_add(28) else { return false; };
+        if !matches!(response, 0 | u32::MAX)
+            || self.toolbox_startup.notification_requests.instance_id(request) != Some(instance)
+            || self.memory.read_u16_be(type_address) != Some(8)
+            || self.memory.read_u32_be(response_address) != Some(response)
+            || !self.toolbox_startup.notification_requests.begin_response(request, instance) {
+            return false;
+        }
+        if response == u32::MAX {
+            return super::dispatch_system::ppc_remove_notification(&mut self.memory,
+                &mut self.toolbox_startup.notification_requests, request) == 0;
+        }
+        true
+    }
+
+    /// Notification responses retain foreground CPU state between bounded
+    /// native slices or while a direct Mixed Mode callee owns execution.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn run_notification_response_with_process_services(
+        &mut self, request: u32, instance: u64, completion: u32,
+        max_cycles: u64, trace_imports: bool, trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager, cfm: &mut PpcCfmState,
+    ) -> Option<PpcHleRunProbe> {
+        self.assert_cfm_execution_owner(Some(cfm));
+        if self.parked_interrupt_callback.is_some() { return None; }
+        if let Some((r, i, c, _, _)) = self.notification_response_context.as_ref() {
+            // A response may NMRemove its own record before it returns. Its
+            // in-flight execution still owns this continuation afterward.
+            if (*r, *i, *c) != (request, instance, completion) { return None; }
+        } else if self.toolbox_startup.notification_requests.instance_id(request) != Some(instance)
+            || self.toolbox_startup.notification_requests.response_started(request, instance) {
+            return None;
+        }
+        let saved = self.cpu.capture_execution_context();
+        let rtoc = if self.cpu.gpr[2] != 0 { self.cpu.gpr[2] } else { self.rtoc };
+        let interrupt = self.interrupt_entry();
+        let callback_sp;
+        if let Some((_, _, _, context, sp)) = self.notification_response_context.take() {
+            callback_sp = sp;
+            self.cpu.install_execution_context(context);
+        } else {
+            let target = crate::guest_procedure::resolve_guest_procedure(&mut self.memory,
+                completion, rtoc, None, GuestIsa::PowerPc, GuestIsa::PowerPc)?;
+            if target.isa == GuestIsa::M68k && (!interrupt.may_park || target.proc_info == 0) {
+                return None;
+            }
+            let mixed_heap = if target.isa == GuestIsa::M68k {
+                Some(memory_manager.native_heap_state()?)
+            } else { None };
+            callback_sp = self.prepare_interrupt_callback_frame(rtoc)?;
+            self.cpu.invalidate_reservation();
+            self.cpu.pc = target.entry;
+            self.cpu.lr = self.halt_pc;
+            self.cpu.gpr[1] = callback_sp;
+            self.cpu.gpr[2] = target.rtoc;
+            if target.isa == GuestIsa::M68k {
+                let heap = mixed_heap.expect("Mixed Mode heap validated before CPU entry");
+                let mut cursor = heap.heap_cursor;
+                let limit = memory_manager.native_allocation_limit(heap.heap_limit);
+                let previous_mixed = self.toolbox_startup.mixed_mode_m68k.snapshot();
+                let entered = super::dispatch_mixed_mode::ppc_begin_m68k_universal_proc(
+                    &self.cpu, Some(memory_manager.native_mut()), &mut self.memory,
+                    &mut cursor, limit, &mut self.toolbox_startup, target, target.proc_info,
+                    None, vec![request], self.halt_pc, PpcNativeReturnGpr3::Preserve);
+                if entered.is_none() {
+                    self.toolbox_startup.mixed_mode_m68k.restore_snapshot(previous_mixed);
+                    self.cpu.install_execution_context(saved);
+                    return None;
+                }
+                let started = self.toolbox_startup.notification_requests.begin_response(request, instance);
+                debug_assert!(started, "serialized notification ownership changed during entry");
+                let probe = PpcHleRunProbe {
+                    result: PpcRunResult::Halted { pc: self.cpu.pc, cycles: 0 },
+                    handled_import_count: 0, last_import_index: None, unsupported_import_index: None,
+                    import_trace: Vec::new(), draw_sprocket_trace: Vec::new(),
+                    input_sprocket_trace: Vec::new(), fetch_histogram: None,
+                };
+                let parked = self.park_interrupt_callback_if_awaiting_m68k(PpcCallbackLevel::Task,
+                    interrupt, Some(callback_sp), &probe, &saved, None, PpcInterruptReturnWork::None);
+                debug_assert!(parked, "direct notification Mixed Mode entry must retain its caller");
+                return Some(probe);
+            }
+            if install_powerpc_call_arguments(&mut self.cpu, &mut self.memory, &[request]).is_none() {
+                self.cpu.install_execution_context(saved);
+                return None;
+            }
+            if !self.toolbox_startup.notification_requests.begin_response(request, instance) {
+                self.cpu.install_execution_context(saved);
+                return None;
+            }
+        }
+        let probe = self.run_with_hle_imports_with_trace(max_cycles, trace_imports,
+            trace_fetches, Some(memory_manager), Some(cfm));
+        let parked = self.park_interrupt_callback_if_awaiting_m68k(PpcCallbackLevel::Task,
+            interrupt, Some(callback_sp), &probe, &saved, None, PpcInterruptReturnWork::None);
+        if !parked {
+            if matches!(probe.result, PpcRunResult::CycleLimit { .. }) {
+                self.notification_response_context = Some((request, instance, completion,
+                    self.cpu.capture_execution_context(), callback_sp));
+            }
+            self.cpu.install_execution_context(saved);
+        }
+        Some(probe)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_sound_completion_callback_with_process_services(
         &mut self,

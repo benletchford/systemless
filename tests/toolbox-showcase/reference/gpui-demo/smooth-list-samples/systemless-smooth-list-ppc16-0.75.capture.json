@@ -1,0 +1,27 @@
+{
+  "compositor": "shared Demo renderer",
+  "case": "ListsSelected",
+  "prefer_powerpc": true,
+  "requested_depth": null,
+  "actual_depth": 16,
+  "requested_scale": 0.75,
+  "scene_scale": 0.75,
+  "scene_origin": [
+    0.0,
+    0.0
+  ],
+  "guest_dimensions": [
+    800,
+    600
+  ],
+  "viewport_dimensions": [
+    600.0,
+    450.0
+  ],
+  "composed_dimensions": [
+    1200,
+    900
+  ],
+  "typography": "resolved outline coverage for supported plain system text; binary fallback for unsupported sources and styled/list recipes",
+  "scope": "Capture provenance only; no automatic smooth visual, font fidelity or performance qualification"
+}

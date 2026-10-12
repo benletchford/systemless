@@ -1,5 +1,16 @@
 # Toolbox showcase fixture
 
+On the Graphics page, `n` installs a text-only Notification Manager request
+with automatic removal after acknowledgment; `r` installs the same Mac Roman
+message with a compiled response procedure that increments its NMRec refCon.
+`b` installs an automatically removed text alert with the system-alert sound
+sentinel; the worker regression captures its audio before acknowledging it.
+`s` requests only the system sound with automatic removal; `t` requests only
+the system sound with the compiled response procedure. Neither requests an alert.
+Both CPU slices use the original NMInstall/NMRemove and NewNMUPP interfaces.
+The response uses only its supplied record. Repeating a trigger removes
+the previous request before reinstalling it.
+
 This directory contains the source and reproducible build for a classic
 Macintosh fat application. The same `showcase.c` is compiled into a 68K
 `CODE` slice and a native PowerPC PEF slice. The PEF remains in the data fork;
@@ -18,7 +29,9 @@ test protocol. Its Pages menu selects sixteen interactive views:
    actions appear as checkmarks in the State menu.
 3. Windows creates three visibly overlapping document windows; the scripted
    contract activates, moves, resizes, hit-tests, and closes them while
-   checking Window Manager order and repaint state.
+   checking Window Manager order and repaint state. The stacked inspector
+   writes an application-defined `WStateData.stdState` rectangle, allowing
+   zoom and restore to exercise guest-owned bounds on both CPU slices.
 4. Drawing & 3D Bevels exercises polygons, arcs, regions, pictures, icons,
    fonts, styles, and metrics. The PowerPC slice also builds and submits a lit
    QuickDraw 3D TriMesh through a view, camera, renderer, and draw context,
@@ -28,7 +41,9 @@ test protocol. Its Pages menu selects sixteen interactive views:
    checkboxes, difficulty and renderer radio groups, a volume scroll bar, and
    action buttons. Its settings stay synchronized with hierarchical menus.
 6. Dialogs & Alerts exercises resource-backed modal dialogs, controls,
-   editable text, and a system alert.
+   editable text, and a system alert. Options → Modeless Dialog opens a
+   separate resource-backed standard dialog whose activation and close
+   lifecycle can be exercised while the showcase window keeps running.
 7. TextEdit exercises an interactive multiline `TERec` buffer, character
    insertion and selection, paragraph alignment (`teJustLeft`, `teJustCenter`,
    `teJustRight`), clipboard scrap operations (`TECut`, `TECopy`, `TEPaste`),
@@ -53,11 +68,23 @@ test protocol. Its Pages menu selects sixteen interactive views:
     `TESetStyle` runs, inspects mixed and continuous attributes with
     `TEContinuousStyle`, resolves Geneva and Monaco through `GetFNum`/`RealFont`,
     and compares `CharWidth`, `TextWidth`, and `MeasureText` results from the
-    same Font Manager state that renders the record.
+    same Font Manager state that renders the record. Clicking the styled field
+    focuses it through `TEActivate`/`TEClick`; typing and deletion use `TEKey`,
+    idle caret updates use `TEIdle`, and suspend/resume follows the guest
+    activation events. Leaving the page clears that focus.
 12. Standard File exercises modern and legacy Open and Save entry points,
     filters the Open list to `TEXT`, navigates into the fixture folder,
     accepts a returned `FSSpec`, edits a Save name, and cancels both legacy
-    paths while checking `StandardFileReply` and `SFReply` fields.
+    paths while checking `StandardFileReply` and `SFReply` fields. A new-name
+    Save writes a known data-fork payload, closes and reopens it, checks every
+    byte, then retains it for desktop save/reload checks. The main window’s app-owned refCon publishes the
+    completion status for tests. Modern Open also reads the data fork and
+    publishes its length, read count, status and up to256 bytes after close.
+    The separate-process GPUI regression persists a new-name Save with the
+    production desktop store, exits, reloads into another process and verifies
+    every restored byte through this guest read checkpoint across all four modes. Confirmed replacement truncates the existing data fork and checks
+    the reopened length and bytes too, leaving the replaced file in that guest
+    session. Tests load independent sessions from the immutable source archive.
 13. Resource Browser enumerates named `DATA` records with
     `Count1Resources`, `Get1IndResource`, `GetResInfo`, `GetResAttrs`, and
     `GetResourceSizeOnDisk`, then demonstrates deferred `GetNamedResource`/
@@ -198,7 +225,7 @@ exact Systemless framebuffer references while performing the same sequence:
     checkpoints are `20-standard-file-page.png`,
     `21-standard-file-open.png`, and `22-standard-file-complete.png`; the
     semantic assertions cover returned `FSSpec`/`SFReply` fields and the
-    `FSpCreate`/`FSpDelete` round trip.
+    `FSpCreate`, write/close/reopen/read checks.
 21. Activate Resource Browser (item 13), capture the map-only enumeration of
     `DATA` 201–203 and the nine `MENU`/one `WIND` counts, refresh the map, load the
     named `DATA` 203 record, release its handle, and load it again. Capture
@@ -612,3 +639,148 @@ diff before committing it:
 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase
 SYSTEMLESS_PREFER_POWERPC=1 SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES=1 cargo test --locked --test toolbox_showcase
 ```
+
+On the Popup & Dropdown Lists page, press `d` to disable both popup controls
+through guest `HiliteControl`, or `e` to re-enable them. These keys preserve
+the selected values and exercise disabled CDEF drawing and hit testing.
+
+## GPUI standard-list paint qualification
+
+The list capture path uses the same `Demo` compositor as the desktop frontend.
+It erases qualified visible standard-cell paint to magenta in the source image
+before composition. The `.guest.png` retains the original native frame, and
+the JSON sidecar records the exact erased regions and actual backing-paint
+depth. Application borders, custom drawing and declined cells remain native.
+Magenta sampling at unowned boundaries is outside the owned-pixel comparison.
+
+Build the example, commit the source, and use a fresh output directory:
+
+```sh
+cargo build --locked --example gpui-menu-demo --features gpui-demo-test
+python3 tests/toolbox-showcase/capture-gpui-list-matrix.py /tmp/list-transitions
+python3 tests/toolbox-showcase/verify-gpui-list-matrix.py /tmp/list-transitions/progress.json
+python3 tests/toolbox-showcase/archive-gpui-list-matrix.py /tmp/list-transitions/progress.json /tmp/list-transitions-archive
+```
+
+The default matrix covers 48 cases: monochrome/colour 68k and PPC8/PPC16,
+four scene scales, and scrolled/inactive/reactivated list states. Add
+`--selected` to capture the 16 selected-state cases instead. Each transition
+clicks a guest fixture button through session input. Guest selection must
+survive; the visible first row must become 4 after scrolling, and the active
+flag must match the requested activation state. The matrix verifier requires
+every combination exactly once, checks file hashes and sidecar state, and
+compares every owned device pixel with the native frame using the canvas's
+device-edge rounding. The capture script pins source, fixture and binary
+hashes; do not rebuild the example or edit pinned files during its run.
+
+For an individual fractional-scale PPC16 transition capture, omit the indexed
+depth argument to use the PPC16 architecture default:
+
+```sh
+target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc --capture-lists-transition /tmp/list-inactive.png --capture-list-transition inactive --capture-scale 0.75
+python3 tests/toolbox-showcase/verify-gpui-list-text.py /tmp/list-inactive.png
+```
+
+These captures establish retained standard-cell paint and guest-button fixture
+states. They do not establish general font replacement, GPUI pointer routing,
+native host activation observation, complete lifecycle behavior, performance,
+or release readiness. Review rendered and guest images before describing
+visible behavior; retain the evidence's original scope when archiving it.
+
+List mutation and resize captures use `--capture-lists-transition PATH --capture-list-transition mutated|resized`. They select guest row seven and click the existing guest button; they assert retained ListHandle/generation/owner, preserved selection, and exact changed bytes or bounds. After building and committing the capture source, `python3 tests/toolbox-showcase/capture-gpui-list-matrix.py /tmp/list-lifecycle --lifecycle` requests 32 cases across the four display/CPU modes and four scales. These new cases are not yet qualified. Row seven may move outside the resized viewport; the verifier compares only qualified visible paint, while guest selection remains retained. Disposal and handle reuse require separate checks.
+
+Replacement prompt captures: `--capture-standard-file-replace-composed PATH --capture-scale SCALE` preserves the native `.guest.png` and emits a `.json` sidecar with modal state, filename, message rectangle, scale, and actual presented framebuffer depth. `python3 tests/toolbox-showcase/verify-gpui-file-replacement-text.py PATH` compares the entire message rectangle with device-edge scaling, requires native ink, and rejects incorrect depth. Use depths 1/8 for classic modes, PPC8 explicitly, and PPC16 without an indexed depth argument. New prompt captures remain pending; verifier synthetic rejection checks are not guest or oracle qualification.
+
+Shared Demo composed fixture captures also emit a separate `.capture.json` file. It records actual depth, requested and rendered scale, scene origin, guest dimensions, logical viewport dimensions, composed pixel dimensions, capture case, and the current typography policy. Pair it with the original `.guest.png` and specialized state sidecar where available. The metadata does not qualify smooth appearance or performance, and exact binary-pixel verifiers must not be treated as smooth-font evidence.
+
+For normal selected-list appearance, combine `--capture-lists-selected PATH` with `--capture-lists-retain-native-source`. This leaves the native source frame intact and labels the specialized sidecar as appearance-only evidence. It cannot establish GPUI ownership: the diagnostic list verifier requires magenta erased source. Use the original diagnostic capture alongside it when reviewing fractional-scale texture boundaries.
+
+For smooth selected-list appearance review, run `python3 tests/toolbox-showcase/capture-gpui-list-matrix.py /tmp/gpui-smooth-selected --selected --smooth-review` after building and committing the source. This collects all four framebuffer modes at four scales with retained native source, pins source/binary/fixture hashes and records shared compositor metadata. It deliberately does not run the binary pixel oracle; images require visual review, and retained source can conceal incomplete replacement. Transition and lifecycle captures remain erased-source only.
+
+`verify-gpui-smooth-list-provenance.py MANIFEST` validates the complete16-case retained-source selected matrix (or completed cases with `--partial` during capture), checking capture hashes, actual depths, shared compositor geometry and guest selection. It checks no glyph pixels and makes no raster parity claim. The capture runner invokes it after smooth review captures. Archived evidence and the exact visual-review subset are in `reference/gpui-demo/smooth-list-selected-shared`.
+
+Smooth retained-source capture now also supports the default scrolled/inactive/reactivated matrix and `--lifecycle` mutation/resize matrix. Omit `--selected` for transitions. Capture cases normalize to the same guest transition path and only change source masking; metadata retains the explicit NativeSource case. The smooth provenance checker validates transition, activation, selection, visible owner cells, updated bytes and resized bounds, without a raster parity claim.
+
+Archive a completed smooth list matrix with `python3 tests/toolbox-showcase/archive-gpui-smooth-list-matrix.py /tmp/CAPTURE/progress.json reference/OUTPUT`. The output must be fresh. The tool verifies complete provenance, compresses PNGs while checking identical decoded RGBA, preserves original and archived hashes, copies sidecars, and verifies the archive. If `visual-review.json` exists beside the input manifest, it copies only its explicitly reviewed samples after checking their original hashes. This never establishes glyph parity.
+
+The completed48-case smooth scrolling/activation matrix is archived in `reference/gpui-demo/smooth-list-transitions-shared`; `review.json` names only the12 visually reviewed cases. `archive-verification.json` pins the checker and archiver hashes separately from the captured renderer source. Run the smooth provenance checker on its `progress.json` to validate depth/geometry/guest state and hashes, not glyph parity.
+
+Completed32-case smooth mutation/resize evidence is in `reference/gpui-demo/smooth-list-lifecycle-shared`. It verifies native state/geometry and hashes, with eight explicitly reviewed samples. The review records a partial-row resize difference explained by the CPU-specific guest baseline recipes; full rows0..5 preserve exact pixels in the sampled colour68k comparison. This is fixture mutation/resize evidence, not disposal/identity reuse or full raster qualification.
+
+### Styled TextEdit spacing controls
+
+On page11 (Styled Text & Fonts), Option-C applies condensed spacing, Option-E
+extended spacing, Option-B both flags and Option-N removes both flags. The guest
+reads each character with TEGetStyle and applies only face changes with
+TESetStyle, preserving font, size, colour, other face bits and selection. Normal
+typing and the default sample remain unchanged. The ordinary
+`macintosh_styled_spacing` regression exercises these keys, verifies runtime
+CPU/depth and retained style intent, then clicks and types in condensed and
+extended fields on mono68k, colour68k, PPC8 and PPC16. Current qualification
+status and composed rendering gaps are recorded in GPUI_COVERAGE.md.
+
+For guest-driven spacing captures, add `--spacing condensed|extended|both` and
+`--smooth-review` to `capture-gpui-styled-text-matrix.py`; the default is normal.
+For example, `--multiline --spacing condensed --smooth-review` requests all16
+CPU/depth/scale cases. Build and commit clean source before starting the driver,
+and keep its pinned source, executable and fixture unchanged until it exits.
+Spacing metadata must agree across the request, sidecar and guest style runs.
+These smooth captures require visual review and do not use a binary ink oracle.
+
+The styled matrix driver also accepts `--binary PATH` for an explicitly built
+capture executable. Its default remains `target/debug/examples/gpui-menu-demo`.
+For the repository's optimized test profile, build with
+`cargo build --locked --profile ci-test --example gpui-menu-demo --features gpui-demo-test`
+and pass `--binary target/ci-test/examples/gpui-menu-demo`. The driver retains
+its clean-source requirement and pins that exact executable, fixture and
+renderer sources throughout the run. The profile retains debug assertions and
+overflow checks; using it does not establish production performance. Omitting
+`--multiline` requests the complete192-case single-line state matrix.
+
+For complete smooth single-line matrices, run
+`verify-gpui-styled-activation-pixels.py DIRECTORY --report REPORT` and
+`verify-gpui-styled-state-visibility.py DIRECTORY --report REPORT`. The latter
+checks nonempty selection/caret changes within native change bounds (one device
+pixel allowance), plus exact hidden-caret equality on suspend. Run
+`check-gpui-styled-state-visibility.py DIRECTORY --report REPORT` to verify five
+updated-hash pixel corruptions are rejected even when restoration equality
+passes. These checks qualify state visibility, not antialiased font appearance.
+
+On Styled Text & Fonts, Option-O/S/H apply underline plus outline/shadow/both
+through guest TEGetStyle/TESetStyle, preserving unmasked face bits, font, size,
+colour, text and selection. Option-A requests all five basic effects. For
+manual shared-compositor probes, use `--capture-styled-halo` with
+`underlined-outline`, `underlined-shadow`, `underlined-both` or `everything`.
+The default `normal` performs no halo mutation. Guest line metrics may change
+with effects and are retained from the new snapshot. The styled matrix driver accepts `--halo` with the same values, together
+with `--smooth-review`. It records the policy and explicit capture command;
+the provenance verifier checks actual guest face bits, including preserved
+spacing bits. Non-normal halo requests reject the unqualified binary oracle
+before output creation. Full halo matrices remain unfinished.
+
+On Styled Text & Fonts, Option-M sets the first four Pages items to outline, shadow, underlined outline+shadow, and bold+italic+underline+outline+shadow through guest SetItemStyle. Hidden capture option `--capture-standard-menu-styled` applies that guest control before opening the shared Demo Pages menu; `--capture-scale` controls the scene scale. The capture asserts actual CPU and retains all menu snapshot fields except the requested four styles. `styled-menu-halos` archives sixteen CPU/depth/scale probes; styled menu selection and keyboard tracking still need qualification.
+
+Styled TextEdit scroll qualification uses Option-V to call guest TEScroll(0,-12) and Option-R for TEScroll(0,12). Add `--capture-styled-scroll` to `--capture-styled-text-edit-multiline PATH` to capture the scrolled field after a guest click at the second-line byte boundary. This verifies guest editing/scrolling and the shared renderer; it does not establish physical host input or automatic selection reveal.
+
+For scrolled styled selection lifecycle captures, combine `--capture-styled-text-edit-multiline PATH --capture-styled-scroll` with `--capture-styled-caret-state suspended` or `resumed`. This selects bytes28..31 through guest mouse tracking before requesting frontend session activation, retains guest scroll geometry, and qualifies the resulting field against guest pixels. The activation request is automated session input, not a physical macOS observer check.
+
+Generic real-application capture diagnostics accept `--capture-application OUTPUT`, optional `--capture-application-key CODE --capture-application-character BYTE`, `--capture-application-updates N` (default120), and `--capture-application-timeout-seconds N` (default30, maximum60). Input down/up defaults to observed updates120/180; `--capture-application-input-after N` and `--capture-application-hold-updates N` change that timing. `--capture-application-mouse-v V --capture-application-mouse-h H` supplies guest mouse coordinates, either alone or alongside a separately timed key (`--capture-application-key-after N`). Captures observe at least60 updates after release. These are observed production-worker snapshots, not frontend ticks or frame timing. Timeout exits as failure and saves `.timeout.guest.png` plus `.timeout.json`. Keep external application media, scenarios and captures outside tracked source; inspect the actual scene before claiming a workflow passed.
+
+Native Unicode staging can be reproduced with the shared compositor capture:
+
+```sh
+cargo build --locked --example gpui-menu-demo --features gpui-demo-test
+target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit \
+  --capture-scale 1.5 --capture-composition-surface /tmp/composition-review
+```
+
+This runs single-line and vertically scrolled multiline marked text across monochrome68k, colour68k, PPC8 and PPC16. Each case checks visible text-service bounds/hit-testing, surrogate boundaries, unchanged guest records and exact pixel restoration after cancellation. JSON sidecars record asserted actual CPU/depth, requested/applied scale and visible range geometry. Unicode staging uses a separate host-typography surface; it does not replace committed guest glyphs. The capture does not qualify physical IME, arbitrary replacement outside the stage, or horizontal/modal scrolling.
+
+Separate-process Save/readback qualification runs with:
+
+```sh
+cargo test --locked --example gpui-menu-demo --features gpui-demo-test \
+  standard_file_save_survives_separate_process_and_guest_read -- --nocapture
+```
+
+The parent creates isolated temporary save roots and runs distinct writer/reader processes in mono68k, colour68k, PPC8 and PPC16. The writer uses the actual guest Save workflow and production DesktopSaveStore flush. The reader imports only disk-loaded files before guest initialization, verifies exact forks/metadata, selects the restored Macintosh Roman filename through Standard File input, then checks guest FSpOpenDF/GetEOF/FSRead/FSClose bytes and unchanged metadata. This covers a new-name TEXT save with a nonempty data fork and empty resource fork. Physical GPUI input/shutdown, replacement or New Folder restart, nonempty resource-fork restart and crash/power-loss recovery are separate gates.

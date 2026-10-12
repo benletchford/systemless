@@ -5,6 +5,8 @@ use crate::process_context::{
 };
 use std::collections::HashMap;
 
+pub(crate) mod activation;
+
 /// Finder metadata for the application represented by the current process.
 ///
 /// Process Manager adapters encode the path's basename for their guest ABI,

@@ -3284,6 +3284,9 @@ fn hle_import_runner_dispose_handle_invalidates_tracked_handle() {
         b"data",
     );
     assert_ne!(handle, 0);
+    let generation = loaded.process_file_system.resource_manager.with_mut(|resources| {
+        resources.menu_generation(handle)
+    });
     let heap_cursor = loaded.heap_cursor();
     loaded.aliases.push(PpcAliasRecord {
         handle,
@@ -3313,6 +3316,10 @@ fn hle_import_runner_dispose_handle_invalidates_tracked_handle() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], handle);
     assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    loaded.process_file_system.resource_manager.with_mut(|resources| {
+        assert!(!resources.menu_generations.contains_key(&handle));
+        assert_ne!(resources.menu_generation(handle), generation);
+    });
     // The data block returns to the heap tail; the master pointer stays
     // reserved for a later NewHandle.
     assert!(loaded.heap_cursor() < heap_cursor);

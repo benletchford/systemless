@@ -1,0 +1,6 @@
+{
+  "result": "PASS shared control manager definition-change regression 0.01s",
+  "scope": "Both set_proc_id and re-registration: preserve completed backdrop for unchanged definition, clear on change, retain generation, reject ambiguous patterned old ink.",
+  "source_sha256": "715aee678adad76c435ce1123b08901cef216ea293f4bb2840e25988f28d627a",
+  "limitations": "Shared manager evidence; actual guest re-registration on both CPUs and composed lifecycle still require qualification. Earlier pinned full-suite run excludes this change."
+}

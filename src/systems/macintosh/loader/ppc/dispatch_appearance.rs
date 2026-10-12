@@ -66,7 +66,9 @@ pub(super) fn dispatch_appearance_import(
                     ],
                 };
                 if let Some(record) = controls.iter_mut().find(|record| record.handle == control) {
-                    record.font_style = (style_value.flags != 0).then_some(style_value);
+                    let style = (style_value.flags != 0).then_some(style_value);
+                    if record.font_style != style { record.paint.invalidate_presentation(); }
+                    record.font_style = style;
                 }
                 // The painter applies the font, face, size and foreground
                 // colour to the title; see ppc_control_title_style.
@@ -85,6 +87,7 @@ pub(super) fn dispatch_appearance_import(
             }
             let active = binding.dispatcher_target == PpcImportDispatcherTarget::ActivateControl;
             if let Some(record) = controls.iter_mut().find(|record| record.handle == handle) {
+                if record.active != active { record.paint.invalidate_presentation(); }
                 record.active = active;
                 let _ = ppc_draw_control(
                     memory,

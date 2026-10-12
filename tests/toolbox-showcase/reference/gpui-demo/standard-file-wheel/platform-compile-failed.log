@@ -1,0 +1,51 @@
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6210:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6210 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+error[E0599]: no method named `render_frame` found for mutable reference `&mut gpui_kit::Window` in the current scope
+     --> src/bin/gpui_demo.rs:12235:28
+      |
+12235 |                     window.render_frame(cx);
+      |                            ^^^^^^^^^^^^ method not found in `&mut gpui_kit::Window`
+      |
+      = help: items from traits can only be used if the trait is in scope
+help: trait `TestWindowExt` which provides `render_frame` is implemented but not in scope; perhaps you want to import it
+      |
+ 6764 +         use gpui_kit::test::TestWindowExt;
+      |
+
+warning: unused variable: `window`
+    --> src/bin/gpui_demo.rs:4765:53
+     |
+4765 |             visual.update_window(window.into(), |_, window, cx| view.update(cx, |demo, cx| {
+     |                                                     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_window`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `cx`
+     --> src/bin/gpui_demo.rs:11245:65
+      |
+11245 |                     cx.update_window(window.into(), |_, window, cx| window.remove_window()).unwrap();
+      |                                                                 ^^ help: if this is intentional, prefix it with an underscore: `_cx`
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `systemless` (example "gpui-menu-demo" test) generated 2 warnings
+error: could not compile `systemless` (example "gpui-menu-demo" test) due to 1 previous error; 2 warnings emitted

@@ -1,0 +1,4 @@
+{
+  "scope": "Comparison tool validation only: same archived 16-case multiline matrix compares equal; one changed guest pixel and one changed composed pixel both fail after updated PNG hashes pass provenance. No different renderer comparison or native oracle qualification yet.",
+  "checker_sha256": "73bcfae9cbd8e16ca84d2eb46de8a233b2119cf1e3059691679d26808d128424"
+}

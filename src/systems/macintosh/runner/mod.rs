@@ -1,8 +1,10 @@
 //! Fixture Runner - Loading and execution infrastructure
 
 use crate::callback_manager::CallbackTaskArchitecture;
+pub use crate::control_manager::{resolve_control_title_style, ControlTitleStyle, scrollbar_drag_position, ControlFontStyle, ControlSnapshot, ControlTextInk, ControlIndicatorSpan, ControlPopupIndicator};
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
+pub use crate::dialog_manager::{DialogEditTextLayout, DialogStaticTextLayout, DialogItemKind, DialogItemSnapshot, DialogSnapshot};
 use crate::event_queue::{EventManagerSnapshot, EventRecordSnapshot};
 use crate::execution_kernel::ExecutionRoute;
 use crate::execution_m68k::M68kExecution;
@@ -25,11 +27,16 @@ use crate::memory::GuestAddressSpace as PpcSectionMem;
 use crate::memory::{AccessSource, MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{ProcessContext, ProcessMemoryManager, SharedProcessFileSystem};
-pub use crate::text_edit::{TextEditManagerSnapshot, TextEditSnapshot};
+pub use crate::standard_file_ui::{
+    StandardFileVolumePopup, StandardFileVolumeChoice, StandardFileEntrySnapshot, StandardFileGetLayout, StandardFileKind, StandardFilePutLayout,
+    StandardFileNameTextLayout, StandardFileSnapshot, StandardFileReplacementLayout, StandardFileNewFolderSnapshot, StandardFileNewFolderLayout,
+};
+pub use crate::list_manager::StandardListCellPaintSnapshot;
+pub use crate::text_edit::{TextEditCharExtraSnapshot, TextEditInkSnapshot, TextEditPaintSnapshot, TextEditLineGeometry, TextEditLineLayoutPolicy, TextEditManagerSnapshot, TextEditSnapshot, TextEditStyleRunSnapshot};
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
-pub use crate::window_manager::WindowSnapshot;
+pub use crate::window_manager::{WindowFrameSnapshot, WindowSnapshot};
 use crate::{Error, Result};
 use m68k::BatchExit;
 use ppc::{PpcException, PpcFetchHistogram, PpcMemory, PpcRunResult};
@@ -40,6 +47,16 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ListManagerSnapshot {
+    /// Guest ListHandle; combine with generation before retaining UI state.
+    pub guest_id: u32,
+    /// Changes when a disposed list's handle is reused.
+    pub generation: u64,
+    /// LNew `theProc` resource ID; only zero is the standard text LDEF.
+    pub definition_id: i16,
+    /// Guest GrafPort or window pointer owning the local view rectangle.
+    pub owner_port: u32,
+    /// Global bounds only when the owner is a known Window Manager window.
+    pub global_view_rect: Option<(i16, i16, i16, i16)>,
     pub view_rect: (i16, i16, i16, i16),
     pub data_bounds: (i16, i16, i16, i16),
     pub cell_size: (i16, i16),
@@ -47,9 +64,13 @@ pub struct ListManagerSnapshot {
     pub draw_enabled: bool,
     pub active: bool,
     pub cells: BTreeMap<(i16, i16), Vec<u8>>,
+    /// Decoded unstyled cell text only for the standard LDEF (resource 0).
+    pub text_cells: Option<BTreeMap<(i16, i16), String>>,
     pub selected: BTreeSet<(i16, i16)>,
     pub vertical_scrollbar: Option<(bool, u8)>,
     pub horizontal_scrollbar: Option<(bool, u8)>,
+    /// Actual built-in standard painter inputs; decoded labels are not a text recipe.
+    pub standard_cell_paint: BTreeMap<(i16, i16), crate::list_manager::StandardListCellPaintSnapshot>,
 }
 
 /// One resource-map entry exposed by the fixture introspection snapshot.
@@ -197,6 +218,10 @@ mod debug_support_disabled;
 pub(crate) use idle::*;
 pub(crate) use interrupt::*;
 pub(crate) use ppc_exec::*;
+mod cursor;
+pub use cursor::CursorSnapshot;
+mod notification;
+pub use notification::NotificationSnapshot;
 pub use vfs::*;
 pub(crate) use virtual_idle::*;
 
@@ -1247,7 +1272,7 @@ fn tracking_refire_uses_dialog_callbacks(opcode: u16) -> bool {
 fn tracking_refire_advances_gui_idle_tick(opcode: u16) -> bool {
     matches!(
         opcode & !0x0400,
-        0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988 | 0xA9EA
+        0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988 | 0xA9EA | 0xA9E7
     )
 }
 
@@ -1831,6 +1856,8 @@ pub struct FixtureRunner {
     /// must not be re-entered by our synthetic tick advancement while the callback
     /// is still unwinding back to interrupted guest code.
     active_interrupt_callback: Option<ActiveInterruptCallback>,
+    /// System-owned notification alert awaiting acknowledgment.
+    notification_alert: Option<NotificationSnapshot>,
     /// Interrupts may preempt a foreground dialog callback; interrupt handlers
     /// themselves remain non-reentrant. Preserve the foreground return frame.
     suspended_dialog_callback: Option<ActiveInterruptCallback>,
@@ -1991,6 +2018,7 @@ impl FixtureRunner {
             crate::memory::globals::addr::MENU_FLASH,
             crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
         );
+        bus.write_long(crate::memory::globals::addr::CARET_TIME, crate::memory::globals::DEFAULT_CARET_TIME_TICKS);
         let profile = crate::machine_profile::reference_machine_profile();
         let visible_row_bytes =
             (u32::from(profile.screen_width) * u32::from(config.screen_depth)).div_ceil(8);
@@ -2070,6 +2098,7 @@ impl FixtureRunner {
             adb_callback_trampoline: 0,
             adb_packet_buffer: 0,
             active_interrupt_callback: None,
+            notification_alert: None,
             suspended_dialog_callback: None,
             nested_dialog_calls: Vec::new(),
             dialog_draw_port_snapshot: None,
@@ -2230,6 +2259,142 @@ impl FixtureRunner {
         }
     }
 
+    /// Acquire a text alert, optionally preceded by the system beep. Mark, icon
+    /// and custom sound delivery remain unsupported. No painting is established.
+    pub fn begin_notification_alert(&mut self, expected: &NotificationSnapshot) -> bool {
+        if self.notification_alert_snapshot().is_some()
+            || self.is_ui_tracking_active()
+            || self.deferred_tracking_refire_pc.is_some()
+            || self.active_interrupt_callback.is_some()
+            || expected.response_started || expected.text.is_none()
+            || expected.mark != 0 || expected.icon_handle != 0
+            || !matches!(expected.sound_handle, 0 | u32::MAX) {
+            return false;
+        }
+        let next = self.notification_snapshot().into_iter().find(|notice| !notice.response_started);
+        if next.as_ref() != Some(expected) { return false; }
+        if self.native.application_mut().is_some_and(|app|
+            app.parked_interrupt_callback.is_some() || app.notification_response_context.is_some()) {
+            return false;
+        }
+        if expected.sound_handle == u32::MAX { self.queue_notification_system_sound(expected); }
+        self.notification_alert = Some(expected.clone());
+        true
+    }
+
+    fn queue_notification_system_sound(&mut self, expected: &NotificationSnapshot) {
+        if let Some(app) = self.native.application_mut() {
+            let queue = &app.toolbox_startup.notification_requests;
+            if queue.begin_sound(expected.guest_id, expected.instance_id) {
+                let volume = app.sound.manager.sys_beep_volume();
+                let channel = app.sound.manager.queue_sys_beep(volume);
+                queue.set_sound_channel(expected.guest_id, expected.instance_id, channel);
+            }
+        } else if self.dispatcher.notification_requests.begin_sound(expected.guest_id, expected.instance_id) {
+            let channel = self.dispatcher.queue_sys_beep(&mut self.bus);
+            self.dispatcher.notification_requests.set_sound_channel(expected.guest_id, expected.instance_id, channel);
+        }
+    }
+
+    /// Advance sound-only system notifications without creating an alert or
+    /// pausing foreground processing. Responses wait for their own tone to end.
+    pub fn advance_notification_system_sounds(&mut self) {
+        if self.notification_alert.is_some() || self.is_ui_tracking_active()
+            || self.deferred_tracking_refire_pc.is_some()
+            || self.active_interrupt_callback.is_some()
+            || self.native.application().is_some_and(|app| app.parked_interrupt_callback.is_some()
+                || app.notification_response_context.is_some()) { return; }
+        let Some(expected) = self.notification_snapshot().into_iter().find(|notice| !notice.response_started) else { return; };
+        if expected.mark != 0 || expected.icon_handle != 0 || expected.text.is_some()
+            || expected.sound_handle != u32::MAX { return; }
+        self.queue_notification_system_sound(&expected);
+        let channel = if let Some(app) = self.native.application() {
+            app.toolbox_startup.notification_requests.sound_channel(expected.guest_id, expected.instance_id)
+        } else { self.dispatcher.notification_requests.sound_channel(expected.guest_id, expected.instance_id) };
+        let Some(channel) = channel else { return; };
+        if channel.is_some_and(|pointer| self.dispatcher.sound_manager.channel_busy(pointer).unwrap_or(false)) { return; }
+        self.complete_notification_delivery(&expected);
+    }
+
+    /// Return the currently owned alert, retiring stale or removed guest records.
+    pub fn notification_alert_snapshot(&mut self) -> Option<NotificationSnapshot> {
+        let expected = self.notification_alert.clone()?;
+        if !self.notification_snapshot().iter().any(|notice| notice == &expected) {
+            self.notification_alert = None;
+            return None;
+        }
+        Some(expected)
+    }
+
+    /// Acknowledge the exact displayed alert and then enter its guest response.
+    pub fn dismiss_notification_alert(&mut self, expected: &NotificationSnapshot) -> bool {
+        if self.notification_alert_snapshot().as_ref() != Some(expected) { return false; }
+        self.notification_alert = None;
+        if self.complete_notification_delivery(expected) { return true; }
+        self.notification_alert = Some(expected.clone());
+        false
+    }
+
+    /// Complete an actually delivered notice. The frontend must supply the
+    /// displayed snapshot; this method does not establish delivery itself.
+    pub fn complete_notification_delivery(&mut self, expected: &NotificationSnapshot) -> bool {
+        if self.notification_alert.is_some() || self.active_interrupt_callback.is_some()
+            || !self.notification_snapshot().iter().any(|current| current == expected) {
+            return false;
+        }
+        if let Some(app) = self.native.application_mut() {
+            if matches!(expected.response, 0 | u32::MAX) {
+                return app.complete_notification_without_procedure(expected.guest_id,
+                    expected.instance_id, expected.response);
+            }
+            // Enter without executing guest instructions. Native continuations
+            // then take priority over foreground code in run_ppc_steps; direct
+            // Mixed Mode responses use the existing parked-callback path.
+            return self.process_context.with_memory_and_cfm(|memory_manager, cfm| {
+                app.run_notification_response_with_process_services(expected.guest_id,
+                    expected.instance_id, expected.response, 0, false, false,
+                    memory_manager, cfm).is_some()
+            });
+        }
+        let saved = self.capture_callback_context(ActiveInterruptCallbackSource::NotificationResponse);
+        if !self.dispatcher.complete_notification_delivery(&mut self.m68k.cpu, &mut self.bus,
+            expected.guest_id, expected.instance_id) { return false; }
+        if self.m68k.cpu.read_reg(Register::PC) != saved.resume_pc {
+            // The Toolbox entry has already installed its return slot and
+            // trampoline. Retain the pre-entry state without pushing again.
+            self.active_interrupt_callback = Some(saved);
+        }
+        true
+    }
+
+    pub fn notification_snapshot(&mut self) -> Vec<NotificationSnapshot> {
+        let requests = self.dispatcher.notification_requests.iter().filter_map(|&request| {
+            self.dispatcher.notification_requests.instance_id(request).map(|instance|
+                (request, instance, self.dispatcher.notification_requests.response_started(request, instance)))
+        }).collect::<Vec<_>>();
+        if let Some(app) = self.native.application_mut() {
+            requests.into_iter().filter_map(|(request, instance, started)| {
+                notification::snapshot_request(request, instance, started, |address| app.memory.read_u8(address))
+            }).collect()
+        } else {
+            requests.into_iter().filter_map(|(request, instance, started)| {
+                notification::snapshot_request(request, instance, started, |address| {
+                    (self.bus.translate_guest_address(address) < self.bus.ram_size())
+                        .then(|| self.bus.read_byte(address))
+                })
+            }).collect()
+        }
+    }
+
+    pub fn cursor_snapshot(&self) -> CursorSnapshot {
+        CursorSnapshot {
+            image: self.dispatcher.cursor_state.installed_image().cloned(),
+            visible: self.dispatcher.cursor_visible(),
+            level: self.dispatcher.cursor_level(),
+            position: self.dispatcher.mouse_position(),
+        }
+    }
+
     pub fn host_now(&self) -> Instant {
         Instant::now()
     }
@@ -2330,6 +2495,7 @@ impl FixtureRunner {
     }
 
     fn guest_work_is_suspended(&self) -> bool {
+        if self.notification_alert.is_some() { return true; }
         #[cfg(feature = "debug")]
         {
             return self.debug.is_paused();
@@ -2371,6 +2537,305 @@ impl FixtureRunner {
                 self.bus.read_byte(address)
             })
         })
+    }
+
+    /// Describe guest frames without granting frontends mutable window records.
+    #[doc(hidden)]
+    pub fn window_frame_snapshot(&mut self) -> Vec<WindowFrameSnapshot> {
+        // Match redraw_chrome: a fullscreen guest owns every display pixel.
+        if self
+            .dispatcher
+            .with_process_state(|state| state.screen_takeover_active)
+            || self
+                .native
+                .application()
+                .is_some_and(|app| app.draw_sprocket.active_context.is_some())
+        {
+            return Vec::new();
+        }
+        let order = self
+            .dispatcher
+            .window_list
+            .with_ref(|windows| windows.to_vec());
+        let snapshots = self.window_stack_snapshot();
+        let mut frames: Vec<_> = order
+            .into_iter()
+            .filter(|window| *window != 0)
+            .zip(snapshots)
+            .map(|(pointer, window)| {
+                let rectangular = crate::window_manager::snapshot_window_regions_rectangular(
+                    pointer,
+                    |address| self.bus.read_byte(address),
+                );
+                let visible_content_rects = crate::window_manager::snapshot_visible_region_rects(
+                    pointer,
+                    |address| self.bus.read_byte(address),
+                );
+                let definition_id = if let Some(app) = self.native.application_mut() {
+                    Some(app.window_definition_id(pointer))
+                } else {
+                    self.dispatcher.window_proc_ids.get(&pointer).copied()
+                };
+                // WindowRecord.goAwayFlag: Inside Macintosh I, I-277.
+                let close_box = self.bus.read_byte(
+                    pointer.wrapping_add(crate::window_manager::WINDOW_GO_AWAY_FLAG_OFFSET),
+                ) != 0;
+                let grow_icon_drawn = self
+                    .dispatcher
+                    .window_list
+                    .grow_icon_drawn_at(pointer, window.bounds);
+                crate::window_manager::WindowFrameSnapshot {
+                    guest_id: pointer,
+                    generation: self.dispatcher.window_list.generation_for_window(pointer),
+                    window,
+                    definition_id,
+                    rectangular_regions: rectangular,
+                    visible_content_rects,
+                    close_box,
+                    grow_icon_drawn,
+                }
+            })
+            .collect();
+        // Guest hilite flags may remain set on covered windows while a modal
+        // loop runs. Present only the frontmost eligible window as active:
+        // keyboard activity and the active title/selection belong to one
+        // window. Macintosh Toolbox Essentials (1992), pp. 1-4--1-5.
+        // FrontWindow ordering alone does not imply activation: HiliteWindow
+        // clears the guest flag on suspend without removing its front window.
+        let front_active = frames
+            .iter()
+            .position(|frame| frame.window.visible && frame.window.active
+                && self.bus.read_byte(frame.guest_id.wrapping_add(
+                    crate::window_manager::WINDOW_HILITED_FLAG_OFFSET)) != 0);
+        for (index, frame) in frames.iter_mut().enumerate() {
+            frame.window.active = Some(index) == front_active;
+        }
+        frames
+    }
+
+    /// Read live ControlRecords on either CPU without executing a CDEF or
+    /// changing a guest field. Unknown definitions remain identifiable by
+    /// their original procID for a guest-pixel fallback.
+    /// Macintosh Toolbox Essentials (1992), pp. 5-60--5-64.
+    #[doc(hidden)]
+    pub fn control_snapshot(&mut self) -> Vec<ControlSnapshot> {
+        let owners = self
+            .window_frame_snapshot()
+            .into_iter()
+            .map(|frame| (frame.guest_id, (frame.window.bounds, frame.window.visible)))
+            .collect::<HashMap<_, _>>();
+        if let Some(app) = self.native.application_mut() {
+            let display_palette = crate::display::rgba_palette_from_clut_with_gamma(
+                &app.screen_clut, &app.display_gamma.table());
+            let records = app.controls.with_ref(|state| state.iter().cloned().collect::<Vec<_>>());
+            records
+                .into_iter()
+                .filter_map(|record| {
+                    crate::control_manager::snapshot_control_record(
+                        record.handle,
+                        record.pointer,
+                        record.generation,
+                        record.proc_id,
+                        record.popup_menu_id,
+                        record.popup_title_width,
+                        record.font_style,
+                        |owner| owners.get(&owner).copied(),
+                        |address| app.memory.read_u8(address),
+                    ).map(|mut snapshot| {
+                        if snapshot.visible && snapshot.owner_visible
+                            && matches!(snapshot.proc_id, 0 | 1 | 2) && record.paint.has_drawing() {
+                            if let Some((identity, current)) = crate::loader::ppc::ppc_capture_standard_control_pixels(
+                                &mut app.memory, &app.gworlds, snapshot.owner_id, record.generation, record.pointer, snapshot.local_bounds) {
+                                if identity.bounds == snapshot.bounds {
+                                    snapshot.background = record.paint.rgba_backdrop(identity, &current, &display_palette);
+                                }
+                            }
+                        }
+                        snapshot.popup_text_inset = 5;
+                        if snapshot.popup_menu_id.is_some() {
+                            snapshot.popup_ink = Some(crate::loader::ppc::ppc_popup_text_ink(&app.gworlds, record.active));
+                            let (top, left, bottom, right) = snapshot.bounds;
+                            snapshot.popup_box_bounds = Some((top.saturating_add(1),
+                                left.saturating_add(snapshot.popup_title_width.unwrap_or(0).max(0)),
+                                bottom.saturating_sub(2), right.saturating_sub(1)));
+                            snapshot.popup_indicator = crate::loader::ppc::ppc_popup_indicator(
+                                &app.gworlds, snapshot.popup_box_bounds.unwrap(),
+                                record.active, snapshot.enabled);
+                        }
+                        snapshot
+                    })
+                })
+                .collect()
+        } else {
+            let display_palette = crate::display::rgba_palette_from_clut_with_gamma(
+                &self.dispatcher.device_clut, &self.dispatcher.display_gamma.table());
+            let records = self
+                .dispatcher
+                .control_manager
+                .with_ref(|state| state.iter().cloned().collect::<Vec<_>>());
+            records
+                .into_iter()
+                .filter_map(|record| {
+                    crate::control_manager::snapshot_control_record(
+                        record.handle,
+                        record.pointer,
+                        record.generation,
+                        record.proc_id,
+                        record.popup_menu_id,
+                        record.popup_title_width,
+                        record.font_style,
+                        |owner| owners.get(&owner).copied(),
+                        |address| Some(self.bus.read_byte(address)),
+                    ).map(|mut snapshot| {
+                        if snapshot.visible && snapshot.owner_visible
+                            && matches!(snapshot.proc_id, 0 | 1 | 2) && record.paint.has_drawing() {
+                            if let Some((identity, current)) = self.dispatcher.capture_standard_control_pixels(
+                                &self.bus, snapshot.owner_id, record.generation, record.pointer, snapshot.bounds) {
+                                snapshot.background = record.paint.rgba_backdrop(identity, &current, &display_palette);
+                            }
+                        }
+                        if let Some(menu_id) = snapshot.popup_menu_id {
+                            snapshot.popup_ink = Some(self.dispatcher.popup_text_ink(snapshot.enabled));
+                            let (top, left, bottom, right) = snapshot.bounds;
+                            snapshot.popup_box_bounds = Some(self.dispatcher.popup_control_box_rect(
+                                &self.bus, top, left, bottom, right, menu_id,
+                                snapshot.popup_title_width.unwrap_or(0), snapshot.proc_id));
+                            if self.dispatcher.ui_theme_id() == UiThemeId::ClassicSystem7 {
+                                snapshot.popup_indicator = Some(crate::control_manager::ControlPopupIndicator {
+                                    spans: crate::control_manager::popup_indicator_spans(
+                                        crate::control_manager::PopupIndicatorKind::Classic68k,
+                                        snapshot.popup_box_bounds.unwrap(), snapshot.enabled),
+                                    rgb: self.dispatcher.popup_indicator_rgb(&self.bus),
+                                });
+                            }
+                        }
+                        snapshot
+                    })
+                })
+                .collect()
+        }
+    }
+
+    /// Inspect visible and hidden Dialog Manager windows without running
+    /// guest code or changing their records. Item bounds are global screen
+    /// coordinates; input still belongs to the guest Dialog Manager.
+    /// Macintosh Toolbox Essentials (1992), pp. 6-13--6-15, 6-120--6-124.
+    #[doc(hidden)]
+    pub fn dialog_snapshot(&mut self) -> Vec<DialogSnapshot> {
+        // A titleless modal box can own Dialog Manager input without a
+        // Window Manager hilite flag (as in Escape Velocity's New Pilot).
+        // Preserve that explicit modal ownership without changing guest
+        // window flags or inferring activation from front-window ordering.
+        let modal_owner = self.native.application().is_none().then(||
+            self.dispatcher.dialog_tracking.as_ref().map(|tracking| tracking.dialog_ptr)).flatten();
+        self.window_frame_snapshot()
+            .into_iter()
+            .filter_map(|frame| {
+                let guest_id = frame.guest_id;
+                let bounds = frame.window.bounds;
+                let (items, default, cancel, edit) =
+                    if let Some(app) = self.native.application_mut() {
+                        let items = app.dialog_items_snapshot(guest_id, bounds)?;
+                        let mut read = |offset| app.memory.read_u16_be(guest_id + offset);
+                        (
+                            items,
+                            read(crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET),
+                            read(crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET),
+                            read(crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET),
+                        )
+                    } else {
+                        let items = self.dispatcher.dialog_items.get(&guest_id)?;
+                        // DialogRecord.textH is the active edit field's TERec.
+                        // Toolbox Essentials (1992), pp. 6-101--6-102; Text (1993), p. 2-84.
+                        let edit_index = self.bus.read_word(guest_id + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET);
+                        let text_handle = self.bus.read_long(guest_id + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                        let text_ptr = if text_handle != 0 { self.bus.read_long(text_handle) } else { 0 };
+                        let caret_visible = (text_ptr != 0).then(|| self.bus.read_word(text_ptr + 0x38) == 0);
+                        // TERec.nLines is at 0x5E (Inside Macintosh: Text,
+                        // TERec layout). A wrapped active field belongs to the
+                        // actual editor painter, not the single-line item path.
+                        let active_edit_multiline = text_ptr != 0 && self.bus.read_word(text_ptr + 0x5E) > 1;
+                        let snapshots = items
+                            .iter()
+                            .enumerate()
+                            .map(|(index, item)| {
+                                let number = (index + 1) as i16;
+                                DialogItemSnapshot {
+                                    static_text_layout: self.dispatcher.dialog_static_text_layout(&self.bus, guest_id, index, item.rect),
+                                    edit_text_layout: (item.is_edit_text()
+                                        && !(active_edit_multiline && index as u16 == edit_index))
+                                        .then(|| self.dispatcher.dialog_edit_text_layout()).flatten(),
+                                    // DITL item handles may change without replacing the dialog.
+                                    // MTE (1992), pp. 6-122--6-123; ControlRecord, pp. 5-60--5-64.
+                                    control_identity: TrapDispatcher::dialog_item_handle_addr(&self.bus, guest_id, number)
+                                        .map(|address| self.bus.read_long(address))
+                                        .and_then(|handle| self.dispatcher.control_manager.with_ref(|state| {
+                                            state.iter().find(|record| record.handle == handle
+                                                && record.pointer != 0
+                                                && self.bus.read_long(handle) == record.pointer
+                                                && self.bus.read_long(record.pointer + 4) == guest_id)
+                                                .map(|record| (record.handle, record.generation))
+                                        })),
+                                    pressed: self.dispatcher.retained_modal_dialog_click.as_ref().is_some_and(|click| {
+                                        click.dialog_ptr == guest_id && click.item_no == number && click.highlighted
+                                    }) || self.dispatcher.dialog_tracking.as_ref().is_some_and(|tracking| {
+                                        tracking.dialog_ptr == guest_id && tracking.active_button.as_ref()
+                                            .is_some_and(|button| button.item_no == number && button.highlighted)
+                                    }),
+                                    number,
+                                    kind: crate::dialog_manager::DialogItemKind::from_raw_type(
+                                        item.item_type,
+                                    ),
+                                    bounds: crate::dialog_manager::dialog_rect_to_global(
+                                        bounds, item.rect,
+                                    ),
+                                    text: if crate::dialog_manager::DialogItemKind::from_raw_type(item.item_type) == crate::dialog_manager::DialogItemKind::StaticText {
+                                        self.dispatcher.apply_param_text(&item.text).into_owned()
+                                    } else { item.text.clone() },
+                                    enabled: item.is_enabled(),
+                                    visible: !item.is_hidden(),
+                                    value: self
+                                        .dispatcher
+                                        .dialog_control_values
+                                        .get(&(guest_id, number))
+                                        .copied(),
+                                    caret_visible: (edit_index as usize == index).then_some(caret_visible).flatten(),
+                                    selection: item
+                                        .is_edit_text()
+                                        .then_some((item.sel_start, item.sel_end)),
+                                }
+                            })
+                            .collect();
+                        let read = |offset| Some(self.bus.read_word(guest_id + offset));
+                        (
+                            snapshots,
+                            read(crate::dialog_manager::DIALOG_DEFAULT_ITEM_OFFSET),
+                            read(crate::dialog_manager::DIALOG_CANCEL_ITEM_OFFSET),
+                            read(crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET),
+                        )
+                    };
+                let valid_item = |raw: Option<u16>| {
+                    raw.map(|number| number as i16)
+                        .filter(|number| *number > 0 && (*number as usize) <= items.len())
+                };
+                let edit_field = edit
+                    .map(|index| index as i16)
+                    .filter(|index| *index >= 0 && (*index as usize) < items.len())
+                    .map(|index| index + 1);
+                Some(DialogSnapshot {
+                    content_revision: self.dispatcher.window_list.dialog_content_revision(guest_id),
+                    guest_id,
+                    generation: frame.generation,
+                    bounds,
+                    visible: frame.window.visible,
+                    active: frame.window.visible && modal_owner.map_or(frame.window.active, |owner| owner == guest_id),
+                    default_item: valid_item(default),
+                    cancel_item: valid_item(cancel),
+                    edit_field,
+                    items,
+                })
+            })
+            .collect()
     }
 
     /// Returns the selected UI theme provider. `classic-system7` is the
@@ -2432,6 +2897,20 @@ impl FixtureRunner {
     /// rendered. Guest `MBarHeight` and fullscreen state may still hide it.
     pub fn menu_bar_visible(&self) -> bool {
         !self.dispatcher.menu_bar_hidden
+    }
+
+    /// Whether the guest currently presents its menu bar on the screen.
+    /// Host policy alone is insufficient: games can hide it through
+    /// `MBarHeight` or take over the display (Inside Macintosh V, V-253).
+    pub fn guest_menu_bar_presented(&self) -> bool {
+        self.menu_bar_visible()
+            && self.bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) > 0
+            && !self.dispatcher.fullscreen_locked
+            && !self.dispatcher.screen_takeover_active
+            && !self
+                .native
+                .application()
+                .is_some_and(|app| app.draw_sprocket.active_context.is_some())
     }
 
     /// Disassemble `count` M68K instructions starting at `pc`.
@@ -2910,6 +3389,16 @@ impl FixtureRunner {
         self.config.screen_depth
     }
 
+    /// Depth of the current guest presentation surface, rather than launch configuration.
+    #[doc(hidden)]
+    pub fn presented_screen_depth(&self) -> Option<u32> {
+        if let Some(app) = self.native.application() {
+            app.presented_front_buffer().map(|buffer| buffer.depth)
+        } else {
+            Some(u32::from(self.dispatcher.screen_mode.4))
+        }
+    }
+
     /// Explicitly select the display depth used by subsequently loaded native
     /// PowerPC applications. Leaving this unset preserves the historical
     /// 16-bit PowerPC architecture default, independently of the configured
@@ -2943,6 +3432,34 @@ impl FixtureRunner {
     /// only after the loaded state has crossed its detached snapshot boundary.
     pub(crate) fn powerpc_system_reservation_range(&self) -> Option<(u32, u32)> {
         self.bus.synthetic_reservation_range()
+    }
+
+    /// Import changed host clipboard text before requesting foreground resume.
+    /// Bytes must be Macintosh Roman with carriage-return line endings. This
+    /// replaces global scrap flavors and leaves private TextEdit scrap to the
+    /// application's resume handler (Toolbox Essentials, pp. 2-58--2-61).
+    pub fn import_clipboard_text(&mut self, text: Vec<u8>) {
+        self.process_context.import_clipboard_text(text);
+        self.wake_pending_wait_next_event_if_input_available();
+    }
+
+    /// Snapshot global TEXT only after suspend handling and the following
+    /// eligible guest yield. `None` means switching is still pending or the
+    /// process is foreground; `Some(None)` means settled non-text/empty scrap.
+    /// Private TextEdit scrap is never read or modified at this boundary.
+    pub fn clipboard_text_after_suspend(&self) -> Option<Option<Vec<u8>>> {
+        self.process_context.clipboard_text_after_suspend()
+    }
+
+    /// Request a process switch at the next eligible Event Manager opportunity.
+    /// A parked WaitNextEvent is already such an opportunity; it can return
+    /// the notification without waiting for the requested sleep to expire.
+    /// Macintosh Toolbox Essentials (1992), pp. 2-19--2-22.
+    pub fn request_foreground(&mut self, foreground: bool) {
+        self.process_context.event_queue().with_mut(|queue| {
+            queue.activation.request(foreground);
+        });
+        self.wake_pending_wait_next_event_if_input_available();
     }
 
     /// Move the mouse without changing the button state. Coordinates are in
@@ -2979,18 +3496,371 @@ impl FixtureRunner {
         }
     }
 
+    /// Inspect an open standard popup without replacing its guest tracker.
+    /// Custom definitions and open hierarchical chains retain guest rendering.
+    #[doc(hidden)]
+    pub fn guest_popup_snapshot(&mut self) -> Option<crate::menu_model::GuestPopupSnapshot> {
+        let menus = self.guest_menu_snapshot();
+        if let Some(snapshot) = self.dispatcher.popup_control_snapshot(&self.bus, &menus) {
+            return Some(snapshot);
+        }
+        self.process_context.menu_tracking().with_ref(|tracking| {
+            let tracking = tracking?;
+            if tracking.kind != crate::menu_manager::MenuTrackingKind::PopUp
+                || tracking.definition.is_some() || !tracking.submenus.is_empty()
+                || tracking.item_appearances.iter().any(|item| item.icon.is_some())
+            {
+                return None;
+            }
+            let menu = menus.menus.into_iter().find(|menu| {
+                menu.guest_id == tracking.menu_handle && menu.standard_definition
+            })?;
+            let row_heights: Vec<_> = tracking.item_appearances.iter().map(|item| item.height).collect();
+            if row_heights.len() != menu.items.len() {
+                return None;
+            }
+            Some(crate::menu_model::GuestPopupSnapshot {
+                font: tracking.item_appearances.first().map(|item| item.font).unwrap_or_default(),
+                menu,
+                bounds: (tracking.popup_top, tracking.popup_left,
+                    tracking.popup_top.saturating_add(tracking.popup_height),
+                    tracking.popup_left.saturating_add(tracking.popup_width)),
+                content_top: tracking.content_top,
+                row_heights,
+                highlighted_item: tracking.highlighted_item,
+            })
+        })
+    }
+
+    /// A guest menu tracker may paint its own dropdown over window content.
+    /// Frontends can retain guest pixels during that interval without
+    /// disabling standard window presentation whenever a custom MDEF exists.
+    #[doc(hidden)]
+    pub fn guest_menu_tracking_active(&self) -> bool {
+        self.process_context.menu_tracking().is_some() || self.dispatcher.is_menu_tracking()
+    }
+
     /// Inspect caller-created TextEdit records and the process's private scrap.
     #[doc(hidden)]
     pub fn text_edit_snapshot(&mut self) -> TextEditManagerSnapshot {
-        if let Some(app) = self.native.application_mut() {
-            let handles = app.scrap.text_edit.handles();
+        use crate::window_manager::{snapshot_local_rect_to_global, snapshot_port_bounds_origin};
+
+        let dialog_owners = self.dialog_snapshot();
+        let mut snapshot = if let Some(app) = self.native.application_mut() {
+            let mut handles = app.scrap.text_edit.identities();
+            // Dialog Manager creates its internal TERec outside caller TENew
+            // registration. Tie discovery to the live owning dialog lifetime.
+            for dialog in &dialog_owners {
+                if !dialog.visible || !dialog.active || dialog.edit_field.is_none() { continue; }
+                let Some(handle) = app.memory.read_u32_be(dialog.guest_id
+                    + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET) else { continue; };
+                if handle != 0 && !handles.iter().any(|(known, _)| *known == handle) {
+                    handles.push((handle, dialog.generation));
+                }
+            }
             crate::text_edit::snapshot_guest_records(&handles, &mut |addr| app.memory.read_u8(addr))
         } else {
-            let handles = self.dispatcher.textedit_states.handles();
+            let mut handles = self.dispatcher.textedit_states.identities();
+            // Classic Dialog Manager also allocates internal TERecs without
+            // TENew registration. Their identity follows the owning dialog,
+            // rather than inventing a persistent standalone editor lifetime.
+            for dialog in &dialog_owners {
+                if !dialog.visible || !dialog.active || dialog.edit_field.is_none() { continue; }
+                let handle = self.bus.read_long(dialog.guest_id
+                    + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+                if handle != 0 && !handles.iter().any(|(known, _)| *known == handle) {
+                    handles.push((handle, dialog.generation));
+                }
+            }
             crate::text_edit::snapshot_guest_records(&handles, &mut |addr| {
                 Some(self.bus.read_byte(addr))
             })
+        };
+        let window_ports: BTreeSet<u32> = self
+            .window_frame_snapshot()
+            .into_iter()
+            .map(|frame| frame.guest_id)
+            .collect();
+        let clips_line_offsets_to_visible_text = self.native.application().is_some();
+        for record in &mut snapshot.records {
+            record.clips_line_offsets_to_visible_text = clips_line_offsets_to_visible_text;
+            record.line_layout_policy = if clips_line_offsets_to_visible_text {
+                crate::text_edit::TextEditLineLayoutPolicy::PpcRunMetrics
+            } else {
+                crate::text_edit::TextEditLineLayoutPolicy::CumulativeGuestMetrics
+            };
+            if !window_ports.contains(&record.owner_port) {
+                continue;
+            }
+            // TERec's inPort owns local destRect/viewRect coordinates.
+            // Inside Macintosh: Text (1993), pp. 2-64--2-69;
+            // Imaging With QuickDraw (1994), Basic QuickDraw pp. 2-9--2-10.
+            let origin = if let Some(app) = self.native.application_mut() {
+                snapshot_port_bounds_origin(
+                    &mut |addr| app.memory.read_u8(addr).unwrap_or(0),
+                    record.owner_port,
+                )
+            } else {
+                snapshot_port_bounds_origin(&mut |addr| self.bus.read_byte(addr), record.owner_port)
+            };
+            record.global_dest_rect = Some(snapshot_local_rect_to_global(record.dest_rect, origin));
+            record.global_view_rect = Some(snapshot_local_rect_to_global(record.view_rect, origin));
+            record.painted_regions = if let Some(app) = self.native.application_mut() {
+                let drawing = crate::text_edit::TextEditDrawing::capture_editor(record.guest_id, record.owner_port, record.view_rect, |addr| app.memory.read_u8(addr));
+                app.presented_front_buffer().map(|front| {
+                    app.memory.presentation().text_edit_drawing_regions(record.guest_id, drawing, front.base_addr)
+                }).unwrap_or_default()
+            } else {
+                self.bus.text_edit_drawing_regions(record.guest_id, record.owner_port, record.view_rect, self.dispatcher.screen_mode.0)
+            };
+            record.drawing_intact = !record.painted_regions.is_empty();
+            record.paint = if let Some(app) = self.native.application_mut() {
+                app.text_edit_paint_snapshot(record)
+            } else {
+                self.dispatcher.text_edit_paint_snapshot(&self.bus, record)
+            };
         }
+        snapshot
+    }
+
+    /// Select a qualified document field through its existing TESetSelect operation.
+    /// The expected record pins the owner and prior editing state; modal fields
+    /// must enter their separate DialogSelect/Standard File paths.
+    #[doc(hidden)]
+    /// Prepare a plain-field style fixture; redraw must still use guest Toolbox paths.
+    #[cfg(any(feature = "test-support", feature = "gpui-demo-test"))]
+    pub fn set_plain_text_edit_face_for_test(&mut self, expected: &TextEditSnapshot, face: u8) -> bool {
+        if !self.text_edit_snapshot().records.iter().any(|record| !record.styled
+            && (record.guest_id, record.generation, record.owner_port)
+                == (expected.guest_id, expected.generation, expected.owner_port)) { return false; }
+        // Inside Macintosh: Text, TERec.txFace, byte offset0x4C.
+        if let Some(app) = self.native.application_mut() {
+            let Some(pointer) = app.memory.read_u32_be(expected.guest_id) else { return false; };
+            let Some(address) = pointer.checked_add(0x4c) else { return false; };
+            app.memory.write_u8(address, face).is_some()
+        } else {
+            let pointer = self.bus.read_long(expected.guest_id);
+            if pointer == 0 || !self.bus.is_guest_address_mapped(pointer, 0x4d) { return false; }
+            self.bus.write_byte(pointer + 0x4c, face);
+            true
+        }
+    }
+
+    pub fn select_text_edit_range(&mut self, expected: &TextEditSnapshot, range: std::ops::Range<usize>) -> bool {
+        if range.start > range.end || range.end > expected.text.len() || range.end > i16::MAX as usize
+            || self.is_ui_tracking_active() || self.standard_file_snapshot().is_some()
+            || self.dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active) {
+            return false;
+        }
+        let parked_event_wait = self.native.application().is_some_and(|app|
+            app.toolbox_startup.is_parked_event_wait(&app.cpu));
+        let events = self.event_manager_snapshot();
+        if events.queue_len != 0 || events.mouse_button
+            || !(parked_event_wait || events.last_record.is_some_and(|event| event.what == 0))
+            || [0u8, 0x37, 0x3a, 0x3b].iter().any(|key|
+                events.key_map[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return false; }
+        let records = self.text_edit_snapshot().records;
+        if records.iter().filter(|record| record.active && record.drawing_intact).count() != 1 { return false; }
+        let Some(record) = records.iter().find(|record| record.active && record.drawing_intact
+            && (record.guest_id, record.generation, record.owner_port) == (expected.guest_id, expected.generation, expected.owner_port)
+            && record.text == expected.text && record.selection == expected.selection
+            && record.style_runs == expected.style_runs && record.global_view_rect.is_some()) else { return false; };
+        let handle = record.guest_id;
+        if let Some(app) = self.native.application_mut() {
+            app.select_and_draw_text_edit(handle, range.start as u32, range.end as u32)
+        } else {
+            if !crate::trap::dispatch::TrapDispatcher::te_set_select(&mut self.bus, handle, range.start as u32, range.end as u32) {
+                return false;
+            }
+            self.dispatcher.draw_te_contents(&mut self.m68k.cpu, &mut self.bus, handle, true);
+            true
+        }
+    }
+
+    /// Select the current dialog edit field without changing focus or text.
+    #[doc(hidden)]
+    pub fn select_dialog_text_range(&mut self, expected: &DialogSnapshot, item_number: i16,
+        range: std::ops::Range<usize>) -> bool {
+        if item_number <= 0 || self.is_non_dialog_ui_tracking_active()
+            || self.standard_file_snapshot().is_some() { return false; }
+        let events = self.event_manager_snapshot();
+        if events.queue_len != 0 || events.mouse_button
+            || [0u8, 0x37, 0x3a, 0x3b].iter().any(|key|
+                events.key_map[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return false; }
+        let dialogs = self.dialog_snapshot();
+        if dialogs.iter().filter(|dialog| dialog.visible && dialog.active).count() != 1 { return false; }
+        let Some(actual) = dialogs.iter().find(|dialog| dialog.visible && dialog.active
+            && (dialog.guest_id, dialog.generation, dialog.content_revision)
+                == (expected.guest_id, expected.generation, expected.content_revision)
+            && dialog.edit_field == Some(item_number) && expected.edit_field == Some(item_number)) else { return false; };
+        let Some(item) = actual.items.iter().find(|item| item.number == item_number) else { return false; };
+        let Some(previous) = expected.items.iter().find(|item| item.number == item_number) else { return false; };
+        if item.kind != DialogItemKind::EditText || !item.visible || !item.enabled
+            || item.text != previous.text || item.selection != previous.selection || item.bounds != previous.bounds {
+            return false;
+        }
+        let length = item.text.chars().count();
+        if range.start > range.end || range.end > length || range.end > i16::MAX as usize { return false; }
+        if let Some(app) = self.native.application_mut() {
+            let handle = app.memory.read_u32_be(actual.guest_id + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET).unwrap_or(0);
+            handle != 0 && app.select_and_draw_text_edit(handle, range.start as u32, range.end as u32)
+        } else {
+            self.dispatcher.select_active_dialog_text_range(&mut self.bus, actual.guest_id, item_number, range)
+        }
+    }
+
+    /// Select a live standard filename editor without touching text or replies.
+    #[doc(hidden)]
+    pub fn select_standard_file_text_range(&mut self, expected: &StandardFileSnapshot, range: std::ops::Range<usize>) -> bool {
+        if self.is_non_dialog_ui_tracking_active() { return false; }
+        let events = self.event_manager_snapshot();
+        if events.queue_len != 0 || events.mouse_button
+            || [0u8, 0x37, 0x3a, 0x3b].iter().any(|key|
+                events.key_map[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return false; }
+        let Some(actual) = self.standard_file_snapshot() else { return false; };
+        if actual.kind != StandardFileKind::Put || !actual.standard_entry_point || actual.confirming_replace
+            || (actual.guest_id, actual.generation, actual.directory_id) != (expected.guest_id, expected.generation, expected.directory_id) {
+            return false;
+        }
+        let length = if let Some(folder) = &actual.new_folder {
+            let Some(previous) = &expected.new_folder else { return false; };
+            if folder.error.is_some() || folder.name != previous.name || folder.selection != previous.selection { return false; }
+            folder.name.chars().count()
+        } else {
+            if expected.new_folder.is_some() || actual.name_has_focus != Some(true)
+                || actual.name != expected.name || actual.name_selection != expected.name_selection { return false; }
+            let Some(name) = &actual.name else { return false; }; name.chars().count()
+        };
+        if range.start > range.end || range.end > length || range.end > i16::MAX as usize { return false; }
+        let new_folder = actual.new_folder.is_some();
+        if let Some(app) = self.native.application_mut() {
+            app.toolbox_startup.select_standard_file_text_range(new_folder, range)
+        } else {
+            self.dispatcher.select_standard_file_text_range(new_folder, range)
+        }
+    }
+
+    /// Observe a retained Standard File Open/Save session without advancing
+    /// its modal event loop or changing the caller's reply record.
+    /// Inside Macintosh: Files (1992), pp. 3-3--3-13, 3-44--3-47.
+    #[doc(hidden)]
+    pub fn standard_file_snapshot(&self) -> Option<StandardFileSnapshot> {
+        if let Some(app) = self.native.application() {
+            return app.toolbox_startup.standard_file_snapshot();
+        }
+        if let Some(tracking) = &self.dispatcher.standard_file_get_tracking {
+            let get_layout = self.dispatcher.standard_file_get_layout(tracking);
+            return Some(StandardFileSnapshot {
+                guest_id: tracking.reply_ptr,
+                generation: tracking.generation,
+                kind: StandardFileKind::Get,
+                list_text_origin: (4, 11),
+                directory_marker: "▸",
+                list_name_limit: Some(36),
+                volume_popup: tracking.volume_popup.clone(),
+                volume_indicator_rgba: None,
+                volume_text: Some((
+                    TrapDispatcher::popup_control_display_title(
+                        &self.dispatcher.standard_file_get_volume_name(tracking),
+                        (get_layout.volume.3 - get_layout.volume.1 - 34).max(0), 0, 12,
+                    ),
+                    (15, {
+                        let metrics = crate::quickdraw::text::get_font_metrics(0, 12);
+                        crate::control_manager::centered_control_label_origin(
+                            (0, 0, get_layout.volume.2 - get_layout.volume.0, get_layout.volume.3 - get_layout.volume.1),
+                            0, metrics.ascent, metrics.descent,
+                        ).1 - 1
+                    }),
+                )),
+                confirming_replace: false,
+                        new_folder: None,
+                standard_entry_point: tracking.standard_entry_point,
+                bounds: tracking.bounds,
+                directory_id: tracking.current_dir_id,
+                entries: Some(
+                    tracking
+                        .entries
+                        .iter()
+                        .map(|entry| StandardFileEntrySnapshot {
+                            name: entry.display_name.clone(),
+                            directory_id: entry.dir_id,
+                            is_directory: entry.is_directory,
+                            file_type: entry.file_type,
+                        })
+                        .collect(),
+                ),
+                selected: (tracking.selected < tracking.entries.len())
+                    .then_some(tracking.selected),
+                prompt: None,
+                name: None,
+                name_selection: None,
+                name_text_layout: None,
+                name_caret_visible: None,
+                name_has_focus: None,
+                directory_label: Some(self.dispatcher.apply_param_text(&self.dispatcher.standard_file_get_volume_name(tracking)).into_owned()),
+                directory_font: (self.dispatcher.tx_font, self.dispatcher.tx_size, self.dispatcher.tx_face as u8),
+                directory_text_layout: self.dispatcher.standard_file_directory_text_layout(get_layout.directory_label),
+                get_layout: Some(get_layout),
+                put_layout: None,
+            });
+        }
+        let tracking = self.dispatcher.standard_file_put_tracking.as_ref()?;
+        let (put_layout, directory_label) = self.dispatcher.standard_file_put_layout(tracking);
+        Some(StandardFileSnapshot {
+            guest_id: tracking.reply_ptr,
+            generation: tracking.generation,
+            kind: StandardFileKind::Put,
+                list_text_origin: (4, 11),
+                directory_marker: "▸",
+                list_name_limit: Some(36),
+                volume_popup: None,
+                volume_indicator_rgba: None,
+                volume_text: None,
+            confirming_replace: tracking.confirming_replace,
+            new_folder: tracking.new_folder.as_ref().map(|folder| folder.snapshot(tracking.bounds, 1, |bytes| {
+                TrapDispatcher::fb_measure_string(&crate::trap::types::decode_mac_roman(bytes), 0, 12)
+            })),
+            standard_entry_point: tracking.standard_entry_point,
+            bounds: tracking.bounds,
+            directory_id: tracking.current_dir_id,
+            entries: Some(
+                tracking
+                    .entries
+                    .iter()
+                    .map(|entry| StandardFileEntrySnapshot {
+                        name: entry.display_name.clone(),
+                        directory_id: entry.dir_id,
+                        is_directory: entry.is_directory,
+                        file_type: entry.file_type,
+                    })
+                    .collect(),
+            ),
+            selected: tracking
+                .selected
+                .filter(|index| *index < tracking.entries.len()),
+            prompt: Some(tracking.prompt.clone()),
+            name: Some(tracking.name.clone()),
+            name_selection: Some((
+                tracking.sel_start.max(0) as usize,
+                tracking.sel_end.max(0) as usize,
+            )),
+            name_text_layout: Some({
+                let metrics = crate::quickdraw::text::get_font_metrics(self.dispatcher.tx_font, self.dispatcher.tx_size);
+                StandardFileNameTextLayout {
+                    font: (self.dispatcher.tx_font, self.dispatcher.tx_size, self.dispatcher.tx_face as u8),
+                    origin: (1, metrics.ascent), selection_top: 0,
+                    selection_height: metrics.ascent + metrics.descent + metrics.leading,
+                    selection_to_edge: true, wraps: false,
+                }
+            }),
+            name_caret_visible: Some(tracking.caret.on && tracking.pointer_anchor.is_none() && tracking.sel_start == tracking.sel_end && !tracking.confirming_replace && tracking.new_folder.is_none()),
+            name_has_focus: Some(!tracking.confirming_replace && tracking.new_folder.is_none()),
+            directory_label: Some(self.dispatcher.apply_param_text(&directory_label).into_owned()),
+            directory_font: (self.dispatcher.tx_font, self.dispatcher.tx_size, self.dispatcher.tx_face as u8),
+            directory_text_layout: self.dispatcher.standard_file_directory_text_layout(put_layout.directory_label),
+            get_layout: None,
+            put_layout: Some(put_layout),
+        })
     }
 
     /// Inspect logical list contents and the visibility/highlight bytes of
@@ -2998,8 +3868,27 @@ impl FixtureRunner {
     #[doc(hidden)]
     pub fn list_manager_snapshot(&mut self) -> Vec<ListManagerSnapshot> {
         use crate::list_manager::ProcessListRecord;
+        use crate::window_manager::{snapshot_local_rect_to_global, snapshot_port_bounds_origin};
+
+        // LNew's rView is local to theWindow. Use the same QuickDraw port
+        // origin conversion as Window Manager snapshots only for known windows.
+        // More Macintosh Toolbox (1993), pp. 4-70--4-72;
+        // Imaging With QuickDraw (1994), Basic QuickDraw pp. 2-9--2-10.
+        let window_ports: BTreeSet<u32> = self
+            .window_frame_snapshot()
+            .into_iter()
+            .map(|frame| frame.guest_id)
+            .collect();
         let snapshot =
-            |record: &ProcessListRecord, bars: [Option<(bool, u8)>; 2]| ListManagerSnapshot {
+            |record: &ProcessListRecord,
+             bars: [Option<(bool, u8)>; 2],
+             global_view_rect: Option<(i16, i16, i16, i16)>,
+             standard_cell_paint| ListManagerSnapshot {
+                guest_id: record.handle,
+                generation: record.generation,
+                definition_id: record.definition_id,
+                owner_port: record.port,
+                global_view_rect,
                 view_rect: record.view_rect,
                 data_bounds: record.data_bounds,
                 cell_size: record.cell_size,
@@ -3011,9 +3900,17 @@ impl FixtureRunner {
                     .iter()
                     .map(|(cell, bytes)| (*cell, bytes.clone()))
                     .collect(),
+                text_cells: (record.definition_id == 0).then(|| {
+                    record
+                        .cells
+                        .iter()
+                        .map(|(cell, bytes)| (*cell, crate::mac_roman::decode_mac_roman(bytes)))
+                        .collect()
+                }),
                 selected: record.selected.clone(),
                 vertical_scrollbar: bars[0],
                 horizontal_scrollbar: bars[1],
+                standard_cell_paint,
             };
         // ListRec.vScroll/hScroll: More Macintosh Toolbox, pp. 4-3--4-7.
         // ControlRecord.contrlVis/contrlHilite: Toolbox Essentials, pp. 5-61--5-63.
@@ -3022,6 +3919,13 @@ impl FixtureRunner {
             records
                 .iter()
                 .map(|record| {
+                    let global_view_rect = window_ports.contains(&record.port).then(|| {
+                        let origin = snapshot_port_bounds_origin(
+                            &mut |address| app.memory.read_u8(address).unwrap_or(0),
+                            record.port,
+                        );
+                        snapshot_local_rect_to_global(record.view_rect, origin)
+                    });
                     let bars = [28, 32].map(|offset| {
                         let ptr = app.memory.read_u32_be(record.handle).filter(|p| *p != 0)?;
                         let handle = app.memory.read_u32_be(ptr + offset).filter(|p| *p != 0)?;
@@ -3031,7 +3935,8 @@ impl FixtureRunner {
                             app.memory.read_u8(control + 17)?,
                         ))
                     });
-                    (record.handle, snapshot(record, bars))
+                    (record.handle, snapshot(record, bars, global_view_rect,
+                        record.standard_cell_paint_snapshot(|address| app.memory.read_u8(address))))
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -3039,6 +3944,13 @@ impl FixtureRunner {
             records
                 .iter()
                 .map(|record| {
+                    let global_view_rect = window_ports.contains(&record.port).then(|| {
+                        let origin = snapshot_port_bounds_origin(
+                            &mut |address| self.bus.read_byte(address),
+                            record.port,
+                        );
+                        snapshot_local_rect_to_global(record.view_rect, origin)
+                    });
                     let bars = [28, 32].map(|offset| {
                         let ptr = self.bus.read_long(record.handle);
                         if ptr == 0 {
@@ -3057,7 +3969,8 @@ impl FixtureRunner {
                             self.bus.read_byte(control + 17),
                         ))
                     });
-                    (record.handle, snapshot(record, bars))
+                    (record.handle, snapshot(record, bars, global_view_rect,
+                        record.standard_cell_paint_snapshot(|address| Some(self.bus.read_byte(address)))))
                 })
                 .collect::<Vec<_>>()
         };
@@ -3367,14 +4280,20 @@ impl FixtureRunner {
     }
 
     pub fn is_ui_tracking_active(&self) -> bool {
+        self.dispatcher.is_dialog_tracking() || self.is_non_dialog_ui_tracking_active()
+    }
+
+    /// Modal text input may enter the retained DialogSelect loop, but must not
+    /// interrupt another pointer/menu tracking operation or frozen execution.
+    pub fn is_non_dialog_ui_tracking_active(&self) -> bool {
         self.frozen_ticks.is_some()
             || self.process_context.menu_tracking().is_some()
-            || self.dispatcher.is_dialog_tracking()
             || self.dispatcher.is_control_tracking()
             || self.dispatcher.is_window_tracking()
             || self.dispatcher.is_grow_window_tracking()
             || self.dispatcher.is_region_tracking()
             || self.dispatcher.textedit_states.has_click_tracking()
+            || self.dispatcher.list_states.with_ref(|manager| manager.scroll_tracking.is_some())
     }
 
     /// Advance the guest tick counter by one, firing VBL and timer tasks.
@@ -3477,6 +4396,49 @@ impl FixtureRunner {
             .restore(native_context)
             .unwrap_or_else(|_| panic!("native context lost its owner"));
         materialized_count
+    }
+
+    pub fn vfs_directory_snapshots(&self) -> Vec<VfsDirectorySnapshot> {
+        self.dispatcher.vfs_directories.iter().filter(|directory| !directory.path.is_empty())
+            .map(|directory| VfsDirectorySnapshot { path: directory.path.clone(),
+                creator: directory.creator, file_type: directory.file_type,
+                finder_flags: directory.finder_flags }).collect()
+    }
+
+    /// Install a read-only mounted root for debug fixture workflows. Both CPU
+    /// adapters consume the same process-owned volume and directory records.
+    #[cfg(feature = "debug")]
+    #[doc(hidden)]
+    pub fn mount_fixture_volume(&mut self, ref_num: i16, name: &str, root_dir_id: u32) -> bool {
+        let path = TrapDispatcher::normalize_vfs_path(name);
+        if ref_num == crate::trap::dispatch::BOOT_VOLUME_REF_NUM || root_dir_id < 3
+            || path.is_empty() || path.contains('/')
+            || self.dispatcher.vfs_volumes.iter().any(|volume| volume.ref_num == ref_num)
+            || self.dispatcher.vfs_directories.iter().any(|directory|
+                directory.dir_id == root_dir_id || directory.path == path) { return false; }
+        self.dispatcher.vfs_directories.with_mut(|directories| directories.push(crate::process_context::ProcessVfsDirectory {
+            dir_id: root_dir_id, parent_dir_id: 1, path, creator: 0, file_type: 0,
+            finder_flags: 0, dirty: false,
+        }));
+        self.dispatcher.vfs_volumes.with_mut(|volumes| volumes.push(crate::process_context::ProcessVfsVolumeRecord {
+            ref_num, name: name.into(), root_dir_id, attributes: 0x0080,
+            file_count: 0, allocation_block_count: 0, allocation_block_size: 0,
+            clump_size: 0, free_blocks: 0, bitmap_start: 0, allocation_pointer: 0,
+            allocation_start: 0, next_catalog_id: 0, created_date: 0, modified_date: 0,
+        }));
+        true
+    }
+
+    pub fn import_vfs_directory(&mut self, directory: &VfsDirectorySnapshot) {
+        let path = TrapDispatcher::normalize_vfs_path(&directory.path);
+        if path.is_empty() || path.starts_with("__rsrc__") { return; }
+        let id = self.dispatcher.ensure_vfs_directory(&path);
+        self.dispatcher.vfs_directories.with_mut(|directories| {
+            if let Some(entry) = directories.iter_mut().find(|entry| entry.dir_id == id) {
+                entry.creator = directory.creator; entry.file_type = directory.file_type;
+                entry.finder_flags = directory.finder_flags; entry.dirty = true;
+            }
+        });
     }
 
     pub fn import_vfs_file(&mut self, file: &VfsFileSnapshot) {
@@ -4014,6 +4976,8 @@ impl FixtureRunner {
         assert!(self.native.reset_for_launch(app.ppc.is_some()));
         self.debug_advance_generation();
         self.process_context.reset_cfm_for_launch();
+        self.process_context.reset_notifications_for_launch();
+        self.notification_alert = None;
         if let Some((ppc_app, migrated_services)) = native_launch {
             self.init_ppc_app_with_services(ppc_app, migrated_services);
             return;
@@ -4028,6 +4992,7 @@ impl FixtureRunner {
         use crate::memory::globals::addr;
         let ram_size = self.bus.ram_size();
 
+        self.process_context.reset_application_size(app.size_resource);
         let high_level_event_aware = app
             .size_resource
             .is_some_and(ApplicationSizeResource::is_high_level_event_aware);
@@ -4111,6 +5076,7 @@ impl FixtureRunner {
         self.bus.write_word(addr::HILITE_RGB, red);
         self.bus.write_word(addr::HILITE_RGB + 2, green);
         self.bus.write_word(addr::HILITE_RGB + 4, blue);
+        self.bus.write_long(addr::CARET_TIME, crate::memory::globals::DEFAULT_CARET_TIME_TICKS);
         // RndSeed ($0156): system random seed initialized during boot.
         // On a real Mac, the boot code seeds this from the real-time clock
         // so that programs that read it directly (without calling Random)
@@ -4829,6 +5795,11 @@ impl FixtureRunner {
         // that capability and a fresh process-wide OAPP claim so a prior
         // application cannot suppress or duplicate delivery. Inside
         // Macintosh: Toolbox Essentials (1992), pp. 2-30--2-32 and 5-90.
+        self.process_context.reset_notifications_for_launch();
+        self.notification_alert = None;
+        self.process_context.reset_application_size(
+            ppc_app.application_size.with_ref(|size| *size),
+        );
         let high_level_event_aware = ppc_app
             .apple_events
             .apple_event_launch_state
@@ -4868,6 +5839,7 @@ impl FixtureRunner {
         self.bus.write_word(addr::HILITE_RGB, red);
         self.bus.write_word(addr::HILITE_RGB + 2, green);
         self.bus.write_word(addr::HILITE_RGB + 4, blue);
+        self.bus.write_long(addr::CARET_TIME, crate::memory::globals::DEFAULT_CARET_TIME_TICKS);
         self.bus.write_byte(addr::MMU32_BIT, 1);
         // Reapply the documented constant after adopting native low memory.
         // Inside Macintosh Volume I (1985), p. I-85; Volume III, p. III-228.
@@ -5072,6 +6044,11 @@ impl FixtureRunner {
     /// Mix and queue audio samples without full frame finalization.
     /// Used to keep the audio buffer fed during long CPU frames.
     pub fn mix_audio(&mut self, num_samples: usize) {
+        if self.notification_alert.is_some() {
+            let samples = self.dispatcher.sound_manager.mix_frame_stereo(num_samples);
+            self.queue_mixed_audio(&samples);
+            return;
+        }
         if self.guest_work_is_suspended() {
             return;
         }
@@ -5268,6 +6245,12 @@ impl FixtureRunner {
     /// doubleback callbacks run between small audio chunks when TickCount is
     /// already caught up to the wall clock.
     pub fn mix_gui_audio_slice(&mut self, audio_samples: usize) {
+        if self.notification_alert.is_some() {
+            // Play queued channels without entering guest completion callbacks
+            // or continuing foreground code while the system alert owns it.
+            self.mix_audio(audio_samples);
+            return;
+        }
         if self.guest_work_is_suspended() {
             return;
         }
@@ -6606,6 +7589,8 @@ impl FixtureRunner {
         sound_work_only: bool,
         finish_frame: FrameFinalization,
     ) -> (usize, bool) {
+        // Removed or mutated records cannot leave foreground execution stuck.
+        if self.notification_alert.is_some() { self.notification_alert_snapshot(); }
         if self.guest_work_is_suspended() {
             return (0, !self.halted);
         }
@@ -7875,13 +8860,31 @@ impl FixtureRunner {
         let probe = self
             .process_context
             .with_memory_and_cfm(|memory_manager, cfm| {
-                ppc_app.run_with_process_services(
-                    ppc_max_steps as u64,
-                    trace_ppc_imports,
-                    trace_ppc_fetches,
-                    memory_manager,
-                    cfm,
-                )
+                if let Some((request, instance, completion, _, _)) =
+                    ppc_app.notification_response_context.as_ref()
+                        .filter(|_| ppc_app.parked_interrupt_callback.is_none()) {
+                    let identity = (*request, *instance, *completion);
+                    let mut callback = ppc_app.run_notification_response_with_process_services(
+                        identity.0, identity.1, identity.2, ppc_max_steps as u64,
+                        trace_ppc_imports, trace_ppc_fetches, memory_manager, cfm)
+                        .expect("owned notification continuation must resume");
+                    // Returning to the private callback sentinel ends this
+                    // response, not the application. Preserve faults and
+                    // ExitToShell instead of treating those as successful return.
+                    if matches!(callback.result, PpcRunResult::Halted { pc, .. } if pc == ppc_app.halt_pc)
+                        && !ppc_halted_by_exit_to_shell(&ppc_app.imports, callback.result,
+                            callback.last_import_index, callback.unsupported_import_index) {
+                        callback.result = PpcRunResult::CycleLimit {
+                            cycles: ppc_run_result_cycles(callback.result),
+                        };
+                    }
+                    callback
+                } else {
+                    ppc_app.run_with_process_services(
+                        ppc_max_steps as u64, trace_ppc_imports, trace_ppc_fetches,
+                        memory_manager, cfm,
+                    )
+                }
             });
         let profile_run_us = elapsed_profile_micros(profile_run_start);
         let ppc_cycles = ppc_run_result_cycles(probe.result);
@@ -10476,6 +11479,7 @@ impl FixtureRunner {
                 callback.source,
                 ActiveInterruptCallbackSource::DialogDrawProc
                     | ActiveInterruptCallbackSource::DialogFilterProc
+                    | ActiveInterruptCallbackSource::NotificationResponse
             )
         })
     }
@@ -10656,6 +11660,7 @@ impl FixtureRunner {
             mut modifiers,
             mut has_event,
         ) = self.dispatcher.with_process_state(|dispatcher| {
+            dispatcher.service_process_activation(&mut self.bus, true);
             dispatcher.dequeue_toolbox_event(&mut self.m68k.cpu, &mut self.bus, pending.event_mask)
         });
         if !has_event {
@@ -11472,12 +12477,7 @@ impl FixtureRunner {
         }
     }
 
-    fn inject_interrupt_callback(
-        &mut self,
-        source: ActiveInterruptCallbackSource,
-        trampoline: u32,
-    ) {
-        self.suspend_dialog_callback_for_interrupt();
+    fn capture_callback_context(&self, source: ActiveInterruptCallbackSource) -> ActiveInterruptCallback {
         let current_pc = self.m68k.cpu.read_reg(Register::PC);
         let sp = self.m68k.cpu.read_reg(Register::A7);
         let d_regs = [
@@ -11502,23 +12502,22 @@ impl FixtureRunner {
         ];
         let ccr = self.m68k.cpu.core.get_ccr();
         let sr = self.m68k.cpu.core.get_sr();
-        let new_sp = sp.wrapping_sub(4);
-        self.bus.write_long(new_sp, current_pc);
+        ActiveInterruptCallback {
+            source, resume_pc: current_pc, resume_sp: sp,
+            d_regs, a_regs, sr, ccr, restore_port: None,
+        }
+    }
+
+    fn inject_interrupt_callback(
+        &mut self, source: ActiveInterruptCallbackSource, trampoline: u32,
+    ) {
+        self.suspend_dialog_callback_for_interrupt();
+        let saved = self.capture_callback_context(source);
+        let new_sp = saved.resume_sp.wrapping_sub(4);
+        self.bus.write_long(new_sp, saved.resume_pc);
         self.m68k.cpu.write_reg(Register::A7, new_sp);
-        self.active_interrupt_callback = Some(ActiveInterruptCallback {
-            source,
-            resume_pc: current_pc,
-            resume_sp: sp,
-            d_regs,
-            a_regs,
-            sr,
-            ccr,
-            restore_port: None,
-        });
-        self.m68k
-            .cpu
-            .core
-            .set_sr_noint_nosp(interrupt_callback_sr(source, sr));
+        self.active_interrupt_callback = Some(saved);
+        self.m68k.cpu.core.set_sr_noint_nosp(interrupt_callback_sr(source, saved.sr));
         self.m68k.cpu.write_reg(Register::PC, trampoline);
     }
 

@@ -820,12 +820,12 @@
     },
     {
       "type": "mouse_move",
-      "v": 260,
+      "v": 285,
       "h": 405
     },
     {
       "type": "mouse_down",
-      "v": 260,
+      "v": 285,
       "h": 405
     },
     {
@@ -834,7 +834,7 @@
     },
     {
       "type": "mouse_up",
-      "v": 260,
+      "v": 285,
       "h": 405
     },
     {
@@ -849,6 +849,17 @@
     {
       "type": "run",
       "ticks": 4
+    },
+    {
+      "type": "assert_pixel",
+      "x": 125,
+      "y": 95,
+      "rgb": [
+        255,
+        255,
+        255
+      ],
+      "label": "Preferences dialog dismissed before continuing page coverage"
     },
     {
       "type": "screenshot",

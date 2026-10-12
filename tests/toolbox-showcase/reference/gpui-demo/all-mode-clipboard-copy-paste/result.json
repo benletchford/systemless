@@ -1,0 +1,17 @@
+{
+  "outcome": "5 tests passed in19.34s: four clipboard policy unit tests and real guest Copy/export/import/resume/Paste across mono68k, colour68k, PPC8, PPC16",
+  "base_source_commit": "e717a0aa3dcdf4d273494f8301dbe8d26e007c79",
+  "source_sha256": {
+    "tests/macintosh_clipboard.rs": "c96461ba253da6879ceb671ad60d9fd219e8e740cf0810da769ce55a81703971",
+    "src/bin/gpui_demo_clipboard.rs": "6df0b088accf9eabeea0a28ea02f760e4c7a58384e2e22137612dd688e6f8fb9",
+    "src/systems/macintosh/session.rs": "3cc1b620b7eb6a343f009f676c5960d36592b91bdf6c2e548f0fe402ab802122",
+    "src/systems/macintosh/runner/mod.rs": "cbe90b515c07e17922544471f8c6bb21efdacd7e6c62cba409e028dc0f297015",
+    "src/systems/macintosh/process_context.rs": "130493ea4848d2c2c2adbc7c415c1e08ca25fc053ebeb0a53a6508645340cca5",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8"
+  },
+  "source_hash_timing": "Pinned before final execution and verified unchanged afterward. New integration test uncommitted at execution. Existing implementation sources from the base commit.",
+  "test_executable": "target/debug/deps/macintosh_clipboard-73a9c3cd980fda4a",
+  "test_executable_sha256": "7037e9e12c24950057d88689cb1ea21201658e4135a2f70628ed139342b4a337",
+  "binary_hash_timing": "After successful execution, without rebuilding before hashing; not a pre-run binary hash.",
+  "scope": "Actual runtime CPU/depth asserted. Guest held Copy/Paste controls and suspend/resume handlers own private/global scrap conversion and document editing. Exact Mac Roman accents/CR line breaks, changed/unchanged resume bits, export echo suppression, selection replacement/caret, generation/bounds/font/style/layout preservation tested. Uses actual GPUI clipboard policy module but no physical macOS pasteboard/observer, native-format transport, composed GPUI paint or font oracle qualification."
+}

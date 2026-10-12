@@ -1,0 +1,23 @@
+    Checking systemless v0.83.0 (/tmp/gpui-package-current-d44b335f/systemless-0.83.0)
+warning: method `instrument` is never used
+   --> src/systems/macintosh/sound.rs:609:19
+    |
+403 | impl SndChannel {
+    | --------------- method in this implementation
+...
+609 |     pub(crate) fn instrument(&self) -> Option<&SampledInstrument> {
+    |                   ^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `dispatch_toolbox` is never used
+    --> src/systems/macintosh/trap/toolbox.rs:6210:19
+     |
+1169 | impl super::TrapDispatcher {
+     | -------------------------- method in this implementation
+...
+6210 |     pub(crate) fn dispatch_toolbox<C: CpuOps>(
+     |                   ^^^^^^^^^^^^^^^^
+
+warning: `systemless` (lib) generated 2 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 39.97s

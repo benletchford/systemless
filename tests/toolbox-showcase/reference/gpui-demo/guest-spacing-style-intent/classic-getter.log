@@ -1,0 +1,6 @@
+
+running 1 test
+test systems::macintosh::trap::dialog::tests::tegetstyle_uses_character_offset_and_writes_style_byte_without_padding ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6680 filtered out; finished in 0.10s
+

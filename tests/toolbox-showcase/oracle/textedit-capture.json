@@ -1,8 +1,8 @@
 {
-  "fixture_sha256": "373a6a1e268b558228d4bd911b3982557c32d52d75ff9bccbb65eff89c1eb254",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
   "scenario": "oracle/textedit.json",
   "scenario_sha256": "e69a6233f0fd85cbff2036e4b11ad0cc05576e2d709fcc13ebe0d14d163b3a90",
-  "capture_date": "2026-09-05",
+  "capture_date": "2026-10-09",
   "verification": {
     "initial": {
       "length": 208,
@@ -76,7 +76,7 @@
     {
       "emulator": "basilisk",
       "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
-      "image_id": "sha256:375159f904a736fc413b386da7b76f8d380bf09db3b0777cb2cd3de129b47e38",
+      "image_id": "sha256:92be8ffcde5c7b5985c34880b55f6e1578ef03d229372f1535a1bc9f897ee26e",
       "system": "Mac OS 8.1",
       "width": 800,
       "height": 600,
@@ -84,11 +84,11 @@
       "checkpoints": [
         {
           "file": "reference/basiliskii-68k/10-te-initial.png",
-          "sha256": "1524ce4c9e8737fa717f41203fcf37dd00a7778c4ebf4686530085c06120ab18"
+          "sha256": "4bfebcb0dc06bc7f44d3aa047c0f9091c0a8ee01e3eea67c863b4b258d0ce68a"
         },
         {
           "file": "reference/basiliskii-68k/10-te-mouse-selected.png",
-          "sha256": "d36ddd58f515713616e1af922b3bb31cebf602ed40ce556ed1ff050c2c6a0aff"
+          "sha256": "bb95c0d473ce0e2daae8e4b7d0bb304e6727a253c218b9909f54dd4b6a53800d"
         },
         {
           "file": "reference/basiliskii-68k/10-te-selected.png",
@@ -96,15 +96,15 @@
         },
         {
           "file": "reference/basiliskii-68k/10-te-copied.png",
-          "sha256": "4ac6b6d5d44a7c7d9a7ec769bd97f737dd56c2ec719d383043c58ae2868aedff"
+          "sha256": "e538d2e5a18ae5491e75dd83a507dd94e7de1a6bb654f9a09bf182cb64ddeab3"
         },
         {
           "file": "reference/basiliskii-68k/10-te-cut.png",
-          "sha256": "f79c4304b71f7baa40ca62b36a58dc2e3acb914efd8878213ff769ee3f441371"
+          "sha256": "c59bb3eb543da52b5186ab7e0c8cf82c815c0a6d98b2af15e0cf979a677c78c7"
         },
         {
           "file": "reference/basiliskii-68k/10-te-pasted.png",
-          "sha256": "e41783c71584f5938cde41895e5cfa2bb568b9c58cbb1102e12301e985e6119b"
+          "sha256": "bdef73fe389a93b484cb1b5c2e9023dead5bda9549cf6548adfef36b8421f6aa"
         },
         {
           "file": "reference/basiliskii-68k/10-te-typed.png",
@@ -112,7 +112,7 @@
         },
         {
           "file": "reference/basiliskii-68k/10-te-reset.png",
-          "sha256": "e538d2e5a18ae5491e75dd83a507dd94e7de1a6bb654f9a09bf182cb64ddeab3"
+          "sha256": "d5ef3b539ba603b73f60e201161a73c2316f9a18b363e9c29f9298978bcbdc58"
         },
         {
           "file": "reference/basiliskii-68k/10-textedit.png",
@@ -120,12 +120,23 @@
         }
       ],
       "clock_source": "live guest clock",
-      "source_capture_record_sha256": "c12cbd0f839b74f3df2b696f2e5b3a861aad5d430bc340be7cffed946f0ebe4f"
+      "source_capture_record_sha256": "c34691f0b364e8a91fcfa12154d2edd869304477cea4fb2e431073d89e66b9f3",
+      "runner_sha256": "85198ba255a5f0e830384e7706ec36d1f983ca0b714c7049be0b53f3a782b067",
+      "capture_recipe_sha256": "0738b6cea00dbcd7865e8a1a9126f5e33dda0d1f6ec52473d6466d7e9d5bc8fa",
+      "rom_sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca",
+      "system_disk_archive_sha256": "2a4985fec6b5b2a23f6141fd6de9a3066dcd87a6fe1412faefdd9d6c87876295",
+      "preferences_sha256": "a3c1c62f438817267bce62afc9748921a21427fb2237677fc7434d2cbccab2be",
+      "runner_environment": {
+        "SYSTEMLESS_BASILISK_MAC_TIME": "<runner default>",
+        "SYSTEMLESS_BASILISK_DETERMINISTIC_TICKS": "<runner default>",
+        "SYSTEMLESS_BASILISK_INSTRUCTIONS_PER_TICK": "<runner default>",
+        "SYSTEMLESS_BASILISK_CPUS": "<runner default>"
+      }
     },
     {
       "emulator": "sheepshaver",
       "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
-      "image_id": "sha256:d2ed9be7ea9b9e7fe912aa0d8c7cd431146ae71c3b6d9ae33c7185b1654814e3",
+      "image_id": "sha256:0616fb4fb30387d31e2441a3d2aa7ef5803c855f8af8c5d83b5650ea28c78702",
       "system": "Mac OS 8.1",
       "width": 800,
       "height": 600,
@@ -137,7 +148,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/10-te-mouse-selected.png",
-          "sha256": "97bef8c177404f15a98bd88878d98c77aa4a632a76d223a81850ce7d56e75845"
+          "sha256": "f41650664995bcc1e873feb209165fe38463f2666bd8c8e078371a9cd704e3fc"
         },
         {
           "file": "reference/sheepshaver-ppc/10-te-selected.png",
@@ -157,7 +168,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/10-te-typed.png",
-          "sha256": "6105475a1d93051396b4a08745db94f61e972366aba217a8f05e9912535170e0"
+          "sha256": "37c64b0ed750d04df4dcae250a3bb255eee5314c1f9743ef615a73eb4b236236"
         },
         {
           "file": "reference/sheepshaver-ppc/10-te-reset.png",
@@ -169,7 +180,18 @@
         }
       ],
       "clock_source": "60.15 Hz wall-clock pacing",
-      "source_capture_record_sha256": "a6e482547060b8c3984e988c949a10011fc2b3a3f735ad625c5df08a67028bd6"
+      "source_capture_record_sha256": "ee182cd4086eb755e41cc5bd4f36bf1a2178927fce41a4a44535120e29b88fc3",
+      "runner_sha256": "7d5edcfb7c24858bf803d7cc88c7e5ccd85cef03ca84fb25dd5c9d6cef958a4b",
+      "capture_recipe_sha256": "0738b6cea00dbcd7865e8a1a9126f5e33dda0d1f6ec52473d6466d7e9d5bc8fa",
+      "rom_sha256": "fd13c05d678bbc7bbb527f7f418cd2dbada522af422a97452eee3bfc5010f032",
+      "system_disk_archive_sha256": "797d3d28fc8aefcb67c53ea21af40692e89c52fdc10fe79d10c512e2df0018c6",
+      "preferences_sha256": "307e437a99d6c2e56ce234d44e7c5386c0889513c407cd307ff7fff47e213436",
+      "runner_environment": {
+        "SYSTEMLESS_SHEEPSHAVER_MAC_TIME": "<runner default>",
+        "SYSTEMLESS_SHEEPSHAVER_DETERMINISTIC_TICKS": "<runner default>",
+        "SYSTEMLESS_SHEEPSHAVER_INSTRUCTIONS_PER_TICK": "<runner default>",
+        "SYSTEMLESS_SHEEPSHAVER_CPUS": "<runner default>"
+      }
     }
   ]
 }

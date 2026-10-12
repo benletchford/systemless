@@ -1,0 +1,5 @@
+{
+  "src/bin/gpui_demo.rs": "9fa6d4a1683d4d073c2b97c73b43345b59c2a8fd6e38cd1f78313633145c5171",
+  "src/systems/macintosh/control_manager/paint.rs": "fca6160fdeae7d685b2da42824097ad4373cd6901156f898886eac76a29b69e6",
+  "src/systems/macintosh/runner/mod.rs": "46fbbcaecdd85c803dc02414baf0066097c395bf544586c9227b02d69bbd38cf"
+}

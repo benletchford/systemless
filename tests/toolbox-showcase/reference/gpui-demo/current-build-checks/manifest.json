@@ -1,0 +1,22 @@
+{
+  "source_head": "79166359501a4d2b1eb863707362a43969653c7a",
+  "checks": [
+    {
+      "command": "cargo check --locked --bin systemless",
+      "exit_code": 0,
+      "reported_seconds": 51.22,
+      "includes_cargo_lock_wait": true
+    },
+    {
+      "command": "cargo check --locked --no-default-features --lib",
+      "exit_code": 0,
+      "reported_seconds": 42.16
+    }
+  ],
+  "scope": "local cached compile checks only; not release linking, packaged runtime or platform qualification",
+  "native_desktop": "CUA reports Mac locked; automatic unlock failed",
+  "hashes": {
+    "headless-check.log": "173bf0b9fcb2375fc0ea678144e11c89579ba5acbdf4ddea166f71333e697f5a",
+    "default-check.log": "7c30f73703849c469d9076323a47e5743fd926485fbd587ee275518126ef9f01"
+  }
+}

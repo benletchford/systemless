@@ -1,0 +1,57 @@
+{
+  "source_commit": "f0ce5e637aaa3fb7c10c1af64b1caefd665a93d6",
+  "source_dirty": true,
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "2f605954dd477c6dcbff01382d35c462fa0e18d0117ea5104fb6cd00a42624e3",
+    "src/bin/gpui_demo_text.rs": "6a43b4cc3a4d765ee92456138743b26e3f94c40e3c464b67eb2f53c2ab796286",
+    "src/bin/gpui_demo_menu.rs": "a7eabf25968f524d8e50c12908a4ebd05f31152d68372a1bc449e5bd6680428d",
+    "tests/toolbox-showcase/packer/src/bin/styled-menu-fixture.rs": "8faea4f1b1751664070e3fa8b1f820213fed81cbb943a329f4a82f82ea2ed153"
+  },
+  "binary_sha256": "a67a5c1b430c6bac451cc8168470b7c3020b4160247e004901f5e048fed63e70",
+  "base_fixture_sha256": "17e3cd4dd1a2510627b55487db166773759319f93454bb9141ad8a80bc40d4b8",
+  "derived_fixture_sha256": "7de6f3d9129370adfa255022e7358182e782871f1fb27788cf960b0ab9ada53a",
+  "derivation": "Only fourteen nonzero style bytes in MENU129 change; unchanged executable forks and all other fork bytes, plus archive metadata, checked by derivation utility. Repeat derivation byte-identical.",
+  "cases": [
+    {
+      "name": "mono-075",
+      "actual_depth": 1,
+      "scene_scale": 0.75,
+      "capture_sha256": "6982eaf430924f9e51ba39b3fbbd4222196966e12b78aac6552dc08e7ddc852d",
+      "archived_sha256": "4df8f58672360c9795b755b8a9698ac5d44a9873a4b708e6b3582111f66c3eb6",
+      "metadata_sha256": "4db1fc614b37d44e194811e877bcfe47993d861485ca687b3d158ebb691086d9",
+      "decoded_rgba_preserved": true,
+      "visually_reviewed": true
+    },
+    {
+      "name": "colour-15",
+      "actual_depth": 8,
+      "scene_scale": 1.5,
+      "capture_sha256": "7c65cd2706665d12e442e3d41413710d632f5c1dadf89411f22e0beb265a3c74",
+      "archived_sha256": "6fbb2e3da9148b80d15c0a127b93fda22529feeee1297726beb9094fb692f0f8",
+      "metadata_sha256": "1da4832682d074cb05f38e3dbaec5a5dd8a34c09d886597834ead59bf103e1e8",
+      "decoded_rgba_preserved": true,
+      "visually_reviewed": true
+    },
+    {
+      "name": "ppc8-2",
+      "actual_depth": 8,
+      "scene_scale": 2,
+      "capture_sha256": "7b5ef37fcfccd2777871c6878674f9f89175356a7d0552dabd01456aa5a78f33",
+      "archived_sha256": "c8f037c9b95105740e6c595e7b61238d5b62510eeebe04c4519e15db83a282d3",
+      "metadata_sha256": "4744cf19e6da10e5afeacfd97230be215de1f29f958f3b2b500549b5eee6ccef",
+      "decoded_rgba_preserved": true,
+      "visually_reviewed": true
+    },
+    {
+      "name": "ppc16-1",
+      "actual_depth": 16,
+      "scene_scale": 1,
+      "capture_sha256": "868bc302b6078de15b1aacfe380a1255b2d40722983469e4551b74001cd317b6",
+      "archived_sha256": "3a463dab08deab9b06451aaaceedd6a50c3c4ee0ff033d9ee4255de212cbaaf6",
+      "metadata_sha256": "1154384262d4a1d3dc139260201f4cafcae6b92599892217b5030e365bf4a5d8",
+      "decoded_rgba_preserved": true,
+      "visually_reviewed": true
+    }
+  ],
+  "scope": "Four guest-resource styled menu samples, faces0..7 twice, visually reviewed; colour1.5 and PPC8/2 previews resized. All-raster source resolution, depth/state/geometry checks. Italic row-shear steps remain coarse. Not all-state appearance, smooth appearance oracle, style mutation/callback/lifecycle, native font oracle, host events or performance qualification."
+}

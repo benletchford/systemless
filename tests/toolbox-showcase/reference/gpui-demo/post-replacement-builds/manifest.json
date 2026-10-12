@@ -1,0 +1,12 @@
+{
+  "tested_head": "43ee32a115be28bf64ebe8712e8cfb4fb222ac68",
+  "commands": [
+    "cargo check --locked --bin systemless",
+    "cargo check --locked --no-default-features --lib"
+  ],
+  "scope": "Cached compilation only. Not fresh-download, release linking, packaged tests, runtime or native host qualification.",
+  "sha256": {
+    "default.log": "6bf826016ce91ab3418cd55923d571d07325513d7a47d61eaf01fb23637d5b02",
+    "public-library.log": "bbd8aea37a17a29df4b1b9a4f49e521d89f400a70d0cb130b515eef227a79758"
+  }
+}

@@ -436,6 +436,8 @@ fn dispose_handle_trap_releases_native_process_allocation_immediately() {
         manager.register_native_handle_records([(record, 0xE0)]);
     }
     dispatcher.attach_unconverted_process_services(&mut context);
+    let generation =
+        dispatcher.with_resource_manager_mut(|resources| resources.menu_generation(handle));
 
     cpu.write_reg(Register::A0, handle);
     dispatcher.current_trap_word = 0xA023;
@@ -445,6 +447,10 @@ fn dispose_handle_trap_releases_native_process_allocation_immediately() {
         .unwrap();
 
     assert_eq!(cpu.read_reg(Register::D0), 0);
+    dispatcher.with_resource_manager_mut(|resources| {
+        assert!(!resources.menu_generations.contains_key(&handle));
+        assert_ne!(resources.menu_generation(handle), generation);
+    });
     assert_eq!(bus.read_long(handle), 0);
     assert_eq!(memory_manager.borrow().native_allocation(handle), None);
     assert_eq!(memory_manager.borrow().recover_handle(ptr), None);
@@ -5183,6 +5189,53 @@ fn deferuserfn_three_call_composition_preserves_stack_across_varying_args() {
 }
 
 #[test]
+fn notification_completion_rejects_duplicate_and_reinstalled_record_identity() {
+    let (mut dispatcher, mut cpu, mut bus) = setup();
+    let request = bus.alloc(36);
+    bus.write_word(request + 4, 8);
+    let text = bus.alloc(8);
+    bus.write_long(request + 24, text);
+    bus.write_long(request + 28, u32::MAX);
+    cpu.write_reg(Register::A0, request);
+    dispatcher.dispatch_memory(false, 0x5e, &mut cpu, &mut bus).unwrap().unwrap();
+    let first = dispatcher.notification_requests.instance_id(request).unwrap();
+    assert!(dispatcher.complete_notification_delivery(&mut cpu, &mut bus, request, first));
+    assert!(dispatcher.notification_requests.is_empty());
+    assert!(!dispatcher.complete_notification_delivery(&mut cpu, &mut bus, request, first));
+    cpu.write_reg(Register::A0, request);
+    dispatcher.dispatch_memory(false, 0x5e, &mut cpu, &mut bus).unwrap().unwrap();
+    let second = dispatcher.notification_requests.instance_id(request).unwrap();
+    assert_ne!(first, second);
+    assert!(!dispatcher.complete_notification_delivery(&mut cpu, &mut bus, request, first));
+    assert_eq!(dispatcher.notification_requests, vec![request]);
+    assert!(dispatcher.complete_notification_delivery(&mut cpu, &mut bus, request, second));
+    assert!(dispatcher.notification_requests.is_empty());
+}
+
+#[test]
+fn notification_delivery_defer_response_and_auto_removal() {
+    for field in [14, 16, 20, 24] {
+        for response in [u32::MAX, 0x123400] {
+            let (mut dispatcher, mut cpu, mut bus) = setup();
+            let request = bus.alloc(36);
+            bus.write_word(request + 4, 8);
+            if field == 14 { bus.write_word(request + field, 1); }
+            else { bus.write_long(request + field, 0x567800); }
+            bus.write_long(request + 28, response);
+            cpu.write_reg(Register::A0, request);
+            let pc = cpu.read_reg(Register::PC);
+            let sp = cpu.read_reg(Register::A7);
+            dispatcher.dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+                .unwrap().unwrap();
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(cpu.read_reg(Register::PC), pc);
+            assert_eq!(cpu.read_reg(Register::A7), sp);
+            assert_eq!(dispatcher.notification_requests, vec![request]);
+        }
+    }
+}
+
+#[test]
 fn nminstall_returns_noerr_for_nominal_notification_request() {
     // Inside Macintosh Volume VI (1991), p. 24-10:
     // NMInstall returns noErr for valid notification requests.
@@ -5412,6 +5465,8 @@ fn notification_response_executes_and_can_be_explicitly_removed() {
     let response = bus.alloc(24);
     bus.write_word(nm_rec + 4, 8);
     bus.write_long(nm_rec + 28, response);
+    let notification_text = bus.alloc(8);
+    bus.write_long(nm_rec + 24, notification_text);
 
     bus.write_word(response, 0x4E56); // LINK A6,#0
     bus.write_word(response + 2, 0);
@@ -5434,6 +5489,15 @@ fn notification_response_executes_and_can_be_explicitly_removed() {
         .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
         .unwrap()
         .unwrap();
+
+    // Installation cannot run an alert response before acknowledgment. The
+    // delivery completion then enters the real guest procedure exactly once.
+    assert_eq!(cpu.read_reg(Register::PC), resume_pc);
+    let instance = dispatcher.notification_requests.instance_id(nm_rec).unwrap();
+    assert!(dispatcher.complete_notification_delivery(&mut cpu, &mut bus, nm_rec, instance));
+    let callback_pc = cpu.read_reg(Register::PC);
+    assert!(!dispatcher.complete_notification_delivery(&mut cpu, &mut bus, nm_rec, instance));
+    assert_eq!(cpu.read_reg(Register::PC), callback_pc);
 
     for _ in 0..16 {
         if cpu.read_reg(Register::PC) == resume_pc {

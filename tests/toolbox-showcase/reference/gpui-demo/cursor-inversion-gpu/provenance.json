@@ -1,0 +1,23 @@
+{
+  "source_base": "3446036caa04216428157f40918b2bdf0c4557fb",
+  "probe_sha256": "6184ca22f9407851f9f21165565dd192d61669e5647492b9b814340c7c3c31ea",
+  "executable_sha256": "a4a3dfaa98e5b3a5737b717017b2582b254381d202731dbe99f417c93dc2b421",
+  "log_sha256": "26b14621d41643fb9ca00a91be17e3e982724ab3966c64fd7eda73ed40346eff",
+  "result": "16 exact-byte assertions passed; exit 0",
+  "format": "BGRA8Unorm, matching GPUI Apple drawable format",
+  "operation": {
+    "source": "white",
+    "source_rgb_factor": "OneMinusDestinationColor",
+    "destination_rgb_factor": "Zero",
+    "operation": "Add",
+    "write_mask": "RGB only"
+  },
+  "cases": "Eight destination colour/alpha values, each inverted once then twice; one-pixel scissor excludes adjacent pixel",
+  "compile": "rustc --edition 2021 tests/toolbox-showcase/reference/gpui-demo/cursor-inversion-gpu/probe.rs -L dependency=target/debug/deps --extern metal=target/debug/deps/libmetal-33e2f0cc56514981.rlib -o /tmp/gpui-cursor-inversion-probe",
+  "run": "/tmp/gpui-cursor-inversion-probe",
+  "limits": [
+    "Standalone offscreen Metal encoder, not the shared GPUI compositor",
+    "No production cursor integration established",
+    "Does not qualify guest cursor masks/hotspot/scale, scene overlap, native pointer capture or host hiding"
+  ]
+}

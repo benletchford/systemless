@@ -1,0 +1,56 @@
+{
+  "base_commit": "76fde29f78100935f845770d2d38b48203b40c88",
+  "source_sha256": {
+    "src/bin/gpui_demo_menu.rs": "d1804dcc9ba8af10ff603f86d66a19c66011f4b934706d52093843f6edebfb68",
+    "src/bin/gpui_demo_text.rs": "dbdb85e0084e5dd574decec4124de93d5d62995ef7672c524539cb8198dca060",
+    "src/systems/macintosh/menu_model.rs": "19ab5f172f18242b6704ac1f2fa39023f8ac1bf2aa83653a239ceb95de5183be",
+    "src/systems/macintosh/menu_manager.rs": "232575327d84db75ec461be363499c02241932393e71bc41bdd903e6fa73cbb9"
+  },
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "scope": "Checkmark/name crops visually reviewed in all three modes at historical viewport. No full-scene review for this revision. Command and hierarchy symbols are absent in these captures, so their visual qualification remains open. Lossless archive preserves exact decoded pixels.",
+  "gaps": [
+    "command and hierarchy symbol captures",
+    "arbitrary mark captures",
+    "row/column geometry",
+    "command case",
+    "scale/state and native font/input"
+  ],
+  "captures": [
+    {
+      "mode": "mono",
+      "file": "menu-guest-symbol-mono.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "original_capture_sha256": "2f7b70f73f4827111453471566eddb2197a3eb0e98424c217bdf011ca98bf4dc",
+      "sha256": "46fee4df7d7e4daba5408ac6290f1139855d9879fae8d762dddedf99e0c4912a",
+      "decoded_pixel_sha256": "716a1663035f44ef4d3068097afd0fe7a73cbfd8e4e8fe8cbf0c487de17612cb",
+      "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --screen-depth 1 --capture-standard-menu /tmp/output.png"
+    },
+    {
+      "mode": "colour",
+      "file": "menu-guest-symbol-colour.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "original_capture_sha256": "e1c6e1c448dae73e716adda2a8086f74c624a6aa009eadc5fdb03e768fc06b79",
+      "sha256": "275563f061fd753d43db03d0543d3e497cd4bfd1dcef6d52290eb544c947c034",
+      "decoded_pixel_sha256": "2378295ea79b0bc2425d04d7579a49c6d714ce50784c1aab2567a663a849d058",
+      "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --screen-depth 8 --capture-standard-menu /tmp/output.png"
+    },
+    {
+      "mode": "ppc",
+      "file": "menu-guest-symbol-ppc.png",
+      "dimensions": [
+        1800,
+        1480
+      ],
+      "original_capture_sha256": "e1c6e1c448dae73e716adda2a8086f74c624a6aa009eadc5fdb03e768fc06b79",
+      "sha256": "275563f061fd753d43db03d0543d3e497cd4bfd1dcef6d52290eb544c947c034",
+      "decoded_pixel_sha256": "2378295ea79b0bc2425d04d7579a49c6d714ce50784c1aab2567a663a849d058",
+      "command": "target/debug/examples/gpui-menu-demo tests/toolbox-showcase/toolbox-showcase.sit --prefer-powerpc --capture-standard-menu /tmp/output.png"
+    }
+  ]
+}

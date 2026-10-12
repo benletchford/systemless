@@ -1,0 +1,13 @@
+{
+  "production_commit": "e0d709d8",
+  "standard_file_repeat": "PASS all four modes, Save and New Folder, 80.01s",
+  "older_suite_failures_current_source": {
+    "text_edit_clips_to_owner_and_front_window_with_custom_fallback": "PASS 0.08s",
+    "named_native_pasteboard_preserves_hidden_formats_on_rejected_export": "PASS 1.09s with macOS service access"
+  },
+  "limitations": "Two file workflow passes do not establish the cause of the earlier intermittent timeout. Full current suite not yet completed; performance and physical host integration remain open.",
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "f63ecb3ad2915921765984d3ae5fe49e4ebcdb8addb35ba8c761efbc357e1e5a",
+    "src/bin/gpui_demo_input.rs": "194b2b3eeb9dca54588c01288706c42a1c21cd8759319ea48765090ca62077a8"
+  }
+}

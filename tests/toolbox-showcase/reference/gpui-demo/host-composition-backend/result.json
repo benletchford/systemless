@@ -1,0 +1,44 @@
+{
+  "status": "passed",
+  "base_commit": "b6f247d7fda4fe4cfdaa7d59620e25742e46e183",
+  "source_state": "base plus source.patch",
+  "source_pins": "host-composition-pins.txt checked unchanged after tests",
+  "executable": "target/ci-test/examples/gpui_menu_demo-957ebf4d71285d8e",
+  "post_execution_executable_sha256": "fc7aec273e379f5b3f07026cfee084e7f7b2c4554e317ed515ac58752e27142a",
+  "state_tests": 2,
+  "guest_modes": [
+    [
+      "false",
+      "1"
+    ],
+    [
+      "false",
+      "8"
+    ],
+    [
+      "true",
+      "8"
+    ],
+    [
+      "true",
+      "16"
+    ]
+  ],
+  "guest_seconds": 0.4,
+  "checks": [
+    "host Unicode preedit with valid UTF16 boundaries",
+    "whole-commit rejection of unrepresentable Unicode; CR normalization",
+    "ownership/selection/text change and focus loss cancel preedit",
+    "old pre-commit snapshots cannot reuse stale selection",
+    "guest identity, port, text and selection validation before document commit",
+    "paired guest key events avoid synthetic autoKey; worker cycles pace characters",
+    "guest insertion preserves exact resulting text, selection, bounds and style runs"
+  ],
+  "limits": [
+    "Native GPUI input handler and preedit rendering are not attached",
+    "No physical host input or full worker-channel integration qualification",
+    "Guest test applies identical paired events with explicit settle between characters",
+    "Modal dialog and Standard File composition use separate ownership and remain unsupported here",
+    "Pending commit cancellation, arbitrary host replacement ranges and rapid multiple commits remain unfinished"
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "caret_state": "blink-off",
+  "insertion_offset": 26,
+  "multiline": false,
+  "selection": [
+    26,
+    26
+  ],
+  "compositor": "shared Demo renderer",
+  "active": true,
+  "caret_visible": false,
+  "drawing_intact": true,
+  "generation": 2,
+  "guest_tick": 14964,
+  "view": [
+    126,
+    74,
+    164,
+    561
+  ],
+  "scale": 0.75,
+  "depth": 8
+}

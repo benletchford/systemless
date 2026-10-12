@@ -234,7 +234,7 @@ pub const PPC_RAND_SEED_ADDR: u32 = 0x0000_0156;
 pub(crate) const PPC_GRAY_RGN_ADDR: u32 = 0x0000_09ee;
 pub(crate) const PPC_DEFAULT_DOUBLE_TIME_TICKS: u32 = 20;
 // Preserve the existing native TextEdit default caret interval.
-pub(crate) const PPC_DEFAULT_CARET_TIME_TICKS: u32 = 32;
+pub(crate) const PPC_DEFAULT_CARET_TIME_TICKS: u32 = crate::memory::globals::DEFAULT_CARET_TIME_TICKS;
 pub(crate) const PPC_RES_CHANGED_ATTR: u16 = 0x0002;
 pub(crate) const PPC_RES_PROTECTED_ATTR: u16 = 0x0008;
 pub const PPC_RES_PROBLEM: i16 = -204;

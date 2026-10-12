@@ -1,0 +1,126 @@
+{
+  "scope": "Two reviewed PPC16 selected-list samples at scale0.75 only; no full matrix, font fidelity, lifecycle, oracle or performance qualification",
+  "mask_analysis": {
+    "owned_device_pixels": 167319,
+    "magenta_inside_owned": 0,
+    "magenta_total": 1010,
+    "first_inside": [],
+    "first_any": [
+      [
+        850,
+        193,
+        [
+          64,
+          0,
+          64
+        ]
+      ],
+      [
+        850,
+        194,
+        [
+          128,
+          0,
+          128
+        ]
+      ],
+      [
+        850,
+        195,
+        [
+          128,
+          0,
+          128
+        ]
+      ],
+      [
+        850,
+        196,
+        [
+          128,
+          0,
+          128
+        ]
+      ],
+      [
+        850,
+        197,
+        [
+          128,
+          0,
+          128
+        ]
+      ]
+    ]
+  },
+  "cases": [
+    {
+      "source": {
+        "source_commit": "88a62582f8842f7aeba2c8ee553ec7582b1fbf6b",
+        "source_dirty": true,
+        "source_sha256": {
+          "src/bin/gpui_demo.rs": "4fde7e7ed04114ac6b132091ff879573ed9405f6e956ed6db37a7a2de451c5fc",
+          "src/bin/gpui_demo_text.rs": "96208a4b063ca9797715f8f649279d0deef8200839ba5b192bba982669b45d46",
+          "src/bin/gpui_demo_frames.rs": "b293ad66102ebdbc69a697b2bdc8d1ba01349a36a20c6a994b7e280eb14d814b"
+        },
+        "binary_sha256": "43d47dceec97eabb4d01632be2719513c1ad9df6c6710e35e147e49a89abde7f",
+        "scope": "Smooth selected list candidate only, qualification pending",
+        "reviewed": {
+          "rendered": "systemless-smooth-list-ppc16-0.75.png",
+          "sha256": "76dcdbdacf7264d014811facc1701800bb591e9a1b1681d38767caa5957e6ffb",
+          "observations": "Smooth normal rows and light selected-row text visible at actual PPC16/scale0.75. Thin magenta source-mask seams visible on right and lower ownership edges; unresolved and not visually qualified. App-owned text remains binary."
+        }
+      },
+      "observations": "Diagnostic magenta source: smooth normal/selected rows; visible magenta only outside the snapped owner projection, zero magenta-tinted owned device pixels.",
+      "files": {
+        "systemless-smooth-list-ppc16-0.75.png": {
+          "original_sha256": "76dcdbdacf7264d014811facc1701800bb591e9a1b1681d38767caa5957e6ffb",
+          "archive_sha256": "603865ee1669e40f6789dec45fe90b183414ca4eedb9cc5b63178f7a868a8d2e"
+        },
+        "systemless-smooth-list-ppc16-0.75.guest.png": {
+          "original_sha256": "97f1da436d071d2b7670135ae2cd04a01ebd720aef391004c67c1dc8b7711ffe",
+          "archive_sha256": "6604d6bda0ef01359e02abb417c0f9d73d85487565ea38eb93e340b317fc3d5e"
+        },
+        "systemless-smooth-list-ppc16-0.75.json": {
+          "original_sha256": "df0efbc014b4c3fc6f2bf0d05bac3eee6d98b6126af24226b5f8f32cac0eae91",
+          "archive_sha256": "df0efbc014b4c3fc6f2bf0d05bac3eee6d98b6126af24226b5f8f32cac0eae91"
+        },
+        "systemless-smooth-list-ppc16-0.75.capture.json": {
+          "original_sha256": "1f4a2138bc1f55cb75191dd1f1284c539d4162ad97dc1a5d8b134d58aab17d55",
+          "archive_sha256": "1f4a2138bc1f55cb75191dd1f1284c539d4162ad97dc1a5d8b134d58aab17d55"
+        }
+      }
+    },
+    {
+      "source": {
+        "source_commit": "88a62582f8842f7aeba2c8ee553ec7582b1fbf6b",
+        "source_dirty": true,
+        "source_sha256": {
+          "src/bin/gpui_demo.rs": "82eab40c1cdc02b64966a65bbc6a07a9533431705ef9ec507e0e2418ad1c7199",
+          "src/bin/gpui_demo_text.rs": "96208a4b063ca9797715f8f649279d0deef8200839ba5b192bba982669b45d46",
+          "src/bin/gpui_demo_frames.rs": "b293ad66102ebdbc69a697b2bdc8d1ba01349a36a20c6a994b7e280eb14d814b"
+        },
+        "binary_sha256": "5885d2a51c2328c54b91c7d392ac7e2e505aca7a1cee6985a53f15fa62c4768b"
+      },
+      "observations": "Retained native source: smooth normal/selected rows and visible boundaries without magenta seams. Appearance evidence only; native pixels can conceal missed overlay paint.",
+      "files": {
+        "systemless-smooth-list-native-ppc16-0.75.png": {
+          "original_sha256": "77763f533268a25b88610d4995e9182ccca30e037a306ee663a9975df037c05b",
+          "archive_sha256": "d1789e64fbbfaac5d53b139be11014a81abc915cc19c1c4465f2baf1566e01d5"
+        },
+        "systemless-smooth-list-native-ppc16-0.75.guest.png": {
+          "original_sha256": "97f1da436d071d2b7670135ae2cd04a01ebd720aef391004c67c1dc8b7711ffe",
+          "archive_sha256": "6604d6bda0ef01359e02abb417c0f9d73d85487565ea38eb93e340b317fc3d5e"
+        },
+        "systemless-smooth-list-native-ppc16-0.75.json": {
+          "original_sha256": "51add768863af4eacc0020d66a479a9bc9f1ae7b60d0bfcdd8cf8cee57c4ebbe",
+          "archive_sha256": "51add768863af4eacc0020d66a479a9bc9f1ae7b60d0bfcdd8cf8cee57c4ebbe"
+        },
+        "systemless-smooth-list-native-ppc16-0.75.capture.json": {
+          "original_sha256": "20a8fa2d19e6121bc67683b042c52b96d233c381dd74bc887740f2a56393a36e",
+          "archive_sha256": "20a8fa2d19e6121bc67683b042c52b96d233c381dd74bc887740f2a56393a36e"
+        }
+      }
+    }
+  ]
+}

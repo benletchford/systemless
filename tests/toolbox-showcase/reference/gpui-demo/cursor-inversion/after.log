@@ -1,0 +1,143 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 26.22s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 72 tests
+test systems::macintosh::cursor_manager::tests::cursor_and_icon_manager_evaluation ... ok
+test systems::macintosh::dialog_manager::tests::count_ditl_and_set_dialog_tracks_cursor_evaluation ... ok
+test systems::macintosh::dialog_manager::tests::dialog_auto_positioning_and_cursor_tracking_evaluation ... ok
+test systems::macintosh::display::tests::render_color_cursor_replaces_masked_pixels_and_inverts_black_outside_mask ... ok
+test systems::macintosh::display::tests::monochrome_cursor_preserves_all_four_mask_data_cases_and_clips_hotspot ... ok
+test systems::macintosh::execution_kernel::tests::nested_critical_sections_keep_task_cursor_and_schedule_unchanged ... ok
+test systems::macintosh::loader::ppc::tests::quickdraw::attached_cursor_image_mutations_cross_isa_immediately ... ok
+test systems::macintosh::loader::ppc::tests::quickdraw::attached_cursor_visibility_mutations_cross_isa_immediately ... ok
+test systems::macintosh::loader::ppc::tests::quickdraw::carbon_get_qd_globals_arrow_copies_cursor_and_returns_buffer ... ok
+test systems::macintosh::loader::ppc::tests::quickdraw::cloned_native_adapter_detaches_process_cursor_state ... ok
+test systems::macintosh::loader::ppc::tests::quickdraw::hle_import_runner_handles_color_cursor_resources ... ok
+test systems::macintosh::memory::presentation::tests::cached_visible_rgba_composes_moving_cursor_and_removes_overlays ... ok
+test systems::macintosh::process_context::tests::attached_cursor_states_share_immediately_while_clones_detach ... ok
+test systems::macintosh::process_manager::tests::single_process_enumeration_classifies_every_cursor_state ... ok
+test systems::macintosh::loader::ppc::tests::quickdraw::hle_import_runner_obscure_cursor_preserves_cursor_level ... ok
+test systems::macintosh::loader::ppc::tests::quickdraw::hle_import_runner_shield_cursor_hides_until_show_cursor ... ok
+test systems::macintosh::loader::ppc::tests::quickdraw::hle_import_runner_tracks_quickdraw_cursor_level ... ok
+test systems::macintosh::runner::tests::cursor::adb_mouse_callback_uses_documented_registers_and_restores_foreground ... ok
+test systems::macintosh::loader::ppc::tests::quickdraw::hle_import_runner_handles_color_cursor_procedures ... ok
+test systems::macintosh::runner::tests::cursor::cursor_task_callback_arms_interrupt_from_low_memory_vector ... ok
+test systems::macintosh::loader::ppc::tests::quickdraw::hle_import_runner_handles_cursor_resources_and_system_fallbacks ... ok
+test systems::macintosh::runner::tests::cursor::cursor_task_default_vector_does_not_inject_interrupt_on_guest_tick ... ok
+test systems::macintosh::loader::ppc::tests::dialog_manager::dialog_default_cancel_and_cursor_tracking_commands_dispatch_with_canonical_evaluation ... ok
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$00200000 bkLim=$007FDFC0 zcbFree=6283136 (6.0MB)
+[INIT] Set MainDevice=$00200A40, TheGDevice=$00200A40 (ptr=$00200A0C)
+[INIT] GDevice chain: $8A4→$00200A40→$00200A0C gdPMap→$00200A08→$002009D4
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+test systems::macintosh::runner::tests::cursor::cursor_task_direct_call_adopts_guest_warp ... ok
+test systems::macintosh::runner::tests::cursor::cursor_task_defers_while_processor_priority_masks_level_one ... ok
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$00200000 bkLim=$007FDFC0 zcbFree=6283136 (6.0MB)
+[INIT] Set MainDevice=$00200A40, TheGDevice=$00200A40 (ptr=$00200A0C)
+[INIT] GDevice chain: $8A4→$00200A40→$00200A0C gdPMap→$00200A08→$002009D4
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+test systems::macintosh::runner::tests::cursor::cursor_task_guest_wrapper_can_chain_to_default_task ... ok
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$00200000 bkLim=$007FDFC0 zcbFree=6283136 (6.0MB)
+[INIT] Set MainDevice=$00200A40, TheGDevice=$00200A40 (ptr=$00200A0C)
+[INIT] GDevice chain: $8A4→$00200A40test systems::macintosh::runner::tests::audio::ppc_decoded_file_playback_pause_resume_uses_process_cursor ... ok
+→$00200A0C gdPMap→$00200A08→$002009D4
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$00200000 bkLim=$007FDFC0 zcbFree=6283136 (6.0MB)
+[INIT] Set MainDevice=$00200A40, TheGDevice=$00200A40 (ptr=$00200A0C)
+[INIT] GDevice chain: $8A4→$00200A40→$00200A0C gdPMap→$00200A08→$002009D4
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+test systems::macintosh::runner::tests::cursor::cursor_task_waits_for_request_and_respects_interrupt_mask ... ok
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$00200000 bkLim=$007FDFC0 zcbFree=6283136 (6.0MB)
+[INIT] Set MainDevice=$00200A40, TheGDevice=$00200A40 (ptr=$00200A0C)
+[INIT] GDevice chain: $8A4→$00200A40→$00200A0C gdPMap→$00200A08→$002009D4
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$00200000 bkLim=$007FDFC0 zcbFree=6283136 (6.0MB)
+[INIT] Set MainDevice=$00200A40, TheGDevice=$00200A40 (ptr=$00200A0C)
+[INIT] GDevice chain: $8A4→$00200A40→$00200A0C gdPMap→$00200A08→$002009D4
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+test systems::macintosh::runner::tests::cursor::init_app_seeds_callable_hide_cursor_low_memory_vector ... ok
+test systems::macintosh::runner::tests::cursor::cursor_task_vbl_adopts_pending_guest_warp ... ok
+test systems::macintosh::runner::tests::cursor::guest_cursor_recenter_does_not_generate_physical_adb_motion ... ok
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$00200000 bkLim=$007FDFC0 zcbFree=6283136 (6.0MB)
+[INIT] Set MainDevice=$00200A40, TheGDevice=$00200A40 (ptr=$00200A0C)
+[INIT] GDevice chain: $8A4→$00200A40→$00200A0C gdPMap→$00200A08→$002009D4
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+test systems::macintosh::runner::tests::cursor::cursor_task_warp_reaches_event_trap_in_same_batch ... ok
+test systems::macintosh::runner::tests::cursor::cursor_snapshot_retains_colour_image_and_mask_when_hidden ... ok
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$00200000 bkLim=$007FDFC0 zcbFree=6283136 (6.0MB)
+[INIT] Set MainDevice=$00200A40, TheGDevice=$00200A40 (ptr=$00200A0C)
+[INIT] GDevice chain: $8A4→$00200A40→$00200A0C gdPMap→$00200A08→$002009D4
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$00200000 bkLim=$007FDFC0 zcbFree=6283136 (6.0MB)
+[INIT] Set MainDevice=$00200A40, TheGDevice=$00200A40 (ptr=$00200A0C)
+[INIT] GDevice chain: $8A4→$00200A40→$00200A0C gdPMap→$00200A08→$002009D4
+[INIT]   PixMap: rowBytes=$8330test systems::macintosh::runner::tests::cursor::init_app_seeds_callable_show_cursor_low_memory_vector ... ok
+ bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+test systems::macintosh::runner::tests::cursor::init_app_seeds_callable_init_cursor_low_memory_vector ... ok
+test systems::macintosh::trap::dialog::tests::dialogdispatch_setdialogtrackscursor_selector_06_returns_noerr_and_pops_arguments ... ok
+test systems::macintosh::trap::dialog::tests::get_cursor_returns_handle_for_system_cursor ... ok
+test systems::macintosh::runner::tests::time::patched_cursor_task_does_not_suppress_due_vbl_batch ... ok
+test systems::macintosh::trap::dialog::tests::get_cursor_returns_handle_to_loaded_curs_resource ... ok
+test systems::macintosh::trap::dialog::tests::get_cursor_returns_nil_for_unknown_id_per_im_i_474 ... ok
+test systems::macintosh::trap::dialog::tests::get_cursor_returns_stable_handle_across_repeated_calls_for_system_cursor ... ok
+test systems::macintosh::trap::dialog::tests::hide_cursor_decrements_level_and_hides_cursor ... ok
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$00200000 bkLim=$007FDFC0 zcbFree=6283136 (6.0test systems::macintosh::runner::tests::audio::ppc_decoded_file_playback_waits_for_process_audio_cursor ... MB)
+ok
+test systems::macintosh::trap::dialog::tests::obscure_cursor_five_call_composition_preserves_stack_pointer_and_level ... ok
+[INIT] Set MainDevice=$00200A40, TheGDevice=$00200A40 (ptr=$00200A0C)
+[INIT] GDevice chain: $8A4→$00200A40→$00200A0C gdPMap→$00200A08→$002009D4
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800test systems::macintosh::trap::dialog::tests::obscure_cursor_noop_preserves_cursor_level_visibility_and_stack ... ok
+) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+test systems::macintosh::trap::dialog::tests::set_cursor_does_not_force_visibility_when_cursor_is_hidden ... ok
+test systems::macintosh::trap::dialog::tests::init_cursor_resets_cursor_level_to_zero_and_sets_arrow_visible ... ok
+test systems::macintosh::trap::dialog::tests::set_cursor_reads_cursor_data_and_pops_4_bytes ... ok
+test systems::macintosh::trap::dialog::tests::show_cursor_at_level_zero_is_noop ... ok
+test systems::macintosh::trap::dialog::tests::show_cursor_balances_hidecursor_and_reveals_at_level_zero ... ok
+test systems::macintosh::trap::dispatch::tests::fullscreen_input_transform_requires_fullscreen_and_hidden_cursor ... ok
+test systems::macintosh::runner::tests::cursor::init_app_seeds_callable_shield_cursor_low_memory_vector ... ok
+test systems::macintosh::trap::quickdraw::tests::disposeccursor_consumes_ccrsrhandle_pointer_argument ... ok
+test systems::macintosh::trap::quickdraw::tests::getccursor_missing_resource_returns_nil ... ok
+test systems::macintosh::trap::quickdraw::tests::disposeccursor_releases_promoted_ccrsr_object_graph ... ok
+test systems::macintosh::trap::quickdraw::tests::alloccursor_pascal_procedure_preserves_stack_across_five_calls ... ok
+test systems::macintosh::trap::quickdraw::tests::getccursor_pascal_function_preserves_stack_across_five_missing_calls ... ok
+test systems::macintosh::trap::quickdraw::tests::getccursor_promotes_compiled_crsr_offsets_to_live_handles ... ok
+[INITGRAF] global_ptr=$00191800 randSeed_addr=$00191782
+test systems::macintosh::trap::quickdraw::tests::setccursor_consumes_ccrsrhandle_pointer_argument ... ok
+[INITGRAF] screenBits: base=$00200000 rowBytes=128 bounds=(0,0,32,test systems::macintosh::trap::quickdraw::tests::getccursor_returns_handle_for_present_crsr_resource ... ok
+64)
+[INITGRAF] qd.thePort=$00202000 (default screen port)
+test systems::macintosh::trap::quickdraw::tests::setccursor_installs_color_pixels_from_promoted_ccrsr ... ok
+test systems::macintosh::trap::quickdraw::tests::initgraf_initializes_arrow_global_to_standard_cursor ... ok
+test systems::macintosh::trap::quickdraw::tests::shield_cursor_five_call_composition_pops_forty_bytes_total ... ok
+test systems::macintosh::trap::quickdraw::tests::shield_cursor_hides_intersecting_cursor_and_pops_eight_bytes ... ok
+test systems::macintosh::trap::quickdraw::tests::setccursor_updates_cursor_state_from_ccrsr_handle ... ok
+test systems::macintosh::trap::quickdraw::tests::shield_cursor_preserves_nonintersecting_cursor_state ... ok
+test systems::macintosh::trap::toolbox::tests::cursordevicenextdevice_consumes_pointer_arg_and_clears_result ... ok
+test systems::macintosh::trap::toolbox::tests::cursordevicebuttonop_consumes_full_selector_frame ... ok
+test systems::macintosh::runner::tests::cursor::init_app_seeds_cursor_task_low_memory_vector ... ok
+test systems::macintosh::runner::tests::cursor::cursor_state_is_immediately_shared_between_cpu_adapters ... ok
+test systems::macintosh::loader::ppc::tests::dialog_manager::dialog_auto_positioning_and_cursor_tracking_dispatch_with_canonical_evaluation ... ok
+test systems::macintosh::runner::tests::idle::virtual_idle_cursor_is_invisible_across_fixed_slices ... ok
+
+test result: ok. 72 passed; 0 failed; 0 ignored; 0 measured; 6630 filtered out; finished in 6.42s
+

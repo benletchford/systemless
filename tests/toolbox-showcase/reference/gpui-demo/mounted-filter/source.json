@@ -1,0 +1,8 @@
+{
+  "base": "e91b6dced3edf66de2f5c60999c0cf17efd505ec",
+  "sha256": {
+    "src/systems/macintosh/loader/ppc/dispatch_standard_file.rs": "2304ed58b10857bdd646b5e2d5734d141e17b97a59bc792bfc54ba952c0e2165",
+    "src/systems/macintosh/loader/ppc/tests/file_manager.rs": "15c37f4384f8cdb3f922ad7189b50b4bdf7075474bdad517bbacfff35a99882a",
+    "target/debug/deps/systemless-4e06a53605bb32d1": "58f7cd92e2b1db455448b49b45677ae34ecbefb47afa5442a274d67c85d04d3f"
+  }
+}

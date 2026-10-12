@@ -2,12 +2,17 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use systemless::runner::{FixtureRunner, VfsFileSnapshot, VfsFileStat, VfsFileSummary};
+use systemless::runner::{FixtureRunner, VfsDirectorySnapshot, VfsFileSnapshot, VfsFileStat, VfsFileSummary};
 
 const SAVE_SCAN_FRAME_INTERVAL: u8 = 30;
+// SLSAVE01 + three big-endian u64 lengths + metadata JSON + raw data/resource
+// forks. One rename publishes a complete generation. Legacy three-file saves
+// remain readable, but are never combined with a published snapshot.
+const SNAPSHOT_FILE: &str = "snapshot.bin";
 const METADATA_FILE: &str = "metadata.json";
 const DATA_FORK_FILE: &str = "data.fork";
 const RESOURCE_FORK_FILE: &str = "resource.fork";
@@ -16,6 +21,8 @@ const RESOURCE_FORK_FILE: &str = "resource.fork";
 pub struct DesktopSaveStore {
     root: PathBuf,
     archive_vfs_stats: HashMap<String, VfsFileStat>,
+    archive_directories: Vec<VfsDirectorySnapshot>,
+    persisted_directories: Vec<VfsDirectorySnapshot>,
     last_vfs_fingerprints: HashMap<String, SaveFingerprint>,
     persisted_save_paths: HashSet<String>,
     save_scan_frame: u8,
@@ -83,6 +90,8 @@ impl DesktopSaveStore {
         Self {
             root: Self::root_for_game_path(game_path),
             archive_vfs_stats: vfs_stats(runner),
+            archive_directories: runner.vfs_directory_snapshots(),
+            persisted_directories: Vec::new(),
             last_vfs_fingerprints: HashMap::new(),
             persisted_save_paths: HashSet::new(),
             save_scan_frame: 0,
@@ -105,6 +114,40 @@ impl DesktopSaveStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn restore_saved_state(&mut self, runner: &mut FixtureRunner) {
+        let path = self.root.join("directories.json");
+        match fs::read(&path).and_then(|bytes| serde_json::from_slice::<Vec<VfsDirectorySnapshot>>(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))) {
+            Ok(directories) => {
+                self.persisted_directories = directories;
+                for directory in &self.persisted_directories { runner.import_vfs_directory(directory); }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!("[SYSTEMLESS] Could not restore directories {}: {error}", path.display()),
+        }
+        for file in self.load_saved_files() { runner.import_vfs_file(&file); }
+    }
+
+    fn sync_directories(&mut self, runner: &FixtureRunner) {
+        let mut directories: Vec<_> = runner.vfs_directory_snapshots().into_iter()
+            .filter(|directory| is_user_save_path(&directory.path)
+                && !self.archive_directories.contains(directory)).collect();
+        directories.sort_by(|left, right| left.path.cmp(&right.path));
+        if directories == self.persisted_directories { return; }
+        let result = (|| -> io::Result<()> {
+            fs::create_dir_all(&self.root)?;
+            let bytes = serde_json::to_vec_pretty(&directories)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            let temporary = self.root.join("directories.json.tmp");
+            fs::write(&temporary, bytes)?;
+            fs::rename(temporary, self.root.join("directories.json"))
+        })();
+        match result {
+            Ok(()) => self.persisted_directories = directories,
+            Err(error) => eprintln!("[SYSTEMLESS] Could not persist directories: {error}"),
+        }
     }
 
     pub fn load_saved_files(&mut self) -> Vec<VfsFileSnapshot> {
@@ -136,6 +179,7 @@ impl DesktopSaveStore {
     }
 
     pub fn sync_save_files_now(&mut self, runner: &mut FixtureRunner) {
+        self.sync_directories(runner);
         let stats = runner.vfs_file_stats_where(is_user_save_path);
         let mut next_fingerprints = HashMap::new();
         let mut next_persisted_paths = HashSet::new();
@@ -207,10 +251,13 @@ impl DesktopSaveStore {
     }
 
     fn persist_save_file(&self, file: &VfsFileSnapshot) -> io::Result<()> {
+        self.persist_save_file_before_publish(file, |_| Ok(()))
+    }
+
+    fn persist_save_file_before_publish(&self, file: &VfsFileSnapshot,
+        before_publish: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {
         let dir = self.save_dir_for_vfs_path(&file.path);
         fs::create_dir_all(&dir)?;
-        fs::write(dir.join(DATA_FORK_FILE), &file.data_fork)?;
-        fs::write(dir.join(RESOURCE_FORK_FILE), &file.resource_fork)?;
 
         let metadata = StoredSaveMetadata {
             version: 1,
@@ -223,8 +270,27 @@ impl DesktopSaveStore {
         };
         let metadata = serde_json::to_vec_pretty(&metadata)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-        fs::write(dir.join(METADATA_FILE), metadata)?;
-        Ok(())
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map_err(io::Error::other)?.as_nanos();
+        let temporary = dir.join(format!(".snapshot-{}-{nonce}.tmp", std::process::id()));
+        // Only clean up a staging file this invocation successfully created.
+        let mut output = fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
+        let result = (|| {
+            output.write_all(b"SLSAVE01")?;
+            for length in [metadata.len(), file.data_fork.len(), file.resource_fork.len()] {
+                output.write_all(&(length as u64).to_be_bytes())?;
+            }
+            output.write_all(&metadata)?;
+            output.write_all(&file.data_fork)?;
+            output.write_all(&file.resource_fork)?;
+            output.sync_all()?;
+            drop(output);
+            before_publish(&temporary)?;
+            fs::rename(&temporary, dir.join(SNAPSHOT_FILE))?;
+            fs::File::open(&dir)?.sync_all()
+        })();
+        if result.is_err() { let _ = fs::remove_file(&temporary); }
+        result
     }
 
     fn delete_save_file(&self, path: &str) -> io::Result<()> {
@@ -331,7 +397,8 @@ fn collect_metadata_files(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> 
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             collect_metadata_files(&path, out)?;
-        } else if file_type.is_file() && entry.file_name() == OsStr::new(METADATA_FILE) {
+        } else if file_type.is_file() && (entry.file_name() == OsStr::new(SNAPSHOT_FILE)
+            || (entry.file_name() == OsStr::new(METADATA_FILE) && !dir.join(SNAPSHOT_FILE).exists())) {
             out.push(path);
         }
     }
@@ -339,8 +406,25 @@ fn collect_metadata_files(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> 
 }
 
 fn read_saved_file(metadata_path: &Path) -> io::Result<VfsFileSnapshot> {
-    let metadata = fs::read(metadata_path)?;
-    let metadata: StoredSaveMetadata = serde_json::from_slice(&metadata)
+    let bytes = fs::read(metadata_path)?;
+    let bundled = metadata_path.file_name() == Some(OsStr::new(SNAPSHOT_FILE));
+    let (metadata_bytes, forks) = if bundled {
+        if bytes.len() < 32 || &bytes[..8] != b"SLSAVE01" {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid save snapshot header"));
+        }
+        let mut cursor = 32usize;
+        let mut parts = Vec::new();
+        for offset in [8, 16, 24] {
+            let length = usize::try_from(u64::from_be_bytes(bytes[offset..offset+8].try_into().unwrap()))
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "save length overflow"))?;
+            let end = cursor.checked_add(length).filter(|end| *end <= bytes.len())
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "truncated save snapshot"))?;
+            parts.push(&bytes[cursor..end]); cursor = end;
+        }
+        if cursor != bytes.len() { return Err(io::Error::new(io::ErrorKind::InvalidData, "trailing save bytes")); }
+        (parts[0], Some((parts[1], parts[2])))
+    } else { (bytes.as_slice(), None) };
+    let metadata: StoredSaveMetadata = serde_json::from_slice(metadata_bytes)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     if metadata.version != 1 {
         return Err(io::Error::new(
@@ -364,8 +448,8 @@ fn read_saved_file(metadata_path: &Path) -> io::Result<VfsFileSnapshot> {
 
     Ok(VfsFileSnapshot {
         path: metadata.path,
-        data_fork: read_fork_file(&dir.join(DATA_FORK_FILE))?,
-        resource_fork: read_fork_file(&dir.join(RESOURCE_FORK_FILE))?,
+        data_fork: if let Some((data, _)) = forks { data.to_vec() } else { read_fork_file(&dir.join(DATA_FORK_FILE))? },
+        resource_fork: if let Some((_, resource)) = forks { resource.to_vec() } else { read_fork_file(&dir.join(RESOURCE_FORK_FILE))? },
         file_type: metadata.file_type,
         creator: metadata.creator,
         finder_flags: metadata.finder_flags,
@@ -497,6 +581,39 @@ mod tests {
     }
 
     #[test]
+    fn empty_directories_restore_metadata_and_removed_paths_do_not_return() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("Showcase.sit");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let packaged = VfsDirectorySnapshot { path: "Packaged".into(), creator: 1,
+            file_type: 2, finder_flags: 3 };
+        runner.import_vfs_directory(&packaged);
+        let mut store = DesktopSaveStore::for_loaded_archive(&game, &mut runner);
+        store.sync_save_files_now(&mut runner);
+        assert!(!store.root().exists());
+        let created = VfsDirectorySnapshot { path: "Packaged/Emptyé".into(),
+            creator: 4, file_type: 5, finder_flags: 6 };
+        runner.import_vfs_directory(&created);
+        store.sync_save_files_now(&mut runner);
+        let mut restored = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        restored.import_vfs_directory(&packaged);
+        let mut reloaded = DesktopSaveStore::for_loaded_archive(&game, &mut restored);
+        reloaded.restore_saved_state(&mut restored);
+        assert!(restored.vfs_directory_snapshots().contains(&created));
+        assert!(restored.vfs_directory_snapshots().contains(&packaged));
+        assert!(reloaded.load_saved_files().is_empty());
+        // A fresh guest state without the created directory represents its deletion.
+        let mut deleted = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        deleted.import_vfs_directory(&packaged);
+        reloaded.sync_save_files_now(&mut deleted);
+        let mut reopened = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        reopened.import_vfs_directory(&packaged);
+        let mut store = DesktopSaveStore::for_loaded_archive(&game, &mut reopened);
+        store.restore_saved_state(&mut reopened);
+        assert!(!reopened.vfs_directory_snapshots().contains(&created));
+    }
+
+    #[test]
     fn save_root_sits_next_to_archive() {
         assert_eq!(
             save_root_for_game_path(Path::new("/Games/EV Override 1.0.1.sit")),
@@ -523,6 +640,8 @@ mod tests {
         let store = DesktopSaveStore {
             root: root.clone(),
             archive_vfs_stats: HashMap::new(),
+            archive_directories: Vec::new(),
+            persisted_directories: Vec::new(),
             last_vfs_fingerprints: HashMap::new(),
             persisted_save_paths: HashSet::new(),
             save_scan_frame: 0,
@@ -533,6 +652,93 @@ mod tests {
 
         let loaded = load_saved_files_from_root(&root).unwrap();
         assert_eq!(loaded, vec![original]);
+    }
+
+    #[test]
+    fn malformed_snapshots_are_rejected_without_partial_forks() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let store = DesktopSaveStore::for_loaded_archive(&temp.path().join("Game.sit"), &mut runner);
+        let original = snapshot("Pilots/Test");
+        store.persist_save_file(&original).unwrap();
+        let path = store.save_dir_for_vfs_path(&original.path).join(SNAPSHOT_FILE);
+        let bytes = fs::read(&path).unwrap();
+        for length in [0, 7, 8, 31, 32, 33, bytes.len() - 1] {
+            fs::write(&path, &bytes[..length]).unwrap();
+            assert_eq!(read_saved_file(&path).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        }
+        let mut overflow = bytes.clone(); overflow[8..16].copy_from_slice(&u64::MAX.to_be_bytes());
+        fs::write(&path, overflow).unwrap();
+        assert_eq!(read_saved_file(&path).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        let mut trailing = bytes.clone(); trailing.push(0);
+        fs::write(&path, trailing).unwrap();
+        assert_eq!(read_saved_file(&path).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(read_saved_file(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn abrupt_process_exit_preserves_complete_snapshot_at_publication_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::env::var_os("SYSTEMLESS_ATOMIC_SAVE_ROOT").map(PathBuf::from)
+            .unwrap_or_else(|| temp.path().to_path_buf());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let store = DesktopSaveStore::for_loaded_archive(&root.join("Game.sit"), &mut runner);
+        let old = snapshot("Pilots/Test");
+        let mut new = old.clone(); new.data_fork = vec![42; 19];
+        new.resource_fork = vec![255, 0, 128]; new.modified_date += 7;
+        if let Ok(stage) = std::env::var("SYSTEMLESS_ATOMIC_SAVE_EXIT") {
+            if stage == "before" {
+                store.persist_save_file_before_publish(&new, |_| std::process::exit(77)).unwrap();
+            } else {
+                store.persist_save_file(&new).unwrap();
+                std::process::exit(78);
+            }
+            panic!("abrupt exit must not return");
+        }
+        store.persist_save_file(&old).unwrap();
+        for (stage, code, expected) in [("before", 77, old), ("after", 78, new)] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "desktop_save_store::tests::abrupt_process_exit_preserves_complete_snapshot_at_publication_boundary"])
+                .env("SYSTEMLESS_ATOMIC_SAVE_ROOT", &root).env("SYSTEMLESS_ATOMIC_SAVE_EXIT", stage)
+                .status().unwrap();
+            assert_eq!(status.code(), Some(code));
+            assert_eq!(load_saved_files_from_root(store.root()).unwrap(), vec![expected]);
+        }
+    }
+
+    #[test]
+    fn legacy_save_migrates_atomically_and_interrupted_stage_keeps_complete_save() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let store = DesktopSaveStore::for_loaded_archive(&temp.path().join("Game.sit"), &mut runner);
+        let old = snapshot("Pilots/Test");
+        let dir = store.save_dir_for_vfs_path(&old.path);
+        fs::create_dir_all(&dir).unwrap();
+        let metadata = StoredSaveMetadata { version: 1, path: old.path.clone(),
+            file_type: old.file_type, creator: old.creator, finder_flags: old.finder_flags,
+            created_date: old.created_date, modified_date: old.modified_date };
+        fs::write(dir.join(METADATA_FILE), serde_json::to_vec(&metadata).unwrap()).unwrap();
+        fs::write(dir.join(DATA_FORK_FILE), &old.data_fork).unwrap();
+        fs::write(dir.join(RESOURCE_FORK_FILE), &old.resource_fork).unwrap();
+        assert_eq!(load_saved_files_from_root(store.root()).unwrap(), vec![old.clone()]);
+        let mut new = old.clone(); new.data_fork = vec![9; 71];
+        new.resource_fork = vec![128, 255, 0]; new.modified_date += 1;
+        assert!(store.persist_save_file_before_publish(&new, |temporary| {
+            assert!(temporary.exists());
+            assert_eq!(load_saved_files_from_root(store.root()).unwrap(), vec![old.clone()]);
+            Err(io::Error::other("interrupted before publication"))
+        }).is_err());
+        assert_eq!(load_saved_files_from_root(store.root()).unwrap(), vec![old.clone()]);
+        store.persist_save_file(&new).unwrap();
+        assert_eq!(load_saved_files_from_root(store.root()).unwrap(), vec![new.clone()]);
+        // Stale legacy components must never mix with the published snapshot.
+        fs::write(dir.join(DATA_FORK_FILE), b"stale legacy data").unwrap();
+        fs::write(dir.join(".snapshot-abandoned.tmp"), b"incomplete stage").unwrap();
+        assert_eq!(load_saved_files_from_root(store.root()).unwrap(), vec![new.clone()]);
+        let mut next = new.clone(); next.data_fork = vec![42];
+        assert!(store.persist_save_file_before_publish(&next, |_| Err(io::Error::other("interrupted"))).is_err());
+        assert_eq!(load_saved_files_from_root(store.root()).unwrap(), vec![new]);
     }
 
     #[test]
@@ -557,6 +763,40 @@ mod tests {
     }
 
     #[test]
+    fn saves_restore_into_loaded_68k_and_powerpc_sessions() {
+        use systemless::systems::macintosh::{game, session::MacintoshSession};
+        let archive = include_bytes!("../../../tests/toolbox-showcase/toolbox-showcase.sit");
+        for (powerpc, depth) in [(false, 1), (false, 8), (true, 8)] {
+            let temp = tempfile::tempdir().unwrap();
+            let game_path = temp.path().join("Showcase.sit");
+            let mut session = MacintoshSession::new(true, Some(depth));
+            session.runner_mut().set_prefer_powerpc_executables(powerpc);
+            let app = session.load_bytes(archive).unwrap();
+            session.initialize(&app);
+            assert_eq!(session.runner().is_powerpc_app(), powerpc);
+            let mut store = DesktopSaveStore::for_loaded_archive(&game_path, session.runner_mut());
+            let saved = snapshot("Toolbox Showcase/Pilots/Persistence Probe");
+            session.runner_mut().import_vfs_file(&saved);
+            store.sync_save_files_now(session.runner_mut());
+            drop(session);
+
+            let mut restored = game::new_runner_with_screen_depth(depth);
+            restored.set_prefer_powerpc_executables(powerpc);
+            let app = game::load_game(&mut restored, archive).unwrap();
+            let mut store = DesktopSaveStore::for_loaded_archive(&game_path, &mut restored);
+            let files = store.load_saved_files();
+            assert_eq!(files, vec![saved.clone()]);
+            for file in files {
+                restored.import_vfs_file(&file);
+            }
+            game::init_game(&mut restored, &app);
+            assert_eq!(restored.is_powerpc_app(), powerpc);
+            store.sync_save_files_now(&mut restored);
+            assert_eq!(store.load_saved_files(), vec![saved]);
+        }
+    }
+
+    #[test]
     fn reset_preferences_removes_only_system_folder_preferences() {
         let base = std::env::temp_dir().join(format!(
             "systemless-reset-prefs-{}",
@@ -568,6 +808,8 @@ mod tests {
         let store = DesktopSaveStore {
             root: root.clone(),
             archive_vfs_stats: HashMap::new(),
+            archive_directories: Vec::new(),
+            persisted_directories: Vec::new(),
             last_vfs_fingerprints: HashMap::new(),
             persisted_save_paths: HashSet::new(),
             save_scan_frame: 0,

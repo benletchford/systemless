@@ -1,0 +1,11 @@
+{
+  "source_commit": "ed245ca826dfafc4ee226e818a18f653812153ae",
+  "compiled_gpui_demo_sha256": "8902fa449f06eaeb63af3b76485ee3d682ea2e4445bc40746705b33f40b7d658",
+  "source_reconstruction": "HEAD gpui_demo.rs plus pointer-only assertion addition; archived patch also includes later separately tested multiline additions",
+  "test_binary_sha256": null,
+  "test_binary_limit": "Binary was replaced by subsequent multiline test compilation before hashing; no binary provenance claim",
+  "log_sha256": "335f4883187756d2a53d159dbc103df19ae2bfa1a4b83a89509d1357173f87f1",
+  "passed": true,
+  "duration_seconds": 370.21,
+  "scope": "Actual GPUI clicks and held drag at four CPU/depth modes and four scene scales; native field qualification and all-raster original-outline resolution required before every event; guest selection assertions. Not composed appearance oracle, physical host integration or performance."
+}

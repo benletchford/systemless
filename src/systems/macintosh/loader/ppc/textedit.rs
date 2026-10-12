@@ -361,6 +361,17 @@ pub(super) fn ppc_te_initialize_record(
     te_handle
 }
 
+/// Shared native TESetSelect operation; preserve the PPC signed-word limits.
+pub(crate) fn ppc_te_set_select(memory: &mut PpcSectionMem, te_handle: u32, start: u32, end: u32) -> bool {
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else { return false; };
+    let length = u32::from(memory.read_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET).unwrap_or(0));
+    let start = start.min(i16::MAX as u32).min(length);
+    let end = end.min(i16::MAX as u32).min(length);
+    let start_written = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, start as u16).is_some();
+    let end_written = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, end as u16).is_some();
+    start_written && end_written
+}
+
 pub(super) fn ppc_te_record_ptr(memory: &mut PpcSectionMem, te_handle: u32) -> Option<u32> {
     memory.read_u32_be(te_handle).filter(|ptr| *ptr != 0)
 }
@@ -744,11 +755,9 @@ pub(super) fn ppc_te_measure_text_width_styled(
         .enumerate()
         .fold(0i16, |width, (index, byte)| {
             let style = ppc_te_style_at_offset(runs, start + index);
-            width.saturating_add(ppc_text_width_bytes(
-                style.font,
-                style.size,
-                style.face,
-                &[*byte],
+            width.saturating_add(crate::text_edit::styled_byte_advance(
+                crate::text_edit::TextEditLineLayoutPolicy::PpcRunMetrics,
+                style.font, style.size, style.face, *byte,
             ))
         })
 }
@@ -814,6 +823,7 @@ pub(super) fn ppc_te_recalculate_layout(
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, i16::MAX));
     let max_width = right.saturating_sub(left).max(1);
     let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
+    let face = memory.read_u8(te_ptr + PPC_TE_TX_FACE_OFFSET).unwrap_or(0);
     let style_runs = if styled {
         ppc_te_style_runs(memory, handles, te_handle, text.len())
     } else {
@@ -825,7 +835,7 @@ pub(super) fn ppc_te_recalculate_layout(
             let style = ppc_te_style_at_offset(&style_runs, index);
             ppc_text_width_bytes(style.font, style.size, style.face, &[byte])
         } else {
-            ppc_text_byte_advance_for_font(byte, font, size)
+            ppc_text_width_bytes(font, size, face, &[byte])
         }
     });
     let starts = lines
@@ -955,7 +965,7 @@ pub(super) fn ppc_te_write_style_table_element(
 }
 
 pub(super) fn ppc_te_set_style_for_range(
-    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    allocator: Option<&mut PpcProcessAllocatorView<'_>>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -1080,7 +1090,22 @@ pub(super) fn ppc_te_set_style_for_range(
     if folded.first().is_none_or(|(start, _)| *start != 0) {
         folded.insert(0, (0, ppc_te_style_at_offset(&existing_runs, 0)));
     }
-    let run_count = folded.len().min(u16::MAX as usize);
+    ppc_te_write_style_runs(allocator, memory, heap_cursor, heap_limit,
+        last_mem_error, handles, te_handle, &folded, text_len)
+}
+
+fn ppc_te_write_style_runs(
+    mut allocator: Option<&mut PpcProcessAllocatorView<'_>>,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    te_handle: u32,
+    runs: &[(usize, PpcTeResolvedStyle)],
+    text_len: usize,
+) -> bool {
+    let run_count = runs.len().min(u16::MAX as usize);
     let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
         return false;
     };
@@ -1151,7 +1176,7 @@ pub(super) fn ppc_te_set_style_for_range(
     };
     let _ = memory.write_u16_be(style_ptr + PPC_TE_STYLE_N_RUNS_OFFSET, run_count as u16);
     let _ = memory.write_u16_be(style_ptr + PPC_TE_STYLE_N_STYLES_OFFSET, run_count as u16);
-    for (index, (start, style)) in folded.iter().take(run_count).enumerate() {
+    for (index, (start, style)) in runs.iter().take(run_count).enumerate() {
         ppc_te_write_style_table_element(
             memory,
             style_table_ptr + index as u32 * PPC_TE_ST_ELEMENT_SIZE,
@@ -1403,6 +1428,34 @@ pub(super) fn ppc_te_commit_edit_buffer(
     te_handle: u32,
     buffer: &crate::text_edit::TextEditBuffer,
 ) -> i16 {
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return PPC_NIL_HANDLE_ERR;
+    };
+    let text = &buffer.text()[..buffer.text().len().min(i16::MAX as usize)];
+    if memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff) {
+        let Some(old) = ppc_te_text_bytes(memory, handles, te_handle) else { return PPC_PARAM_ERR; };
+        let selection_start = usize::from(memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET).unwrap_or(0));
+        if let Some(change @ (start, deleted, _)) = crate::text_edit::edited_byte_span(&old, text, selection_start) {
+            // Reserve growth before changing style ownership. A failed text
+            // allocation must not shift styles while leaving the old bytes.
+            if text.len() > old.len() {
+                let text_handle = memory.read_u32_be(te_ptr + PPC_TE_HTEXT_OFFSET).unwrap_or(0);
+                let result = ppc_allocator_view_resize_handle(allocator.as_deref_mut(), memory,
+                    heap_cursor, heap_limit, last_mem_error, handles, text_handle, text.len() as u32);
+                if result != PPC_NO_ERR { return result; }
+            }
+            let runs = ppc_te_style_runs(memory, handles, te_handle, old.len());
+            let inserted_style = ppc_te_null_style_resolved_style(memory, te_handle)
+                .unwrap_or_else(|| ppc_te_style_at_offset(&runs, start.checked_sub(1).unwrap_or(start + deleted)));
+            let edited = crate::text_edit::style_runs_after_edit(
+                &runs.iter().map(|run| (run.start, run.style)).collect::<Vec<_>>(), change,
+                inserted_style, ppc_te_style_at_offset(&runs, start + deleted), text.len(),
+            );
+            if !ppc_te_write_style_runs(allocator.as_deref_mut(), memory, heap_cursor,
+                heap_limit, last_mem_error, handles, te_handle, &edited, text.len())
+            { return if *last_mem_error != PPC_NO_ERR { *last_mem_error } else { PPC_PARAM_ERR }; }
+        }
+    }
     let result = ppc_te_set_text(
         allocator.as_deref_mut(),
         memory,
@@ -1411,7 +1464,7 @@ pub(super) fn ppc_te_commit_edit_buffer(
         last_mem_error,
         handles,
         te_handle,
-        buffer.text(),
+        text,
     );
     if result != PPC_NO_ERR {
         return result;
@@ -1443,7 +1496,26 @@ pub(super) fn ppc_te_key(
     let Some(mut buffer) = ppc_te_edit_buffer(memory, handles, te_handle) else {
         return PPC_NIL_HANDLE_ERR;
     };
-    buffer.apply_key(key);
+    if matches!(key, 0x1e | 0x1f) {
+        let te_ptr = ppc_te_record_ptr(memory, te_handle).unwrap();
+        let count = usize::from(memory.read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET).unwrap_or(0));
+        let selection = buffer.selection();
+        let offset = if key == 0x1e { selection.start } else { selection.end };
+        let line = (1..count).take_while(|index|
+            memory.read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + *index as u32 * 2)
+                .is_some_and(|start| usize::from(start) <= offset)).count();
+        let target = if key == 0x1e && line == 0 { 0 }
+            else if key == 0x1f && line + 1 >= count { buffer.text().len() }
+            else {
+                let adjacent = if key == 0x1e { line - 1 } else { line + 1 };
+                let start = memory.read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + adjacent as u32 * 2).unwrap_or(0);
+                let point = ppc_te_get_point(memory, handles, te_handle, offset as u16);
+                let row = ppc_te_get_point(memory, handles, te_handle, start);
+                ppc_te_point_to_offset(memory, handles, te_handle,
+                    ((row >> 16) as i16).saturating_add(1), point as i16).unwrap_or(offset)
+            };
+        buffer.move_caret_to(target);
+    } else { buffer.apply_key(key); }
     ppc_te_commit_edit_buffer(
         allocator,
         memory,
@@ -1508,6 +1580,7 @@ pub(super) fn ppc_te_point_to_offset(
     let (top, left, _, right) =
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, 0));
     let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
+    let face = memory.read_u8(te_ptr + PPC_TE_TX_FACE_OFFSET).unwrap_or(0);
     let style_runs = if styled {
         ppc_te_style_runs(memory, handles, te_handle, text.len())
     } else {
@@ -1547,7 +1620,7 @@ pub(super) fn ppc_te_point_to_offset(
     let width = if styled {
         ppc_te_measure_text_width_styled(&style_runs, &text, start, visible_end)
     } else {
-        ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size)
+        ppc_text_width_bytes(font, size, face, &text[start..visible_end])
     };
     let alignment = memory.read_u16_be(te_ptr + PPC_TE_JUST_OFFSET).unwrap_or(0) as i16;
     let line_left = crate::text_edit::aligned_line_left(left, right, width, alignment, 1);
@@ -1559,7 +1632,7 @@ pub(super) fn ppc_te_point_to_offset(
             let style = ppc_te_style_at_offset(&style_runs, start + index);
             ppc_text_width_bytes(style.font, style.size, style.face, &[byte])
         } else {
-            ppc_text_byte_advance_for_font(byte, font, size)
+            ppc_text_width_bytes(font, size, face, &[byte])
         };
         if target_x < advance.saturating_add(char_width / 2) {
             offset = start + index;
@@ -1792,6 +1865,7 @@ pub(super) fn ppc_te_get_point(
     let (top, left, _, right) =
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, 0));
     let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
+    let face = memory.read_u8(te_ptr + PPC_TE_TX_FACE_OFFSET).unwrap_or(0);
     let style_runs = if styled {
         ppc_te_style_runs(memory, handles, te_handle, text.len())
     } else {
@@ -1812,7 +1886,7 @@ pub(super) fn ppc_te_get_point(
     let line_width = if styled {
         ppc_te_measure_text_width_styled(&style_runs, &text, start, visible_end)
     } else {
-        ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size)
+        ppc_text_width_bytes(font, size, face, &text[start..visible_end])
     };
     let alignment = memory.read_u16_be(te_ptr + PPC_TE_JUST_OFFSET).unwrap_or(0) as i16;
     let line_left = crate::text_edit::aligned_line_left(left, right, line_width, alignment, 1);
@@ -1820,7 +1894,7 @@ pub(super) fn ppc_te_get_point(
     let prefix_width = if styled {
         ppc_te_measure_text_width_styled(&style_runs, &text, start, prefix_end)
     } else {
-        ppc_text_bytes_advance_for_font(&text[start..prefix_end], font, size)
+        ppc_text_width_bytes(font, size, face, &text[start..prefix_end])
     };
     let h = line_left.saturating_add(prefix_width);
     let mut v = top;
@@ -1833,6 +1907,39 @@ pub(super) fn ppc_te_get_point(
         v = v.saturating_add(previous_height);
     }
     (u32::from(v as u16) << 16) | u32::from(h as u16)
+}
+
+/// Inside Macintosh: Text (1993), p. 2-92: reveal the selection's
+/// top-left when it exceeds the view; leave feature policy to the caller.
+pub(super) fn ppc_te_selection_scroll_delta(
+    memory: &mut PpcSectionMem, handles: &[PpcHandleRecord], te_handle: u32,
+) -> Option<(i16, i16)> {
+    fn delta(start: i16, stop: i16, view_start: i16, view_stop: i16) -> i16 {
+        if start < view_start { view_start.saturating_sub(start) }
+        else if stop > view_stop {
+            if stop.saturating_sub(start) > view_stop.saturating_sub(view_start) {
+                view_start.saturating_sub(start)
+            } else { view_stop.saturating_sub(stop) }
+        } else { 0 }
+    }
+    let ptr = ppc_te_record_ptr(memory, te_handle)?;
+    let view = ppc_read_rect(memory, ptr + PPC_TE_VIEW_RECT_OFFSET)?;
+    let start = memory.read_u16_be(ptr + PPC_TE_SEL_START_OFFSET)?;
+    let end = memory.read_u16_be(ptr + PPC_TE_SEL_END_OFFSET)?;
+    let first = ppc_te_get_point(memory, handles, te_handle, start);
+    let last = ppc_te_get_point(memory, handles, te_handle, end);
+    let count = usize::from(memory.read_u16_be(ptr + PPC_TE_N_LINES_OFFSET)?);
+    let mut line = 0;
+    for candidate in 1..count {
+        if memory.read_u16_be(ptr + PPC_TE_LINE_STARTS_OFFSET + candidate as u32 * 2)? <= end {
+            line = candidate;
+        } else { break; }
+    }
+    let (_, _, fallback_height, _) = ppc_te_metrics(memory, ptr);
+    let height = ppc_te_line_height(memory, ptr, line);
+    let height = if height > 0 { height } else { fallback_height };
+    Some((delta(first as u16 as i16, last as u16 as i16, view.1, view.3),
+        delta((first >> 16) as i16, ((last >> 16) as i16).saturating_add(height), view.0, view.2)))
 }
 
 /// Moves destRect by (dh, dv), pinned to the text when requested. Returns
@@ -2058,6 +2165,7 @@ pub(super) fn ppc_te_draw(
     let (top, left, _, right) =
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, 0));
     let styled = memory.read_u16_be(te_ptr + PPC_TE_TX_SIZE_OFFSET) == Some(0xffff);
+    let face = memory.read_u8(te_ptr + PPC_TE_TX_FACE_OFFSET).unwrap_or(0);
     let (font, size, fallback_line_height, fallback_ascent) = ppc_te_metrics(memory, te_ptr);
     let style_runs = if styled {
         ppc_te_style_runs(memory, handles, te_handle, text.len())
@@ -2074,6 +2182,14 @@ pub(super) fn ppc_te_draw(
     let mode = memory
         .read_u16_be(te_ptr + PPC_TE_TX_MODE_OFFSET)
         .unwrap_or(PPC_QD_TEXT_MODE_SRC_OR as u16) as i16;
+    // Keep actual glyph ink separate from later selection and themed caret
+    // paint. Snapshotting the caller's current foreground cannot recover it.
+    let plain_ink = if !styled && matches!(mode, 0 | 1) {
+        ppc_live_quickdraw_surface(memory, gworlds, port).and_then(|surface| {
+            ppc_quickdraw_surface_fore_pixel(memory, surface, fallback_color, explicit_index)
+                .map(|pixel| (surface.front_buffer.depth as u16, pixel))
+        })
+    } else { None };
     let line_count = usize::from(
         memory
             .read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET)
@@ -2093,6 +2209,16 @@ pub(super) fn ppc_te_draw(
     // the text, so drawing is clipped to it.
     let view_clip = ppc_read_rect(memory, te_ptr + PPC_TE_VIEW_RECT_OFFSET);
     let view = view_clip.unwrap_or((0, 0, 0, 0));
+    // Share TEClick/TEGetPoint's cumulative origins. Resolve once so painting
+    // a long styled document does not repeatedly walk preceding lines.
+    let styled_line_tops = if styled {
+        let mut origin = top;
+        (0..line_count).map(|line| {
+            let current = origin;
+            origin = origin.saturating_add(ppc_te_line_height(memory, te_ptr, line).max(1));
+            current
+        }).collect::<Vec<_>>()
+    } else { Vec::new() };
     for line in 0..line_count {
         let start = usize::from(
             memory
@@ -2120,7 +2246,7 @@ pub(super) fn ppc_te_draw(
             ppc_text_width_bytes(
                 font,
                 size,
-                ppc_current_text_style(memory, port),
+                face,
                 &text[start..visible_end],
             )
         };
@@ -2131,9 +2257,9 @@ pub(super) fn ppc_te_draw(
         } else {
             (fallback_line_height, fallback_ascent)
         };
-        let baseline = top
-            .saturating_add(ascent)
-            .saturating_add((line as i16).saturating_mul(line_height));
+        let line_top = if styled { styled_line_tops[line] }
+            else { top.saturating_add((line as i16).saturating_mul(line_height)) };
+        let baseline = line_top.saturating_add(ascent);
         if styled {
             let mut offset = start;
             let mut pen = line_left;
@@ -2164,7 +2290,7 @@ pub(super) fn ppc_te_draw(
                 offset = run_end;
             }
         } else {
-            let _ = ppc_draw_text_bytes_clipped(
+            let _ = ppc_draw_text_bytes_styled_clipped(
                 memory,
                 gworlds,
                 port,
@@ -2174,6 +2300,7 @@ pub(super) fn ppc_te_draw(
                 mode,
                 fallback_color,
                 explicit_index,
+                face,
                 view_clip,
                 &text[start..visible_end],
             );
@@ -2187,7 +2314,7 @@ pub(super) fn ppc_te_draw(
                     if styled {
                         ppc_te_measure_text_width_styled(&style_runs, &text, start, end)
                     } else {
-                        ppc_text_bytes_advance_for_font(&text[start..end], font, size)
+                        ppc_text_width_bytes(font, size, face, &text[start..end])
                     }
                 };
                 let selection_left = if selected_start == start && matches!(alignment, 0 | -2) {
@@ -2220,7 +2347,9 @@ pub(super) fn ppc_te_draw(
             .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
             .unwrap_or(0),
     );
-    if active && sel_start == sel_end {
+    if active && sel_start == sel_end
+        && memory.read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET).unwrap_or(0) == 0
+    {
         for line in 0..line_count {
             let start = usize::from(
                 memory
@@ -2238,7 +2367,9 @@ pub(super) fn ppc_te_draw(
             } else {
                 text.len()
             };
-            if sel_start >= start && (sel_start <= end || line + 1 == line_count) {
+            let after_hard_break = sel_start == end && line + 1 < line_count
+                && end > start && matches!(text[end - 1], b'\r' | b'\n');
+            if !after_hard_break && sel_start >= start && (sel_start <= end || line + 1 == line_count) {
                 let mut visible_end = end;
                 while visible_end > start && matches!(text[visible_end - 1], b' ' | b'\r' | b'\n') {
                     visible_end -= 1;
@@ -2254,7 +2385,7 @@ pub(super) fn ppc_te_draw(
                     ppc_text_width_bytes(
                         font,
                         size,
-                        ppc_current_text_style(memory, port),
+                        face,
                         &text[start..visible_end],
                     )
                 };
@@ -2268,7 +2399,7 @@ pub(super) fn ppc_te_draw(
                     ppc_text_width_bytes(
                         font,
                         size,
-                        ppc_current_text_style(memory, port),
+                        face,
                         &text[start..caret_offset],
                     )
                 };
@@ -2276,13 +2407,17 @@ pub(super) fn ppc_te_draw(
                 if caret_offset > start {
                     caret_x = caret_x.saturating_sub(1);
                 }
-                let line_top = top.saturating_add((line as i16).saturating_mul(line_height));
+                let line_top = if styled { styled_line_tops[line] }
+                    else { top.saturating_add((line as i16).saturating_mul(line_height)) };
                 let line_bottom = line_top.saturating_add(line_height);
+                let caret = (line_top.max(view.0), caret_x.max(view.1),
+                    line_bottom.min(view.2), caret_x.saturating_add(1).min(view.3));
+                if caret.0 >= caret.2 || caret.1 >= caret.3 { break; }
                 let _ = ppc_paint_rect_bounds(
                     memory,
                     gworlds,
                     port,
-                    (line_top, caret_x, line_bottom, caret_x.saturating_add(1)),
+                    caret,
                     if ppc_ui_theme(gworlds) != UiThemeId::ClassicSystem7 {
                         ppc_theme_rgb(ppc_ui_theme(gworlds).provider().palette().selection)
                     } else if styled {
@@ -2296,6 +2431,11 @@ pub(super) fn ppc_te_draw(
             }
         }
     }
+    // Text (1993), p. 2-88: retain evidence only after actual drawing.
+    let mut drawing = crate::text_edit::TextEditDrawing::capture_editor(te_handle, port, view, |addr| memory.read_u8(addr));
+    if let Some(drawing) = &mut drawing { drawing.plain_ink = plain_ink; }
+    memory.presentation().record_text_edit_drawing(te_handle, drawing);
+
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2428,4 +2568,38 @@ pub(super) fn ppc_te_dispose(
         handles,
         te_handle,
     );
+}
+
+// Text (1993), p. 2-84: blink active insertion points at the guest idle interval.
+pub(super) fn ppc_te_idle(memory: &mut PpcSectionMem, handle: u32, tick_count: u32) -> bool {
+    if let Some(te_ptr) = ppc_te_record_ptr(memory, handle) {
+        let active = memory
+            .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
+            .unwrap_or(0)
+            != 0;
+        let start = memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
+            .unwrap_or(0);
+        let end = memory
+            .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
+            .unwrap_or(0);
+        let previous = memory
+            .read_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET)
+            .unwrap_or(0);
+        let caret_time = memory
+            .read_u32_be(crate::memory::globals::addr::CARET_TIME)
+            .unwrap_or(PPC_DEFAULT_CARET_TIME_TICKS);
+        if active && start == end && tick_count.wrapping_sub(previous) >= caret_time {
+            let caret = memory
+                .read_u16_be(te_ptr + PPC_TE_CARET_STATE_OFFSET)
+                .unwrap_or(0);
+            let _ = memory.write_u16_be(
+                te_ptr + PPC_TE_CARET_STATE_OFFSET,
+                if caret == 0 { 1 } else { 0 },
+            );
+            let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
+            return true;
+        }
+    }
+    false
 }

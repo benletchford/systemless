@@ -316,6 +316,22 @@ pub(crate) fn ppc_closest_available_clut_index(
         .map_or(0, |(index, _)| index as u8)
 }
 
+/// IM:VI, pp. 20-16, 20-23: palette restoration follows the device mode.
+fn ppc_default_device_clut(memory: &mut PpcSectionMem, gdevice: u32) -> [[u16; 3]; 256] {
+    let gd = memory.read_u32_be(gdevice).unwrap_or(0);
+    let pixmap_handle = memory.read_u32_be(gd.wrapping_add(22)).unwrap_or(0);
+    let pixmap = memory.read_u32_be(pixmap_handle).unwrap_or(0);
+    if gd == 0 || pixmap_handle == 0 || pixmap == 0 {
+        return TrapDispatcher::standard_mac_8bpp_clut();
+    }
+    let Some(depth) = memory.read_u16_be(pixmap.wrapping_add(32))
+        .filter(|depth| matches!(depth, 1 | 2 | 4 | 8)) else {
+        return TrapDispatcher::standard_mac_8bpp_clut();
+    };
+    let is_color = memory.read_u16_be(gd.wrapping_add(20)).map_or(true, |flags| flags & 1 != 0);
+    TrapDispatcher::standard_screen_depth_clut(depth, is_color).unwrap().0
+}
+
 pub(crate) fn ppc_release_palette_allocations_and_restore(
     memory: &mut PpcSectionMem,
     toolbox_startup: &mut PpcToolboxStartupState,
@@ -324,7 +340,6 @@ pub(crate) fn ppc_release_palette_allocations_and_restore(
     screen_clut: &mut [[u16; 3]; 256],
     color_manager_clut: &mut [[u16; 3]; 256],
 ) {
-    let defaults = TrapDispatcher::standard_mac_8bpp_clut();
     for (gdevice, index, animated, was_active) in
         ppc_release_palette_allocations(toolbox_startup, palette)
     {
@@ -334,6 +349,7 @@ pub(crate) fn ppc_release_palette_allocations_and_restore(
         if !animated && !was_active {
             continue;
         }
+        let defaults = ppc_default_device_clut(memory, gdevice);
         let slot = usize::from(index);
         let still_reserved = toolbox_startup
             .palette_allocations
@@ -539,7 +555,7 @@ pub(crate) fn ppc_apply_palette(
     // animated entries retain their recorded indexes and are written again
     // below. Inside Macintosh Volume VI (1991), p. 20-10.
     if let Some(previous) = &previous {
-        let defaults = TrapDispatcher::standard_mac_8bpp_clut();
+        let defaults = ppc_default_device_clut(memory, gdevice);
         for index in previous
             .entry_mappings
             .iter()
@@ -829,7 +845,7 @@ pub(crate) fn ppc_activate_window_palette(
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> bool {
     ppc_register_gdevice(toolbox_startup, gdevice);
-    let defaults = TrapDispatcher::standard_mac_8bpp_clut();
+    let defaults = ppc_default_device_clut(memory, gdevice);
     let mut device_clut = if gdevice == current_gdevice {
         *screen_clut
     } else {
@@ -1660,7 +1676,6 @@ pub(crate) fn ppc_restore_device_clut(
     color_manager_clut: &mut [[u16; 3]; 256],
     toolbox_startup: &mut PpcToolboxStartupState,
 ) {
-    let canonical = TrapDispatcher::standard_mac_8bpp_clut();
     let mut gdevices = if requested_gdevice == 0 {
         let mut represented = vec![PPC_MAIN_GDEVICE, current_gdevice];
         represented.extend(toolbox_startup.known_gdevices.iter().copied());
@@ -1683,6 +1698,7 @@ pub(crate) fn ppc_restore_device_clut(
         if gdevice == 0 {
             continue;
         }
+        let canonical = ppc_default_device_clut(memory, gdevice);
         let mut device_clut = if gdevice == current_gdevice {
             *screen_clut
         } else {

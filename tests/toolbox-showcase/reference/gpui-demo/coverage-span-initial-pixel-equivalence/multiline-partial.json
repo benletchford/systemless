@@ -1,0 +1,186 @@
+{
+  "outcome": "All 16 guest/composed images match exact decoded RGBA",
+  "after_complete": false,
+  "partial_after_requested": true,
+  "before_source": "9fee4404d585a04743ef1574cca0388d469562e8",
+  "after_source": "019cae5d709f05539a51deb7ce93656b63cf5258",
+  "scope": "Complete baseline and complete or explicitly partial after-matrix provenance/state/geometry verified independently before comparison. Partial comparison qualifies only captured cases. Equivalence between Systemless runs does not establish original Macintosh font appearance, physical host interaction or performance.",
+  "images": [
+    {
+      "case": [
+        "multiline",
+        "ppc16",
+        "selected",
+        null,
+        0.75
+      ],
+      "kind": "guest",
+      "rgba_sha256": "f5be3e2096eb9c566e4f11c8f13cd13b089a9a5aecce08bfae54f0ab91fd759a"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc16",
+        "selected",
+        null,
+        0.75
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "22ffc8084529489a516e26554fd6202798ae17ffa1f17e7793e3b7a965a327bb"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc16",
+        "selected",
+        null,
+        1
+      ],
+      "kind": "guest",
+      "rgba_sha256": "f5be3e2096eb9c566e4f11c8f13cd13b089a9a5aecce08bfae54f0ab91fd759a"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc16",
+        "selected",
+        null,
+        1
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "a880853abd4afab278187f384f9a3455dd55709a82fe2a4358467b3b5ea412ba"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc16",
+        "selected",
+        null,
+        1.5
+      ],
+      "kind": "guest",
+      "rgba_sha256": "f5be3e2096eb9c566e4f11c8f13cd13b089a9a5aecce08bfae54f0ab91fd759a"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc16",
+        "selected",
+        null,
+        1.5
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "44ab74890490abd06ff21ab3c5174d0c99a71e85a6eef2b65000267a0cf8a8b6"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc16",
+        "selected",
+        null,
+        2
+      ],
+      "kind": "guest",
+      "rgba_sha256": "f5be3e2096eb9c566e4f11c8f13cd13b089a9a5aecce08bfae54f0ab91fd759a"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc16",
+        "selected",
+        null,
+        2
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "ec46cea8b0bbf33e84d33de1681482dd92b9149edbdd3695832333f114db4f6e"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc8",
+        "selected",
+        null,
+        0.75
+      ],
+      "kind": "guest",
+      "rgba_sha256": "96a4fcb6c8e46ee5b2f2272230ac3c8e9f6ef2c5e4c2d5d9bff73e9be4f6c375"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc8",
+        "selected",
+        null,
+        0.75
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "4460358c5fe36be506c49cca95b3b163deebde7e3eb663ebe90e1ad46b753464"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc8",
+        "selected",
+        null,
+        1
+      ],
+      "kind": "guest",
+      "rgba_sha256": "96a4fcb6c8e46ee5b2f2272230ac3c8e9f6ef2c5e4c2d5d9bff73e9be4f6c375"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc8",
+        "selected",
+        null,
+        1
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "f6290b8940e390598c9d98e9a2164714427246c3aa615d69b06aa4cf63ef1b84"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc8",
+        "selected",
+        null,
+        1.5
+      ],
+      "kind": "guest",
+      "rgba_sha256": "96a4fcb6c8e46ee5b2f2272230ac3c8e9f6ef2c5e4c2d5d9bff73e9be4f6c375"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc8",
+        "selected",
+        null,
+        1.5
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "da608fc5a5812e4f28f062ac1d5dcfa701f19001cc02fe0d782b965693724703"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc8",
+        "selected",
+        null,
+        2
+      ],
+      "kind": "guest",
+      "rgba_sha256": "96a4fcb6c8e46ee5b2f2272230ac3c8e9f6ef2c5e4c2d5d9bff73e9be4f6c375"
+    },
+    {
+      "case": [
+        "multiline",
+        "ppc8",
+        "selected",
+        null,
+        2
+      ],
+      "kind": "rendered",
+      "rgba_sha256": "029e70e2904a69d94c11316a4d26c85a6efd2c989ae21818c76d5a90fdf8e7a2"
+    }
+  ]
+}

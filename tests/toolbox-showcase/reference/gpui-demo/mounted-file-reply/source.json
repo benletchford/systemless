@@ -1,0 +1,11 @@
+{
+  "base": "18f9d8d002f5593aed734c97a44de21cabe63742",
+  "scope": "Dirty source checkpoint for focused debug library tests, not final release qualification",
+  "sha256": {
+    "src/systems/macintosh/loader/ppc/dispatch_standard_file.rs": "e1336c33fc89add5cd548c5311ec0236f1928d4290bc4bf02741e580f760f15c",
+    "src/systems/macintosh/trap/toolbox.rs": "91dabf6a58fae84e1da22864f1cecffc438b2b050bcbddac9d87104e880a97c9",
+    "src/systems/macintosh/standard_file_ui/volume_popup.rs": "663cf7239a135dc9f277fdd794eb20c7a813b1a64ebbdcc65ef24cbcd04e0e87",
+    "target/debug/deps/systemless-4e06a53605bb32d1": "0a9b08a526edfb344c3609329e50a1e06b17b28f6691c0dab8f70fc545f3b2b7",
+    "tests/toolbox-showcase/toolbox-showcase.sit": "7e9259cf65889bd1097a34439278ef4ecc1e69ec6272009488b169adeb72bb59"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "base_head": "59f4b14b80d7f1ea8fbfa22e1b45bca0442d52a9",
+  "scope": "Actual shared Demo wrapped PPC dialog: long horizontal marked selection, painted bounds, hit-testing and exact cancellation. PPC8 scale1.5 and PPC16 scale0.75; both long-stage images reviewed. Other CPU/scale/modal variants and physical IME/native reference/performance remain open.",
+  "sha256": {
+    "ppc8.png": "cc8507ddbb0bc53e1ea397645fdcbabe3990839b2b01dbb27c53c8b83e044041",
+    "ppc8.long-marked.png": "2fede4e6012953246eb74d2dbc386db9f8f53fea14b25ced224d2c639cd8d65f",
+    "ppc8.capture.json": "d78563707cb79b93839bc7e1c354a8f429693ee18a2263d9d621439123efbc83",
+    "ppc16.png": "1cc10e8a12718049f098d19f2a89bf8385881277de731a4e541bf4836d863f08",
+    "ppc16.long-marked.png": "30797de42c0f9c980a9adb206a691fc97121d7d6358b819d6b9d58727fc92d62",
+    "ppc16.capture.json": "8a827454c4b5924925dd1c791a5fcfdbe43c94d1a1da7247b01ecda87581f4d2",
+    "capture.log": "75f580da4e8761a117c2eda049677ee2201ff982bca7be0eec1de2cd8af52150",
+    "capture-ppc16.log": "4dff32a4c6d9f2f84c2053ede97a37cc2fc55f7150b004bf50675ac52f2dcec5"
+  }
+}

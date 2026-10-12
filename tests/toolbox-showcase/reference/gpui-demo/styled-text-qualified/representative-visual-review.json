@@ -1,0 +1,32 @@
+{
+  "source_commit": "d7c3e82f",
+  "scope": "Representative composed public styled fixture screenshots; not full matrix visual review or production qualification",
+  "cases": [
+    {
+      "rendered": "inactive-ppc16-inactive-none-0.75.png",
+      "original_sha256": "958c6a38f8b68fef854cca8d4285e3b48c91a45e8a53aa177b7e45fba697f529",
+      "archived_sha256": "6643a813d0fff81b32cf8b0fc276d0da50841839bb22ae54eb2318218c9bba28"
+    },
+    {
+      "rendered": "selection-mono-selected-none-0.75.png",
+      "original_sha256": "9551aeb762bde12ff69fa0633e5728c81a7b49d930d13976242ce96cb6c6f4a7",
+      "archived_sha256": "89ddd94cffba3f868830930492af5def246715f5e37315e752a2fd2875d962db"
+    },
+    {
+      "rendered": "caret-ppc16-visible-0-1.png",
+      "original_sha256": "fa8cad82d6e2ffb2f606f2cb2e2c947e49e2aaa645a32d85ab41b64399813bfc",
+      "archived_sha256": "237dc446d98243261901b102b5e8dfdbbfd5907e4001311d53b1566861b51ece"
+    },
+    {
+      "rendered": "caret-colour-visible-0-1.png",
+      "original_sha256": "d21dfedb2f0e61800daaa1dbf2ec60b44282215e24ebe0deb6491592485a6f79",
+      "archived_sha256": "9099126a0b6cbd15792af0748c2d21c0e31afd88b51668821d0bbac348a466f8"
+    }
+  ],
+  "observations": [
+    "Guest mixed bitmap styles retained in reviewed field",
+    "Monochrome selected field inverts selected range while custom black panels remain guest-rendered",
+    "Classic colour caret is purple and PPC16 caret is black at guest insertion zero",
+    "Application-drawn diagnostic labels outside the field are not qualified by this review"
+  ]
+}

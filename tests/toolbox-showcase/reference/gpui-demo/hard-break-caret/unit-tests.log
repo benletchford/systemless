@@ -1,0 +1,17 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.56s
+     Running unittests src/lib.rs (target/debug/deps/systemless-fb1873a31fc5e0eb)
+
+running 9 tests
+test systems::macintosh::text_edit::tests::alignment_is_shared_for_every_guest_adapter ... ok
+test systems::macintosh::text_edit::tests::paint_spacing_eligibility_uses_guest_cpu_units ... ok
+test systems::macintosh::text_edit::tests::vertical_arrow_keys_do_not_insert_control_bytes ... ok
+test systems::macintosh::text_edit::tests::selection_is_clamped_and_normalized_once ... ok
+test systems::macintosh::text_edit::tests::styled_edits_keep_insertion_anchor_and_following_attributes ... ok
+test systems::macintosh::text_edit::tests::key_editing_handles_backspace_and_caret_arrows ... ok
+test systems::macintosh::text_edit::tests::replace_and_delete_share_selection_semantics ... ok
+test systems::macintosh::text_edit::tests::edit_handle_generation_changes_only_after_disposal ... ok
+test systems::macintosh::text_edit::tests::styled_snapshot_preserves_runs_colors_line_metrics_and_rejects_bad_indices ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 6691 filtered out; finished in 0.09s
+

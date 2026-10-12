@@ -1,0 +1,37 @@
+{
+  "base_head": "90f1175c23bfdf064a20c782cb44c620a019dcd3",
+  "scope": "First visible candidate bounds for ranges crossing Unicode stage into guest suffix; 20 shared Demo cases across four CPU/depth modes at scale1.5; guest state and exact cancellation pixel restoration asserted",
+  "limits": [
+    "No arbitrary guest replacement operation implemented",
+    "Prefix/stage/suffix partition and surrogate validation have unit evidence; painted crossing assertion covers stage/suffix",
+    "No new full-image review or independent native oracle",
+    "Physical IME remains unqualified; Mac locked"
+  ],
+  "hashes": {
+    "capture.log": "c66b3ad5e62fe5b09ed54f0f510b7dfb6bd9727997aa8ba50b5210a18cd62cc3",
+    "failure.log": "996e03a6627a16d43e2688eba569fe82e2715d5f5e14b3d825a090954c1d661a",
+    "false-8-crlf-interior.json": "a53ed50d702ce6fd3d05560d7d20cd923f2f195896890a510be6dcc736c79476",
+    "false-1-long-caret-row.json": "4e5942b46789133255a8d819cb06b53e5e9362456068ffd8aa2a8cc53126f41b",
+    "true-16-long-caret-row.json": "c1cbb15f5173760edf9b010d2cda41903c51f97d4ddc7ff336fddabcd8206dae",
+    "true-8-long-caret-row.json": "9cad7396681b626d6e4f6ca249e1698d409dfe46dc764d21468b2cd67134b93d",
+    "false-8-long-caret-row.json": "f508fc992e414c6b96bd4ca596f9408671706b9016642bb806b340e6d0b7d1dd",
+    "true-16-single.json": "b90613353078945329d721944b1dae0d247d1265d5b8649b71bfbe5dc9d6115f",
+    "false-8-long-inactive-row.json": "75ba1b770c4b892613d7e0c8e3a179362e2f5808dfbaa9d6e3b062db63c45fba",
+    "composition-tests.log": "85fd2046d10899776871900d569f4e7a7323364d1aa8d4e65b53c8110eb4b1da",
+    "false-1-single.json": "89d5c91dff40876800ae4a67b8592a82be82616c818228a0ae16d6fbb11330fc",
+    "false-1-crlf-interior.json": "818ed36347e2172c85c7b5c0932ffd2c85a91bd0c341fa88b4b027b2bc0f3ecc",
+    "false-8-single.json": "ba075452f601d0ecdee6b06f2433b940225a164421f2ea7bf8c9a36d89ba1845",
+    "true-8-multiline.json": "f4119958d5b361cb397dc2eebdbdf7bb2b258b966c2ebf24508753dd95e94383",
+    "true-16-long-inactive-row.json": "1a9741448c0b825b82549e080a9c2ede3560817f6fd17f7ccd518ea4707a7afe",
+    "unit.log": "9eb63adb6df4ed1507ab7ef86159a4e136af295aec3f053afcf07801388a2d0c",
+    "false-1-long-inactive-row.json": "ae2f0ee5df82c100b9b8041aa854152a62524bc715fc7427e429228b4e5058c1",
+    "true-8-long-inactive-row.json": "21198ad51da5a53e32419964356e8e339dae955e85758ea5608873abeb8020b3",
+    "true-8-single.json": "a27c2ce0538e8b83afd4e02b6ba7fb23146a06bca34f38ea987bf1327769d795",
+    "false-1-multiline.json": "394ab6c85e8fc8eab983c2951aedc1e04d7255e01661874ce74c99e0568c4ccf",
+    "true-16-crlf-interior.json": "bc2eaecb9e27256afc4de5b2f3fa51c99241e8dfb0cb398ff09705d95ec7c155",
+    "true-8-crlf-interior.json": "2aa7da00425e65156f7d7d94b94bf56b7f0a608a3fe29a96607fb93e8d5a7bec",
+    "true-16-multiline.json": "e160f37a3c2f48cc74850eb38204a28938c16251fbd731eb957e7aa54762bd1f",
+    "false-8-multiline.json": "20be692a58b807552fe8a3cf51958436a3bc92d46928683395e354686dfac338",
+    "build.log": "43e84db608c4e191fb687b3252ebbe18bcbd2e4c88bc2ec7ceaec754adb2eaf8"
+  }
+}

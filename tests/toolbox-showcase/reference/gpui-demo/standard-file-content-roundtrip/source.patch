@@ -1,0 +1,82 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index 714b4758..b649405e 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -7783,6 +7783,15 @@ mod desktop {
+                 assert_eq!(reply.bytes[1], u8::from(replacing), "replacement result");
+                 assert_eq!(usize::from(reply.bytes[12]), name_bytes.len());
+                 assert_eq!(&reply.bytes[13..13 + name_bytes.len()], name_bytes.as_slice(), "guest-edited FSSpec name");
++                if !replacing {
++                    use systemless::memory::MemoryBus;
++                    let main = session.runner_mut().window_frame_snapshot().into_iter()
++                        .find(|frame| frame.window.title == "Toolbox Showcase").unwrap().guest_id;
++                    assert!((0..100).any(|_| {
++                        step(&mut session);
++                        session.runner_mut().bus_mut().read_long(main + 152) == 0x53460001
++                    }), "guest write/close/reopen/read/byte comparison failed: PPC={powerpc}, depth={depth:?}");
++                }
+             }
+         }
+ 
+diff --git a/tests/toolbox-showcase/showcase.c b/tests/toolbox-showcase/showcase.c
+index 775096b2..97d3d7ee 100644
+--- a/tests/toolbox-showcase/showcase.c
++++ b/tests/toolbox-showcase/showcase.c
+@@ -2980,7 +2980,11 @@ void DoLegacyFileOpen(void)
+ 
+ void DoStandardFileSave(void)
+ {
+-    OSErr err;
++    OSErr err, closeErr;
++    short refNum, i;
++    long count;
++    static const char payload[] = "Systemless Standard File round trip\r";
++    char restored[sizeof(payload)];
+ 
+     StandardPutFile("\pSave a named fixture", "\pUntitled", &gFileSaveReply);
+     if (!gFileSaveReply.sfGood) {
+@@ -2988,13 +2992,41 @@ void DoStandardFileSave(void)
+         return;
+     }
+ 
+-    /* The returned FSSpec is consumed by File Manager, then removed so the
+-     * next Open dialog sees only the immutable fixture entries. */
++    /* Exercise the returned specification through guest File Manager calls.
++     * Close and reopen before checking bytes; cleanup retains the immutable
++     * directory used by the other showcase scenarios. This is not a host
++     * process restart or durable-save qualification. */
+     err = FSpCreate(&gFileSaveReply.sfFile, 'SHWC', 'TEXT', smSystemScript);
+     if (err == noErr) {
+-        err = FSpDelete(&gFileSaveReply.sfFile);
++        err = FSpOpenDF(&gFileSaveReply.sfFile, fsWrPerm, &refNum);
++        if (err == noErr) {
++            count = sizeof(payload) - 1;
++            err = FSWrite(refNum, &count, payload);
++            if (err == noErr && count != sizeof(payload) - 1) err = ioErr;
++            closeErr = FSClose(refNum);
++            if (err == noErr) err = closeErr;
++        }
++        if (err == noErr) {
++            err = FSpOpenDF(&gFileSaveReply.sfFile, fsRdPerm, &refNum);
++            if (err == noErr) {
++                count = sizeof(payload) - 1;
++                err = FSRead(refNum, &count, restored);
++                if (err == noErr && count != sizeof(payload) - 1) err = ioErr;
++                if (err == noErr) {
++                    for (i = 0; i < sizeof(payload) - 1; i++) {
++                        if (restored[i] != payload[i]) { err = ioErr; break; }
++                    }
++                }
++                closeErr = FSClose(refNum);
++                if (err == noErr) err = closeErr;
++            }
++        }
++        closeErr = FSpDelete(&gFileSaveReply.sfFile);
++        if (err == noErr) err = closeErr;
+     }
+     gFileSaveStatus = err == noErr ? fileStatusAccepted : fileStatusError;
++    /* App-owned test checkpoint: status is published only after close/read/cleanup. */
++    SetWRefCon(gMainWindow, 0x53460000L | gFileSaveStatus);
+ }
+ 
+ void DoLegacyFileSave(void)

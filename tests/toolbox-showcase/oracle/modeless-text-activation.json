@@ -1,0 +1,173 @@
+{
+  "architecture": "ppc",
+  "boot_delay_ticks": 0,
+  "show_menu_bar": true,
+  "sheepshaver_color_depth": 32,
+  "actions": [
+    {
+      "type": "run",
+      "ticks": 180
+    },
+    {
+      "type": "mouse_move",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 123,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 123,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "mouse_down",
+      "v": 132,
+      "h": 75
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_move",
+      "v": 132,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_up",
+      "v": 132,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "00-document-selected.png"
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 15
+    },
+    {
+      "type": "mouse_move",
+      "v": 43,
+      "h": 170
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "mouse_move",
+      "v": 129,
+      "h": 330
+    },
+    {
+      "type": "run",
+      "ticks": 30
+    },
+    {
+      "type": "screenshot",
+      "path": "01-modeless-menu.png"
+    },
+    {
+      "type": "mouse_up",
+      "v": 129,
+      "h": 330
+    },
+    {
+      "type": "run",
+      "ticks": 90
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "02-document-inactive.png"
+    },
+    {
+      "type": "mouse_down",
+      "v": 100,
+      "h": 70
+    },
+    {
+      "type": "run",
+      "ticks": 8
+    },
+    {
+      "type": "mouse_up",
+      "v": 100,
+      "h": 70
+    },
+    {
+      "type": "run",
+      "ticks": 60
+    },
+    {
+      "type": "mouse_move",
+      "v": 550,
+      "h": 760
+    },
+    {
+      "type": "run",
+      "ticks": 4
+    },
+    {
+      "type": "screenshot",
+      "path": "03-document-reactivated.png"
+    }
+  ]
+}

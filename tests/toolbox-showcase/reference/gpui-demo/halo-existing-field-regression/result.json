@@ -1,0 +1,28 @@
+{
+  "baseline": "tests/toolbox-showcase/reference/gpui-demo/condensed-multiline-shared",
+  "baseline_case": "multiline-ppc16-selected-none-1.png",
+  "images": {
+    "probe.png": {
+      "capture_sha256": "a79f3ff6ef44b4bd03d4e5f00490c8d32c4bf0c5721f90a2d102271dc24a4b5e",
+      "archive_sha256": "ab03327a3c2408fd4eafb740acb26fea44b1647de171971e923d6bd9bdff3823",
+      "decoded_rgba_preserved": true
+    },
+    "probe.guest.png": {
+      "capture_sha256": "63fc108b1f33247fa657fc86be92288e6ab2243948213a592f4c7d997f2c118a",
+      "archive_sha256": "0ac32fbe8ce56772a4dc09e2a07369ca3e1278ee7a6e2d8476121e69a7311ab6",
+      "decoded_rgba_preserved": true
+    }
+  },
+  "guest_full_rgba_identical": true,
+  "composed_field_rgba_identical": true,
+  "composed_full_rgba_identical": false,
+  "composed_difference_bounds": [
+    97,
+    81,
+    102,
+    90
+  ],
+  "composed_difference_pixels": 5,
+  "build_seconds": 15.27,
+  "scope": "One condensed selected multiline PPC16 scale1 capture on e389b814. Entire guest and composed TextEdit view equal earlier archived capture. Five composed pixels differ in GPUI host-text close icon, outside the field; cause unqualified, full-scene equality is not claimed. Only top-review.png was directly viewed (native-resolution side-by-side crop). This does not review newly supported underlined halo styles."
+}

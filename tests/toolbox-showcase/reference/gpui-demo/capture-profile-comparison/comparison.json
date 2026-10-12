@@ -1,0 +1,29 @@
+{
+  "scope": "One condensed selected two-line PPC16 case at scene scale1; full guest/composed RGBA comparison, not general profile equivalence or native-font/performance qualification",
+  "comparisons": [
+    {
+      "baseline": "tests/toolbox-showcase/reference/gpui-demo/condensed-multiline-shared/multiline-ppc16-selected-none-1.png",
+      "probe": "probe.png",
+      "dimensions": [
+        1600,
+        1200
+      ],
+      "decoded_rgba_equal": true,
+      "baseline_sha256": "60b40cb5c50f954aeb518d4c6f796198d93a3ff1f7f847e3d2ae892cc8e05d8b",
+      "probe_sha256": "d8f011ce1c88ba228a39790d5c0a986b497f4945ba307f58118f62e388022a0d",
+      "original_probe_path": "/tmp/systemless-ci-condensed-multiline-probe.png"
+    },
+    {
+      "baseline": "tests/toolbox-showcase/reference/gpui-demo/condensed-multiline-shared/multiline-ppc16-selected-none-1.guest.png",
+      "probe": "probe.guest.png",
+      "dimensions": [
+        800,
+        600
+      ],
+      "decoded_rgba_equal": true,
+      "baseline_sha256": "0ac32fbe8ce56772a4dc09e2a07369ca3e1278ee7a6e2d8476121e69a7311ab6",
+      "probe_sha256": "63fc108b1f33247fa657fc86be92288e6ab2243948213a592f4c7d997f2c118a",
+      "original_probe_path": "/tmp/systemless-ci-condensed-multiline-probe.guest.png"
+    }
+  ]
+}

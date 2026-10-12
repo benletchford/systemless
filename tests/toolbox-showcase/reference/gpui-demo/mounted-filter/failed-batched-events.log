@@ -1,0 +1,24 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 00s
+     Running unittests src/lib.rs (target/debug/deps/systemless-4e06a53605bb32d1)
+
+running 1 test
+test systems::macintosh::loader::ppc::tests::file_manager::custom_get_file_filter_receives_mounted_volume_after_popup_switch ... FAILED
+
+failures:
+
+---- systems::macintosh::loader::ppc::tests::file_manager::custom_get_file_filter_receives_mounted_volume_after_popup_switch stdout ----
+
+thread 'systems::macintosh::loader::ppc::tests::file_manager::custom_get_file_filter_receives_mounted_volume_after_popup_switch' (2144204) panicked at src/systems/macintosh/loader/ppc/tests/file_manager.rs:2672:9:
+assertion `left == right` failed
+  left: 2
+ right: 42000
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    systems::macintosh::loader::ppc::tests::file_manager::custom_get_file_filter_receives_mounted_volume_after_popup_switch
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6825 filtered out; finished in 0.52s
+
+error: test failed, to rerun pass `--lib`

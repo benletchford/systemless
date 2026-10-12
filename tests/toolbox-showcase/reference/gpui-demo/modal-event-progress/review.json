@@ -1,0 +1,13 @@
+{
+  "scope": "Production worker modal rapid composition, stale rejection, retained and merged replacements: mono68k, colour68k, PPC8/PPC16 plain; PPC8/PPC16 wrapped.",
+  "result": "PASS six cases, 59.15 seconds.",
+  "fix": "Reserve guest execution budget after command validation; wait for event queue consumption before settling timeout; pending text retry permits shutdown.",
+  "limitations": [
+    "Physical IME and live frame delivery not qualified.",
+    "Shutdown preemption and Standard File regression require subsequent verification."
+  ],
+  "source_sha256": {
+    "src/bin/gpui_demo.rs": "61191b816ed04d2aa98b8c9af1196838adb1768726aa9fba4e6a75d6a4de5d67",
+    "src/bin/gpui_demo_input.rs": "194b2b3eeb9dca54588c01288706c42a1c21cd8759319ea48765090ca62077a8"
+  }
+}

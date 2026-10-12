@@ -1,0 +1,250 @@
+{
+  "scope": "Thirty-five explicitly listed images reviewed: ten PPC16, four PPC8, ten mono68k and eleven colour68k. Other157 composed images not visually reviewed. Complete192-case matrix. No full appearance or original Macintosh font fidelity qualification.",
+  "images": [
+    {
+      "file": "selection-ppc16-selected-none-1.png",
+      "sha256": "a00ec44f7e572a4048dbc338f3b55f52cee89a78d4228fe2bae61698e76c87df",
+      "observations": "Single-line mixed original-font text shows smooth plain, bold, colour and italic glyphs. Guest selection ends before unselected underlined Font. View bounds and application-drawn pixel labels retained.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "3577a66227e6fb52f0d2f6dd8e07cce0ac2f02b5749698d65a385c81aa5b375a"
+    },
+    {
+      "file": "selection-ppc16-suspended-none-1.png",
+      "sha256": "520af63fa3d37a1f9707e5a70e8790462888433fbed514e753286623cfbd5a31",
+      "observations": "Selection hidden and title inactive; smooth font/style intent and view bounds retained. Application-drawn labels remain native. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "d71130fec070098595e54a23e706ecbc5c0d07ad5d6572e9d56139fa516fdf87"
+    },
+    {
+      "file": "selection-ppc16-resumed-none-1.png",
+      "sha256": "a00ec44f7e572a4048dbc338f3b55f52cee89a78d4228fe2bae61698e76c87df",
+      "observations": "Selection and active title restored; italic, bold, colour and underlined unselected suffix retained. Application-drawn labels remain native. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "3577a66227e6fb52f0d2f6dd8e07cce0ac2f02b5749698d65a385c81aa5b375a"
+    },
+    {
+      "file": "caret-ppc16-visible-0-1.png",
+      "sha256": "8a6c35a833f3dd43bf3f4a9d05dc5871ad497347b387ed026656946b61b715d1",
+      "observations": "Insertion caret visible at guest offset zero with smooth mixed-style text and stable field bounds. Application-drawn labels remain native. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "bdd772ce5bbfe069da580f6eda522654053d9a0297e6cafa9b3f0cbc271436eb"
+    },
+    {
+      "file": "caret-ppc16-blink-off-0-1.png",
+      "sha256": "c7c1a5ddd8cc2e334dc8cb912103539da0d4449f352965098a4a59076d5087ee",
+      "observations": "Insertion caret hidden during guest blink-off; smooth mixed-style text and stable bounds retained. Application-drawn labels remain native. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "c124509b4420f1b2fcc7d773bb0589705378c06ff716d978a3f33ba89366f2ee"
+    },
+    {
+      "file": "inactive-ppc16-inactive-none-0.75.png",
+      "sha256": "d7ab413a4833a7c63422773ca5827a67b9351585f68b85b4b0110f932b7e3cfb",
+      "observations": "Small-scale inactive mixed-style field preserves smooth font intent, italic slope, underline and view bounds. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original dimensions.",
+      "capture_sha256": "1ce4d7c1024b281621d48c42e13f86f7ae093592ea30c47a93ec43ba99d164d0"
+    },
+    {
+      "file": "inactive-ppc16-inactive-none-2.png",
+      "sha256": "ee6290f2aeaa91cd6d2ba7fa5102b4327f1b997ee4e5ad8ec0dc92abd11bb701",
+      "observations": "Large-scale inactive mixed-style field preserves smooth font intent, italic slope, underline and view bounds. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "3200x2400 preview resized to1824x1368.",
+      "capture_sha256": "e0da7861f2370671724de9ab76a17b06613889ae18059e862e7998a358d01c6a"
+    },
+    {
+      "file": "caret-ppc16-visible-26-1.png",
+      "sha256": "420edb6fa7f5d837d332b67e400c746b9df6a5d4b34f195fa94cab73e9a00afe",
+      "observations": "Guest insertion caret visible at offset26 before underlined Font; smooth text and field bounds retained. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original dimensions.",
+      "capture_sha256": "53f46490e686b5d74170c58457224e4bbdb161a358664e86cf3170a510b561fe"
+    },
+    {
+      "file": "caret-ppc16-blink-off-26-1.png",
+      "sha256": "c7c1a5ddd8cc2e334dc8cb912103539da0d4449f352965098a4a59076d5087ee",
+      "observations": "Guest insertion caret hidden at offset26 during blink-off; text styles and field bounds retained. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original dimensions.",
+      "capture_sha256": "c124509b4420f1b2fcc7d773bb0589705378c06ff716d978a3f33ba89366f2ee"
+    },
+    {
+      "file": "caret-ppc16-suspended-26-1.png",
+      "sha256": "520af63fa3d37a1f9707e5a70e8790462888433fbed514e753286623cfbd5a31",
+      "observations": "Caret hidden and title inactive during suspension; smooth text styles and field bounds retained. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original dimensions.",
+      "capture_sha256": "d71130fec070098595e54a23e706ecbc5c0d07ad5d6572e9d56139fa516fdf87"
+    },
+    {
+      "file": "selection-ppc8-selected-none-1.png",
+      "sha256": "f9bce240745e7540c96ff079ee60668232ee43bd35b249c2dd254e59b56a6b27",
+      "observations": "Selected mixed-style text retains indexed selection colours, smooth original-font italic and unselected underlined suffix. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original1600x1200 dimensions.",
+      "capture_sha256": "46a2550b4a6072a9fea956c3568e8592206006660d7f18439a7a96e51b848160"
+    },
+    {
+      "file": "selection-ppc8-suspended-none-1.png",
+      "sha256": "e347abf53daa81ff1c9051afda94dc826416b74feda02978e62df765f8db59d7",
+      "observations": "Selection hidden and title inactive on suspension; smooth text styles and field bounds retained. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original1600x1200 dimensions.",
+      "capture_sha256": "c3767b01ef7c93e07cbb6c8df133b1dfea4a4c97128c6ad01507ad1bf711b843"
+    },
+    {
+      "file": "selection-ppc8-resumed-none-1.png",
+      "sha256": "f9bce240745e7540c96ff079ee60668232ee43bd35b249c2dd254e59b56a6b27",
+      "observations": "Indexed selection colours and active title return on resume; smooth text styles and bounds retained. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original1600x1200 dimensions.",
+      "capture_sha256": "46a2550b4a6072a9fea956c3568e8592206006660d7f18439a7a96e51b848160"
+    },
+    {
+      "file": "caret-ppc8-visible-0-1.png",
+      "sha256": "79acc5ac25cfab0e84e9f3c2989eade2eeeaa0b58372c7b9c8ae715c900f46eb",
+      "observations": "Caret visible at guest offset zero; smooth mixed-style text and field bounds retained. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original1600x1200 dimensions.",
+      "capture_sha256": "f1dd240dccaeed0936877472b4d558b35fd7ef1b074c0c080e7b10aaeedb2b6b"
+    },
+    {
+      "file": "inactive-mono-inactive-none-1.png",
+      "sha256": "d68b50a7d4dcd9f3fbbe38131540981b0c1d9bf9413b035e56652dc1f5552b8f",
+      "observations": "Inactive one-bit field retains smooth original-font plain, bold, italic and underline; white field bounds retained. Guest black custom panels retained intentionally. Sampled appearance only.",
+      "preview_note": "Original dimensions.",
+      "capture_sha256": "d4b46ef8ed3f3ca97fc27da9803793ef06837f7eac2d10c50096dd985adb2f27"
+    },
+    {
+      "file": "selection-mono-selected-none-0.75.png",
+      "sha256": "315ae9921428e6a355fa0bb73ad5e1c0fd684399325ebe187786926f25d061ee",
+      "observations": "Small-scale one-bit selection retains smooth inverted glyph coverage and unselected underlined suffix; field bounds retained. Guest black custom panels retained intentionally. Sampled appearance only.",
+      "preview_note": "Original dimensions.",
+      "capture_sha256": "16e21d03298b7bc4074ff066d50aab85fd6b6348842845a2f453ba89fe5fcd07"
+    },
+    {
+      "file": "selection-mono-suspended-none-0.75.png",
+      "sha256": "abf52d96f019b9a189fcec89e1ade7a65ab10ce95011261e9bd346b146918ca8",
+      "observations": "Small-scale one-bit field hides selection on suspension and shows inactive title. Smooth plain/bold/italic/underline intent and white field bounds retained. Native black custom panels retained. Sampled appearance only.",
+      "preview_note": "Original1200x900 dimensions.",
+      "capture_sha256": "55f33c3b489bdf0f6abb22a12d7e7e15446fb3bbe531670a316ff73eadf2e2b6"
+    },
+    {
+      "file": "selection-mono-suspended-none-1.png",
+      "sha256": "76fa93a5a3197e6e2bfc662c3505cbbbbd2fd171bab8da59bf6ff61eba26b851",
+      "observations": "One-bit selection hidden and title inactive during suspension; smooth mixed-style glyphs, underline and view bounds retained. Guest black custom panels retained. Sampled appearance only.",
+      "preview_note": "Original1600x1200 dimensions.",
+      "capture_sha256": "6d2ebdb123526e6d5cc8b7821ad85b4b6d7f3d6f612637097e7dfc6dd6f24369"
+    },
+    {
+      "file": "selection-mono-resumed-none-0.75.png",
+      "sha256": "315ae9921428e6a355fa0bb73ad5e1c0fd684399325ebe187786926f25d061ee",
+      "observations": "One-bit selection and active title restored on resume; smooth mixed-style glyphs, unselected underline and view bounds retained. Native black custom panels retained. Sampled appearance only.",
+      "preview_note": "Original1200x900 dimensions.",
+      "capture_sha256": "16e21d03298b7bc4074ff066d50aab85fd6b6348842845a2f453ba89fe5fcd07"
+    },
+    {
+      "file": "caret-mono-visible-0-1.png",
+      "sha256": "dff4f5217e07ca525518fee75d3cd22c72cbdb4475d882212ce9b5f86c4638a9",
+      "observations": "Caret visible at guest offset zero in one-bit field; smooth styles, underline and view bounds retained. Native black application panels retained. Sampled appearance only.",
+      "preview_note": "Original1600x1200 dimensions.",
+      "capture_sha256": "b0c9169429a7d6d98f7ecc2e54a76551876a36812290f99e3c03c412b66c5a0d"
+    },
+    {
+      "file": "caret-mono-blink-off-0-1.png",
+      "sha256": "d68b50a7d4dcd9f3fbbe38131540981b0c1d9bf9413b035e56652dc1f5552b8f",
+      "observations": "Caret hidden in guest blink-off phase; smooth styles, underline and field bounds retained. Native black application panels retained. Sampled appearance only.",
+      "preview_note": "Original1600x1200 dimensions.",
+      "capture_sha256": "d4b46ef8ed3f3ca97fc27da9803793ef06837f7eac2d10c50096dd985adb2f27"
+    },
+    {
+      "file": "caret-mono-visible-26-1.png",
+      "sha256": "04020693d51a888fea52ed6580e83d7924c9e80311c01c5062952b20a5d4338a",
+      "observations": "One-bit caret visible at style boundary before underlined Font; smooth styles and bounds retained. Guest black custom panels retained. Sampled appearance only.",
+      "preview_note": "Original1600x1200 dimensions.",
+      "capture_sha256": "07c029a5b15a8b6d3f137f8ce3da90cb42604d578181d10d92c441ceb809cd14"
+    },
+    {
+      "file": "caret-mono-suspended-0-1.png",
+      "sha256": "76fa93a5a3197e6e2bfc662c3505cbbbbd2fd171bab8da59bf6ff61eba26b851",
+      "observations": "One-bit caret hidden on suspension and title inactive; smooth styles and bounds retained. Guest black custom panels retained. Sampled appearance only.",
+      "preview_note": "Original1600x1200 dimensions.",
+      "capture_sha256": "6d2ebdb123526e6d5cc8b7821ad85b4b6d7f3d6f612637097e7dfc6dd6f24369"
+    },
+    {
+      "file": "caret-mono-resumed-0-1.png",
+      "sha256": "dff4f5217e07ca525518fee75d3cd22c72cbdb4475d882212ce9b5f86c4638a9",
+      "observations": "One-bit caret restored at offset zero with active title; smooth styles and bounds retained. Guest black custom panels retained. Sampled appearance only.",
+      "preview_note": "Original1600x1200 dimensions.",
+      "capture_sha256": "b0c9169429a7d6d98f7ecc2e54a76551876a36812290f99e3c03c412b66c5a0d"
+    },
+    {
+      "file": "selection-colour-selected-none-1.png",
+      "sha256": "f9bce240745e7540c96ff079ee60668232ee43bd35b249c2dd254e59b56a6b27",
+      "observations": "Colour68k mixed original-font outline text retains smooth plain/bold/italic/underline coverage and stable bounds; selection visible with active title. Application-drawn text remains guest pixels. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "46a2550b4a6072a9fea956c3568e8592206006660d7f18439a7a96e51b848160"
+    },
+    {
+      "file": "selection-colour-suspended-none-1.png",
+      "sha256": "e347abf53daa81ff1c9051afda94dc826416b74feda02978e62df765f8db59d7",
+      "observations": "Colour68k mixed original-font outline text retains smooth plain/bold/italic/underline coverage and stable bounds; selection hidden and title inactive. Application-drawn text remains guest pixels. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "c3767b01ef7c93e07cbb6c8df133b1dfea4a4c97128c6ad01507ad1bf711b843"
+    },
+    {
+      "file": "selection-colour-resumed-none-1.png",
+      "sha256": "f9bce240745e7540c96ff079ee60668232ee43bd35b249c2dd254e59b56a6b27",
+      "observations": "Colour68k mixed original-font outline text retains smooth plain/bold/italic/underline coverage and stable bounds; selection visible with active title. Application-drawn text remains guest pixels. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "46a2550b4a6072a9fea956c3568e8592206006660d7f18439a7a96e51b848160"
+    },
+    {
+      "file": "caret-colour-visible-0-1.png",
+      "sha256": "b7238a1103db1569c6f676d903c2d4559f67b8fa88cc8d818b45a58efd51a65d",
+      "observations": "Colour68k caret at offset zero visible; mixed smooth original-font text, style intent and bounds retained. Title inactive on suspension. Application-drawn labels retain guest pixels. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "eaa0d94ae59f0f85447cb4682181b12e22e10d576c8992e08791556ab47058d2"
+    },
+    {
+      "file": "caret-colour-blink-off-0-1.png",
+      "sha256": "9efb4767ebed9d5a93f8dd18b7bfff55b301838169f805ed814df9e4b8ea35c4",
+      "observations": "Colour68k caret at offset zero hidden; mixed smooth original-font text, style intent and bounds retained. Title inactive on suspension. Application-drawn labels retain guest pixels. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "9e3c340fdf30d9628070738014b39c6f9a1ad10246f5e4068ede263eb9ed130c"
+    },
+    {
+      "file": "caret-colour-suspended-0-1.png",
+      "sha256": "e347abf53daa81ff1c9051afda94dc826416b74feda02978e62df765f8db59d7",
+      "observations": "Colour68k caret at offset zero hidden; mixed smooth original-font text, style intent and bounds retained. Title inactive on suspension. Application-drawn labels retain guest pixels. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "c3767b01ef7c93e07cbb6c8df133b1dfea4a4c97128c6ad01507ad1bf711b843"
+    },
+    {
+      "file": "caret-colour-resumed-0-1.png",
+      "sha256": "b7238a1103db1569c6f676d903c2d4559f67b8fa88cc8d818b45a58efd51a65d",
+      "observations": "Caret at guest offset zero and active title restored; smooth mixed original-font text and bounds retained. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "eaa0d94ae59f0f85447cb4682181b12e22e10d576c8992e08791556ab47058d2"
+    },
+    {
+      "file": "caret-colour-visible-26-1.png",
+      "sha256": "d345a61ea7b5ea5d35610cf108c44f7cce4789a7dea9475d49523987e4aa0883",
+      "observations": "Caret visible at guest offset26 before underlined Font; smooth original-font style intent and field bounds retained. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "77f0c253e5b1b0178c36e2444bff9cdc7a8533520cbe2d5dba9b77dc8dfb42ab"
+    },
+    {
+      "file": "caret-colour-blink-off-26-1.png",
+      "sha256": "9efb4767ebed9d5a93f8dd18b7bfff55b301838169f805ed814df9e4b8ea35c4",
+      "observations": "Guest blink-off hides offset26 caret before underlined Font; smooth original-font styles and bounds retained. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "9e3c340fdf30d9628070738014b39c6f9a1ad10246f5e4068ede263eb9ed130c"
+    },
+    {
+      "file": "caret-colour-suspended-26-1.png",
+      "sha256": "e347abf53daa81ff1c9051afda94dc826416b74feda02978e62df765f8db59d7",
+      "observations": "Suspension hides offset26 caret and makes title inactive; smooth original-font styles and field geometry retained. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "c3767b01ef7c93e07cbb6c8df133b1dfea4a4c97128c6ad01507ad1bf711b843"
+    },
+    {
+      "file": "caret-colour-resumed-26-1.png",
+      "sha256": "d345a61ea7b5ea5d35610cf108c44f7cce4789a7dea9475d49523987e4aa0883",
+      "observations": "Resume restores offset26 caret and active title; smooth original-font styles and field geometry retained. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Original 1600x1200 dimensions.",
+      "capture_sha256": "77f0c253e5b1b0178c36e2444bff9cdc7a8533520cbe2d5dba9b77dc8dfb42ab"
+    }
+  ]
+}

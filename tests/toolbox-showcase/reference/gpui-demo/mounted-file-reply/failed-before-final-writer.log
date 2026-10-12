@@ -1,0 +1,60 @@
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 11s
+     Running unittests src/lib.rs (target/debug/deps/systemless-4e06a53605bb32d1)
+
+running 1 test
+test systems::macintosh::standard_file_ui::volume_popup::volume_popup_tests::volume_popup_switches_mounted_guest_directory_on_both_cpus ... FAILED
+
+failures:
+
+---- systems::macintosh::standard_file_ui::volume_popup::volume_popup_tests::volume_popup_switches_mounted_guest_directory_on_both_cpus stdout ----
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D8 bkLim=$0044A1D8 zcbFree=2400664 (2.3MB)
+[INIT] Set MainDevice=$002264CC, TheGDevice=$002264CC (ptr=$00226498)
+[INIT] GDevice chain: $8A4→$002264CC→$00226498 gdPMap→$00226494→$00226460
+[INIT]   PixMap: rowBytes=$8070 bounds=(0,0,600,800) pixelSize=1
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAD9E randSeed_addr=$003FAD20
+[INITGRAF] screenBits: base=$07F80000 rowBytes=112 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226528 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00226E24 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00226E24 pixmap=$00205B30 bounds=(50,40,420,600) goAway=true
+[TRAP] HighLevelFSDispatch Selector=2
+[TRAP] FSpOpenDF("Mounted.txt", perm=1) ref_num_ptr=$00FFFF38
+[TRAP] FSpOpenDF -> refnum=96 vfs="Archive/Mounted.txt"
+[TRAP] PBRead ref=96 buf=$003FCE3C count=27 posMode=0 posOff=0
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D8 bkLim=$0044A1D8 zcbFree=2400664 (2.3MB)
+[INIT] Set MainDevice=$00226CBC, TheGDevice=$00226CBC (ptr=$00226C88)
+[INIT] GDevice chain: $8A4→$00226CBC→$00226C88 gdPMap→$00226C84→$00226C50
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FAD9E randSeed_addr=$003FAD20
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226D18 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$00227614 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$00227614 pixmap=$00205B30 bounds=(50,40,420,600) goAway=true
+[TRAP] HighLevelFSDispatch Selector=2
+[TRAP] FSpOpenDF("Mounted.txt", perm=1) ref_num_ptr=$00FFFF38
+[TRAP] FSpOpenDF -> refnum=96 vfs="Archive/Mounted.txt"
+[TRAP] PBRead ref=96 buf=$003FCE3C count=27 posMode=0 posOff=0
+
+thread 'systems::macintosh::standard_file_ui::volume_popup::volume_popup_tests::volume_popup_switches_mounted_guest_directory_on_both_cpus' (2133652) panicked at src/systems/macintosh/standard_file_ui/volume_popup.rs:288:13:
+assertion `left == right` failed
+  left: -1
+ right: -42
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    systems::macintosh::standard_file_ui::volume_popup::volume_popup_tests::volume_popup_switches_mounted_guest_directory_on_both_cpus
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6824 filtered out; finished in 8.37s
+
+error: test failed, to rerun pass `--lib`

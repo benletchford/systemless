@@ -1,0 +1,12 @@
+{
+  "scope": "One directly viewed manual composed probe, not complete matrix or independent native-font fidelity.",
+  "images": [
+    {
+      "file": "systemless-condensed-native-probe.png",
+      "capture_sha256": "d8f011ce1c88ba228a39790d5c0a986b497f4945ba307f58118f62e388022a0d",
+      "sha256": "60b40cb5c50f954aeb518d4c6f796198d93a3ff1f7f847e3d2ae892cc8e05d8b",
+      "observations": "PPC16 two-line smooth original-font mixed styles retain tighter guest spacing and selected bounds; application labels stay guest-rendered.",
+      "preview_note": "Full-scene1600x1200 tool preview."
+    }
+  ]
+}

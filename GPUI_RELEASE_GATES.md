@@ -1,0 +1,501 @@
+# GPUI production release gates
+
+### Disjoint marked-text composed evidence (2026-10-11)
+
+The existing shared composition capture now stages two separate candidates
+through GPUI's text-input interface on actual styled guest TextEdit. Eight
+active captures pass across mono68k, colour68k, PPC8 and PPC16 at scales0.75
+and1. Both displayed anchor queries match virtual text indices, candidate
+surfaces remain separate, guest records remain unchanged, and cancellation
+restores exact baseline pixels. All eight images were reviewed. The example
+build passes (24.37s). Source/executable/fixture and artifact hashes are in
+`tests/toolbox-showcase/reference/gpui-demo/disjoint-composition/review.json`.
+Modal/file candidates, other scales/states and physical IME remain open; this
+selected evidence does not close the broader input or typography gates.
+
+
+### Styled label overlap correction (2026-10-11)
+
+Overlapping equal-coverage glyph spans used the default even-odd polygon fill,
+which cancels shared ink. Non-zero fill now retains the union of their consistent
+winding; disjoint direct triangles, glyph positions, advances and clipping keep
+their existing paths. An independent geometry probe reproduces cancellation;
+the regression verifies union area 150 for overlapping ten-by-ten spans.
+All 31 text-helper tests pass (87.58s), and the default desktop check passes
+(58.02s). Preserved pre-fix and corrected shared-compositor styled menus show the
+same 458-pixel stroke correction in mono68k/0.75, colour68k/1, PPC8/1.5 and
+PPC16/2. All four menu metadata pairs match; original-resolution crops were
+reviewed. Evidence: `tests/toolbox-showcase/reference/gpui-demo/label-overlap/review.json`.
+These selected active pairs do not qualify all scales/states, native Macintosh
+font fidelity or physical interaction. The pinned 204-test run remains evidence
+for its original `5a19bc91` executable, not this later correction. No broad release
+gate closes.
+
+
+### Source-outline monochrome stroke correction (2026-10-11)
+
+Small source-outline glyphs previously lost strokes when antialiased masks were
+thresholded. A statically linked, namespaced FreeType monochrome converter now
+uses the existing hinted outlines and bounds on macOS, preserving advances,
+bearings, layout and resource precedence. Guest bitmap strikes and smooth GPUI
+system-text coverage retain their existing paths. Failed conversion retains the
+same source mask instead of authorizing another font family. Contexts are owned
+independently; vendored sources include provenance and FTL notices.
+
+The initial smart-dropout prototype was rejected: four traced glyphs differed
+from independent rendering despite equal hinted outlines. Default simple dropout
+control matches those source instructions. The stronger exact-row regression
+passes A/M/4/S (0.02s); the prior font suite passes 26 cases (1.68s). Corrected
+Marathon gameplay reaches 1350 observations in 68.80s and its shared composition
+was reviewed. All twelve traced HUD ink shapes match independent FreeType for
+the same Nimbus Mono source after exterior-padding normalization. This is not an
+original Apple-font oracle: the existing Monaco substitute remains visible.
+The ordinary no-default-features library check passes (46.92s), and the
+GPUI TextEdit geometry/interaction regression passes twelve CPU/depth/alignment
+cases (31.24s) after temporary tracing removal.
+Per-glyph SCANCTRL/SCANTYPE propagation, other host platforms, physical input,
+performance and full font fidelity remain unqualified. No broad gate closes.
+Unicode/menu-symbol glyphs now share this converter and same-source fallback.
+All 27 font tests pass (2.03s), including complete Roman/Unicode pixel and metric
+equality. The example build passes (55.35s); four active checked-menu captures
+were reviewed at mono68k/0.75, colour68k/1, PPC8/1.5 and PPC16/2. Labels and
+checkmark fit the popup. These selected pairs do not qualify all CPU/scale/state
+combinations, native activation, physical tracking or original Apple fonts.
+Evidence: `tests/toolbox-showcase/reference/gpui-demo/source-monochrome-raster/review.json`.
+
+
+### Current Marathon gameplay fidelity check (2026-10-11)
+
+The verified catalogue archive (a8ddcadc...) reaches an active 3D scene, HUD and
+weapon through the actual worker: Begin Game at observations800/802, Space at
+1100/1102. The 60-second run terminated at1271/1350 and is retained as a failure.
+An explicit120-second capture budget reached1350 in69.34s, then rendered the
+shared Demo scene800x600 at origin(0,0), scale1 with menus hidden/height0. The
+hidden capture deadline now permits longer explicit workflows, retaining its
+30-second default; this is not a changed production performance threshold.
+Reviewed guest/shared images show distorted custom HUD lettering compared with
+`.github/assets/marathon-gameplay.png`. The earlier PR gameplay guest capture
+has the same discrepancy; this is not attributed to recent volume/selection
+changes. The defect is present before GPUI composition. Application-drawn text
+remains guest-rendered and faithful font/resource/raster diagnosis is required.
+Local failed/successful images, logs and hashes are under
+`target/gpui-qualification/current-marathon`. Observed updates are not FPS;
+physical input, sustained live delivery, audio and saves remain unqualified.
+No production gate closes.
+
+
+### Oversized popup shared-compositor review (2026-10-11)
+
+Reusable hidden capture flags now install debug-only read-only mounted roots,
+open the guest selector, and optionally scroll it through held guest pointer
+tracking before using the shared Demo renderer. Eight initial/scrolled scenes
+were reviewed: mono68k/0.75, colour68k/1, PPC8/1.5 and PPC16/2. Smooth accented
+labels, clipping, row placement, arrows and final-choice highlighting fit the
+popup. Eight inactive original-resolution popup crops were also reviewed; popup
+highlight is retained during host inactivity. All eight active/reactivated
+image pairs are byte-identical; final source/executable hash audit matches.
+Local captures, crops and provenance: `target/gpui-qualification/volume-many`.
+This selected matrix does not prove all CPU by scale combinations, native
+activation, physical pointer/IME, native accessibility, independent Macintosh
+font fidelity or production readiness. All broad release gates remain open.
+
+Reproduce with `cargo build --locked --example gpui-menu-demo --features gpui-demo-test`,
+then use `--capture-standard-file-volume-many-composed <output.png>` or
+`--capture-standard-file-volume-scrolled-composed <output.png>` alongside
+`--screen-depth`, `--prefer-powerpc` and `--capture-scale`.
+
+
+### Oversized guest volume-popup scrolling (2026-10-11)
+
+Volume popups now reuse shared Menu Manager pointer tracking and arrow pixels
+in both CPU painters and GPUI. Hover arms an indicator before repeated tracking
+scrolls; the final row becomes selectable when its arrow disappears. Keyboard
+navigation reveals choices while a stationary pointer preserves the selection.
+Arrow slots expose no hidden volume choice or acceptance action. All ten popup
+library regressions pass (23.89s), including actual 41-volume pointer scrolling,
+mounted-file Open replies and guest file reads across mono68k, colour68k, PPC8
+and PPC16. The shared GPUI action regression passes (3.69s), checking arrow-slot
+action exclusion and ordinary popup/modal contracts. These are guest workflow
+and test-window checks; oversized composed images across scales/activation,
+physical tracking and native accessibility remain unqualified. No broad release
+gate closes.
+
+
+### Text-service selection repaint correction (2026-10-11)
+
+The immutable earlier `99b529fb` frontend suite terminated with 197 passed,
+four failed and one ignored (8215.93s); its final audit matches all 11,359
+source inputs and the executable. It is earlier-checkpoint evidence, not a
+current release qualification. Current pre-fix rechecks reproduced document
+replacement and wrapped PPC modal replacement failures; Save/New Folder passed.
+Guarded selection changed the TERec without repainting, invalidating completed
+paint ownership before the following commit. Document selection now repaints
+through the existing classic/PPC TextEdit painters, and native dialog selection
+uses the same correction. Exact owner, text, selection and stale-request guards
+remain in place. The platform commit regression passes four modes (52.20s);
+the four-mode stale-selection/style guard regression passes (4.47s), and
+all three worker composition regressions pass (170.66s), including wrapped PPC
+modal replacement and four-mode Save/New Folder. This does not establish a
+clean full current-candidate run, physical IME, native accessibility or production
+readiness. All eight broad release gates remain open.
+
+
+### Volume-popup wheel boundary
+
+Frontend file-list wheel targeting and worker semantic click creation now reject current volume-popup ownership. The actual modal snapshot regression passes15.27s across eight CPU/depth/input cases, checking a scrollable target loses ownership and a queued worker scroll preserves popup/pointer state. Normal Open-list wheel scrolling still passes four modes40.62s. Evidence: `reference/gpui-demo/volume-wheel-boundary`. Oversized popup pointer autoscrolling, physical wheel integration and broader qualification remain open; no production gate closes.
+
+### Volume-popup accessibility contracts
+
+Popup choices expose full volume names, list-box/option roles and selected state. Weak Demo callbacks reject inactive, changed-owner, changed-popup and non-visible requests before restoring guest focus and sending one guest mouse-down/up pair. The expanded shared GPUI regression passes3.87s; its initial missing-observer failure is preserved. Evidence: `reference/gpui-demo/volume-accessibility`. This proves helper metadata and synthetic dispatch contracts; native assistive navigation and complete modal accessibility remain open. No production gate closes.
+
+### Ordinary guest Tab routing
+
+The window-scoped interceptor now preserves Tab/Shift-Tab when the guest root has focus, before Base Root bindings consume them. Host menu/control focus retains GPUI handling; notification and volume-popup ownership retain their boundaries. The shared Open pointer/keyboard regression passes3.30s. Actual GPUI-to-session plain TextEdit editing passes four CPU/depth modes6.73s, verifying exactly one Tab insertion and guest caret advancement. Five notification regressions pass29.50s. Evidence: `reference/gpui-demo/guest-root-tab`. Physical keyboard, broader focus transitions and native accessibility remain open; no broad release gate closes.
+
+### PPC mounted-volume custom filter
+
+Custom Open callbacks now receive the tracked mounted-volume reference in ioVRefNum. The compiled PPC callback regression passes (0.50s), recording boot then -42 across guest popup navigation while retaining modal ownership. All five custom_get_file regressions pass (0.71s). Evidence: `reference/gpui-demo/mounted-filter`. This is callback/event-loop evidence; physical GPUI input, full custom variants, mounted legacy acceptance and cross-CPU callback equivalence remain open. No broad release gate closes.
+
+### Mounted-file Open reply identity
+
+Both CPU paths now preserve the mounted-volume reference through candidate creation and final Open replies. The expanded actual-guest modern Open/read regression passes four CPU/depth modes (8.22s), verifying volume -42, parent directory42000, exact file bytes and successful guest read/close. All seven selector library tests pass (7.41s). Evidence and failed diagnostics: `reference/gpui-demo/mounted-file-reply`. This is session/debug evidence; legacy mounted-file acceptance, custom filter callbacks, Save navigation, physical GPUI input and broader production qualification remain open. No broad gate closes.
+
+### Guest-owned Open volume selector
+
+Open panels now retain shared mounted-volume choices and popup tracking in both CPU event loops. Directory ancestry supplies the current volume name; GPUI renders the guest snapshot with original-font smooth labels and preserves guest bounds and event ownership. Seven library selector tests pass (5.42s), including mounted-directory switching in mono68k, colour68k, PPC8 and PPC16. The GPUI pointer/keyboard regression passes (3.88s); window-scoped interception delivers Tab before Base Root bindings and excludes inactive/background semantic actions. All five notification regressions pass (43.87s). Four selected active compositions were reviewed at scales0.75/1/1.5/2 with exact active/reactivated restoration. Evidence: `reference/gpui-demo/volume-selector`. Capture provenance precedes subsequent keyboard/test edits. Multiple-choice visual scrolling, mounted-file replies/filter callbacks, Save destination navigation, physical input, native accessibility and independent font fidelity remain open. All eight release gates remain open.
+
+Sound-only system notifications: the worker services records with no text, mark or icon and the system-sound sentinel. It queues one tone per installation, keeps foreground processing available and waits for that specific channel to finish before response delivery. Muted tones complete without an alert. The corrected library run passes all 24 notification tests (0.28s), including muted/unmuted autoremove on both CPUs. Five frontend notification tests pass (29.10s); those retain their existing text-alert scope. Evidence is under `reference/gpui-demo/notification-sound-only`. The rebuilt dual-CPU fixture and expanded 20-case guest/worker/GPUI workflow pass (23.73s), including sound-only autoremove and compiled callbacks across mono68k, colour68k, PPC8/PPC16, AudioBackend output, no alert and subsequent guest menu interaction. Physical audio and complete notification-stage ordering remain unqualified. All eight production gates remain open.
+
+Guest-installed system-sound workflow: the dual-CPU fixture now requests the
+system alert sound through NMInstall (`b` on Graphics). Twelve actual worker
+and GPUI cases pass across mono68k, colour68k, PPC8 and explicit PPC16 (16.75s).
+System-sound cases capture non-silent output at the AudioBackend before rendered
+OK acknowledgment; the workflow also preserves menu exclusion, autoremove and
+compiled response behavior. Evidence and hashes are under
+`reference/gpui-demo/notification-system-sound`. Physical audio, sustained game
+continuity, custom sounds and mark/icon stages remain open.
+
+Notification system-sound stage: text alerts can now use the `nmSound == -1`
+system-alert sentinel. Per-installation sound delivery is retained in the
+shared queue; native/classic Sound Manager paths queue the tone before alert
+ownership. Owned alerts mix queued channel samples without executing foreground
+or completion callback code, rather than silencing the mixer until dismissal.
+The new both-CPU runner regression verifies non-silent128-sample output while
+owned, unchanged CPU context and no response entry. All23 library notification
+tests pass (0.19s) and five frontend notification regressions pass (11.49s).
+Guest-installed sound workflows and physical audio continuity remain unqualified;
+custom sounds, marks and icons still decline. No broad release gate closes.
+
+Notification keyboard boundary: a root capture-phase handler now excludes
+owned-alert keys before focused background controls can process them, prevents
+default Tab/Shift-Tab traversal, and restores active guest root focus. Return
+remains excluded while inactive. Five notification regressions pass (12.08s);
+the strengthened pointer/key regression separately verifies forward/backward
+tab focus retention, inactive exclusion, and exactly one acknowledgment per
+OK/Return gesture (0.18s). These GPUI test-window checks do not qualify native
+accessibility focus actions, physical input or broader modal dialog focus.
+
+Notification accessibility background separation: the alert is now a sibling
+of the painted guest scene; the background scene and retained menu bar carry
+hidden accessibility state during alert ownership. SceneMetrics forwards roles,
+metadata and synthetic children rather than dropping them. Five notification
+regressions pass (11.78s), six accessibility helper tests pass, and the wrapper
+role/identity/hidden-state regression passes. A recapture is pixel-identical to
+the previously reviewed mono notification scene. This establishes source/helper
+contracts and preserved selected appearance, not native assistive navigation,
+keyboard focus trapping or complete modal accessibility qualification.
+
+Notification menu retention fix: alert ownership previously removed the GPUI
+bar, exposing guest bitmap menus. Presented standard menus now retain the GPUI
+bar with disabled triggers; hidden menus retain their visibility policy.
+The five notification regressions pass (11.00s), followed by the strengthened
+eight-case cross-CPU workflow checking rendered menu-trigger exclusion (12.43s).
+One corrected mono shared-compositor image was reviewed and shows smooth menu
+labels throughout the alert. Evidence: `reference/gpui-demo/notification-menu-retention`.
+No font substitution or metric change is introduced; native/physical and broad
+font qualification remain open.
+
+Explicit PPC16 launch correction: both frontend parsers accept 16; the shared
+constructor retains the supported 8-bit classic configuration and selects
+16-bit native PowerPC presentation, with that distinction documented in CLI
+help. The constructor regression passes all five explicit depths (0.08s), the
+eight-case guest notification workflow now passes explicit PPC16 rather than
+an omitted-depth workaround (10.20s), and the default application compile check
+passes (15.17s). This corrects the reproduced explicit-depth launch rejection;
+it does not establish full 16-bit application or release qualification.
+
+Notification inactivity correction: OK pointer/accessibility handlers now
+revalidate current exact ownership and host activity; Return is also excluded
+while inactive. The inactive button is not presented as primary. The shared
+pointer/key regression passes active focus restoration and inactive click/Return
+exclusion (0.15s); the other four notification regressions passed in the preceding
+run (9.84s total, whose pointer case failed before explicit simulated host
+activation was corrected). Physical activation and native accessibility remain
+unqualified. The capture option's test argument initializer is also corrected.
+
+Notification visual checkpoint: actual worker-owned mono68k/scale1 and default
+PPC16/scale2 alerts were captured through the shared offscreen Demo renderer and
+both images reviewed. The accented Mac Roman message is smooth and legible;
+message and OK button fit the alert bounds, while application-drawn headings
+retain guest raster ink. Captures and review hashes are under
+`reference/gpui-demo/notification-composed`. The capture helper explicitly
+requests worker acquisition; automatic acquisition is covered separately by
+the timer-driven workflow test. These selected active scenes do not establish
+native alert geometry, independent font fidelity or physical qualification.
+
+Latest notification workflow evidence: the rebuilt dual-CPU guest fixture now
+calls NMInstall from normal key events and constructs its response with
+NewNMUPP. The actual production worker + shared GPUI polling/render/click
+regression passes eight cases across mono68k, colour68k, PPC8 and default PPC16
+(9.96s), covering autoremove and compiled callbacks, response-once and blocked
+background menu input. Evidence and source hashes are under
+`reference/gpui-demo/guest-notification-workflow`. This supersedes the earlier
+PPC-installation gap for text-only requests. Mixed mark/icon/sound delivery,
+reviewed notification images, physical input and native accessibility remain
+open; all eight broad production gates remain open.
+
+Last full gate audit: `d9324626` on 2026-10-10. Current progress reconciled
+through opaque cursor presentation and production-worker folder persistence on
+2026-10-11; all eight gates remain open. The production gate is the Systemless
+release, as requested by the user. GPUI is already the default desktop frontend;
+this document does not restore an opt-in flag. The complete objective remains
+open. Passing fixture cases does not establish production readiness.
+
+This is a current decision checklist. `GPUI_COVERAGE.md` retains chronological
+implementation and evidence records; later entries can supersede earlier gaps.
+A gate closes only after its complete scope is implemented and verified against
+the final release candidate. No overall percentage is inferred from test counts.
+
+| Objective requirement | Current evidence and limitation | Evidence required to close |
+| --- | --- | --- |
+| 1. Complete system UI inventory | Coverage inventory identifies menus, windows, dialogs, controls, lists, TextEdit, Standard File, cursors/notifications and custom-definition fallback. Its rows still describe incomplete slices and historical gaps. | Reconcile every row against current production source and tests. Enumerate supported standard variants and explicit tested custom fallbacks, CPU/depth coverage, rendering and interaction evidence. |
+| 2. Shared live/headless presentation and transforms | `Demo` is shared by live presentation, composed captures and test-window input. Centered-scale interaction evidence exists. Physical host integration and complete app scenes are not established by captures. | Exercise final live compositor and transforms in representative application scenes, including clipping, overlap, scale changes and fullscreen; retain matched headless repros. |
+| 3. Menu/window lifecycle | Styled menu selection128 and Escape cancellation128 pass across four CPU/depth modes and scales. Other tests cover identity, nested menus and window operations with their recorded scopes. They are not a complete final-state lifecycle qualification. | Cross-CPU mutation/disposal/reuse, callbacks, menu drag/keyboard/nesting/cancellation/visibility, window ordering/activation/drag/grow/zoom and focus restoration; verify custom-definition fallback. |
+| 4. Dialogs, controls, lists, TextEdit, file workflows | Standard overlays and numerous fixture tests exist. Styled single-line text has broad state evidence. Wrapped PPC dialog text now uses original-font smooth ink and guest TextEdit geometry; composed marked-text cancellation restores exact pixels and rapid wrapped worker commits/rejection pass. Styled document TEScroll, clipping and guest click geometry now pass actual shared captures across all four modes, including PPC16 scale1.5. Scrolled selection suspend/resume also passes all four modes through the shared compositor. Scroll restoration and broader widget variants remain open. Save/replacement now verifies actual guest file contents; new-name Save persists through the production store into a fresh initialized session with exact fork/metadata comparison across four modes. New-name TEXT Save now also passes distinct writer/reader OS processes and actual guest readback across all four modes, preserving exact forks/metadata after reading. New-name file readback uses explicit production-store flush. Empty New Folder creation now survives separate reader OS processes across all four modes; actual production workers also preserve folders after Shutdown, command-channel disconnect and guest File > Quit. These checks do not isolate periodic versus final flush timing. Separate-process replacement Save now preserves exact data/resource forks and metadata, including a nonempty resource fork, with guest Open/readback across all four modes (`reference/gpui-demo/replacement-process-restart`). Actual production-worker Shutdown, command-channel disconnect and guest File > Quit also preserve replacement contents through separate-process guest readback in twelve cases (`reference/gpui-demo/worker-replacement-shutdown`). These checks establish orderly persisted contents, without isolating periodic versus final flush timing. Physical desktop close/input and crash durability remain open. | Complete supported standard variants, mixed custom content, multiline selection/editing/scrolling and complete Open/Save/New Folder/replacement/cancellation workflows, including file contents and persistence. |
+| 5. Host input, clipboard, composition, accessibility | Key/modifier/pointer routes and clipboard bridge exist. The shared Demo now registers a GPUI text input handler for eligible document TextEdit and stages marked text. Platform test-window sequential commits pass on the earlier checkpoint; current real-worker rapid commits and persistent rejection feedback pass across all four CPU/depth modes. Separate Unicode staging now renders selection/caret with painted bounds/point queries; single/multiline shared captures preserve guest state and exactly restore pixels on cancellation. Recognized standard modal dialog handlers and real-worker rapid commits/rejection now pass across all four modes. Standard File Save/New Folder platform handlers and actual Save worker rapid commits/rejection now pass across all four modes. Wrapped PPC dialog handlers now use internal guest TextEdit geometry with four-scale interface tests and shared painted captures, retaining dialog event ownership. Styled document scrolling has actual guest/compositor evidence. Marked-text subrange corrections now preserve UTF-16 boundaries and pinned guest ownership; cross-CPU document/dialog/Save/New Folder checks cover staging, cancellation and committing corrected text. Active document vertical marked-stage range bounds/hit-testing and exact cancellation restoration now pass 32 shared captures across all four modes and scales0.75/1/1.5/2. Explicit replacement and overlapping marked-stage replacement are implemented for document, dialog, Save and New Folder targets with guest-worker evidence; Disjoint replacement now has document/dialog/Save/New Folder worker evidence, with modal/file GPUI request-ordering checks; composed visual coverage, broader staging scroll and physical IME remain unfinished. Opaque mono/colour guest cursors now use the shared Demo compositor with original pixels, hotspot and clipping. Four selected CPU/depth/scale captures establish exact hidden/inactive/outside restoration through simulated frontend states. Balanced macOS cursor hiding is implemented but physically unqualified; inverted pixels explicitly decline the complete plan. Visible Open/Save rows now expose guarded Click actions with actual guest selection tests across all four modes. Recognized document/dialog/Save/New Folder editors expose guarded SetValue using lossless Mac Roman conversion; actual-worker document4, dialog6 and file8 cases pass text/caret and stale rejection. Registration excludes host focus loss, marked staging and menu ownership. Native action delivery, text selection/navigation and full styled replacement fidelity remain open. Test-window semantic actions do not prove native accessibility. | Implement host text/composition through guest event/Toolbox paths with Mac Roman policy, caret geometry and modal ownership. Qualify physical input, repeat/wheel/capture/focus loss, clipboard formats and native accessibility actions/text editing. |
+| 6. Lifecycle and native reference fidelity | Native recipe tests, guest sessions and archived native references exist with explicit limitations. Repeated Systemless captures are not independent Macintosh references. | Match CPU lifecycle scenarios and relevant reference evidence; preserve text/font/style, bounds, alignment/wrapping/clipping, caret/selection/scroll behavior and callback ownership. Record unavailable independent comparisons explicitly rather than claiming they pass. |
+| 7. Representative real games | `tests/presentation_performance.rs` is ignored and requires an external archive. It measures guest execute/compose/presentation helpers, not live GPUI frame delivery. A public catalogue Marathon archive is now available under ignored target output with exact catalogue hash/size verification; a later shared Demo main-menu checkpoint now passes at800 observed production-worker updates, with an earlier30-second timeout retained. Actual guest Begin New Game input also reaches a shared Arrival level-transition checkpoint. A separately timed guest Space input now reaches an active-gameplay shared Demo snapshot. Sustained gameplay and live qualification remain open. | Use verified catalogue media and run the actual live frontend: fullscreen/hidden menu geometry, input latency, frame delivery, CPU/memory, audio continuity, saves/restart and lifecycle. Compare an established baseline under the same conditions; declare acceptable regression limits before measuring. |
+| 8. Reuse, reproducibility and builds | Public fixture rebuild and prior build/package checkpoints are recorded; they pin earlier candidate states. At `43ee32a1`, post-replacement cached checks pass for the default application (10.73s) and no-default-features public library (9.21s), archived in `reference/gpui-demo/post-replacement-builds`. Earlier at `79166359`, the ordinary default-feature application passes `cargo check --locked --bin systemless` (51.22s including Cargo lock wait), and the public library passes `cargo check --locked --no-default-features --lib` (42.16s). Logs and source/hash provenance are archived in `reference/gpui-demo/current-build-checks`. A 444-file package created at 3d06c8da passes both standalone extracted library and default application checks offline, with exact frontend source hashes recorded. At production source e6690b21, the optimized default executable now links successfully (13m46s), its help path succeeds, and the existing public Graphics-to-Controls guest workflow passes on actual 68k/PPC with two assertions each and no exhausted frames. Both Controls images were reviewed. This is guest-runtime smoke coverage, not physical GPUI qualification; evidence and hashes are under `reference/gpui-demo/release-executable-smoke`. At d44b335f a new offline 446-file package has byte-identical Rust sources and passes extracted no-default public library (39.97s) and default GPUI application (48.71s) compile checks using cached dependencies/artifacts; evidence is under `reference/gpui-demo/current-packaged-source`. Network creation was interrupted after repeated DNS failures. Packaged linking/runtime and fresh-download qualification remain unproven. Fresh-download builds, final packaged tests/runtime and live qualification remain open. | Build/test the final candidate from checkout and packaged crate with supported ordinary/headless configurations. Verify published artifact contents, reproducible captures and reusable presentation modules; distinguish platform buildability from GUI qualification. |
+
+## Current accessibility and clipboard qualification (2026-10-11)
+
+At production source `7ec422c2`, recognized document, dialog and Standard File
+editors additionally expose guarded guest text selection. Multiline document
+and wrapped dialog text uses guest line boundaries, Mac Roman offsets and
+clipped guest glyph geometry; inactive accessibility avoids constructing that
+geometry. Actual-worker selection, stale-owner rejection and geometry/model
+checks are recorded in the corresponding `reference/gpui-demo` evidence folders.
+These results do not establish native accessibility tree or action delivery.
+Physical activation, scrolling geometry and styled replacement remain open.
+
+The native named-pasteboard test passes with macOS service access, preserving
+all six tested hidden-format payloads after rejected export. The unchanged test
+failed under restricted access when macOS returned a NULL named pasteboard.
+Evidence is in `reference/gpui-demo/native-pasteboard-service-access`; it does
+not qualify live clipboard suspend/resume. The full 183-test frontend suite is
+not yet established as passing. All eight release gates remain open.
+
+## Typography requirements within the gates
+
+Recognized system text must use guest text and font/style intent, guest layout
+and guest event ownership. Original-resource outlines may be antialiased at
+display resolution; a modern host font must not silently replace the source or
+change advances. Bitmap-only sources and unsupported paint must retain guest
+rendering unless faithful replacement is established. Application-drawn text
+stays guest-rendered until ownership and faithful replacement are proven.
+
+Classic integer-scaled strikes now have original-outline support with passing
+helper checks; actual guest large-font scene and composed interaction evidence
+remain open. Plain PPC non-unit ratios now have passing original-outline helper
+checks; supported styled non-unit recipes now synthesize source effects before
+scaling with passing helper checks. Actual guest scene, composed interaction
+and performance evidence remain open. These
+gaps do not justify changing font metrics; unsupported paint retains guest
+rendering. Broader font resources, scaled appearance and independent native
+font fidelity remain open.
+
+## Current source font-path audit (2026-10-11)
+
+Inspected `src/bin/gpui_demo_text.rs` at production head `31ad029a`.
+This is source-path evidence, not a composed appearance or Macintosh oracle.
+
+| Recognized surface | Current path | Remaining qualification |
+| --- | --- | --- |
+| Dialog static text and Standard File prompts/directory labels | `classic_wrapped_text` lays out guest advances and calls `paint_smooth_label`, then retains strike ink on failure. | Supported font/face variants, wrap boundaries and CPU-specific scene fidelity. |
+| Dialog single-line editor and file rows/Save filename | Original-source `ClassicLine` and `paint_smooth_label`; guest caret/selection geometry remains separate. | Original outline availability per resource and actual composed fallback coverage. |
+| Styled TextEdit | Retained paint plan feeds `classic_text_pixels_with_smooth`; source styles and integer/rational scaling resolve before compositing. | Large-font and non-unit-ratio guest scenes, full styled editing and performance. |
+| Labels with an explicit italic strike | `ClassicLine::styled` retains the actual italic strike instead of synthesizing a different outline. | Establish a matching original italic outline before changing this fallback. |
+
+The inspected paths already attempt smoothing; adding another host-font label
+would not establish fidelity. `resolve_smooth_run` can decline unsupported
+sources/recipes, after which bitmap ink remains. Next font work should capture
+a concrete failing font/size/style scene and identify its source resolution,
+rather than treating every pixelated glyph as a missing GPUI call. Original
+Macintosh advances and original resource identity remain mandatory.
+
+## Next work in release-risk order
+
+1. Implement faithful cursor inversion over the final GPUI scene and qualify
+   host hiding, capture, pointer transforms and guest warps. Qualify native host
+   Standard File integration and physical modal input,
+   dialog/file rendering/geometry, qualify disjoint replacement ranges visually and qualify scrolling staging and qualify physical IME/focus
+   boundaries. Audit native accessibility alongside it.
+2. Reconcile the system UI inventory and close remaining real workflow/lifecycle
+   defects, especially multiline TextEdit and durable Standard File behavior.
+3. Qualify representative live applications and measure performance/audio/save
+   behavior using the verified catalogue Marathon archive and additional
+   representative titles as needed.
+4. Extend faithful scaled text and close broader font/widget fidelity gaps.
+5. Run current packaged build and executable checks beyond the completed
+   release link and guest-runtime smoke checkpoint. Repeat final-candidate release audits after
+   implementation is stable. Keep the PR draft and goal active until every gate is supported.
+
+Do not expand already passing micro-style matrices without a concrete uncovered
+behavior or regression. Prefer a reproduced missing end-to-end behavior and the
+implementation necessary to fix it. Narrow tests remain useful regression
+checks, with their scope stated explicitly.
+
+## Guest worker progress correction (2026-10-11)
+
+Current worker validation could exhaust the execution deadline before queued
+PPC16 dialog input ran. Guest execution now receives its bounded slice after
+validation; text retry settling starts after queued events drain. Final modal
+regression passes six cases (52.45s), Save/New Folder four modes (107.46s), and
+the default application check passes (11.13s). Evidence is archived under
+`reference/gpui-demo/modal-event-progress`. An earlier monochrome New Folder
+accessibility replacement timeout is retained; performance/timing and deferred
+retry shutdown qualification remain open. All eight release gates remain open.
+
+At `e0d709d8`, the complete Save/New Folder worker regression passes a second
+consecutive run across four modes (80.01s). Both failures in the older 183-test
+suite pass individually on current source: owner/front-window clipping (0.08s),
+and named pasteboard hidden-format preservation (1.09s, macOS service access).
+The older full run terminated with 180 passed, two failed and one ignored after
+9449.76s; it is not current-candidate evidence. Rechecks are archived alongside
+the worker correction. The earlier file timeout cause remains unproven.
+
+The long full-suite parent remains alive at the recorded earlier checkpoint.
+Subsequent targeted example builds replaced its executable path; any tests
+that launch `current_exe` children can use newer artifacts. Its eventual result
+must therefore be treated as mixed-checkpoint regression evidence, not a full
+final-candidate qualification. Preserve that run rather than restarting on an
+observation timeout; a stable final candidate needs a separate pinned artifact.
+
+## TextEdit completed-paint ownership (2026-10-11)
+
+Both CPU paths now retain canonical TextEdit contents/layout alongside completed
+native raster evidence. Changes to guest text, font/style, wrapping/alignment,
+selection, activation or caret state cannot authorize premature GPUI replacement
+merely because old screen pixels remain unchanged. Completed native redraws
+establish fresh ownership. Shared ownership/raster tests pass eight cases; the
+actual plain-editor geometry/hit-testing/editing regression passes all twelve
+CPU/depth/alignment cases (32.40s). Styled halo editing passes all four modes
+(174.32s). These checks do not close physical-input, independent-font-fidelity,
+performance or final-candidate qualification. Evidence is archived under
+`reference/gpui-demo/textedit-paint-recipe`; all eight gates remain open.
+
+The same candidate additionally passes styled halo editing across four modes
+(174.32s) and spacing-style editing across four modes (56.85s), with the combined
+log archived in `reference/gpui-demo/textedit-paint-recipe`.
+
+### Movable dialog drag correction (2026-10-11)
+
+Real guest title dragging now preserves dialog identity/text/selection and
+translates window/item bounds in four reviewed shared compositor captures:
+mono68k/0.75, colour68k/1, PPC8/2 and PPC16/1.5. PPC moving previously left
+native ink behind; visible content and drawing detail now transfer from a
+retained snapshot, preserving overlap and front-window occlusion. A second
+defect let background FrameRect drawing cross the dialog; both port clipping
+regions now apply. Final QuickDraw118 and the all-depth region regression pass;
+WindowManager104 passed before the FrameRect change. Failed, partial and final
+images/provenance are under `reference/gpui-demo/movable-dialog-drag`. Physical
+input, broader lifecycle, performance and final-candidate qualification remain
+open; no production gate is closed by this selected workflow.
+
+### Replacement Save independent-process readback (2026-10-11)
+
+Create/replace/read now passes twelve distinct OS-process phases across mono68k,
+colour68k, PPC8 and PPC16. Persisted old data and a nonempty binary resource fork
+are verified before guest replacement; guest Save requires confirmation and
+updates data while preserving the resource fork. Fresh-process guest Open/read
+verifies exact bytes, both forks and metadata before/after close. Stronger final
+run passes20.99s; evidence is under `reference/gpui-demo/replacement-process-restart`.
+This covers explicit production-store flush; actual worker shutdown/periodic
+flush for replacement, crash durability and physical desktop close remain open.
+All eight production gates remain open.
+
+### Save-store crash audit (2026-10-11)
+
+`DesktopSaveStore::persist_save_file` currently writes data fork, resource fork
+and metadata directly and sequentially into the existing directory. An
+interruption between writes can leave a mixed-generation save; successful
+orderly exit/restart tests do not establish crash durability. Atomic snapshot
+publication and interruption/recovery verification remain required before
+claiming this durability scope complete. This is a source audit, not a
+reproduced crash test or a claim of observed user data loss.
+
+### Worker replacement Save at orderly exit (2026-10-11)
+
+The actual production worker now passes replacement Save followed by Shutdown,
+channel disconnect and guest File > Quit in all four CPU/depth modes (12 cases,
+82.86s). No test flush is called on the replacement worker. Persisted new data
+and unchanged nonempty resource fork survive a separate reader process and
+actual guest Open/read/close with exact fork/metadata comparison. Evidence is
+under `reference/gpui-demo/worker-replacement-shutdown`. This does not isolate
+periodic/final flush timing or establish physical close/crash durability; the
+sequential-write audit remains open. All eight release gates remain open.
+
+### Atomic save snapshot checkpoint (2026-10-11)
+
+Both forks and metadata are now staged/synced as a single binary snapshot,
+published by rename and containing-directory sync. Legacy saves remain readable.
+Store11 tests pass migration, interrupted publication and malformed lengths;
+abrupt subprocess exits before/after publication recover complete old/new saves.
+Final actual-worker replacement exits pass12 cases across four modes (88.42s),
+with fresh-process guest readback. Evidence: `reference/gpui-demo/atomic-save-snapshots`.
+This addresses the audited mixed-generation process-interruption risk. Sudden
+power loss, tree creation/deletion durability, disk failure injection and full
+storage barriers remain unqualified. No overall production gate closes here.
+
+### Completed mixed-checkpoint frontend regression (2026-10-11)
+
+The preserved full-suite run has now terminated successfully: 189 passed,
+zero failed and one ignored in 8401.92s. Its parent began at `e0d709d8`, while
+later targeted builds replaced the executable used by `current_exe` children.
+This is mixed-checkpoint regression evidence, not final-candidate qualification.
+A pinned packaged candidate still requires a clean, reproducible full run.
+
+### Notification acknowledgment focus (2026-10-11)
+
+Notification OK restores the guest root focus before dispatching the exact
+owned acknowledgment, for both pointer and accessibility Click handlers.
+The shared GPUI test deliberately displaces focus before clicking OK, verifies
+restoration, and checks that pointer and keyboard inputs do not leak into the
+guest while the alert remains owned (one test passed, 0.11s). This does not
+qualify native accessibility delivery, physical focus or automatic notification
+acquisition, which remains disconnected from frontend polling.
+
+### Automatic notification acquisition (2026-10-11)
+
+Frontend polling now requests eligible text-only alerts automatically and
+retries after ownership guards clear. Only an exact worker-owned snapshot
+authorizes painting/input exclusion; pending requests do not fabricate guest
+ownership. The acquisition regression now advances the actual frontend timer
+and verifies held-key release precedes the request. All five targeted frontend
+notification tests pass (9.12s), including classic guest NMInstall/callback
+worker delivery and editor text-service restoration across four modes.
+These separate tests do not yet establish one composed automatic
+install/display/acknowledge workflow, PPC guest installation, mixed mark/icon/
+sound delivery, native accessibility or physical interaction. All release gates
+remain open.
+
+### Integrated classic notification workflow (2026-10-11)
+
+The real-worker notification regression now feeds its installed guest snapshot
+through the actual Demo polling task, waits for worker-owned acquisition, renders
+the shared GPUI alert and clicks its OK button. All four classic cases pass:
+mono/colour with autoremove or a Pascal leaf response (one test, 4.30s).
+It verifies exact acknowledgment, response-once behavior and discarded background
+menu input. This supersedes separate-path evidence for those cases; it is a GPUI
+test-window workflow, not a reviewed image or physical desktop qualification.
+PPC installation and mixed mark/icon/sound delivery remain unfinished.

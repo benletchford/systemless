@@ -1,0 +1,22 @@
+[
+  {
+    "image": "guest",
+    "partial_after": false,
+    "outcome": "mutation rejected after provenance passed"
+  },
+  {
+    "image": "guest",
+    "partial_after": true,
+    "outcome": "mutation rejected after provenance passed"
+  },
+  {
+    "image": "rendered",
+    "partial_after": false,
+    "outcome": "mutation rejected after provenance passed"
+  },
+  {
+    "image": "rendered",
+    "partial_after": true,
+    "outcome": "mutation rejected after provenance passed"
+  }
+]

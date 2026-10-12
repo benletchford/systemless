@@ -1,0 +1,14 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.06s
+     Running unittests src/lib.rs (target/debug/deps/systemless-4e06a53605bb32d1)
+
+running 7 tests
+test systems::macintosh::standard_file_ui::volume_popup::volume_popup_tests::volume_popup_choices_preserve_mounted_names_roots_and_read_only_volumes ... ok
+test systems::macintosh::standard_file_ui::volume_popup::volume_popup_tests::volume_popup_declines_empty_choices_and_unusable_geometry ... ok
+test systems::macintosh::standard_file_ui::volume_popup::volume_popup_tests::volume_popup_pointer_release_and_cancellation_preserve_choice_identity ... ok
+test systems::macintosh::standard_file_ui::volume_popup::volume_popup_tests::volume_popup_keyboard_scrolls_and_accepts_or_cancels ... ok
+test systems::macintosh::standard_file_ui::volume_popup::volume_popup_tests::volume_popup_directory_ancestry_resolves_volume_identity_without_name_matching ... ok
+test systems::macintosh::standard_file_ui::volume_popup::volume_popup_tests::volume_popup_stationary_pointer_preserves_keyboard_navigation ... ok
+test systems::macintosh::standard_file_ui::volume_popup::volume_popup_tests::volume_popup_switches_mounted_guest_directory_on_both_cpus ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 6818 filtered out; finished in 7.41s
+

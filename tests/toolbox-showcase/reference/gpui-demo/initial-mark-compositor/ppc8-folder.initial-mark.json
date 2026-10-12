@@ -1,0 +1,16 @@
+{
+  "target": "StandardFile { new_folder: true }",
+  "guest_selection": [
+    0,
+    15
+  ],
+  "replacement": [
+    0,
+    1
+  ],
+  "marked_selection_utf16": [
+    1,
+    3
+  ],
+  "scope": "Shared Demo initial explicit stage geometry/hit-testing, surrogate rejection, exact cancellation and simulated focus-loss restoration. No physical IME qualification."
+}

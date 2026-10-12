@@ -1,0 +1,99 @@
+{
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "scenario": "oracle/modeless-text-activation.json",
+  "scenario_sha256": "d887127d414a836ebc625e67af28b0cf384ba378f9c847f074bbae32d2c1588a",
+  "capture_date": "2026-10-09",
+  "verification": {
+    "scope": "Document selection across modeless window activation; not host suspend/resume.",
+    "selected_range": [
+      0,
+      15
+    ],
+    "inactive_selection_highlight": false,
+    "reactivated_selection_preserved": true
+  },
+  "runs": [
+    {
+      "emulator": "basilisk",
+      "image_id": "sha256:92be8ffcde5c7b5985c34880b55f6e1578ef03d229372f1535a1bc9f897ee26e",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "runner_sha256": "85198ba255a5f0e830384e7706ec36d1f983ca0b714c7049be0b53f3a782b067",
+      "capture_recipe_sha256": "5ad90ce4030fece7b48af621e985064dfd7a0ba514e7d4fa9f6c99aac1898cb0",
+      "runner_environment": {
+        "SYSTEMLESS_BASILISK_MAC_TIME": "<runner default>",
+        "SYSTEMLESS_BASILISK_DETERMINISTIC_TICKS": "<runner default>",
+        "SYSTEMLESS_BASILISK_INSTRUCTIONS_PER_TICK": "<runner default>",
+        "SYSTEMLESS_BASILISK_CPUS": "<runner default>"
+      },
+      "rom_sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca",
+      "system_disk_archive_sha256": "2a4985fec6b5b2a23f6141fd6de9a3066dcd87a6fe1412faefdd9d6c87876295",
+      "system": "Mac OS 8.1",
+      "clock_source": "live guest clock",
+      "audio_enabled": false,
+      "preferences_sha256": "a3c1c62f438817267bce62afc9748921a21427fb2237677fc7434d2cbccab2be",
+      "width": 800,
+      "height": 600,
+      "depth": 8,
+      "source_capture_record_sha256": "da912aff40a9b18876d90016ac4ebbbdf46780e6724e0f63aba36f43e85c5762",
+      "checkpoints": [
+        {
+          "file": "reference/basiliskii-68k/modeless-text-activation/00-document-selected.png",
+          "sha256": "d36ddd58f515713616e1af922b3bb31cebf602ed40ce556ed1ff050c2c6a0aff"
+        },
+        {
+          "file": "reference/basiliskii-68k/modeless-text-activation/01-modeless-menu.png",
+          "sha256": "b29f5c03038ab164f5dfc05796541b2d76cd40e4d1922623ce9be5bf2396201f"
+        },
+        {
+          "file": "reference/basiliskii-68k/modeless-text-activation/02-document-inactive.png",
+          "sha256": "24947f755dae34e8e70521cc42fe9f7255ec432c303d3d620c3bec13fbc3e546"
+        },
+        {
+          "file": "reference/basiliskii-68k/modeless-text-activation/03-document-reactivated.png",
+          "sha256": "d36ddd58f515713616e1af922b3bb31cebf602ed40ce556ed1ff050c2c6a0aff"
+        }
+      ]
+    },
+    {
+      "emulator": "sheepshaver",
+      "image_id": "sha256:0616fb4fb30387d31e2441a3d2aa7ef5803c855f8af8c5d83b5650ea28c78702",
+      "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
+      "runner_sha256": "7d5edcfb7c24858bf803d7cc88c7e5ccd85cef03ca84fb25dd5c9d6cef958a4b",
+      "capture_recipe_sha256": "5ad90ce4030fece7b48af621e985064dfd7a0ba514e7d4fa9f6c99aac1898cb0",
+      "runner_environment": {
+        "SYSTEMLESS_SHEEPSHAVER_MAC_TIME": "<runner default>",
+        "SYSTEMLESS_SHEEPSHAVER_DETERMINISTIC_TICKS": "<runner default>",
+        "SYSTEMLESS_SHEEPSHAVER_INSTRUCTIONS_PER_TICK": "<runner default>",
+        "SYSTEMLESS_SHEEPSHAVER_CPUS": "<runner default>"
+      },
+      "rom_sha256": "fd13c05d678bbc7bbb527f7f418cd2dbada522af422a97452eee3bfc5010f032",
+      "system_disk_archive_sha256": "797d3d28fc8aefcb67c53ea21af40692e89c52fdc10fe79d10c512e2df0018c6",
+      "system": "Mac OS 8.1",
+      "clock_source": "60.15 Hz wall-clock pacing",
+      "audio_enabled": false,
+      "preferences_sha256": "307e437a99d6c2e56ce234d44e7c5386c0889513c407cd307ff7fff47e213436",
+      "width": 800,
+      "height": 600,
+      "depth": 8,
+      "source_capture_record_sha256": "ffa212221c31fc18d1cb4e97a0c05ab79334335564cdc24812699bd9b4356f44",
+      "checkpoints": [
+        {
+          "file": "reference/sheepshaver-ppc/modeless-text-activation/00-document-selected.png",
+          "sha256": "f41650664995bcc1e873feb209165fe38463f2666bd8c8e078371a9cd704e3fc"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/modeless-text-activation/01-modeless-menu.png",
+          "sha256": "2a98245f78c85954b3eb9d261372a0e4b1822c0cf008198af7abf4ade76ca1ae"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/modeless-text-activation/02-document-inactive.png",
+          "sha256": "91a728bca323b357f246eae9c1ab559922f6eb855b9ed6e452bf2bc2069de9ef"
+        },
+        {
+          "file": "reference/sheepshaver-ppc/modeless-text-activation/03-document-reactivated.png",
+          "sha256": "cebbe26dde9e78a2c43cf6156c45e046ab49459fd56a1ae2bdf6e7a80a709dbd"
+        }
+      ]
+    }
+  ]
+}

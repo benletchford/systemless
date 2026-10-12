@@ -1,0 +1,95 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index f49b1384..08baa558 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -11805,6 +11805,43 @@ mod desktop {
+                     super::super::frames::Rect::from((0, 0, 600, 800)));
+                 assert!(pieces.iter().any(|piece| records[piece.record].guest_id == record.guest_id),
+                     "actual guest multiline field must reach shared renderer: PPC={powerpc} depth={depth}");
++                let geometry = super::composition::text_line_geometry(record, 0).unwrap();
++                let dest = record.global_dest_rect.unwrap();
++                let line = super::super::text::ClassicLine::plain(
++                    &record.text[..record.line_starts.as_ref().unwrap()[1]], record.font, record.size);
++                let identity = (record.guest_id, record.generation);
++                let original_text = record.text.clone();
++                for offset in [3usize, 10, 20] {
++                    let horizontal = dest.1 - record.dest_rect.1 + geometry.left
++                        + i16::try_from(line.positions[offset]).unwrap();
++                    let vertical = dest.0 - record.dest_rect.0 + geometry.top + geometry.ascent;
++                    session.deliver_input(MacintoshInput::MouseDown { vertical, horizontal });
++                    settle(&mut session);
++                    session.deliver_input(MacintoshInput::MouseUp { vertical, horizontal });
++                    settle(&mut session);
++                    let clicked = session.runner_mut().text_edit_snapshot().records.into_iter()
++                        .find(|current| (current.guest_id, current.generation) == identity).unwrap();
++                    assert_eq!(clicked.selection, (offset, offset),
++                        "wrapped dialog glyph boundary must match guest TEClick: depth={depth}, offset={offset}");
++                    assert_eq!(clicked.text, original_text);
++                    assert!(clicked.drawing_intact);
++                }
++                let dialogs = session.runner_mut().dialog_snapshot();
++                let records = session.runner_mut().text_edit_snapshot().records;
++                let controls = session.runner_mut().control_snapshot();
++                let owner = super::super::input::dialog_text_owner_with_records(
++                    &dialogs, &windows, &records, &controls).expect("wrapped dialog has one qualified owner");
++                let inputs = super::super::input::guest_dialog_commit_inputs(&mut session, &owner, &[0x8e, b'Z'])
++                    .expect("wrapped dialog commits must retain DialogSelect ownership");
++                for input in inputs { session.deliver_input(input); settle(&mut session); }
++                let after = session.runner_mut().text_edit_snapshot().records.into_iter()
++                    .find(|current| (current.guest_id, current.generation) == identity).unwrap();
++                let mut expected = original_text;
++                expected.splice(20..20, [0x8e, b'Z']);
++                assert_eq!(after.text, expected);
++                assert_eq!(after.selection, (22, 22));
++                assert!(super::super::input::guest_dialog_commit_inputs(&mut session, &owner, b"x").is_none(),
++                    "old wrapped dialog text/selection must reject stale commits");
+             }
+         }
+ 
+diff --git a/src/bin/gpui_demo_input.rs b/src/bin/gpui_demo_input.rs
+index 521e87c0..11767310 100644
+--- a/src/bin/gpui_demo_input.rs
++++ b/src/bin/gpui_demo_input.rs
+@@ -456,6 +456,31 @@ pub(crate) fn dialog_text_owner(
+     Some(DialogTextOwner { content_revision: dialog.content_revision, identity: (dialog.guest_id, dialog.generation), item: item.number, text, selection })
+ }
+ 
++/// Admit an internal dialog TERec only through the same ownership and paint
++/// guards used by the shared compositor. The dialog remains the event target.
++pub(crate) fn dialog_text_owner_with_records(
++    dialogs: &[systemless::runner::DialogSnapshot],
++    windows: &[systemless::runner::WindowFrameSnapshot],
++    records: &[systemless::runner::TextEditSnapshot],
++    controls: &[systemless::runner::ControlSnapshot],
++) -> Option<DialogTextOwner> {
++    if let Some(owner) = dialog_text_owner(dialogs, windows) { return Some(owner); }
++    let viewport = super::frames::Rect { top: i16::MIN as i32, left: i16::MIN as i32,
++        bottom: i16::MAX as i32, right: i16::MAX as i32 };
++    let pieces = super::frames::text_edit_pieces(records, dialogs, controls, windows, viewport);
++    let mut candidates = pieces.iter().filter_map(|piece| {
++        let record = &records[piece.record];
++        let dialog = dialogs.iter().find(|dialog| dialog.guest_id == record.owner_port)?;
++        let item = dialog.items.iter().find(|item| Some(item.number) == dialog.edit_field)?;
++        Some(DialogTextOwner { identity: (dialog.guest_id, dialog.generation),
++            content_revision: dialog.content_revision, item: item.number,
++            text: record.text.clone(), selection: record.selection.0..record.selection.1 })
++    });
++    let owner = candidates.next()?;
++    // Clipping can produce several pieces for one record, but never several owners.
++    candidates.all(|other| other == owner).then_some(owner)
++}
++
+ pub(crate) fn guest_dialog_commit_inputs(
+     session: &mut systemless::systems::macintosh::session::MacintoshSession,
+     owner: &DialogTextOwner,
+@@ -468,7 +493,9 @@ pub(crate) fn guest_dialog_commit_inputs(
+         keys[usize::from(*key / 8)] & (1 << (*key % 8)) != 0) { return None; }
+     let dialogs = session.runner_mut().dialog_snapshot();
+     let windows = session.runner_mut().window_frame_snapshot();
+-    if dialog_text_owner(&dialogs, &windows).as_ref() != Some(owner) { return None; }
++    let records = session.runner_mut().text_edit_snapshot().records;
++    let controls = session.runner_mut().control_snapshot();
++    if dialog_text_owner_with_records(&dialogs, &windows, &records, &controls).as_ref() != Some(owner) { return None; }
+     // Return/Tab/Escape are modal actions, never characters in a text commit.
+     let delete = [8u8];
+     let bytes = if bytes.is_empty() && !owner.selection.is_empty() { &delete[..] } else { bytes };

@@ -1,0 +1,18 @@
+    Blocking waiting for file lock on artifact directory
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 25s
+     Running unittests src/lib.rs (target/debug/deps/systemless-05ca615472fa3f01)
+
+running 9 tests
+test systems::macintosh::process_manager::activation::tests::background_only_process_cannot_become_foreground ... ok
+test systems::macintosh::process_manager::activation::tests::active_clipboard_conversion_defers_and_delivers_once_without_activation ... ok
+test systems::macintosh::process_manager::activation::tests::cancelled_requests_coalesce_but_delivered_suspend_requires_resume ... ok
+test systems::macintosh::process_manager::activation::tests::clipboard_import_upgrades_pending_resume_without_reposting ... ok
+test systems::macintosh::process_manager::activation::tests::modality_can_defer_a_switch_after_suspend_delivery ... ok
+test systems::macintosh::process_manager::activation::tests::owning_activation_requires_suspend_support_and_both_switch_directions_work ... ok
+test systems::macintosh::process_manager::activation::tests::suspend_is_handled_before_yield_and_activation_cannot_overtake_it ... ok
+test systems::macintosh::process_manager::activation::tests::blocked_switch_waits_and_clipboard_conversion_is_reported_only_on_resume ... ok
+test systems::macintosh::process_manager::activation::tests::unsupported_clipboard_notifications_do_not_keep_event_service_busy ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 6671 filtered out; finished in 0.01s
+

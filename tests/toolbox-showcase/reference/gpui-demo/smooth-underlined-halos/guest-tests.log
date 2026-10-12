@@ -1,0 +1,31 @@
+   Compiling gpui-pre-collections v0.3.8
+   Compiling gpui-pre v0.3.8
+   Compiling gpui-pre-http-client v0.3.8
+   Compiling fnv v1.0.7
+   Compiling gpui-pre-apple v0.3.8
+   Compiling gpui-component v0.7.1
+   Compiling gimli v0.33.0
+   Compiling gpui-pre-zlog v0.3.8
+   Compiling gpui-pre-ztracing v0.3.8
+   Compiling gpui-pre-sum-tree v0.3.8
+   Compiling cranelift-codegen v0.132.0
+   Compiling cranelift-module v0.132.0
+   Compiling cranelift-native v0.132.0
+   Compiling cranelift-frontend v0.132.0
+   Compiling cranelift-jit v0.132.0
+   Compiling m68k v0.14.3
+   Compiling gpui-pre-macos v0.3.8
+   Compiling gpui-kit-assets v0.7.1
+   Compiling gpui-base v0.7.1
+   Compiling gpui-pre-platform v0.3.8
+   Compiling gpui-kit v0.7.1
+   Compiling systemless v0.83.0 (/Users/ben/.codex/worktrees/bfd9/systemless)
+    Finished `ci-test` profile [optimized + debuginfo] target(s) in 5m 20s
+     Running unittests src/lib.rs (target/ci-test/deps/systemless-ab8d3978307603c0)
+
+running 2 tests
+test systems::macintosh::quickdraw::text::classic_textedit_ink_tests::classic_halo_underline_recipe_preserves_descenders_and_everything_style ... ok
+test systems::macintosh::quickdraw::text::classic_textedit_ink_tests::ppc_halo_underline_recipe_preserves_run_extent_and_per_glyph_exclusion ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 6691 filtered out; finished in 0.13s
+

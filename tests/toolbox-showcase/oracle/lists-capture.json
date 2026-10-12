@@ -1,8 +1,8 @@
 {
-  "fixture_sha256": "373a6a1e268b558228d4bd911b3982557c32d52d75ff9bccbb65eff89c1eb254",
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
   "scenario": "oracle/lists.json",
   "scenario_sha256": "cc8bad1ba5fee115e3bf613ec528001cb6b70f9c296c3f68a6febe21dc991dec",
-  "capture_date": "2026-09-05",
+  "capture_date": "2026-10-09",
   "verification": {
     "selected_row": 8,
     "mutated_cell_bytes": 40,
@@ -21,7 +21,7 @@
     {
       "emulator": "basilisk",
       "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
-      "image_id": "sha256:375159f904a736fc413b386da7b76f8d380bf09db3b0777cb2cd3de129b47e38",
+      "image_id": "sha256:92be8ffcde5c7b5985c34880b55f6e1578ef03d229372f1535a1bc9f897ee26e",
       "system": "Mac OS 8.1",
       "width": 800,
       "height": 600,
@@ -29,7 +29,7 @@
       "checkpoints": [
         {
           "file": "reference/basiliskii-68k/15-lists.png",
-          "sha256": "fa740ac004b51bc5c0770fc22da6e64ab143dd25f38572483b5029b42b8dbf4a"
+          "sha256": "356ae12ed01ce2c15f54b4465421897a3ee6df85d5d2d35ce3889f55022e59df"
         },
         {
           "file": "reference/basiliskii-68k/15-lists-selected.png",
@@ -49,11 +49,11 @@
         },
         {
           "file": "reference/basiliskii-68k/15-lists-inactive.png",
-          "sha256": "513ff9836d592266e9e18c71d7dbac833d3c848d5968cc806767f33b8ecf38af"
+          "sha256": "1910fce93e7e2c973d6ee441cd62ebdfbdb670e05de20e419ff21b94334af4b1"
         },
         {
           "file": "reference/basiliskii-68k/16-lists-interacted.png",
-          "sha256": "c8b76470c433bfd391dadd4e9598e5cb43ef234f51ba5e60c67c236deceeac15"
+          "sha256": "f3e8fee40b6b81b0d0e77effb0af625f4ab72b1565075700b58a1e0270bde285"
         },
         {
           "file": "reference/basiliskii-68k/34-popup-lists.png",
@@ -61,12 +61,23 @@
         }
       ],
       "clock_source": "live guest clock",
-      "source_capture_record_sha256": "fae0151d1b9d7cdf389667e0eb6b9c5610235c47898f3d5ceaab104787755b10"
+      "source_capture_record_sha256": "3613a482566a713008e56e3fb6f295ed634bacf534c2ea28a595adb7e5fe977f",
+      "runner_sha256": "6107fac0deb552633bfc304b1b85c2efdc323c26be26fed457eb5f5098f19a24",
+      "capture_recipe_sha256": "5ad90ce4030fece7b48af621e985064dfd7a0ba514e7d4fa9f6c99aac1898cb0",
+      "rom_sha256": "05ad753fb594e656cf078023ec189e09e2a7655a780de993b75b8c51ed6b09ca",
+      "system_disk_archive_sha256": "2a4985fec6b5b2a23f6141fd6de9a3066dcd87a6fe1412faefdd9d6c87876295",
+      "preferences_sha256": "a3c1c62f438817267bce62afc9748921a21427fb2237677fc7434d2cbccab2be",
+      "runner_environment": {
+        "SYSTEMLESS_BASILISK_MAC_TIME": "<runner default>",
+        "SYSTEMLESS_BASILISK_DETERMINISTIC_TICKS": "<runner default>",
+        "SYSTEMLESS_BASILISK_INSTRUCTIONS_PER_TICK": "<runner default>",
+        "SYSTEMLESS_BASILISK_CPUS": "<runner default>"
+      }
     },
     {
       "emulator": "sheepshaver",
       "source_revision": "96e512bd6376e78a2869f16dcc8a9028bce5ee72",
-      "image_id": "sha256:d2ed9be7ea9b9e7fe912aa0d8c7cd431146ae71c3b6d9ae33c7185b1654814e3",
+      "image_id": "sha256:0616fb4fb30387d31e2441a3d2aa7ef5803c855f8af8c5d83b5650ea28c78702",
       "system": "Mac OS 8.1",
       "width": 800,
       "height": 600,
@@ -78,7 +89,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/15-lists-selected.png",
-          "sha256": "42bedb9ead4392573712739ff5081242774d22e2e3f7d0d96db647878e60e786"
+          "sha256": "68bc5a162a11506f8c964d1f9da266402f528d1deb368ba16e45acf3feafbd50"
         },
         {
           "file": "reference/sheepshaver-ppc/15-lists-mutated.png",
@@ -94,7 +105,7 @@
         },
         {
           "file": "reference/sheepshaver-ppc/15-lists-inactive.png",
-          "sha256": "92eaf92c58920f3d3a9a6811dea2ba29d8e72cb25e2e5a9d4d5008d9b8932007"
+          "sha256": "f4993a4b44ed5cbac3bb9870dd7c8e1b0d8fb3887d986cf985bdad71f3d14e04"
         },
         {
           "file": "reference/sheepshaver-ppc/16-lists-interacted.png",
@@ -102,11 +113,22 @@
         },
         {
           "file": "reference/sheepshaver-ppc/34-popup-lists.png",
-          "sha256": "60983a87cf5154f06555ce62998c3433e997861eb324c7570809a30721f12063"
+          "sha256": "017ca07c92ed76c1615fcb5cfff719f7355a176eeb0a028a73a553619d1d56e3"
         }
       ],
       "clock_source": "60.15 Hz wall-clock pacing",
-      "source_capture_record_sha256": "8abf24b171f020a3b6757befb3c79c952efa7ee1220327a8859cdba121e54ab2"
+      "source_capture_record_sha256": "d4e9ce383d5c33d5f068b9f80a99d960c9ca682801f116949b96d6d983349048",
+      "runner_sha256": "5f7e1017df817b9ab0d2348d8b63ff93d5701004948580837930415c64c1604d",
+      "capture_recipe_sha256": "5ad90ce4030fece7b48af621e985064dfd7a0ba514e7d4fa9f6c99aac1898cb0",
+      "rom_sha256": "fd13c05d678bbc7bbb527f7f418cd2dbada522af422a97452eee3bfc5010f032",
+      "system_disk_archive_sha256": "797d3d28fc8aefcb67c53ea21af40692e89c52fdc10fe79d10c512e2df0018c6",
+      "preferences_sha256": "307e437a99d6c2e56ce234d44e7c5386c0889513c407cd307ff7fff47e213436",
+      "runner_environment": {
+        "SYSTEMLESS_SHEEPSHAVER_MAC_TIME": "<runner default>",
+        "SYSTEMLESS_SHEEPSHAVER_DETERMINISTIC_TICKS": "<runner default>",
+        "SYSTEMLESS_SHEEPSHAVER_INSTRUCTIONS_PER_TICK": "<runner default>",
+        "SYSTEMLESS_SHEEPSHAVER_CPUS": "<runner default>"
+      }
     }
   ]
 }

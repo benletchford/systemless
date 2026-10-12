@@ -1,0 +1,6 @@
+guest control font: id=50334016 proc=0 style=Some(ControlFontStyle { flags: 7, font: 3, size: 18, style: 1, mode: 0, justification: 0, foreground: [0, 0, 0], background: [0, 0, 0] })
+guest control font: id=50334336 proc=1 style=Some(ControlFontStyle { flags: 7, font: 3, size: 18, style: 1, mode: 0, justification: 0, foreground: [0, 0, 0], background: [0, 0, 0] })
+guest control font: id=50334656 proc=16 style=None
+styled title click toggled guest checkbox: id=50334336 value=1
+saved guest frame to /tmp/gpui-backdrop-freshness-ppc8.guest.png
+saved composed GPUI capture to /tmp/gpui-backdrop-freshness-ppc8.png

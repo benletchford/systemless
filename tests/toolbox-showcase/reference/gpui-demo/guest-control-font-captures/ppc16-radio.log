@@ -1,0 +1,14 @@
+guest control font: id=50334976 proc=1 style=None
+guest control font: id=50335296 proc=1 style=None
+guest control font: id=50335616 proc=16 style=None
+guest control font: id=50335936 proc=2 style=Some(ControlFontStyle { flags: 7, font: 3, size: 18, style: 1, mode: 0, justification: 0, foreground: [0, 0, 0], background: [0, 0, 0] })
+guest control font: id=50336256 proc=2 style=Some(ControlFontStyle { flags: 7, font: 3, size: 18, style: 1, mode: 0, justification: 0, foreground: [0, 0, 0], background: [0, 0, 0] })
+guest control font: id=50336576 proc=2 style=Some(ControlFontStyle { flags: 7, font: 3, size: 18, style: 1, mode: 0, justification: 0, foreground: [0, 0, 0], background: [0, 0, 0] })
+guest control font: id=50336896 proc=2 style=None
+guest control font: id=50337216 proc=2 style=None
+guest control font: id=50337536 proc=2 style=None
+guest control font: id=50337856 proc=0 style=None
+guest control font: id=50338176 proc=0 style=None
+guest control font: id=50338496 proc=0 style=None
+saved guest frame to /tmp/gpui-control-font-captures/ppc16-radio.guest.png
+saved composed GPUI capture to /tmp/gpui-control-font-captures/ppc16-radio.png

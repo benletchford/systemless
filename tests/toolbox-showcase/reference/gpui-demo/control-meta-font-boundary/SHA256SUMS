@@ -1,0 +1,2 @@
+a5f11c6addb71318992df8f76a108498ec3599b7b4c1310d771209185264459e  src/systems/macintosh/loader/ppc/dispatch_control.rs
+aee6486150f2b3566b5c5b92ba22dd3af788ecab45656d7aa4b7c8ff76a18695  src/systems/macintosh/loader/ppc/tests/control_manager.rs

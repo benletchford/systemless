@@ -1,0 +1,7 @@
+# Mounted-file Open reply correction
+
+Classic candidate creation resolves the mounted volume by directory ancestry. PPC completion supplies the mounted volume to modern replies and legacy working-directory resolution; the final modern reply writer now preserves that reference instead of replacing it with the boot volume.
+
+The expanded actual-guest selector regression passes across mono68k, colour68k, PPC8 and PPC16 (8.22s). A read-only Archive volume contains a TEXT file: guest popup navigation selects Archive, guest list input selects the file, Return accepts, and the fixture executes FSpOpenDF/GetEOF/FSRead/FSClose. Memory inspection verifies sfGood, volume -42, parent directory42000, successful read/close status and exact27-byte contents. All seven selector library regressions pass (7.41s), with debug enabled for guest memory assertions. Both earlier failing logs are retained; the diagnostic establishes PPC8 as the failure, rather than colour68k.
+
+This is actual guest/session evidence, not physical GPUI input or a newly reviewed composition. Legacy mounted-file acceptance and custom filter callbacks are not qualified by this modern StandardGetFile workflow. PPC custom-filter ioVRefNum still hard-codes the boot volume. Save destination navigation, native accessibility, independent font fidelity and broad production qualification remain open. All eight release gates remain open.

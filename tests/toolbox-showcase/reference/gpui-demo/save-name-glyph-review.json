@@ -1,0 +1,97 @@
+{
+  "fixture_sha256": "efc7d5b8858b49650c0a8099113f2be1f74ea7abd0f6f575417ec998c621ebf8",
+  "review": "GPUI uses resolved guest glyphs; 68k uses inherited font and selection to field edge, PPC uses system font and glyph range. Initial and edited states inspected. Static insertion feedback remains interim.",
+  "limits": [
+    "No native Macintosh font parity claim",
+    "No caret blinking qualification",
+    "No scale or activation matrix qualification",
+    "No native pointer capture qualification",
+    "No paint-time font mutation qualification"
+  ],
+  "captures": [
+    {
+      "mode": "mono",
+      "state": "selected",
+      "kind": "composed",
+      "file": "save-name-glyph-mono-selected.png",
+      "sha256": "c4e3c377e3123cc23aaaf72225c294d241937ef09cf403e8757e3e4ed9016387"
+    },
+    {
+      "mode": "mono",
+      "state": "selected",
+      "kind": "guest",
+      "file": "save-name-glyph-mono-selected.guest.png",
+      "sha256": "0c693656f84957b0e76c3a690cc10bb806a31d2f70b2cad0a383349b7117040d"
+    },
+    {
+      "mode": "mono",
+      "state": "edited",
+      "kind": "composed",
+      "file": "save-name-glyph-mono-edited.png",
+      "sha256": "bccc70224fe8346c2886b3f6b78fe96b1188419c1e4b9a0e55ecded324d4e6b5"
+    },
+    {
+      "mode": "mono",
+      "state": "edited",
+      "kind": "guest",
+      "file": "save-name-glyph-mono-edited.guest.png",
+      "sha256": "6450f1b634d04bad84dc10810421f731850e574db0e03651a9727e1831d7ec9d"
+    },
+    {
+      "mode": "colour",
+      "state": "selected",
+      "kind": "composed",
+      "file": "save-name-glyph-colour-selected.png",
+      "sha256": "c15bbd14d3f9188f9c8ce1cc7ac5ad5a0c3e7cb634112cd1f0e65f7e13b8ac83"
+    },
+    {
+      "mode": "colour",
+      "state": "selected",
+      "kind": "guest",
+      "file": "save-name-glyph-colour-selected.guest.png",
+      "sha256": "3648409aaf9c8eade573850fa12297873381ec41be1816cc955162e91c625f73"
+    },
+    {
+      "mode": "colour",
+      "state": "edited",
+      "kind": "composed",
+      "file": "save-name-glyph-colour-edited.png",
+      "sha256": "c941ab30be48e8a8417e9e909f40831a0fa8dab7629acd3b172f3dff43840590"
+    },
+    {
+      "mode": "colour",
+      "state": "edited",
+      "kind": "guest",
+      "file": "save-name-glyph-colour-edited.guest.png",
+      "sha256": "fbd4d7289c4364e679ecec3cc76152abcbe567fd7a21d85e9b06f01692ec4a53"
+    },
+    {
+      "mode": "ppc",
+      "state": "selected",
+      "kind": "composed",
+      "file": "save-name-glyph-ppc-selected.png",
+      "sha256": "92464c82a5d36997627b72b662e3d1616277622910063693f44983e094827637"
+    },
+    {
+      "mode": "ppc",
+      "state": "selected",
+      "kind": "guest",
+      "file": "save-name-glyph-ppc-selected.guest.png",
+      "sha256": "8a10d6b9cd7ba400d36ac05f3ec590afe87a12c7715593dc2c8d1cf0fadc0b99"
+    },
+    {
+      "mode": "ppc",
+      "state": "edited",
+      "kind": "composed",
+      "file": "save-name-glyph-ppc-edited.png",
+      "sha256": "5d8d5d8e58e1ec069eba417bce11ceab239a0756f2a08f20945400e5742a2252"
+    },
+    {
+      "mode": "ppc",
+      "state": "edited",
+      "kind": "guest",
+      "file": "save-name-glyph-ppc-edited.guest.png",
+      "sha256": "9762daa08d98f992caba00433ff24e43c537800d08a4dfbae77cc1a35ed4cb2a"
+    }
+  ]
+}

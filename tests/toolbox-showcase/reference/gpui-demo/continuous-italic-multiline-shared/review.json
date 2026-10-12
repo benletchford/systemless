@@ -1,0 +1,113 @@
+{
+  "scope": "All 16 selected multiline composed images explicitly visually reviewed across mono68k, colour68k, PPC8 and PPC16 at scene scales 0.75, 1, 1.5 and 2. No all-state, all-font/style, native-oracle, host or performance qualification.",
+  "images": [
+    {
+      "file": "multiline-ppc16-selected-none-0.75.png",
+      "sha256": "afd8ac0336512dee1d4bb3cea6fd0c34deeb9a82e887c9309bc7c4449278c175",
+      "observations": "Selected two-line mixed field appears smooth with original-font italic, native selection colours, second-line underline and retained view bounds. Application-drawn panel labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "PPC8/1.5 preview resized2400x1800 to1824x1368; PPC16/0.75 original dimensions.",
+      "capture_sha256": "4cdbe690e6aa149999924e0fd75d5f9015a21eb6ac677f7d152594892bb1be76"
+    },
+    {
+      "file": "multiline-ppc8-selected-none-1.5.png",
+      "sha256": "7a14c6e12a33f7e887e792c6bb27d845dcd1c94614e8ef97ca90f1d4da5f24e8",
+      "observations": "Selected two-line mixed field appears smooth with original-font italic, native selection colours, second-line underline and retained view bounds. Application-drawn panel labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "PPC8/1.5 preview resized2400x1800 to1824x1368; PPC16/0.75 original dimensions.",
+      "capture_sha256": "343f7e6a42218d0a60c5979b5643970a9c54c23a4bc79f19a8e771a6dce99b01"
+    },
+    {
+      "file": "multiline-mono-selected-none-0.75.png",
+      "sha256": "0ce28f7919339845dc16926aa9db759a17e50d8bf891f2cf283c632531a9029c",
+      "observations": "Selected two-line field shows smooth original-font glyphs, italic Size and underlined second-line Font with native selection colours and view bounds retained. Guest application-drawn content remains native; mono black custom panels retained. Sampled appearance only.",
+      "capture_sha256": "75e7fed650f8515b62c29971efcdde2d3d0021bbbd45c074df872e94aa1b62b5"
+    },
+    {
+      "file": "multiline-mono-selected-none-1.png",
+      "sha256": "f4d48c830e8ad42b371b044af038c186400d0b0c1b38570ee89361a64fd26082",
+      "observations": "Selected two-line field shows smooth original-font glyphs, italic Size and underlined second-line Font with native selection colours and view bounds retained. Guest application-drawn content remains native; mono black custom panels retained. Sampled appearance only.",
+      "capture_sha256": "777c91fc139b51c4033883127b8d9af875dae3adf803c2886aaded81174dd99c"
+    },
+    {
+      "file": "multiline-ppc16-selected-none-1.png",
+      "sha256": "8ec08b3aef621af8f3fee5c47682dde87c04fcd3e82f34ab351bd110450e63e3",
+      "observations": "Selected two-line field shows smooth original-font glyphs, italic Size and underlined second-line Font with native selection colours and view bounds retained. Guest application-drawn content remains native; mono black custom panels retained. Sampled appearance only.",
+      "capture_sha256": "2c205ea0940ad09de1fbd152bbae5a8928f72cb723f6fe3c346c53fdb5882c84"
+    },
+    {
+      "file": "multiline-ppc8-selected-none-0.75.png",
+      "sha256": "b3f55ccf6e234f73b45eb64e375f788089623761193a7c3f2ede0748b53f3284",
+      "observations": "Selected two-line field shows smooth original-font glyphs, italic Size and underlined second-line Font with native selection colours and view bounds retained. Guest application-drawn content remains native; mono black custom panels retained. Sampled appearance only.",
+      "capture_sha256": "2859054383bcd6b28edc37f8f9b68553a9999499aae9931a4a6f15286c9fce28"
+    },
+    {
+      "file": "multiline-mono-selected-none-1.5.png",
+      "sha256": "b1e848071fc59764ee784a336b00cb523a5cd32ba82b26f48c8459564b5be5e3",
+      "observations": "Selected two-line mixed field retains smooth original-font glyphs, italic Size, second-line underline, native selection colours and view bounds. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Preview resized to 1824x1368.",
+      "capture_sha256": "78ee2c425f7ef038182d93a7a7064a35f6e6699841db62723bb89b8516bf6e56"
+    },
+    {
+      "file": "multiline-mono-selected-none-2.png",
+      "sha256": "e967b19a070a0264f5c32fa8539253d8120f401ef92fe79b05ab7988590069b5",
+      "observations": "Selected two-line mixed field retains smooth original-font glyphs, italic Size, second-line underline, native selection colours and view bounds. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Preview resized to 1824x1368.",
+      "capture_sha256": "4f4007b341cbb708b9c9e60811c34efd94aad115b26a4a12cbd10b6fe35bf48d"
+    },
+    {
+      "file": "multiline-colour-selected-none-0.75.png",
+      "sha256": "ff87f3074c9f2d0cd7f16ca5b4011c2ff97600a13eac44da4b703636bceb2542",
+      "observations": "Selected two-line mixed field retains smooth original-font glyphs, italic Size, second-line underline, native selection colours and view bounds. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Preview at original dimensions.",
+      "capture_sha256": "fa548edd93769f1b2e6d3b53043b874ecaf366c61975968be0ea709afced6c8d"
+    },
+    {
+      "file": "multiline-colour-selected-none-1.png",
+      "sha256": "76981404ed7e2662ca4403cea100ad2f3792a5795bc8c3a4a13221a97b3958d3",
+      "observations": "Selected two-line mixed field retains smooth original-font glyphs, italic Size, second-line underline, native selection colours and view bounds. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Preview at original dimensions.",
+      "capture_sha256": "41e3ebadac43b327baacf6d2235de52d107f79500295ead33e670667fbba671c"
+    },
+    {
+      "file": "multiline-colour-selected-none-1.5.png",
+      "sha256": "72ba654ba4baa37afe0e572508c18b1dc95a3e0a373e26055b3bec277956a96e",
+      "observations": "Selected two-line mixed field retains smooth original-font glyphs, italic Size, second-line underline, native selection colours and view bounds. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Preview resized to 1824x1368.",
+      "capture_sha256": "10541ea065780dbeba4dfa352f50ab8cee211c43f2e4e24f78b46e4399dfcef1"
+    },
+    {
+      "file": "multiline-colour-selected-none-2.png",
+      "sha256": "18908111f3cc6969a667d8ee469010d160d2a17d08b65f16f1fb3b55c737fc90",
+      "observations": "Selected two-line mixed field retains smooth original-font glyphs, italic Size, second-line underline, native selection colours and view bounds. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Preview resized to 1824x1368.",
+      "capture_sha256": "186ea82d83de0e6469d65556e191b4242a38bba70655130cdea7293f94a6c8c3"
+    },
+    {
+      "file": "multiline-ppc8-selected-none-1.png",
+      "sha256": "7f873f8cc416593266d1a8609286ccd49f78d278d605e77575ebf57ff5e4d0ce",
+      "observations": "Selected two-line mixed field retains smooth original-font glyphs, italic Size, second-line underline, native selection colours and view bounds. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Preview at original dimensions.",
+      "capture_sha256": "c540ec0376e0eba12fff92c212a8c1a538ff74a2bb24df9a4c75d9c095fc55f2"
+    },
+    {
+      "file": "multiline-ppc8-selected-none-2.png",
+      "sha256": "3d26b07b22608b0889108c71e8808756b9caea66ecd35753fe8cbaab28df77a8",
+      "observations": "Selected two-line mixed field retains smooth original-font glyphs, italic Size, second-line underline, native selection colours and view bounds. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Preview resized to 1824x1368.",
+      "capture_sha256": "2882fe4e972fa3ce7ec4ca1f1991d452d15815cce8152a9ffb7714e6705de4f7"
+    },
+    {
+      "file": "multiline-ppc16-selected-none-1.5.png",
+      "sha256": "9cba1b554540d9ad4a2c37b26d934a4f2b27521b704c8a18b20a84ce9c1fd640",
+      "observations": "Selected two-line mixed field retains smooth original-font glyphs, italic Size, second-line underline, native selection colours and view bounds. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Preview resized to 1824x1368.",
+      "capture_sha256": "65870fc681d160f550188b04fbe44921b0f429d66485aa7efb2dc4138489001c"
+    },
+    {
+      "file": "multiline-ppc16-selected-none-2.png",
+      "sha256": "cb19e79fa6676dcc844c28bf8ce0f2abd176683c845d0fde0271687e1358fc1b",
+      "observations": "Selected two-line mixed field retains smooth original-font glyphs, italic Size, second-line underline, native selection colours and view bounds. Application-drawn labels remain guest pixels. Sampled appearance only.",
+      "preview_note": "Preview resized to 1824x1368.",
+      "capture_sha256": "631196be6580a75b519e8905ca5a0f2a6b4549297dce39355e234b493000ec03"
+    }
+  ]
+}

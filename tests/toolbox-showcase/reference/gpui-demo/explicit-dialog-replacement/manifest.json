@@ -1,0 +1,8 @@
+{
+  "base_head": "bc0753de0565f8ef8bb21d35e83c08fa63fa9c75",
+  "scope": "Explicit dialog replacement through production worker: four CPU/depth modes and wrapped PPC8/PPC16, caret restoration, stale rejection and sibling preservation. Existing GPUI modal composition regression passes. No physical IME, composed visual or native oracle qualification.",
+  "sha256": {
+    "worker.log": "5d372979a71846d3e8b28bd3bb4a18223100ad3d2f73a8c995ce30c200ad787e",
+    "platform.log": "28ef5accfb206ccab0b0774386c8442cf1ee8672dd091d5bed5f8c24af0320da"
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "scope": "Pixel equality and provenance only; guest modal state does not change in this host-state helper",
+  "cases": [
+    {
+      "case": "mono-0.75",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "mono-1",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "mono-1.5",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "mono-2",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "colour-0.75",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "colour-1",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "colour-1.5",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "colour-2",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "ppc8-0.75",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "ppc8-1",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "ppc8-1.5",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "ppc8-2",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "ppc16-0.75",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "ppc16-1",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "ppc16-1.5",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    },
+    {
+      "case": "ppc16-2",
+      "restoration_exact": true,
+      "inactive_same_pixels_as_active": true,
+      "active_matches_prior_reviewed_matrix": true
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "source_hashes": {
+    "src/bin/gpui_demo.rs": "34c55f51f37287a8bb01d435a0653991dcb4dec4515f9828a85a39805289d668",
+    "src/bin/gpui_demo_composition.rs": "f64b2355d5881b96df63a78acbf25bb6c401dae24e05840006665c1b780253a8"
+  },
+  "scope": "Shared test-window alert acknowledgment/input regression extended to modified key. Composition exclusion and direct modifier-event guard are source/compile evidence; physical IME, separate modifier-event simulation and editor restoration are not qualified.",
+  "result": {
+    "passed": 1,
+    "failed": 0,
+    "seconds": 0.39
+  }
+}

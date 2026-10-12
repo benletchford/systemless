@@ -1,0 +1,6 @@
+
+running 1 test
+test desktop::tests::styled_document_glyph_clicks_reach_guest_at_centered_scene_scales ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 126 filtered out; finished in 361.87s
+

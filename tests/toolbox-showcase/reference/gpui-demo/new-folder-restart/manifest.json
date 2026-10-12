@@ -1,0 +1,18 @@
+{
+  "base_head": "ec72350b1d18ef1321a93bc2503d629f2a792cbb",
+  "scope": "New Folder created by guest standard dialog survives production-store flush, dropped session and fresh initialized session in mono68k, colour68k, PPC8 and PPC16, both duplicate-file/directory workflow variants. Store tests cover exact directory metadata and removal. Not separate OS processes, physical shutdown, native UI or broad production qualification.",
+  "source_sha256": {
+    "src/bin/desktop/desktop_save_store.rs": "9481ddac58d01af25902a6781bb6f7757aab3c8d85aba1c871008dfdcaf3ecfc",
+    "src/bin/desktop/headless_time.rs": "08208e4fb9727affb8143269d4cd88254192cadab0103c2fd6174f031d99e918",
+    "src/bin/gpui_demo.rs": "dca23c322c6fac48878f4f392160f648c40b3494433ac25a0ae372944317ee09",
+    "src/systems/macintosh/runner/mod.rs": "030bbd0dc6fb391e36cafb3a97fcbcf09abf9d27d7c82ef39fe46dd8afb6f19c",
+    "src/systems/macintosh/runner/vfs.rs": "8a3ee22c51481344333f63c8a9b7f76ff0ab63b0fecc08330aa4fea87a9d02cf"
+  },
+  "sha256": {
+    "before.log": "f5bed0ade22166ec1ec5625c239899a20e3762759851943d1b8ad4f3b15a656c",
+    "default-build.log": "fec751f784ddb504bbb97d55d015aa218c57d46229fd56a5f9361141b2685d6f",
+    "guest-restart.log": "d58af8fddc108daee9a2c1ec006ed2f21d8d8d14252243c7a12263039fcafc5e",
+    "public-build.log": "4172533f184d3c41c9e54259400ef723434aaf27797529fa434867c87e238b29",
+    "store-tests.log": "1922b993cdd9e2d6ef96affd115697a8401f860e318e1ae807839b4f3a764ce3"
+  }
+}

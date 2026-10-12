@@ -1,0 +1,12 @@
+{
+  "scope": "One explicitly listed PPC16 multiline image reviewed while matrix runs; no full visual/font fidelity qualification.",
+  "images": [
+    {
+      "file": "multiline-ppc16-selected-none-1.png",
+      "sha256": "8ec08b3aef621af8f3fee5c47682dde87c04fcd3e82f34ab351bd110450e63e3",
+      "observations": "Two-line selected original-font text preserves smooth plain, bold, colour, italic and underlined glyphs, clipping and guest selection bounds. Native application labels retained.",
+      "preview_note": "Original1600x1200 dimensions.",
+      "capture_sha256": "2c205ea0940ad09de1fbd152bbae5a8928f72cb723f6fe3c346c53fdb5882c84"
+    }
+  ]
+}

@@ -1,0 +1,452 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index 9133ecaa..16183441 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -605,11 +605,19 @@ mod desktop {
+                                 let events = session.runner().event_manager_snapshot();
+                                 let in_event = events.queue_len != 0 || events.last_record.is_some_and(|record| record.what != 0)
+                                     || session.runner().is_ui_tracking_active();
+-                                let same_field = session.runner_mut().text_edit_snapshot().records.iter().any(|record|
+-                                    record.active && (record.guest_id, record.generation) == owner.identity
+-                                        && record.owner_port == owner.port);
++                                let same_field = match owner.target {
++                                    super::input::TextInputTarget::Document { port } => session.runner_mut().text_edit_snapshot().records.iter().any(|record|
++                                        record.active && (record.guest_id, record.generation) == owner.identity && record.owner_port == port),
++                                    super::input::TextInputTarget::Dialog { item, content_revision } => {
++                                        let dialogs = session.runner_mut().dialog_snapshot();
++                                        let windows = session.runner_mut().window_frame_snapshot();
++                                        super::input::dialog_text_owner(&dialogs, &windows).is_some_and(|actual|
++                                            actual.identity == owner.identity && actual.item == item && actual.content_revision == content_revision)
++                                    }
++                                };
+                                 let document = session.runner().standard_file_snapshot().is_none()
+-                                    && !session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active);
++                                    && (matches!(owner.target, super::input::TextInputTarget::Dialog { .. })
++                                        || !session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active));
+                                 if !pointer_down && same_field && document && in_event
+                                     && text_commit_wait.get_or_insert_with(Instant::now).elapsed() < Duration::from_millis(250) {
+                                     queued.push_front(Command::CommitText(owner, bytes));
+@@ -8915,7 +8923,7 @@ mod desktop {
+                 assert_eq!(matches!(record.line_layout_policy, systemless::runner::TextEditLineLayoutPolicy::PpcRunMetrics), powerpc);
+                 let mut composition = super::super::input::GuestComposition::default();
+                 let owner = super::super::input::TextInputOwner { identity: (record.guest_id, record.generation),
+-                    port: record.owner_port, text: record.text.clone(), selection: record.selection.0..record.selection.1 };
++                    target: super::super::input::TextInputTarget::Document { port: record.owner_port }, text: record.text.clone(), selection: record.selection.0..record.selection.1 };
+                 composition.synchronize(Some(owner.clone()));
+                 let mut expected = owner.text.clone(); expected.splice(owner.selection.clone(), [0x8e, b'Z']);
+                 for text in ["é", "Z"] {
+@@ -8943,6 +8951,89 @@ mod desktop {
+             }
+         }
+ 
++        #[cfg(feature = "gpui-demo-test")]
++        #[test]
++        fn worker_preserves_rapid_modal_composed_text_commits() {
++            use clap::Parser;
++            use super::{Args, Command, Update};
++            use std::sync::{mpsc, Arc, Mutex};
++            use std::time::{Duration, Instant};
++            struct Worker(mpsc::Sender<Command>, Option<std::thread::JoinHandle<()>>);
++            impl Drop for Worker {
++                fn drop(&mut self) {
++                    let _ = self.0.send(Command::Shutdown);
++                    if let Some(handle) = self.1.take() { let _ = handle.join(); }
++                }
++            }
++            fn wait(stage: &str, updates: &Mutex<Option<Update>>, ready: impl Fn(&Update) -> bool) -> Update {
++                let start = Instant::now();
++                loop {
++                    if let Some(update) = updates.lock().unwrap().take() {
++                        if ready(&update) { return update; }
++                    }
++                    assert!(start.elapsed() < Duration::from_secs(15), "worker did not complete composed text: {stage}");
++                    std::thread::sleep(Duration::from_millis(10));
++                }
++            }
++            for (powerpc, depth) in [(false, Some(1u16)), (false, Some(8)), (true, Some(8)), (true, None)] {
++                let mut argv = vec!["gpui-menu-demo".to_string(), PathBuf::from(env!("CARGO_MANIFEST_DIR"))
++                    .join("tests/toolbox-showcase/toolbox-showcase.sit").to_string_lossy().into_owned()];
++                if powerpc { argv.push("--prefer-powerpc".into()); }
++                if let Some(depth) = depth { argv.extend(["--screen-depth".into(), depth.to_string()]); }
++                let args = Args::try_parse_from(argv).unwrap();
++                let (sender, receiver) = mpsc::channel();
++                let updates = Arc::new(Mutex::new(None));
++                let output = updates.clone();
++                let worker = Worker(sender, Some(std::thread::spawn(move || super::run_guest(args, receiver, output, false))));
++                let initial = wait("menus", &updates, |update| update.menus.menus.iter().any(|menu| menu.id == 132));
++                let menu = initial.menus.menus.iter().find(|menu| menu.id == 132).unwrap();
++                worker.0.send(Command::Menu(132, 6, menu.guest_id, menu.generation)).unwrap();
++                let modal = wait("modal dialog", &updates, |update| update.dialogs.iter().any(|dialog| dialog.visible && dialog.items.len() == 10));
++                let dialog = modal.dialogs.iter().find(|dialog| dialog.visible && dialog.items.len() == 10).unwrap();
++                let rect = dialog.items[8].bounds;
++                for input in [MacintoshInput::MouseDown { vertical: rect.0 + 5, horizontal: rect.1 + 1 },
++                    MacintoshInput::MouseUp { vertical: rect.0 + 5, horizontal: rect.1 + 1 }] {
++                    worker.0.send(Command::Input(input)).unwrap();
++                }
++                let focused = wait("focused modal field", &updates, |update| update.dialogs.iter().any(|dialog| dialog.visible && dialog.active && dialog.edit_field == Some(9)));
++                let dialog_owner = super::super::input::dialog_text_owner(&focused.dialogs, &focused.windows).unwrap();
++                let before = focused.dialogs.iter().find(|dialog| dialog.guest_id == dialog_owner.identity.0).unwrap().clone();
++                let actual_depth = depth.unwrap_or(16);
++                let mut composition = super::super::input::GuestComposition::default();
++                let owner = super::super::input::TextInputOwner { identity: dialog_owner.identity,
++                    target: super::super::input::TextInputTarget::Dialog { item: dialog_owner.item, content_revision: dialog_owner.content_revision },
++                    text: dialog_owner.text, selection: dialog_owner.selection };
++                composition.synchronize(Some(owner.clone()));
++                let mut expected = owner.text.clone(); expected.splice(owner.selection.clone(), [0x8e, b'Z']);
++                for text in ["é", "Z"] {
++                    let (owner, bytes) = composition.commit(text).unwrap();
++                    worker.0.send(Command::CommitText(owner, bytes)).unwrap();
++                }
++                let expected_text = systemless::systems::macintosh::mac_roman::decode_mac_roman(&expected);
++                let completed = wait("modal commits", &updates, |update| update.dialogs.iter().any(|dialog|
++                    (dialog.guest_id, dialog.generation) == owner.identity && dialog.items[8].text == expected_text));
++                let after = completed.dialogs.iter().find(|dialog| (dialog.guest_id, dialog.generation) == owner.identity).unwrap();
++                let caret = (owner.selection.start + 2) as i16;
++                assert_eq!(after.items[8].selection, Some((caret, caret)));
++                assert_eq!(after.items[6].text, before.items[6].text);
++                assert_eq!(after.items[8].bounds, before.items[8].bounds);
++                // A stale request must report rejection persistently, even if
++                // the frontend misses the first worker frame carrying it.
++                worker.0.send(Command::CommitText(owner.clone(), vec![b'x'])).unwrap();
++                let rejected = wait("rejection", &updates, |update| update.text_commit_rejection.is_some());
++                assert_eq!(rejected.text_commit_rejection.as_ref().unwrap().1, owner);
++                let revision = rejected.text_commit_rejection.as_ref().unwrap().0;
++                let repeated = wait("persistent rejection", &updates, |update|
++                    update.text_commit_rejection.as_ref().is_some_and(|(value, _)| *value == revision));
++                assert_eq!(repeated.text_commit_rejection.as_ref().unwrap().1, owner);
++                let actual = repeated.dialogs.iter().find(|dialog| (dialog.guest_id, dialog.generation) == owner.identity).unwrap();
++                assert_eq!(actual.items[8].text, expected_text);
++                assert_eq!(actual.items[6].text, before.items[6].text);
++                eprintln!("PASS worker-modal-rapid-composition-and-rejection powerpc={powerpc} depth={actual_depth}");
++                drop(worker);
++            }
++        }
++
+         #[cfg(feature = "gpui-demo-test")]
+         #[gpui_kit::test]
+         fn plain_guest_text_service_geometry_uses_actual_field(cx: &mut gpui_kit::TestAppContext) {
+@@ -9163,10 +9254,10 @@ mod desktop {
+                 settle(&mut session);
+                 let before = session.runner_mut().text_edit_snapshot().records.into_iter().find(|record| record.styled).unwrap();
+                 let owner = super::super::input::TextInputOwner { identity: (before.guest_id, before.generation),
+-                    port: before.owner_port, text: before.text.clone(), selection: before.selection.0..before.selection.1 };
++                    target: super::super::input::TextInputTarget::Document { port: before.owner_port }, text: before.text.clone(), selection: before.selection.0..before.selection.1 };
+                 for invalid in 0..4 {
+                     let mut stale = owner.clone();
+-                    match invalid { 0 => stale.identity.1 += 1, 1 => stale.port += 1,
++                    match invalid { 0 => stale.identity.1 += 1, 1 => stale.target = super::super::input::TextInputTarget::Document { port: before.owner_port + 1 },
+                         2 => stale.text.push(b'x'), _ => stale.selection = 0..usize::MAX }
+                     assert!(super::super::input::guest_commit_inputs(&mut session, &stale, b"x").is_none());
+                 }
+@@ -11086,6 +11177,74 @@ mod desktop {
+             }
+         }
+ 
++        #[cfg(feature = "gpui-demo-test")]
++        #[gpui_kit::test]
++        fn modal_platform_composition_commits_to_active_guest_item(cx: &mut gpui_kit::TestAppContext) {
++            use gpui_kit::{AppContext, EntityInputHandler, Bounds, test::TestWindowExt};
++            cx.update(gpui_kit::init);
++            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
++                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
++                session.runner_mut().set_prefer_powerpc_executables(powerpc);
++                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
++                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
++                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
++                session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
++                assert!(session.runner_mut().select_guest_menu_item(132, 6)); settle(&mut session);
++                let dialog = session.runner_mut().dialog_snapshot().into_iter().find(|dialog| dialog.visible && dialog.items.len() == 10).unwrap();
++                let bounds = dialog.items[8].bounds;
++                for input in [MacintoshInput::MouseDown { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 },
++                    MacintoshInput::MouseUp { vertical: bounds.0 + 5, horizontal: bounds.1 + 1 }] {
++                    session.deliver_input(input); settle(&mut session);
++                }
++                let dialogs = session.runner_mut().dialog_snapshot();
++                let before = dialogs.iter().find(|next| next.guest_id == dialog.guest_id).unwrap().clone();
++                let (sender, receiver) = std::sync::mpsc::channel();
++                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
++                    |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
++                cx.update_window(window.into(), |_, window, cx| {
++                    window.render_frame(cx);
++                    view.update(cx, |demo, cx| {
++                        demo.width = 800; demo.height = 600; demo.dialogs = dialogs;
++                        demo.windows = session.runner_mut().window_frame_snapshot();
++                        demo.host_active = Some(true); window.focus(&demo.focus, cx); cx.notify();
++                    });
++                    window.render_frame(cx);
++                    view.update(cx, |demo, cx| {
++                        let owner = demo.composition.owner().unwrap().clone();
++                        assert!(matches!(owner.target, super::super::input::TextInputTarget::Dialog { item: 9, .. }));
++                        assert!(demo.bounds_for_range(owner.selection.clone(), Bounds::default(), window, cx).is_some());
++                        demo.replace_and_mark_text_in_range(None, "日😀", Some(1..3), window, cx);
++                        assert!(demo.composition_surface(cx).is_some());
++                    });
++                    window.render_frame(cx);
++                    window.press("escape", cx);
++                    assert!(view.read(cx).composition.preedit.is_none());
++                }).unwrap();
++                receiver.try_iter().for_each(drop);
++                cx.simulate_input(window.into(), "éZ");
++                let commands: Vec<_> = receiver.try_iter().collect();
++                assert!(!commands.iter().any(|command| matches!(command,
++                    super::Command::Input(MacintoshInput::KeyDown { character, .. } | MacintoshInput::KeyUp { character, .. }) if *character != 0)),
++                    "committed text must not duplicate physical character events");
++                let commits: Vec<_> = commands.into_iter().filter_map(|command| match command {
++                    super::Command::CommitText(owner, bytes) => Some((owner, bytes)), _ => None,
++                }).collect();
++                assert_eq!(commits.len(), 2);
++                for (owner, bytes) in commits {
++                    let inputs = super::super::input::guest_commit_inputs(&mut session, &owner, &bytes).unwrap();
++                    for pair in inputs.chunks_exact(2) {
++                        session.deliver_input(pair[0]); session.deliver_input(pair[1]); settle(&mut session);
++                    }
++                }
++                let after = session.runner_mut().dialog_snapshot().into_iter().find(|next| next.guest_id == before.guest_id).unwrap();
++                assert_eq!(after.items[8].text, format!("éZ{}", before.items[8].text));
++                assert_eq!(after.items[8].selection, Some((2, 2)));
++                assert_eq!(after.items[6].text, before.items[6].text);
++                eprintln!("PASS modal-platform-composition powerpc={powerpc} depth={depth}");
++                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
++            }
++        }
++
+         #[test]
+         fn modal_composed_commit_pins_active_dialog_item_and_rejects_stale_input() {
+             use super::super::input::{dialog_text_owner, guest_dialog_commit_inputs};
+diff --git a/src/bin/gpui_demo_composition.rs b/src/bin/gpui_demo_composition.rs
+index 33ed1947..55126060 100644
+--- a/src/bin/gpui_demo_composition.rs
++++ b/src/bin/gpui_demo_composition.rs
+@@ -45,11 +45,17 @@ fn marked_lines(text: &str) -> Vec<MarkedLine> {
+ #[derive(Clone)]
+ struct MarkedRow { start: usize, positions: Vec<(usize, f32)>, origin: (f32, f32) }
+ 
++#[derive(Clone)]
++enum PaintedSource {
++    Document(systemless::runner::TextEditSnapshot),
++    Dialog(systemless::runner::DialogSnapshot),
++}
++
+ #[derive(Clone)]
+ pub(super) struct PaintedComposition {
+     owner: super::super::input::TextInputOwner,
+     preedit: super::super::input::Preedit,
+-    record: systemless::runner::TextEditSnapshot,
++    record: PaintedSource,
+     transform: ((f32, f32), f32),
+     clip: (f32, f32, f32, f32),
+     rows: Vec<MarkedRow>,
+@@ -59,24 +65,84 @@ impl Demo {
+     pub(super) fn synchronize_composition(&mut self, window: &Window, _: &mut Context<Self>) {
+         let eligible = self.focus.is_focused(window) && self.host_active != Some(false)
+             && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none()
+-            && self.standard_file.is_none() && !self.dialogs.iter().any(|dialog| dialog.visible && dialog.active);
++            && self.standard_file.is_none();
+         let mut records = self.text_edits.iter().filter(|record| record.active && record.drawing_intact);
+         let record = records.next();
+-        let owner = if eligible && records.next().is_none() {
++        let owner = if eligible && self.dialogs.iter().any(|dialog| dialog.visible && dialog.active) {
++            super::super::input::dialog_text_owner(&self.dialogs, &self.windows).map(|owner|
++                super::super::input::TextInputOwner { identity: owner.identity,
++                    target: super::super::input::TextInputTarget::Dialog { item: owner.item, content_revision: owner.content_revision },
++                    text: owner.text, selection: owner.selection })
++        } else if eligible && records.next().is_none() {
+             record.filter(|record| record.global_view_rect.is_some()).map(|record|
+                 super::super::input::TextInputOwner { identity: (record.guest_id, record.generation),
+-                    port: record.owner_port, text: record.text.clone(), selection: record.selection.0..record.selection.1 })
++                    target: super::super::input::TextInputTarget::Document { port: record.owner_port }, text: record.text.clone(), selection: record.selection.0..record.selection.1 })
+         } else { None };
+         self.composition.synchronize(owner);
+     }
+ 
++    fn dialog_field(&self, owner: &super::super::input::TextInputOwner)
++        -> Option<(&systemless::runner::DialogSnapshot, &systemless::runner::DialogItemSnapshot)> {
++        let super::super::input::TextInputTarget::Dialog { item, content_revision } = owner.target else { return None; };
++        let dialog = self.dialogs.iter().find(|dialog| (dialog.guest_id, dialog.generation) == owner.identity
++            && dialog.content_revision == content_revision && dialog.visible && dialog.active && dialog.edit_field == Some(item))?;
++        let field = dialog.items.iter().find(|field| field.number == item && field.enabled && field.visible && field.edit_text_layout.is_some())?;
++        if field.text != systemless::systems::macintosh::mac_roman::decode_mac_roman(&owner.text) { return None; }
++        Some((dialog, field))
++    }
++
++    fn dialog_bounds(&self, range: Range<usize>) -> Option<Bounds<Pixels>> {
++        let owner = self.composition.owner()?;
++        let (_, field) = self.dialog_field(owner)?;
++        if range.start > range.end || range.end > owner.text.len() || !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
++        let layout = field.edit_text_layout.as_ref()?;
++        if layout.wrap { return None; }
++        let line = super::super::text::ClassicLine::unicode(&field.text, layout.font.0, layout.font.1);
++        let left = i32::from(field.bounds.1) + 1 + *line.positions.get(range.start)?
++            - i32::from(range.is_empty() && layout.text_edit_geometry && range.start > 0);
++        let right = if range.is_empty() { left + 1 } else { i32::from(field.bounds.1) + 1 + *line.positions.get(range.end)? };
++        let left = left.max(i32::from(field.bounds.1)); let right = right.min(i32::from(field.bounds.3));
++        let top = field.bounds.0;
++        let bottom = i32::from(top).saturating_add(i32::from(layout.line_height)).min(i32::from(field.bounds.2));
++        if left >= right || i32::from(top) >= bottom { return None; }
++        Some(Bounds::new(point(px(self.display_origin.0 + left as f32 * self.display_scale),
++            px(self.display_origin.1 + f32::from(top) * self.display_scale)),
++            size(px((right - left) as f32 * self.display_scale), px((bottom - i32::from(top)) as f32 * self.display_scale))))
++    }
++
++    fn dialog_index_for_point(&self, point: Point<Pixels>) -> Option<usize> {
++        let owner = self.composition.owner()?;
++        let (_, field) = self.dialog_field(owner)?;
++        if !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
++        let x = (f32::from(point.x) - self.display_origin.0) / self.display_scale;
++        let y = (f32::from(point.y) - self.display_origin.1) / self.display_scale;
++        if !x.is_finite() || !y.is_finite() || x < f32::from(field.bounds.1) || x >= f32::from(field.bounds.3)
++            || y < f32::from(field.bounds.0) || y >= f32::from(field.bounds.2) { return None; }
++        let layout = field.edit_text_layout.as_ref()?;
++        if layout.wrap { return None; }
++        let line = super::super::text::ClassicLine::unicode(&field.text, layout.font.0, layout.font.1);
++        line.positions.iter().enumerate().min_by(|a, b|
++            (f32::from(field.bounds.1) + 1. + *a.1 as f32 - x).abs().total_cmp(
++                &(f32::from(field.bounds.1) + 1. + *b.1 as f32 - x).abs())).map(|(offset, _)| offset)
++    }
++
+     /// Unicode staging belongs to the host text service. It uses host typography
+     /// in a separate surface, never as a replacement for committed guest glyphs.
+     pub(super) fn composition_surface(&self, cx: &Context<Self>) -> Option<AnyElement> {
+         let owner = self.composition.owner()?;
+         let preedit = self.composition.preedit.clone()?;
++        if !self.display_scale.is_finite() || self.display_scale <= 0. { return None; }
++        let (x, y, line_height, view, cache_record) = if matches!(owner.target, super::super::input::TextInputTarget::Dialog { .. }) {
++            let (dialog, field) = self.dialog_field(owner)?;
++            let layout = field.edit_text_layout.as_ref()?;
++            if layout.wrap { return None; }
++            let line = super::super::text::ClassicLine::unicode(&field.text, layout.font.0, layout.font.1);
++            let pen = *line.positions.get(owner.selection.start)?;
++            (i32::from(field.bounds.1) + 1 + pen, i32::from(field.bounds.0), layout.line_height,
++                field.bounds, PaintedSource::Dialog(dialog.clone()))
++        } else {
+         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
+-        if record.text != owner.text || self.display_scale <= 0. { return None; }
++        if record.text != owner.text { return None; }
+         let starts = record.line_starts.as_ref()?;
+         let index = starts.partition_point(|start| *start <= owner.selection.start).saturating_sub(1)
+             .min(starts.len().checked_sub(2)?);
+@@ -86,17 +152,18 @@ impl Demo {
+         let x = i32::from(dest.1) - i32::from(record.dest_rect.1) + i32::from(geometry.left)
+             + i32::from(text_range_width(record, starts[index]..owner.selection.start)?);
+         let y = i32::from(dest.0) - i32::from(record.dest_rect.0) + i32::from(geometry.top);
++        (x, y, geometry.height, view, PaintedSource::Document(record.clone()))
++        };
+         if x < i32::from(view.1) || x >= i32::from(view.3) || y < i32::from(view.0) || y >= i32::from(view.2) { return None; }
+         let width = 240f32.min(self.width as f32 * self.display_scale).max(1.);
+         let lines = marked_lines(&preedit.text);
+         let height = (lines.len().max(1) as f32 * 20. + 8.).min(168.).min(self.height as f32 * self.display_scale);
+         let left = (self.display_origin.0 + x as f32 * self.display_scale)
+             .min(self.display_origin.0 + self.width as f32 * self.display_scale - width);
+-        let top = (self.display_origin.1 + (y + i32::from(geometry.height)) as f32 * self.display_scale)
++        let top = (self.display_origin.1 + (y + i32::from(line_height)) as f32 * self.display_scale)
+             .min(self.display_origin.1 + self.height as f32 * self.display_scale - height);
+         let cache = self.composition_geometry.clone();
+         let cache_owner = owner.clone();
+-        let cache_record = record.clone();
+         let transform = (self.display_origin, self.display_scale);
+         let foreground = cx.theme().foreground;
+         let selection = cx.theme().selection;
+@@ -163,7 +230,10 @@ impl Demo {
+         (self.composition.owner() == Some(&painted.owner)
+             && self.composition.preedit.as_ref() == Some(&painted.preedit)
+             && painted.transform == (self.display_origin, self.display_scale)
+-            && self.text_edits.iter().any(|record| record == &painted.record)).then_some(painted)
++            && match &painted.record {
++                PaintedSource::Document(expected) => self.text_edits.iter().any(|record| record == expected),
++                PaintedSource::Dialog(expected) => self.dialogs.iter().any(|dialog| dialog == expected),
++            }).then_some(painted)
+     }
+ 
+     fn marked_bounds(&self, range: Range<usize>) -> Option<Bounds<Pixels>> {
+@@ -263,6 +333,7 @@ impl EntityInputHandler for Demo {
+     fn bounds_for_range(&mut self, range: Range<usize>, _: Bounds<Pixels>,
+         _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
+         if self.composition.preedit.is_some() { return self.marked_bounds(range); }
++        if matches!(self.composition.owner()?.target, super::super::input::TextInputTarget::Dialog { .. }) { return self.dialog_bounds(range); }
+         let owner = self.composition.owner()?;
+         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
+         // Geometry is meaningful only for the currently painted guest text.
+@@ -294,6 +365,7 @@ impl EntityInputHandler for Demo {
+     }
+     fn character_index_for_point(&mut self, point: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+         if self.composition.preedit.is_some() { return self.marked_index_for_point(point); }
++        if matches!(self.composition.owner()?.target, super::super::input::TextInputTarget::Dialog { .. }) { return self.dialog_index_for_point(point); }
+         let owner = self.composition.owner()?;
+         let record = self.text_edits.iter().find(|record| (record.guest_id, record.generation) == owner.identity)?;
+         if self.composition.preedit.is_some() || record.text != owner.text
+diff --git a/src/bin/gpui_demo_input.rs b/src/bin/gpui_demo_input.rs
+index 1d1e652a..2641ac17 100644
+--- a/src/bin/gpui_demo_input.rs
++++ b/src/bin/gpui_demo_input.rs
+@@ -174,10 +174,16 @@ pub(crate) fn guest_key(keystroke: &Keystroke) -> Option<(u8, u8)> {
+ 
+ /// Host preedit is transient: the guest is changed only after a complete commit.
+ /// Mac Roman guest offsets are UTF-16 offsets because every decoded byte is BMP.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(crate) enum TextInputTarget {
++    Document { port: u32 },
++    Dialog { item: i16, content_revision: u64 },
++}
++
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub(crate) struct TextInputOwner {
+     pub identity: (u32, u64),
+-    pub port: u32,
++    pub target: TextInputTarget,
+     pub text: Vec<u8>,
+     pub selection: std::ops::Range<usize>,
+ }
+@@ -214,7 +220,7 @@ impl GuestComposition {
+                 // the next commit at that stale guest selection.
+                 if self.pending_commits.iter().any(|(base, bytes)| {
+                     if actual == base { return true; }
+-                    if actual.identity != base.identity || actual.port != base.port { return false; }
++                    if actual.identity != base.identity || actual.target != base.target { return false; }
+                     let retained = base.text.len() - base.selection.len();
+                     let Some(inserted) = actual.text.len().checked_sub(retained) else { return false; };
+                     inserted <= bytes.len()
+@@ -279,10 +285,10 @@ impl GuestComposition {
+ 
+ #[cfg(test)]
+ mod composition_tests {
+-    use super::{GuestComposition, TextInputOwner};
++    use super::{GuestComposition, TextInputOwner, TextInputTarget};
+ 
+     fn owner() -> TextInputOwner {
+-        TextInputOwner { identity: (42, 3), port: 100,
++        TextInputOwner { identity: (42, 3), target: TextInputTarget::Document { port: 100 },
+             text: vec![b'a', 0x8e, b'b'], selection: 1..2 }
+     }
+ 
+@@ -348,7 +354,7 @@ mod composition_tests {
+             let mut changed = initial;
+             match mutation {
+                 0 => changed.identity.1 += 1,
+-                1 => changed.port += 1,
++                1 => changed.target = TextInputTarget::Document { port: 101 },
+                 2 => changed.text.push(b'x'),
+                 3 => changed.selection = 0..0,
+                 _ => changed.selection = 0..99,
+@@ -376,6 +382,13 @@ pub(crate) fn guest_commit_inputs(
+     owner: &TextInputOwner,
+     bytes: &[u8],
+ ) -> Option<Vec<MacintoshInput>> {
++    if let TextInputTarget::Dialog { item, content_revision } = owner.target {
++        return guest_dialog_commit_inputs(session, &DialogTextOwner {
++            identity: owner.identity, item, content_revision,
++            text: owner.text.clone(), selection: owner.selection.clone(),
++        }, bytes);
++    }
++    let TextInputTarget::Document { port } = owner.target else { return None; };
+     if session.runner().is_ui_tracking_active()
+         || session.runner().standard_file_snapshot().is_some()
+         || session.runner_mut().dialog_snapshot().iter().any(|dialog| dialog.visible && dialog.active) {
+@@ -389,7 +402,7 @@ pub(crate) fn guest_commit_inputs(
+     let records = session.runner_mut().text_edit_snapshot().records;
+     let record = records.iter().find(|record| record.active && record.drawing_intact
+         && (record.guest_id, record.generation) == owner.identity
+-        && record.owner_port == owner.port && record.text == owner.text
++        && record.owner_port == port && record.text == owner.text
+         && record.selection == (owner.selection.start, owner.selection.end))?;
+     if records.iter().filter(|record| record.active && record.drawing_intact).count() != 1
+         || record.global_view_rect.is_none() { return None; }

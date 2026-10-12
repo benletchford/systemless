@@ -505,6 +505,60 @@ impl super::TrapDispatcher {
         bus: &MacMemoryBus,
         event_mask: u16,
     ) -> Option<super::dispatch::QueuedEvent> {
+        let queued = self.peek_toolbox_event_without_activation(bus, event_mask);
+        let activation = self.peek_process_activation_event(event_mask);
+        match (activation, queued) {
+            (Some(activation), Some(queued))
+                if Self::toolbox_event_priority(activation.what)
+                    < Self::toolbox_event_priority(queued.what) =>
+            {
+                Some(activation)
+            }
+            (activation, queued) => queued.or(activation),
+        }
+    }
+
+    pub(crate) fn service_process_activation(&mut self, bus: &mut MacMemoryBus, yields: bool) {
+        if !self.event_queue.with_ref(|queue| queue.activation.needs_event_service()) {
+            return;
+        }
+        let front = self.front_window_for_trap(bus);
+        // Toolbox Essentials (1992), "Switching Contexts", pp. 2-19--2-20:
+        // dBoxProc blocks major switching; movableDBoxProc does not.
+        let allowed = (front == 0 || self.window_proc_id(front) != 1)
+            && !self.is_dialog_tracking() && !self.is_menu_tracking()
+            && !self.is_standard_file_get_tracking() && !self.is_standard_file_put_tracking()
+            && !self.is_control_tracking() && !self.is_window_tracking()
+            && !self.is_go_away_tracking() && !self.is_grow_window_tracking()
+            && !self.is_region_tracking();
+        let policy = self.application_size.with_ref(|size| *size);
+        let notification = self.event_queue.with_mut(|queue| {
+            queue.activation.begin_event_call(policy, yields, allowed);
+            queue.activation.peek()
+        });
+        if allowed {
+            if let Some(crate::process_manager::activation::ActivationNotification::Window { active }) = notification {
+                self.hilite_process_front_window(bus, front, active);
+                self.event_queue.with_mut(|queue| queue.activation.consume());
+            }
+        }
+    }
+
+    fn peek_process_activation_event(&self, event_mask: u16) -> Option<super::dispatch::QueuedEvent> {
+        let tick = self.current_tick();
+        let position = self.input_state.mouse_position();
+        let modifiers = self.current_event_modifiers();
+        self.event_queue.with_mut(|queue| {
+            queue.activation.prepare_os_event(tick, position, modifiers);
+            queue.activation.peek_os_event(event_mask)
+        })
+    }
+
+    fn peek_toolbox_event_without_activation(
+        &mut self,
+        bus: &MacMemoryBus,
+        event_mask: u16,
+    ) -> Option<super::dispatch::QueuedEvent> {
         self.enqueue_open_application_event_if_needed(event_mask);
         self.enqueue_auto_key_if_due(
             bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
@@ -574,6 +628,28 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         event_mask: u16,
     ) -> (u16, u32, u32, i16, i16, u16, bool) {
+        // Dialog button tracking follows physical release, independently of
+        // the application's requested event mask (MTE 1992, pp. 5-57--5-59).
+        // An app-owned press only restores its pixels; its queued mouseUp stays
+        // available to the application. A retained Dialog Manager press owns
+        // its matching release, but must not swallow older unrelated mouseUps.
+        if self.retained_modal_dialog_click.is_some() && !self.input_state.mouse_button_pressed() {
+            let (where_v, where_h) = self.input_state.mouse_position();
+            let release = super::dispatch::QueuedEvent {
+                what: 2, message: 0, when: self.current_tick(), where_v, where_h,
+                modifiers: self.current_event_modifiers(),
+            };
+            if self.consume_retained_modal_dialog_event(cpu, bus, &release) {
+                let index = self.event_queue.iter().position(|event|
+                    event.what == 2 && event.where_v == where_v && event.where_h == where_h);
+                if let Some(index) = index { self.event_queue.remove(index); }
+                // Match the retained release path below: finishing an owned
+                // gesture yields a null event. Disposal's queued activation and
+                // update events remain for the next application poll.
+                return (0, 0, self.current_tick(), where_v, where_h,
+                    self.current_event_modifiers(), false);
+            }
+        }
         self.enqueue_open_application_event_if_needed(event_mask);
         self.enqueue_auto_key_if_due(
             bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
@@ -582,6 +658,16 @@ impl super::TrapDispatcher {
         );
         if Self::event_matches_mask(event_mask, 6) {
             self.service_window_picture_updates(cpu, bus);
+        }
+        if let Some(event) = self.peek_process_activation_event(event_mask) {
+            let queued = self.peek_toolbox_event_without_activation(bus, event_mask);
+            if queued.is_none_or(|queued| Self::toolbox_event_priority(event.what)
+                < Self::toolbox_event_priority(queued.what))
+            {
+                self.event_queue.with_mut(|queue| queue.activation.consume());
+                return (event.what, event.message, event.when, event.where_v,
+                    event.where_h, event.modifiers, true);
+            }
         }
         let pending_menu = self.peek_pending_native_menu_event(event_mask);
         let first_idx = self.matching_toolbox_event_index(event_mask);

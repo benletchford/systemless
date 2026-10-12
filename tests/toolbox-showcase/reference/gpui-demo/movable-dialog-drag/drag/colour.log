@@ -1,0 +1,24 @@
+[INIT] CurDirStore=2 SFSaveDisk=1
+[INIT] Zone header: start=$00200000 allocStart=$0044A1D0 bkLim=$0044A1D0 zcbFree=2400656 (2.3MB)
+[INIT] Set MainDevice=$00226B78, TheGDevice=$00226B78 (ptr=$00226B44)
+[INIT] GDevice chain: $8A4→$00226B78→$00226B44 gdPMap→$00226B40→$00226B0C
+[INIT]   PixMap: rowBytes=$8330 bounds=(0,0,600,800) pixelSize=8
+[INIT]   GDevice: gdRect=(0,0,600,800) gdFlags=$BC01
+[TRAP] Get1NamedResource('CODE', "%_Static_Constructor_Destructor_Pointers")
+[TRAP] Get1NamedResource -> NULL (not found)
+[INITGRAF] global_ptr=$003FADDA randSeed_addr=$003FAD5C
+[INITGRAF] screenBits: base=$07F80000 rowBytes=816 bounds=(0,0,600,800)
+[INITGRAF] qd.thePort=$00226BD4 (default screen port)
+[WINDOW] GetNewCWindow: WIND 128 bounds=(50,40,420,600) procID=0 position=$0000 title="Toolbox Showcase"
+[WINDOW-INIT] init_cgraf_window: window=$002274D0 bounds=(50,40,420,600) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$002274D0 pixmap=$002059EC bounds=(50,40,420,600) goAway=true
+[TRAP] GetNewDialog(131)
+[TRAP] GetNewDialog(131) bounds=(90,120,260,430) raw_bounds=(90,120,260,430) position=$0000 len=40 procID=5 items=4 title="Modeless Settings"
+[TRAP]   item 1: type=button(4) rect=(125,220,145,290) text="Close"
+[TRAP]   item 2: type=checkbox(5) rect=(60,20,80,280) text="Enable modeless option"
+[TRAP]   item 3: type=statText(136) rect=(20,20,40,280) text="Edit this field, then switch windows."
+[TRAP]   item 4: type=editText(16) rect=(90,20,110,280) text="Pilot"
+[WINDOW-INIT] init_cgraf_window: window=$0023D800 bounds=(90,120,260,430) MBarHeight=20 → visRgn.top=0
+[WINDOW] CGrafWindow: window=$0023D800 pixmap=$0023D8AC bounds=(90,120,260,430) goAway=true
+saved guest frame to /tmp/gpui-movable-dialog-captures/drag/colour.guest.png
+saved composed GPUI capture to /tmp/gpui-movable-dialog-captures/drag/colour.png

@@ -1,0 +1,8 @@
+{
+  "sources": {
+    "src/bin/gpui_demo.rs": "33d2a4a05b59a0bdbd896924a1eea0722740e5c56e223f093918885c4e47a9f2",
+    "src/bin/gpui_demo_a11y.rs": "4287ff866d871d4dab4723104b4c7088a9ef3eee20d16f2428dbbcfc6e6aabb1",
+    "src/bin/gpui_demo_text.rs": "df846e59883e367d22b838677262c145c35be82b7cac80c30c6392104c0cd382"
+  },
+  "scope": "Single-line text-run and guest selection metadata; Save retained positions; New Folder refreshed painted pointer map. Boundary/model tests and production compile; no native AX or complete compositor text-node qualification."
+}

@@ -1,0 +1,10 @@
+{
+  "base_head": "4d879fc3",
+  "scope": "Two disjoint predicted edits and four-mode document production worker text/caret/style preservation; exact PPC parked WaitNextEvent boundary fixes reproduced second-request rejection. Modal disjoint, frontend emitted requests, physical input, visual and native oracle qualification remain open.",
+  "sha256": {
+    "worker.log": "671a090d21c90802861c803d6597b89f24958eda3d87ab60bd034c9e0178fe7d",
+    "state.log": "95e55b90c941bbf53775e5121b4ea8ed13055f3084d3738587790347020442d6",
+    "initial-failure.log": "ecf20ce4e32131a4c2dcc80ec9d4ba86b368dc9acd9ba8bf98e0a2acf08fd0a9",
+    "boundary-diagnostic.log": "c3c54359318363cea1807214f72c441c6946cdfa4869edb43472a0abeb0307e6"
+  }
+}

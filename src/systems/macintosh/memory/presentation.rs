@@ -38,9 +38,22 @@ fn divide_row(offset: u32, row_bytes: u32, reciprocal: u64) -> (u32, u32) {
     (x, y)
 }
 
+/// A scoped observation of plain TextEdit glyph ink. Nested draws restore the
+/// outer observation; other ports and selection/caret operations do not enter it.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TextEditInkCapture {
+    port: Option<u32>,
+    ink: Option<(u16, u16)>,
+    mixed: bool,
+}
+
 /// Shared by both CPU adapters; access is scoped to a single drawing operation.
 #[derive(Clone, Default)]
-pub(crate) struct PresentationSlot(std::rc::Rc<std::cell::RefCell<Option<Presentation>>>);
+pub(crate) struct PresentationSlot(
+    std::rc::Rc<std::cell::RefCell<Option<Presentation>>>,
+    std::rc::Rc<std::cell::RefCell<HashMap<u32, crate::text_edit::TextEditDrawing>>>,
+    std::rc::Rc<std::cell::Cell<TextEditInkCapture>>,
+);
 
 /// Page size of the bus's JIT store filter; equal to `PageIndex`'s.
 pub(crate) const STORE_FILTER_PAGE_SHIFT: u32 = super::page_index::PAGE_SHIFT;
@@ -128,6 +141,56 @@ impl std::fmt::Debug for PresentationSlot {
     }
 }
 impl PresentationSlot {
+    pub(crate) fn begin_text_edit_ink_capture(&self, port: u32) -> TextEditInkCapture {
+        self.2.replace(TextEditInkCapture { port: Some(port), ..TextEditInkCapture::default() })
+    }
+    pub(crate) fn end_text_edit_ink_capture(&self, previous: TextEditInkCapture) -> Option<(u16, u16)> {
+        let current = self.2.replace(previous);
+        if current.mixed { None } else { current.ink }
+    }
+    pub(crate) fn record_text_edit_glyph_ink(&self, port: u32, depth: u16, pixel: Option<u16>) {
+        let mut capture = self.2.get();
+        if capture.port != Some(port) || capture.mixed { return; }
+        let Some(pixel) = pixel else { capture.mixed = true; self.2.set(capture); return; };
+        let ink = (depth, pixel);
+        if capture.ink.is_some_and(|held| held != ink) { capture.mixed = true; }
+        else { capture.ink = Some(ink); }
+        self.2.set(capture);
+    }
+    pub(crate) fn text_edit_plain_ink(&self, handle: u32) -> Option<(u16, u16)> {
+        self.1.borrow().get(&handle)?.plain_ink
+    }
+    pub(crate) fn text_edit_solid_caret(&self, handle: u32) -> Option<((i16, i16, i16, i16), u16, u16)> {
+        self.1.borrow().get(&handle)?.solid_caret
+    }
+    pub(crate) fn forget_text_edit_drawing(&self, handle: u32) {
+        self.1.borrow_mut().remove(&handle);
+    }
+
+    pub(crate) fn record_text_edit_drawing(&self, handle: u32, drawing: Option<crate::text_edit::TextEditDrawing>) {
+        let mut drawings = self.1.borrow_mut();
+        if let Some(drawing) = drawing { drawings.insert(handle, drawing); }
+        else { drawings.remove(&handle); }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn text_edit_drawing_intact(&self, handle: u32, drawing: Option<crate::text_edit::TextEditDrawing>, screen_base: u32) -> bool {
+        !self.text_edit_drawing_regions(handle, drawing, screen_base).is_empty()
+    }
+
+    pub(crate) fn text_edit_drawing_regions(&self, handle: u32, drawing: Option<crate::text_edit::TextEditDrawing>, screen_base: u32) -> Vec<(i16, i16, i16, i16)> {
+        let Some(drawing) = drawing else { return Vec::new(); };
+        let drawings = self.1.borrow();
+        #[cfg(feature = "test-support")]
+        if std::env::var_os("SYSTEMLESS_TRACE_TEXT_OWNERSHIP").is_some() {
+            eprintln!("TE ownership handle={handle:#x} screen={screen_base:#x}: {}",
+                drawings.get(&handle).map(|held| held.ownership_diagnostic(&drawing))
+                    .unwrap_or_else(|| "no retained drawing".into()));
+        }
+        drawings.get(&handle).filter(|held| drawing.base == screen_base && held.same_pixels(&drawing))
+            .map(|held| held.painted_regions.clone()).unwrap_or_default()
+    }
+
     /// The presentation half of a span copy (see
     /// `MacMemoryBus::copy_detail_spans`): copy `spans` (source,
     /// destination, length), whose source bytes are `pixels` laid end to
@@ -2899,6 +2962,26 @@ fn paint_offscreen_glyph_coverage(
 }
 
 impl MacMemoryBus {
+    pub(crate) fn forget_text_edit_drawing(&self, handle: u32) {
+        self.presentation.forget_text_edit_drawing(handle);
+    }
+    pub(crate) fn record_text_edit_caret_drawing(
+        &self, handle: u32, port: u32, view: (i16, i16, i16, i16),
+        caret: Option<(i16, i16, i16, i16)>, plain_ink: Option<(u16, u16)>,
+    ) {
+        let mut drawing = crate::text_edit::TextEditDrawing::capture_editor(handle, port, view, |addr| Some(self.read_byte(addr)));
+        if let Some(drawing) = &mut drawing { drawing.plain_ink = plain_ink; }
+        if let (Some(drawing), Some(rect)) = (&mut drawing, caret) { drawing.qualify_solid_caret(rect); }
+        self.presentation.record_text_edit_drawing(handle, drawing);
+    }
+    pub(crate) fn text_edit_solid_caret(&self, handle: u32) -> Option<((i16, i16, i16, i16), u16, u16)> {
+        self.presentation.text_edit_solid_caret(handle)
+    }
+    pub(crate) fn text_edit_drawing_regions(&self, handle: u32, port: u32, rect: (i16, i16, i16, i16), screen_base: u32) -> Vec<(i16, i16, i16, i16)> {
+        let drawing = crate::text_edit::TextEditDrawing::capture_editor(handle, port, rect, |addr| Some(self.read_byte(addr)));
+        self.presentation.text_edit_drawing_regions(handle, drawing, screen_base)
+    }
+
     pub(crate) fn begin_cpu_drawing(&mut self) {
         if let Some(mut p) = self.presentation.as_mut() {
             p.cpu_drawing = true;

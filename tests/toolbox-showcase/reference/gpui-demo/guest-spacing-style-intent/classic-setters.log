@@ -1,0 +1,7 @@
+
+running 2 tests
+test systems::macintosh::trap::dialog::tests::tesetstyle_changes_only_the_selected_styled_text_range ... ok
+test systems::macintosh::trap::dialog::tests::tesetstyle_reads_style_byte_without_treating_record_padding_as_face_bits ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 6679 filtered out; finished in 0.03s
+

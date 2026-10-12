@@ -1,0 +1,20 @@
+{
+  "base_head": "8928c2006097a88d3c69c940a13b5b888e92f72f",
+  "scope": "Modal staged correction preserves retained suffix and insertion caret; shared commit worker restores caret via guest Left events; both Save filename gateways handle horizontal arrows through TextEditBuffer",
+  "results": {
+    "state": "9PASS; dialog, Save and New Folder correction prediction and intermediate caret recognition",
+    "worker": "3PASS24.41s; four-mode document, dialog, Save/New Folder; wrapped PPC dialog cases; subsidiary return/disposal preserved",
+    "platform": "3PASS40.73s; modal retained-suffix request checked; document and Standard File regressions preserved"
+  },
+  "limitations": [
+    "Arbitrary modal replacement selection remains unfinished",
+    "Disjoint document-stage replacement remains unfinished",
+    "No new composed visual, physical IME or independent Macintosh oracle evidence"
+  ],
+  "hashes": {
+    "state.log": "6c93fca4a87553ae00afd8a062365928254b1172bc897174ef09c770f996e62d",
+    "worker.log": "b2e1e561be87e15539adb11a28392cf0a801bf606b8d7f1df41ccff04408b799",
+    "save-arrow-failure.log": "50fec7c952d5ac13ed3a2d232edb59a4a12e24f12dc6ef9dbb5c7c727dd3b196",
+    "platform.log": "4138e06930b853917519e7310eb4628c75192a21fda9ac0eac1f5f11292efbad"
+  }
+}

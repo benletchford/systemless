@@ -1,0 +1,6 @@
+{
+  "scope": "GPUI Open/Save click regression includes whole-panel fallback for missing and malformed selector chrome (2.47s). Actual guest Open wheel regression uses qualified same-frame indicator pixels across mono68k, colour68k, PPC8/PPC16 (38.41s). Current frontend build passes (8.25s). Capture matrix separately pending, no release or physical-input qualification.",
+  "sha256": {
+    "src/bin/gpui_demo.rs": "9f21dbb924a0509994eebbde7aa82e85bbb13ac276bdb4d4b17cba34b5fcb569"
+  }
+}

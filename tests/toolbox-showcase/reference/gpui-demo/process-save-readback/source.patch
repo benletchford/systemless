@@ -1,0 +1,178 @@
+diff --git a/src/bin/gpui_demo.rs b/src/bin/gpui_demo.rs
+index d2d12a1b..6c85f7ec 100644
+--- a/src/bin/gpui_demo.rs
++++ b/src/bin/gpui_demo.rs
+@@ -8123,6 +8123,128 @@ mod desktop {
+             }
+         }
+ 
++        #[test]
++        fn standard_file_save_survives_separate_process_and_guest_read() {
++            use super::super::activation::{ControlActivation, FileAction};
++            use systemless::memory::MemoryBus;
++            use systemless::systems::macintosh::debug::{handle_debug_request, DebugReply, DebugRequest, M68K_SPACE, PPC_SPACE};
++            const PHASE: &str = "SYSTEMLESS_GPUI_SAVE_PROCESS_PHASE";
++            let Ok(phase) = std::env::var(PHASE) else {
++                for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
++                    let temp = tempfile::tempdir().unwrap();
++                    for phase in ["write", "read"] {
++                        let output = std::process::Command::new(std::env::current_exe().unwrap())
++                            .args(["--exact", "desktop::tests::standard_file_save_survives_separate_process_and_guest_read", "--nocapture"])
++                            .env(PHASE, phase).env("SYSTEMLESS_GPUI_SAVE_PROCESS_ROOT", temp.path())
++                            .env("SYSTEMLESS_GPUI_SAVE_PROCESS_CPU", if powerpc { "ppc" } else { "68k" })
++                            .env("SYSTEMLESS_GPUI_SAVE_PROCESS_DEPTH", depth.to_string())
++                            .output().unwrap();
++                        eprint!("{}", String::from_utf8_lossy(&output.stderr));
++                        print!("{}", String::from_utf8_lossy(&output.stdout));
++                        assert!(output.status.success(), "save process {phase}: powerpc={powerpc} depth={depth}");
++                    }
++                }
++                return;
++            };
++            assert!(matches!(phase.as_str(), "write" | "read"));
++            let root = PathBuf::from(std::env::var_os("SYSTEMLESS_GPUI_SAVE_PROCESS_ROOT").unwrap());
++            let powerpc = std::env::var("SYSTEMLESS_GPUI_SAVE_PROCESS_CPU").unwrap() == "ppc";
++            let depth: u16 = std::env::var("SYSTEMLESS_GPUI_SAVE_PROCESS_DEPTH").unwrap().parse().unwrap();
++            let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/toolbox-showcase/toolbox-showcase.sit");
++            let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
++            session.runner_mut().set_prefer_powerpc_executables(powerpc);
++            if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
++            let app = session.load_path(&fixture).unwrap();
++            let mut store = super::super::desktop_save_store::DesktopSaveStore::for_loaded_archive(
++                &root.join("Showcase.sit"), session.runner_mut());
++            let saved = if phase == "read" {
++                let expected: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("expected.json")).unwrap()).unwrap();
++                assert_ne!(expected["writer_pid"].as_u64().unwrap(), u64::from(std::process::id()));
++                let files = store.load_saved_files();
++                for file in &files { session.runner_mut().import_vfs_file(file); }
++                Some(expected)
++            } else { None };
++            session.initialize(&app);
++            wait_for_menu(&mut session, 129, 1, true);
++            assert_eq!(session.runner().is_powerpc_app(), powerpc);
++            assert_eq!(session.runner().presented_screen_depth(), Some(u32::from(depth)));
++            assert!(session.runner_mut().select_guest_menu_item(129, 12));
++            wait_for_menu(&mut session, 129, 12, true); settle(&mut session);
++            let step = |session: &mut MacintoshSession| {
++                let tick = session.runner().guest_tick().saturating_add(1);
++                session.runner_mut().run_gui_slice_with_audio(100_000, tick, 0);
++            };
++            let main = session.runner_mut().window_frame_snapshot().into_iter()
++                .find(|frame| frame.window.title == "Toolbox Showcase").unwrap().guest_id;
++            let snapshot_json = |file: &systemless::runner::VfsFileSnapshot| serde_json::json!({
++                "path": file.path, "data_fork": file.data_fork, "resource_fork": file.resource_fork,
++                "file_type": file.file_type, "creator": file.creator, "finder_flags": file.finder_flags,
++                "created_date": file.created_date, "modified_date": file.modified_date });
++            step(&mut session);
++            for input in [MacintoshInput::MouseDown { vertical: 266, horizontal: if phase == "write" { 400 } else { 126 } },
++                MacintoshInput::MouseUp { vertical: 266, horizontal: if phase == "write" { 400 } else { 126 } }] {
++                session.deliver_input(input);
++            }
++            let panel = (0..100).find_map(|_| { step(&mut session); session.runner().standard_file_snapshot() }).unwrap();
++            if phase == "write" {
++                let bytes = b"Restart\x8e";
++                for &character in bytes {
++                    session.deliver_input(MacintoshInput::KeyDown { mac_key: 0, character });
++                    session.deliver_input(MacintoshInput::KeyUp { mac_key: 0, character }); step(&mut session);
++                }
++                assert!((0..100).any(|_| { step(&mut session); session.runner().standard_file_snapshot()
++                    .is_some_and(|panel| panel.name.as_deref() == Some("Restarté")) }));
++            } else {
++                let expected = saved.as_ref().unwrap();
++                let path = expected["snapshot"]["path"].as_str().unwrap();
++                let restored = session.runner_mut().vfs_file_snapshot(path).expect("saved file survives independent process initialization");
++                assert_eq!(snapshot_json(&restored), expected["snapshot"]);
++                let index = panel.entries.as_ref().unwrap().iter().position(|entry| entry.name == "Restarté").unwrap_or_else(|| panic!("restored Open entries: {:?}; path={path}", panel.entries));
++                let layout = panel.get_layout.as_ref().unwrap();
++                assert!(index >= layout.first_visible && index < layout.first_visible + layout.visible_rows);
++                let vertical = layout.list.0 + 2 + (index - layout.first_visible) as i16 * layout.row_height + layout.row_height / 2;
++                let horizontal = layout.list.1 + 8;
++                for input in [MacintoshInput::MouseDown { vertical, horizontal }, MacintoshInput::MouseUp { vertical, horizontal }] {
++                    session.deliver_input(input); step(&mut session);
++                }
++                assert!((0..100).any(|_| { step(&mut session); session.runner().standard_file_snapshot()
++                    .is_some_and(|panel| panel.selected == Some(index)) }));
++            }
++            let panel = session.runner().standard_file_snapshot().unwrap();
++            let click = ControlActivation::begin_file(&mut session, panel.guest_id, panel.generation, FileAction::Accept).unwrap();
++            step(&mut session); let click = click.advance(&mut session).unwrap(); step(&mut session);
++            assert!(click.advance(&mut session).is_none());
++            assert!((0..100).any(|_| { step(&mut session); session.runner().standard_file_snapshot().is_none() }));
++            if phase == "write" {
++                assert!((0..100).any(|_| { step(&mut session); session.runner_mut().bus_mut().read_long(main + 152) == 0x53460001 }));
++                let file = session.runner_mut().vfs_file_summaries().into_iter()
++                    .find(|file| file.path.rsplit('/').next() == Some("Restarté")).unwrap();
++                let snapshot = session.runner_mut().vfs_file_snapshot(&file.path).unwrap();
++                assert_eq!(snapshot.data_fork, b"Systemless Standard File round trip\n");
++                store.sync_save_files_now(session.runner_mut());
++                std::fs::write(root.join("expected.json"), serde_json::to_vec_pretty(&serde_json::json!({
++                    "writer_pid": std::process::id(), "snapshot": snapshot_json(&snapshot) })).unwrap()).unwrap();
++            } else {
++                let checkpoint = (0..100).find_map(|_| {
++                    step(&mut session); let pointer = session.runner_mut().bus_mut().read_long(main + 152);
++                    (pointer != 0 && pointer != 0x53460001).then_some(pointer)
++                }).expect("guest Open must publish a read checkpoint after FSClose");
++                let expected = saved.unwrap();
++                let expected_bytes: Vec<u8> = expected["snapshot"]["data_fork"].as_array().unwrap().iter().map(|byte| byte.as_u64().unwrap() as u8).collect();
++                let DebugReply::Memory(reply) = handle_debug_request(session.runner_mut(), DebugRequest::ReadMemory {
++                    space: if powerpc { PPC_SPACE } else { M68K_SPACE }, address: u64::from(checkpoint), length: (10 + expected_bytes.len()) as u64,
++                }).unwrap() else { panic!("guest read checkpoint memory"); };
++                assert_eq!(u32::from_be_bytes(reply.bytes[0..4].try_into().unwrap()) as usize, expected_bytes.len());
++                assert_eq!(u32::from_be_bytes(reply.bytes[4..8].try_into().unwrap()) as usize, expected_bytes.len());
++                assert_eq!(&reply.bytes[8..10], &[0, 0], "guest FSpOpenDF/GetEOF/FSRead/FSClose must succeed");
++                assert_eq!(&reply.bytes[10..], expected_bytes.as_slice(), "guest must read exact restored bytes");
++                let path = expected["snapshot"]["path"].as_str().unwrap();
++                assert_eq!(snapshot_json(&session.runner_mut().vfs_file_snapshot(path).unwrap()), expected["snapshot"],
++                    "guest read/close must preserve restored forks and metadata");
++            }
++            eprintln!("PASS process-save phase={phase} powerpc={powerpc} depth={depth} pid={}", std::process::id());
++        }
++
+         #[test]
+         fn styled_text_edit_snapshots_preserve_guest_runs_across_cpu_modes() {
+             for (powerpc, depth, ppc_depth) in [(false, Some(1), None), (false, Some(8), None), (true, None, None), (true, None, Some(8))] {
+diff --git a/tests/toolbox-showcase/showcase.c b/tests/toolbox-showcase/showcase.c
+index 384de027..9fd092af 100644
+--- a/tests/toolbox-showcase/showcase.c
++++ b/tests/toolbox-showcase/showcase.c
+@@ -2961,10 +2961,40 @@ void DrawFileStatusLine(short top, ConstStr255Param label, short status)
+     DrawFileStatus(status);
+ }
+ 
++/* Publish actual guest File Manager reads after the data fork is closed.
++ * The checkpoint contains file length, bytes read, status and a bounded prefix.
++ * It is application-owned evidence, not a host read of the VFS. */
++static struct {
++    long length;
++    long count;
++    OSErr status;
++    char bytes[256];
++} gFileOpenRead;
++
+ void DoStandardFileOpen(void)
+ {
++    short refNum, i;
++    OSErr closeErr;
++
+     StandardGetFile(nil, 1, gFileTypeList, &gFileOpenReply);
+     gFileOpenStatus = gFileOpenReply.sfGood ? fileStatusAccepted : fileStatusCancelled;
++    if (!gFileOpenReply.sfGood) return;
++    gFileOpenRead.length = gFileOpenRead.count = 0;
++    for (i = 0; i < 256; i++) gFileOpenRead.bytes[i] = 0;
++    gFileOpenRead.status = FSpOpenDF(&gFileOpenReply.sfFile, fsRdPerm, &refNum);
++    if (gFileOpenRead.status == noErr) {
++        gFileOpenRead.status = GetEOF(refNum, &gFileOpenRead.length);
++        if (gFileOpenRead.status == noErr) {
++            gFileOpenRead.count = gFileOpenRead.length;
++            if (gFileOpenRead.count > 256) gFileOpenRead.count = 256;
++            if (gFileOpenRead.count > 0)
++                gFileOpenRead.status = FSRead(refNum, &gFileOpenRead.count, gFileOpenRead.bytes);
++        }
++        closeErr = FSClose(refNum);
++        if (gFileOpenRead.status == noErr) gFileOpenRead.status = closeErr;
++    }
++    if (gFileOpenRead.status != noErr) gFileOpenStatus = fileStatusError;
++    SetWRefCon(gMainWindow, (long)&gFileOpenRead);
+ }
+ 
+ void DoLegacyFileOpen(void)
