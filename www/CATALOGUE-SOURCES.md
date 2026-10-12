@@ -2214,8 +2214,9 @@ Six differ: vers 1/2, SMSD 13, RenA 0, PICT 153/5001. All nine Para Sounds
 resource payloads match, but whole resource forks differ. This strengthens exact
 asset correspondence; licence applicability to the complete compiled demo and
 changed assets still requires assessment. No hosting approval or game patch.
-Current-source native reproduction, gameplay, browser and ordinary catalogue
-pipeline gates remain open.
+Native colour steering and complete package parity are now verified below.
+Complete compiled-demo licence coverage, browser and ordinary catalogue pipeline
+gates remain open.
 
 ### Tristan false archive lead — primary 115
 
@@ -2263,3 +2264,41 @@ passed website deployment, six native builds and binary upload. This is the
 68K title; no native PPC slice. Full levels, jumping, saving, audio and the known
 Options/help/post-Options rendering faults remain unverified or unresolved.
 Intake stays open for those faults. No release action taken.
+
+
+### Pararena 2.01 original colour gameplay and package parity
+
+[Intake #4750](https://github.com/benletchford/systemless/issues/4750).
+Exact selector `Pararena Demo/Pararena/Pararena Demo 2.01`. Original game has
+empty data fork, 772,586-byte resource fork, eight CODE resources and no cfrg:
+**68K only**, no native PPC slice. All three original files/six forks and Finder
+type/creator/flags match independent unar versus the production packer built
+from `f1110f94ca3f7492c360a0fa357659160b650504`; packed size **1,003,253 bytes**.
+The game packing source and archive-decoder dependencies are unchanged through
+`d0fee273d563e3d0878c512a53b098473ff29970`; intervening lock changes are CPU-model
+and project versions. Empty resource/data forks and original ReadMe are retained.
+
+Original **NSetPalette** activation overwrites the 16-entry screen table with
+256 entries, corrupting adjacent PixMap/GDevice records. The game's later colour
+dissolve writes through its corrupted base/stride to the A-line exception vector
+and halts at A5A5A5A5. [Fix #4753](https://github.com/benletchford/systemless/pull/4753)
+preserves the device table extent; its new baseline regression fails before the
+fix and all **180 palette tests** pass after it, including PPC cases.
+
+Immutable tested source `d0fee273d563e3d0878c512a53b098473ff29970`, unchanged
+original demo, explicit 68K/depth 4: ordinary File → New Game → original
+Human versus Simple George → Okay starts a live arena. Original opponent/demo
+restrictions are retained. Mouse movement steers the human player. A fresh
+left/right case and its matched neutral-mouse control each pass **16 assertions**
+(**eight measured human-position pixels plus eight base/stride/exception-vector
+preservation checks**) at **1,748 frontend / 2,326 guest ticks**, zero exhaustion.
+Only the final two pointer positions differ; the final CPU-player and ball image
+regions match exactly while human positions differ. Captures inspected. This is
+bounded input-causality evidence, not an independent rendering oracle or full
+match/scoring/save/audio qualification.
+
+Palette fix CI/merge is pending. Title cropping and selected-opponent/dialog
+sprite artifacts remain unresolved. Complete historical demo redistribution
+applicability of the author's MIT source release remains under assessment;
+source-resource correspondence does not automatically clear the entire archive.
+No catalogue entry, managed upload, browser approval or live increment is claimed.
