@@ -1,5 +1,32 @@
 # GPUI Kit system-interface coverage
 
+### Fractional device text coverage (2026-10-12)
+
+The shared TextEdit renderer now area-samples the final guest-composited RGB
+coverage onto physical pixels instead of snapping individual source samples.
+This prevents thin strokes disappearing at fractional scale. Native glyph
+metrics, pens, wrapping, selection inversion and caret/erase order are resolved
+before sampling; paint stays within the same snapped guest view. Missing
+samples use the qualified native background. Unsupported sampling falls back
+to existing guest-pixel painting. Label rendering is unchanged.
+
+All32 plain source-copy composed captures pass (59.19s), plus24 source-or
+coloured-background captures (33.00s), across the applicable CPU/depth cases,
+four scales and active/inactive states. All seven CPU/background contact sheets
+were inspected. Fractional scale0.75 text is visibly smoother; wrapping and
+selection activation remain stable. All24 complete RGB source-copy images at
+scales1/1.5/2 exactly match the prior82b2101a producer; eight scale0.75 images
+change as intended. Six coverage tests pass (0.05s), including thin strokes,
+negative phase, native colours, filled areas and invalid transforms. All31
+text-helper tests pass (52.63s). Final capture build and desktop/public-library
+checks pass (8.56s/15.33s/0.40s).
+
+Ignored evidence directories are
+`target/gpui-qualification/plain-face-rendering/source-copy-device-sampling/`
+and `device-sampling-coloured-background/`. These establish offscreen
+TextEdit composition, not complete Macintosh font fidelity, physical host
+interaction, all label typography, energy use or smooth live EV gameplay.
+
 ### Source-copy composed rendering and editing (2026-10-12)
 
 The capture helper now accepts `--capture-plain-text-edit-mode 0` together

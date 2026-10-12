@@ -158,7 +158,9 @@ native pixels before replacement. PPC fractional-strike and styled/faced
 source-copy recipes remain guest-painted pending faithful phase/style ordering.
 Basic face-zero mode0 composed images pass across four CPU/display modes, four
 scales and active/inactive states; wider style and physical input qualification
-remain open. At scale0.75 small strike detail is visibly coarse; structural
+remain open. Final TextEdit coverage is area-sampled onto device pixels;
+scale0.75 detail is smoother than the prior snapped-sample captures, while
+integer device-scale composed images are unchanged. Structural
 eligibility alone does not grant paint replacement. This gate does not qualify
 every simple Dialog Manager item paint path or native transfer-mode appearance.
 Guest font resolution, advances, wrapping and input positions stay authoritative.

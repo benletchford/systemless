@@ -2156,26 +2156,39 @@ fn classic_text_pixels_with_smooth(
         if let Some((ops, view, background)) = &field {
             let raster = (scale * device_scale).ceil().max(1.) as u32;
             if let Some(pixels) = smooth_textedit_pixels(ops, raster, *view, background) {
-                let unit = scale / raster as f32;
-                let mut coverage_paths = std::collections::BTreeMap::new();
-                // Coalesce only equal resolved RGB coverage. Guest composition,
-                // clipping, selection inversion and caret order are already final.
-                for span in super::coverage::row_spans(pixels) {
-                    let color = span.color;
-                    let left = snap(port_origin.0 + span.left as f32 * unit);
-                    let top = snap(port_origin.1 + span.y as f32 * unit);
-                    let right = snap(port_origin.0 + span.right as f32 * unit);
-                    let bottom = snap(port_origin.1 + (i64::from(span.y) + 1) as f32 * unit);
-                    if right <= left || bottom <= top { continue; }
-                    let path = coverage_paths.entry(color).or_insert_with(PathBuilder::fill);
-                    path.move_to(point(left, top)); path.line_to(point(right, top));
-                    path.line_to(point(right, bottom)); path.line_to(point(left, bottom)); path.close();
+                if let Some(pixels) = super::coverage::device_pixels(pixels,
+                    f64::from(scale) * f64::from(device_scale) / f64::from(raster),
+                    (f64::from(port_origin.0 * device_scale), f64::from(port_origin.1 * device_scale)),
+                    background.rgb) {
+                    let mut coverage_paths = std::collections::BTreeMap::new();
+                    // Coalesce only equal resolved RGB coverage. Guest composition,
+                    // clipping, selection inversion and caret order are already final.
+                    // Keep the same snapped field clip as the background quad;
+                    // area sampling must not paint outside the guest view.
+                    let edge = |value: f32| (f32::from(snap(value)) * device_scale).round() as i32;
+                    let clip = (edge(port_origin.1 + f32::from(view.0) * scale),
+                        edge(port_origin.0 + f32::from(view.1) * scale),
+                        edge(port_origin.1 + f32::from(view.2) * scale),
+                        edge(port_origin.0 + f32::from(view.3) * scale));
+                    let pixels = pixels.into_iter().filter(|((x, y), _)|
+                        *x >= clip.1 && *x < clip.3 && *y >= clip.0 && *y < clip.2).collect();
+                    for span in super::coverage::row_spans(pixels) {
+                        let color = span.color;
+                        let left = px(span.left as f32 / device_scale);
+                        let top = px(span.y as f32 / device_scale);
+                        let right = px(span.right as f32 / device_scale);
+                        let bottom = px((i64::from(span.y) + 1) as f32 / device_scale);
+                        if right <= left || bottom <= top { continue; }
+                        let path = coverage_paths.entry(color).or_insert_with(PathBuilder::fill);
+                        path.move_to(point(left, top)); path.line_to(point(right, top));
+                        path.line_to(point(right, bottom)); path.line_to(point(left, bottom)); path.close();
+                    }
+                    for ([r, g, b], path) in coverage_paths {
+                        let ink: Hsla = rgb((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)).into();
+                        window.paint_path(path.build().expect("resolved styled field coverage"), ink);
+                    }
+                    return;
                 }
-                for ([r, g, b], path) in coverage_paths {
-                    let ink: Hsla = rgb((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)).into();
-                    window.paint_path(path.build().expect("resolved styled field coverage"), ink);
-                }
-                return;
             }
         }
         for (color, pixels) in &paths {

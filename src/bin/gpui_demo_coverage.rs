@@ -29,9 +29,62 @@ pub(super) fn row_spans<Color: Copy + PartialEq>(
     spans
 }
 
+/// Resolve fractional source coverage onto physical pixels after guest composition.
+/// Missing source samples have the qualified field background, not transparent ink.
+pub(super) fn device_pixels(
+    pixels: BTreeMap<(i32, i32), [u8; 3]>, unit: f64, origin: (f64, f64),
+    background: [u8; 3],
+) -> Option<BTreeMap<(i32, i32), [u8; 3]>> {
+    if !unit.is_finite() || unit <= 0. || unit > 1.
+        || !origin.0.is_finite() || !origin.1.is_finite() { return None; }
+    let mut sums = BTreeMap::<(i32, i32), [f64; 3]>::new();
+    for ((x, y), color) in pixels {
+        if color == background { continue; }
+        let left = origin.0 + f64::from(x) * unit;
+        let top = origin.1 + f64::from(y) * unit;
+        let right = left + unit; let bottom = top + unit;
+        if left.floor() < f64::from(i32::MIN) || top.floor() < f64::from(i32::MIN)
+            || right.ceil() > f64::from(i32::MAX) || bottom.ceil() > f64::from(i32::MAX) { return None; }
+        for dy in top.floor() as i32..bottom.ceil() as i32 {
+            let height = bottom.min(f64::from(dy) + 1.) - top.max(f64::from(dy));
+            for dx in left.floor() as i32..right.ceil() as i32 {
+                let width = right.min(f64::from(dx) + 1.) - left.max(f64::from(dx));
+                let weight = width * height;
+                if weight <= 0. { continue; }
+                let sum = sums.entry((dx, dy)).or_default();
+                for channel in 0..3 {
+                    sum[channel] += weight * (f64::from(color[channel]) - f64::from(background[channel]));
+                }
+            }
+        }
+    }
+    Some(sums.into_iter().filter_map(|(at, sum)| {
+        let color = std::array::from_fn(|channel|
+            (f64::from(background[channel]) + sum[channel]).round().clamp(0., 255.) as u8);
+        (color != background).then_some((at, color))
+    }).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fractional_sampling_preserves_thin_ink_background_and_negative_phase() {
+        let black = BTreeMap::from([((0, 0), [0; 3])]);
+        assert_eq!(device_pixels(black.clone(), 0.5, (0., 0.), [255; 3]).unwrap(),
+            BTreeMap::from([((0, 0), [191; 3])]));
+        assert_eq!(device_pixels(black.clone(), 1., (-0.5, -0.5), [255; 3]).unwrap(),
+            BTreeMap::from([((-1, -1), [191; 3]), ((0, -1), [191; 3]),
+                ((-1, 0), [191; 3]), ((0, 0), [191; 3])]));
+        let resolved = BTreeMap::from([((0, 0), [20, 100, 200]), ((1, 0), [220, 50, 80])]);
+        assert_eq!(device_pixels(resolved.clone(), 1., (0., 0.), [70, 90, 110]).unwrap(), resolved);
+        assert_eq!(device_pixels(BTreeMap::from([((0, 0), [0; 3]), ((1, 0), [0; 3]),
+            ((0, 1), [0; 3]), ((1, 1), [0; 3])]), 0.5, (0., 0.), [255; 3]).unwrap(),
+            BTreeMap::from([((0, 0), [0; 3])]));
+        assert!(device_pixels(black.clone(), f64::NAN, (0., 0.), [255; 3]).is_none());
+        assert!(device_pixels(black, 1., (f64::INFINITY, 0.), [255; 3]).is_none());
+    }
 
     #[test]
     fn spans_preserve_holes_colours_negative_origins_and_rows() {
