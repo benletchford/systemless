@@ -28,8 +28,14 @@ compatibility:
       VISE files/twelve forks and type/creator records match an independently
       implemented pinned ScummVM-reference reader. Original Finder flags are not
       recovered by that reference; original archive bytes remain unchanged. Full
-      games, saves and audio fidelity remain unverified. Browser qualification,
-      asset promotion and launch approval are pending; no human release is asserted.
+      games, saves and audio fidelity remain unverified. Local Chrome Worker replays
+      at depth 8 show board rendering, ball drops and score 50, with WebGL at
+      59.959 and Canvas2D at 59.996 guest ticks per second and no console errors.
+      Both use the exact local archive fixture, not a hosted production archive.
+      Held drag feedback is absent in both rendering paths; direct rendered-canvas
+      captures confirm the discrepancy with the native image. These observations
+      do not qualify browser gameplay. Browser assertions, asset promotion and
+      launch approval remain pending; no human release is asserted.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4692
   - date: "2026-10-12"
