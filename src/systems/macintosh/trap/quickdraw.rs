@@ -17663,8 +17663,12 @@ impl super::TrapDispatcher {
         bus.write_long(ctab_ptr, seed);
         self.trace_ctab_seed_write(ctab_ptr, seed, trace_seed_label);
         bus.write_word(ctab_ptr + 4, 0x8000);
-        bus.write_word(ctab_ptr + 6, 255);
-        for (index, rgb) in self.device_clut.iter().enumerate() {
+        // Palette activation changes the colours, not the device table's
+        // extent. Lower-depth indexed devices have fewer than 256 entries;
+        // writing a full 8-bit table overwrites the adjacent PixMap/GDevice.
+        // Imaging With QuickDraw (1994), pp. 4-56–4-57 (ctSize).
+        let entries = Self::color_table_entry_count(bus, ctab_handle).min(256) as usize;
+        for (index, rgb) in self.device_clut.iter().enumerate().take(entries) {
             let entry = ctab_ptr + 8 + (index as u32) * 8;
             bus.write_word(entry, index as u16);
             bus.write_word(entry + 2, rgb[0]);
