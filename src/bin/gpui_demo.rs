@@ -13224,7 +13224,8 @@ mod desktop {
         fn plain_guest_text_service_geometry_uses_actual_field(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{AppContext, EntityInputHandler, Bounds, point, px};
             cx.update(gpui_kit::init);
-            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+            for (powerpc, depth, coloured) in [(false, 1u16, false), (false, 8, false),
+                (true, 8, false), (true, 16, false), (false, 8, true), (true, 8, true), (true, 16, true)] {
                 for justification in [0, 1, -1] {
                     let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
                     session.runner_mut().set_prefer_powerpc_executables(powerpc);
@@ -13257,6 +13258,13 @@ mod desktop {
                         assert!(activation.is_none());
                         settle(&mut session);
                     }
+                    if coloured {
+                        let current = session.runner_mut().text_edit_snapshot().records.into_iter()
+                            .find(|record| record.guest_id == initial.guest_id).unwrap();
+                        assert!(session.runner_mut().set_text_edit_background_for_test(&current, [0xcccc; 3]));
+                        assert!(session.runner_mut().select_text_edit_range(&current,
+                            current.selection.0 as usize..current.selection.1 as usize));
+                    }
                     let records = session.runner_mut().text_edit_snapshot().records;
                     let before = records.iter().find(|record| record.guest_id == initial.guest_id).unwrap().clone();
                     assert!(before.active && before.drawing_intact);
@@ -13264,6 +13272,12 @@ mod desktop {
                     let pieces = super::super::frames::text_edit_pieces(&records, &[], &[],
                         &session.runner_mut().window_frame_snapshot(), super::super::frames::Rect::from((0, 0, 600, 800)));
                     assert!(pieces.iter().any(|piece| records[piece.record].guest_id == before.guest_id));
+                    let frame = session.video_frame().unwrap();
+                    let plans = super::qualify_styled_text_fields(&records, &frame.pixels, frame.width, frame.height);
+                    if coloured {
+                        let index = records.iter().position(|record| record.guest_id == before.guest_id).unwrap();
+                        assert_ne!(plans[index].as_ref().expect("coloured aligned field paint must qualify").background, [255; 3]);
+                    }
                     let original = before.clone();
                     let (sender, _receiver) = std::sync::mpsc::channel();
                     let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
@@ -13271,7 +13285,7 @@ mod desktop {
                     cx.update_window(window.into(), |_, window, cx| {
                         view.update(cx, |demo, cx| {
                             demo.width = 800; demo.height = 600;
-                            demo.text_edits = records;
+                            demo.text_edits = records; demo.styled_text_plans = plans;
                             demo.windows = session.runner_mut().window_frame_snapshot();
                             demo.host_active = Some(true);
                             window.focus(&demo.focus, cx);
@@ -13338,7 +13352,11 @@ mod desktop {
                     assert_eq!(edited.text, expected);
                     assert_eq!(edited.selection, (2, 2));
                     assert_eq!(edited.justification, justification);
-                    eprintln!("PASS plain-guest-text-geometry-and-edit powerpc={powerpc} depth={depth} justification={justification}");
+                    let frame = session.video_frame().unwrap();
+                    assert!(super::qualify_styled_text_fields(std::slice::from_ref(&edited),
+                        &frame.pixels, frame.width, frame.height)[0].is_some(), "post-edit guest paint must qualify");
+
+                    eprintln!("PASS plain-guest-text-geometry-and-edit powerpc={powerpc} depth={depth} justification={justification} coloured={coloured}");
                     cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
                 }
             }

@@ -1,5 +1,23 @@
 # GPUI Kit system-interface coverage
 
+### Coloured TextEdit alignment, hit-testing and editing (2026-10-12)
+
+The existing GPUI text-service geometry regression now includes coloured plain
+fields at left/centre/right alignment on colour68k/PPC8/PPC16, alongside white
+fields on all four CPU/display modes. All21 cases pass (1 test,95.48s), each at
+scales0.75/1/1.5/2. Qualified paint plans accompany the actual records in Demo;
+coloured aligned fields require a non-white native-qualified plan.
+
+Caret range bounds, point-to-byte lookup and pointer transforms match canonical
+guest geometry. Captured drags retain identity guards, including stale captures.
+A real guest click selects byte1, typing inserts Z with caret[2,2] and unchanged
+alignment, and fresh post-edit native paint qualification succeeds. The test
+keeps the guest fixture's subsequent repaint authoritative. Exact source/log
+hashes and case counts are in the ignored
+`target/gpui-qualification/plain-face-rendering/coloured-geometry-edit/review.json`.
+This is functional test-context/native-operation evidence, not physical input,
+composed post-edit images, original-font oracle or a release-readiness claim.
+
 ### Composed coloured-background TextEdit captures (2026-10-12)
 
 The test-only plain-field capture now prepares a non-white guest background,
