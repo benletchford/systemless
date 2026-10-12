@@ -60,6 +60,12 @@ Evidence is under `/tmp/wgpu-comparison-evidence/menu` and `final-pilot-2`, with
 
 The matched 1200×900 GPUI pilot image was visually inspected. It uses the existing modern control skin; the wgpu prototype uses a simple custom skin with guest geometry and text metrics. Both show the edited pilot name, checked Strict Play, resource artwork and Cancel/OK controls. Appearance equivalence is not pixel identity for custom controls. Framebuffer-only gameplay and cancelled-dialog scenes were checked separately for exact RGB equality.
 
+## Headless resize probe
+
+`--offscreen --resize-probe` cycles the same final guest snapshot through 800×600, 1200×900, 1600×1200, 1000×600, 600×1000, zero size, and 800×600 again. It uses the real GPU target allocation/draw/readback path, checks suspension at zero size, and checks inverse pointer mapping at the first, middle and last guest pixel centres after each nonzero resize. The pilot run completed all six actions and all checks; landscape and portrait letterboxed images were inspected. Evidence: `/tmp/wgpu-comparison-evidence/resize-pilot`.
+
+That single instrumented run took 15.99 s wall time, 4.87 s user CPU and 1.10 s system CPU, with maximum RSS 133,087,232 bytes and peak footprint 154,846,096 bytes. These figures include startup, PNG readbacks and resize allocations. They are neither a steady-state budget nor a comparison with GPUI. This probe does not create a native surface or test compositor/DPI notifications.
+
 ## Measurement contract and remaining live protocol
 
 Use the same build profile, archive hash, guest architecture/depth, scene actions, physical viewport, display refresh rate, audio setting and foreground state. Warm up before steady-flight sampling. Run sequential alternating GPUI/wgpu repetitions with builds and other heavy work stopped. Record host load and the exact binary/source hashes. Keep tracing runs separate from uninstrumented CPU/memory runs.

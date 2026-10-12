@@ -76,6 +76,8 @@ mod desktop {
         offscreen: bool,
         #[arg(long)]
         capture_menu: Option<i16>,
+        #[arg(long, requires = "offscreen")]
+        resize_probe: bool,
         #[arg(long, default_value_t = 1050)]
         updates: u64,
         #[arg(long)]
@@ -220,6 +222,7 @@ mod desktop {
         let output = args.output.clone().expect("--offscreen requires --output");
         std::fs::create_dir_all(&output).unwrap();
         let capture_menu = args.capture_menu;
+        let resize_probe = args.resize_probe;
         let count = args.updates;
         let captures = args.capture_at.clone();
         let scale = args.scale;
@@ -267,6 +270,46 @@ mod desktop {
             }
             renderer.draw(*w, *h, pixels, &quads);
             samples.push(start.elapsed().as_secs_f64() * 1000.);
+            if resize_probe && observed == count {
+                let mut results = Vec::new();
+                for (rw, rh) in [
+                    (800, 600),
+                    (1200, 900),
+                    (1600, 1200),
+                    (1000, 600),
+                    (600, 1000),
+                    (0, 0),
+                    (800, 600),
+                ] {
+                    renderer.resize(rw, rh);
+                    let quads = scene::controls(&update, *w, *h, renderer.raster(*w, *h));
+                    let rendered = renderer.draw(*w, *h, pixels, &quads);
+                    assert_eq!(rendered, rw > 0 && rh > 0);
+                    if rendered {
+                        let (left, top, vw, vh) = renderer.viewport(*w, *h);
+                        for (gx, gy) in [(0, 0), (*w / 2, *h / 2), (*w - 1, *h - 1)] {
+                            let point = renderer.guest_point(
+                                (left + (gx as f32 + 0.5) * vw / *w as f32) as f64,
+                                (top + (gy as f32 + 0.5) * vh / *h as f32) as f64,
+                                *w,
+                                *h,
+                            );
+                            assert_eq!(point, (gy as i16, gx as i16));
+                        }
+                        renderer.save_capture(&output.join(format!("resize-{rw}x{rh}.png")));
+                    }
+                    results.push(serde_json::json!({"size":[rw,rh],"rendered":rendered,"viewport":renderer.viewport(*w,*h)}));
+                }
+                std::fs::write(
+                    output.join("resize-probe.json"),
+                    serde_json::to_vec_pretty(&results).unwrap(),
+                )
+                .unwrap();
+                renderer.resize(width, height);
+                let quads = scene::controls(&update, *w, *h, renderer.raster(*w, *h));
+                renderer.draw(*w, *h, pixels, &quads);
+            }
+
             if captures.contains(&observed) || observed == count {
                 renderer.save_capture(&output.join(format!("frame-{observed}.png")));
                 let rgba = gpui_pixels(pixels.clone());
