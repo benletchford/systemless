@@ -1349,7 +1349,8 @@ pub(crate) fn dispatcher_target_for_import(
         (
             "Apple;Carbon;Multimedia",
             "GetMovieBox" | "DisposeMovie" | "SetMovieBox" | "EnterMovies" | "SetMovieGWorld"
-            | "StopMovie" | "GetMoviesError" | "MoviesTask" | "StartMovie" | "IsMovieDone",
+            | "StopMovie" | "GetMoviesError" | "MoviesTask" | "StartMovie" | "IsMovieDone"
+            | "MCDoAction",
         ) => "QuickTimeLib",
         // CarbonLib exports these C math symbols with the same PowerPC
         // floating-point ABI as MathLib. Inside Macintosh: PowerPC Numerics

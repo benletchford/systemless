@@ -3339,84 +3339,105 @@ fn quicktime_get_media_sample_description_copies_stsd_entry() {
 
 #[test]
 fn quicktime_mc_do_action_rejects_unknown_controller() {
-    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"MCDoAction");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    let params = PPC_DATA_BASE + 0x1800;
-    loaded.memory.add_region(params, vec![0x5a; 16]);
-    loaded.cpu.gpr[3] = 0;
-    loaded.cpu.gpr[4] = 29; // mcActionSetSelectionBegin
-    loaded.cpu.gpr[5] = params;
-    let probe = loaded.run_with_hle_imports(64);
-    assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_INVALID_COMPONENT_ID));
-    assert_eq!(loaded.memory.read_u32_be(params), Some(0x5a5a_5a5a));
+    for library in [
+        b"QuickTimeLib".as_slice(),
+        b"Apple;Carbon;Multimedia".as_slice(),
+    ] {
+        let pef = synthetic_pef_with_library_import(library, b"MCDoAction");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let params = PPC_DATA_BASE + 0x1800;
+        loaded.memory.add_region(params, vec![0x5a; 16]);
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 29; // mcActionSetSelectionBegin
+        loaded.cpu.gpr[5] = params;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+        assert_eq!(loaded.memory.read_u32_be(params), Some(0x5a5a_5a5a));
 
-    loaded.cpu.pc = loaded.entry_pc;
-    loaded.cpu.gpr[3] = 0x1234_5678;
-    loaded.run_with_hle_imports(64);
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = 0x1234_5678;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_INVALID_COMPONENT_ID));
+    }
 }
 
 #[test]
 fn quicktime_mc_do_action_play_starts_and_stops_controller_movie() {
-    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"MCDoAction");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    let controller = 0x4001_3010;
-    loaded.quicktime.movie_controllers.push(PpcQuickTimeControllerRecord {
-        handle: controller,
-        movie: PPC_QT_MOVIE,
-        rect: (0, 0, 100, 100),
-        flags: 0,
-        window: 0,
-        origin: 0,
-        action_filter: 0,
-        action_ref_con: 0,
-    });
-    loaded.cpu.gpr[3] = controller;
-    loaded.cpu.gpr[4] = 8; // mcActionPlay
-    loaded.cpu.gpr[5] = 0x0001_0000; // normal forward playback
-    let probe = loaded.run_with_hle_imports(64);
-    assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-    assert!(loaded.quicktime.movie_started);
+    for library in [
+        b"QuickTimeLib".as_slice(),
+        b"Apple;Carbon;Multimedia".as_slice(),
+    ] {
+        let pef = synthetic_pef_with_library_import(library, b"MCDoAction");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let controller = 0x4001_3010;
+        loaded
+            .quicktime
+            .movie_controllers
+            .push(PpcQuickTimeControllerRecord {
+                handle: controller,
+                movie: PPC_QT_MOVIE,
+                rect: (0, 0, 100, 100),
+                flags: 0,
+                window: 0,
+                origin: 0,
+                action_filter: 0,
+                action_ref_con: 0,
+            });
+        loaded.cpu.gpr[3] = controller;
+        loaded.cpu.gpr[4] = 8; // mcActionPlay
+        loaded.cpu.gpr[5] = 0x0001_0000; // normal forward playback
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert!(loaded.quicktime.movie_started);
 
-    loaded.cpu.pc = loaded.entry_pc;
-    loaded.cpu.gpr[3] = controller;
-    loaded.cpu.gpr[4] = 8;
-    loaded.cpu.gpr[5] = 0; // stop
-    loaded.run_with_hle_imports(64);
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-    assert!(!loaded.quicktime.movie_started);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = controller;
+        loaded.cpu.gpr[4] = 8;
+        loaded.cpu.gpr[5] = 0; // stop
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert!(!loaded.quicktime.movie_started);
+    }
 }
 
 #[test]
 fn quicktime_mc_do_action_idle_tasks_associated_movie() {
-    let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"MCDoAction");
-    let mut loaded = load_pef_application(&pef).unwrap();
-    let controller = 0x4001_3010;
-    loaded.quicktime.movie_controllers.push(PpcQuickTimeControllerRecord {
-        handle: controller,
-        movie: PPC_QT_MOVIE,
-        rect: (0, 0, 100, 100),
-        flags: 0,
-        window: 0,
-        origin: 0,
-        action_filter: 0,
-        action_ref_con: 0,
-    });
-    loaded.quicktime.movie_active = true;
-    loaded.quicktime.movie_started = true;
-    loaded.quicktime.movie_tasks_until_done = 10;
-    loaded.cpu.gpr[3] = controller;
-    loaded.cpu.gpr[4] = 1; // mcActionIdle
-    loaded.cpu.gpr[5] = 0;
+    for library in [
+        b"QuickTimeLib".as_slice(),
+        b"Apple;Carbon;Multimedia".as_slice(),
+    ] {
+        let pef = synthetic_pef_with_library_import(library, b"MCDoAction");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let controller = 0x4001_3010;
+        loaded
+            .quicktime
+            .movie_controllers
+            .push(PpcQuickTimeControllerRecord {
+                handle: controller,
+                movie: PPC_QT_MOVIE,
+                rect: (0, 0, 100, 100),
+                flags: 0,
+                window: 0,
+                origin: 0,
+                action_filter: 0,
+                action_ref_con: 0,
+            });
+        loaded.quicktime.movie_active = true;
+        loaded.quicktime.movie_started = true;
+        loaded.quicktime.movie_tasks_until_done = 10;
+        loaded.cpu.gpr[3] = controller;
+        loaded.cpu.gpr[4] = 1; // mcActionIdle
+        loaded.cpu.gpr[5] = 0;
 
-    let probe = loaded.run_with_hle_imports(64);
+        let probe = loaded.run_with_hle_imports(64);
 
-    assert_eq!(probe.unsupported_import_index, None);
-    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-    assert_eq!(loaded.quicktime.movie_task_count, 1);
-    assert!(loaded.quicktime.movie_started);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.quicktime.movie_task_count, 1);
+        assert!(loaded.quicktime.movie_started);
+    }
 }
 
 #[test]
