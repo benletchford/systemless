@@ -6458,13 +6458,21 @@ mod desktop {
         }
         assert!(tracking.is_none()); settle(&mut session);
         if inactive { session.request_foreground(false); }
-        let record = (0..300).find_map(|_| {
+        let mut record = (0..300).find_map(|_| {
             session.runner_mut().run_steps(10_000, None);
             let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
             session.runner_mut().text_edit_snapshot().records.into_iter().find(|record|
                 settled && record.guest_id == original.guest_id && record.face == face
                     && record.drawing_intact && (!inactive || !record.active))
         }).expect("plain face paint must settle through guest update/suspend paths");
+        if inactive {
+            // TEDeactivate clears active before completing its guest drawing.
+            // A prior null event can still be the last event during that trap.
+            settle(&mut session);
+            record = session.runner_mut().text_edit_snapshot().records.into_iter()
+                .find(|current| current.guest_id == record.guest_id && !current.active
+                    && current.drawing_intact).expect("suspended field must remain intact after painting");
+        }
         let mut frame = session.video_frame().unwrap();
         let mut plans = qualify_styled_text_fields(std::slice::from_ref(&record),
             &frame.pixels, frame.width, frame.height);

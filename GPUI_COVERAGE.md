@@ -1,5 +1,23 @@
 # GPUI Kit system-interface coverage
 
+### Suspend capture completion correction (2026-10-12)
+
+The apparent monochrome inactive-selection discrepancy below was a capture
+race, not a demonstrated guest drawing bug. The plain-field harness could see
+TEDeactivate's cleared active flag while its drawing was unfinished and the
+last event was still a prior null event. It now advances the guest after that
+state transition and refreshes the intact inactive record before reading pixels.
+
+All32 fallback comparisons pass again (51.42s), with exact complete composed
+pixel equality. Native-image probes at the inspected blank selection corner
+confirm active inversion and inactive white background in all32 cases. Four
+CPU contact sheets were inspected: inactive selection now hides throughout.
+The capture executable builds (11.91s). Corrected artifacts/hashes are in the
+ignored `target/gpui-qualification/plain-face-rendering/transparent-fallback-settled/matrix.json`;
+older captures retain their producer and incomplete-paint evidence. This closes
+that capture discrepancy, not independent Macintosh font fidelity, physical
+host input, EV smoothness or broader release qualification.
+
 ### Transparent fallback composed-pixel checks (2026-10-12)
 
 The test-only plain-field capture can deliberately decline an otherwise
@@ -15,7 +33,7 @@ The normal capture executable builds (10.02s).
 This proves semantic fallback transparency, not font replacement fidelity or
 native host interaction. The guest bitmap itself is resampled by GPUI; a
 nearest-neighbour enlargement is not the compositor baseline. Visual review
-found an open mono68k activation-paint discrepancy: selection remains inverted
+initially found an apparent mono68k activation-paint discrepancy: selection remains inverted
 in the guest image despite the saved field being inactive. Colour/PPC captures
 hide it. Fallback faithfully preserves that guest image; monochrome inactive
 selection behavior is not qualified by this matrix.
