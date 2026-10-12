@@ -10264,3 +10264,316 @@ fn window_screen_constraint_weak_import_moves_live_geometry_and_calculates_frame
         }
     }
 }
+
+#[test]
+fn fullscreen_owned_window_storage_creates_real_port_and_releases_fixed_blocks() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewCWindow")).unwrap();
+    let shared = loaded.process_memory_manager.0.clone();
+    let mut manager = shared.borrow_mut();
+    let manager = manager.native_mut();
+    let heap = manager.native_heap_state().unwrap();
+    let mut cursor = heap.heap_cursor;
+    let mut error = heap.last_mem_error;
+    let mut handles = manager.native_handle_records().to_vec();
+    let old_handles = handles.len();
+    let old_ptrs = manager.native_ptr_records().len();
+    let device = *loaded.current_gdevice;
+    let mut allocator = PpcProcessAllocatorView {
+        memory_manager: manager,
+    };
+    let mut first_cycle_cursor = None;
+    for _ in 0..16 {
+        let storage = dispatch_window::ppc_new_owned_cwindow(
+            PpcNewCWindowParameters {
+                storage_ptr: 0,
+                bounds: (0, 0, 600, 800),
+                visible: true,
+                proc_id: 2,
+                behind: u32::MAX,
+                go_away: false,
+                ref_con: 0,
+            },
+            &mut allocator,
+            &mut loaded.memory,
+            &mut cursor,
+            heap.heap_limit,
+            &mut error,
+            &mut handles,
+            &mut loaded.gworlds,
+            &loaded.window_list,
+            device,
+        )
+        .unwrap();
+        assert_eq!(
+            allocator.memory_manager.native_ptr_records().len(),
+            old_ptrs + 3
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(storage.window + 2),
+            Some(storage.pixmap_handle)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(storage.pixmap_handle),
+            Some(storage.pixmap)
+        );
+        assert_eq!(loaded.memory.read_u16_be(storage.window + 6), Some(0xc000));
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, storage.window + 16),
+            Some((0, 0, 600, 800))
+        );
+        assert!(loaded
+            .gworlds
+            .iter()
+            .any(|record| record.port == storage.window));
+        let mut current = storage.window;
+        let mut selected_device = device;
+        dispatch_window::ppc_dispose_window(
+            &mut allocator,
+            &mut loaded.memory,
+            &mut cursor,
+            heap.heap_limit,
+            &mut error,
+            &mut handles,
+            &mut Vec::new(),
+            &mut loaded.gworlds,
+            &loaded.window_list,
+            &mut VecDeque::new(),
+            &mut current,
+            &mut selected_device,
+            storage.window,
+        );
+        storage.release(allocator.memory_manager);
+        assert_eq!(
+            allocator.memory_manager.native_ptr_records().len(),
+            old_ptrs
+        );
+        assert_eq!(handles.len(), old_handles);
+        assert!(!loaded
+            .gworlds
+            .iter()
+            .any(|record| record.port == storage.window));
+        let released_cursor = allocator
+            .memory_manager
+            .native_heap_state()
+            .unwrap()
+            .heap_cursor;
+        if let Some(first) = first_cycle_cursor {
+            assert_eq!(
+                released_cursor, first,
+                "repeated fullscreen windows must reuse their storage"
+            );
+        } else {
+            first_cycle_cursor = Some(released_cursor);
+        }
+    }
+}
+
+#[test]
+fn fullscreen_owned_window_failure_releases_partial_fixed_storage() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewCWindow")).unwrap();
+    let shared = loaded.process_memory_manager.0.clone();
+    let mut manager = shared.borrow_mut();
+    let manager = manager.native_mut();
+    let heap = manager.native_heap_state().unwrap();
+    let limit = heap.heap_cursor + PPC_CGRAF_PORT_SIZE + PPC_PIXMAP_SIZE + 16;
+    manager.set_application_heap_limit(limit);
+    let old_ptrs = manager.native_ptr_records().len();
+    let mut cursor = heap.heap_cursor;
+    let mut error = 0;
+    let mut handles = manager.native_handle_records().to_vec();
+    let old_handles = handles.len();
+    let mut allocator = PpcProcessAllocatorView {
+        memory_manager: manager,
+    };
+    let storage = dispatch_window::ppc_new_owned_cwindow(
+        PpcNewCWindowParameters {
+            storage_ptr: 0,
+            bounds: (0, 0, 600, 800),
+            visible: true,
+            proc_id: 2,
+            behind: u32::MAX,
+            go_away: false,
+            ref_con: 0,
+        },
+        &mut allocator,
+        &mut loaded.memory,
+        &mut cursor,
+        limit,
+        &mut error,
+        &mut handles,
+        &mut loaded.gworlds,
+        &loaded.window_list,
+        *loaded.current_gdevice,
+    );
+    assert_eq!(storage, None);
+    assert_eq!(error, PPC_MEM_FULL_ERR);
+    assert_eq!(
+        allocator.memory_manager.native_ptr_records().len(),
+        old_ptrs
+    );
+    assert_eq!(handles.len(), old_handles);
+}
+
+#[test]
+fn fullscreen_import_creates_guest_window_and_restores_screen_port_menu_cursor() {
+    for library in [
+        b"QuickTimeLib".as_slice(),
+        b"Apple;Carbon;Multimedia".as_slice(),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            library,
+            b"BeginFullScreen",
+        ))
+        .unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::QtBeginFullScreen
+        );
+        let end = load_pef_application(&synthetic_pef_with_library_import(
+            library,
+            b"EndFullScreen",
+        ))
+        .unwrap();
+        assert_eq!(
+            end.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::QtEndFullScreen
+        );
+        let scratch = PPC_DATA_BASE + 0x1400;
+        loaded.memory.add_region(scratch, vec![0; 0x100]);
+        let previous = create_test_cwindow(
+            &mut loaded,
+            scratch + 64,
+            (40, 50, 140, 250),
+            0,
+            true,
+            u32::MAX,
+        );
+        let previous_device = *loaded.current_gdevice;
+        let old_windows = loaded.window_list.with_ref(|windows| windows.to_vec());
+        let old_cursor = loaded.cursor_state.level();
+        let front =
+            ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let sample = front.base_addr + front.row_bytes * 80 + 80;
+        loaded.memory.write_u8(sample, 0x33).unwrap();
+        let old_menu_height = loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap();
+        let pointers = loaded
+            .process_memory_manager
+            .0
+            .borrow_mut()
+            .native_mut()
+            .native_ptr_records()
+            .len();
+        loaded.memory.write_u16_be(scratch + 8, 640).unwrap();
+        loaded.memory.write_u16_be(scratch + 10, 480).unwrap();
+        loaded.cpu.gpr[3] = scratch;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = scratch + 8;
+        loaded.cpu.gpr[6] = scratch + 10;
+        loaded.cpu.gpr[7] = scratch + 4;
+        loaded.cpu.gpr[8] = 0;
+        loaded.cpu.gpr[9] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::QtBeginFullScreen);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let state = loaded.memory.read_u32_be(scratch).unwrap();
+        let window = loaded.memory.read_u32_be(scratch + 4).unwrap();
+        assert_ne!(state, 0);
+        assert_ne!(window, 0);
+        assert_ne!(window, previous);
+        assert_eq!(*loaded.current_gworld, window);
+        assert!(loaded
+            .window_list
+            .with_ref(|windows| windows.to_vec())
+            .contains(&window));
+        let pixmap_handle = loaded.memory.read_u32_be(window + 2).unwrap();
+        assert_ne!(loaded.memory.read_u32_be(pixmap_handle), Some(0));
+        assert_eq!(
+            loaded.memory.read_u16_be(scratch + 8),
+            Some(front.width as u16)
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(scratch + 10),
+            Some(front.height as u16)
+        );
+        assert!(loaded.toolbox_startup.host_menu_bar_hidden);
+        assert_eq!(loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR), Some(0));
+        assert_eq!(loaded.cursor_state.level(), old_cursor - 1);
+        assert_ne!(loaded.memory.read_u8(sample), Some(0x33));
+        loaded.cpu.gpr[3] = state;
+        loaded.cpu.gpr[4] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::QtEndFullScreen);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(*loaded.current_gworld, previous);
+        assert_eq!(*loaded.current_gdevice, previous_device);
+        assert_eq!(
+            loaded.window_list.with_ref(|windows| windows.to_vec()),
+            old_windows
+        );
+        assert_eq!(loaded.memory.read_u8(sample), Some(0x33));
+        assert_eq!(
+            loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR),
+            Some(old_menu_height)
+        );
+        assert!(!loaded.toolbox_startup.host_menu_bar_hidden);
+        assert_eq!(loaded.cursor_state.level(), old_cursor);
+        assert!(loaded.toolbox_startup.fullscreen.is_none());
+        assert_eq!(
+            loaded
+                .process_memory_manager
+                .0
+                .borrow_mut()
+                .native_mut()
+                .native_ptr_records()
+                .len(),
+            pointers
+        );
+        loaded.cpu.gpr[3] = state;
+        loaded.cpu.gpr[4] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::QtEndFullScreen);
+        assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+    }
+}
+
+#[test]
+fn fullscreen_preflight_and_invalid_outputs_leave_guest_state_unchanged() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"QuickTimeLib",
+        b"BeginFullScreen",
+    ))
+    .unwrap();
+    let scratch = PPC_DATA_BASE + 0x1400;
+    loaded.memory.add_region(scratch, vec![0xa5; 0x100]);
+    let port = *loaded.current_gworld;
+    let windows = loaded.window_list.with_ref(|windows| windows.to_vec());
+    let menu = loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR);
+    loaded.memory.write_u16_be(scratch + 8, 640).unwrap();
+    loaded.memory.write_u16_be(scratch + 10, 480).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = scratch + 10;
+    loaded.cpu.gpr[7] = u32::MAX;
+    loaded.cpu.gpr[8] = 0;
+    loaded.cpu.gpr[9] = 8;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtBeginFullScreen);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.memory.read_u32_be(scratch), Some(0xa5a5a5a5));
+    assert_eq!(*loaded.current_gworld, port);
+    assert_eq!(
+        loaded.window_list.with_ref(|windows| windows.to_vec()),
+        windows
+    );
+    assert_eq!(loaded.memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR), menu);
+    assert!(loaded.toolbox_startup.fullscreen.is_none());
+    loaded.cpu.gpr[3] = scratch;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = scratch + 8;
+    loaded.cpu.gpr[6] = scratch + 10;
+    loaded.cpu.gpr[7] = u32::MAX;
+    loaded.cpu.gpr[9] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::QtBeginFullScreen);
+    assert_eq!(loaded.cpu.gpr[3] as i16, PPC_PARAM_ERR);
+    assert_eq!(loaded.memory.read_u32_be(scratch), Some(0xa5a5a5a5));
+    assert_eq!(*loaded.current_gworld, port);
+    assert!(loaded.toolbox_startup.fullscreen.is_none());
+}

@@ -1182,6 +1182,7 @@ pub(crate) fn dispatch_supported_import(
 
     if let Some(action) =
         dispatch_window::dispatch_window_import(dispatch_window::PpcWindowDispatchContext {
+            cursor_state,
             binding,
             cpu,
             memory,
@@ -2005,7 +2006,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::ErasePoly => {
             unreachable!("Polygon Manager imports return through dispatch_polygon_import")
         }
-        PpcImportDispatcherTarget::NewCWindow
+        PpcImportDispatcherTarget::QtBeginFullScreen
+        | PpcImportDispatcherTarget::QtEndFullScreen
+        | PpcImportDispatcherTarget::NewCWindow
         | PpcImportDispatcherTarget::GetNewCWindow
         | PpcImportDispatcherTarget::GetWRefCon
         | PpcImportDispatcherTarget::SetWRefCon
