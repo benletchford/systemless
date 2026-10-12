@@ -307,6 +307,19 @@ pub fn styled_text_edit_candidates(
     text_edit_pieces_for_kind(records, dialogs, controls, windows, viewport, true)
 }
 
+/// Resolve plain guest fields for input and text-service geometry. Font faces
+/// change their painting route, not their canonical guest editing target.
+/// Replacement pixels remain separately qualified by the compositor.
+pub fn plain_text_edit_input_candidates(
+    records: &[TextEditSnapshot], dialogs: &[DialogSnapshot], controls: &[ControlSnapshot],
+    windows: &[WindowFrameSnapshot], viewport: Rect,
+) -> Vec<TextEditPiece> {
+    let mut pieces = text_edit_pieces(records, dialogs, controls, windows, viewport);
+    pieces.extend(styled_text_edit_candidates(records, dialogs, controls, windows, viewport)
+        .into_iter().filter(|piece| !records[piece.record].styled && records[piece.record].face != 0));
+    pieces
+}
+
 fn text_edit_pieces_for_kind(
     records: &[TextEditSnapshot], dialogs: &[DialogSnapshot], controls: &[ControlSnapshot],
     windows: &[WindowFrameSnapshot], viewport: Rect, styled: bool,

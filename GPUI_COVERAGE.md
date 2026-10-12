@@ -1,5 +1,28 @@
 # GPUI Kit system-interface coverage
 
+### Shared font-face dialog text-service geometry (2026-10-12)
+
+The GPUI dialog-record resolver now uses the same guarded plain-field candidates
+as input ownership. Previously, bold/italic wrapped fields could retain their
+input target but still disappear from range geometry and accessible ownership;
+the new GPUI test-context reproduction failed at accessible-record resolution.
+The shared helper preserves ordinary plain fields and includes font-faced plain
+paint-plan candidates. Rendering still requires separate native pixel matching.
+
+The expanded real-guest/GPUI regression passes8 CPU/font cases at4 scales
+(1 test,45.90s). It checks accessible owner resolution, caret range bounds and
+point-to-byte lookup against canonical guest geometry, visible-anchor Unicode
+composition/cancellation, unchanged guest snapshots, and the existing guest
+commit/post-edit paint/lifetime guards. The initial composition probe used an
+off-view end caret, which the clipping guard correctly rejected; the positive
+staging check now explicitly uses a visible glyph boundary.
+
+Ordinary wrapped-field interaction and modal platform composition pass
+(20.03s/5.14s), and the locked/offline default desktop check passes (14.34s).
+These functional GPUI test-context checks do not establish native accessibility
+or physical IME integration, composed post-edit images, or overall release
+qualification. The cffe18c2 optimized captures retain their earlier provenance.
+
 ### Font-face wrapped dialog text-input ownership (2026-10-12)
 
 Plain dialog fields with a nonzero face now retain text-input ownership when

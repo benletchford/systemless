@@ -228,7 +228,7 @@ impl Demo {
         if field.edit_text_layout.is_some() { return None; }
         let viewport = super::super::frames::Rect { top: 0, left: 0,
             bottom: self.height as i32, right: self.width as i32 };
-        let pieces = super::super::frames::text_edit_pieces(&self.text_edits, &self.dialogs,
+        let pieces = super::super::frames::plain_text_edit_input_candidates(&self.text_edits, &self.dialogs,
             &self.controls, &self.windows, viewport);
         pieces.iter().map(|piece| &self.text_edits[piece.record]).find(|record|
             record.owner_port == dialog.guest_id && record.text == owner.text

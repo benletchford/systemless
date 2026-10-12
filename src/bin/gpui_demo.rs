@@ -16223,8 +16223,10 @@ mod desktop {
         }
 
         #[cfg(feature = "gpui-demo-test")]
-        #[test]
-        fn plain_face_wrapped_dialog_retains_guest_text_input_owner() {
+        #[gpui_kit::test]
+        fn plain_face_wrapped_dialog_retains_guest_text_input_owner(cx: &mut gpui_kit::TestAppContext) {
+            use gpui_kit::{AppContext, EntityInputHandler, Bounds, point, px};
+            cx.update(gpui_kit::init);
             for (powerpc, depth, face) in [(false, 1u16, 1u8), (false, 1, 2), (false, 8, 1), (false, 8, 2),
                 (true, 8, 1), (true, 8, 2), (true, 16, 1), (true, 16, 2)] {
                 let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
@@ -16279,6 +16281,45 @@ mod desktop {
                 let mut hidden = dialogs.clone();
                 hidden.iter_mut().find(|current| current.guest_id == dialog.guest_id).unwrap().items[8].visible = false;
                 assert!(super::super::input::dialog_text_owner_with_records(&hidden, &windows, &records, &[]).is_none());
+                let (sender, _receiver) = std::sync::mpsc::channel();
+                let (window, view) = cx.update(|cx| gpui_kit::open_window(Default::default(), cx,
+                    |_, cx| cx.new(|cx| super::Demo::new(sender, Default::default(), cx))).unwrap());
+                cx.update_window(window.into(), |_, window, cx| {
+                    view.update(cx, |demo, cx| {
+                        demo.width = frame.width; demo.height = frame.height;
+                        demo.text_edits = records.clone(); demo.dialogs = dialogs.clone();
+                        demo.windows = windows.clone(); demo.styled_text_plans = plans.clone();
+                        demo.host_active = Some(true); window.focus(&demo.focus, cx);
+                        demo.synchronize_composition(window, cx);
+                        assert_eq!(demo.composition.owner().unwrap().identity, owner.identity);
+                        assert!(demo.accessible_record_owner(record).is_some());
+                        let dest = record.global_dest_rect.unwrap();
+                        let view_rect = record.global_view_rect.unwrap();
+                        let (offset, x, y) = record.line_starts.as_ref().unwrap().iter().enumerate()
+                            .find_map(|(line, &start)| {
+                                let geometry = record.guest_line_geometry(line)?;
+                                let offset = start.checked_add(1)?;
+                                let x = i32::from(dest.1) - i32::from(record.dest_rect.1) + i32::from(geometry.left)
+                                    + i32::from(record.guest_plain_range_width(start..offset)?);
+                                let y = i32::from(dest.0) - i32::from(record.dest_rect.0) + i32::from(geometry.top);
+                                (x >= i32::from(view_rect.1) && x < i32::from(view_rect.3)
+                                    && y >= i32::from(view_rect.0) && y + 1 < i32::from(view_rect.2))
+                                    .then_some((offset, x, y))
+                            }).expect("a visible guest glyph boundary is required");
+                        for scale in [0.75, 1., 1.5, 2.] {
+                            demo.display_origin = (37., 29.); demo.display_scale = scale;
+                            let rect = demo.bounds_for_range(offset..offset, Bounds::default(), window, cx).unwrap();
+                            assert_eq!(f32::from(rect.origin.x), 37. + x as f32 * scale);
+                            assert_eq!(demo.character_index_for_point(
+                                point(px(37. + x as f32 * scale), px(29. + (y as f32 + 1.) * scale)), window, cx), Some(offset));
+                            demo.replace_and_mark_text_in_range(Some(offset..offset), "日😀", Some(1..3), window, cx);
+                            assert!(demo.composition_surface(cx).is_some());
+                            demo.composition.cancel();
+                        }
+                        assert_eq!(demo.text_edits, records); assert_eq!(demo.dialogs, dialogs);
+                    });
+                }).unwrap();
+                cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
                 let mut expected = record.text.clone();
                 expected.splice(owner.selection.clone(), [b'Z']);
                 let inputs = super::super::input::guest_dialog_commit_inputs(&mut session, &owner, b"Z").unwrap();
