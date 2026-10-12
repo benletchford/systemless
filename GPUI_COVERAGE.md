@@ -1,5 +1,26 @@
 # GPUI Kit system-interface coverage
 
+### Ordered opaque text-cell compositor primitive (2026-10-12)
+
+The shared smooth TextEdit compositor now has an explicit Erase operation for
+native opaque cells. It applies a clipped background rectangle in operation
+order, replacing preceding glyph/selection coverage while retaining both
+physical colour values for subsequent indexed inversion. It shares atomic
+operation resolution with glyph, selection and caret painting.
+
+The expanded real-outline coverage test passes raster1/2/3/4 (0.08s), checking
+clear-after-glyph and clear-before-glyph behavior, fractional-edge removal,
+negative/out-of-view cell clipping, non-complementary inverse colour and later
+selection order. All31 text-helper tests pass (22.16s), and the desktop check
+passes (11.75s). Source/log hashes are in the ignored
+`target/gpui-qualification/plain-face-rendering/opaque-cell-primitive/review.json`.
+
+Mode0 remains guest-painted: native ordered per-glyph cell/ink emission and
+whole-field mode0 qualification are not connected yet. Classic clears use its
+scaled base advance/ascent/descent; PPC uses styled advance and rational metric
+bounds. Merely changing the mode gate to accept0 would lose those overlap rules.
+No source-copy guest-field or composed-scene qualification is claimed here.
+
 ### Typography policy and ownership inventory audit (2026-10-12)
 
 The canonical inventory now reflects shared plain/styled paint candidates and

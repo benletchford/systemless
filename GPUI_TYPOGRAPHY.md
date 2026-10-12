@@ -153,8 +153,9 @@ Canonical `TERec.txMode` is retained in each editor snapshot and its recorded
 paint identity. Structural plain-field candidates admit modes0/1 for ownership
 and text services, but the current whole-field paint recipe requires zero-spacing
 srcOr (mode1). Source-copy mode0 and other unqualified transfer recipes retain
-guest pixels. Faithful opaque-cell/destination-aware coverage composition remains
-unfinished; structural eligibility alone does not grant paint replacement. This gate does not qualify every
+guest pixels. The compositor has a tested ordered opaque-cell clear primitive;
+native per-glyph cell/ink emission and whole-field mode0 qualification remain
+unfinished. Structural eligibility alone does not grant paint replacement. This gate does not qualify every
 simple Dialog Manager item paint path or native transfer-mode appearance.
 Guest font resolution, advances, wrapping and input positions stay authoritative.
 

@@ -515,6 +515,23 @@ mod tests {
             for y in 0..18 * raster as i32 { for x in 0..2 * raster as i32 {
                 assert_eq!(final_ink[&(x, y)], [90; 3]);
             } }
+            // An opaque cell may erase earlier glyph coverage or selection,
+            // including fractional edge samples. Its physical inverse is
+            // retained for subsequent indexed selection painting.
+            let cell = (-4, 0, 20, 8);
+            let cell_background = TextEditInkSnapshot { pixel: 3, rgb: [70, 80, 90], inverted_rgb: [10, 120, 230] };
+            let erased = smooth_textedit_pixels(&[run.clone(), Op::Invert(view),
+                Op::Erase(cell, cell_background.clone()), Op::Invert(view)], raster, view, &background).unwrap();
+            assert_eq!(erased.len(), (18 * 18 * raster * raster) as usize);
+            for (&point, rgb) in &erased {
+                if point.0 < 8 * raster as i32 { assert_eq!(*rgb, cell_background.inverted_rgb); }
+                else { assert_eq!(*rgb, normal.get(&point).copied().unwrap_or(background.rgb)); }
+                assert!(point.0 >= 0 && point.1 >= 0 && point.0 < 18 * raster as i32 && point.1 < 18 * raster as i32);
+            }
+            let before_glyph = smooth_textedit_pixels(&[Op::Erase(cell, cell_background), run.clone()],
+                raster, view, &background).unwrap();
+            assert!(normal.iter().any(|(&point, rgb)| point.0 < 8 * raster as i32
+                && *rgb == [50; 3] && before_glyph[&point] == [50; 3]));
         }
     }
 
@@ -1670,6 +1687,8 @@ enum StyledTextEditPaintOp {
     Run { glyphs: ClassicLine, left: i16, baseline: i16,
         ink: systemless::runner::TextEditInkSnapshot },
     Invert((i16, i16, i16, i16)),
+    /// Native opaque text-cell clearing, ordered before the owning glyph.
+    Erase((i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot),
     Caret((i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot),
 }
 
@@ -1678,6 +1697,7 @@ enum ResolvedTextEditPaintOp {
     Run { glyphs: Vec<(i32, systemless::quickdraw::text::SmoothGlyphSnapshot)>,
         left: i16, baseline: i16, ink: systemless::runner::TextEditInkSnapshot },
     Invert((i16, i16, i16, i16)),
+    Erase((i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot),
     Caret((i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot),
 }
 
@@ -1692,6 +1712,7 @@ impl StyledTextEditPaintOp {
                 left: *left, baseline: *baseline, ink: ink.clone(),
             },
             Self::Invert(rect) => ResolvedTextEditPaintOp::Invert(*rect),
+            Self::Erase(rect, ink) => ResolvedTextEditPaintOp::Erase(*rect, ink.clone()),
             Self::Caret(rect, ink) => ResolvedTextEditPaintOp::Caret(*rect, ink.clone()),
         })).collect()
     }
@@ -1735,7 +1756,7 @@ fn smooth_textedit_pixels(
             op => {
                 let (rect, caret) = match op {
                     ResolvedTextEditPaintOp::Invert(rect) => (rect, None),
-                    ResolvedTextEditPaintOp::Caret(rect, ink) => (rect, Some(ink)),
+                    ResolvedTextEditPaintOp::Caret(rect, ink) | ResolvedTextEditPaintOp::Erase(rect, ink) => (rect, Some(ink)),
                     ResolvedTextEditPaintOp::Run { .. } => unreachable!(),
                 };
                 let (top, left, bottom, right) = rect;
