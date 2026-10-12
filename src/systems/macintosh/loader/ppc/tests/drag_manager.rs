@@ -528,6 +528,15 @@ fn retained_drag_image_owns_masked_pixels_blends_moves_and_restores_background()
             ),
             PpcImportAction::Yield(_)
         ));
+        let parked = loaded.drag_tracking_stack.last().unwrap();
+        assert!(parked.is_presentation_wait(loaded.cpu.pc));
+        assert!(!parked.is_presentation_wait(loaded.cpu.pc.wrapping_add(4)));
+        let mut unfinished = parked.clone();
+        unfinished.snapshot_pending = true;
+        assert!(!unfinished.is_presentation_wait(loaded.cpu.pc));
+        unfinished.snapshot_pending = false;
+        unfinished.phase = dispatch_drag::PpcDragPhase::Receiving;
+        assert!(!unfinished.is_presentation_wait(loaded.cpu.pc));
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (100, 100)),
             Some(expected)

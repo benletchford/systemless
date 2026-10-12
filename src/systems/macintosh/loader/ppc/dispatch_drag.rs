@@ -292,6 +292,16 @@ pub(crate) struct PpcDragTrackingState {
     image_origin: (i16, i16),
 }
 
+impl PpcDragTrackingState {
+    pub(crate) fn is_presentation_wait(&self, pc: u32) -> bool {
+        pc == self.import_pc
+            && self.phase == PpcDragPhase::Tracking
+            && !self.snapshot_pending
+            && self.awaiting_callback.is_none()
+            && self.callbacks.is_empty()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PpcDragOutline {
     region: Vec<u8>,
