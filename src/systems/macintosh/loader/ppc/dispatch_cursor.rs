@@ -175,6 +175,11 @@ pub(super) fn dispatch_cursor_import(
             let _ = ppc_plot_cicon(&params, memory, gworlds, current_gworld, screen_clut);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::PlotCIconHandle => {
+            let params = crate::cursor_manager::evaluate_plot_cicon_parameters(cpu.gpr[3], cpu.gpr[6]);
+            let result = ppc_plot_cicon_with_options(&params, cpu.gpr[4] as u16, cpu.gpr[5] as u16, memory, gworlds, current_gworld, screen_clut);
+            Some(PpcImportAction::Return(ppc_i16_result(result.err().unwrap_or(0))))
+        }
         PpcImportDispatcherTarget::DisposeCIcon => {
             let params = crate::cursor_manager::evaluate_dispose_cicon_parameters(cpu.gpr[3]);
             ppc_dispose_cicon(
@@ -466,32 +471,49 @@ fn ppc_plot_cicon(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     current_gworld: u32,
-    _screen_clut: &[[u16; 3]; 256],
+    screen_clut: &[[u16; 3]; 256],
 ) -> bool {
+    ppc_plot_cicon_with_options(params, 0, 0, memory, gworlds, current_gworld, screen_clut)
+        .unwrap_or(false)
+}
+
+fn ppc_plot_cicon_with_options(
+    params: &crate::cursor_manager::PlotCIconParameters,
+    alignment: u16,
+    transform: u16,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    _screen_clut: &[[u16; 3]; 256],
+) -> Result<bool, i16> {
+    if alignment & !0x000F != 0 || transform & !0x4703 != 0 {
+        return Err(PPC_PARAM_ERR);
+    }
     let rect_ptr = params.rect_ptr;
     let icon_handle = params.cicon_handle;
     let (Some(port_dst_rect), Some(icon_ptr)) = (
         ppc_read_rect(memory, rect_ptr),
         memory.read_u32_be(icon_handle).filter(|ptr| *ptr != 0),
     ) else {
-        return false;
+        return Err(PPC_PARAM_ERR);
     };
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
-        return false;
+        return Err(PPC_PARAM_ERR);
     };
     let front_buffer = surface.front_buffer;
-    let (dst_top, dst_left, dst_bottom, dst_right) = surface.local_rect_i16(port_dst_rect);
+    let (mut dst_top, mut dst_left, mut dst_bottom, mut dst_right) =
+        surface.local_rect_i16(port_dst_rect);
     if !matches!(front_buffer.depth, 1 | 2 | 4 | 8 | 16) {
-        return false;
+        return Err(PPC_PARAM_ERR);
     }
     let Some(pixel_base) = memory.read_u32_be(icon_ptr) else {
-        return false;
+        return Err(PPC_PARAM_ERR);
     };
     let Some(pixel_row_bytes) = memory
         .read_u16_be(icon_ptr + 4)
         .map(|value| u32::from(value & 0x3fff))
     else {
-        return false;
+        return Err(PPC_PARAM_ERR);
     };
     let pixel_bounds = (
         memory.read_u16_be(icon_ptr + 6).unwrap_or(0) as i16,
@@ -516,13 +538,73 @@ fn ppc_plot_cicon(
         || mask_bounds.2 <= mask_bounds.0
         || mask_bounds.3 <= mask_bounds.1
     {
-        return false;
+        return Err(PPC_PARAM_ERR);
     }
 
+    if alignment != 0 {
+        let mut opaque: Option<(i16, i16, i16, i16)> = None;
+        for v in mask_bounds.0..mask_bounds.2 {
+            for h in mask_bounds.1..mask_bounds.3 {
+                if ppc_read_packed_bitmap_index(
+                    memory,
+                    mask_base,
+                    mask_row_bytes,
+                    1,
+                    mask_bounds,
+                    v,
+                    h,
+                ) == Some(1)
+                {
+                    opaque = Some(match opaque {
+                        None => (v, h, v + 1, h + 1),
+                        Some((t, l, b, r)) => (t.min(v), l.min(h), b.max(v + 1), r.max(h + 1)),
+                    });
+                }
+            }
+        }
+        let Some((top, left, bottom, right)) = opaque else {
+            return Ok(false);
+        };
+        // More Macintosh Toolbox, p. 5-21: stretch first, then align mask edges.
+        let project =
+            |value: i16, origin: i16, source_end: i16, target_start: i16, target_end: i16| {
+                let numerator = (i64::from(value) - i64::from(origin))
+                    * (i64::from(target_end) - i64::from(target_start));
+                let denominator = i64::from(source_end) - i64::from(origin);
+                i32::from(target_start) + ((numerator + denominator - 1) / denominator) as i32
+            };
+        let t = project(top, mask_bounds.0, mask_bounds.2, dst_top, dst_bottom);
+        let b = project(bottom, mask_bounds.0, mask_bounds.2, dst_top, dst_bottom);
+        let l = project(left, mask_bounds.1, mask_bounds.3, dst_left, dst_right);
+        let r = project(right, mask_bounds.1, mask_bounds.3, dst_left, dst_right);
+        let shift = |mode: u16, start: i16, end: i16, first: i32, last: i32| match mode {
+            1 => (i32::from(start) + i32::from(end) - first - last) / 2,
+            2 => i32::from(start) - first,
+            3 => i32::from(end) - last,
+            _ => 0,
+        };
+        let dv = shift(alignment & 3, dst_top, dst_bottom, t, b);
+        let dh = shift((alignment >> 2) & 3, dst_left, dst_right, l, r);
+        dst_top = i16::try_from(i32::from(dst_top) + dv).map_err(|_| PPC_PARAM_ERR)?;
+        dst_bottom = i16::try_from(i32::from(dst_bottom) + dv).map_err(|_| PPC_PARAM_ERR)?;
+        dst_left = i16::try_from(i32::from(dst_left) + dh).map_err(|_| PPC_PARAM_ERR)?;
+        dst_right = i16::try_from(i32::from(dst_right) + dh).map_err(|_| PPC_PARAM_ERR)?;
+    }
+    let mut clips = Vec::new();
+    for offset in [
+        PPC_CGRAF_PORT_VIS_RGN_OFFSET,
+        PPC_CGRAF_PORT_CLIP_RGN_OFFSET,
+    ] {
+        if let Some(handle) = memory.read_u32_be(current_gworld.wrapping_add(offset)) {
+            if let Some(region) = ppc_region_storage(memory, handle) {
+                clips.push(region);
+            }
+        }
+    }
     // More Macintosh Toolbox (1993), pp. 5-25--5-26: PlotCIcon scales the
     // color PixMap into the destination rectangle and applies the icon mask.
     let mut drew = false;
-    for dst_v in dst_top..dst_bottom {
+    for dst_v in dst_top.max(0)..dst_bottom.min(front_buffer.height.min(i16::MAX as u32) as i16) {
         let Some(src_v) =
             ppc_scale_icon_coordinate(dst_v, dst_top, dst_bottom, pixel_bounds.0, pixel_bounds.2)
         else {
@@ -533,7 +615,18 @@ fn ppc_plot_cicon(
         else {
             continue;
         };
-        for dst_h in dst_left..dst_right {
+        for dst_h in dst_left.max(0)..dst_right.min(front_buffer.width.min(i16::MAX as u32) as i16)
+        {
+            let point = (
+                dst_v.wrapping_add(surface.top),
+                dst_h.wrapping_add(surface.left),
+            );
+            if !clips
+                .iter()
+                .all(|region| ppc_point_in_region_storage(region, point.0, point.1))
+            {
+                continue;
+            }
             let Some(mask_h) =
                 ppc_scale_icon_coordinate(dst_h, dst_left, dst_right, mask_bounds.1, mask_bounds.3)
             else {
@@ -571,8 +664,56 @@ fn ppc_plot_cicon(
             ) else {
                 continue;
             };
-            let Some(color) = ppc_cicon_color(memory, color_table_handle, index) else {
+            let Some(mut color) = ppc_cicon_color(memory, color_table_handle, index) else {
                 continue;
+            };
+            // Icon Toolkit states are visual transforms, not changes to source data.
+            // Apple TN QD18 permits system-dependent state appearance.
+            let mut channels = [color.red, color.green, color.blue];
+            let label = usize::from((transform >> 8) & 7);
+            if label != 0 {
+                const LABELS: [[u16; 3]; 8] = [
+                    [0; 3],
+                    [0x8888; 3],
+                    [0, 0x8888, 0],
+                    [0x8888, 0x2222, 0xAAAA],
+                    [0, 0x7777, 0xFFFF],
+                    [0xFFFF, 0xAAAA, 0],
+                    [0xFFFF, 0x2222, 0],
+                    [0xFFFF, 0xFFFF, 0],
+                ];
+                for (component, tint) in channels.iter_mut().zip(LABELS[label]) {
+                    *component = ((u32::from(*component) + u32::from(tint)) / 2) as u16;
+                }
+            }
+            match transform & 3 {
+                1 => {
+                    for component in &mut channels {
+                        *component = ((u32::from(*component) + 0xFFFF) / 2) as u16;
+                    }
+                }
+                2 => {
+                    let gray =
+                        ((u32::from(channels[0]) + u32::from(channels[1]) + u32::from(channels[2]))
+                            / 3) as u16;
+                    channels = [gray; 3];
+                }
+                3 => {
+                    for component in &mut channels {
+                        *component = ((u32::from(*component) + 3 * 0xFFFF) / 4) as u16;
+                    }
+                }
+                _ => {}
+            }
+            if transform & 0x4000 != 0 {
+                for component in &mut channels {
+                    *component /= 2;
+                }
+            }
+            color = PpcRgbColor {
+                red: channels[0],
+                green: channels[1],
+                blue: channels[2],
             };
             let Some(raw_pixel) = ppc_quickdraw_surface_color_pixel(memory, surface, color) else {
                 continue;
@@ -602,7 +743,7 @@ fn ppc_plot_cicon(
             drew
         );
     }
-    drew
+    Ok(drew)
 }
 
 #[allow(clippy::too_many_arguments)]

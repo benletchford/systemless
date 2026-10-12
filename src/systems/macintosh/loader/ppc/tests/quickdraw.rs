@@ -6283,3 +6283,138 @@ fn fillcrect_tiles_color_pixpat_across_rectangle() {
     assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 0)), Some(9));
     assert_eq!(ppc_quickdraw_read_pixel(&mut loaded.memory, front, (3, 0)), Some(8));
 }
+
+#[test]
+fn hle_plot_cicon_handle_preserves_mask_and_applies_options() {
+    let pef = synthetic_pef_with_import(b"GetCIcon");
+    let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.set_current_resource_refnum(5);
+    loaded
+        .process_file_system
+        .push_vfs_resource(PpcVfsResourceRecord {
+            ref_num: 5,
+            path: "Escape Velocity".to_string(),
+            res_type: u32::from_be_bytes(*b"cicn"),
+            res_id: 128,
+            name: b"Pilot".to_vec(),
+            data: test_one_bit_cicon(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+    loaded.cpu.gpr[3] = 128;
+
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    let icon_handle = loaded.cpu.gpr[3];
+    let icon_ptr = loaded.memory.read_u32_be(icon_handle).unwrap();
+    let color_table_handle = loaded.memory.read_u32_be(icon_ptr + 42).unwrap();
+    let pixel_data_handle = loaded.memory.read_u32_be(icon_ptr + 78).unwrap();
+    assert_ne!(icon_handle, 0);
+    assert_ne!(color_table_handle, 0);
+    assert_ne!(pixel_data_handle, 0);
+    assert_eq!(
+        loaded.memory.read_u32_be(icon_ptr + 50),
+        Some(icon_ptr + 82)
+    );
+    assert_eq!(
+        loaded.memory.read_u32_be(icon_ptr + 64),
+        Some(icon_ptr + 83)
+    );
+    assert_eq!(test_handle_records!(loaded).len(), 3);
+
+    let rect_ptr = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(rect_ptr, vec![0; 8]);
+    ppc_write_rect(&mut loaded.memory, rect_ptr, 1, 2, 2, 10).unwrap();
+    loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::PlotCIconHandle;
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = rect_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = icon_handle;
+    let probe = loaded.run_with_hle_imports(64);
+
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(probe.unsupported_import_index, None);
+    let front = ppc_front_buffer_for_gworld(&loaded.gworlds, *loaded.current_gworld).unwrap();
+    let red_index = pict::closest_clut_index(0xffff, 0, 0, &loaded.screen_clut);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+        Some(u16::from(red_index))
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (5, 1)),
+        Some(u16::from(red_index))
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (6, 1)),
+        Some(0)
+    );
+
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    for x in 2..10 {
+        ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, 1), 0);
+    }
+    loaded.cpu.gpr[3] = rect_ptr;
+    loaded.cpu.gpr[4] = 0x000C; // right-align the stretched mask, not its transparent padding
+    loaded.cpu.gpr[5] = 0x4000; // selected
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotCIconHandle);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    let selected_index = pict::closest_clut_index(0x7FFF, 0, 0, &loaded.screen_clut);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+        Some(0)
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (6, 1)),
+        Some(u16::from(selected_index))
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (9, 1)),
+        Some(u16::from(selected_index))
+    );
+    loaded.cpu.gpr[3] = rect_ptr;
+    loaded.cpu.gpr[4] = 0x0010; // reserved alignment bits
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotCIconHandle);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (6, 1)),
+        Some(u16::from(selected_index))
+    );
+    loaded.cpu.gpr[3] = rect_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[6] = 0;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotCIconHandle);
+    assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    let clip = loaded
+        .memory
+        .read_u32_be(*loaded.current_gworld + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+        .unwrap();
+    ppc_write_rgn_bbox(&mut loaded.memory, clip, 0, 1, 1, 2).unwrap();
+    ppc_write_rect(&mut loaded.memory, rect_ptr, -1, -2, 1, 6).unwrap();
+    for x in 0..3 {
+        ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, 0), 77);
+    }
+    loaded.cpu.gpr[3] = rect_ptr;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = 0;
+    loaded.cpu.gpr[6] = icon_handle;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotCIconHandle);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
+        Some(77)
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (1, 0)),
+        Some(u16::from(red_index))
+    );
+    assert_eq!(
+        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 0)),
+        Some(77)
+    );
+}
