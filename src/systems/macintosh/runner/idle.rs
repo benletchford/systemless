@@ -142,6 +142,7 @@ pub(crate) struct IdleCycleProbe {
     pub(crate) trap_pc: u32,
     pub(crate) tick: u32,
     pub(crate) cpu: CpuArchitecturalSnapshot,
+    pub(crate) host: IdleCycleHostSnapshot,
     /// Same-site arrivals observed since the probe began without matching
     /// the starting CPU state. A wait cycle may have a small period (EV
     /// Override's crawl alternates two polled keycodes through D5, a
@@ -304,6 +305,7 @@ pub(crate) const IDLE_CYCLE_MAX_PROBES_PER_TICK: u8 = 2;
 /// are unchanged and the Event Manager still has no deliverable event.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IdleCycleHostSnapshot {
+    pub(crate) task: crate::execution_kernel::ExecutionTaskId,
     pub(crate) mouse_pos: (i16, i16),
     pub(crate) mouse_button: bool,
     pub(crate) key_map: [u8; 16],
@@ -326,6 +328,7 @@ pub(crate) struct IdleCycleHostSnapshot {
 impl IdleCycleHostSnapshot {
     pub(crate) fn capture(dispatcher: &TrapDispatcher) -> Self {
         Self {
+            task: dispatcher.guest_calls.current_task(),
             mouse_pos: dispatcher.input_state.mouse_position(),
             mouse_button: dispatcher.input_state.mouse_button_pressed(),
             key_map: dispatcher.key_map_bytes(),

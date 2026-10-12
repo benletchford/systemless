@@ -3071,3 +3071,178 @@ fn track_control_custom_cdef_preserves_guest_parts_and_release_cancellation() {
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp + 12);
     }
 }
+
+#[test]
+fn zero_sleep_wait_next_event_proves_a_cycle_and_wakes_for_input() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let trap_pc = 0x0002_0000;
+    let sp = 0x0010_0000;
+    let event = 0x0010_0100;
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    runner.set_guest_tick_for_test(100);
+    runner.bus.write_long(0x016A, 100);
+    for iteration in 0..3 {
+        runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.m68k.cpu.core.ppc = trap_pc;
+        runner.m68k.cpu.core.ir = 0xA860;
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        runner.bus.write_long(sp, 0); // no mouse region
+        runner.bus.write_long(sp + 4, 0); // no sleep
+        runner.bus.write_long(sp + 8, event);
+        runner.bus.write_word(sp + 12, 0xFFFF);
+        runner
+            .dispatcher
+            .dispatch(0xA860, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap();
+        assert_eq!(runner.bus.read_word(event), 0);
+        assert!(runner.note_idle_cycle_trap_result(0xA860));
+        assert_eq!(
+            runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)),
+            iteration == 2
+        );
+    }
+    assert_eq!(runner.guest_tick(), 100);
+    assert!(runner.idle_cycle_sleep.is_some());
+    runner.push_mouse_down(20, 30);
+    assert!(!runner.try_resume_proven_idle_cycle(Some(110)));
+    assert_eq!(runner.guest_tick(), 100);
+    assert!(runner.idle_cycle_sleep.is_none());
+}
+
+#[test]
+fn wait_next_event_sleep_and_delivered_events_reject_an_idle_probe() {
+    for (sleep, deliver_event) in [(60, false), (0, true)] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000;
+        let sp = 0x0010_0000;
+        runner.dispatcher.set_sent_open_app_event_for_test(true);
+        runner.set_guest_tick_for_test(100);
+        runner.m68k.cpu.write_reg(Register::A7, sp);
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 101, Some(105)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 101, Some(105)));
+        assert!(runner.idle_cycle_probe.is_some());
+        if deliver_event {
+            runner.push_mouse_down(20, 30);
+        }
+        runner.m68k.cpu.write_reg(Register::PC, trap_pc + 2);
+        runner.bus.write_long(sp, 0);
+        runner.bus.write_long(sp + 4, sleep);
+        runner.bus.write_long(sp + 8, 0x0010_0100);
+        runner.bus.write_word(sp + 12, 0xFFFF);
+        runner
+            .dispatcher
+            .dispatch(0xA860, &mut runner.m68k.cpu, &mut runner.bus)
+            .unwrap();
+        assert!(!runner.note_idle_cycle_trap_result(0xA860));
+        assert!(runner.idle_cycle_probe.is_none());
+        if !deliver_event {
+            assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, sleep);
+            assert!(runner.dispatcher.pending_wait_next_event_return.is_some());
+        }
+        assert_eq!(runner.guest_tick(), 100);
+    }
+}
+
+#[test]
+fn parked_event_loop_wakes_for_menu_bar_invalidation() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let trap_pc = 0x0002_0000;
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    runner.set_guest_tick_for_test(100);
+    runner.bus.write_long(0x016A, 100);
+    assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 101, Some(100)));
+    assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 101, Some(100)));
+    assert!(runner.try_exact_idle_cycle_fastfwd(trap_pc, 101, Some(100)));
+    runner.dispatcher.event_queue.invalidate_menu_bar();
+    assert!(!runner.try_resume_proven_idle_cycle(Some(105)));
+    assert_eq!(runner.guest_tick(), 100);
+    assert!(runner.idle_cycle_sleep.is_none());
+    assert!(runner.dispatcher.event_queue.menu_bar_is_invalid());
+}
+
+fn zero_sleep_event_loop_for_deferred_slices() -> FixtureRunner {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let base = 0x0002_0000;
+    let event = 0x0010_0100;
+    let mut words = vec![
+        0x4267, // CLR.W -(SP): result
+        0x3F3C,
+        0xFFFF, // MOVE.W #allEvents,-(SP)
+        0x4879,
+        (event >> 16) as u16,
+        event as u16, // PEA event
+        0x42A7,
+        0x42A7, // CLR.L -(SP): sleep, mouseRgn
+        0xA860,
+        0x548F, // WaitNextEvent; ADDQ.L #2,SP
+        0x42A7,
+        0xA924,
+        0x588F, // FrontWindow result; ADDQ.L #4,SP
+    ];
+    // Make one identity iteration longer than the browser's 64-instruction
+    // slice so a same-slice-only proof cannot possibly qualify it.
+    words.extend(std::iter::repeat_n(0x4E71, 70));
+    words.push(0x6000);
+    let displacement = -((words.len() * 2) as i16);
+    words.push(displacement as u16);
+    for (index, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(base + index as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, base);
+    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    runner.set_guest_tick_for_test(100);
+    runner.bus.write_long(0x016A, 100);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    runner
+}
+
+#[test]
+fn deferred_cpu_slices_prove_long_zero_sleep_event_loops() {
+    let mut runner = zero_sleep_event_loop_for_deferred_slices();
+    for _ in 0..12 {
+        let (steps, running) = runner.run_gui_cpu_slice(64, 100);
+        assert!(running);
+        assert!(steps <= 64);
+        if runner.idle_cycle_sleep.is_some() {
+            break;
+        }
+    }
+    assert!(runner.idle_cycle_sleep.is_some());
+    assert_eq!(runner.guest_tick(), 100);
+    runner.push_mouse_down(20, 30);
+    for _ in 0..4 {
+        let (_, running) = runner.run_gui_cpu_slice(64, 100);
+        assert!(running);
+        if runner.bus.read_word(0x0010_0100) == 1 {
+            break;
+        }
+    }
+    assert_eq!(runner.bus.read_word(0x0010_0100), 1);
+    assert!(runner.idle_cycle_sleep.is_none());
+}
+
+#[test]
+fn frame_composition_and_changed_input_revoke_unfinished_deferred_proofs() {
+    for compose in [false, true] {
+        let mut runner = zero_sleep_event_loop_for_deferred_slices();
+        for _ in 0..12 {
+            let (_, running) = runner.run_gui_cpu_slice(64, 100);
+            assert!(running);
+            if runner.idle_cycle_probe.is_some() {
+                break;
+            }
+        }
+        assert!(runner.idle_cycle_probe.is_some());
+        if compose {
+            runner.composite_frame();
+        } else {
+            runner.push_mouse_down(20, 30);
+            // A single instruction cannot close another loop; it only tests
+            // that entry rejects the stale host/input observation.
+            runner.run_gui_cpu_slice(1, 100);
+        }
+        assert!(runner.idle_cycle_probe.is_none());
+        assert!(runner.idle_cycle_sleep.is_none());
+        assert_eq!(runner.guest_tick(), 100);
+    }
+}
