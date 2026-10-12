@@ -1076,3 +1076,67 @@ fn ppc_sound_completions_see_ticks_advanced_by_prior_callback() {
     assert_eq!(ppc_app.sound.completion_invocations.len(), 2);
     assert_eq!(ppc_app.sound.completion_invocations[1].end_r3, 42);
 }
+#[test]
+fn ppc_retained_drag_wait_advances_clock_and_timers_without_executing_idle_cycles() {
+    const EVENT: u32 = PPC_DATA_BASE + 0x2000;
+    const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+    let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+    let native = app.ppc.as_mut().unwrap();
+    native.memory.add_region(EVENT, vec![0; 16]);
+    native
+        .memory
+        .add_region(PPC_DATA_BASE + 0x3000, vec![0; 32]);
+    native
+        .memory
+        .add_region(CALLBACK, 0x4e80_0020u32.to_be_bytes().to_vec());
+    native
+        .memory
+        .write_u32_be(
+            PPC_CODE_BASE,
+            ppc_test_relative_branch(PPC_CODE_BASE, PPC_IMPORT_TRAP_BASE),
+        )
+        .unwrap();
+    let mut binding = test_ppc_import_binding(0, "DragLib", "TrackDrag");
+    binding.trap_pc = PPC_IMPORT_TRAP_BASE;
+    binding.dispatcher_target =
+        PpcImportDispatcherTarget::Drag(crate::loader::ppc::PpcDragOperation::Track);
+    native.import_count = 1;
+    native.imports = vec![binding];
+    native.timer_tasks.push(PpcTimerTaskRecord {
+        task_ptr: PPC_DATA_BASE + 0x3000,
+        architecture: CallbackTaskArchitecture::PowerPc,
+        extended: false,
+        callback: CALLBACK,
+        active: true,
+        fire_at_tick: 1,
+        fire_at_subtick: 0,
+        last_fired_tick: None,
+    });
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    runner.init_app(&app);
+    runner.set_instructions_per_tick(100_000);
+    runner.tick_budget = 100_000;
+    let native = runner.native.application_mut().unwrap();
+    let reference = native
+        .drag_manager
+        .with_mut(|manager| manager.new_drag().unwrap());
+    native.cpu.gpr[3] = reference;
+    native.cpu.gpr[4] = EVENT;
+    native.cpu.gpr[5] = 0;
+    runner.push_mouse_down(0, 0);
+    let before = runner.guest_tick();
+    let instructions = runner.total_instructions;
+    let (_, running) = runner.run_gui_cpu_slice(64, before + 1);
+    assert!(running);
+    assert!(runner.is_drag_presentation_wait());
+    assert_eq!(runner.guest_tick(), before + 1);
+    assert!(runner.total_instructions - instructions < 1_000);
+    assert_eq!(
+        runner.native.application().unwrap().timer_tasks[0].last_fired_tick,
+        Some(before + 1)
+    );
+    let (_, running) = runner.run_gui_cpu_slice(64, before + 2);
+    assert!(running);
+    assert!(runner.is_drag_presentation_wait());
+    assert_eq!(runner.guest_tick(), before + 2);
+}
