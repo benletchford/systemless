@@ -12,6 +12,7 @@ architectures:
 - ppc
 default_architecture: ppc
 category: Arcade
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -19,9 +20,30 @@ compatibility:
     tester: Catalogue maintainer
     systemless_version: a8fe92e087f4ce5838cf9e8da9988fa6818d5925
     architecture: ppc
-    environment: "Merged-master optimized native build, untouched original 1.0 shareware archive, exact selector below and depth 16. Normal menu/Play starts the four-player arena. Held default left/right arrows rotate BEM's bat in both directions; a live ball and CPU score progression pass 25 measured pixel checks at 722 frontend/guest ticks with zero exhaustion. The matched no-key run passes nine stationary-bat checks. Captures inspected. All 32 original files/64 forks and supported Finder metadata match independent extraction and production packing. Actual game is PPC-only; helper CODE does not establish a native 68K slice. Fullscreen, Carbon math and genuine cooperative movie callbacks are merged in #4742, #4744 and #4746. Options background artifacts remain tracked in #4745. Browser, promotion, launch approval, full games, human-player scoring, saving and audio fidelity remain unverified. Launch is disabled."
+    environment: "Merged-master optimized native build, untouched original 1.0 shareware archive, exact selector below and depth 16. Normal menu/Play starts the four-player arena. Held default left/right arrows rotate BEM's bat in both directions; a live ball and CPU score progression pass 25 measured pixel checks at 722 frontend/guest ticks with zero exhaustion. The matched no-key run passes nine stationary-bat checks. Captures inspected. All 32 original files/64 forks and supported Finder metadata match independent extraction and production packing. Actual game is PPC-only; helper CODE does not establish a native 68K slice. Fullscreen, Carbon math and genuine cooperative movie callbacks are merged in #4742, #4744 and #4746. Options background artifacts remain tracked in #4745. Browser, promotion, launch approval, full games, human-player scoring, saving and audio fidelity remain unverified. Hosted verification below supersedes the initial launch hold."
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4698
+  - date: "2026-10-13"
+    tester: Catalogue maintainer
+    systemless_version: a8fe92e087f4ce5838cf9e8da9988fa6818d5925
+    architecture: ppc
+    environment: >-
+      Browser launch approved after two optimized Chrome 151 Worker/Canvas2D
+      staging replays at default 25 MHz and implicit PPC 16-bit depth. The
+      unreleased frontend is bridged under production origin; the actual managed
+      archive is untouched, with no local archive fixture or security override.
+      Fresh archive/screenshot downloads match pinned sizes and SHA-256 values.
+      Normal menu/Play enters the original arena. Six measured blue-bat region
+      checks pass twice for left/right arrow rotation; inspected captures show a
+      live ball and CPU score progression. Steady pacing is 61.017 and 62.172
+      guest ticks/sec, above the unchanged minimum 50, with no console errors.
+      Page compositor captures show the complete arena; later raw-canvas exports
+      can capture a different intermediate image and are not exact frame oracles.
+      Original Options background artifacts remain in #4745. Full games,
+      human-player scoring, saves and audio are unverified. This is hosted-asset
+      staging approval; human release and direct public qualification are pending.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/4748
 runtime:
   executable_path: Airburst 1.0 Shareware/Airburst/Airburst Carbon
   show_menu_bar: true
@@ -85,7 +107,7 @@ nine game types and balloon editor retain their registration restrictions.
 No registration key or game patch is included.
 
 Native bat rotation, ball movement and CPU score progression are verified.
-Browser launch is pending. The Options background has a known rendering issue;
+Hosted-archive browser controls and pacing are approved. The Options background has a known rendering issue;
 full games, human-player scoring, saving and audio remain unverified.
 
 ![Airburst original four-player arena](https://assets.systemless.org/catalogue/media/sha256/1e/1efb53cb6f57752dc82a4cff78d3c7173d813f18cff533fbe28da423be520904.png)
