@@ -1,5 +1,16 @@
 # GPUI Kit system-interface coverage
 
+### Declined TextEdit paint-plan text-service regression (2026-10-12)
+
+The wrapped dialog regression now exercises both qualified replacement and an
+explicitly absent paint plan. All eight bold/italic CPU/display cases retain
+canonical text ownership, accessible record resolution, caret range geometry,
+point-to-byte lookup and visible-anchor composition/cancellation at four scales.
+Guest records remain unchanged by composition; the subsequent guest commit and
+post-edit pixel qualification still pass. The expanded test passes (1 test,
+60.62s). This is a GPUI test-context fallback regression, not a composed fallback
+image check, physical accessibility/IME test or gameplay performance measurement.
+
 ### Unified native-qualified ordinary TextEdit painting (2026-10-12)
 
 Face-zero ordinary fields now use the same whole-field native-pixel paint plan
