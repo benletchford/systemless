@@ -1116,3 +1116,111 @@ fn hle_import_runner_handles_delay_microseconds_and_tick_count() {
     assert_eq!(probe.unsupported_import_index, None);
     assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
 }
+
+#[test]
+fn driver_services_absolute_time_arithmetic_preserves_struct_abi() {
+    for (symbol, first, second, expected) in [
+        ("NanosecondsToAbsolute", 2_345_678u64, 0u64, 2_345u64),
+        (
+            "AddAbsoluteToAbsolute",
+            (1u64 << 32) | 7,
+            10u64,
+            (1u64 << 32) | 17,
+        ),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"CarbonLib",
+            symbol.as_bytes(),
+        ))
+        .unwrap();
+        let output = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(output, vec![0xA5; 12]);
+        loaded.cpu.gpr[3] = output;
+        loaded.cpu.gpr[4] = (first >> 32) as u32;
+        loaded.cpu.gpr[5] = first as u32;
+        loaded.cpu.gpr[6] = (second >> 32) as u32;
+        loaded.cpu.gpr[7] = second as u32;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], output);
+        assert_eq!(loaded.memory.read_u64_be(output), Some(expected));
+        assert_eq!(loaded.memory.read_u32_be(output + 8), Some(0xA5A5A5A5));
+    }
+}
+
+#[test]
+fn carbon_mp_delay_until_waits_for_virtual_deadline() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"CarbonLib",
+        b"MPDelayUntil",
+    ))
+    .unwrap();
+    let expiration = PPC_DATA_BASE + 0x1000;
+    loaded
+        .memory
+        .add_region(expiration, 50_000u64.to_be_bytes().to_vec());
+    loaded.cpu.gpr[3] = expiration;
+    let caller = loaded.cpu.lr;
+    for now in [0, 49_999] {
+        let action = dispatch_simple_hot_import_fast(
+            &PpcImportDispatcherTarget::MPDelayUntil,
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            now,
+        );
+        assert!(matches!(action, Some(PpcImportAction::Yield(_))));
+        assert_eq!(loaded.cpu.gpr[3], expiration);
+        assert_eq!(loaded.cpu.lr, caller);
+        assert_eq!(loaded.memory.read_u64_be(expiration), Some(50_000));
+    }
+    for now in [50_000, 80_000] {
+        assert!(matches!(
+            dispatch_simple_hot_import_fast(
+                &PpcImportDispatcherTarget::MPDelayUntil,
+                &mut loaded.cpu,
+                &mut loaded.memory,
+                now
+            ),
+            Some(PpcImportAction::Return(0))
+        ));
+    }
+    loaded.cpu.gpr[3] = u32::MAX - 2;
+    assert!(
+        matches!(dispatch_simple_hot_import_fast(&PpcImportDispatcherTarget::MPDelayUntil, &mut loaded.cpu, &mut loaded.memory, 0), Some(PpcImportAction::Return(value)) if value == ppc_i16_result(PPC_PARAM_ERR))
+    );
+}
+
+#[test]
+fn carbon_mp_delay_until_retains_and_resumes_native_call() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"CarbonLib",
+        b"MPDelayUntil",
+    ))
+    .unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::MPDelayUntil
+    );
+    let expiration = PPC_DATA_BASE + 0x1000;
+    loaded
+        .memory
+        .add_region(expiration, 50_000u64.to_be_bytes().to_vec());
+    loaded.cpu.gpr[3] = expiration;
+    loaded.set_clock_cycle_timing(1_000_000, 0);
+    for tick in [0, 2, 3] {
+        loaded.set_tick_count(tick);
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.result, PpcRunResult::CycleLimit { cycles: 64 });
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.pc, loaded.import_trap_base);
+        assert_eq!(loaded.cpu.gpr[3], expiration);
+        assert_eq!(loaded.memory.read_u64_be(expiration), Some(50_000));
+    }
+    loaded.set_tick_count(4);
+    let probe = loaded.run_with_hle_imports(64);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert_eq!(probe.handled_import_count, 1);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
+}

@@ -774,6 +774,9 @@ pub enum PpcImportDispatcherTarget {
     SecondsToDate,
     Microseconds,
     AbsoluteToNanoseconds,
+    NanosecondsToAbsolute,
+    AddAbsoluteToAbsolute,
+    MPDelayUntil,
     SysEnvirons,
     TextWidth,
     StringWidth,
@@ -4186,6 +4189,15 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib" | "DriverServicesLib", "UpTime") => PpcImportDispatcherTarget::Microseconds,
         ("InterfaceLib" | "DriverServicesLib", "AbsoluteToNanoseconds") => {
             PpcImportDispatcherTarget::AbsoluteToNanoseconds
+        }
+        ("InterfaceLib" | "DriverServicesLib", "NanosecondsToAbsolute") => {
+            PpcImportDispatcherTarget::NanosecondsToAbsolute
+        }
+        ("InterfaceLib" | "DriverServicesLib", "AddAbsoluteToAbsolute") => {
+            PpcImportDispatcherTarget::AddAbsoluteToAbsolute
+        }
+        ("InterfaceLib" | "MPLibrary", "MPDelayUntil") => {
+            PpcImportDispatcherTarget::MPDelayUntil
         }
         ("InterfaceLib", "LMGetTicks") => PpcImportDispatcherTarget::TickCount,
         ("InterfaceLib", "SysEnvirons") => PpcImportDispatcherTarget::SysEnvirons,

@@ -2486,6 +2486,37 @@ pub(crate) fn dispatch_simple_hot_import_fast(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::NanosecondsToAbsolute
+        | PpcImportDispatcherTarget::AddAbsoluteToAbsolute => {
+            // DriverServices.h returns the eight-byte struct through r3.
+            // The existing virtual AbsoluteTime clock uses microseconds.
+            let output = cpu.gpr[3];
+            let first = (u64::from(cpu.gpr[4]) << 32) | u64::from(cpu.gpr[5]);
+            let value = if *target == PpcImportDispatcherTarget::NanosecondsToAbsolute {
+                first / 1_000
+            } else {
+                let second = (u64::from(cpu.gpr[6]) << 32) | u64::from(cpu.gpr[7]);
+                first.wrapping_add(second)
+            };
+            if output != 0 && ppc_memory_can_write_bytes(memory, output, 8) {
+                let _ = memory.write_u64_be(output, value);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::MPDelayUntil => {
+            // Multiprocessing.h: expirationTime points to an AbsoluteTime.
+            // Yield without completing the import until the guest clock reaches it.
+            let expiration = if cpu.gpr[3] == 0 {
+                None
+            } else {
+                memory.read_u64_be(cpu.gpr[3])
+            };
+            Some(match expiration {
+                None => PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)),
+                Some(expiration) if expiration > microseconds => PpcImportAction::Yield(u64::MAX),
+                Some(_) => PpcImportAction::Return(0),
+            })
+        }
         _ => dispatch_math::dispatch_math_import(target, cpu, memory),
     }
 }

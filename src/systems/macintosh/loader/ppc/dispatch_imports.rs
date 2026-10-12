@@ -2992,7 +2992,10 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMGetTime
         | PpcImportDispatcherTarget::SecondsToDate
         | PpcImportDispatcherTarget::Microseconds
-        | PpcImportDispatcherTarget::AbsoluteToNanoseconds => {
+        | PpcImportDispatcherTarget::AbsoluteToNanoseconds
+        | PpcImportDispatcherTarget::NanosecondsToAbsolute
+        | PpcImportDispatcherTarget::AddAbsoluteToAbsolute
+        | PpcImportDispatcherTarget::MPDelayUntil => {
             unreachable!("time imports return through dispatch_time_import")
         }
         PpcImportDispatcherTarget::ReturnError(error) => {
