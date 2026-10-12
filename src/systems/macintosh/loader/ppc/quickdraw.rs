@@ -470,6 +470,9 @@ pub(crate) fn ppc_paint_region(
 }
 
 enum PpcPixPatKind {
+    ColorDirect {
+        pixels: Vec<u16>,
+    },
     ColorIndexed {
         data: Vec<u8>,
         row_bytes: u32,
@@ -492,6 +495,11 @@ struct PpcPixPatSampler {
 impl PpcPixPatSampler {
     fn sample(&self, x: i16, y: i16) -> u16 {
         match &self.kind {
+            PpcPixPatKind::ColorDirect { pixels } => {
+                let x = i32::from(x).rem_euclid(self.width) as usize;
+                let y = i32::from(y).rem_euclid(self.height) as usize;
+                pixels[y * self.width as usize + x]
+            }
             PpcPixPatKind::ColorIndexed {
                 data,
                 row_bytes,
@@ -610,21 +618,41 @@ fn ppc_decode_pixpat_sampler(
         let mut read_map = |base_offset: u32| {
             let row_bytes =
                 u32::from(memory.read_u16_be(pat_map_ptr + base_offset).unwrap_or(0) & 0x3FFF);
-            let top = memory.read_u16_be(pat_map_ptr + base_offset + 2).unwrap_or(0) as i16;
-            let left = memory.read_u16_be(pat_map_ptr + base_offset + 4).unwrap_or(0) as i16;
-            let bottom = memory.read_u16_be(pat_map_ptr + base_offset + 6).unwrap_or(0) as i16;
-            let right = memory.read_u16_be(pat_map_ptr + base_offset + 8).unwrap_or(0) as i16;
-            let pixel_size = memory.read_u16_be(pat_map_ptr + base_offset + 28).unwrap_or(0);
-            let table_offset = memory.read_u32_be(pat_map_ptr + base_offset + 38).unwrap_or(0);
-            (row_bytes, top, left, bottom, right, pixel_size, table_offset)
+            let top = memory
+                .read_u16_be(pat_map_ptr + base_offset + 2)
+                .unwrap_or(0) as i16;
+            let left = memory
+                .read_u16_be(pat_map_ptr + base_offset + 4)
+                .unwrap_or(0) as i16;
+            let bottom = memory
+                .read_u16_be(pat_map_ptr + base_offset + 6)
+                .unwrap_or(0) as i16;
+            let right = memory
+                .read_u16_be(pat_map_ptr + base_offset + 8)
+                .unwrap_or(0) as i16;
+            let pixel_size = memory
+                .read_u16_be(pat_map_ptr + base_offset + 28)
+                .unwrap_or(0);
+            let table_offset = memory
+                .read_u32_be(pat_map_ptr + base_offset + 38)
+                .unwrap_or(0);
+            (
+                row_bytes,
+                top,
+                left,
+                bottom,
+                right,
+                pixel_size,
+                table_offset,
+            )
         };
         let map_valid = |candidate: &(u32, i16, i16, i16, i16, u16, u32)| {
             let (row_bytes, top, left, bottom, right, pixel_size, table_offset) = *candidate;
             row_bytes != 0
                 && i32::from(bottom) > i32::from(top)
                 && i32::from(right) > i32::from(left)
-                && matches!(pixel_size, 1 | 2 | 4 | 8)
-                && table_offset != 0
+                && matches!(pixel_size, 1 | 2 | 4 | 8 | 16 | 32)
+                && (pixel_size >= 16 || table_offset != 0)
                 && table_offset <= 0x200000
         };
         let raw_map = read_map(0);
@@ -636,16 +664,18 @@ fn ppc_decode_pixpat_sampler(
         } else {
             None
         };
-        chosen.map(|(row_bytes, top, left, bottom, right, pixel_size, table_offset)| {
-            (
-                row_bytes,
-                i32::from(right) - i32::from(left),
-                i32::from(bottom) - i32::from(top),
-                pixel_size,
-                pat_data_ptr,
-                pp_ptr + table_offset,
-            )
-        })
+        chosen.map(
+            |(row_bytes, top, left, bottom, right, pixel_size, table_offset)| {
+                (
+                    row_bytes,
+                    i32::from(right) - i32::from(left),
+                    i32::from(bottom) - i32::from(top),
+                    pixel_size,
+                    pat_data_ptr,
+                    pp_ptr + table_offset,
+                )
+            },
+        )
     } else {
         None
     };
@@ -671,7 +701,7 @@ fn ppc_decode_pixpat_sampler(
         if row_bytes != 0
             && i32::from(bottom) > i32::from(top)
             && i32::from(right) > i32::from(left)
-            && matches!(pixel_size, 1 | 2 | 4 | 8)
+            && matches!(pixel_size, 1 | 2 | 4 | 8 | 16 | 32)
             && pat_data_ptr != 0
         {
             Some((
@@ -693,10 +723,9 @@ fn ppc_decode_pixpat_sampler(
         if memory.read_bytes_into(data_ptr, &mut data).is_some() {
             let mut src_clut = TrapDispatcher::standard_mac_8bpp_clut();
             if table_ptr != 0 {
-                let count = usize::from(memory.read_u16_be(table_ptr + 6).unwrap_or(0))
-                    .saturating_add(1);
-                let uses_implicit =
-                    (memory.read_u16_be(table_ptr + 4).unwrap_or(0) & 0x8000) != 0;
+                let count =
+                    usize::from(memory.read_u16_be(table_ptr + 6).unwrap_or(0)).saturating_add(1);
+                let uses_implicit = (memory.read_u16_be(table_ptr + 4).unwrap_or(0) & 0x8000) != 0;
                 for ordinal in 0..count.min(256) {
                     let entry = table_ptr + 8 + ordinal as u32 * 8;
                     let value = if uses_implicit {
@@ -728,6 +757,57 @@ fn ppc_decode_pixpat_sampler(
             } else {
                 dst_fallback
             };
+
+            if matches!(pixel_size, 16 | 32) {
+                let bytes_per_pixel = usize::from(pixel_size / 8);
+                if (row_bytes as usize) < width as usize * bytes_per_pixel {
+                    return fallback;
+                }
+                let mut pixels = Vec::with_capacity(width as usize * height as usize);
+                for y in 0..height as usize {
+                    for x in 0..width as usize {
+                        let offset = y * row_bytes as usize + x * bytes_per_pixel;
+                        let rgb = if pixel_size == 16 {
+                            let pixel = u16::from_be_bytes([data[offset], data[offset + 1]]);
+                            let expand = |value: u16| {
+                                (value << 11) | (value << 6) | (value << 1) | (value >> 4)
+                            };
+                            [
+                                expand((pixel >> 10) & 31),
+                                expand((pixel >> 5) & 31),
+                                expand(pixel & 31),
+                            ]
+                        } else {
+                            // Classic 32-bit direct pixels are xRGB; the first byte is padding.
+                            [
+                                u16::from(data[offset + 1]) * 257,
+                                u16::from(data[offset + 2]) * 257,
+                                u16::from(data[offset + 3]) * 257,
+                            ]
+                        };
+                        let pixel = match surface.front_buffer.depth {
+                            depth @ (1 | 2 | 4 | 8) => {
+                                let count = ppc_indexed_depth_entry_count(depth).unwrap_or(256);
+                                u16::from(pict::closest_clut_index(
+                                    rgb[0], rgb[1], rgb[2], &dst_clut,
+                                )) & (count as u16 - 1)
+                            }
+                            16 => ppc_rgb_color_to_rgb555(PpcRgbColor {
+                                red: rgb[0],
+                                green: rgb[1],
+                                blue: rgb[2],
+                            }),
+                            _ => return fallback,
+                        };
+                        pixels.push(pixel);
+                    }
+                }
+                return PpcPixPatSampler {
+                    width,
+                    height,
+                    kind: PpcPixPatKind::ColorDirect { pixels },
+                };
+            }
 
             let mut src_to_dst = [0u16; 256];
             for (value, dst) in src_to_dst.iter_mut().enumerate() {
