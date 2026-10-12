@@ -8,7 +8,7 @@ use std::{
 
 pub(crate) struct Latest<T> {
     state: Mutex<State<T>>,
-    #[cfg(any(test, feature = "gpui-demo-test"))]
+    #[cfg(any(test, feature = "gpui-demo-test", feature = "wgpu-demo"))]
     ready: std::sync::Condvar,
 }
 
@@ -55,7 +55,7 @@ impl<T> State<T> {
 impl<T> Default for Latest<T> {
     fn default() -> Self {
         Self {
-            #[cfg(any(test, feature = "gpui-demo-test"))]
+            #[cfg(any(test, feature = "gpui-demo-test", feature = "wgpu-demo"))]
             ready: std::sync::Condvar::new(),
             state: Mutex::new(State {
                 value: None,
@@ -86,7 +86,7 @@ impl<T> Latest<T> {
             let previous = state.value.replace(value);
             (previous, state.waiter.take())
         };
-        #[cfg(any(test, feature = "gpui-demo-test"))]
+        #[cfg(any(test, feature = "gpui-demo-test", feature = "wgpu-demo"))]
         self.ready.notify_all();
         if let Some((_, waiter)) = waiter {
             waiter.wake();
@@ -102,7 +102,7 @@ impl<T> Latest<T> {
 
     /// Capture drivers wait on the same slot without a periodic sleep. The
     /// predicate and publication use one mutex, preventing lost notifications.
-    #[cfg(any(test, feature = "gpui-demo-test"))]
+    #[cfg(any(test, feature = "gpui-demo-test", feature = "wgpu-demo"))]
     pub(crate) fn take_timeout(&self, timeout: std::time::Duration) -> Option<T> {
         let state = self.state.lock().unwrap();
         let (mut state, _) = self.ready.wait_timeout_while(state, timeout,
@@ -112,6 +112,21 @@ impl<T> Latest<T> {
 
     pub(crate) fn last_delivery(&self) -> Option<DeliverySnapshot> {
         self.state.lock().unwrap().delivery.as_ref().and_then(|profile| profile.last)
+    }
+
+    /// Event-loop consumers retain a one-shot wake until the next publication.
+    /// Register and consume under one lock so no wake can be lost between them.
+    #[cfg(feature = "wgpu-demo")]
+    pub(crate) fn take_and_subscribe(&self, waker: &Waker) -> Option<T> {
+        let (value, previous) = {
+            let mut state = self.state.lock().unwrap();
+            state.next_waiter = state.next_waiter.checked_add(1).expect("wait identity exhausted");
+            let id = state.next_waiter;
+            let previous = if state.closed { None } else { state.waiter.replace((id, waker.clone())) };
+            (state.take_value(), previous)
+        };
+        drop(previous);
+        value
     }
 
     /// One renderer awaits the next snapshot; no periodic timer is required.
@@ -138,7 +153,7 @@ impl<T> Latest<T> {
             state.closed = true;
             state.waiter.take()
         };
-        #[cfg(any(test, feature = "gpui-demo-test"))]
+        #[cfg(any(test, feature = "gpui-demo-test", feature = "wgpu-demo"))]
         self.ready.notify_all();
         if let Some((_, waiter)) = waiter {
             waiter.wake();
@@ -437,5 +452,29 @@ mod tests {
         drop(mailbox.publisher());
         assert!(!mailbox.publish(payload()));
         assert_eq!(dropped.load(Ordering::SeqCst), 3);
+    }
+}
+
+#[cfg(all(test, feature = "wgpu-demo"))]
+mod event_loop_tests {
+    use super::*;
+    use std::sync::{Arc,atomic::{AtomicUsize,Ordering}};
+    struct Counter(AtomicUsize);
+    impl std::task::Wake for Counter {fn wake(self:Arc<Self>){self.0.fetch_add(1,Ordering::SeqCst);}}
+    #[test]
+    fn consuming_ready_value_also_arms_next_event_loop_wake() {
+        let mailbox=Latest::default();let counter=Arc::new(Counter(AtomicUsize::new(0)));
+        let waker=std::task::Waker::from(counter.clone());
+        mailbox.publish(1);
+        assert_eq!(mailbox.take_and_subscribe(&waker),Some(1));
+        mailbox.publish(2);
+        assert_eq!(counter.0.load(Ordering::SeqCst),1);
+        mailbox.publish(3);
+        assert_eq!(mailbox.take_and_subscribe(&waker),Some(3));
+        mailbox.publish(4);
+        assert_eq!(counter.0.load(Ordering::SeqCst),2);
+        mailbox.close();
+        assert_eq!(mailbox.take_and_subscribe(&waker),Some(4));
+        assert_eq!(mailbox.take_and_subscribe(&waker),None);
     }
 }

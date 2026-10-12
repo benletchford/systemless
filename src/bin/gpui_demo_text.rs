@@ -31,6 +31,7 @@ impl TextPointerMap {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[cfg(feature = "gui")]
     fn overlapping_label_spans_retain_the_union_of_guest_ink() {
         use gpui_kit::{point, px};
         let mut path = super::label_coverage_path();
@@ -1006,6 +1007,7 @@ mod tests {
 
 /// Shape, scroll and paint a Roman single-line guest field from one layout.
 /// Scrolling changes presentation only; pointer positions still come from the guest.
+#[cfg(feature = "gui")]
 pub(crate) fn single_line(
     folder: &systemless::runner::StandardFileNewFolderSnapshot,
     identity: (u32, u64),
@@ -1418,6 +1420,7 @@ impl ClassicLineGeometry {
 
 /// Paint a plain document TE line with guest baseline, advances, selection and
 /// blink phase. Parent clipping and guest destRect supply scrolling/wrapping.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_line(
     line: ClassicLine,
     ascent: i16,
@@ -1639,6 +1642,7 @@ impl ClassicListCellPaintPlan {
 }
 
 /// Use the shared device-snapped canvas for a fully qualified standard cell.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_list_cell(
     plan: ClassicListCellPaintPlan, scale: f32, port_origin: (f32, f32),
 ) -> Option<impl gpui_kit::IntoElement> {
@@ -2087,12 +2091,14 @@ impl StyledTextEditLine {
 
 /// Paint styled native bitmap ink in the shared GPUI compositor. The caller
 /// owns background/selection, clipping and the port-to-scene transform.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_styled_text_edit_ink(
     line: StyledTextEditLine, scale: f32, port_origin: (f32, f32),
 ) -> Option<impl gpui_kit::IntoElement> {
     classic_styled_text_pixels(line.pixels()?, scale, port_origin)
 }
 
+#[cfg(feature = "gui")]
 pub(crate) fn classic_styled_text_edit_selection(
     line: StyledTextEditLine, background: &systemless::runner::TextEditInkSnapshot,
     scale: f32, port_origin: (f32, f32),
@@ -2102,6 +2108,7 @@ pub(crate) fn classic_styled_text_edit_selection(
 
 /// Solid guest caret paint only: patterned pens and themed caps require
 /// their own qualified raster rather than silent substitution here.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_styled_text_edit_solid_caret(
     line: StyledTextEditLine, rect: Option<(i16, i16, i16, i16)>,
     ink: &systemless::runner::TextEditInkSnapshot,
@@ -2112,6 +2119,7 @@ pub(crate) fn classic_styled_text_edit_solid_caret(
 
 /// Paint an already-qualified whole field in the shared live/headless canvas.
 /// Background and ink use the same device snapping, including fractional scales.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_styled_text_edit_field(
     plan: StyledTextEditPaintPlan, scale: f32, port_origin: (f32, f32),
 ) -> Option<impl gpui_kit::IntoElement> {
@@ -2120,6 +2128,7 @@ pub(crate) fn classic_styled_text_edit_field(
         Some((plan.ops, plan.view, plan.background_ink)))
 }
 
+#[cfg(feature = "gui")]
 fn classic_styled_text_pixels(
     pixels: std::collections::BTreeMap<(i16, i16), [u8; 3]>,
     scale: f32, port_origin: (f32, f32),
@@ -2127,6 +2136,7 @@ fn classic_styled_text_pixels(
     classic_styled_text_pixels_with_background(pixels, scale, port_origin, None)
 }
 
+#[cfg(feature = "gui")]
 fn classic_styled_text_pixels_with_background(
     pixels: std::collections::BTreeMap<(i16, i16), [u8; 3]>,
     scale: f32, port_origin: (f32, f32),
@@ -2135,6 +2145,7 @@ fn classic_styled_text_pixels_with_background(
     classic_text_pixels_with_smooth(pixels, scale, port_origin, background, None, None)
 }
 
+#[cfg(feature = "gui")]
 fn classic_text_pixels_with_smooth(
     pixels: std::collections::BTreeMap<(i16, i16), [u8; 3]>,
     scale: f32, port_origin: (f32, f32),
@@ -2230,6 +2241,7 @@ fn classic_text_pixels_with_smooth(
 
 /// Standard CDEF/dialog/Standard File buttons use the Roman system font.
 /// Center in integer guest coordinates before applying presentation scale.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_button_label(
     label: &str,
     scale: f32,
@@ -2238,6 +2250,7 @@ pub(crate) fn classic_button_label(
     classic_control_label(label, true, scale, foreground)
 }
 
+#[cfg(feature = "gui")]
 pub(crate) fn classic_choice_label(
     label: &str,
     scale: f32,
@@ -2246,6 +2259,7 @@ pub(crate) fn classic_choice_label(
     classic_control_label(label, false, scale, foreground)
 }
 
+#[cfg(feature = "gui")]
 fn classic_control_label(
     label: &str,
     centered: bool,
@@ -2255,6 +2269,7 @@ fn classic_control_label(
     classic_control_label_with_style(label, centered, scale, foreground, None)
 }
 
+#[cfg(feature = "gui")]
 pub(crate) fn classic_control_label_with_style(
     label: &str, centered: bool, scale: f32, foreground: gpui_kit::Hsla,
     style: Option<systemless::runner::ControlTitleStyle>,
@@ -2269,6 +2284,7 @@ pub(crate) fn classic_control_label_with_style(
     classic_label_canvas_with_font(line, centered, scale, foreground, font, None)
 }
 
+#[cfg(feature = "gui")]
 pub(crate) fn classic_menu_label(
     label: &str, face: u8, scale: f32, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
@@ -2290,6 +2306,7 @@ pub(crate) fn classic_menu_label(
 }
 
 /// Symbols use the same Unicode-to-guest-glyph resolver as Menu Manager.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_menu_symbol(
     label: &str, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
@@ -2301,6 +2318,7 @@ pub(crate) fn classic_menu_symbol(
 }
 
 /// Paint CPU-resolved indicator runs using the same scene transform as text.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_popup_indicator(
     indicator: systemless::runner::ControlPopupIndicator,
     scale: f32, scene_origin: (f32, f32),
@@ -2318,6 +2336,7 @@ pub(crate) fn classic_popup_indicator(
     }).size_full()
 }
 
+#[cfg(feature = "gui")]
 pub(crate) fn classic_popup_control_label(
     label: &str, guest_font: systemless::menu_model::GuestMenuFont, title: bool, text_inset: i16,
     scale: f32, ink: systemless::runner::ControlTextInk,
@@ -2635,6 +2654,7 @@ fn smooth_bold_mask(
 
 // All coverage rectangles use the same winding. Non-zero fill retains their
 // union; the default even-odd fill would erase shared glyph strokes.
+#[cfg(feature = "gui")]
 fn label_coverage_path() -> gpui_kit::PathBuilder {
     use gpui_kit::{FillOptions, FillRule, PathBuilder, PathStyle};
     PathBuilder::fill().with_style(PathStyle::Fill(
@@ -2643,6 +2663,7 @@ fn label_coverage_path() -> gpui_kit::PathBuilder {
 }
 
 /// Outline coverage changes ink only; guest advances and baseline remain authoritative.
+#[cfg(feature = "gui")]
 fn paint_smooth_label(
     line: &ClassicLine, left: gpui_kit::Pixels, baseline: gpui_kit::Pixels,
     scale: f32, foreground: gpui_kit::Hsla, window: &mut gpui_kit::Window,
@@ -2717,12 +2738,14 @@ fn paint_smooth_label(
     true
 }
 
+#[cfg(feature = "gui")]
 fn classic_label_canvas(
     line: ClassicLine, centered: bool, scale: f32, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
     classic_label_canvas_with_font(line, centered, scale, foreground, (0, 12), None)
 }
 
+#[cfg(feature = "gui")]
 fn classic_label_canvas_with_font(
     line: ClassicLine, centered: bool, scale: f32, foreground: gpui_kit::Hsla,
     guest_font: (i16, i16), right_inset: Option<i32>,
@@ -2764,6 +2787,7 @@ fn classic_label_canvas_with_font(
 
 /// Paint a standard popup row at guest MDEF anchors and the owner-port font.
 /// The caller owns row clipping and tracking; no host shaping or ellipsis occurs.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_popup_row(
     popup: &systemless::menu_model::GuestPopupSnapshot,
     item: &systemless::menu_model::GuestMenuItem,
@@ -2811,6 +2835,7 @@ pub(crate) fn classic_popup_row(
 
 /// Standard File prompt layout uses the same word/hard-break algorithm as
 /// guest dialog drawing. Parent bounds own the clip, never host text shaping.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_file_prompt(
     text: &str,
     scale: f32,
@@ -2819,6 +2844,7 @@ pub(crate) fn classic_file_prompt(
     classic_wrapped_text(text, (0, 12), 0, 0, (0, 12, 16), false, scale, foreground)
 }
 
+#[cfg(feature = "gui")]
 pub(crate) fn classic_directory_label(
     text: &str,
     font: (i16, i16, u8),
@@ -2872,6 +2898,7 @@ pub(crate) fn dialog_field_geometry(
     DialogFieldGeometry { selection: highlight, caret }
 }
 
+#[cfg(feature = "gui")]
 pub(crate) fn classic_dialog_edit_text(
     text: &str, layout: &systemless::runner::DialogEditTextLayout,
     selection: (usize, usize), focused: bool, caret_visible: bool,
@@ -2913,6 +2940,7 @@ pub(crate) fn classic_dialog_edit_text(
     }).size_full().into_any_element()
 }
 
+#[cfg(feature = "gui")]
 pub(crate) fn classic_dialog_static_text(
     text: &str, layout: &systemless::runner::DialogStaticTextLayout,
     scale: f32, foreground: gpui_kit::Hsla,
@@ -2921,6 +2949,7 @@ pub(crate) fn classic_dialog_static_text(
         layout.inclusive_bottom, scale, foreground)
 }
 
+#[cfg(feature = "gui")]
 fn classic_wrapped_text(
     text: &str,
     guest_font: (i16, i16),
@@ -2943,6 +2972,7 @@ fn classic_wrapped_text(
 
 /// Notification messages retain raw Macintosh Roman bytes and the original
 /// system-font advances. Host shaping never chooses their wrap boundaries.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_notification_message(
     bytes: &[u8], scale: f32, foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
@@ -2950,6 +2980,7 @@ pub(crate) fn classic_notification_message(
         false, scale, foreground)
 }
 
+#[cfg(feature = "gui")]
 fn classic_wrapped_bytes(
     bytes: Vec<u8>, guest_font: (i16, i16), face: u8, wrap_advance_extra: i16,
     layout: (i16, i16, i16), inclusive_bottom: bool,
@@ -3008,6 +3039,7 @@ fn classic_wrapped_bytes(
 }
 
 /// Paint one guest-owned Standard File list row; the row clip owns overflow.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_file_row(
     text: &str,
     origin: (i16, i16),
@@ -3050,6 +3082,7 @@ pub(crate) fn file_row_name(name: &str, limit: Option<usize>) -> String {
 }
 
 /// Guest glyph positions and selection geometry for the Save filename field.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_save_name(
     name: &str,
     selection: (usize, usize),
@@ -3146,6 +3179,7 @@ pub(crate) fn classic_save_name(
 }
 
 /// Use the guest Menu Manager raster, never a host-font chevron.
+#[cfg(feature = "gui")]
 pub(crate) fn classic_menu_hierarchy_indicator(
     foreground: gpui_kit::Hsla,
 ) -> impl gpui_kit::IntoElement {
@@ -3159,4 +3193,29 @@ pub(crate) fn classic_menu_hierarchy_indicator(
                 size(px(1.), px(1.))), foreground));
         }
     }).w(px(6.)).h(px(18.)).flex_shrink_0()
+}
+
+/// Renderer-neutral outline spans at a requested raster density. Overlapping
+/// glyph boxes retain bitmap ink until union coverage is qualified for this backend.
+#[cfg(feature = "wgpu-demo")]
+pub(crate) fn comparison_outline_spans(line: &ClassicLine, raster: u32) -> Option<Vec<(f32,f32,f32,f32,f32)>> {
+    if line.smooth_sources.is_empty() {return None;}
+    let glyphs=resolve_smooth_run(line,raster)?;
+    let mut boxes=Vec::new(); let mut spans=Vec::new();
+    for (pen,glyph) in glyphs {
+        let left=i64::from(pen)*i64::from(raster)+i64::from(glyph.left);
+        let top=i64::from(glyph.top); let right=left+i64::from(glyph.width); let bottom=top+i64::from(glyph.height);
+        if boxes.iter().any(|&(l,t,r,b)| left<r && l<right && top<b && t<bottom) {return None;}
+        boxes.push((left,top,right,bottom));
+        for y in 0..glyph.height {
+            let mut x=0;
+            while x<glyph.width {
+                let alpha=glyph.pixels[(y*glyph.width+x) as usize]; let start=x; x+=1;
+                while x<glyph.width && glyph.pixels[(y*glyph.width+x) as usize]==alpha {x+=1;}
+                if alpha!=0 {spans.push(((left+i64::from(start)) as f32/raster as f32,(top+i64::from(y)) as f32/raster as f32,
+                    (left+i64::from(x)) as f32/raster as f32,(top+i64::from(y)+1) as f32/raster as f32,f32::from(alpha)/255.));}
+            }
+        }
+    }
+    Some(spans)
 }

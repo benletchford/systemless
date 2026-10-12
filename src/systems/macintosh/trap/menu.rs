@@ -715,6 +715,36 @@ impl super::TrapDispatcher {
     /// frontend-neutral representation. Classic applications and custom menu
     /// procedures can mutate guest-owned MenuInfo records directly, so this
     /// reads those records instead of the adapter's presentation cache.
+    /// Narrow standard-menu projection for the comparison frontend. The live
+    /// MenuList hit cells and MenuInfo dimensions remain authoritative.
+    pub(crate) fn comparison_menu_presentations(&self, bus:&MacMemoryBus, snapshot:&GuestMenuSnapshot)
+        -> Vec<crate::menu_model::GuestMenuPresentation> {
+        if snapshot.requires_guest_menu_rendering() {return Vec::new();}
+        let Some(list)=self.current_menu_list(bus) else{return Vec::new();};
+        let (_,_,width,height,_)=self.get_screen_params();
+        let bar_height=bus.read_word(addr::MBAR_HEIGHT) as i16;
+        if bar_height<=0 {return Vec::new();}
+        list.regular_title_regions().into_iter().filter_map(|region| {
+            let menu=snapshot.menus.iter().find(|m|m.guest_id==region.handle && m.visible_in_menu_bar)?.clone();
+            let record=bus.read_long(region.handle);if record==0 {return None;}
+            let raw=menu_items_from_memory(bus,region.handle)?;
+            // Icon/hierarchical and scrolling panes retain the guest fallback.
+            if raw.items.iter().any(|item|item.icon!=0 || crate::menu_manager::hierarchical_menu_id(item.command,item.mark).is_some()) {return None;}
+            let row_heights:Vec<_>=raw.items.iter().map(|item|if item.text==b"-" {STANDARD_MENU_SEPARATOR_HEIGHT}
+                else {StandardMenuIconKind::None.row_height(QuickDrawTextStyle::from_bits(item.style))}).collect();
+            let w=bus.read_word(record+2) as i16;let h=bus.read_word(record+4) as i16;
+            if w<=0 || h<=0 {return None;}
+            let layout=crate::menu_manager::standard_pull_down_menu_layout(w,h,(width,height),region.left,bar_height)?;
+            if row_heights.iter().map(|h|i32::from(*h)).sum::<i32>()>i32::from(layout.height) {return None;}
+            let metrics=crate::quickdraw::text::get_font_metrics(0,12);
+            Some(crate::menu_model::GuestMenuPresentation {
+                title_bounds:(0,region.left,bar_height,region.right),
+                title_origin:(region.title_origin(),crate::menu_manager::standard_menu_bar_title_baseline(bar_height,metrics.ascent,metrics.descent)),
+                pane:crate::menu_model::GuestPopupSnapshot {menu,font:Default::default(),bounds:(layout.top,layout.left,layout.top+layout.height,layout.left+layout.width),content_top:layout.content_top,row_heights,highlighted_item:0},
+            })
+        }).collect()
+    }
+
     pub(crate) fn guest_menu_snapshot(&mut self, bus: &MacMemoryBus) -> GuestMenuSnapshot {
         let mut snapshot = self.current_menu_list(bus)
             .unwrap_or_default()

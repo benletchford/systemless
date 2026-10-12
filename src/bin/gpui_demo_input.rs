@@ -1,6 +1,16 @@
 //! Guest keyboard translation and focus lifecycle shared by GPUI views.
 
+#[cfg(feature = "gui")]
 use gpui_kit::{Keystroke, Modifiers};
+#[cfg(not(feature = "gui"))]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Modifiers {
+    pub platform: bool, pub shift: bool, pub alt: bool, pub control: bool,
+}
+#[cfg(not(feature = "gui"))]
+pub(crate) struct Keystroke {
+    pub key: String, pub key_char: Option<String>, pub modifiers: Modifiers,
+}
 use std::collections::HashMap;
 use systemless::systems::macintosh::session::MacintoshInput;
 

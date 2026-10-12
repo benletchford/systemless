@@ -63,8 +63,16 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 # Pure-Rust math library for cross-platform deterministic transcendentals
 libm = "0.2"
 
+wgpu = { version = "29.0.4", optional = true }
+winit = { version = "0.30.13", optional = true }
+pollster = { version = "0.4", optional = true }
+
+accesskit = { version = "0.24.1", optional = true }
+accesskit_winit = { version = "0.33.2", optional = true }
+
 [features]
 default = ["gui", "jit"]
+wgpu-demo = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:accesskit", "dep:accesskit_winit", "native-audio"]
 gui = ["dep:gpui-kit", "native-audio", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit"]
 # Shared host audio output for native frontends.
 native-audio = ["cpal"]
@@ -143,3 +151,8 @@ debug = "line-tables-only"
 debug-assertions = true
 overflow-checks = true
 incremental = false
+
+[[bin]]
+name = "wgpu-comparison"
+path = "src/bin/wgpu_comparison.rs"
+required-features = ["wgpu-demo"]
