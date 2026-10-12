@@ -2045,6 +2045,7 @@ pub(crate) fn dispatch_supported_import(
             unreachable!("palette imports return through dispatch_palette_import")
         }
         PpcImportDispatcherTarget::GetPort
+        | PpcImportDispatcherTarget::GetQDGlobalsThePort
         | PpcImportDispatcherTarget::GetPortBounds
         | PpcImportDispatcherTarget::GetPortBitMapForCopyBits
         | PpcImportDispatcherTarget::SetPort

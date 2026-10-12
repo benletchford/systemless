@@ -52,6 +52,11 @@ pub(super) fn dispatch_gworld_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::GetQDGlobalsThePort => {
+            // Quickdraw.h: CGrafPtr GetQDGlobalsThePort(void). This is the
+            // current qd.thePort value, also observed by GetPort.
+            Some(PpcImportAction::Return(*current_gworld))
+        }
         PpcImportDispatcherTarget::GetPort => {
             let port_ptr = cpu.gpr[3];
             if port_ptr != 0 && ppc_memory_can_write_bytes(memory, port_ptr, 4) {
