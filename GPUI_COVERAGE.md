@@ -1,5 +1,39 @@
 # GPUI Kit system-interface coverage
 
+### Native font faces in plain source-copy TextEdit (2026-10-12)
+
+Plain source-copy now preserves native font faces, with glyph drawing pens
+separate from canonical measured insertion positions. Classic clear widths
+use the actual base/italic strike advance; PPC uses styled native advances.
+Both retain exact native ordered cell receipts and full-field pixel agreement.
+Classic per-character underline is supported. PPC continuous underline is
+explicitly declined because it draws after all cell/glyph ink; fractional PPC
+strikes and styled TERec source-copy remain guest-painted pending faithful
+ordering support.
+
+The native receipt regression passes32 mode0 CPU/font-face recipes and36
+mode1 redraws, with four PPC underlined mode0 recipes explicitly rejected
+(1 test,27.86s). Missing, duplicated, reordered and changed-pixel evidence is
+rejected for each accepted recipe. The expanded native click/type regression
+passes68 paint/edit recipes (1 test,107.48s), including unchanged guest font
+face, mode, byte selection and full native post-edit pixel qualification.
+All31 text-helper tests pass (28.29s).
+
+All80 composed captures pass (184.12s): bold/italic in all four CPU/display
+modes, and underline in mono/colour68k, at four scales and active/inactive
+states. All ten contact sheets were inspected; wrapping/selection states and
+underline placement remain stable. Every captured recipe resolves original
+font outlines at rasters1..8. Italic source-copy overhangs are visibly clipped
+by following native cell clears, also visible in the actual guest image; GPUI
+preserves that transfer behavior rather than substituting host italic metrics.
+These are Geneva9 fixture recipes, not a general original Macintosh font oracle.
+
+Capture/default/public-library builds pass (9.06s/3.60s/0.50s). Source/log hashes
+and captures are in the ignored
+`target/gpui-qualification/plain-face-rendering/source-copy-faces-composed/`.
+Other fonts/sizes, coloured font-face source-copy, styled TERec source-copy,
+PPC underline/fractional phase, physical input and live EV gameplay remain open.
+
 ### Fractional device text coverage (2026-10-12)
 
 The shared TextEdit renderer now area-samples the final guest-composited RGB
@@ -1452,7 +1486,7 @@ All CPU modes share these rules after their guest snapshots are normalized.
 | Frames | Recognized WDEF IDs 0, 1, 2, 3, 4, 5, 8, 12, 16; title strips only for 0, 4, 5, 8, 12, 16. Structure must contain content. | Unknown definitions and unavailable/complex presentation geometry retain guest pixels. `hidden_and_custom_frames_keep_guest_presentation` checks model fallback; actual lifecycle coverage for each listed variant remains required. |
 | Controls | CDEF proc IDs 0, 1, 2, 16, plus popup IDs 1008–1023 with a resolvable selected nonseparator item. | Buttons/checkboxes/radio buttons accept selected `ControlFontStyle` flags within mask `0x0187` (font/face/size and supported additive/system selectors). Other selected Appearance fields and popup overrides retain guest drawing. Buttons/checkboxes/radio buttons additionally require an exact current retained background for their bounds; raw recipe mutation invalidates that evidence until redraw. `overlapping_controls_follow_guest_draw_order_and_custom_fallback` checks model ownership boundaries. |
 | Dialog items | The listed recognized WDEFs, exact visible dialog/window identity and generation, and an item set limited to button, static text, EditText, checkbox/radio, resource Picture and Icon. Static text needs its retained layout; simple EditText needs a retained layout, no CR and height at most 24; checkbox/radio needs a known value. | Picture/Icon and other unsupported bounded items retain their own guest pixels; their visible bounds are subtracted from standard overlays and decoration. Any UserItem or unknown item kind declines the whole dialog because callback ownership is unbounded. `inactive_standard_dialog_items_clip_below_front_window` checks occlusion, bounded Picture preservation, UserItem/custom-WDEF fallback, layout loss and generation mismatch. The reviewed original EV ship-name capture combines GPUI text/actions with retained resource artwork. Full mixed-item mutation/disposal and all CPU/scale/state combinations remain open. |
-| TextEdit | Document WDEFs 0, 4, 8, 12, 16; additionally active WDEF1 dialog fields whose actual TERec text, selection and bounds match the current edit item. Drawing must remain intact and owner port must match. | Shared paint candidates cover plain face-zero/font-faced and styled records; replacement separately requires complete native-field pixel agreement. Current paint recipes require zero-spacing srcOr (mode1) or plain face-zero source-copy (mode0) with complete ordered native cell receipts, supported resolved glyphs and a matching white or guest-port background. PPC fractional source-copy strikes remain unqualified. Plain text-service candidates use justification0/1/-1, positive line height and canonical display lines; they no longer inherit the legacy exact-strike-only classification. Unqualified mode0 may retain transparent text-service ownership while keeping guest paint. Unqualified records retain their complete guest image. `text_edit_clips_to_owner_and_front_window_with_custom_fallback` is model evidence; document and wrapped-dialog worker/compositor evidence retains its recorded scope. |
+| TextEdit | Document WDEFs 0, 4, 8, 12, 16; additionally active WDEF1 dialog fields whose actual TERec text, selection and bounds match the current edit item. Drawing must remain intact and owner port must match. | Shared paint candidates cover plain face-zero/font-faced and styled records; replacement separately requires complete native-field pixel agreement. Current paint recipes require zero-spacing srcOr (mode1) or plain font-faced source-copy (mode0) with complete ordered native cell receipts, supported resolved glyphs and a matching white or guest-port background. PPC fractional/underlined source-copy and styled TERec source-copy remain unqualified. Plain text-service candidates use justification0/1/-1, positive line height and canonical display lines; they no longer inherit the legacy exact-strike-only classification. Unqualified mode0 may retain transparent text-service ownership while keeping guest paint. Unqualified records retain their complete guest image. `text_edit_clips_to_owner_and_front_window_with_custom_fallback` is model evidence; document and wrapped-dialog worker/compositor evidence retains its recorded scope. |
 | Lists | Document WDEFs 0, 4, 8, 12, 16; LDEF0, drawing enabled, retained text cells and matching owner port. | Overlapping nonstandard controls decline list replacement. `standard_list_clips_beneath_front_window_and_custom_definition_falls_back` checks model fallback; real draw mutation/disposal evidence and complete cell recipes remain separate requirements. |
 
 The classification guards establish where guest ownership is retained; they do

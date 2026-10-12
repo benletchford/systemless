@@ -1963,12 +1963,14 @@ impl StyledTextEditLine {
         cells: &std::collections::BTreeMap<(i16, i16, i16, i16), systemless::runner::TextEditInkSnapshot>) -> Option<Self> {
         use systemless::{runner::TextEditLineLayoutPolicy, quickdraw::{fonts, text}};
         let paint = record.paint.as_ref()?;
-        if record.styled || record.face != 0 || !paint.supports_zero_spacing_src_copy() || paint.style_ink.len() != 1 { return None; }
+        if record.styled || record.face >= 128 || !paint.supports_zero_spacing_src_copy() || paint.style_ink.len() != 1 { return None; }
         let size = if record.size == 0 { 12 } else { record.size.max(1) };
         let (strike, scale) = fonts::get_font_face_scaled(record.font, size);
         if record.line_layout_policy == TextEditLineLayoutPolicy::PpcRunMetrics {
             let (_, numerator, denominator) = fonts::get_font_face_scale_ratio(record.font, size);
-            if numerator != denominator { return None; }
+            // PPC paints the continuous underline after all glyph cells.
+            // Per-cell runs cannot preserve that ordering yet.
+            if numerator != denominator || record.face & 4 != 0 { return None; }
         }
         let metrics = text::get_font_metrics(record.font, size);
         let factor = if record.line_layout_policy == TextEditLineLayoutPolicy::CumulativeGuestMetrics { scale } else { 1 };
@@ -1981,20 +1983,34 @@ impl StyledTextEditLine {
         while end > start && matches!(record.text[end - 1], b' ' | b'\r' | b'\n') { end -= 1; }
         let positions = record.guest_plain_insertion_positions(start..end)?;
         let mut runs = Vec::new();
+        let mut paint_pen = 0i32;
         for (offset, &byte) in record.text.get(start..end)?.iter().enumerate() {
-            let (glyph, _) = text::get_glyph(record.font, strike.size, byte as char)?;
-            let left = geometry.left.checked_add(positions[offset])?;
-            let rect = (baseline.checked_sub(metrics.ascent.checked_mul(factor)?)?, left,
-                baseline.checked_add(metrics.descent.checked_mul(factor)?)?,
-                left.checked_add(i16::from(glyph.advance).checked_mul(factor)?)?);
-            let cell = (rect, cells.get(&rect)?.clone());
+            let glyph_hit = if record.face & 2 != 0 {
+                text::get_glyph_italic(record.font, strike.size, byte as char)
+                    .or_else(|| text::get_glyph(record.font, strike.size, byte as char))
+            } else { text::get_glyph(record.font, strike.size, byte as char) };
+            let (glyph, _) = glyph_hit?;
+            // Drawing pens and measured insertion positions are independent
+            // native policies, especially for condensed/extended faces.
+            let left = geometry.left.checked_add(i16::try_from(paint_pen).ok()?)?;
+            let measured_left = geometry.left.checked_add(positions[offset])?;
+            let measured_right = geometry.left.checked_add(positions[offset + 1])?;
             let advance = positions[offset + 1].checked_sub(positions[offset])?;
-            let glyphs = match record.line_layout_policy {
-                TextEditLineLayoutPolicy::CumulativeGuestMetrics => ClassicLine::classic_textedit_run(&[byte], record.font, size, 0, vec![0, i32::from(advance)])?,
-                TextEditLineLayoutPolicy::PpcRunMetrics => ClassicLine::ppc_styled_run(&[byte], record.font, size, 0, vec![0, i32::from(advance)])?,
+            let (glyphs, native_advance) = match record.line_layout_policy {
+                TextEditLineLayoutPolicy::CumulativeGuestMetrics => ClassicLine::classic_textedit_run_with_paint_advance(
+                    &[byte], record.font, size, record.face, vec![0, i32::from(advance)])?,
+                TextEditLineLayoutPolicy::PpcRunMetrics => ClassicLine::ppc_styled_run_with_paint_advance(
+                    &[byte], record.font, size, record.face, vec![0, i32::from(advance)])?,
             };
+            let cell_advance = if record.line_layout_policy == TextEditLineLayoutPolicy::CumulativeGuestMetrics {
+                i16::from(glyph.advance).checked_mul(factor)?
+            } else { i16::try_from(native_advance).ok()? };
+            let rect = (baseline.checked_sub(metrics.ascent.checked_mul(factor)?)?, left,
+                baseline.checked_add(metrics.descent.checked_mul(factor)?)?, left.checked_add(cell_advance)?);
+            let cell = (rect, cells.get(&rect)?.clone());
+            paint_pen = paint_pen.checked_add(native_advance)?;
             runs.push(StyledTextEditRun { bytes: start + offset..start + offset + 1, left,
-                measured_positions: vec![left, left.checked_add(advance)?], glyphs,
+                measured_positions: vec![measured_left, measured_right], glyphs,
                 ink: paint.style_ink[0].clone(), opaque_cell: Some(cell) });
         }
         Some(Self { geometry, baseline, selection: record.guest_selection_rect(index)?, runs })

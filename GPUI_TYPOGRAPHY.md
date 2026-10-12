@@ -152,10 +152,15 @@ font substitution or rendering change.
 Canonical `TERec.txMode` is retained in each editor snapshot and its recorded
 paint identity. Structural plain-field candidates admit modes0/1 for ownership
 and text services. Whole-field paint supports zero-spacing srcOr (mode1), plus
-plain unstyled source-copy (mode0) when every native clear cell can be uniquely
+plain unstyled source-copy (mode0), including qualified font faces, when every
+native clear cell can be uniquely
 paired with its original glyph in native order. The complete field must match
-native pixels before replacement. PPC fractional-strike and styled/faced
-source-copy recipes remain guest-painted pending faithful phase/style ordering.
+native pixels before replacement. Classic cells use native base glyph advances,
+while PPC cells use actual styled advances. Drawing pens and measured insertion
+positions remain separate. PPC fractional-strike and underlined source-copy,
+and styled TERec source-copy, remain guest-painted pending faithful phase/style
+ordering. PPC draws its continuous underline after cell/glyph ink; substituting
+per-glyph underline would change that ordering.
 Basic face-zero mode0 composed images pass across four CPU/display modes, four
 scales and active/inactive states; wider style and physical input qualification
 remain open. Final TextEdit coverage is area-sampled onto device pixels;

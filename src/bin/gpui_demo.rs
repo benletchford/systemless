@@ -10842,7 +10842,9 @@ mod desktop {
                 assert!(session.runner_mut().select_guest_menu_item(129, 7));
                 wait_for_menu(&mut session, 129, 7, true);
                 settle(&mut session);
+                for mode in [1, 0] {
                 for face in [0, 1, 2, 4, 8, 16, 32, 64, 31] {
+                    if mode == 0 && powerpc && face & 4 != 0 { continue; }
                     assert!((0..300).any(|_| {
                         session.runner_mut().run_steps(10_000, None);
                         !session.runner().is_ui_tracking_active()
@@ -10852,6 +10854,7 @@ mod desktop {
                     let original = session.runner_mut().text_edit_snapshot().records.into_iter()
                         .find(|record| !record.styled && record.drawing_intact).unwrap();
                     assert!(session.runner_mut().set_plain_text_edit_face_for_test(&original, face));
+                    assert!(session.runner_mut().set_plain_text_edit_mode_for_test(&original, mode));
                     // Preparation changes the ABI record. Real guest Reset calls
                     // TESetText/TESetSelect and redraws through TEUpdate.
                     let reset = session.runner_mut().control_snapshot().into_iter()
@@ -10868,6 +10871,7 @@ mod desktop {
                     let records = session.runner_mut().text_edit_snapshot().records;
                     let index = records.iter().position(|record| record.guest_id == original.guest_id).unwrap();
                     let record = &records[index];
+                    assert_eq!(record.text_mode, mode);
                     assert!(!record.styled); assert_eq!(record.face, face); assert!(record.drawing_intact);
                     let frame = session.video_frame().unwrap();
                     let plans = super::qualify_styled_text_fields(&records, &frame.pixels, frame.width, frame.height);
@@ -10920,11 +10924,14 @@ mod desktop {
                     assert_eq!(edited.text, expected);
                     assert_eq!(edited.selection, (2, 2));
                     assert_eq!(edited.face, face);
+                    assert_eq!(edited.text_mode, mode);
                     let edited_frame = session.video_frame().unwrap();
                     assert!(super::qualify_styled_text_fields(std::slice::from_ref(&edited),
                         &edited_frame.pixels, edited_frame.width, edited_frame.height)[0].is_some(),
                         "edited field must still qualify: face={face}, PPC={powerpc}, depth={depth}");
                     eprintln!("PASS plain-face-plan-and-edit powerpc={powerpc} depth={depth} face={face}");
+                    eprintln!("PASS native-face-edit face={face} mode={mode} PPC={powerpc} depth={depth}");
+                }
                 }
             }
         }
@@ -10980,9 +10987,11 @@ mod desktop {
                 session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
                 assert!(session.runner_mut().select_guest_menu_item(129, 7));
                 wait_for_menu(&mut session, 129, 7, true); settle(&mut session);
+                for face in [0, 1, 2, 4, 8, 16, 32, 64, 31] {
                 for mode in [0, 1] {
                     let original = session.runner_mut().text_edit_snapshot().records.into_iter()
                         .find(|record| !record.styled && record.drawing_intact).unwrap();
+                    assert!(session.runner_mut().set_plain_text_edit_face_for_test(&original, face));
                     assert!(session.runner_mut().set_plain_text_edit_mode_for_test(&original, mode));
                     let reset = session.runner_mut().control_snapshot().into_iter()
                         .find(|control| control.visible && control.title == "Reset").unwrap();
@@ -11004,9 +11013,14 @@ mod desktop {
                         assert!(cells.iter().all(|(rect, ink)| rect.0 < rect.2 && rect.1 < rect.3 && ink.rgb == [255; 3]));
                         let frame = session.video_frame().unwrap();
 
+                        if powerpc && face & 4 != 0 {
+                            assert!(super::qualify_styled_text_fields(std::slice::from_ref(&current),
+                                &frame.pixels, frame.width, frame.height)[0].is_none(), "PPC line-final underline stays guest-painted");
+                            continue;
+                        }
                         let plan = super::qualify_styled_text_fields(std::slice::from_ref(&current),
                             &frame.pixels, frame.width, frame.height).remove(0)
-                            .expect("plain source-copy cells and glyph ink must qualify");
+                            .unwrap_or_else(|| panic!("plain source-copy face={face} PPC={powerpc} depth={depth} must qualify"));
                         for scale in [0.75, 1., 1.5, 2.] {
                             assert!(super::super::text::classic_styled_text_edit_field(plan.clone(), scale, (0., 0.)).is_some());
                         }
@@ -11028,6 +11042,8 @@ mod desktop {
                             &changed, frame.width, frame.height)[0].is_none());
 
                     } else { assert!(paint.opaque_cells.is_none(), "new srcOr drawing must clear old cell evidence"); }
+                    eprintln!("PASS native-source-copy-face face={face} PPC={powerpc} depth={depth} mode={mode}");
+                }
                 }
             }
         }
