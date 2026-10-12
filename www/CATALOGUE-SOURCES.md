@@ -2297,7 +2297,10 @@ regions match exactly while human positions differ. Captures inspected. This is
 bounded input-causality evidence, not an independent rendering oracle or full
 match/scoring/save/audio qualification.
 
-Palette fix CI/merge is pending. Title cropping and selected-opponent/dialog
+All final checks passed and palette fix [#4753](https://github.com/benletchford/systemless/pull/4753) merged as
+`e27b56726244ce9dcef77f6efbd82a57768c982e`. Its complete source tree matches the
+tested d0fee273 tree (`4b6bda11a0b70225bec98fb49fc042b4c4751dee`); no retest
+of different code is implied. Human release remains pending. Title cropping and selected-opponent/dialog
 sprite artifacts remain unresolved. Complete historical demo redistribution
 applicability of the author's MIT source release remains under assessment;
 source-resource correspondence does not automatically clear the entire archive.
