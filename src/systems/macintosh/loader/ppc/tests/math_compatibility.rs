@@ -974,3 +974,108 @@ fn mathlib_acos_returns_nan_outside_the_domain_in_main_and_hot_paths() {
         ppc_import_extra_cycles_for_target(&PpcImportDispatcherTarget::MathAsin)
     );
 }
+
+
+#[test]
+fn carbon_and_mathlib_sine_imports_return_known_angles_in_fpr1() {
+    for library in [b"CarbonLib".as_slice(), b"MathLib".as_slice()] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_library_import(library, b"sin")).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::MathSin
+        );
+        for (angle, expected) in [
+            (0.0f64, 0.0f64),
+            (-0.0, -0.0),
+            (std::f64::consts::FRAC_PI_2, 1.0),
+            (-std::f64::consts::FRAC_PI_2, -1.0),
+        ] {
+            loaded.cpu.fpr[1] = angle.to_bits();
+            loaded.cpu.fpr[2] = 0x0123456789abcdef;
+            loaded.cpu.gpr[3] = 0x12345678;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::MathSin);
+            assert_eq!(loaded.cpu.fpr[1], expected.to_bits());
+            assert_eq!(loaded.cpu.fpr[2], 0x0123456789abcdef);
+            assert_eq!(loaded.cpu.gpr[3], 0x12345678);
+        }
+        loaded.cpu.fpr[1] = f64::NAN.to_bits();
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MathSin);
+        assert!(f64::from_bits(loaded.cpu.fpr[1]).is_nan());
+    }
+}
+
+
+#[test]
+fn carbon_and_mathlib_atan_imports_return_known_angles_in_fpr1() {
+    for library in [b"CarbonLib".as_slice(), b"MathLib".as_slice()] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_library_import(library, b"atan")).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::MathAtan
+        );
+        for (argument, expected) in [
+            (0.0f64, 0.0f64),
+            (-0.0, -0.0),
+            (1.0, std::f64::consts::FRAC_PI_4),
+            (-1.0, -std::f64::consts::FRAC_PI_4),
+            (f64::INFINITY, std::f64::consts::FRAC_PI_2),
+            (f64::NEG_INFINITY, -std::f64::consts::FRAC_PI_2),
+        ] {
+            loaded.cpu.fpr[1] = argument.to_bits();
+            loaded.cpu.fpr[2] = 0x0123456789abcdef;
+            loaded.cpu.gpr[3] = 0x12345678;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::MathAtan);
+            assert_eq!(loaded.cpu.fpr[1], expected.to_bits());
+            assert_eq!(loaded.cpu.fpr[2], 0x0123456789abcdef);
+            assert_eq!(loaded.cpu.gpr[3], 0x12345678);
+        }
+        loaded.cpu.fpr[1] = f64::NAN.to_bits();
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MathAtan);
+        assert!(f64::from_bits(loaded.cpu.fpr[1]).is_nan());
+    }
+}
+
+#[test]
+fn carbon_and_mathlib_rounding_imports_preserve_native_floating_point_abi() {
+    for library in [b"CarbonLib".as_slice(), b"MathLib".as_slice()] {
+        for (symbol, target, positive, negative) in [
+            (
+                b"ceil".as_slice(),
+                PpcImportDispatcherTarget::MathCeil,
+                2.0f64,
+                -1.0f64,
+            ),
+            (
+                b"floor".as_slice(),
+                PpcImportDispatcherTarget::MathCompatibility(PpcMathCompatibilityOperation::Floor),
+                1.0f64,
+                -2.0f64,
+            ),
+        ] {
+            let mut loaded =
+                load_pef_application(&synthetic_pef_with_library_import(library, symbol)).unwrap();
+            assert_eq!(loaded.imports[0].dispatcher_target, target);
+            for (argument, expected) in [
+                (1.5f64, positive),
+                (-1.5, negative),
+                (0.0, 0.0),
+                (-0.0, -0.0),
+                (f64::INFINITY, f64::INFINITY),
+                (f64::NEG_INFINITY, f64::NEG_INFINITY),
+            ] {
+                loaded.cpu.fpr[1] = argument.to_bits();
+                loaded.cpu.fpr[2] = 0x0123456789abcdef;
+                loaded.cpu.gpr[3] = 0x12345678;
+                run_test_import(&mut loaded, target.clone());
+                assert_eq!(loaded.cpu.fpr[1], expected.to_bits());
+                assert_eq!(loaded.cpu.fpr[2], 0x0123456789abcdef);
+                assert_eq!(loaded.cpu.gpr[3], 0x12345678);
+            }
+            loaded.cpu.fpr[1] = f64::NAN.to_bits();
+            run_test_import(&mut loaded, target);
+            assert!(f64::from_bits(loaded.cpu.fpr[1]).is_nan());
+        }
+    }
+}

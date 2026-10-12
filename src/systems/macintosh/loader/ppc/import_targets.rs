@@ -1364,7 +1364,7 @@ pub(crate) fn dispatcher_target_for_import(
         // floating-point ABI as MathLib. Inside Macintosh: PowerPC Numerics
         // (1994), pp. 6-10--6-11 (sqrt), 10-17--10-19 (pow),
         // 10-29--10-30 (cos).
-        ("CarbonLib", "cos" | "pow" | "round" | "sqrt") => "MathLib",
+        ("CarbonLib", "atan" | "ceil" | "cos" | "floor" | "pow" | "round" | "sin" | "sqrt") => "MathLib",
         // These classic port-buffering routines are Carbon-only exports.
         (
             "CarbonLib",
