@@ -1,5 +1,24 @@
 # GPUI Kit system-interface coverage
 
+### Rejected macOS pacing experiments (2026-10-12)
+
+Foreground user-interactive pthread QoS was tested, including native
+foreground/background/foreground class queries and all five cadence tests.
+The optimized EV experiment completes14 actions/2900 observations without
+readiness delay in49.78s, and its full scene/HUD was inspected. Its longest
+interval still contains8.006ms sleep overshoot (15.996ms requested versus
+24.002ms elapsed). The policy change was removed rather than retained as a
+claimed fix. The ignored `worker-qos-flight-review.json` in the EV qualification
+directory records the experiment binary/source hashes and rejected disposition.
+
+An isolated alternating120-sample-per-method macOS wait probe also found no
+useful improvement: standard16ms sleep overshoot mean/p95/max
+4.907/8.073/9.498ms versus native mach_wait_until4.939/8.035/8.330ms.
+These probes rule out the two tested changes as demonstrated solutions on this
+host; they do not identify the timer/power/scheduling cause or qualify native
+gameplay. No production QoS or native-wait changes were kept. EV smoothness,
+actual presentation and audio continuity remain open.
+
 ### EV requested sleep versus wake-up timing (2026-10-12)
 
 Opt-in profiling now measures the existing worker sleep request and elapsed
