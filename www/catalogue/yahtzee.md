@@ -47,7 +47,7 @@ artifacts:
   format: sit
   source:
     type: url
-    url: https://www.vintageapplemac.com/files/games/Yahtzee%21%20v3.2.0.sit
+    url: https://bargains-minutes-alerts-avon.trycloudflare.com/yahtzee320-original.sit
     expected_sha256: a6918a4776377cfca37c9be377ccc0c79591fb8927b3a70098a7e400a8147c28
     expected_size: 25001
   provenance:
@@ -55,6 +55,7 @@ artifacts:
     original: true
     sources:
     - https://www.vintageapplemac.com/software/games/y/
+    - https://www.vintageapplemac.com/files/games/Yahtzee%21%20v3.2.0.sit
     - https://github.com/benletchford/systemless/issues/4757
     license: Original unchanged-package conditional redistribution grant
     rights_holder: Mikael Sheikh and Necromancer Software
@@ -73,6 +74,10 @@ artifacts:
       complete 5818-byte README with resource fork. Both files, all four forks,
       filenames and Finder metadata match independent extraction. No native PPC
       slice exists in this edition. Neither application nor README is edited.
+      Original host rejected GitHub's download with HTTP 403; a temporary
+      checksum-pinned HTTPS transfer supplies identical bytes for normal CI
+      promotion. Original provenance remains above; retire the transfer after
+      managed storage and its pinned bytes are verified.
 - id: gameplay-screenshot
   role: screenshot
   format: png
