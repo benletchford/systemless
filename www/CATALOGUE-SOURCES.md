@@ -2406,3 +2406,19 @@ The original readme permits complete unchanged nonprofit redistribution, retains
 [Compatibility defect #4762](https://github.com/benletchford/systemless/issues/4762): the indexed-only PixPat decoder fell back to unrelated monochrome bytes for the original 16/32-bit colour patterns, producing white stripes. The proposed direct-colour decoder renders the original texture: **84,600 background pixels independently match original ppat 1000** after RGB555 conversion. The older blank black background is not an independent oracle. Existing gameplay checks now use original-resource background values while retaining ball-flight and struck-brick assertions. The candidate passes **11 assertions**, at **1,725 frontend/guest ticks**, zero exhaustion; final captures show a launched ball, a removed red brick and score 10. **134 native QuickDraw tests pass**, including padded-row, tiling, xRGB padding and indexed/16-bit destination checks.
 
 Tested native SHA-256 `820508c7a36cd1d5576802bde0d13cf34abb36ccefc10ee3d19577db288b9be6`; explicit PowerPC, literal arrows, default 640×480/16-bit display. This is bounded gameplay and original-resource rendering evidence, not complete game qualification. Paddle-control causality, browser pacing, bundled-library rights, catalogue CI/promotion/launch approval and public qualification remain pending in [intake #4689](https://github.com/benletchford/systemless/issues/4689). No live increment or release action.
+
+## Genuine pinball demo intakes: Lost Continent and Tristan
+
+### Lost Continent original PPC demo — primary 111
+
+[Original download](https://classicmacdemos.com/download/3d-ultra-pinball-the-lost-continent/): **6,449,029 bytes**, SHA-256 `c16d1d2c10fa2121ba6ecc51d57c96582cc2345a6ec20448f864795462595a2c`. Independent extraction exposes four files: Pinball 3 Demo, Demo Data, Demo Map, v0. Main executable is PowerPC PEF; resource fork contains cfrg and two CODE resources. Original strings explicitly require Power Macintosh. Auxiliary CODE resources do not establish a playable 68K edition.
+
+Bounded native PPC startup halts at unsupported InterfaceLib:PixMap32Bit. This is an addressing-mode query, not a pixel-depth query; [Apple QD01](https://leopard-adc.pepas.com/technotes/qd/qd_01.html) documents pmVersion 4. Native binding and neutral tests are in progress. [Intake #4764](https://github.com/benletchford/systemless/issues/4764). No standalone readme in the package; affirmative redistribution permission and production fork/Finder parity remain pending. No gameplay, hosting or publication qualification.
+
+### Genuine Tristan pinball demo — primary 115
+
+[Original download](https://classicmacdemos.com/download/tristan/): **657,581 bytes**, SHA-256 `278d01a636388a888b76285ebcf27d2a8dcb7e6548e486e7393993eb9704b602`. This genuine LittleWing pinball archive supersedes the unrelated Trist board-game lead. Independent extraction exposes Tristan™ Demo, External Sound, screen1. Game data fork is empty; 751,039-byte resource fork has five CODE resources and no cfrg: 68K only. Original requirements include 68020/FPU, System 6.0.6+, Color QuickDraw and 256 colours.
+
+Native 68K/depth 8 shows the original title at 600 frontend/1,200 guest ticks, zero exhaustion. Ordinary title click and 600 further frontend ticks show “Application program damaged. Please copy from master disk and try again.” Captures inspected; the cause is unverified, so do not label the archive corrupt or bypass the alert. Zero-assertion diagnostics do not qualify gameplay. [Intake #4765](https://github.com/benletchford/systemless/issues/4765). No standalone readme; affirmative hosting grant and production parity remain pending.
+
+Both diagnostics used native SHA-256 `820508c7a36cd1d5576802bde0d13cf34abb36ccefc10ee3d19577db288b9be6`. Originals unchanged; no game patches, registration bypasses, managed uploads, live increments or release actions.
