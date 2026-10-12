@@ -2182,6 +2182,8 @@ pub(super) fn ppc_te_draw(
     let mode = memory
         .read_u16_be(te_ptr + PPC_TE_TX_MODE_OFFSET)
         .unwrap_or(PPC_QD_TEXT_MODE_SRC_OR as u16) as i16;
+    let previous_opaque_capture = (mode == 0)
+        .then(|| memory.presentation().begin_text_edit_opaque_capture(port));
     // Keep actual glyph ink separate from later selection and themed caret
     // paint. Snapshotting the caller's current foreground cannot recover it.
     let plain_ink = if !styled && matches!(mode, 0 | 1) {
@@ -2434,6 +2436,9 @@ pub(super) fn ppc_te_draw(
     // Text (1993), p. 2-88: retain evidence only after actual drawing.
     let mut drawing = crate::text_edit::TextEditDrawing::capture_editor(te_handle, port, view, |addr| memory.read_u8(addr));
     if let Some(drawing) = &mut drawing { drawing.plain_ink = plain_ink; }
+    let opaque_cells = previous_opaque_capture
+        .and_then(|previous| memory.presentation().end_text_edit_opaque_capture(previous));
+    if let Some(drawing) = &mut drawing { drawing.opaque_cells = opaque_cells; }
     memory.presentation().record_text_edit_drawing(te_handle, drawing);
 
 }

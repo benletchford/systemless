@@ -3646,6 +3646,24 @@ impl FixtureRunner {
         }
     }
 
+    /// Prepare transfer intent; redraw must still use the guest Toolbox path.
+    #[doc(hidden)]
+    #[cfg(any(feature = "test-support", feature = "gpui-demo-test"))]
+    pub fn set_plain_text_edit_mode_for_test(&mut self, expected: &TextEditSnapshot, mode: i16) -> bool {
+        if !self.text_edit_snapshot().records.iter().any(|record| !record.styled
+            && (record.guest_id, record.generation, record.owner_port)
+                == (expected.guest_id, expected.generation, expected.owner_port)) { return false; }
+        if let Some(app) = self.native.application_mut() {
+            let Some(pointer) = app.memory.read_u32_be(expected.guest_id) else { return false; };
+            let Some(address) = pointer.checked_add(0x4e) else { return false; };
+            app.memory.write_u16_be(address, mode as u16).is_some()
+        } else {
+            let pointer = self.bus.read_long(expected.guest_id);
+            if pointer == 0 || !self.bus.is_guest_address_mapped(pointer, 0x50) { return false; }
+            self.bus.write_word(pointer + 0x4e, mode as u16); true
+        }
+    }
+
     /// Prepare CGrafPort background intent; painting still uses guest TextEdit operations.
     #[doc(hidden)]
     #[cfg(any(feature = "test-support", feature = "gpui-demo-test"))]

@@ -239,7 +239,12 @@ impl PpcLoadedApp {
             .and_then(|(_, color)| ppc_quickdraw_surface_color_pixel(&mut self.memory, surface, color))
             .map(|pixel| TextEditInkSnapshot { pixel, rgb: rgb_at(pixel),
                 inverted_rgb: rgb_at(pixel ^ if front.depth == 16 { 0xffff } else { 0xff }) });
-        Some(TextEditPaintSnapshot { depth: front.depth as u16, mode, background_ink,
+        let opaque_cells = self.memory.presentation().text_edit_opaque_cells(record.guest_id)
+            .filter(|_| record.drawing_intact).and_then(|cells| cells.into_iter().map(|(rect, depth, pixel)| {
+                (u32::from(depth) == front.depth).then(|| (rect, TextEditInkSnapshot { pixel,
+                    rgb: rgb_at(pixel), inverted_rgb: rgb_at(pixel ^ if depth == 16 { 0xffff } else { 0xff }) }))
+            }).collect::<Option<Vec<_>>>());
+        Some(TextEditPaintSnapshot { depth: front.depth as u16, mode, background_ink, opaque_cells,
             char_extra: TextEditCharExtraSnapshot::PpcPacked(ppc_port_char_extra_packed(&mut self.memory, record.owner_port)),
             space_extra: self.memory.read_u32_be(record.owner_port.checked_add(76)?)? as i32,
             solid_caret: None, style_ink })

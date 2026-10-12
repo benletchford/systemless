@@ -15,6 +15,8 @@ pub(crate) struct TextEditDrawing {
     pub(crate) solid_caret: Option<((i16, i16, i16, i16), u16, u16)>,
     /// Plain editor foreground resolved before selection/caret painting.
     pub(crate) plain_ink: Option<(u16, u16)>,
+    /// Actual source-copy clears in glyph drawing order: local rect, depth, pixel.
+    pub(crate) opaque_cells: Option<Vec<((i16, i16, i16, i16), u16, u16)>>,
 }
 
 impl TextEditDrawing {
@@ -274,6 +276,7 @@ impl TextEditDrawing {
             painted_regions,
             solid_caret: None,
             plain_ink: None,
+            opaque_cells: None,
         })
     }
 }

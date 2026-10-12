@@ -1019,12 +1019,18 @@ fn ppc_clear_text_cell(
     let Some(background) = ppc_read_rgb_color(memory, port + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET)
         .and_then(|color| ppc_quickdraw_surface_color_pixel(memory, surface, color))
     else {
+        memory.presentation().record_text_edit_opaque_cell(port, None, surface.front_buffer.depth as u16, None);
         return;
     };
     let top = baseline + ppc_scale_font_floor(-i32::from(metrics.ascent), numerator, denominator);
     let bottom =
         baseline + ppc_scale_font_floor(i32::from(metrics.descent), numerator, denominator);
     let right = left + ppc_scale_font_floor(advance, numerator, denominator);
+    if memory.presentation().text_edit_opaque_capture_active(port) {
+        let rect = [top, left, bottom, right].map(i16::try_from);
+        let rect = match rect { [Ok(t), Ok(l), Ok(b), Ok(r)] => Some((t, l, b, r)), _ => None };
+        memory.presentation().record_text_edit_opaque_cell(port, rect, surface.front_buffer.depth as u16, Some(background));
+    }
     for y in top..bottom {
         for x in left..right {
             if ppc_local_point_in_port_regions(surface, (x, y), vis, clip) {

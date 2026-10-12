@@ -1,5 +1,29 @@
 # GPUI Kit system-interface coverage
 
+### Native source-copy cell evidence (2026-10-12)
+
+Both guest draw paths now retain source-copy cell clears in actual draw order,
+including local rectangles, physical background pixels and depth. Classic uses
+its actual scaled cell rectangle and rejects nonuniform/custom background
+patterns; PPC uses its actual rational cell bounds and mapped background.
+Receipt capture is scoped to a matching TextEdit port, bounded to32768 cells,
+restores outer state after nested drawing, and rejects partial/invalid evidence.
+Ordinary application text skips receipt resolution when no matching capture is
+active. Read-only paint snapshots expose receipts only with intact drawing;
+a fresh source-or redraw removes earlier source-copy evidence.
+
+The real-guest Reset regression passes all four CPU/display modes (1 test,
+4.22s), retaining nonempty white-cell receipts under mode0 and clearing them
+under mode1. Mode0 still declines GPUI field replacement. Capture-state tests
+pass nested owners, invalid evidence and the bound (1 test,0.01s). The final
+ordinary desktop check passes (21.97s), and the public library check passes
+without default features (12.56s). These tests establish receipt collection
+and lifetime, not complete per-glyph ink ordering or source-copy composition.
+Pairing receipts with original resolved glyphs and whole-field mode0 paint
+qualification remains unfinished; no source-copy composed-image or native-font
+oracle claim is made. Evidence hashes are retained in the ignored
+`target/gpui-qualification/plain-face-rendering/native-opaque-cells/review.json`.
+
 ### Ordered opaque text-cell compositor primitive (2026-10-12)
 
 The shared smooth TextEdit compositor now has an explicit Erase operation for

@@ -843,6 +843,20 @@ impl super::TrapDispatcher {
                     p.erasing_text = true;
                 }
                 self.draw_rect(cpu, bus, &copy_rect, ShapeOp::Erase);
+                let port = *self.current_port;
+                if bus.presentation.text_edit_opaque_capture_active(port) {
+                    let depth = self.screen_mode.4;
+                    let color_port = bus.read_word(port + 6) & 0xc000 == 0xc000;
+                    let back_pattern = color_port.then(|| bus.read_long(port + 32));
+                    let custom_pattern = back_pattern.is_some_and(|handle|
+                        self.makergbpat_colors.contains_key(&handle) || self.decode_raw_pixpat(bus, handle).is_some());
+                    let pixel = if self.bk_pat != [0; 8] || custom_pattern { None }
+                        else if bus.read_word(port + 6) & 0xc000 == 0xc000 {
+                            Some((bus.read_long(port + 84) & if depth == 1 { 1 } else { 255 }) as u16)
+                        } else { Some(0) };
+                    bus.presentation.record_text_edit_opaque_cell(port,
+                        Some((copy_rect.top, copy_rect.left, copy_rect.bottom, copy_rect.right)), depth, pixel);
+                }
                 if let Some(mut p) = bus.presentation.as_mut() {
                     p.erasing_text = false;
                 }

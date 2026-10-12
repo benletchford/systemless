@@ -154,8 +154,8 @@ paint identity. Structural plain-field candidates admit modes0/1 for ownership
 and text services, but the current whole-field paint recipe requires zero-spacing
 srcOr (mode1). Source-copy mode0 and other unqualified transfer recipes retain
 guest pixels. The compositor has a tested ordered opaque-cell clear primitive;
-native per-glyph cell/ink emission and whole-field mode0 qualification remain
-unfinished. Structural eligibility alone does not grant paint replacement. This gate does not qualify every
+native cell clears are now retained from actual drawing, while matching them
+with ordered glyph ink and whole-field mode0 qualification remains unfinished. Structural eligibility alone does not grant paint replacement. This gate does not qualify every
 simple Dialog Manager item paint path or native transfer-mode appearance.
 Guest font resolution, advances, wrapping and input positions stay authoritative.
 

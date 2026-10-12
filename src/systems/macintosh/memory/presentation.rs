@@ -47,12 +47,16 @@ pub(crate) struct TextEditInkCapture {
     mixed: bool,
 }
 
+pub(crate) type TextEditOpaqueCells = Vec<((i16, i16, i16, i16), u16, u16)>;
+pub(crate) type TextEditOpaqueCapture = Option<(u32, Option<TextEditOpaqueCells>)>;
+
 /// Shared by both CPU adapters; access is scoped to a single drawing operation.
 #[derive(Clone, Default)]
 pub(crate) struct PresentationSlot(
     std::rc::Rc<std::cell::RefCell<Option<Presentation>>>,
     std::rc::Rc<std::cell::RefCell<HashMap<u32, crate::text_edit::TextEditDrawing>>>,
     std::rc::Rc<std::cell::Cell<TextEditInkCapture>>,
+    std::rc::Rc<std::cell::RefCell<TextEditOpaqueCapture>>,
 );
 
 /// Page size of the bus's JIT store filter; equal to `PageIndex`'s.
@@ -141,6 +145,29 @@ impl std::fmt::Debug for PresentationSlot {
     }
 }
 impl PresentationSlot {
+    pub(crate) fn text_edit_opaque_capture_active(&self, port: u32) -> bool {
+        self.3.borrow().as_ref().is_some_and(|(owner, cells)| *owner == port && cells.is_some())
+    }
+    pub(crate) fn begin_text_edit_opaque_capture(&self, port: u32) -> TextEditOpaqueCapture {
+        self.3.replace(Some((port, Some(Vec::new()))))
+    }
+    pub(crate) fn end_text_edit_opaque_capture(&self, previous: TextEditOpaqueCapture) -> Option<TextEditOpaqueCells> {
+        self.3.replace(previous).and_then(|(_, cells)| cells)
+    }
+    pub(crate) fn record_text_edit_opaque_cell(&self, port: u32, rect: Option<(i16, i16, i16, i16)>,
+        depth: u16, pixel: Option<u16>) {
+        let mut slot = self.3.borrow_mut();
+        let Some((owner, cells)) = slot.as_mut() else { return; };
+        if *owner != port || cells.is_none() { return; }
+        let (Some(rect), Some(pixel)) = (rect, pixel) else { *cells = None; return; };
+        if !matches!(depth, 1 | 8 | 16) || cells.as_ref().unwrap().len() >= 32768 {
+            *cells = None; return;
+        }
+        cells.as_mut().unwrap().push((rect, depth, pixel));
+    }
+    pub(crate) fn text_edit_opaque_cells(&self, handle: u32) -> Option<TextEditOpaqueCells> {
+        self.1.borrow().get(&handle)?.opaque_cells.clone()
+    }
     pub(crate) fn begin_text_edit_ink_capture(&self, port: u32) -> TextEditInkCapture {
         self.2.replace(TextEditInkCapture { port: Some(port), ..TextEditInkCapture::default() })
     }
@@ -2967,10 +2994,11 @@ impl MacMemoryBus {
     }
     pub(crate) fn record_text_edit_caret_drawing(
         &self, handle: u32, port: u32, view: (i16, i16, i16, i16),
-        caret: Option<(i16, i16, i16, i16)>, plain_ink: Option<(u16, u16)>,
+        caret: Option<(i16, i16, i16, i16)>, plain_ink: Option<(u16, u16)>, opaque_cells: Option<TextEditOpaqueCells>,
     ) {
         let mut drawing = crate::text_edit::TextEditDrawing::capture_editor(handle, port, view, |addr| Some(self.read_byte(addr)));
         if let Some(drawing) = &mut drawing { drawing.plain_ink = plain_ink; }
+        if let Some(drawing) = &mut drawing { drawing.opaque_cells = opaque_cells; }
         if let (Some(drawing), Some(rect)) = (&mut drawing, caret) { drawing.qualify_solid_caret(rect); }
         self.presentation.record_text_edit_drawing(handle, drawing);
     }
@@ -4199,6 +4227,26 @@ impl PresentationSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_edit_opaque_capture_restores_nested_owners_and_rejects_partial_evidence() {
+        let slot = PresentationSlot::default();
+        let outer = slot.begin_text_edit_opaque_capture(10);
+        slot.record_text_edit_opaque_cell(10, Some((1, 2, 3, 4)), 8, Some(7));
+        let inner = slot.begin_text_edit_opaque_capture(20);
+        slot.record_text_edit_opaque_cell(10, Some((5, 6, 7, 8)), 8, Some(9));
+        slot.record_text_edit_opaque_cell(20, Some((2, 3, 4, 5)), 16, Some(0x7fff));
+        assert_eq!(slot.end_text_edit_opaque_capture(inner), Some(vec![((2, 3, 4, 5), 16, 0x7fff)]));
+        slot.record_text_edit_opaque_cell(10, Some((3, 4, 5, 6)), 8, Some(8));
+        assert_eq!(slot.end_text_edit_opaque_capture(outer), Some(vec![((1, 2, 3, 4), 8, 7), ((3, 4, 5, 6), 8, 8)]));
+        let previous = slot.begin_text_edit_opaque_capture(10);
+        slot.record_text_edit_opaque_cell(10, None, 8, Some(1));
+        slot.record_text_edit_opaque_cell(10, Some((1, 2, 3, 4)), 8, Some(1));
+        assert!(slot.end_text_edit_opaque_capture(previous).is_none());
+        let previous = slot.begin_text_edit_opaque_capture(10);
+        for _ in 0..32769 { slot.record_text_edit_opaque_cell(10, Some((1, 2, 3, 4)), 8, Some(1)); }
+        assert!(slot.end_text_edit_opaque_capture(previous).is_none());
+    }
 
     pub(super) fn bus() -> MacMemoryBus {
         let mut bus = MacMemoryBus::new(1024 * 1024);

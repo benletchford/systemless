@@ -25984,7 +25984,12 @@ impl super::TrapDispatcher {
             TextEditInkSnapshot { pixel: u16::from(pixel), rgb: rgb_at(pixel),
                 inverted_rgb: rgb_at(pixel ^ if depth == 1 { 1 } else { 255 }) }
         });
-        Some(TextEditPaintSnapshot { depth, mode, background_ink,
+        let opaque_cells = bus.presentation.text_edit_opaque_cells(record.guest_id)
+            .filter(|_| record.drawing_intact).and_then(|cells| cells.into_iter().map(|(rect, painted_depth, pixel)| {
+                (painted_depth == depth).then(|| (rect, TextEditInkSnapshot { pixel,
+                    rgb: rgb_at(pixel as u8), inverted_rgb: rgb_at(pixel as u8 ^ if depth == 1 { 1 } else { 255 }) }))
+            }).collect::<Option<Vec<_>>>());
+        Some(TextEditPaintSnapshot { depth, mode, background_ink, opaque_cells,
             char_extra: TextEditCharExtraSnapshot::ClassicFixed(self.char_extra),
             space_extra: bus.read_long(port + 76) as i32, style_ink,
             solid_caret: bus.text_edit_solid_caret(record.guest_id)

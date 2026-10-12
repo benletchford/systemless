@@ -10964,6 +10964,47 @@ mod desktop {
         }
 
         #[test]
+        fn source_copy_text_edit_retains_native_opaque_cells_across_cpu_modes() {
+            for (powerpc, depth) in [(false, 1u16), (false, 8), (true, 8), (true, 16)] {
+                let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
+                session.runner_mut().set_prefer_powerpc_executables(powerpc);
+                if powerpc { session.runner_mut().set_powerpc_screen_depth(depth).unwrap(); }
+                let app = session.load_path(&PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/toolbox-showcase/toolbox-showcase.sit")).unwrap();
+                session.initialize(&app); wait_for_menu(&mut session, 129, 1, true);
+                assert!(session.runner_mut().select_guest_menu_item(129, 7));
+                wait_for_menu(&mut session, 129, 7, true); settle(&mut session);
+                for mode in [0, 1] {
+                    let original = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| !record.styled && record.drawing_intact).unwrap();
+                    assert!(session.runner_mut().set_plain_text_edit_mode_for_test(&original, mode));
+                    let reset = session.runner_mut().control_snapshot().into_iter()
+                        .find(|control| control.visible && control.title == "Reset").unwrap();
+                    let mut activation = Some(super::super::activation::ControlActivation::begin(&mut session,
+                        reset.guest_id, reset.generation).unwrap());
+                    for _ in 0..20 {
+                        settle(&mut session);
+                        activation = activation.and_then(|click| click.advance(&mut session));
+                        if activation.is_none() { break; }
+                    }
+                    assert!(activation.is_none()); settle(&mut session);
+                    let current = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| record.guest_id == original.guest_id && record.drawing_intact).unwrap();
+                    assert_eq!(current.text_mode, mode);
+                    let paint = current.paint.as_ref().unwrap();
+                    if mode == 0 {
+                        let cells = paint.opaque_cells.as_ref().expect("native source-copy cell trace");
+                        assert!(!cells.is_empty());
+                        assert!(cells.iter().all(|(rect, ink)| rect.0 < rect.2 && rect.1 < rect.3 && ink.rgb == [255; 3]));
+                        let frame = session.video_frame().unwrap();
+                        assert!(super::qualify_styled_text_fields(std::slice::from_ref(&current),
+                            &frame.pixels, frame.width, frame.height)[0].is_none());
+                    } else { assert!(paint.opaque_cells.is_none(), "new srcOr drawing must clear old cell evidence"); }
+                }
+            }
+        }
+
+        #[test]
         fn plain_text_edit_paint_snapshots_preserve_native_ink_across_cpu_modes() {
             for (powerpc, depth, ppc_depth) in [(false, Some(1), None), (false, Some(8), None),
                 (true, None, Some(8)), (true, None, Some(16))] {
