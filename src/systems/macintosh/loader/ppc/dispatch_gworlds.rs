@@ -52,6 +52,20 @@ pub(super) fn dispatch_gworld_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::GetPortPixMap => {
+            // Quickdraw.h: PixMapHandle GetPortPixMap(CGrafPtr). Read the
+            // specified live colour port, rather than the selected GWorld.
+            let port = cpu.gpr[3];
+            let handle = (port != 0)
+                .then(|| port.checked_add(6))
+                .flatten()
+                .and_then(|version| memory.read_u16_be(version))
+                .filter(|version| version & 0xc000 == 0xc000)
+                .and_then(|_| port.checked_add(2))
+                .and_then(|slot| memory.read_u32_be(slot))
+                .unwrap_or(0);
+            Some(PpcImportAction::Return(handle))
+        }
         PpcImportDispatcherTarget::GetQDGlobalsThePort => {
             // Quickdraw.h: CGrafPtr GetQDGlobalsThePort(void). This is the
             // current qd.thePort value, also observed by GetPort.

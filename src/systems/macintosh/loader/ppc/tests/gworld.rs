@@ -2625,3 +2625,58 @@ fn qd_globals_port_accessor_returns_selected_port_without_out_parameter() {
         assert_eq!(loaded.memory.read_u32_be(scratch + 16), Some(window));
     }
 }
+
+#[test]
+fn port_pixmap_accessor_returns_argument_ports_live_handle_and_rejects_invalid_ports() {
+    for library in [b"InterfaceLib".as_slice(), b"CarbonLib".as_slice()] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            library,
+            b"GetPortPixMap",
+        ))
+        .unwrap();
+        let accessor = loaded.imports[0].dispatcher_target.clone();
+        assert_eq!(accessor, PpcImportDispatcherTarget::GetPortPixMap);
+        let main_port = *loaded.current_gworld;
+        let main_handle = loaded
+            .gworlds
+            .iter()
+            .find(|record| record.port == main_port)
+            .unwrap()
+            .pixmap_handle;
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 64]);
+        let window = super::window_manager::create_test_cwindow(
+            &mut loaded,
+            scratch,
+            (40, 50, 200, 300),
+            0,
+            true,
+            u32::MAX,
+        );
+        let window_handle = loaded
+            .gworlds
+            .iter()
+            .find(|record| record.port == window)
+            .unwrap()
+            .pixmap_handle;
+        assert_ne!(window_handle, main_handle);
+        let data = loaded.memory.read_u32_be(window_handle).unwrap();
+        assert_ne!(window_handle, data);
+        loaded.cpu.gpr[3] = main_port;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetPort);
+        loaded.cpu.gpr[3] = window;
+        run_test_import(&mut loaded, accessor.clone());
+        assert_eq!(loaded.cpu.gpr[3], window_handle);
+        assert_eq!(*loaded.current_gworld, main_port);
+        // A live port field can change independently of the cached GWorld record.
+        loaded.memory.write_u32_be(window + 2, main_handle).unwrap();
+        loaded.cpu.gpr[3] = window;
+        run_test_import(&mut loaded, accessor.clone());
+        assert_eq!(loaded.cpu.gpr[3], main_handle);
+        for invalid in [0, 0xfffffff0, scratch + 32] {
+            loaded.cpu.gpr[3] = invalid;
+            run_test_import(&mut loaded, accessor.clone());
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+    }
+}
