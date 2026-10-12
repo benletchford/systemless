@@ -2976,6 +2976,8 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::LMSetCurDirStore
         | PpcImportDispatcherTarget::LMGetSFSaveDisk
         | PpcImportDispatcherTarget::LMSetSFSaveDisk
+        | PpcImportDispatcherTarget::LMGetHiliteMode
+        | PpcImportDispatcherTarget::LMSetHiliteMode
         | PpcImportDispatcherTarget::LMGetRndSeed
         | PpcImportDispatcherTarget::LMGetGhostWindow
         | PpcImportDispatcherTarget::LMGetCrsrBusy
