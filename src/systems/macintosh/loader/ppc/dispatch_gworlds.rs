@@ -52,6 +52,19 @@ pub(super) fn dispatch_gworld_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::PixMap32Bit => {
+            // Apple QD01: pmVersion = baseAddr32 (4) requires 32-bit
+            // addressing, independently of pixel colour depth.
+            let handle = cpu.gpr[3];
+            let requires_32bit = (handle != 0)
+                .then(|| memory.read_u32_be(handle))
+                .flatten()
+                .filter(|pointer| *pointer != 0)
+                .and_then(|pointer| pointer.checked_add(14))
+                .and_then(|version| memory.read_u16_be(version))
+                == Some(4);
+            Some(PpcImportAction::Return(u32::from(requires_32bit)))
+        }
         PpcImportDispatcherTarget::GetPortPixMap => {
             // Quickdraw.h: PixMapHandle GetPortPixMap(CGrafPtr). Read the
             // specified live colour port, rather than the selected GWorld.

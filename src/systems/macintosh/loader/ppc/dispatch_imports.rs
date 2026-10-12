@@ -2070,6 +2070,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::InitCPort
         | PpcImportDispatcherTarget::CloseCPort
         | PpcImportDispatcherTarget::SetPortBits { .. }
+        | PpcImportDispatcherTarget::PixMap32Bit
         | PpcImportDispatcherTarget::GetPixBaseAddr
         | PpcImportDispatcherTarget::GetPixRowBytes
         | PpcImportDispatcherTarget::LockPixels
