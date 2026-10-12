@@ -814,6 +814,8 @@ pub enum PpcImportDispatcherTarget {
     DMCheckDisplayMode,
     DMSetDisplayMode,
     DMNewDisplayModeList,
+    NewDMDisplayModeListIteratorUPP,
+    DisposeDMDisplayModeListIteratorUPP,
     DMGetIndexedDisplayModeFromList,
     DMDisposeList,
     DMBeginConfigureDisplays,
@@ -3321,6 +3323,12 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib" | "DisplayLib", "DMSetDisplayMode") => {
             PpcImportDispatcherTarget::DMSetDisplayMode
+        }
+        ("InterfaceLib" | "DisplayLib", "NewDMDisplayModeListIteratorUPP") => {
+            PpcImportDispatcherTarget::NewDMDisplayModeListIteratorUPP
+        }
+        ("InterfaceLib" | "DisplayLib", "DisposeDMDisplayModeListIteratorUPP") => {
+            PpcImportDispatcherTarget::DisposeDMDisplayModeListIteratorUPP
         }
         ("InterfaceLib" | "DisplayLib", "DMNewDisplayModeList") => {
             PpcImportDispatcherTarget::DMNewDisplayModeList
