@@ -1,5 +1,5 @@
 //! Opt-in worker timing. Measures worker phases, not presented frames or FPS.
-use std::time::Instant;
+use std::time::{Duration, Instant};
 const STAGES: [&str; 7] = [
     "commands",
     "guest_execution",
@@ -30,7 +30,8 @@ pub(crate) struct WorkerProfiler {
     previous_cycle: Option<Instant>,
     cycle_intervals_ms: Vec<f64>,
     previous_phases: Vec<f64>,
-    longest_interval: Option<(f64, Vec<f64>)>,
+    previous_wait: Option<(f64, f64)>,
+    longest_interval: Option<(f64, Vec<f64>, Option<(f64, f64)>)>,
 }
 impl WorkerProfiler {
     pub fn from_env() -> Self {
@@ -40,11 +41,21 @@ impl WorkerProfiler {
             previous_cycle: None,
             cycle_intervals_ms: Vec::new(),
             previous_phases: Vec::new(),
+            previous_wait: None,
             longest_interval: None,
         }
     }
     pub fn enabled(&self) -> bool {
         self.enabled
+    }
+    pub fn sleep(&mut self, requested: Duration) {
+        if !self.enabled {
+            std::thread::sleep(requested);
+            return;
+        }
+        let start = Instant::now();
+        std::thread::sleep(requested);
+        self.previous_wait = Some((requested.as_secs_f64() * 1000., start.elapsed().as_secs_f64() * 1000.));
     }
     pub fn begin(&mut self) -> FrameTiming {
         let now = self.enabled.then(Instant::now);
@@ -54,8 +65,8 @@ impl WorkerProfiler {
                 .map(|previous| now.duration_since(previous).as_secs_f64() * 1000.)
         });
         if let Some(interval) = cycle_interval_ms {
-            if self.longest_interval.as_ref().is_none_or(|(longest, _)| interval > *longest) {
-                self.longest_interval = Some((interval, self.previous_phases.clone()));
+            if self.longest_interval.as_ref().is_none_or(|(longest, _, _)| interval > *longest) {
+                self.longest_interval = Some((interval, self.previous_phases.clone(), self.previous_wait));
             }
         }
         FrameTiming {
@@ -95,10 +106,13 @@ impl WorkerProfiler {
         });
         // An interval ends at this cycle's start, so its work belongs to the
         // preceding cycle, including across the 120-sample reporting boundary.
-        let longest = self.longest_interval.as_ref().map(|(interval, phases)| {
+        let longest = self.longest_interval.as_ref().map(|(interval, phases, wait)| {
             let work_ms = phases.iter().sum::<f64>();
             serde_json::json!({ "interval_ms": interval, "preceding_work_ms": work_ms,
                 "outside_measured_work_ms": (interval - work_ms).max(0.),
+                "preceding_sleep": wait.map(|(requested, elapsed)| serde_json::json!({
+                    "requested_ms": requested, "elapsed_ms": elapsed,
+                    "overshoot_ms": (elapsed - requested).max(0.) })),
                 "preceding_phases": STAGES.iter().zip(phases).map(|(name, value)|
                     serde_json::json!({ "phase": name, "elapsed_ms": value })).collect::<Vec<_>>(),
                 "scope": "Outside work includes intended sleep, timer/scheduler delay and profiler overhead; phase elapsed time includes preemption. Not CPU utilization or native presentation." })

@@ -1,5 +1,22 @@
 # GPUI Kit system-interface coverage
 
+### EV requested sleep versus wake-up timing (2026-10-12)
+
+Opt-in profiling now measures the existing worker sleep request and elapsed
+sleep, pairing both with the preceding work in the longest interval. With
+profiling disabled the worker keeps the same sleep behavior. The optimized
+example builds (54.34s); original EV completes14 actions/2900 observations with
+zero readiness delays in49.80s. All24 report windows pass phase/sleep sum checks.
+The full flight scene, original HUD and instructions were visually inspected.
+
+The longest interval is24.695ms: preceding work0.615ms, sleep request16.036ms,
+actual sleep24.079ms and overshoot8.043ms. This verifies timer/wake-up overshoot
+in this run, without identifying its OS cause or establishing that visible
+stutter is fixed. Instrumented offscreen timing does not qualify native frame
+delivery, input latency or audio continuity. Exact producer/artifact hashes are
+retained in the ignored
+`target/gpui-qualification/escape-velocity/sleep-attribution-flight-review.json`.
+
 ### EV worker interval attribution (2026-10-12)
 
 Opt-in worker profiling now pairs each reporting window's longest start-to-start

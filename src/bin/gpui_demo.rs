@@ -1114,7 +1114,7 @@ mod desktop {
                 }
                 // Preserve the original schedule after an overslept host timer;
                 // skip missed deadlines instead of accumulating wake-up delay.
-                std::thread::sleep(worker_cadence.worker_delay(Instant::now()));
+                profiler.sleep(worker_cadence.worker_delay(Instant::now()));
             }
         });
         let error = match result {
