@@ -1,5 +1,25 @@
 # GPUI Kit system-interface coverage
 
+### Transparent fallback composed-pixel checks (2026-10-12)
+
+The test-only plain-field capture can deliberately decline an otherwise
+qualified paint plan without clearing the guest image. It captures the shared
+Demo compositor, removes only the TextEdit semantic overlay, captures again,
+and requires exact equality of the complete composed images. All32 cases pass:
+mono68k/colour68k/PPC8/PPC16, scales0.75/1/1.5/2 and active/suspended states.
+All four CPU contact sheets were visually reviewed. Artifacts, states, hashes
+and producer information are retained in the ignored
+`target/gpui-qualification/plain-face-rendering/transparent-fallback/matrix.json`.
+The normal capture executable builds (10.02s).
+
+This proves semantic fallback transparency, not font replacement fidelity or
+native host interaction. The guest bitmap itself is resampled by GPUI; a
+nearest-neighbour enlargement is not the compositor baseline. Visual review
+found an open mono68k activation-paint discrepancy: selection remains inverted
+in the guest image despite the saved field being inactive. Colour/PPC captures
+hide it. Fallback faithfully preserves that guest image; monochrome inactive
+selection behavior is not qualified by this matrix.
+
 ### Declined TextEdit paint-plan text-service regression (2026-10-12)
 
 The wrapped dialog regression now exercises both qualified replacement and an

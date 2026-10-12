@@ -307,6 +307,9 @@ mod desktop {
         #[arg(long, hide = true, requires = "capture_plain_text_edit_ink")]
         capture_plain_text_edit_inactive: bool,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_plain_text_edit_ink")]
+        capture_plain_text_edit_fallback: bool,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_styled_text_edit_multiline: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -6417,7 +6420,7 @@ mod desktop {
 
     #[cfg(feature = "gpui-demo-test")]
     fn capture_plain_text_edit_ink(game: &std::path::Path, output: &std::path::Path,
-        powerpc: bool, depth: Option<u16>, scale: f32, face: u8, inactive: bool) {
+        powerpc: bool, depth: Option<u16>, scale: f32, face: u8, inactive: bool, fallback: bool) {
         fn settle(session: &mut MacintoshSession) {
             let start = session.runner().guest_tick();
             for _ in 0..100 {
@@ -6470,16 +6473,17 @@ mod desktop {
             "depth": session.runner().presented_screen_depth(), "face": record.face,
             "font": record.font, "size": record.size, "scale": scale, "inactive": inactive,
             "active": record.active, "selection": record.selection, "caret_visible": record.caret_visible,
+            "replacement_declined_for_test": fallback,
             "view": record.global_view_rect, "line_starts": record.line_starts,
             "smooth_support": plan.smooth_raster_support(), "compositor": "shared Demo renderer",
             "scope": "Actual plain TERec style, guest Reset/update/suspend, whole-field pixel qualification and shared offscreen compositor. No native Macintosh font oracle or physical host interaction." });
         image::save_buffer(output.with_extension("guest.png"), &frame.pixels, frame.width,
             frame.height, image::ColorType::Rgba8).unwrap();
         let view = record.global_view_rect.unwrap();
-        for y in view.0..view.2 { for x in view.1..view.3 {
+        if !fallback { for y in view.0..view.2 { for x in view.1..view.3 {
             let at = ((y as u32 * frame.width + x as u32) * 4) as usize;
             frame.pixels[at..at + 4].copy_from_slice(&[255; 4]);
-        } }
+        } } }
         let windows = session.runner_mut().window_frame_snapshot();
         let controls = session.runner_mut().control_snapshot();
         let dialogs = session.runner_mut().dialog_snapshot();
@@ -6490,22 +6494,34 @@ mod desktop {
             Arc::new(gpui_kit::assets::Assets), platform::current_headless_renderer);
         visual.update(gpui_kit::init);
         let (sender, _receiver) = mpsc::channel();
+        let mut entity_view = None;
         let window = visual.open_window(size(px(frame.width as f32 * scale), px(frame.height as f32 * scale)), |_, cx| {
-            cx.new(|cx| {
+            let entity = cx.new(|cx| {
                 let mut demo = Demo::new(sender, Default::default(), cx);
                 demo.width = frame.width; demo.height = frame.height;
                 demo.menu_presented = session.runner().guest_menu_bar_presented();
                 demo.menu_height = session.runner().bus().read_word(MBAR_HEIGHT);
                 demo.menus = session.runner_mut().guest_menu_snapshot();
                 demo.windows = windows; demo.controls = controls; demo.dialogs = dialogs;
-                demo.text_edits = vec![record]; demo.styled_text_plans = vec![Some(plan)];
+                demo.text_edits = vec![record]; demo.styled_text_plans = vec![if fallback { None } else { Some(plan) }];
                 demo.image = Some(Arc::new(RenderImage::new(vec![image::Frame::new(
                     image::RgbaImage::from_raw(frame.width, frame.height, gpui_pixels(frame.pixels)).unwrap())])));
                 demo
-            })
+            });
+            entity_view = Some(entity.clone()); entity
         }).unwrap();
         visual.run_until_parked();
-        visual.capture_screenshot(window.into()).unwrap().save(output).unwrap();
+        let composed = visual.capture_screenshot(window.into()).unwrap();
+        composed.save(output).unwrap();
+        if fallback {
+            visual.update_window(window.into(), |_, _, cx| entity_view.as_ref().unwrap().update(cx, |demo, cx| {
+                demo.text_edits.clear(); demo.styled_text_plans.clear(); cx.notify();
+            })).unwrap();
+            visual.run_until_parked();
+            let baseline = visual.capture_screenshot(window.into()).unwrap();
+            baseline.save(output.with_extension("baseline.png")).unwrap();
+            assert_eq!(composed, baseline, "transparent fallback must preserve complete composed pixels");
+        }
         std::fs::write(output.with_extension("json"), serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
         eprintln!("saved GPUI plain face capture to {}", output.display());
     }
@@ -7615,7 +7631,7 @@ mod desktop {
         if let Some(output) = args.capture_plain_text_edit_ink.as_ref() {
             capture_plain_text_edit_ink(&args.game, output, args.prefer_powerpc, args.screen_depth,
                 args.capture_scale.unwrap_or(1.), args.capture_plain_text_edit_face,
-                args.capture_plain_text_edit_inactive);
+                args.capture_plain_text_edit_inactive, args.capture_plain_text_edit_fallback);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -8442,6 +8458,7 @@ mod desktop {
                         capture_plain_text_edit_ink: None,
                         capture_plain_text_edit_face: 1,
                         capture_plain_text_edit_inactive: false,
+                        capture_plain_text_edit_fallback: false,
                         capture_styled_text_edit_multiline: None,
                         capture_styled_scroll: false,
                         capture_styled_navigation: false,
