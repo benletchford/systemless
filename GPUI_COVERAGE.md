@@ -1,5 +1,24 @@
 # GPUI Kit system-interface coverage
 
+### EV worker interval attribution (2026-10-12)
+
+Opt-in worker profiling now pairs each reporting window's longest start-to-start
+interval with the preceding cycle's seven measured phases, retaining that cycle
+across reporting boundaries. It reports measured work and the remaining time
+separately. The remainder includes intended sleep, timer/scheduler delay and
+profiler overhead; phase elapsed times include preemption. No CPU utilization
+or native-presentation claim follows from these values.
+
+The default optimized example builds and original EV completes14 actions and
+2900 consumed publications with zero readiness delays in52.67s. All26 profile
+windows have seven preceding phases; their sums and interval decomposition were
+verified. The longest interval is37.540ms, with2.423ms measured preceding work
+and35.117ms outside it. The complete flight scene/HUD/instructions were inspected.
+The ignored `target/gpui-qualification/escape-velocity/interval-attribution-flight-review.json`
+retains the exact producer and artifact hashes. This narrows the pacing
+investigation; it does not establish a scheduler cause or fix visible stutter,
+audio continuity, native input or release readiness.
+
 ### Current optimized EV flight check (2026-10-12, cd170d7d)
 
 The current default optimized CI capture executable builds in57.32s with one

@@ -29,6 +29,8 @@ pub(crate) struct WorkerProfiler {
     samples: Vec<Vec<f64>>,
     previous_cycle: Option<Instant>,
     cycle_intervals_ms: Vec<f64>,
+    previous_phases: Vec<f64>,
+    longest_interval: Option<(f64, Vec<f64>)>,
 }
 impl WorkerProfiler {
     pub fn from_env() -> Self {
@@ -37,6 +39,8 @@ impl WorkerProfiler {
             samples: Vec::new(),
             previous_cycle: None,
             cycle_intervals_ms: Vec::new(),
+            previous_phases: Vec::new(),
+            longest_interval: None,
         }
     }
     pub fn enabled(&self) -> bool {
@@ -49,6 +53,11 @@ impl WorkerProfiler {
                 .replace(now)
                 .map(|previous| now.duration_since(previous).as_secs_f64() * 1000.)
         });
+        if let Some(interval) = cycle_interval_ms {
+            if self.longest_interval.as_ref().is_none_or(|(longest, _)| interval > *longest) {
+                self.longest_interval = Some((interval, self.previous_phases.clone()));
+            }
+        }
         FrameTiming {
             previous: now,
             values: Vec::new(),
@@ -60,6 +69,7 @@ impl WorkerProfiler {
             return;
         }
         assert_eq!(timing.values.len(), STAGES.len());
+        self.previous_phases.clone_from(&timing.values);
         self.samples.push(timing.values);
         if let Some(interval) = timing.cycle_interval_ms {
             self.cycle_intervals_ms.push(interval);
@@ -83,13 +93,25 @@ impl WorkerProfiler {
             "p95_ms": intervals[intervals.len() * 95 / 100],
             "max_ms": intervals[intervals.len() - 1],
         });
+        // An interval ends at this cycle's start, so its work belongs to the
+        // preceding cycle, including across the 120-sample reporting boundary.
+        let longest = self.longest_interval.as_ref().map(|(interval, phases)| {
+            let work_ms = phases.iter().sum::<f64>();
+            serde_json::json!({ "interval_ms": interval, "preceding_work_ms": work_ms,
+                "outside_measured_work_ms": (interval - work_ms).max(0.),
+                "preceding_phases": STAGES.iter().zip(phases).map(|(name, value)|
+                    serde_json::json!({ "phase": name, "elapsed_ms": value })).collect::<Vec<_>>(),
+                "scope": "Outside work includes intended sleep, timer/scheduler delay and profiler overhead; phase elapsed time includes preemption. Not CPU utilization or native presentation." })
+        });
         eprintln!(
             "[GPUI-PROFILE] {}",
             serde_json::json!({ "worker_cycles": self.samples.len(), "phases": phases,
                 "worker_cycle_intervals": cadence,
+                "longest_interval_attribution": longest,
                 "scope": "phases measure worker work only; cycle intervals include sleep and scheduling; neither measures native frame presentation" })
         );
         self.samples.clear();
         self.cycle_intervals_ms.clear();
+        self.longest_interval = None;
     }
 }
