@@ -974,3 +974,33 @@ fn mathlib_acos_returns_nan_outside_the_domain_in_main_and_hot_paths() {
         ppc_import_extra_cycles_for_target(&PpcImportDispatcherTarget::MathAsin)
     );
 }
+
+
+#[test]
+fn carbon_and_mathlib_sine_imports_return_known_angles_in_fpr1() {
+    for library in [b"CarbonLib".as_slice(), b"MathLib".as_slice()] {
+        let mut loaded =
+            load_pef_application(&synthetic_pef_with_library_import(library, b"sin")).unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::MathSin
+        );
+        for (angle, expected) in [
+            (0.0f64, 0.0f64),
+            (-0.0, -0.0),
+            (std::f64::consts::FRAC_PI_2, 1.0),
+            (-std::f64::consts::FRAC_PI_2, -1.0),
+        ] {
+            loaded.cpu.fpr[1] = angle.to_bits();
+            loaded.cpu.fpr[2] = 0x0123456789abcdef;
+            loaded.cpu.gpr[3] = 0x12345678;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::MathSin);
+            assert_eq!(loaded.cpu.fpr[1], expected.to_bits());
+            assert_eq!(loaded.cpu.fpr[2], 0x0123456789abcdef);
+            assert_eq!(loaded.cpu.gpr[3], 0x12345678);
+        }
+        loaded.cpu.fpr[1] = f64::NAN.to_bits();
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MathSin);
+        assert!(f64::from_bits(loaded.cpu.fpr[1]).is_nan());
+    }
+}
