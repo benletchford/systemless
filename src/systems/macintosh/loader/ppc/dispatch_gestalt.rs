@@ -63,10 +63,10 @@ fn ppc_gestalt(
     let dynamic_value = toolbox_startup.gestalt_values.get(&selector).copied();
     let mut query_eval = evaluate_gestalt_query(params.selector, &eval_context, dynamic_value);
     if selector == u32::from_be_bytes(*b"drag") {
-        // Gestalt.h: basic Drag Manager and native DragLib are implemented here.
-        // Image dragging and floating-window extensions remain unadvertised.
+        // Gestalt.h: basic Drag Manager, native DragLib and image feedback.
+        // Floating-window extensions and image-update capability remain unadvertised.
         // The classic 68K DragDispatch adapter still reports the manager absent.
-        query_eval.response = (1 << 0) | (1 << 2);
+        query_eval.response = (1 << 0) | (1 << 2) | (1 << 3);
     }
 
     if memory

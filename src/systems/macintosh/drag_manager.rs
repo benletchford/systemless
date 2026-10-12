@@ -156,8 +156,17 @@ pub(crate) struct DragItem {
     pub(crate) flavors: Vec<DragFlavor>,
 }
 
+/// Owned RGB snapshot of a drag image; guest handles may be disposed after setup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DragImage {
+    pub(crate) offset: (i16, i16),
+    pub(crate) flags: u32,
+    pub(crate) pixels: Vec<(i16, i16, [u16; 3])>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DragRecord {
+    pub(crate) image: Option<DragImage>,
     pub(crate) items: Vec<DragItem>,
     pub(crate) attributes: u32,
     pub(crate) origin: (i16, i16),

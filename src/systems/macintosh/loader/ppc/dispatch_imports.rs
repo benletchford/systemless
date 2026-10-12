@@ -1099,6 +1099,12 @@ pub(crate) fn dispatch_supported_import(
             crate::drag_manager::MouseMoveWaitResult::Waiting => PpcImportAction::Yield(u64::MAX),
         });
     }
+    if binding.dispatcher_target == PpcImportDispatcherTarget::Drag(PpcDragOperation::SetImage) {
+        let result = dispatch_drag::set_drag_image(cpu, memory, drag_manager, gworlds, screen_clut);
+        return Some(PpcImportAction::Return(ppc_i16_result(
+            result.err().unwrap_or(0),
+        )));
+    }
     if binding.dispatcher_target == PpcImportDispatcherTarget::Drag(PpcDragOperation::Track) {
         return Some(dispatch_drag::track_drag(cpu, memory, drag_manager, drag_tracking_stack,
             gworlds, window_list, input, event_queue, screen_clut));

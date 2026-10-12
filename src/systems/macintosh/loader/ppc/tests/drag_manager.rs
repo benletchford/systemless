@@ -428,3 +428,230 @@ fn retained_drag_invokes_native_tracking_and_receive_handlers() {
     assert_eq!(loaded.memory.read_u32_be(receive_output), Some(reference));
     assert_eq!(loaded.memory.read_u32_be(tracking_output), Some(5));
 }
+
+#[test]
+fn retained_drag_image_owns_masked_pixels_blends_moves_and_restores_background() {
+    for (flags, component) in [(0u32, 42597u16), (1, 32767), (2, 16383), (3, 0)] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"DragLib",
+            b"SetDragImage",
+        ))
+        .unwrap();
+        assert_eq!(
+            loaded.imports[0].dispatcher_target,
+            PpcImportDispatcherTarget::Drag(PpcDragOperation::SetImage)
+        );
+        let base = PPC_DATA_BASE + 0x2000;
+        loaded.memory.add_region(base, vec![0; 256]);
+        loaded.memory.write_u32_be(base, base + 32).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, base + 32, base + 96, 8, 0, 0, 1, 2, 32).unwrap();
+        loaded.memory.write_u32_be(base + 96, 0x00ff0000).unwrap();
+        loaded.memory.write_u32_be(base + 100, 0x000000ff).unwrap();
+        loaded.memory.write_u32_be(base + 160, base + 168).unwrap();
+        loaded.memory.write_u16_be(base + 168, 10).unwrap();
+        ppc_write_rect(&mut loaded.memory, base + 170, 0, 0, 1, 1).unwrap();
+        let reference = loaded
+            .drag_manager
+            .with_mut(|manager| manager.new_drag().unwrap());
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[4] = base;
+        loaded.cpu.gpr[5] = base + 160;
+        loaded.cpu.gpr[6] = (100 << 16) | 100;
+        loaded.cpu.gpr[7] = flags;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::Drag(PpcDragOperation::SetImage),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let snapshot = loaded
+            .drag_manager
+            .with_ref(|manager| manager.get(reference).unwrap().image.clone().unwrap());
+        assert_eq!(snapshot.pixels, vec![(0, 0, [0xffff, 0, 0])]);
+        // Overwrite both guest inputs: feedback must own the original pixels/mask.
+        loaded.memory.write_u32_be(base + 96, 0).unwrap();
+        ppc_write_rect(&mut loaded.memory, base + 170, 0, 0, 0, 0).unwrap();
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[7] = 0x80;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::Drag(PpcDragOperation::SetImage),
+        );
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(
+            loaded
+                .drag_manager
+                .with_ref(|manager| manager.get(reference).unwrap().image.clone()),
+            Some(snapshot)
+        );
+        let clut = loaded.screen_clut.with_ref(|clut| *clut);
+        let front =
+            ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let white = ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &clut).unwrap();
+        for (x, y) in [(100, 100), (101, 100), (120, 110), (121, 110)] {
+            ppc_quickdraw_write_raw_pixel(&mut loaded.memory, front, (x, y), white);
+        }
+        let expected = ppc_physical_screen_color_pixel(
+            front,
+            PpcRgbColor {
+                red: 0xffff,
+                green: component,
+                blue: component,
+            },
+            &clut,
+        )
+        .unwrap();
+        let event = base + 192;
+        loaded.memory.write_u16_be(event + 10, 100).unwrap();
+        loaded.memory.write_u16_be(event + 12, 100).unwrap();
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[4] = event;
+        loaded.cpu.gpr[5] = 0;
+        let mut input = PpcInputSnapshot {
+            mouse_v: 100,
+            mouse_h: 100,
+            mouse_button: true,
+            ..Default::default()
+        };
+        let mut events = crate::event_queue::EventQueue::default();
+        assert!(matches!(
+            dispatch_drag::track_drag(
+                &mut loaded.cpu,
+                &mut loaded.memory,
+                &loaded.drag_manager,
+                &mut loaded.drag_tracking_stack,
+                &loaded.gworlds,
+                &loaded.window_list,
+                input,
+                &mut events,
+                &clut
+            ),
+            PpcImportAction::Yield(_)
+        ));
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (100, 100)),
+            Some(expected)
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (101, 100)),
+            Some(white)
+        );
+        input.mouse_v = 110;
+        input.mouse_h = 120;
+        assert!(matches!(
+            dispatch_drag::track_drag(
+                &mut loaded.cpu,
+                &mut loaded.memory,
+                &loaded.drag_manager,
+                &mut loaded.drag_tracking_stack,
+                &loaded.gworlds,
+                &loaded.window_list,
+                input,
+                &mut events,
+                &clut
+            ),
+            PpcImportAction::Yield(_)
+        ));
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (100, 100)),
+            Some(white)
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (120, 110)),
+            Some(expected)
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (121, 110)),
+            Some(white)
+        );
+        input.mouse_button = false;
+        assert!(
+            matches!(dispatch_drag::track_drag(&mut loaded.cpu, &mut loaded.memory,
+            &loaded.drag_manager, &mut loaded.drag_tracking_stack, &loaded.gworlds,
+            &loaded.window_list, input, &mut events, &clut), PpcImportAction::Return(value) if value == ppc_i16_result(-128))
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (120, 110)),
+            Some(white)
+        );
+        assert!(loaded.drag_tracking_stack.is_empty());
+        loaded
+            .drag_manager
+            .with_mut(|manager| manager.dispose(reference))
+            .unwrap();
+        assert!(loaded
+            .drag_manager
+            .with_ref(|manager| manager.get(reference).is_err()));
+    }
+}
+
+#[test]
+fn native_drag_image_preserves_custom_palettes_at_all_indexed_depths() {
+    for depth in [1, 2, 4, 8] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"DragLib",
+            b"SetDragImage",
+        ))
+        .unwrap();
+        let base = PPC_DATA_BASE + 0x2400;
+        loaded.memory.add_region(base, vec![0; 256]);
+        loaded.memory.write_u32_be(base, base + 32).unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            base + 32,
+            base + 96,
+            if depth == 8 { 2 } else { 1 },
+            0,
+            0,
+            1,
+            2,
+            depth,
+        )
+        .unwrap();
+        loaded
+            .memory
+            .write_u32_be(base + 32 + 42, base + 16)
+            .unwrap();
+        loaded.memory.write_u32_be(base + 16, base + 128).unwrap();
+        loaded.memory.write_u16_be(base + 134, 1).unwrap();
+        loaded.memory.write_u16_be(base + 138, 0xffff).unwrap(); // index 0: red
+        loaded.memory.write_u16_be(base + 144, 1).unwrap();
+        loaded.memory.write_u16_be(base + 150, 0xffff).unwrap(); // index 1: blue
+        if depth == 8 {
+            loaded.memory.write_u8(base + 97, 1).unwrap();
+        } else {
+            loaded
+                .memory
+                .write_u8(base + 96, 1 << (8 - depth * 2))
+                .unwrap();
+        }
+        let reference = loaded
+            .drag_manager
+            .with_mut(|manager| manager.new_drag().unwrap());
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[4] = base;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = 3;
+        run_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::Drag(PpcDragOperation::SetImage),
+        );
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        let pixels = loaded.drag_manager.with_ref(|manager| {
+            manager
+                .get(reference)
+                .unwrap()
+                .image
+                .as_ref()
+                .unwrap()
+                .pixels
+                .clone()
+        });
+        assert_eq!(
+            pixels,
+            vec![(0, 0, [0xffff, 0, 0]), (0, 1, [0, 0, 0xffff])],
+            "depth {depth}"
+        );
+    }
+}

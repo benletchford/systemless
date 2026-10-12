@@ -1404,6 +1404,7 @@ pub(crate) fn dispatcher_target_for_import(
         ("DragLib" | "InterfaceLib", "RemoveReceiveHandler") => PpcImportDispatcherTarget::Drag(PpcDragOperation::RemoveReceiveHandler),
         ("DragLib" | "InterfaceLib", "GetDragAttributes") => PpcImportDispatcherTarget::Drag(PpcDragOperation::GetAttributes),
         ("DragLib" | "InterfaceLib", "GetDragMouse") => PpcImportDispatcherTarget::Drag(PpcDragOperation::GetMouse),
+        ("DragLib" | "InterfaceLib", "SetDragImage") => PpcImportDispatcherTarget::Drag(PpcDragOperation::SetImage),
         ("DragLib" | "InterfaceLib", "TrackDrag") => PpcImportDispatcherTarget::Drag(PpcDragOperation::Track),
         ("DragLib" | "InterfaceLib", "WaitMouseMoved") => PpcImportDispatcherTarget::Drag(PpcDragOperation::WaitMouseMoved),
         ("DragLib" | "InterfaceLib", "GetDropLocation") => PpcImportDispatcherTarget::Drag(PpcDragOperation::GetDropLocation),

@@ -7,6 +7,7 @@ use crate::drag_manager::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PpcDragOperation {
     Track,
+    SetImage,
     ShowHilite,
     HideHilite,
     WaitMouseMoved,
@@ -42,6 +43,7 @@ pub(super) fn dispatch_drag_import(
     let result: Result<(), i16> = (|| {
         match operation {
             PpcDragOperation::Track
+            | PpcDragOperation::SetImage
             | PpcDragOperation::WaitMouseMoved
             | PpcDragOperation::ShowHilite
             | PpcDragOperation::HideHilite => {
@@ -286,6 +288,8 @@ pub(crate) struct PpcDragTrackingState {
     pub(crate) snapshot_pending: bool,
     pub(crate) result: i16,
     outline: Option<PpcDragOutline>,
+    image_feedback: Option<PpcDragImageFeedback>,
+    image_origin: (i16, i16),
 }
 
 #[derive(Clone, Debug)]
@@ -419,9 +423,7 @@ fn finish_drag(
     error: i16,
 ) -> PpcImportAction {
     let mut state = stack.pop().unwrap();
-    if let Some(outline) = state.outline.as_mut() {
-        erase_drag_outline(memory, outline);
-    }
+    erase_drag_feedback(memory, &mut state);
     cpu.lr = state.final_pc;
     cpu.gpr[2] = state.restore_rtoc;
     PpcImportAction::Return(ppc_i16_result(error))
@@ -496,11 +498,11 @@ pub(super) fn track_drag(
             snapshot_pending: false,
             result: -128,
             outline,
+            image_feedback: None,
+            image_origin: origin,
         });
     }
-    if let Some(outline) = stack.last_mut().unwrap().outline.as_mut() {
-        erase_drag_outline(memory, outline);
-    }
+    erase_drag_feedback(memory, stack.last_mut().unwrap());
     let reference = stack.last().unwrap().reference;
     if let Err(error) = manager.with_ref(|state| state.get(reference).map(|_| ())) {
         return finish_drag(memory, cpu, stack, error);
@@ -565,7 +567,23 @@ pub(super) fn track_drag(
             }
             PpcDragPhase::Tracking if state.snapshot_pending => {
                 state.snapshot_pending = false;
-                refresh_drag_outline(memory, state, (input.mouse_v, input.mouse_h), clut);
+                let image = manager.with_ref(|manager| {
+                    manager
+                        .get(reference)
+                        .ok()
+                        .and_then(|record| record.image.clone())
+                });
+                if image.as_ref().is_none_or(|image| image.flags & 0x10 != 0) {
+                    refresh_drag_outline(memory, state, (input.mouse_v, input.mouse_h), clut);
+                }
+                refresh_drag_image(
+                    memory,
+                    gworlds,
+                    state,
+                    image.as_ref(),
+                    (input.mouse_v, input.mouse_h),
+                    clut,
+                );
                 return PpcImportAction::Yield(u64::MAX);
             }
             PpcDragPhase::Tracking => {}
@@ -733,4 +751,149 @@ pub(super) fn show_drag_hilite(
         pixels,
     });
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct PpcDragImageFeedback {
+    bits: PpcPixMapBits,
+    saved_pixels: Vec<(i32, i32, u32)>,
+}
+
+fn erase_drag_feedback(memory: &mut PpcSectionMem, state: &mut PpcDragTrackingState) {
+    if let Some(feedback) = state.image_feedback.take() {
+        for (x, y, pixel) in feedback.saved_pixels {
+            let _ = ppc_write_pixmap_raw_pixel(memory, feedback.bits, x, y, pixel);
+        }
+    }
+    if let Some(outline) = state.outline.as_mut() {
+        erase_drag_outline(memory, outline);
+    }
+}
+
+pub(super) fn set_drag_image(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    manager: &SharedProcessDragManager,
+    gworlds: &[PpcGWorldRecord],
+    clut: &[[u16; 3]; 256],
+) -> Result<(), i16> {
+    let reference = cpu.gpr[3];
+    manager.with_ref(|manager| manager.get(reference).map(|_| ()))?;
+    let flags = cpu.gpr[7];
+    if flags & !0x33 != 0 {
+        return Err(PPC_PARAM_ERR);
+    }
+    let pixmap = memory
+        .read_u32_be(cpu.gpr[4])
+        .filter(|pointer| *pointer != 0)
+        .ok_or(PPC_PARAM_ERR)?;
+    let bits = ppc_resolve_pixmap_bits(memory, gworlds, pixmap).ok_or(PPC_PARAM_ERR)?;
+    if !matches!(bits.depth, 1 | 2 | 4 | 8 | 16 | 32) {
+        return Err(PPC_PARAM_ERR);
+    }
+    let mask = if cpu.gpr[5] == 0 {
+        None
+    } else {
+        Some(ppc_region_storage(memory, cpu.gpr[5]).ok_or(PPC_PARAM_ERR)?)
+    };
+    let source_table = ppc_resolve_pixmap_ctable_handle_with_provenance(memory, gworlds, pixmap)
+        .handle
+        .unwrap_or(0);
+    let source_clut = if ppc_indexed_depth_entry_count(bits.depth).is_some() {
+        Some(ppc_copy_bits_clut(memory, source_table, clut))
+    } else {
+        None
+    };
+    let mut pixels = Vec::new();
+    for y in bits.top..bits.bottom {
+        for x in bits.left..bits.right {
+            if mask
+                .as_ref()
+                .is_some_and(|mask| !ppc_point_in_region_storage(mask, y, x))
+            {
+                continue;
+            }
+            let raw = ppc_read_pixmap_raw_pixel(memory, bits, i32::from(x), i32::from(y))
+                .ok_or(PPC_PARAM_ERR)?;
+            let color = if bits.depth == 1 && source_table != 0 {
+                source_clut
+                    .as_ref()
+                    .and_then(|clut| clut.get(raw as usize))
+                    .copied()
+            } else {
+                ppc_pixmap_pixel_rgb(bits, raw, source_clut.as_ref())
+            }
+            .ok_or(PPC_PARAM_ERR)?;
+            pixels.try_reserve(1).map_err(|_| PPC_MEM_FULL_ERR)?;
+            pixels.push((y, x, color));
+        }
+    }
+    let image = crate::drag_manager::DragImage {
+        offset: ((cpu.gpr[6] >> 16) as u16 as i16, cpu.gpr[6] as u16 as i16),
+        flags,
+        pixels,
+    };
+    manager.with_mut(|manager| {
+        manager.get_mut(reference)?.image = Some(image);
+        Ok(())
+    })
+}
+
+fn refresh_drag_image(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    state: &mut PpcDragTrackingState,
+    image: Option<&crate::drag_manager::DragImage>,
+    point: (i16, i16),
+    clut: &[[u16; 3]; 256],
+) {
+    let Some(image) = image else {
+        return;
+    };
+    let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) else {
+        return;
+    };
+    let bits = PpcPixMapBits {
+        base_addr: front.base_addr,
+        row_bytes: front.row_bytes,
+        top: 0,
+        left: 0,
+        bottom: front.height.min(i16::MAX as u32) as i16,
+        right: front.width.min(i16::MAX as u32) as i16,
+        width: front.width,
+        height: front.height,
+        depth: front.depth,
+    };
+    let origin = state.image_origin;
+    let dv = i32::from(point.0) - i32::from(origin.0) + i32::from(image.offset.0);
+    let dh = i32::from(point.1) - i32::from(origin.1) + i32::from(image.offset.1);
+    let opacity = [35u32, 50, 75, 100][(image.flags & 3) as usize];
+    let mut feedback = PpcDragImageFeedback {
+        bits,
+        saved_pixels: Vec::new(),
+    };
+    for &(y, x, source) in &image.pixels {
+        let y = i32::from(y) + dv;
+        let x = i32::from(x) + dh;
+        if x < 0 || y < 0 || x >= i32::from(bits.right) || y >= i32::from(bits.bottom) {
+            continue;
+        }
+        let Some(raw) = ppc_read_pixmap_raw_pixel(memory, bits, x, y) else {
+            continue;
+        };
+        let Some(back) = ppc_pixmap_pixel_rgb(bits, raw, Some(clut)) else {
+            continue;
+        };
+        let color = std::array::from_fn(|channel| {
+            ((u32::from(source[channel]) * opacity + u32::from(back[channel]) * (100 - opacity))
+                / 100) as u16
+        });
+        let Some(pixel) = ppc_rgb_to_pixmap_pixel(bits, color, Some(clut)) else {
+            continue;
+        };
+        if ppc_write_pixmap_raw_pixel(memory, bits, x, y, pixel).is_some() {
+            feedback.saved_pixels.push((x, y, raw));
+        }
+    }
+    state.image_feedback = Some(feedback);
 }
