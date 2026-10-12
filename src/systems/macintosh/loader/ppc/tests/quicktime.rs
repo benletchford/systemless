@@ -4268,3 +4268,214 @@ fn quicktime_carbon_movie_rewind_uses_existing_movie_state_and_void_return() {
         assert!(!loaded.quicktime.movie_started);
     }
 }
+
+#[test]
+fn quicktime_callback_lifecycle_delivers_guest_arguments_and_honours_cancel_dispose() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"Apple;Carbon;Multimedia", b"NewCallBack",
+    )).unwrap();
+    let operation = |op| PpcImportDispatcherTarget::QuickTimeCompatibility(op);
+    use PpcQuickTimeCompatibilityOperation as Op;
+    let code = PPC_CODE_BASE + 0x4000;
+    let vector = PPC_DATA_BASE + 0x1000;
+    let observed = PPC_DATA_BASE + 0x1200;
+    loaded.memory.add_region(code, [0x90620000u32, 0x90820004, 0x4e800020]
+        .into_iter().flat_map(u32::to_be_bytes).collect());
+    loaded.memory.add_region(vector, [code, observed].into_iter().flat_map(u32::to_be_bytes).collect());
+    loaded.memory.add_region(observed, vec![0; 8]);
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE + 0x10;
+    loaded.cpu.gpr[4] = 1;
+    run_quicktime_callback_test_import(&mut loaded, operation(Op::NewCallBack));
+    let callback = loaded.cpu.gpr[3];
+    assert_ne!(callback, 0);
+    assert!(loaded.quicktime.callbacks.get(callback).is_some());
+    loaded.quicktime.movie_active = true;
+    loaded.quicktime.movie_started = true;
+    loaded.quicktime.movie_file_duration = 600;
+    loaded.quicktime.movie_time_scale = 600;
+    loaded.quicktime.movie_tasks_until_done = 6;
+    let arm = |loaded: &mut PpcLoadedApp| {
+        loaded.cpu.gpr[3] = callback;
+        loaded.cpu.gpr[4] = vector;
+        loaded.cpu.gpr[5] = 0xdeadbeef;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = 50;
+        loaded.cpu.gpr[8] = 600;
+        run_quicktime_callback_test_import(loaded, operation(Op::CallMeWhen));
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    };
+    arm(&mut loaded);
+    loaded.cpu.gpr[3] = callback;
+    run_quicktime_callback_test_import(&mut loaded, operation(Op::CancelCallBack));
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_quicktime_callback_test_import(&mut loaded, PpcImportDispatcherTarget::QtMoviesTask);
+    assert_eq!(loaded.memory.read_u32_be(observed), Some(0));
+    loaded.quicktime.movie_task_count = 0;
+    arm(&mut loaded);
+    let original_rtoc = loaded.cpu.gpr[2];
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_quicktime_callback_test_import(&mut loaded, PpcImportDispatcherTarget::QtMoviesTask);
+    assert_eq!(loaded.memory.read_u32_be(observed), Some(callback));
+    assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(0xdeadbeef));
+    assert_eq!(loaded.cpu.gpr[2], original_rtoc);
+    assert_eq!(loaded.cpu.gpr[3], 0);
+    loaded.memory.write_u32_be(observed, 0).unwrap();
+    loaded.quicktime.movie_task_count = 0;
+    arm(&mut loaded);
+    loaded.cpu.gpr[3] = callback;
+    run_quicktime_callback_test_import(&mut loaded, operation(Op::DisposeCallBack));
+    assert!(loaded.quicktime.callbacks.get(callback).is_none());
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_quicktime_callback_test_import(&mut loaded, PpcImportDispatcherTarget::QtMoviesTask);
+    assert_eq!(loaded.memory.read_u32_be(observed), Some(0));
+}
+
+fn run_quicktime_callback_test_import(loaded: &mut PpcLoadedApp, target: PpcImportDispatcherTarget) {
+    loaded.cpu.pc = loaded.entry_pc;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.imports[0].dispatcher_target = target;
+    let probe = loaded.run_with_hle_imports(512);
+    assert_eq!(probe.unsupported_import_index, None);
+    assert!(matches!(probe.result, PpcRunResult::Halted { pc: PPC_HALT_PC, .. }), "{probe:?}");
+    assert!(loaded.guest_calls().is_empty());
+    assert!(loaded.quicktime.callback_frames.is_empty());
+}
+
+#[test]
+fn quicktime_callback_end_delivers_all_due_events_and_disposal_callback() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"Apple;Carbon;Multimedia", b"NewCallBack",
+    )).unwrap();
+    use PpcQuickTimeCompatibilityOperation as Op;
+    let operation = |op| PpcImportDispatcherTarget::QuickTimeCompatibility(op);
+    let code = PPC_CODE_BASE + 0x4000;
+    let vector = PPC_DATA_BASE + 0x1000;
+    let observed = PPC_DATA_BASE + 0x1200;
+    loaded.memory.add_region(code, [0x80a20000u32, 0x38a50001, 0x90a20000, 0x90820004, 0x4e800020]
+        .into_iter().flat_map(u32::to_be_bytes).collect());
+    loaded.memory.add_region(vector, [code, observed].into_iter().flat_map(u32::to_be_bytes).collect());
+    loaded.memory.add_region(observed, vec![0; 8]);
+    for kind in [2, 4, 5] {
+        loaded.cpu.gpr[3] = PPC_QT_MOVIE + 0x10;
+        loaded.cpu.gpr[4] = kind;
+        run_quicktime_callback_test_import(&mut loaded, operation(Op::NewCallBack));
+        let reference = loaded.cpu.gpr[3];
+        assert_ne!(reference, 0);
+        loaded.cpu.gpr[3] = reference;
+        loaded.cpu.gpr[4] = vector;
+        loaded.cpu.gpr[5] = kind;
+        loaded.cpu.gpr[6] = if kind == 2 { 16 } else { 2 };
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = 0;
+        run_quicktime_callback_test_import(&mut loaded, operation(Op::CallMeWhen));
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+    loaded.quicktime.movie_active = true;
+    loaded.quicktime.movie_started = true;
+    loaded.quicktime.movie_file_duration = 600;
+    loaded.quicktime.movie_time_scale = 600;
+    loaded.quicktime.movie_tasks_until_done = 6;
+    loaded.quicktime.movie_task_count = 5;
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_quicktime_callback_test_import(&mut loaded, PpcImportDispatcherTarget::QtMoviesTask);
+    assert_eq!(loaded.memory.read_u32_be(observed), Some(2));
+    assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(4));
+    assert!(!loaded.quicktime.movie_disposed);
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_quicktime_callback_test_import(&mut loaded, PpcImportDispatcherTarget::QtDisposeMovie);
+    assert_eq!(loaded.memory.read_u32_be(observed), Some(3));
+    assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(5));
+    assert!(loaded.quicktime.movie_disposed);
+    loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+    run_quicktime_callback_test_import(&mut loaded, PpcImportDispatcherTarget::QtDisposeMovie);
+    assert_eq!(loaded.memory.read_u32_be(observed), Some(3));
+}
+
+
+#[test]
+fn quicktime_controller_idle_delivers_due_guest_callback_once() {
+    use PpcQuickTimeCompatibilityOperation as Op;
+    for operation in [Op::MCIdle, Op::MCDoAction] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"Apple;Carbon;Multimedia",
+            b"NewCallBack",
+        ))
+        .unwrap();
+        let code = PPC_CODE_BASE + 0x4000;
+        let vector = PPC_DATA_BASE + 0x1000;
+        let observed = PPC_DATA_BASE + 0x1200;
+        loaded.memory.add_region(
+            code,
+            [
+                0x80a20000u32,
+                0x38a50001,
+                0x90a20000,
+                0x90620004,
+                0x90820008,
+                0x4e800020,
+            ]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+        );
+        loaded.memory.add_region(
+            vector,
+            [code, observed]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        loaded.memory.add_region(observed, vec![0; 12]);
+        loaded.cpu.gpr[3] = PPC_QT_MOVIE + 0x10;
+        loaded.cpu.gpr[4] = 1;
+        run_quicktime_callback_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::QuickTimeCompatibility(Op::NewCallBack),
+        );
+        let callback = loaded.cpu.gpr[3];
+        assert_ne!(callback, 0);
+        loaded.cpu.gpr[3] = callback;
+        loaded.cpu.gpr[4] = vector;
+        loaded.cpu.gpr[5] = 0xdeadbeef;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = 50;
+        loaded.cpu.gpr[8] = 600;
+        run_quicktime_callback_test_import(
+            &mut loaded,
+            PpcImportDispatcherTarget::QuickTimeCompatibility(Op::CallMeWhen),
+        );
+        loaded.quicktime.movie_active = true;
+        loaded.quicktime.movie_started = true;
+        loaded.quicktime.movie_file_duration = 600;
+        loaded.quicktime.movie_time_scale = 600;
+        loaded.quicktime.movie_tasks_until_done = 6;
+        let controller = 0x5000;
+        loaded
+            .quicktime
+            .movie_controllers
+            .push(PpcQuickTimeControllerRecord {
+                handle: controller,
+                movie: PPC_QT_MOVIE,
+                rect: (0, 0, 100, 100),
+                flags: 0,
+                window: 0,
+                origin: 0,
+                action_filter: 0,
+                action_ref_con: 0,
+            });
+        let rtoc = loaded.cpu.gpr[2];
+        for _ in 0..2 {
+            loaded.cpu.gpr[3] = controller;
+            loaded.cpu.gpr[4] = 1;
+            run_quicktime_callback_test_import(
+                &mut loaded,
+                PpcImportDispatcherTarget::QuickTimeCompatibility(operation),
+            );
+            assert_eq!(loaded.cpu.gpr[2], rtoc);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+        }
+        assert_eq!(loaded.memory.read_u32_be(observed), Some(1));
+        assert_eq!(loaded.memory.read_u32_be(observed + 4), Some(callback));
+        assert_eq!(loaded.memory.read_u32_be(observed + 8), Some(0xdeadbeef));
+    }
+}

@@ -4167,3 +4167,47 @@ fn display_mode_iterator_upp_constructs_calls_and_disposes_native_callback() {
     assert!(!loaded.toolbox_startup.system_allocations.release(upp));
     assert_eq!(loaded.memory.read_u32_be(vector), Some(callback));
 }
+
+#[test]
+fn quicktime_callback_upp_preserves_native_vector_and_disposes_owned_descriptor() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+        b"Apple;Carbon;Multimedia",
+        b"NewQTCallBackUPP",
+    ))
+    .unwrap();
+    assert_eq!(
+        loaded.imports[0].dispatcher_target,
+        PpcImportDispatcherTarget::NewQTCallBackUPP
+    );
+    let vector = PPC_DATA_BASE + 0x1000;
+    let callback = PPC_CODE_BASE + 0x4000;
+    loaded.memory.add_region(
+        vector,
+        [callback, PPC_DATA_BASE]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+    );
+    loaded.cpu.gpr[3] = vector;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewQTCallBackUPP);
+    let upp = loaded.cpu.gpr[3];
+    assert_ne!(upp, 0);
+    assert_ne!(upp, vector);
+    assert_eq!(
+        loaded
+            .memory
+            .read_u32_be(upp + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE),
+        Some(dispatch_mixed_mode::PPC_QT_CALLBACK_PROC_INFO)
+    );
+    let target = ppc_resolve_callback_target(&mut loaded.memory, upp, 0, None).unwrap();
+    assert_eq!(target.entry, callback);
+    assert_eq!(target.rtoc, PPC_DATA_BASE);
+    loaded.cpu.gpr[3] = upp;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeQTCallBackUPP);
+    assert!(!loaded.toolbox_startup.system_allocations.release(upp));
+    assert_eq!(loaded.memory.read_u32_be(vector), Some(callback));
+    assert_eq!(
+        dispatcher_target_for_import("Apple;Carbon;Multimedia", "UnsupportedCallbackFunction"),
+        PpcImportDispatcherTarget::Unsupported
+    );
+}

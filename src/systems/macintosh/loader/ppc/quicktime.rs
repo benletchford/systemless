@@ -1,5 +1,7 @@
 //! QuickTime and Movie Media state and tracking records.
 
+pub(crate) mod callbacks;
+
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -38,6 +40,12 @@ pub fn ppc_main_screen_height() -> u32 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcQuickTimeCompatibilityOperation {
+    NewCallBack,
+    DisposeCallBack,
+    CancelCallBack,
+    CallMeWhen,
+    GetCallBackType,
+    GetCallBackTimeBase,
     GetMovieActive,
     GetMovieTimeBase,
     GetMovieTimeScale,
@@ -179,6 +187,8 @@ pub struct PpcQuickTimeControllerRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcQuickTimeState {
+    pub(crate) callbacks: callbacks::Callbacks,
+    pub(crate) callback_frames: Vec<callbacks::DeliveryFrame>,
     pub movie_toolbox_enter_count: u32,
     pub movie_toolbox_exit_count: u32,
     pub movie_toolbox_init_depth: u32,
@@ -240,6 +250,8 @@ pub struct PpcQuickTimeState {
 impl Default for PpcQuickTimeState {
     fn default() -> Self {
         Self {
+            callbacks: callbacks::Callbacks::default(),
+            callback_frames: Vec::new(),
             movie_toolbox_enter_count: 0,
             movie_toolbox_exit_count: 0,
             movie_toolbox_init_depth: 0,
@@ -353,6 +365,59 @@ pub(super) fn dispatch_quicktime_compatibility(
 ) -> PpcImportAction {
     const PPC_QT_TIME_BASE: u32 = PPC_QT_MOVIE + 0x10;
     match operation {
+        PpcQuickTimeCompatibilityOperation::NewCallBack => {
+            let time_base = cpu.gpr[3];
+            let kind = cpu.gpr[4] as u16;
+            if time_base != PPC_QT_TIME_BASE || quicktime.movie_disposed
+                || !(1..=5).contains(&(kind & 0x3fff)) {
+                ppc_qt_record_error(quicktime, PPC_PARAM_ERR);
+                return PpcImportAction::Return(0);
+            }
+            // QTCallBack is opaque. Keep its token in an owned native allocation.
+            let address = process_memory_manager.new_native_ptr(memory, 4, true);
+            super::ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+            if address == 0 {
+                ppc_qt_record_error(quicktime, PPC_MEM_FULL_ERR);
+                return PpcImportAction::Return(0);
+            }
+            assert!(quicktime.callbacks.create(address, time_base, kind));
+            ppc_qt_record_error(quicktime, PPC_NO_ERR);
+            PpcImportAction::Return(address)
+        }
+        PpcQuickTimeCompatibilityOperation::DisposeCallBack => {
+            if quicktime.callbacks.dispose(cpu.gpr[3]) {
+                process_memory_manager.dispose_native_ptr(cpu.gpr[3]);
+                super::ppc_apply_process_native_allocator(process_memory_manager, memory, heap_cursor, last_mem_error);
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickTimeCompatibilityOperation::CancelCallBack => {
+            quicktime.callbacks.cancel(cpu.gpr[3]);
+            PpcImportAction::ReturnPreserve
+        }
+        PpcQuickTimeCompatibilityOperation::CallMeWhen => {
+            let Some(record) = quicktime.callbacks.get(cpu.gpr[3]) else {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            };
+            if record.kind & 0x3fff == 1 && (cpu.gpr[8] as i32 <= 0 || !(1..=3).contains(&cpu.gpr[6])) {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            }
+            if super::ppc_resolve_callback_target(memory, cpu.gpr[4], cpu.gpr[2], None).is_none() {
+                return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+            }
+            let registration = callbacks::Registration {
+                procedure: cpu.gpr[4], rtoc: cpu.gpr[2], refcon: cpu.gpr[5],
+                parameters: [cpu.gpr[6] as i32, cpu.gpr[7] as i32, cpu.gpr[8] as i32],
+            };
+            let armed = quicktime.callbacks.arm(cpu.gpr[3], registration);
+            PpcImportAction::Return(ppc_i16_result(if armed { PPC_NO_ERR } else { PPC_PARAM_ERR }))
+        }
+        PpcQuickTimeCompatibilityOperation::GetCallBackType => {
+            PpcImportAction::Return(quicktime.callbacks.get(cpu.gpr[3]).map_or(0, |record| u32::from(record.kind)))
+        }
+        PpcQuickTimeCompatibilityOperation::GetCallBackTimeBase => {
+            PpcImportAction::Return(quicktime.callbacks.get(cpu.gpr[3]).map_or(0, |record| record.time_base))
+        }
         PpcQuickTimeCompatibilityOperation::GetMovieActive => {
             // Inside Macintosh: QuickTime (1993), p. 2-146.
             PpcImportAction::Return(u32::from(
