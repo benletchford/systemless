@@ -303,6 +303,7 @@ pub enum PpcImportDispatcherTarget {
     GetPalette,
     GetPort,
     GetQDGlobalsThePort,
+    GetPortPixMap,
     GetPortBounds,
     GetPortBitMapForCopyBits,
     GetWMgrPort,
@@ -3302,6 +3303,7 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "GetPalette") => PpcImportDispatcherTarget::GetPalette,
         ("InterfaceLib", "GetPort") => PpcImportDispatcherTarget::GetPort,
+        ("InterfaceLib", "GetPortPixMap") => PpcImportDispatcherTarget::GetPortPixMap,
         ("InterfaceLib", "GetQDGlobalsThePort") => PpcImportDispatcherTarget::GetQDGlobalsThePort,
         ("InterfaceLib", "GetPortBounds") => PpcImportDispatcherTarget::GetPortBounds,
         ("InterfaceLib" | "CarbonLib", "GetPortBitMapForCopyBits" | "getportbitmapforcopybits") => {

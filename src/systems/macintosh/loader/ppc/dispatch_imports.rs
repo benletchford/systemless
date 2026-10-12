@@ -2046,6 +2046,7 @@ pub(crate) fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::GetPort
         | PpcImportDispatcherTarget::GetQDGlobalsThePort
+        | PpcImportDispatcherTarget::GetPortPixMap
         | PpcImportDispatcherTarget::GetPortBounds
         | PpcImportDispatcherTarget::GetPortBitMapForCopyBits
         | PpcImportDispatcherTarget::SetPort
