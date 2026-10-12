@@ -4235,3 +4235,36 @@ fn hle_import_runner_quicktime_graphics_importer_draws_gif_into_32_bit_gworld() 
         vec![0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0x00ff_ffff]
     );
 }
+
+#[test]
+fn quicktime_carbon_movie_rewind_uses_existing_movie_state_and_void_return() {
+    for library in [
+        b"QuickTimeLib".as_slice(),
+        b"Apple;Carbon;Multimedia".as_slice(),
+    ] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            library,
+            b"GoToBeginningOfMovie",
+        ))
+        .unwrap();
+        loaded.quicktime.movie_started = true;
+        loaded.quicktime.movie_at_beginning = false;
+        loaded.quicktime.movie_task_count = 7;
+        loaded.cpu.gpr[3] = PPC_QT_MOVIE;
+        loaded.cpu.lr = PPC_HALT_PC;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert!(matches!(
+            probe.result,
+            PpcRunResult::Halted {
+                pc: PPC_HALT_PC,
+                ..
+            }
+        ));
+        assert_eq!(loaded.cpu.gpr[3], PPC_QT_MOVIE);
+        assert_eq!(loaded.quicktime.movie_task_count, 0);
+        assert_eq!(loaded.quicktime.movie_beginning_count, 1);
+        assert!(loaded.quicktime.movie_at_beginning);
+        assert!(!loaded.quicktime.movie_started);
+    }
+}
