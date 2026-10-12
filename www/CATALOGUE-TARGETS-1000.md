@@ -122,7 +122,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 77 | 265 | Mike's Cards | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 78 | 266 | Angband | Original 68K/PPC packages; see per-slice qualification | P | [Original grant, architecture and bounded evidence](catalogue/angband.md) |
 | 79 | 267 | Moria | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/moria.md) |
-| 80 | 268 | Rogue | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/rogue.md) |
+| 80 | 268 | Rogue | Original 68K only; pacing fix merged; private gameplay verified; public held | P | [Rights, architecture and gameplay/pacing evidence](CATALOGUE-SOURCES.md#rogue-iii-mac-release-6--primary-slot-80) |
 | 81 | 269 | MacSokoban | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
 | 82 | 270 | Sokoban | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/s/) |
 | 83 | 271 | MacBrickout | 3.1 CODE / 4.1 native PPC; both unqualified | U | [Original package, independent parity and runtime evidence](CATALOGUE-SOURCES.md#macbrickout-41-original-package-and-current-startup) |

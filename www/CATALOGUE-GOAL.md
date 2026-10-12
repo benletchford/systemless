@@ -7,3 +7,5 @@ For each item, identify the intact original distribution and applicable redistri
 Advance catalogue publication and emulator compatibility together. Keep a publication-ready candidate moving while investigating deeper defects in other games. Prefer finishing candidates with clear distribution terms and working gameplay before accumulating more unqualified intake. Record each fix, exact-package retest, remaining blocker and next action so work can continue without repeating the investigation.
 
 Measure progress separately as qualified live games, staged catalogue records, and compatibility fixes merged. Report changes in those counts with supporting links. A new record, a title screen or a successful build is an intermediate result; the goal is complete only when 1,000 distinct qualified games are live.
+
+Only a human may trigger a release. Agents may merge qualified ordinary catalogue and compatibility PRs, but must not merge release-please PRs, publish releases or tags, or dispatch, rerun or manipulate release workflows to initiate a release. Read-only release monitoring and public deployment verification are permitted.
