@@ -2656,6 +2656,9 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DisposeControlKeyFilterUPP
         | PpcImportDispatcherTarget::NewControlEditTextValidationUPP
         | PpcImportDispatcherTarget::DisposeControlEditTextValidationUPP
+        | PpcImportDispatcherTarget::NewDMDisplayModeListIteratorUPP
+        | PpcImportDispatcherTarget::DisposeDMDisplayModeListIteratorUPP
+        | PpcImportDispatcherTarget::InvokeDMDisplayModeListIteratorUPP
         | PpcImportDispatcherTarget::NewFatRoutineDescriptor
         | PpcImportDispatcherTarget::DisposeRoutineDescriptor
         | PpcImportDispatcherTarget::CallUniversalProc

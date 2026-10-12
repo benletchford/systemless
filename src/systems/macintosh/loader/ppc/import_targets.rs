@@ -1253,6 +1253,9 @@ pub enum PpcImportDispatcherTarget {
     DisposeControlKeyFilterUPP,
     NewControlEditTextValidationUPP,
     DisposeControlEditTextValidationUPP,
+    NewDMDisplayModeListIteratorUPP,
+    DisposeDMDisplayModeListIteratorUPP,
+    InvokeDMDisplayModeListIteratorUPP,
     NewFatRoutineDescriptor,
     DisposeRoutineDescriptor,
     CallUniversalProc,
@@ -4602,6 +4605,18 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DisposeControlEditTextValidationUPP") => {
             PpcImportDispatcherTarget::DisposeControlEditTextValidationUPP
         }
+        (
+            "InterfaceLib" | "DisplayLib",
+            "NewDMDisplayModeListIteratorUPP" | "newdmdisplaymodelistiteratorupp",
+        ) => PpcImportDispatcherTarget::NewDMDisplayModeListIteratorUPP,
+        (
+            "InterfaceLib" | "DisplayLib",
+            "DisposeDMDisplayModeListIteratorUPP" | "disposedmdisplaymodelistiteratorupp",
+        ) => PpcImportDispatcherTarget::DisposeDMDisplayModeListIteratorUPP,
+        (
+            "InterfaceLib" | "DisplayLib",
+            "InvokeDMDisplayModeListIteratorUPP" | "invokedmdisplaymodelistiteratorupp",
+        ) => PpcImportDispatcherTarget::InvokeDMDisplayModeListIteratorUPP,
         ("InterfaceLib", "NewFatRoutineDescriptor") => {
             PpcImportDispatcherTarget::NewFatRoutineDescriptor
         }

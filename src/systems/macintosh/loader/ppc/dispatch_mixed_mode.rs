@@ -32,6 +32,11 @@ pub(super) const PPC_CONTROL_KEY_FILTER_PROC_INFO: u32 = 0x3FE0;
 // ControlEditTextValidationProcPtr returns void and takes one ControlRef.
 pub(super) const PPC_CONTROL_EDIT_TEXT_VALIDATION_PROC_INFO: u32 = 0x00C0;
 
+// Displays.h: void DMDisplayModeListIteratorProcPtr(void *userData,
+//     DMListIndexType itemIndex, DMDisplayModeListEntryPtr displaymodeInfo).
+// Pascal stack convention, void result, three 4-byte parameters.
+pub(super) const PPC_DM_DISPLAY_MODE_LIST_ITERATOR_PROC_INFO: u32 = 0x0FC0;
+
 // Apple Universal Interfaces 3.4.1 MacMemory.h: uppGrowZoneProcInfo.
 // Pascal stack convention, a 4-byte result and one 4-byte Size parameter.
 pub(super) const PPC_GROW_ZONE_PROC_INFO: u32 = 0x00F0;
@@ -292,6 +297,18 @@ pub(super) fn dispatch_mixed_mode_import(
                 &mut toolbox_startup.system_allocations,
             ))))
         }
+        PpcImportDispatcherTarget::NewDMDisplayModeListIteratorUPP => {
+            Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                PPC_DM_DISPLAY_MODE_LIST_ITERATOR_PROC_INFO,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            ))))
+        }
         PpcImportDispatcherTarget::NewFatRoutineDescriptor => Some(Some(PpcImportAction::Return(
             ppc_new_fat_routine_descriptor(
                 cpu,
@@ -313,7 +330,8 @@ pub(super) fn dispatch_mixed_mode_import(
         | PpcImportDispatcherTarget::DisposeUserItemUPP
         | PpcImportDispatcherTarget::DisposeControlActionUPP
         | PpcImportDispatcherTarget::DisposeControlKeyFilterUPP
-        | PpcImportDispatcherTarget::DisposeControlEditTextValidationUPP => {
+        | PpcImportDispatcherTarget::DisposeControlEditTextValidationUPP
+        | PpcImportDispatcherTarget::DisposeDMDisplayModeListIteratorUPP => {
             // DisposeRoutineDescriptor(theProcPtr: UniversalProcPtr): void.
             // PowerPC ABI: r3 carries the descriptor and is preserved on return.
             // The Mixed Mode Manager releases only creation-allocated heap storage.
@@ -335,6 +353,39 @@ pub(super) fn dispatch_mixed_mode_import(
             );
             *last_mem_error = PPC_NO_ERR;
             Some(Some(PpcImportAction::ReturnPreserve))
+        }
+        PpcImportDispatcherTarget::InvokeDMDisplayModeListIteratorUPP => {
+            let user_data = cpu.gpr[3];
+            let item_index = cpu.gpr[4];
+            let display_mode_info = cpu.gpr[5];
+            let user_upp = cpu.gpr[6];
+            if user_upp == 0 {
+                return Some(Some(PpcImportAction::ReturnPreserve));
+            }
+            let restore_rtoc = cpu.gpr[2];
+            let final_pc = cpu.lr;
+            let target = ppc_resolve_callback_target(memory, user_upp, restore_rtoc, None)?;
+            install_powerpc_call_arguments(
+                cpu,
+                memory,
+                &[user_data, item_index, display_mode_info],
+            )?;
+            Some(Some(
+                GuestCallEffect::call_guest(
+                    GuestCallRequest::new(GuestCallTarget {
+                        isa: GuestIsa::PowerPc,
+                        entry: target.entry,
+                        rtoc: target.rtoc,
+                    }),
+                    GuestCallContinuation::to_powerpc(
+                        PPC_GUEST_CALL_RETURN_PC,
+                        final_pc,
+                        restore_rtoc,
+                        PpcNativeReturnGpr3::Preserve,
+                    ),
+                )
+                .into_ppc_import_action()?,
+            ))
         }
         PpcImportDispatcherTarget::CallUniversalProc => {
             // Inside Macintosh: PowerPC System Software (1994), pp. 2-15 and
