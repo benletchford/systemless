@@ -7063,8 +7063,6 @@ fn control_set_gamma_installs_one_channel_table_from_vdgamma_record() {
     }
 }
 
-/private/tmp/powerball13-zero-address-gamma-test-snippet.rs:
-
 #[test]
 fn control_set_gamma_reads_record_at_guest_address_zero() {
     let (mut dispatcher, mut cpu, mut bus) = setup();
