@@ -153,11 +153,11 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 108 | 296 | Bubbles | Original 1.3: PPC verified | P | [Original Internet grant; native and hosted-browser gameplay verified; launch approved](CATALOGUE-SOURCES.md#bubbles-13--primary-108-original-ppc-shareware-intake); [entry #4719](https://github.com/benletchford/systemless/pull/4719); [qualified public v0.97.0 gameplay](https://systemless.org/bubbles/) |
 | 109 | 297 | Airburst | Original 1.0: PPC verified | S | [Complete unchanged-distribution grant; native/hosted-browser gameplay verified; entry merged; human release pending](CATALOGUE-SOURCES.md#airburst-10--primary-109-original-ppc-shareware-intake); [#4698](https://github.com/benletchford/systemless/issues/4698) |
 | 110 | 298 | DX Ball | Original Classic: PPC only | U | [Exact shareware archive; fifteen gameplay checks, hosting rights held](CATALOGUE-SOURCES.md#dx-ball--primary-110-original-classic-shareware-intake); [#4696](https://github.com/benletchford/systemless/issues/4696) |
-| 111 | 299 | 3-D Ultra Pinball: The Lost Continent | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-the-lost-continent) |
+| 111 | 299 | 3-D Ultra Pinball: The Lost Continent | Original demo: PPC only | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-the-lost-continent) |
 | 112 | 300 | 3-D Ultra Pinball: Thrillride | PPC era; verify | D | [Demo index](https://classicmacdemos.com/3d-ultra-pinball-thrillride) |
 | 113 | 301 | Pro Pinball: Big Race USA | PPC era; verify | D | [Demo index](https://classicmacdemos.com/pro-pinball-big-race-usa) |
 | 114 | 302 | Crystal Caliburn | Original 1.02 demo: 68K only | D | [Exact original demo; twelve plunger checks, broader hosting held](CATALOGUE-SOURCES.md#crystal-caliburn-102-interactive-demo--primary-114-original-intake); [#4677](https://github.com/benletchford/systemless/issues/4677) |
-| 115 | 303 | Tristan | 68K lead | D | [Demo index](https://classicmacdemos.com/tristan) |
+| 115 | 303 | Tristan | Original demo: 68K only | D | [Demo index](https://classicmacdemos.com/tristan) |
 | 116 | 304 | Royal Flush | Original 1.2.1: actual 68K + PPC | U | [Exact fat package; rights, black 68K capture and PPC startup fault held](CATALOGUE-SOURCES.md#royal-flush-121--primary-116-original-fat-game-intake); [#4728](https://github.com/benletchford/systemless/issues/4728) |
 | 117 | 305 | F/A-18 Korea | PPC lead | D | [Demo index](https://classicmacdemos.com/fa-18-korea) |
 | 118 | 306 | Chuck Yeager's Air Combat | 68K era; verify | D | [Demo index](https://classicmacdemos.com/chuck-yeagers-air-combat) |
