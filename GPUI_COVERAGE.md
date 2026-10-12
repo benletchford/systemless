@@ -1,5 +1,24 @@
 # GPUI Kit system-interface coverage
 
+### Composed coloured-background TextEdit captures (2026-10-12)
+
+The test-only plain-field capture now prepares a non-white guest background,
+redraws through the existing TextEdit selection operation, requires a non-white
+whole-field qualified plan, and clears the underlying field image before GPUI
+composition. All24 face-zero captures pass across colour68k/PPC8/PPC16,
+scales0.75/1/1.5/2 and active/suspended states (32.23s, functional profile).
+All three CPU contact sheets were inspected: wrapping/bounds remain stable,
+selected range[0,14] is preserved and highlighting hides when inactive.
+Native and composed background probes both match the qualified guest colour;
+indexed modes resolve grey218, RGB555 grey206. No host-theme background is used.
+
+The capture executable builds (11.96s); the capture-enabled test build and
+native background regression pass (1 test,1.96s). Sidecars, images, logs and hashes are in
+the ignored `target/gpui-qualification/plain-face-rendering/coloured-background/matrix.json`.
+This closes the composed-image gap for these face-zero coloured-field recipes,
+not mono non-white patterns, every font-face/transfer/background combination,
+independent Macintosh font fidelity, physical input or overall release readiness.
+
 ### Guest port background candidates for TextEdit (2026-10-12)
 
 TextEdit paint snapshots now expose an optional guest port background ink.

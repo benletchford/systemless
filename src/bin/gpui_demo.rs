@@ -310,6 +310,9 @@ mod desktop {
         #[arg(long, hide = true, requires = "capture_plain_text_edit_ink")]
         capture_plain_text_edit_fallback: bool,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, requires = "capture_plain_text_edit_ink")]
+        capture_plain_text_edit_coloured_background: bool,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true)]
         capture_styled_text_edit_multiline: Option<PathBuf>,
         #[cfg(feature = "gpui-demo-test")]
@@ -6422,7 +6425,7 @@ mod desktop {
 
     #[cfg(feature = "gpui-demo-test")]
     fn capture_plain_text_edit_ink(game: &std::path::Path, output: &std::path::Path,
-        powerpc: bool, depth: Option<u16>, scale: f32, face: u8, inactive: bool, fallback: bool) {
+        powerpc: bool, depth: Option<u16>, scale: f32, face: u8, inactive: bool, fallback: bool, coloured_background: bool) {
         fn settle(session: &mut MacintoshSession) {
             let start = session.runner().guest_tick();
             for _ in 0..100 {
@@ -6459,6 +6462,12 @@ mod desktop {
             if tracking.is_none() { break; }
         }
         assert!(tracking.is_none()); settle(&mut session);
+        if coloured_background {
+            let current = session.runner_mut().text_edit_snapshot().records.into_iter()
+                .find(|record| record.guest_id == original.guest_id).unwrap();
+            assert!(session.runner_mut().set_text_edit_background_for_test(&current, [0xcccc; 3]));
+            assert!(session.runner_mut().select_text_edit_range(&current, 0..14));
+        }
         if inactive { session.request_foreground(false); }
         let mut record = (0..300).find_map(|_| {
             session.runner_mut().run_steps(10_000, None);
@@ -6479,11 +6488,13 @@ mod desktop {
         let mut plans = qualify_styled_text_fields(std::slice::from_ref(&record),
             &frame.pixels, frame.width, frame.height);
         let plan = plans.remove(0).expect("whole native field recipe before replacement");
+        if coloured_background { assert_ne!(plan.background, [255; 3]); }
         let evidence = serde_json::json!({ "case": "plain-face", "powerpc": powerpc,
             "depth": session.runner().presented_screen_depth(), "face": record.face,
             "font": record.font, "size": record.size, "scale": scale, "inactive": inactive,
             "active": record.active, "selection": record.selection, "caret_visible": record.caret_visible,
             "replacement_declined_for_test": fallback,
+            "coloured_background_preparation": coloured_background, "qualified_background": plan.background,
             "view": record.global_view_rect, "line_starts": record.line_starts,
             "smooth_support": plan.smooth_raster_support(), "compositor": "shared Demo renderer",
             "scope": "Actual plain TERec style, guest Reset/update/suspend, whole-field pixel qualification and shared offscreen compositor. No native Macintosh font oracle or physical host interaction." });
@@ -7641,7 +7652,8 @@ mod desktop {
         if let Some(output) = args.capture_plain_text_edit_ink.as_ref() {
             capture_plain_text_edit_ink(&args.game, output, args.prefer_powerpc, args.screen_depth,
                 args.capture_scale.unwrap_or(1.), args.capture_plain_text_edit_face,
-                args.capture_plain_text_edit_inactive, args.capture_plain_text_edit_fallback);
+                args.capture_plain_text_edit_inactive, args.capture_plain_text_edit_fallback,
+                args.capture_plain_text_edit_coloured_background);
             return;
         }
         #[cfg(feature = "gpui-demo-test")]
@@ -8469,6 +8481,7 @@ mod desktop {
                         capture_plain_text_edit_face: 1,
                         capture_plain_text_edit_inactive: false,
                         capture_plain_text_edit_fallback: false,
+                        capture_plain_text_edit_coloured_background: false,
                         capture_styled_text_edit_multiline: None,
                         capture_styled_scroll: false,
                         capture_styled_navigation: false,
