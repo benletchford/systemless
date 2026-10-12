@@ -1308,7 +1308,10 @@ run match every original ICON bit. No archive fixture or security override.
 These are original-resource/Systemless comparisons, not independent ROM oracles.
 All nine checks passed on exact head 937e47c9; compatibility #4760 merged as
 `f80a8e4e565e60695c9a6bbe8f5bd1c56aa7d247`. Catalogue browser launch is approved
-for that merged fix; final entry CI/merge remains pending. Only a human may
+for that merged fix. Catalogue #4758 passed all four final checks on exact head
+`760ca4e2de842f0c631fcec2a73f58efe73d7e82` and merged as
+`800d5a18b73f5994352fd592496df418577f6f94`. All package, native, hosted-browser,
+asset-promotion and launch-approval stages are complete. Only a human may
 trigger the release; direct public qualification must follow.
 Full matches, Triple Yahtzee, multiplayer, saves and audio remain unverified.
 No qualified-live increment or agent release action.
