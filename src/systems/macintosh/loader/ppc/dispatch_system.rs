@@ -561,7 +561,7 @@ pub(crate) fn ppc_dispatch_system_compatibility(
         PpcSystemCompatibilityOperation::IuStringOrder => {
             let a = ppc_read_pascal_string(memory, cpu.gpr[3]).unwrap_or_default();
             let b = ppc_read_pascal_string(memory, cpu.gpr[4]).unwrap_or_default();
-            let result = crate::text_utils::evaluate_text_order(
+            let result = crate::text_utils::evaluate_string_order(
                 &a,
                 &b,
                 cpu.gpr[5] as i16,

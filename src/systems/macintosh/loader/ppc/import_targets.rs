@@ -3277,10 +3277,12 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "GetMainDevice") => PpcImportDispatcherTarget::GetMainDevice,
         ("InterfaceLib", "GetMaxDevice") => PpcImportDispatcherTarget::GetMaxDevice,
         ("InterfaceLib", "DeviceLoop") => PpcImportDispatcherTarget::DeviceLoop,
-        ("InterfaceLib", "GetSysFont") => PpcImportDispatcherTarget::GetSysFont,
-        ("InterfaceLib", "GetAppFont") => PpcImportDispatcherTarget::GetAppFont,
-        ("InterfaceLib", "GetDefFontSize") => PpcImportDispatcherTarget::GetDefFontSize,
-        ("InterfaceLib", "GetFontName") => PpcImportDispatcherTarget::GetFontName,
+        ("InterfaceLib" | "CarbonLib", "GetSysFont") => PpcImportDispatcherTarget::GetSysFont,
+        ("InterfaceLib" | "CarbonLib", "GetAppFont") => PpcImportDispatcherTarget::GetAppFont,
+        ("InterfaceLib" | "CarbonLib", "GetDefFontSize") => {
+            PpcImportDispatcherTarget::GetDefFontSize
+        }
+        ("InterfaceLib" | "CarbonLib", "GetFontName") => PpcImportDispatcherTarget::GetFontName,
         (
             "InterfaceLib" | "AppearanceLib" | "CarbonLib",
             "GetMBarHeight" | "getmbarheight" | "LMGetMBarHeight" | "lmgetmbarheight",
@@ -4187,20 +4189,20 @@ pub(crate) fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "LMGetTicks") => PpcImportDispatcherTarget::TickCount,
         ("InterfaceLib", "SysEnvirons") => PpcImportDispatcherTarget::SysEnvirons,
-        ("InterfaceLib", "TextWidth") => PpcImportDispatcherTarget::TextWidth,
-        ("InterfaceLib", "StringWidth") => PpcImportDispatcherTarget::StringWidth,
+        ("InterfaceLib" | "CarbonLib", "TextWidth") => PpcImportDispatcherTarget::TextWidth,
+        ("InterfaceLib" | "CarbonLib", "StringWidth") => PpcImportDispatcherTarget::StringWidth,
         ("InterfaceLib" | "CarbonLib", "TruncString") => PpcImportDispatcherTarget::TruncString,
-        ("InterfaceLib", "CharWidth") => PpcImportDispatcherTarget::CharWidth,
-        ("InterfaceLib", "MeasureText") => PpcImportDispatcherTarget::MeasureText,
+        ("InterfaceLib" | "CarbonLib", "CharWidth") => PpcImportDispatcherTarget::CharWidth,
+        ("InterfaceLib" | "CarbonLib", "MeasureText") => PpcImportDispatcherTarget::MeasureText,
         ("InterfaceLib", "RealFont") => PpcImportDispatcherTarget::RealFont,
-        ("InterfaceLib", "GetFontInfo") => PpcImportDispatcherTarget::GetFontInfo,
-        ("InterfaceLib", "FontMetrics") => PpcImportDispatcherTarget::FontMetrics,
+        ("InterfaceLib" | "CarbonLib", "GetFontInfo") => PpcImportDispatcherTarget::GetFontInfo,
+        ("InterfaceLib" | "CarbonLib", "FontMetrics") => PpcImportDispatcherTarget::FontMetrics,
         ("InterfaceLib", "FMSwapFont") => PpcImportDispatcherTarget::FMSwapFont,
-        ("InterfaceLib", "GetFNum") => PpcImportDispatcherTarget::GetFNum,
+        ("InterfaceLib" | "CarbonLib", "GetFNum") => PpcImportDispatcherTarget::GetFNum,
         ("InterfaceLib" | "CarbonLib", "FontToScript") => PpcImportDispatcherTarget::FontToScript,
         ("InterfaceLib", "SetPreserveGlyph") => PpcImportDispatcherTarget::SetPreserveGlyph,
         ("InterfaceLib", "GetPreserveGlyph") => PpcImportDispatcherTarget::GetPreserveGlyph,
-        ("InterfaceLib", "IsMetric") => PpcImportDispatcherTarget::IsMetric,
+        ("InterfaceLib" | "CarbonLib", "IsMetric") => PpcImportDispatcherTarget::IsMetric,
         ("InterfaceLib" | "CarbonLib", "VisibleLength") => PpcImportDispatcherTarget::VisibleLength,
         ("InterfaceLib" | "CarbonLib", "GetIntlResource" | "IUGetIntl" | "GetIntl") => {
             PpcImportDispatcherTarget::GetIntlResource
@@ -4214,19 +4216,21 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "AEInteractWithUser") => PpcImportDispatcherTarget::AEInteractWithUser,
         ("InterfaceLib", "AEManagerInfo") => PpcImportDispatcherTarget::AEManagerInfo,
         ("InterfaceLib", "SVersion") => PpcImportDispatcherTarget::SVersion,
-        ("InterfaceLib", "EqualString") => PpcImportDispatcherTarget::EqualString,
-        ("InterfaceLib", "RelString") => PpcImportDispatcherTarget::RelString,
+        ("InterfaceLib" | "CarbonLib", "EqualString") => PpcImportDispatcherTarget::EqualString,
+        ("InterfaceLib" | "CarbonLib", "RelString") => PpcImportDispatcherTarget::RelString,
         ("InterfaceLib", "InitEditionPackVersion") => {
             PpcImportDispatcherTarget::InitEditionPackVersion
         }
         ("InterfaceLib", "StuffHex") => PpcImportDispatcherTarget::StuffHex,
-        ("InterfaceLib", "IUEqualPString") => PpcImportDispatcherTarget::IUEqualPString,
+        ("InterfaceLib" | "CarbonLib", "IUEqualPString") => {
+            PpcImportDispatcherTarget::IUEqualPString
+        }
         (
             "InterfaceLib" | "CarbonLib",
             "GetIntlResourceTable" | "IUGetIntlTable" | "IUGetItlTable" | "GetItlTable",
         ) => PpcImportDispatcherTarget::GetIntlResourceTable,
-        ("InterfaceLib", "NumToString") => PpcImportDispatcherTarget::NumToString,
-        ("InterfaceLib", "StringToNum") => PpcImportDispatcherTarget::StringToNum,
+        ("InterfaceLib" | "CarbonLib", "NumToString") => PpcImportDispatcherTarget::NumToString,
+        ("InterfaceLib" | "CarbonLib", "StringToNum") => PpcImportDispatcherTarget::StringToNum,
         ("InterfaceLib", "Random") => PpcImportDispatcherTarget::Random,
         ("InterfaceLib" | "CarbonLib", "SetQDGlobalsRandomSeed" | "setqdglobalsrandomseed") => {
             PpcImportDispatcherTarget::SetQDGlobalsRandomSeed
@@ -4234,14 +4238,14 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "BitAnd") => PpcImportDispatcherTarget::BitAnd,
         ("InterfaceLib", "BitOr") => PpcImportDispatcherTarget::BitOr,
         ("InterfaceLib", "BitTst") => PpcImportDispatcherTarget::BitTst,
-        ("InterfaceLib", "p2cstr") | ("InterfaceLib", "P2CStr") => {
-            PpcImportDispatcherTarget::P2CStr
+        ("InterfaceLib" | "CarbonLib", "p2cstr" | "P2CStr") => PpcImportDispatcherTarget::P2CStr,
+        ("InterfaceLib" | "CarbonLib", "c2pstr" | "C2PStr") => PpcImportDispatcherTarget::C2PStr,
+        ("InterfaceLib" | "CarbonLib", "CopyCStringToPascal") => {
+            PpcImportDispatcherTarget::CopyCStringToPascal
         }
-        ("InterfaceLib", "c2pstr") | ("InterfaceLib", "C2PStr") => {
-            PpcImportDispatcherTarget::C2PStr
+        ("InterfaceLib" | "CarbonLib", "CopyPascalStringToC") => {
+            PpcImportDispatcherTarget::CopyPascalStringToC
         }
-        ("InterfaceLib", "CopyCStringToPascal") => PpcImportDispatcherTarget::CopyCStringToPascal,
-        ("InterfaceLib", "CopyPascalStringToC") => PpcImportDispatcherTarget::CopyPascalStringToC,
         ("InterfaceLib", "__CFStringMakeConstantString") => {
             PpcImportDispatcherTarget::CfStringMakeConstantString
         }
@@ -4279,10 +4283,16 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "CFBundleLoadExecutable") => {
             PpcImportDispatcherTarget::CfBundleLoadExecutable
         }
-        ("InterfaceLib" | "CarbonLib", "LowerText") => PpcImportDispatcherTarget::LowerText,
-        ("InterfaceLib" | "CarbonLib", "StripText") => PpcImportDispatcherTarget::StripText,
-        ("InterfaceLib" | "CarbonLib", "UpperText") => PpcImportDispatcherTarget::UpperText,
-        ("InterfaceLib" | "CarbonLib", "StripUpperText") => {
+        ("InterfaceLib" | "CarbonLib", "LowerText" | "LowercaseText") => {
+            PpcImportDispatcherTarget::LowerText
+        }
+        ("InterfaceLib" | "CarbonLib", "StripText" | "StripDiacritics") => {
+            PpcImportDispatcherTarget::StripText
+        }
+        ("InterfaceLib" | "CarbonLib", "UpperText" | "UppercaseText") => {
+            PpcImportDispatcherTarget::UpperText
+        }
+        ("InterfaceLib" | "CarbonLib", "StripUpperText" | "UppercaseStripDiacritics") => {
             PpcImportDispatcherTarget::StripUpperText
         }
         // Native Thread Manager exports also live in ThreadsLib.
@@ -5540,9 +5550,11 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DIZero") => {
             PpcImportDispatcherTarget::SystemCompatibility(PpcSystemCompatibilityOperation::DiZero)
         }
-        ("InterfaceLib", "DrawJust") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::DrawJust,
-        ),
+        ("InterfaceLib" | "CarbonLib", "DrawJust" | "DrawJustified") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::DrawJust,
+            )
+        }
         ("InterfaceLib", "Debugger") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::Debugger,
         ),
@@ -5671,12 +5683,16 @@ pub(crate) fn dispatcher_target_for_import(
                 PpcSystemCompatibilityOperation::IuTextOrder,
             )
         }
-        ("InterfaceLib", "IUMetric") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::IuMetric,
-        ),
-        ("InterfaceLib", "IUClearCache") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::IuClearCache,
-        ),
+        ("InterfaceLib" | "CarbonLib", "IUMetric") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuMetric,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "IUClearCache" | "ClearIntlResourceCache") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuClearCache,
+            )
+        }
         ("InterfaceLib" | "CarbonLib", "LongDateString" | "IULDateString") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::IuLDateString,
@@ -5692,25 +5708,31 @@ pub(crate) fn dispatcher_target_for_import(
                 PpcSystemCompatibilityOperation::SetIntlResource,
             )
         }
-        ("InterfaceLib", "IUDatePString" | "DateString") => {
+        ("InterfaceLib" | "CarbonLib", "IUDatePString" | "DateString") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::IuDatePString,
             )
         }
-        ("InterfaceLib", "IUDateString") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::IuDateString,
-        ),
-        ("InterfaceLib", "IUTimePString" | "TimeString") => {
+        ("InterfaceLib" | "CarbonLib", "IUDateString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuDateString,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "IUTimePString" | "TimeString") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::IuTimePString,
             )
         }
-        ("InterfaceLib", "IUTimeString") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::IuTimeString,
-        ),
-        ("InterfaceLib", "Char2Pixel") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::Char2Pixel,
-        ),
+        ("InterfaceLib" | "CarbonLib", "IUTimeString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::IuTimeString,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "Char2Pixel" | "CharToPixel") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::Char2Pixel,
+            )
+        }
         ("InterfaceLib" | "CarbonLib", "CharByte" | "CharacterByteType") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::CharByte,
@@ -5721,12 +5743,16 @@ pub(crate) fn dispatcher_target_for_import(
                 PpcSystemCompatibilityOperation::CharType,
             )
         }
-        ("InterfaceLib", "GetSysDirection") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::GetSysDirection,
-        ),
-        ("InterfaceLib", "SetSysDirection") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::SetSysDirection,
-        ),
+        ("InterfaceLib" | "CarbonLib", "GetSysDirection") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::GetSysDirection,
+            )
+        }
+        ("InterfaceLib" | "CarbonLib", "SetSysDirection") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::SetSysDirection,
+            )
+        }
         ("InterfaceLib", "GetEvQHdr") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::GetEvQHdr,
         ),
@@ -5778,9 +5804,11 @@ pub(crate) fn dispatcher_target_for_import(
                 PpcSystemCompatibilityOperation::NFindWord,
             )
         }
-        ("InterfaceLib", "MeasureJust") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::MeasureJust,
-        ),
+        ("InterfaceLib" | "CarbonLib", "MeasureJust" | "MeasureJustified") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::MeasureJust,
+            )
+        }
         ("InterfaceLib", "NMInstall") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::NmInstall,
         ),
@@ -5793,19 +5821,21 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "OpenDefaultComponent") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::OpenDefaultComponent,
         ),
-        ("InterfaceLib" | "CarbonLib", "ParseTable") => {
+        ("InterfaceLib" | "CarbonLib", "ParseTable" | "FillParseTable") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::ParseTable,
             )
         }
-        ("InterfaceLib" | "CarbonLib", "PortionText") => {
+        ("InterfaceLib" | "CarbonLib", "PortionText" | "PortionLine") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::PortionText,
             )
         }
-        ("InterfaceLib", "Pixel2Char") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::Pixel2Char,
-        ),
+        ("InterfaceLib" | "CarbonLib", "Pixel2Char" | "PixelToChar") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::Pixel2Char,
+            )
+        }
         ("InterfaceLib" | "CarbonLib", "ReplaceText") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::ReplaceText,
@@ -5827,17 +5857,21 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "SystemEdit") => PpcImportDispatcherTarget::SystemCompatibility(
             PpcSystemCompatibilityOperation::SystemEdit,
         ),
-        ("InterfaceLib", "Transliterate") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::Transliterate,
-        ),
+        ("InterfaceLib" | "CarbonLib", "Transliterate" | "TransliterateText") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::Transliterate,
+            )
+        }
         ("InterfaceLib" | "CarbonLib", "TruncText") => {
             PpcImportDispatcherTarget::SystemCompatibility(
                 PpcSystemCompatibilityOperation::TruncText,
             )
         }
-        ("InterfaceLib", "UpperString") => PpcImportDispatcherTarget::SystemCompatibility(
-            PpcSystemCompatibilityOperation::UpperString,
-        ),
+        ("InterfaceLib" | "CarbonLib", "UpperString") => {
+            PpcImportDispatcherTarget::SystemCompatibility(
+                PpcSystemCompatibilityOperation::UpperString,
+            )
+        }
         ("InterfaceLib", "OpenDF") => {
             PpcImportDispatcherTarget::FileCompatibility(PpcFileCompatibilityOperation::OpenDf)
         }

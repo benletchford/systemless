@@ -14252,6 +14252,95 @@ fn pack6_scriptorder_langorder_and_textorder_evaluate_ordering() {
     assert_eq!(cpu.read_reg(Register::D0), 0);
 }
 
+#[test]
+fn pack6_iu_get_intl_and_table_selectors() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let sp = TEST_SP;
+
+    // 1. IUGetIntl: ID 0 synthesizes default itl0 when no resource is in chain
+    bus.write_word(sp, crate::text_utils::PACK6_IU_GET_INTL_SELECTOR as u16);
+    bus.write_word(sp + 2, 0); // ID 0
+    bus.write_long(sp + 4, 0); // result slot
+
+    let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+
+    let handle = bus.read_long(sp + 4);
+    assert_ne!(handle, 0);
+    assert_eq!(cpu.read_reg(Register::A0), handle);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+
+    // 2. IUGetIntlTable: missing table writes zeroes
+    let handle_ptr = 0x2000;
+    let offset_ptr = 0x2004;
+    let length_ptr = 0x2008;
+
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(
+        sp,
+        crate::text_utils::PACK6_IU_GET_INTL_TABLE_SELECTOR as u16,
+    );
+    bus.write_long(sp + 2, length_ptr);
+    bus.write_long(sp + 6, offset_ptr);
+    bus.write_long(sp + 10, handle_ptr);
+    bus.write_word(sp + 14, 0); // table_code = 0 (smWordSelectTable -> itl2)
+    bus.write_word(sp + 16, 0); // script = 0
+
+    let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+
+    assert_eq!(bus.read_long(handle_ptr), 0);
+    assert_eq!(bus.read_long(offset_ptr), 0);
+    assert_eq!(bus.read_long(length_ptr), 0);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+
+    // 3. IUGetIntlTable: loaded table resolves itl2
+    let itl2_buf = bus.alloc(64);
+    bus.write_bytes(itl2_buf, &[0x55; 64]);
+    disp.set_loaded_resources_for_test(LoadedResources {
+        files: HashMap::from([
+            (0, ResourceFileMap::default()),
+            (
+                1,
+                ResourceFileMap {
+                    loaded: HashMap::from([((*b"itl2", 0i16), itl2_buf)]),
+                    ..ResourceFileMap::default()
+                },
+            ),
+        ]),
+        names: HashMap::new(),
+        search_order: vec![0, 1],
+        current_file: 1,
+    });
+
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(
+        sp,
+        crate::text_utils::PACK6_IU_GET_INTL_TABLE_SELECTOR as u16,
+    );
+    bus.write_long(sp + 2, length_ptr);
+    bus.write_long(sp + 6, offset_ptr);
+    bus.write_long(sp + 10, handle_ptr);
+    bus.write_word(sp + 14, 0); // table_code = 0 (smWordSelectTable -> itl2)
+    bus.write_word(sp + 16, 0); // script = 0
+
+    let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+    assert!(result.is_some());
+    assert!(result.unwrap().is_ok());
+
+    let resolved_handle = bus.read_long(handle_ptr);
+    assert_ne!(resolved_handle, 0);
+    assert_eq!(bus.read_long(resolved_handle), itl2_buf);
+    assert_eq!(bus.read_long(offset_ptr), 0);
+    assert_eq!(bus.read_long(length_ptr), 64);
+    assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+    assert_eq!(cpu.read_reg(Register::D0), 0);
+}
+
 // Pack12 / Color Picker ($A82E)
 // Inside Macintosh Volume VI (1991), pp. 19-10 to 19-13.
 #[test]

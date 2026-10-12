@@ -72,25 +72,20 @@ pub(super) fn dispatch_toolbox_import(
                         b'A'..=b'F' => digit - b'A' + 10,
                         _ => 0,
                     };
-                    let _ = memory.write_u8(destination.wrapping_add(offset as u32),
-                        (nibble(pair[0]) << 4) | nibble(pair[1]));
+                    let _ = memory.write_u8(
+                        destination.wrapping_add(offset as u32),
+                        (nibble(pair[0]) << 4) | nibble(pair[1]),
+                    );
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::IUEqualPString => {
-            // IdenticalString uses the current script's primary ordering when
-            // no explicit 'itl2' resource is supplied (Inside Macintosh: Text, 5-17).
-            if cpu.gpr[5] != 0 {
-                return None;
-            }
+            // IdenticalString / IUEqualPString uses the script's primary ordering.
+            // Inside Macintosh: Text (1993), 5-17. itl2Handle at gpr[5] is ignored.
             let left = ppc_read_pstring_bytes(memory, cpu.gpr[3])?;
             let right = ppc_read_pstring_bytes(memory, cpu.gpr[4])?;
-            let primary = |byte| crate::trap::mac_roman_to_upper(byte, true);
-            let equal = left
-                .into_iter()
-                .map(primary)
-                .eq(right.into_iter().map(primary));
+            let equal = crate::text_utils::evaluate_iu_equal_string(&left, &right);
             Some(PpcImportAction::Return(u32::from(!equal)))
         }
         PpcImportDispatcherTarget::GetIntlResourceTable => {
@@ -122,7 +117,9 @@ pub(super) fn dispatch_toolbox_import(
             // Share the live QDGlobals.randSeed location with Random, including
             // its existing pre-InitGraf storage. Do not overwrite LM RandSeed
             // once the application has installed its own QuickDraw globals.
-            let seed_addr = init_graf_global_ptr.checked_sub(126).unwrap_or(PPC_RAND_SEED_ADDR);
+            let seed_addr = init_graf_global_ptr
+                .checked_sub(126)
+                .unwrap_or(PPC_RAND_SEED_ADDR);
             if ppc_memory_can_write_bytes(memory, seed_addr, 4) {
                 let _ = memory.write_u32_be(seed_addr, cpu.gpr[3]);
             }
@@ -131,7 +128,9 @@ pub(super) fn dispatch_toolbox_import(
         PpcImportDispatcherTarget::Random => {
             // QuickDraw's randSeed lives 126 bytes before thePort, not at
             // the unrelated low-memory RandSeed global (Inside Macintosh I-195).
-            let seed_addr = init_graf_global_ptr.checked_sub(126).unwrap_or(PPC_RAND_SEED_ADDR);
+            let seed_addr = init_graf_global_ptr
+                .checked_sub(126)
+                .unwrap_or(PPC_RAND_SEED_ADDR);
             // IM:I I-194: Random returns a signed INTEGER. Preserve its sign
             // in r3 so native callers can take its magnitude before division.
             Some(PpcImportAction::Return(ppc_i16_result(
