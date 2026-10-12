@@ -1321,6 +1321,15 @@ fn idle_cycle_trap_is_journal_complete(
         // revokes the proof through the non-null result. The result classifier
         // rejects pending sleep and retained SystemTask continuations.
         (true, 0x0060) => null_event,
+        // Secs2Date is a pure Gregorian conversion of D0 into the fourteen
+        // DateTimeRec bytes at A0; every result write passes through the bus.
+        (true, 0x01C6) => true,
+        // Only the Help Manager status getters: their current handlers return
+        // constant FALSE through the stack and D0, without mutable help state.
+        // Keep setters, resource access and balloon operations out. Pack14
+        // clobbers D0 with its result, so post-dispatch callers pass the saved
+        // input selector rather than reading that result as a selector.
+        (true, 0x0030) => matches!(selector as u16, 0x0003 | 0x0007),
         // HLock/HUnlock (memory.rs) set or clear one host-mirrored lock bit
         // and write MemErr/D0 (journaled). Any sequence of them in a cycle
         // leaves the bit where its last call put it, so the journaled cycle
@@ -5896,7 +5905,7 @@ impl FixtureRunner {
     /// the frontend is executing on its event thread: newly arrived host input
     /// cannot be injected until the slice returns. SystemTask is quiescent only
     /// while the HLE has no periodic desk-accessory or driver work.
-    fn note_idle_cycle_trap_result(&mut self, opcode: u16) -> bool {
+    fn note_idle_cycle_trap_result(&mut self, opcode: u16, input_selector: u32) -> bool {
         let null_event_poll = match canonical_trap_number(opcode) {
             (true, 0x0170) | (true, 0x0171) => true,
             (true, 0x0060) => {
@@ -5910,11 +5919,9 @@ impl FixtureRunner {
         if self.idle_cycle_probe.is_none() {
             return null_event;
         }
-        // Live D0 still holds the QDExtensions selector here for any
-        // admitted selector (GetGWorld/SetGWorld write no registers but
-        // A7); a non-admitted selector never reaches this classification
-        // -- the pre-dispatch check cancelled the probe before the
-        // handler ran.
+        // A selector belongs to the input trap invocation. Some admitted
+        // getters replace D0 with their result; retain its pre-dispatch value.
+        // A non-admitted selector cancels before dispatch or classification.
         // SndDoCommand returns its OSErr on the popped stack.
         let sound_command_rejected = canonical_trap_number(opcode) == (true, 0x0003)
             && self.bus.read_word(self.m68k.cpu.core.a(7)) as i16 == SOUND_QUEUE_FULL;
@@ -5923,7 +5930,7 @@ impl FixtureRunner {
             null_event,
             !self.dispatcher.system_task_has_periodic_work(&self.bus),
             sound_command_rejected,
-            self.m68k.cpu.read_reg(Register::D0),
+            input_selector,
         );
         if !quiescent {
             ws_note_cancel_trap(opcode);
@@ -7466,10 +7473,12 @@ impl FixtureRunner {
                                 )
                             });
                     }
+                    let input_selector = self.m68k.cpu.read_reg(Register::D0);
                     let dispatch_result = self.dispatch_classic_with_process_services(opcode);
                     match dispatch_result {
                         Ok(()) => {
-                            let null_event = self.note_idle_cycle_trap_result(opcode);
+                            let null_event =
+                                self.note_idle_cycle_trap_result(opcode, input_selector);
                             // TickCount spin-loop acceleration is a post-dispatch
                             // control-flow optimization. The generated trap gateway,
                             // native-patch routing, canonical Toolbox operation, and
