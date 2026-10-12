@@ -6806,3 +6806,118 @@ fn fillcrect_tiles_direct_colour_pixpat_with_padding_and_xrgb() {
         }
     }
 }
+
+#[test]
+fn save_entries_grows_empty_handle_and_round_trips_device_selection() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SaveEntries")).unwrap();
+    loaded.cpu.gpr[3] = 0;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::NewHandle { clear: true },
+    );
+    let result = loaded.cpu.gpr[3];
+    assert_ne!(result, 0);
+    let scratch = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(scratch, vec![0; 16]);
+    loaded.memory.write_u16_be(scratch, 2).unwrap();
+    for (offset, index) in [(2, 42u16), (4, 7), (6, 300)] {
+        loaded.memory.write_u16_be(scratch + offset, index).unwrap();
+    }
+    let source = loaded.memory.read_u32_be(PPC_MAIN_CTABLE_HANDLE).unwrap();
+    let seed = loaded.memory.read_u32_be(source).unwrap();
+    let clut = *loaded.screen_clut;
+    let logical = *loaded.color_manager_clut;
+    let mut expected = [[0u8; 8]; 2];
+    loaded
+        .memory
+        .read_bytes_into(source + 8 + 42 * 8, &mut expected[0])
+        .unwrap();
+    loaded
+        .memory
+        .read_bytes_into(source + 8 + 7 * 8, &mut expected[1])
+        .unwrap();
+    let sp = loaded.cpu.gpr[1];
+    loaded.cpu.gpr[3] = 0;
+    loaded.cpu.gpr[4] = result;
+    loaded.cpu.gpr[5] = scratch;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SaveEntries);
+    assert_eq!(loaded.cpu.gpr[1], sp);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    let packed = loaded.memory.read_u32_be(result).unwrap();
+    assert_ne!(packed, 0);
+    assert_eq!(loaded.memory.read_u32_be(packed), Some(seed));
+    assert_eq!(loaded.memory.read_u16_be(packed + 4), Some(0));
+    assert_eq!(loaded.memory.read_u16_be(packed + 6), Some(2));
+    for ordinal in 0..2 {
+        let mut actual = [0u8; 8];
+        loaded
+            .memory
+            .read_bytes_into(packed + 8 + ordinal as u32 * 8, &mut actual)
+            .unwrap();
+        assert_eq!(actual, expected[ordinal]);
+    }
+    assert_eq!(loaded.memory.read_u16_be(scratch + 6), Some(u16::MAX));
+    assert_eq!(*loaded.screen_clut, clut);
+    assert_eq!(*loaded.color_manager_clut, logical);
+    loaded
+        .memory
+        .write_u16_be(source + 10 + 42 * 8, 0x1234)
+        .unwrap();
+    loaded.cpu.gpr[3] = result;
+    loaded.cpu.gpr[4] = 0;
+    loaded.cpu.gpr[5] = scratch;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::RestoreEntries);
+    let mut restored = [0u8; 8];
+    loaded
+        .memory
+        .read_bytes_into(source + 8 + 42 * 8, &mut restored)
+        .unwrap();
+    assert_eq!(restored, expected[0]);
+    assert_eq!(loaded.memory.read_u32_be(source), Some(seed));
+}
+
+#[test]
+fn save_entries_supplied_source_can_alias_result_without_losing_entries() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SaveEntries")).unwrap();
+    loaded.cpu.gpr[3] = 24;
+    run_test_import(
+        &mut loaded,
+        PpcImportDispatcherTarget::NewHandle { clear: true },
+    );
+    let table = loaded.cpu.gpr[3];
+    let pointer = loaded.memory.read_u32_be(table).unwrap();
+    loaded.memory.write_u32_be(pointer, 0x12345678).unwrap();
+    loaded.memory.write_u16_be(pointer + 6, 1).unwrap();
+    let entries = [
+        [0, 7, 0x11, 0x11, 0x22, 0x22, 0x33, 0x33],
+        [0, 9, 0x44, 0x44, 0x55, 0x55, 0x66, 0x66],
+    ];
+    for i in 0..2 {
+        loaded
+            .memory
+            .write_bytes(pointer + 8 + i as u32 * 8, &entries[i])
+            .unwrap();
+    }
+    let selection = PPC_DATA_BASE + 0x5000;
+    loaded.memory.add_region(selection, vec![0; 6]);
+    loaded.memory.write_u16_be(selection, 1).unwrap();
+    loaded.memory.write_u16_be(selection + 2, 1).unwrap();
+    loaded.memory.write_u16_be(selection + 4, 0).unwrap();
+    let device_before = *loaded.screen_clut;
+    loaded.cpu.gpr[3] = table;
+    loaded.cpu.gpr[4] = table;
+    loaded.cpu.gpr[5] = selection;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::SaveEntries);
+    assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    let pointer = loaded.memory.read_u32_be(table).unwrap();
+    assert_eq!(loaded.memory.read_u32_be(pointer), Some(0x12345678));
+    for i in 0..2 {
+        let mut actual = [0; 8];
+        loaded
+            .memory
+            .read_bytes_into(pointer + 8 + i as u32 * 8, &mut actual)
+            .unwrap();
+        assert_eq!(actual, entries[1 - i]);
+    }
+    assert_eq!(*loaded.screen_clut, device_before);
+}

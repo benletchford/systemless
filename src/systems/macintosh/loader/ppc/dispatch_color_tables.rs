@@ -128,6 +128,43 @@ pub(super) fn dispatch_color_table_import(
             ppc_set_clut_entry_flag(flags, index, cpu.gpr[4] & 0xff != 0);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::SaveEntries => {
+            if let Some((bytes, invalid_slots)) =
+                ppc_pack_saved_entries(cpu, memory, *current_gdevice)
+            {
+                let result_handle = cpu.gpr[4];
+                *last_mem_error = process_memory_manager
+                    .set_process_handle_size_from_native_import(
+                        memory,
+                        result_handle,
+                        bytes.len() as u32,
+                    );
+                ppc_apply_process_native_allocator(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                );
+                if let Some(updated) = process_memory_manager.native_allocation(result_handle) {
+                    if let Some(record) = handles
+                        .iter_mut()
+                        .find(|record| record.handle == result_handle)
+                    {
+                        *record = updated;
+                    }
+                }
+                if *last_mem_error == PPC_NO_ERR {
+                    if let Some(pointer) = memory.read_u32_be(result_handle).filter(|p| *p != 0) {
+                        if memory.write_bytes(pointer, &bytes).is_some() {
+                            for slot in invalid_slots {
+                                let _ = memory.write_u16_be(slot, u16::MAX);
+                            }
+                        }
+                    }
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::RestoreEntries => {
             ppc_restore_entries(cpu, memory, *current_gdevice, screen_clut);
             Some(PpcImportAction::ReturnPreserve)

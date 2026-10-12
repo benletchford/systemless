@@ -2115,6 +2115,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::CTabChanged
         | PpcImportDispatcherTarget::ProtectEntry
         | PpcImportDispatcherTarget::ReserveEntry
+        | PpcImportDispatcherTarget::SaveEntries
         | PpcImportDispatcherTarget::RestoreEntries
         | PpcImportDispatcherTarget::SetEntries
         | PpcImportDispatcherTarget::RestoreDeviceClut

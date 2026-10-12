@@ -1467,6 +1467,45 @@ pub(crate) fn ppc_set_entries(
     }
 }
 
+// SaveEntries packs selected source entries before resizing the result,
+// preserving overlapping source/result handles and device/inverse-table state.
+pub(crate) fn ppc_pack_saved_entries(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    current_gdevice: u32,
+) -> Option<(Vec<u8>, Vec<u32>)> {
+    if cpu.gpr[4] == 0 || cpu.gpr[5] == 0 {
+        return None;
+    }
+    let source_handle = if cpu.gpr[3] == 0 {
+        ppc_gdevice_ctable_handle(memory, current_gdevice)?
+    } else {
+        cpu.gpr[3]
+    };
+    let source = memory.read_u32_be(source_handle).filter(|p| *p != 0)?;
+    let last_source = memory.read_u16_be(source.checked_add(6)?)?;
+    let last_request = memory.read_u16_be(cpu.gpr[5])? as i16;
+    if last_request < 0 {
+        return None;
+    }
+    let count = usize::from(last_request as u16) + 1;
+    let mut bytes = vec![0; 8 + count * 8];
+    bytes[..4].copy_from_slice(&memory.read_u32_be(source)?.to_be_bytes());
+    bytes[6..8].copy_from_slice(&(last_request as u16).to_be_bytes());
+    let mut invalid_slots = Vec::new();
+    for ordinal in 0..count {
+        let slot = cpu.gpr[5].checked_add(2 + ordinal as u32 * 2)?;
+        let index = memory.read_u16_be(slot)? as i16;
+        if index < 0 || index as u16 > last_source {
+            invalid_slots.push(slot);
+            continue;
+        }
+        let entry = source.checked_add(8 + index as u32 * 8)?;
+        memory.read_bytes_into(entry, &mut bytes[8 + ordinal * 8..16 + ordinal * 8])?;
+    }
+    Some((bytes, invalid_slots))
+}
+
 pub(crate) fn ppc_restore_entries(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
