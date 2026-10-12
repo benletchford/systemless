@@ -27,6 +27,7 @@ resources and an independent native reference.
 | Resolved source or paint policy | Current presentation policy |
 | --- | --- |
 | Supported outline glyphs | Antialiased coverage from the original resolved outline at raster scales 1–8. |
+| Supported integer/rational outline transforms | Preserve the resolved strike, CPU-specific paint pens and separately supplied guest insertion positions. Rational helper tests exist; actual guest fractional-font scene and interaction qualification remains open. |
 | Bitmap-only FONT/NFNT glyphs | Preserve the resolved guest glyph pixels; the smooth resolver declines them. No outline or host font is silently substituted. |
 | Missing glyph or unsupported source/style | Retain the complete qualified binary recipe or guest-owned source region. Whole-run and whole-field resolution prevents partial text replacement. |
 | Unsupported scaled strikes, justification, custom backgrounds or definitions | Keep guest paint until the complete geometry, colour and ownership policy is supported and tested. |
@@ -93,8 +94,11 @@ tests pass. All four halo policies have complete single-line CPU/state/scale
 matrices with restoration and visibility checks; one full state composition
 per policy was directly reviewed, with viewer resizing recorded. Broader
 appearance and interaction qualification remain unfinished.
-Ratio-scaled strikes and bitmap-only sources still need faithful smooth
-support. Their existing fallback remains part of the GPUI frontend. Condensed/extended support has native recipe and smooth-mask tests,
+Integer and PPC rational outline helpers are implemented, including source
+style synthesis before scaling and fractional paint-pen phase. Their helper
+tests do not establish actual guest fractional-font scenes or complete
+interaction/appearance qualification. Bitmap-only sources and unsupported
+transforms retain their existing fallback within the GPUI frontend. Condensed/extended support has native recipe and smooth-mask tests,
 guest-driven editing checks, and selected two-line composed captures across
 four CPU/display modes at four scales. Native-pixel field crops from all32
 cases were directly reviewed; this scope excludes the field's right edge and
@@ -146,8 +150,25 @@ font substitution or rendering change.
 ### TextEdit transfer-mode identity
 
 Canonical `TERec.txMode` is retained in each editor snapshot and its recorded
-paint identity. Actual plain/styled TERec overlays currently qualify modes0/1;
-other transfer recipes retain their guest pixels. Smooth destination-aware
-composition for those modes is unfinished. This gate does not qualify every
+paint identity. Structural plain-field candidates admit modes0/1 for ownership
+and text services, but the current whole-field paint recipe requires zero-spacing
+srcOr (mode1). Source-copy mode0 and other unqualified transfer recipes retain
+guest pixels. Faithful opaque-cell/destination-aware coverage composition remains
+unfinished; structural eligibility alone does not grant paint replacement. This gate does not qualify every
 simple Dialog Manager item paint path or native transfer-mode appearance.
 Guest font resolution, advances, wrapping and input positions stay authoritative.
+
+### Qualified guest backgrounds and current interaction scope
+
+Plain face-zero, font-faced and styled TextEdit share whole-field native-pixel
+qualification. The white background recipe remains a candidate, with an optional
+guest port background candidate tried after rejection. Indexed inversion uses
+physical palette pairs; RGB555 follows its native mapping. Port metadata can be
+stale, so every accepted field must match its actual native pixels completely.
+
+Face-zero coloured-field captures currently cover colour68k/PPC8/PPC16 at four
+scales in active/suspended states. White/coloured text-service tests cover21
+CPU/alignment cases at four scales with guest click/type and post-edit native
+qualification. These checks do not qualify every font-face/background/transfer
+combination, physical IME/accessibility or independent Macintosh font fidelity.
+See GPUI_COVERAGE.md for exact producers, captures, tests and remaining gates.
