@@ -298,9 +298,9 @@ pub fn text_edit_pieces(
     text_edit_pieces_for_kind(records, dialogs, controls, windows, viewport, false)
 }
 
-/// Visibility candidates only. A styled recipe must additionally pass native
+/// Visibility candidates only. A field recipe must additionally pass native
 /// whole-field paint qualification before any candidate becomes GPUI-owned.
-pub fn styled_text_edit_candidates(
+pub fn text_edit_paint_candidates(
     records: &[TextEditSnapshot], dialogs: &[DialogSnapshot], controls: &[ControlSnapshot],
     windows: &[WindowFrameSnapshot], viewport: Rect,
 ) -> Vec<TextEditPiece> {
@@ -314,10 +314,12 @@ pub fn plain_text_edit_input_candidates(
     records: &[TextEditSnapshot], dialogs: &[DialogSnapshot], controls: &[ControlSnapshot],
     windows: &[WindowFrameSnapshot], viewport: Rect,
 ) -> Vec<TextEditPiece> {
-    let mut pieces = text_edit_pieces(records, dialogs, controls, windows, viewport);
-    pieces.extend(styled_text_edit_candidates(records, dialogs, controls, windows, viewport)
-        .into_iter().filter(|piece| !records[piece.record].styled && records[piece.record].face != 0));
-    pieces
+    text_edit_paint_candidates(records, dialogs, controls, windows, viewport)
+        .into_iter().filter(|piece| {
+            let record = &records[piece.record];
+            !record.styled && matches!(record.justification, -1 | 0 | 1)
+                && record.line_height > 0 && record.display_lines().is_some()
+        }).collect()
 }
 
 fn text_edit_pieces_for_kind(
@@ -363,7 +365,7 @@ fn text_edit_pieces_for_kind(
             // coverage composition; retain their guest pixels until supported.
             if !matches!(record.text_mode, 0 | 1)
                 || !record.drawing_intact || record.owner_port != frame.guest_id
-                || (record.styled || record.face != 0) != styled
+                || (!styled && (record.styled || record.face != 0))
                 || (!styled && (record.face != 0 || !matches!(record.justification, -1 | 0 | 1) || record.line_height <= 0
                     // Plain scaled substitutes retain their existing qualification guard.
                     || systemless::quickdraw::fonts::get_font_face_or_default(record.font, record.size).size
@@ -1272,7 +1274,7 @@ mod tests {
             assert_eq!(text_edit_pieces(&[transfer.clone()], &[], &[], &[back.clone()], viewport).is_empty(),
                 !matches!(mode, 0 | 1), "plain transfer recipe {mode}");
             transfer.styled = true;
-            assert_eq!(super::styled_text_edit_candidates(&[transfer], &[], &[], &[back.clone()], viewport).is_empty(),
+            assert_eq!(super::text_edit_paint_candidates(&[transfer], &[], &[], &[back.clone()], viewport).is_empty(),
                 !matches!(mode, 0 | 1), "styled transfer recipe {mode}");
         }
         let mut scaled = record.clone();
@@ -1313,20 +1315,20 @@ mod tests {
         let mut styled = record;
         styled.styled = true;
         assert!(text_edit_pieces(&[styled.clone()], &[], &[], &[back.clone()], viewport).is_empty());
-        let candidates = super::styled_text_edit_candidates(&[styled.clone()], &[], &[], &[back.clone()], viewport);
+        let candidates = super::text_edit_paint_candidates(&[styled.clone()], &[], &[], &[back.clone()], viewport);
         assert!(!candidates.is_empty());
-        let covered = super::styled_text_edit_candidates(&[styled.clone()], &[], &[], &[front, back.clone()], viewport);
+        let covered = super::text_edit_paint_candidates(&[styled.clone()], &[], &[], &[front, back.clone()], viewport);
         assert!(covered.iter().all(|piece| piece.clip.intersection(Rect::from((40, 60, 92, 142))).is_none()));
         styled.painted_regions = vec![(100, 30, 110, 70)];
-        let candidates = super::styled_text_edit_candidates(&[styled.clone()], &[], &[], &[back.clone()], viewport);
+        let candidates = super::text_edit_paint_candidates(&[styled.clone()], &[], &[], &[back.clone()], viewport);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].clip, Rect::from((100, 30, 110, 70)));
         styled.drawing_intact = false;
-        assert!(super::styled_text_edit_candidates(&[styled.clone()], &[], &[], &[back.clone()], viewport).is_empty());
+        assert!(super::text_edit_paint_candidates(&[styled.clone()], &[], &[], &[back.clone()], viewport).is_empty());
         styled.drawing_intact = true;
         let mut custom = back;
         custom.definition_id = Some(128);
-        assert!(super::styled_text_edit_candidates(&[styled], &[], &[], &[custom], viewport).is_empty());
+        assert!(super::text_edit_paint_candidates(&[styled], &[], &[], &[custom], viewport).is_empty());
     }
 
     #[test]

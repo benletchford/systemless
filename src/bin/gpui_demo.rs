@@ -1516,7 +1516,7 @@ mod desktop {
             let viewport = super::frames::Rect::from((0, 0,
                 self.height.min(i16::MAX as u32) as i16, self.width.min(i16::MAX as u32) as i16));
             let mut pieces = super::frames::text_edit_pieces(&self.text_edits, &self.dialogs, &self.controls, &self.windows, viewport);
-            pieces.extend(super::frames::styled_text_edit_candidates(&self.text_edits, &self.dialogs,
+            pieces.extend(super::frames::text_edit_paint_candidates(&self.text_edits, &self.dialogs,
                 &self.controls, &self.windows, viewport).into_iter().filter(|piece|
                     self.styled_text_plans.get(piece.record).is_some_and(Option::is_some)));
             for piece in pieces {
@@ -2350,71 +2350,15 @@ mod desktop {
                 // TextEdit supplies the guest line breaks and scroll origin. Keep
                 // keyboard and pointer events on the normal guest path.
                 // Inside Macintosh: Text (1993), pp. 2-64--2-69.
-                for piece in super::frames::text_edit_pieces(
-                    &self.text_edits,
-                    &self.dialogs,
-                    &self.controls,
-                    &self.windows,
-                    viewport,
+                // Unqualified plain fields retain their complete guest paint.
+                // A transparent semantic overlay preserves editing/accessibility
+                // without replacing background, glyph, selection or caret ink.
+                for piece in super::frames::plain_text_edit_input_candidates(
+                    &self.text_edits, &self.dialogs, &self.controls, &self.windows, viewport,
                 ) {
+                    if self.styled_text_plans.get(piece.record).is_some_and(Option::is_some) { continue; }
                     let record = &self.text_edits[piece.record];
-                    let Some(lines) = record.display_lines() else {
-                        continue;
-                    };
-                    let Some(dest) = record.global_dest_rect.map(super::frames::Rect::from) else {
-                        continue;
-                    };
-                    let source = piece.source;
                     let clip = piece.clip;
-                    let mut overlay = div()
-                        .absolute()
-                        .left(guest_px((source.left - clip.left) as f32))
-                        .top(guest_px((source.top - clip.top) as f32))
-                        .w(guest_px(source.width() as f32))
-                        .h(guest_px(source.height() as f32))
-                        .bg(cx.theme().background);
-                    let caret_line = record.caret_line();
-                    for (index, _line) in lines.into_iter().enumerate() {
-                        // Reuse the owning CPU's line anchors. Styled records
-                        // remain guest-owned until run ink/selection is qualified.
-                        let Some(geometry) = composition::text_line_geometry(record, index) else { continue; };
-                        let top = dest.top - i32::from(record.dest_rect.0) + i32::from(geometry.top) - source.top;
-                        if top >= source.height() || top + i32::from(geometry.height) <= 0 {
-                            continue;
-                        }
-                        let starts = record.line_starts.as_ref().unwrap();
-                        let line_start = starts[index];
-                        let line_end = starts[index + 1];
-                        let mut visible_end = line_end;
-                        while visible_end > line_start && matches!(record.text[visible_end - 1], b' ' | b'\r' | b'\n') {
-                            visible_end -= 1;
-                        }
-                        let measured_end = if record.clips_line_offsets_to_visible_text { visible_end } else { line_end };
-                        let selection = (
-                            record.selection.0.saturating_sub(line_start).min(measured_end - line_start),
-                            record.selection.1.saturating_sub(line_start).min(measured_end - line_start),
-                        );
-                        let mut glyphs = super::text::ClassicLine::plain(&record.text[line_start..visible_end], record.font, record.size);
-                        // Measure canonical byte spans independently of visible
-                        // ink; CR and trailing spaces remain guest offsets.
-                        glyphs.positions = super::text::ClassicLine::plain(&record.text[line_start..line_end], record.font, record.size).positions;
-                        let caret = caret_line.filter(|&(line, _)| line == index).map(|(_, offset)| offset);
-                        overlay = overlay.child(
-                            div()
-                                .id(format!("guest-text-edit-line-{}-{}-{index}", record.guest_id, record.generation))
-                                .absolute()
-                                .left(guest_px((dest.left - i32::from(record.dest_rect.1) + i32::from(geometry.left) - 1 - source.left) as f32))
-                                .top(guest_px(top as f32))
-                                .w(guest_px(dest.width().max(1) as f32))
-                                .h(guest_px(f32::from(geometry.height)))
-                                .overflow_hidden()
-                                .child(super::text::classic_line(
-                                    glyphs, geometry.ascent, geometry.height,
-                                    if record.active { selection } else { (0, 0) }, caret,
-                                    super::text::ClassicLineGeometry::TextEdit, self.display_scale, cx.theme().foreground, cx.theme().selection,
-                                )),
-                        );
-                    }
                     let accessible_line_ids = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                     screen = screen.child(super::a11y::AccessibleState::new(
                         div()
@@ -2425,7 +2369,6 @@ mod desktop {
                             .top(guest_px(clip.top as f32))
                             .w(guest_px(clip.width() as f32))
                             .h(guest_px(clip.height() as f32))
-                            .child(overlay)
                             .when(self.composition.preedit.is_none() && self.host_active != Some(false)
                                 && self.focus.is_focused(window) && self.open_menus.is_empty() && !self.guest_menu_tracking && self.guest_popup.is_none(), |field| {
                                 let Some(owner) = self.accessible_record_owner(record) else { return field; };
@@ -2455,10 +2398,10 @@ mod desktop {
                         } else { Vec::new() })
                         .guest_text_lines(&record.text, record.line_starts.as_deref().unwrap_or(&[]), record.selection.0..record.selection.1, window.is_a11y_active()));
                 }
-                // Styled fields use the owning CPU's strikes and paint order.
+                // Qualified fields use the owning CPU's strikes and paint order.
                 // Visibility establishes the standard owner; exact native pixels
                 // establish paint fidelity. Input continues through guest events.
-                for piece in super::frames::styled_text_edit_candidates(
+                for piece in super::frames::text_edit_paint_candidates(
                     &self.text_edits, &self.dialogs, &self.controls, &self.windows, viewport,
                 ) {
                     let Some(Some(plan)) = self.styled_text_plans.get(piece.record) else { continue; };
@@ -6087,7 +6030,6 @@ mod desktop {
         records: &[TextEditSnapshot], native: &[u8], width: u32, height: u32,
     ) -> Vec<Option<super::text::StyledTextEditPaintPlan>> {
         records.iter().map(|record| {
-            if !record.styled && record.face == 0 { return None; }
             let background = systemless::runner::TextEditInkSnapshot {
                 pixel: if record.paint.as_ref()?.depth == 16 { 0x7fff } else { 0 },
                 rgb: [255, 255, 255], inverted_rgb: [0, 0, 0],
@@ -6446,7 +6388,7 @@ mod desktop {
         let controls = session.runner_mut().control_snapshot();
         let viewport = super::frames::Rect { top: 0, left: 0,
             bottom: frame.height as i32, right: frame.width as i32 };
-        assert!(!super::frames::styled_text_edit_candidates(std::slice::from_ref(&record),
+        assert!(!super::frames::text_edit_paint_candidates(std::slice::from_ref(&record),
             &dialogs, &controls, &windows, viewport).is_empty(), "standard styled field visibility");
         let (sender, _receiver) = mpsc::channel();
         let window = visual.open_window(size(px(frame.width as f32 * scale), px(frame.height as f32 * scale)), |_, cx| {
@@ -6490,7 +6432,7 @@ mod desktop {
                     menu.id == id && menu.items.iter().any(|item| item.number == number && item.checked == checked))
             }), "guest menu readiness must be established");
         }
-        assert!(face != 0 && face < 128);
+        assert!(face < 128);
         assert!(scale.is_finite() && scale > 0.);
         let mut session = MacintoshSession::new(true, if powerpc { Some(8) } else { depth });
         session.runner_mut().set_prefer_powerpc_executables(powerpc);
@@ -6541,7 +6483,7 @@ mod desktop {
         let windows = session.runner_mut().window_frame_snapshot();
         let controls = session.runner_mut().control_snapshot();
         let dialogs = session.runner_mut().dialog_snapshot();
-        assert!(!super::frames::styled_text_edit_candidates(std::slice::from_ref(&record),
+        assert!(!super::frames::text_edit_paint_candidates(std::slice::from_ref(&record),
             &dialogs, &controls, &windows, super::frames::Rect::from((0, 0, frame.height as i16,
                 frame.width as i16))).is_empty());
         let mut visual = HeadlessAppContext::with_platform(platform::current_platform(true).text_system(),
@@ -10854,7 +10796,7 @@ mod desktop {
                 assert!(session.runner_mut().select_guest_menu_item(129, 7));
                 wait_for_menu(&mut session, 129, 7, true);
                 settle(&mut session);
-                for face in [1, 2, 4, 8, 16, 32, 64, 31] {
+                for face in [0, 1, 2, 4, 8, 16, 32, 64, 31] {
                     assert!((0..300).any(|_| {
                         session.runner_mut().run_steps(10_000, None);
                         !session.runner().is_ui_tracking_active()
@@ -10889,7 +10831,7 @@ mod desktop {
                         assert!(super::super::text::classic_styled_text_edit_field(plan.clone(), scale, (0., 0.)).is_some());
                     }
                     let windows = session.runner_mut().window_frame_snapshot();
-                    let candidates = super::super::frames::styled_text_edit_candidates(&records, &[], &[], &windows,
+                    let candidates = super::super::frames::text_edit_paint_candidates(&records, &[], &[], &windows,
                         super::super::frames::Rect::from((0, 0, frame.height as i16, frame.width as i16)));
                     assert!(candidates.iter().any(|piece| piece.record == index));
                     let mut changed = frame.pixels.clone();
@@ -14287,7 +14229,7 @@ mod desktop {
                                     demo.text_edits = current_records.clone();
                                     demo.styled_text_plans = plans.clone();
                                     if phase == 0 {
-                                        assert!(!super::super::frames::styled_text_edit_candidates(
+                                        assert!(!super::super::frames::text_edit_paint_candidates(
                                             &demo.text_edits, &demo.dialogs, &demo.controls, &demo.windows,
                                             super::super::frames::Rect { top: 0, left: 0, bottom: 600, right: 800 },
                                         ).is_empty(), "pointer test requires a GPUI-owned visible field");

@@ -1,5 +1,34 @@
 # GPUI Kit system-interface coverage
 
+### Unified native-qualified ordinary TextEdit painting (2026-10-12)
+
+Face-zero ordinary fields now use the same whole-field native-pixel paint plan
+as font-faced and styled records. The former ordinary renderer's host-theme
+background, glyph colour, selection and caret painting is removed. Qualified
+fields use retained guest ink and CPU paint order; unqualified plain fields
+retain their complete guest image with a transparent semantic overlay. Input/
+text-service candidates share structural ownership guards and canonical guest
+geometry rather than the old exact-strike-only presentation classification.
+
+The extended real-guest plan/edit regression passes36 CPU/face recipes,
+including face0 (1 test,78.30s), and rejects a changed native pixel. Wrapped
+bold/italic ownership/geometry passes (63.44s); ordinary multiline interaction
+and plain text-service geometry/editing pass (18.37s/20.97s). All18 frame-ownership
+tests pass (0.09s). The capture executable builds (14.42s), and the default
+locked/offline desktop check passes (15.68s). These use functional root-opt0 CI
+builds and do not establish gameplay performance.
+
+All32 face-zero composed captures pass across mono68k/colour68k/PPC8/PPC16,
+scales0.75/1/1.5/2 and active/suspended states. All field crops were inspected on
+four CPU contact sheets: native wrapping/bounds remain stable, selection is
+preserved, and highlighting hides on suspend. Saved states/dimensions and
+artifact hashes are checked in the ignored
+`target/gpui-qualification/plain-face-rendering/all-plain-unification/matrix.json`.
+The white-background recipe is still a candidate requiring complete native
+pixel matching; arbitrary background/transfer-mode/font recipes, independent
+Macintosh font fidelity, native input/accessibility and broader release
+qualification remain open. Older optimized EV evidence retains its producer.
+
 ### Shared font-face dialog text-service geometry (2026-10-12)
 
 The GPUI dialog-record resolver now uses the same guarded plain-field candidates
