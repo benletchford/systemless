@@ -1,5 +1,34 @@
 # GPUI Kit system-interface coverage
 
+### Source-copy composed rendering and editing (2026-10-12)
+
+The capture helper now accepts `--capture-plain-text-edit-mode 0` together
+with `--capture-plain-text-edit-face 0`. It prepares canonical guest mode,
+then redraws through the actual guest Reset control; metadata verifies mode.
+All32 composed captures pass across mono68k, colour68k, PPC8 and PPC16,
+four scales (0.75/1/1.5/2) and active/inactive states (64.68s). All four CPU
+contact sheets were inspected: wrapping stays stable and selection hides
+on deactivation. The underlying field is cleared before GPUI composition,
+so retained guest glyphs cannot disguise a missing replacement. At scale0.75
+small strike detail remains visibly coarse; these captures do not establish
+modern typography quality at every scale. Original font metrics remain intact.
+
+The expanded text-service regression also passes all33 native cases (63.06s):
+21 existing white/gray source-or cases plus12 source-copy CPU/alignment cases,
+each at four display scales. It checks input ownership, caret bounds, point
+lookup, transformed pointers and held/stale capture guards, native click/type
+through guest events, and full native paint qualification after editing. The
+focus-click fixture waits for guest tracking to finish before a second control
+activation; production tracking guards are unchanged. The capture build passes
+(11.99s). This is offscreen event-path evidence, not physical keyboard/mouse
+or IME platform qualification.
+
+Evidence is in the ignored
+`target/gpui-qualification/plain-face-rendering/source-copy-composed/matrix.json`.
+This covers basic plain face-zero source-copy with exact PPC strikes; broader
+styles/fractional strikes, independent original Macintosh font fidelity and
+physical host interaction remain unqualified.
+
 ### Plain source-copy cell/glyph pairing (2026-10-12)
 
 Plain unstyled zero-spacing mode0 fields now pair each original resolved glyph
@@ -18,9 +47,9 @@ text-helper tests pass (29.97s), and all36 existing face/CPU native paint/edit
 recipes pass (70.50s). Desktop/public-library checks pass (25.10s/8.48s).
 Source/log hashes are in the ignored
 `target/gpui-qualification/plain-face-rendering/source-copy-pairing/review.json`.
-This enables the qualified basic mode0 recipe; composed source-copy images,
-source-copy text-service/typing qualification, broader fonts/styles, physical
-input and independent original-Macintosh font fidelity remain open.
+This enabled the qualified basic mode0 recipe. Subsequent composed-image
+and editing evidence is recorded above; broader fonts/styles, physical input
+and independent original-Macintosh font fidelity remain open.
 
 ### Native source-copy cell evidence (2026-10-12)
 

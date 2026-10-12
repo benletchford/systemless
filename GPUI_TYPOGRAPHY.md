@@ -156,7 +156,9 @@ plain unstyled source-copy (mode0) when every native clear cell can be uniquely
 paired with its original glyph in native order. The complete field must match
 native pixels before replacement. PPC fractional-strike and styled/faced
 source-copy recipes remain guest-painted pending faithful phase/style ordering.
-Composed mode0 images and mode0 interaction qualification remain open; structural
+Basic face-zero mode0 composed images pass across four CPU/display modes, four
+scales and active/inactive states; wider style and physical input qualification
+remain open. At scale0.75 small strike detail is visibly coarse; structural
 eligibility alone does not grant paint replacement. This gate does not qualify
 every simple Dialog Manager item paint path or native transfer-mode appearance.
 Guest font resolution, advances, wrapping and input positions stay authoritative.

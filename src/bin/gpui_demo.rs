@@ -304,6 +304,9 @@ mod desktop {
         #[arg(long, hide = true, default_value_t = 1, requires = "capture_plain_text_edit_ink")]
         capture_plain_text_edit_face: u8,
         #[cfg(feature = "gpui-demo-test")]
+        #[arg(long, hide = true, default_value_t = 1, requires = "capture_plain_text_edit_ink")]
+        capture_plain_text_edit_mode: i16,
+        #[cfg(feature = "gpui-demo-test")]
         #[arg(long, hide = true, requires = "capture_plain_text_edit_ink")]
         capture_plain_text_edit_inactive: bool,
         #[cfg(feature = "gpui-demo-test")]
@@ -6425,7 +6428,7 @@ mod desktop {
 
     #[cfg(feature = "gpui-demo-test")]
     fn capture_plain_text_edit_ink(game: &std::path::Path, output: &std::path::Path,
-        powerpc: bool, depth: Option<u16>, scale: f32, face: u8, inactive: bool, fallback: bool, coloured_background: bool) {
+        powerpc: bool, depth: Option<u16>, scale: f32, face: u8, mode: i16, inactive: bool, fallback: bool, coloured_background: bool) {
         fn settle(session: &mut MacintoshSession) {
             let start = session.runner().guest_tick();
             for _ in 0..100 {
@@ -6441,6 +6444,7 @@ mod desktop {
             }), "guest menu readiness must be established");
         }
         assert!(face < 128);
+        assert!(matches!(mode, 0 | 1));
         assert!(scale.is_finite() && scale > 0.);
         let mut session = MacintoshSession::new(true, if powerpc { Some(8) } else { depth });
         session.runner_mut().set_prefer_powerpc_executables(powerpc);
@@ -6452,6 +6456,7 @@ mod desktop {
         let original = session.runner_mut().text_edit_snapshot().records.into_iter()
             .find(|record| !record.styled && record.drawing_intact).unwrap();
         assert!(session.runner_mut().set_plain_text_edit_face_for_test(&original, face));
+        assert!(session.runner_mut().set_plain_text_edit_mode_for_test(&original, mode));
         let reset = session.runner_mut().control_snapshot().into_iter()
             .find(|control| control.visible && control.title == "Reset").unwrap();
         let mut tracking = Some(super::activation::ControlActivation::begin(&mut session,
@@ -6473,7 +6478,7 @@ mod desktop {
             session.runner_mut().run_steps(10_000, None);
             let settled = session.runner().event_manager_snapshot().last_record.is_some_and(|event| event.what == 0);
             session.runner_mut().text_edit_snapshot().records.into_iter().find(|record|
-                settled && record.guest_id == original.guest_id && record.face == face
+                settled && record.guest_id == original.guest_id && record.face == face && record.text_mode == mode
                     && record.drawing_intact && (!inactive || !record.active))
         }).expect("plain face paint must settle through guest update/suspend paths");
         if inactive {
@@ -6490,7 +6495,7 @@ mod desktop {
         let plan = plans.remove(0).expect("whole native field recipe before replacement");
         if coloured_background { assert_ne!(plan.background, [255; 3]); }
         let evidence = serde_json::json!({ "case": "plain-face", "powerpc": powerpc,
-            "depth": session.runner().presented_screen_depth(), "face": record.face,
+            "depth": session.runner().presented_screen_depth(), "face": record.face, "mode": record.text_mode,
             "font": record.font, "size": record.size, "scale": scale, "inactive": inactive,
             "active": record.active, "selection": record.selection, "caret_visible": record.caret_visible,
             "replacement_declined_for_test": fallback,
@@ -7651,7 +7656,7 @@ mod desktop {
         #[cfg(feature = "gpui-demo-test")]
         if let Some(output) = args.capture_plain_text_edit_ink.as_ref() {
             capture_plain_text_edit_ink(&args.game, output, args.prefer_powerpc, args.screen_depth,
-                args.capture_scale.unwrap_or(1.), args.capture_plain_text_edit_face,
+                args.capture_scale.unwrap_or(1.), args.capture_plain_text_edit_face, args.capture_plain_text_edit_mode,
                 args.capture_plain_text_edit_inactive, args.capture_plain_text_edit_fallback,
                 args.capture_plain_text_edit_coloured_background);
             return;
@@ -8479,6 +8484,7 @@ mod desktop {
                         capture_styled_text_edit_ink: None,
                         capture_plain_text_edit_ink: None,
                         capture_plain_text_edit_face: 1,
+                        capture_plain_text_edit_mode: 1,
                         capture_plain_text_edit_inactive: false,
                         capture_plain_text_edit_fallback: false,
                         capture_plain_text_edit_coloured_background: false,
@@ -13287,8 +13293,9 @@ mod desktop {
         fn plain_guest_text_service_geometry_uses_actual_field(cx: &mut gpui_kit::TestAppContext) {
             use gpui_kit::{AppContext, EntityInputHandler, Bounds, point, px};
             cx.update(gpui_kit::init);
-            for (powerpc, depth, coloured) in [(false, 1u16, false), (false, 8, false),
-                (true, 8, false), (true, 16, false), (false, 8, true), (true, 8, true), (true, 16, true)] {
+            for (powerpc, depth, coloured, mode) in [(false, 1u16, false, 1), (false, 8, false, 1),
+                (true, 8, false, 1), (true, 16, false, 1), (false, 8, true, 1), (true, 8, true, 1), (true, 16, true, 1),
+                (false, 1, false, 0), (false, 8, false, 0), (true, 8, false, 0), (true, 16, false, 0)] {
                 for justification in [0, 1, -1] {
                     let mut session = MacintoshSession::new(true, Some(if powerpc { 8 } else { depth }));
                     session.runner_mut().set_prefer_powerpc_executables(powerpc);
@@ -13302,11 +13309,30 @@ mod desktop {
                     settle(&mut session);
                     let initial = session.runner_mut().text_edit_snapshot().records.into_iter()
                         .find(|record| !record.styled && record.global_view_rect.is_some()).unwrap();
+                    if mode == 0 {
+                        assert!(session.runner_mut().set_plain_text_edit_mode_for_test(&initial, mode));
+                        let reset = session.runner_mut().control_snapshot().into_iter()
+                            .find(|control| control.visible && control.title == "Reset").unwrap();
+                        let mut activation = Some(super::super::activation::ControlActivation::begin(
+                            &mut session, reset.guest_id, reset.generation).unwrap());
+                        for _ in 0..20 {
+                            settle(&mut session);
+                            activation = activation.and_then(|click| click.advance(&mut session));
+                            if activation.is_none() { break; }
+                        }
+                        assert!(activation.is_none()); settle(&mut session);
+                    }
+                    let initial = session.runner_mut().text_edit_snapshot().records.into_iter()
+                        .find(|record| record.guest_id == initial.guest_id).unwrap();
                     let rect = initial.global_view_rect.unwrap();
                     for input in [MacintoshInput::MouseDown { vertical: rect.0 + 4, horizontal: rect.1 + 4 },
                         MacintoshInput::MouseUp { vertical: rect.0 + 4, horizontal: rect.1 + 4 }] {
                         session.deliver_input(input); settle(&mut session);
                     }
+                    assert!((0..300).any(|_| {
+                        session.runner_mut().run_steps(10_000, None);
+                        !session.runner().is_ui_tracking_active()
+                    }), "focus click must finish guest tracking before alignment activation");
                     if justification != 0 {
                         let title = if justification == 1 { "Center" } else { "Right" };
                         let control = session.runner_mut().control_snapshot().into_iter()
@@ -13332,11 +13358,14 @@ mod desktop {
                     let before = records.iter().find(|record| record.guest_id == initial.guest_id).unwrap().clone();
                     assert!(before.active && before.drawing_intact);
                     assert_eq!(before.justification, justification);
+                    assert_eq!(before.text_mode, mode);
                     let pieces = super::super::frames::text_edit_pieces(&records, &[], &[],
                         &session.runner_mut().window_frame_snapshot(), super::super::frames::Rect::from((0, 0, 600, 800)));
                     assert!(pieces.iter().any(|piece| records[piece.record].guest_id == before.guest_id));
                     let frame = session.video_frame().unwrap();
                     let plans = super::qualify_styled_text_fields(&records, &frame.pixels, frame.width, frame.height);
+                    let index = records.iter().position(|record| record.guest_id == before.guest_id).unwrap();
+                    assert!(plans[index].is_some(), "native aligned field paint must qualify mode={mode}");
                     if coloured {
                         let index = records.iter().position(|record| record.guest_id == before.guest_id).unwrap();
                         assert_ne!(plans[index].as_ref().expect("coloured aligned field paint must qualify").background, [255; 3]);
@@ -13415,11 +13444,12 @@ mod desktop {
                     assert_eq!(edited.text, expected);
                     assert_eq!(edited.selection, (2, 2));
                     assert_eq!(edited.justification, justification);
+                    assert_eq!(edited.text_mode, mode);
                     let frame = session.video_frame().unwrap();
                     assert!(super::qualify_styled_text_fields(std::slice::from_ref(&edited),
                         &frame.pixels, frame.width, frame.height)[0].is_some(), "post-edit guest paint must qualify");
 
-                    eprintln!("PASS plain-guest-text-geometry-and-edit powerpc={powerpc} depth={depth} justification={justification} coloured={coloured}");
+                    eprintln!("PASS plain-guest-text-geometry-and-edit powerpc={powerpc} depth={depth} justification={justification} coloured={coloured} mode={mode}");
                     cx.update_window(window.into(), |_, window, _| window.remove_window()).unwrap();
                 }
             }
