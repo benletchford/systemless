@@ -28,30 +28,43 @@ compatibility:
       VISE files/twelve forks and type/creator records match an independently
       implemented pinned ScummVM-reference reader. Original Finder flags are not
       recovered by that reference; original archive bytes remain unchanged. Full
-      games, saves and audio fidelity remain unverified. Local Chrome Worker replays
-      at depth 8 show board rendering, ball drops and score 50, with WebGL at
-      59.959 and Canvas2D at 59.996 guest ticks per second and no console errors.
-      Both use the exact local archive fixture, not a hosted production archive.
-      Held drag feedback is absent in both rendering paths; direct rendered-canvas
-      captures confirm the discrepancy with the native image. These observations
-      do not qualify browser gameplay. Browser assertions, asset promotion and
-      launch approval remain pending; no human release is asserted.
+      games, saves and audio fidelity remain unverified. The later verified source
+      below fixes browser drag feedback and wait-clock pacing. Production archive
+      promotion, hosted-archive replay and launch approval remain pending.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4692
   - date: "2026-10-12"
     tester: Catalogue maintainer
-    systemless_version: fb3e11d3b67895a21e3dae7b05ca7fba4615fb12
+    systemless_version: 1fbc1a9b7c078562231459faf50c1ff0122d037f
     architecture: ppc
     environment: >-
-      Fresh native replay at the configured browser-compatible depth 8, untouched
-      original archive and exact selector. Dismiss the original 256-colour advisory
-      with Continue, then normal New Game/OK, held translucent image, ball drops,
-      five-ball removal and score 50 pass thirty measured pixel assertions at 2176
-      frontend / 2148 guest ticks, zero exhausted frames. Captures inspected. The
-      initial inspection without dismissing the advisory only showed that dialog
-      and did not qualify gameplay. Browser and launch approval remain pending.
+      Fresh optimized native build from the committed drag-feedback/clock fix,
+      configured depth 8, untouched original archive and exact selector. Continue
+      at the original colour advisory, then normal New Game/OK, held translucent
+      image, ball drops, five-ball removal and score 50 pass thirty measured pixel
+      assertions at 2176 frontend / 2148 guest ticks with zero exhausted frames.
+      Captures inspected. The catalogue screenshot matches the fresh gameplay
+      content crop byte for byte. Full-game, save and audio fidelity remain unverified.
     status: playable
-    evidence: https://github.com/benletchford/systemless/issues/4692
+    evidence: https://github.com/benletchford/systemless/pull/4722
+  - date: "2026-10-12"
+    tester: Catalogue maintainer
+    systemless_version: 1fbc1a9b7c078562231459faf50c1ff0122d037f
+    architecture: ppc
+    environment: >-
+      Local Chrome Worker replay of the unchanged original archive at depth 8 and
+      25 MHz. Software rendering passes four held-image/source checks and ten fresh
+      gameplay checks covering five-ball removal and the inspected score 50 display.
+      Held-drag pacing is 60.014 guest ticks/sec; scoring replay is 60.466. WebGL
+      captures confirm original drag feedback, drops, line removal and score 50 at
+      60.045 guest ticks/sec; Escape cancellation restores the source and leaves
+      score zero at 60.155. No console errors; unchanged minimum 50 guest ticks/sec
+      requirement passes. Browser-font reference is from a previously inspected
+      replay, not an independent Macintosh emulator. All runs use a local fixture;
+      production promotion, hosted-archive replay, launch approval and human release
+      remain pending. Launch stays disabled.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/4722
 runtime:
   executable_path: Bubbles 1.3/Bubbles1.3/Bubbles 1.3/Bubbles PPC
   screen_depth: 8
@@ -112,6 +125,7 @@ references:
 - https://www.vintageapplemac.com/software/games/b/
 - https://github.com/benletchford/systemless/issues/4692
 - https://github.com/benletchford/systemless/pull/4706
+- https://github.com/benletchford/systemless/pull/4722
 ---
 
 Play **Bubbles 1.3**, Maxym Runov's ball-line puzzle.
@@ -120,8 +134,8 @@ Accept the Small field, then drag a ball to an empty
 cell reachable through free spaces. Five matching balls in a line disappear and
 add to your score; new balls arrive after other turns.
 
-Native ball movement, translucent drag feedback, line removal and scoring are
-verified. Browser launching is pending approval. The original unregistered
+Ball movement, translucent drag feedback, line removal and scoring are verified
+in native and local browser tests. Browser launching is pending approval. The original unregistered
 shareware restrictions remain: score saving and GameField Manager require
 registration.
 
