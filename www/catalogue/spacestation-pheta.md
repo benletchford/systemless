@@ -48,6 +48,25 @@ compatibility:
       and public replay remain pending.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4628
+  - date: "2026-10-13"
+    tester: Catalogue maintainer
+    systemless_version: v0.97.0
+    architecture: 68k
+    environment: >-
+      Direct public systemless.org player, actual managed original HQX, default
+      25 MHz and 8-bit depth, Chrome 151 Worker/Canvas2D, 1000x900 host viewport.
+      No frontend bridge, local archive fixture or security override. Original
+      About visibly shows UNREGISTERED. Ordinary Pheta / New Game reaches Screen 1;
+      L walks to the first ladder and A climbs to its upper platform. Eight fixed
+      measured before/after climbing pixel checks pass in each of two fresh runs,
+      at 52.824 and 51.787 guest ticks/sec, no console errors; captures inspected.
+      Independent public archive GET matches 281913 bytes and original SHA-256.
+      Human v0.97.0 release pipeline and catalogue merge are verified. Initial
+      sprite-free paint captures are excluded; title-screen pacing failures remain
+      recorded separately. Full levels, jumping, saving, audio and known Options/help
+      rendering faults remain unverified or unresolved.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/pull/4751
 runtime:
   executable_path: Spacestation Pheta 2.7/Spacestation Pheta
   screen_depth: 8

@@ -10,6 +10,8 @@ Stages: **rights** = applicable affirmative archive redistribution terms; **arch
 
 Stock rechecked on 12 October 2026 against every catalogue Markdown record and production validation. NetHack 3.4.3, Galactic Frontiers and Rogue are merged with browser launch approval; their public gameplay replays remain pending. The latest human-published release is [v0.97.0](https://github.com/benletchford/systemless/releases/tag/v0.97.0) (12 October 2026, 12:02 UTC). Record counts and launch flags do not prove a qualified-live total.
 
+- **Spacestation Pheta (reserve R101):** [public v0.97.0 player](https://systemless.org/spacestation-pheta/) verifies original UNREGISTERED notice, ordinary New Game, walking to the first ladder and climbing to the upper platform. Two fresh direct public runs pass eight fixed measured climbing checks each at 52.824 / 51.787 guest ticks/sec, no console errors; captures inspected. Public archive bytes/hash, conditional rights, fork/Finder parity, native and staged-browser gameplay, promotion, launch approval, entry merge and the human release pipeline are verified. This is the **nineteenth independently qualified new live game**. Title-screen pacing failures and initial sprite-free paint exclusions are retained; full levels, jumping, saves, audio and known Options/help rendering faults remain unverified or unresolved. [Evidence](CATALOGUE-SOURCES.md#spacestation-pheta-direct-public-replay--qualified-bounded-gameplay); intake #4628 stays open for remaining faults.
+
 - **Mahjong (primary 102):** [public v0.97.0 player](https://systemless.org/mahjong/) passes all sixteen setup/deal/discard checks with inspected computer replies and North-wind meld, at 61.013 guest ticks/sec and no console errors. Actual browser archive bytes/hash match the original. Normal rights/parity/native/CI/promotion/launch gates and the complete published release pipeline are verified. This is the **seventeenth independently qualified new live game**; full hands/games, saves and audio remain unverified. [Intake #4674](https://github.com/benletchford/systemless/issues/4674).
 
 - **Bubbles (primary 108):** [entry #4719](https://github.com/benletchford/systemless/pull/4719) merged with verified original-package distribution permission, PPC gameplay, hosted assets and launch approval. The human v0.97.0 release and complete deployment/native-package pipeline succeeded. Direct public Worker replay passes ten held-image, line-removal and score-50 checks at 59.978 guest ticks/sec, with inspected captures and no console errors; a fresh public archive GET matches the original bytes/hash. This is the **sixteenth independently qualified new live game**. Full-game, save and audio fidelity remain unverified. [Intake/evidence #4692](https://github.com/benletchford/systemless/issues/4692).
@@ -888,7 +890,9 @@ worker-backed browser walking and climbing pass sixteen measured checks, with
 UNREGISTERED visibly retained and the managed archive request untouched.
 [Launch-approved catalogue PR #4629](https://github.com/benletchford/systemless/pull/4629)
 merged at `1463e21ee247d07ac223ba205df3fb50b5a25585` after all final checks passed.
-Human release and independently verified public replay remain pending. Blank options
+Human v0.97.0 release and [direct public walking/climbing replay](CATALOGUE-SOURCES.md#spacestation-pheta-direct-public-replay--qualified-bounded-gameplay)
+are verified: eight measured climbing checks pass twice, with passing pacing.
+This is the nineteenth independently qualified new live game. Blank options
 labels/help and damaged playfield after closing Options remain open. [Intake
 #4628](https://github.com/benletchford/systemless/issues/4628) tracks those remaining
-gates. Primary slots and qualified-live count are unchanged.
+faults. Primary slots are unchanged.

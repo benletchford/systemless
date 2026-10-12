@@ -1688,8 +1688,10 @@ notice visibly says UNREGISTERED. Once Screen 1 is fully painted, ordinary L
 walking and A ladder climbing pass sixteen measured before/after pixel checks;
 captures inspected. Launch approval is submitted through the ordinary catalogue
 PR, merged at `1463e21ee247d07ac223ba205df3fb50b5a25585` after all final checks
-passed. Human release and independent public replay remain pending. Full levels,
-jumping, saving and audio are unverified. No qualified-live increase.
+passed. Human v0.97.0 release and [direct public walking/climbing replay](#spacestation-pheta-direct-public-replay--qualified-bounded-gameplay)
+are now independently verified; this is the nineteenth qualified new live game.
+Full levels, jumping, saving, audio and known Options/help rendering faults remain
+unverified or unresolved.
 
 
 ## MacBrickout 4.1 original package and current startup
@@ -2192,3 +2194,72 @@ Original Read Me describes the product as free but gives no explicit third-party
 Immutable native source `f5483633a23f28ddf6bd2e55f8f712ce04a69b9d`, m68k 0.14.4 / PPC 0.7.2: explicit 68K runs **120 frontend / 720 guest ticks**, zero exhausted frames, no assertions, but the inspected capture is entirely black. Explicit PPC, depth 8, halts after **four instructions** with a read memory fault at `2200064C`, PC `0100AEC8`, SP `07F6FF84`, LR zero. Neither establishes gameplay compatibility.
 
 Pending: authoritative redistribution permission; production inventory/fork/Finder comparison; fixes and bounded controls/scoring for both slices; browser checks and factual content screenshot; ordinary CI/promotion/hosting/launch approval/integration; human release and public replay.
+
+
+## Pararena author-source rights lead — primary 60
+
+[Intake #4750](https://github.com/benletchford/systemless/issues/4750).
+The original author's [Pararena2 source](https://github.com/softdorothy/Pararena2)
+is pinned to `6b82bbae9f0509e37281bf93376e88ed38f8e9d1`. Its
+[MIT licence](https://github.com/softdorothy/Pararena2/blob/6b82bbae9f0509e37281bf93376e88ed38f8e9d1/LICENSE)
+requires preservation of the copyright/permission notice. The revision-pinned
+source ZIP is 1,867,985 bytes, SHA-256
+`b534b40e1c0a62b8ed396aad5de61c73b020c8898c6889b55f07401bf745ac6d`.
+Bundled author version history identifies 2.01 as the first demo spin-off.
+
+Fresh independently extracted original demo remains 537,179 bytes / SHA-256
+`53be6cb1cb92fc3fe4f632ca875fe616e4422e299206a0654669ed03a60c8234`.
+All 248 author Rez resource identities occur in the demo; 242 payloads match.
+Six differ: vers 1/2, SMSD 13, RenA 0, PICT 153/5001. All nine Para Sounds
+resource payloads match, but whole resource forks differ. This strengthens exact
+asset correspondence; licence applicability to the complete compiled demo and
+changed assets still requires assessment. No hosting approval or game patch.
+Current-source native reproduction, gameplay, browser and ordinary catalogue
+pipeline gates remain open.
+
+### Tristan false archive lead — primary 115
+
+The [T index](https://www.vintageapplemac.com/software/games/t/) links
+`Trist.sit`, 106,671 bytes / SHA-256
+`f7163a8a6b798c3c1290992360f01d8d1f84eb14ce27b8980b489675135cf371`.
+Its original Trist Docs identifies Tom Gooding's stone-capture board game,
+not LittleWing's Tristan pinball. The document requests $5 shareware registration
+and supplies no affirmative redistribution grant. Do not use this archive for
+Tristan target 115 or infer hosting rights from the mirror listing.
+
+### Spacestation Pheta direct public replay — qualified bounded gameplay
+
+Direct [published player](https://systemless.org/spacestation-pheta/) replay on
+human-published v0.97.0 uses the actual immutable managed HQX, default 25 MHz,
+68K/depth 8, Chrome 151 Worker/Canvas2D and 1000×900 host viewport. No production
+bridge, local archive fixture, security override or release action. Original
+About visibly shows UNREGISTERED. Not Yet followed by held Pheta menu → New Game
+reaches complete Screen 1; held L visibly moves the player right. Inspected
+before/after captures show walking. Two full-gameplay pacing probes pass the
+unchanged minimum 50 at **53.906 / 51.856 guest ticks/sec**, without console
+errors; a later longer-control probe also passes at 53.906.
+
+The aligned sequence holds L for 1.5 seconds to reach the actual first ladder,
+then A for two seconds to climb to the upper platform. Two fresh direct public
+runs pass **eight fixed measured before/after climbing pixel checks each**, at
+**52.824 / 51.787 guest ticks/sec**, with no console errors. Both actual captures
+are inspected. Initial sprite-free paint captures are excluded from assertions;
+only stable ladder-bottom and ladder-top captures qualify. Prior short walks
+stopped adjacent to the ladder, while two-second L overshot it: those were
+alignment probes, not evidence of a climbing defect.
+
+Early Command-N was a harness mistake (actual visible shortcut is Command-G),
+and its captures remained on the title screen. Title-screen samples fell below
+the unchanged 50 gate (42.722 / 42.713); preserve those failures separately from
+successful Screen 1 samples. Actual managed HQX GET independently matches
+281,913 bytes and the original SHA-256. The original conditional rights,
+fork/Finder parity, native walking/climbing, promotion and launch approval are
+recorded in [#4628](https://github.com/benletchford/systemless/issues/4628).
+Entry [#4629](https://github.com/benletchford/systemless/pull/4629) is merged as
+`1463e21ee247d07ac223ba205df3fb50b5a25585`. Human v0.97.0
+[release pipeline](https://github.com/benletchford/systemless/actions/runs/38246494927)
+passed website deployment, six native builds and binary upload. This is the
+**nineteenth independently qualified new live game**, one distinct original
+68K title; no native PPC slice. Full levels, jumping, saving, audio and the known
+Options/help/post-Options rendering faults remain unverified or unresolved.
+Intake stays open for those faults. No release action taken.

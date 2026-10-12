@@ -102,7 +102,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 57 | 245 | Pillars of Garendall | PPC lead | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 58 | 246 | Gubble | PPC era; verify | D | [Demo index](https://classicmacdemos.com/gubble); [Archive index](https://www.vintageapplemac.com/software/games/g/) |
 | 59 | 247 | MacSki | 68K lead | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 60 | 248 | Pararena | 68K lead | D | [Demo index](https://classicmacdemos.com/pararena-20) |
+| 60 | 248 | Pararena | Original demo 2.01: 68K lead | D | [Author MIT-source correspondence; complete demo rights/runtime pending](CATALOGUE-SOURCES.md#pararena-author-source-rights-lead--primary-60); [#4750](https://github.com/benletchford/systemless/issues/4750) |
 | 61 | 249 | Bonkheads | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
 | 62 | 250 | Bonkheads Deluxe | 68K lead | D | [Demo index](https://classicmacdemos.com/bonkheads-deluxe) |
 | 63 | 251 | Monkey Shines | Original 68K only; native/browser evidence | P | [Original grant, architecture and bounded evidence](catalogue/monkey-shines.md) |
@@ -989,7 +989,7 @@ human release and independently verified public replay before it is counted live
 
 | Reserve | Game | CPU evidence | Distribution | Qualification |
 | --- | --- | --- | --- | --- |
-| R101 | Spacestation Pheta 2.7 | 68K; no native PPC slice in original archive | Explicit conditional shareware-library grant; UNREGISTERED visibly verified; complete original package retained | [Native/browser walking and climbing, exact archive/forks and promoted screenshot](CATALOGUE-SOURCES.md#spacestation-pheta-27--additional-reserve-discovery); [catalogue PR #4629 merged](https://github.com/benletchford/systemless/pull/4629), human release/public replay pending |
+| R101 | Spacestation Pheta 2.7 | 68K; no native PPC slice in original archive | Explicit conditional shareware-library grant; UNREGISTERED visibly verified; complete original package retained | [Native/browser walking and climbing, exact archive/forks and promoted screenshot](CATALOGUE-SOURCES.md#spacestation-pheta-27--additional-reserve-discovery); [catalogue PR #4629 merged](https://github.com/benletchford/systemless/pull/4629); [qualified public v0.97.0 walking/climbing](CATALOGUE-SOURCES.md#spacestation-pheta-direct-public-replay--qualified-bounded-gameplay) |
 
 ## Existing catalogue inventory (188; baseline)
 
