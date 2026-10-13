@@ -171,9 +171,9 @@ pub(crate) struct PpcParkedInterruptCallback {
     pub(crate) level: PpcCallbackLevel,
     /// Task that owns the callback's 68K call and its native frame.
     pub(crate) task: crate::guest_call::ExecutionTaskId,
-    /// The 68K call the callback submitted when it parked. Every call the
-    /// callback makes afterwards has a larger ID.
-    pub(crate) awaited_call: crate::guest_call::CallId,
+    /// The 68K call the callback submitted when it parked. None denotes
+    /// a native sound callback that exhausted its execution slice.
+    pub(crate) awaited_call: Option<crate::guest_call::CallId>,
     /// Stack pointer the callback holds when it returns to `halt_pc`.
     pub(crate) callback_sp: u32,
     pub(crate) interrupted: PpcExecutionContext,
