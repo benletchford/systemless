@@ -4211,3 +4211,37 @@ fn quicktime_callback_upp_preserves_native_vector_and_disposes_owned_descriptor(
         PpcImportDispatcherTarget::Unsupported
     );
 }
+
+
+#[test]
+fn sound_callback_upp_resolves_weak_import_allocates_descriptor_and_disposes() {
+    for (name, target) in [
+        (b"NewSndCallBackUPP".as_slice(), PpcImportDispatcherTarget::NewSndCallBackUPP),
+        (b"DisposeSndCallBackUPP".as_slice(), PpcImportDispatcherTarget::DisposeRoutineDescriptor),
+    ] {
+        let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+            b"CarbonLib", name, 0x82, &[sm_index_reloc(0x30, 0)],
+        ));
+        let mut loaded = load_pef_application(&pef).unwrap();
+        assert_eq!(loaded.imports[0].dispatcher_target, target);
+        assert_ne!(loaded.imports[0].address, 0);
+        assert_eq!(loaded.memory.read_u32_be(PPC_DATA_BASE), Some(loaded.imports[0].address));
+    }
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NewSndCallBackUPP")).unwrap();
+    let callback = PPC_CODE_BASE;
+    let original_code = ppc_memory_read_bytes(&mut loaded.memory, callback, 8).unwrap();
+    loaded.cpu.gpr[3] = callback;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::NewSndCallBackUPP);
+    let descriptor = loaded.cpu.gpr[3];
+    assert_ne!(descriptor, 0);
+    assert_ne!(descriptor, callback);
+    assert_eq!(loaded.memory.read_u16_be(descriptor), Some(PPC_MIXED_MODE_TRAP));
+    let record = descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE;
+    assert_eq!(loaded.memory.read_u32_be(record), Some(0x000003C0));
+    assert_eq!(loaded.memory.read_u32_be(record + PPC_ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET), Some(callback));
+    assert_eq!(loaded.memory.read_u8(record + PPC_ROUTINE_RECORD_ISA_OFFSET), Some(PPC_ROUTINE_RECORD_POWERPC_ISA));
+    loaded.cpu.gpr[3] = descriptor;
+    run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeRoutineDescriptor);
+    assert_eq!(loaded.cpu.gpr[3], descriptor);
+    assert_eq!(ppc_memory_read_bytes(&mut loaded.memory, callback, 8), Some(original_code));
+}
