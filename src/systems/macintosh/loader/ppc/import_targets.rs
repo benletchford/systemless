@@ -7,6 +7,7 @@ pub enum PpcImportDispatcherTarget {
     Collection(PpcCollectionOperation),
     Drag(PpcDragOperation),
     InstallExceptionHandler,
+    NSpInitialize,
     NewPtr { clear: bool },
     DisposePtr,
     GetPtrSize,
@@ -1395,6 +1396,7 @@ pub(crate) fn dispatcher_target_for_import(
         _ => library_name,
     };
     match (library_name, symbol_name) {
+        ("NetSprocketLib", "NSpInitialize") => PpcImportDispatcherTarget::NSpInitialize,
         ("OpenGLMemory", "glmSetMode") => PpcImportDispatcherTarget::GlmSetMode,
         ("OpenGLMemory", "glmSetFunc") => PpcImportDispatcherTarget::GlmSetFunc,
         ("OpenGLMemory", "glmMalloc") => PpcImportDispatcherTarget::GlmMalloc,

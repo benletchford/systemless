@@ -1364,6 +1364,12 @@ pub(crate) fn dispatch_supported_import(
     }
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::NSpInitialize => {
+            // Apple MacErrors.h: kNSpOTNotPresentErr. NetSprocket cannot
+            // initialize without Open Transport; do not advertise networking
+            // or allocate an initialized instance when no transport exists.
+            Some(PpcImportAction::Return((-30370i32) as u32))
+        }
         PpcImportDispatcherTarget::Drag(_) => {
             unreachable!("drag imports return through dispatch_drag_import")
         }

@@ -1726,3 +1726,25 @@ fn qd_random_seed_getter_observes_live_state_without_changing_draw_sequence() {
         }
     }
 }
+
+
+#[test]
+fn netsprocket_initialize_reports_missing_transport_without_mutating_arguments() {
+    assert_eq!(
+        dispatcher_target_for_import("NetSprocketLib", "NSpInitialize"),
+        PpcImportDispatcherTarget::NSpInitialize
+    );
+    assert_eq!(
+        dispatcher_target_for_import("InterfaceLib", "NSpInitialize"),
+        PpcImportDispatcherTarget::Unsupported
+    );
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"NSpInitialize")).unwrap();
+    for arguments in [[0, 0, 0, 0, 0], [586, 409600, 20, 0x41535452, 0]] {
+        loaded.cpu.gpr[3..8].copy_from_slice(&arguments);
+        let stack = loaded.cpu.gpr[1];
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NSpInitialize);
+        assert_eq!(loaded.cpu.gpr[3] as i32, -30370);
+        assert_eq!(loaded.cpu.gpr[4..8], arguments[1..5]);
+        assert_eq!(loaded.cpu.gpr[1], stack);
+    }
+}
