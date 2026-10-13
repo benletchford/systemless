@@ -4523,6 +4523,7 @@ fn canvas_cursor_scale(canvas: &HtmlCanvasElement, logical: (u32, u32)) -> f64 {
         return 0.0;
     }
     canvas.get_bounding_client_rect().width() / logical.0 as f64
+        * crate::browser_bridge::systemless_cursor_zoom()
 }
 
 fn canvas_output_scale(canvas: &HtmlCanvasElement, logical: (u32, u32)) -> u32 {

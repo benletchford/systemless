@@ -25,6 +25,8 @@ fn main() {
     if catalogue::games().is_empty() {
         return;
     }
+    // Calibrate saved page zoom while navigating the catalogue or booting a game.
+    browser_bridge::systemless_cursor_zoom();
     if let Some(root) = root_element() {
         root.set_inner_html("");
         mount_to(root, app::App).forget();

@@ -6,7 +6,7 @@ use image::ImageEncoder;
 use systemless::systems::macintosh::display::{self, CursorImage};
 
 pub(crate) struct HostCursor {
-    key: Option<(Option<CursorImage>, u64)>,
+    key: Option<(Option<CursorImage>, Option<NativeSize>)>,
     pub css: String,
     pub software: bool,
 }
@@ -23,14 +23,17 @@ impl Default for HostCursor {
 
 impl HostCursor {
     pub fn update(&mut self, image: Option<&CursorImage>, scale: f64) -> bool {
+        // Coordinate-derived scale can vary below a pixel. Cache the actual
+        // bitmap dimensions and hotspot, not the floating-point measurement.
+        let size = image.and_then(|image| native_size(image, scale));
         if self
             .key
             .as_ref()
-            .is_some_and(|(old, old_scale)| old.as_ref() == image && *old_scale == scale.to_bits())
+            .is_some_and(|(old, old_size)| old.as_ref() == image && *old_size == size)
         {
             return false;
         }
-        self.key = Some((image.cloned(), scale.to_bits()));
+        self.key = Some((image.cloned(), size));
         self.css = "none".into();
         self.software = false;
         if let Some(image) = image {
@@ -42,6 +45,51 @@ impl HostCursor {
         }
         true
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct NativeSize {
+    width: usize,
+    height: usize,
+    hot_h: usize,
+    hot_v: usize,
+}
+
+fn native_size(image: &CursorImage, scale: f64) -> Option<NativeSize> {
+    let (w, h, hot_h, hot_v) = match image {
+        CursorImage::Mono { hot_h, hot_v, .. } => (16, 16, *hot_h, *hot_v),
+        CursorImage::Color {
+            width,
+            height,
+            hot_h,
+            hot_v,
+            ..
+        } => (usize::from(*width), usize::from(*height), *hot_h, *hot_v),
+    };
+    if !scale.is_finite()
+        || scale <= 0.0
+        || w == 0
+        || h == 0
+        || hot_h < 0
+        || hot_v < 0
+        || hot_h as usize >= w
+        || hot_v as usize >= h
+    {
+        return None;
+    }
+    let width = (w as f64 * scale).round().max(1.0) as usize;
+    let height = (h as f64 * scale).round().max(1.0) as usize;
+    // Chromium/Firefox reject oversized image cursors. Keep the software
+    // overlay instead of hiding it and relying on an ignored CSS image.
+    if width > 128 || height > 128 {
+        return None;
+    }
+    Some(NativeSize {
+        width,
+        height,
+        hot_h: ((hot_h as f64 * scale).round() as usize).min(width - 1),
+        hot_v: ((hot_v as f64 * scale).round() as usize).min(height - 1),
+    })
 }
 
 pub(crate) fn native_pointer_supported(
@@ -57,6 +105,7 @@ pub(crate) fn native_pointer_supported(
 }
 
 fn native_css(image: &CursorImage, scale: f64) -> Option<String> {
+    let size = native_size(image, scale)?;
     let (w, h, hot_h, hot_v) = match image {
         CursorImage::Mono {
             data,
@@ -94,22 +143,7 @@ fn native_css(image: &CursorImage, scale: f64) -> Option<String> {
             (w, h, *hot_h, *hot_v)
         }
     };
-    if !scale.is_finite()
-        || scale <= 0.0
-        || hot_h < 0
-        || hot_v < 0
-        || hot_h as usize >= w
-        || hot_v as usize >= h
-    {
-        return None;
-    }
-    let out_w = (w as f64 * scale).round().max(1.0) as usize;
-    let out_h = (h as f64 * scale).round().max(1.0) as usize;
-    // Chromium/Firefox reject oversized image cursors. Keep the software
-    // overlay instead of hiding it and relying on an ignored CSS image.
-    if out_w > 128 || out_h > 128 {
-        return None;
-    }
+    let (out_w, out_h) = (size.width, size.height);
     let mut source = vec![0; w * h * 4];
     display::render_cursor(&mut source, w as u32, h as u32, image, (hot_v, hot_h));
     let mut scaled = vec![0; out_w * out_h * 4];
@@ -130,8 +164,7 @@ fn native_css(image: &CursorImage, scale: f64) -> Option<String> {
         )
         .ok()?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(png);
-    let hot_h = ((hot_h as f64 * scale).round() as usize).min(out_w - 1);
-    let hot_v = ((hot_v as f64 * scale).round() as usize).min(out_h - 1);
+    let (hot_h, hot_v) = (size.hot_h, size.hot_v);
     Some(format!(
         "url(\"data:image/png;base64,{encoded}\") {hot_h} {hot_v}, none"
     ))
@@ -198,8 +231,11 @@ mod tests {
         let pointer = state.css.as_ptr();
         assert!(!state.update(Some(&image), 1.0));
         assert_eq!(state.css.as_ptr(), pointer);
-        for scale in [0.0, -1.0, f64::NAN, f64::INFINITY, 9.0] {
-            assert!(state.update(Some(&image), scale));
+        for (index, scale) in [0.0, -1.0, f64::NAN, f64::INFINITY, 9.0]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(state.update(Some(&image), scale), index == 0);
             assert!(state.software);
             assert_eq!(state.css, "none");
         }
@@ -210,6 +246,21 @@ mod tests {
         assert!(!state.software);
         assert_eq!(state.css, "none");
         assert!(native_css(&CursorImage::mono([0; 32], [255; 32], -1, 0), 1.0).is_none());
+    }
+
+    #[test]
+    fn scale_measurement_noise_reuses_identical_pixels_and_hotspot() {
+        let mut state = HostCursor::default();
+        let image = CursorImage::mono([0; 32], [255; 32], 7, 7);
+        assert!(state.update(Some(&image), 1.0));
+        let pointer = state.css.as_ptr();
+        for scale in [0.9999, 1.0001, 1.001, 1.01] {
+            assert!(!state.update(Some(&image), scale));
+            assert_eq!(state.css.as_ptr(), pointer);
+        }
+        assert!(state.update(Some(&image), 1.213));
+        // Both images are 19 pixels wide, but the hotspot crosses a pixel.
+        assert!(state.update(Some(&image), 1.215));
     }
 
     #[test]
