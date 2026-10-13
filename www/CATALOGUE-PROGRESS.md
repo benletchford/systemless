@@ -252,7 +252,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 195 | Alone in the Dark 2 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 196 | Alone in the Dark 3: Ghosts in Town | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 197 | AmoebArena | README inspected; no explicit redistribution grant found | Demo archive identified | 68K + PPC executable verified | 68K setup and three placements inspected; one replay assertion passes; PPC toolbox alert | Pending | Pending | Held; [#4783](https://github.com/benletchford/systemless/issues/4783) |
-| 198 | AstroRock 2000 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 198 | AstroRock 2000 | README/notices inspected; permission unresolved | Exact 1.2 demo identified | PPC only; no game CODE | Unsupported NSpInitialize, [#3967](https://github.com/benletchford/systemless/issues/3967) | Pending | Pending | Held; [#4786](https://github.com/benletchford/systemless/issues/4786) |
 | 199 | Backyard Football | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 200 | Bad Milk | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 201 | battle-girl | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
