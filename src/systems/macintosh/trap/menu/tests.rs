@@ -11599,3 +11599,42 @@ fn native_selection_rejects_disabled_and_hierarchical_parent_items() {
     assert_eq!(disp.queue_native_menu_selection(&bus, 100, 2), None);
     assert_eq!(disp.queue_native_menu_selection(&bus, 999, 1), None);
 }
+
+#[test]
+fn hilitemenu_already_clear_preserves_pixels_and_registers() {
+    let (mut disp, mut cpu, mut bus) = setup_with_port();
+    let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 64);
+    disp.menu_bar_hidden = false;
+    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+    let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 243, 0x30B800, "File");
+    insert_menu(&mut disp, &mut cpu, &mut bus, file);
+    disp.draw_menu_bar_to_fb(&mut bus);
+    // An independent pixel marker detects redundant menu-bar painting even
+    // when a renderer would otherwise rewrite identical pixels.
+    bus.write_byte(base + 5 * row_bytes + 100, 47);
+    let before = bus.read_bytes(base, (row_bytes * 64) as usize);
+    cpu.write_reg(Register::D0, 0x1234_5678);
+    for _ in 0..3 {
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        assert!(disp.hilite_menu_clear_is_noop(&bus, 0));
+        disp.dispatch_menu(true, 0x138, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::THE_MENU), 0);
+        assert_eq!(bus.read_bytes(base, (row_bytes * 64) as usize), before);
+    }
+    assert!(!disp.hilite_menu_clear_is_noop(&bus, 243));
+    bus.write_word(crate::memory::globals::addr::THE_MENU, 243);
+    assert!(!disp.hilite_menu_clear_is_noop(&bus, 0));
+    cpu.write_reg(Register::A7, TEST_SP);
+    disp.dispatch_menu(true, 0x138, &mut cpu, &mut bus)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bus.read_word(crate::memory::globals::addr::THE_MENU), 0);
+    assert_ne!(bus.read_bytes(base, (row_bytes * 64) as usize), before);
+    disp.open_menu_dropdown(&mut bus, 0);
+    assert!(!disp.hilite_menu_clear_is_noop(&bus, 0));
+}

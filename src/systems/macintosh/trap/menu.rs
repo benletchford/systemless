@@ -451,6 +451,11 @@ fn mc_entry_matches(bytes: &[u8], menu_id: i16, menu_item: i16) -> bool {
 }
 
 impl super::TrapDispatcher {
+    /// A clear request is inert only when no dropdown or title needs clearing.
+    pub(crate) fn hilite_menu_clear_is_noop(&self, bus: &MacMemoryBus, menu_id: i16) -> bool {
+        menu_id == 0 && self.menu_tracking.is_none() && bus.read_word(addr::THE_MENU) == 0
+    }
+
     fn menu_uses_standard_definition(&self, bus: &MacMemoryBus, menu_ptr: u32) -> bool {
         let handle = bus.read_long(menu_ptr + 6);
         self.loaded_handles
@@ -2961,6 +2966,13 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let requested_menu_id = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
+
+                // HiliteMenu(0) is frequently part of a null-event poll. When
+                // the title and dropdown are already clear, neither the guest
+                // menu state nor its pixels need changing.
+                if self.hilite_menu_clear_is_noop(bus, requested_menu_id) {
+                    return Some(Ok(()));
+                }
 
                 // If there's still a dropdown open, close it
                 if let Some(tracking) = self.menu_tracking.take() {

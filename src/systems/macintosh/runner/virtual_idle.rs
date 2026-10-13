@@ -66,6 +66,9 @@ pub(crate) fn virtual_idle_trap_is_journal_complete(
         system_task_idle,
         sound_command_rejected,
         selector,
+        // This recorder lacks the pre-dispatch menu-clear fact. Keep menu
+        // drawing out; only the exact parking prover admits its no-op path.
+        false,
     ) || (!ui_tracking
         && matches!(
             canonical_trap_number(opcode),
