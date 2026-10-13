@@ -31,6 +31,22 @@ compatibility:
       qualification remain unverified.
     status: playable
     evidence: https://github.com/benletchford/systemless/issues/4774
+  - date: "2026-10-13"
+    tester: Catalogue maintainer
+    systemless_version: c103d671e2f52d3004d66f5262bf30eeab0f2f33
+    architecture: 68k
+    environment: >-
+      Optimized staged Chrome Worker/Canvas2D loads the actual managed original,
+      no local archive fixture or browser security override. Ordinary held clicks
+      close About, place two stones and produce two computer replies, returning
+      to Black's Turn. Actual captures inspected. Default 25 MHz and 800x600,
+      optimized Wasm SHA-256 4e06918320a7c25a99f5d8dfd2bd75e03fa9d9d662f0f0396602977be61a268d.
+      Steady guest pacing is 13.220316576 ticks/sec, below unchanged minimum 50,
+      despite 59.999898 host FPS and no console errors. Browser launch remains
+      disabled; focused runtime defect #4779 is open. This failed pacing run
+      does not qualify browser launch or public gameplay.
+    status: broken
+    evidence: https://github.com/benletchford/systemless/issues/4779
 runtime:
   executable_path: SUSAN™ 2.5 ƒ/SUSAN™ 2.5
   show_menu_bar: true
@@ -93,7 +109,9 @@ Surround an opponent's stone to win. The complete original manual explains
 sliding, draws and strategy; both optional art sets and the trained intelligence
 file remain in the unchanged free download.
 
-One placement and computer reply are verified natively. Browser approval,
-full games, sliding, learning persistence, saves and audio remain pending.
+One placement and computer reply are verified natively. Two placements work
+in the staged browser, but pacing fails the launch gate and launching remains
+disabled. Full games, sliding, learning persistence, saves and audio remain
+pending.
 
 ![Susan original board after a placement and reply](https://assets.systemless.org/catalogue/media/sha256/c4/c4cd13cae56280c6734cf4086992097393154ea84e4c23a714b216f1d31c6adc.png)
