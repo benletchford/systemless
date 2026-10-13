@@ -2,6 +2,20 @@ use js_sys::{Array, Object};
 use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 use web_sys::Worker;
 
+// PointerEvent exposes fractional CSS coordinates, but web-sys inherits the
+// integer MouseEvent getters. Preserve that precision until guest-pixel rounding.
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(extends = web_sys::PointerEvent, js_name = PointerEvent)]
+    pub type PrecisePointerEvent;
+
+    #[wasm_bindgen(method, getter, structural, js_name = clientX)]
+    pub fn client_x_f64(this: &PrecisePointerEvent) -> f64;
+
+    #[wasm_bindgen(method, getter, structural, js_name = clientY)]
+    pub fn client_y_f64(this: &PrecisePointerEvent) -> f64;
+}
+
 #[wasm_bindgen(inline_js = r#"
 const archivePrefetches = new Map();
 const archiveFetchCancellations = new WeakMap();

@@ -4472,15 +4472,16 @@ fn mobile_control_pointer(pointer_type: &str, is_primary: bool) -> bool {
 }
 
 fn pointer_coords(canvas: &HtmlCanvasElement, ev: &PointerEvent) -> Option<(i16, i16)> {
-    canvas_coords_from_client(canvas, ev.client_x(), ev.client_y())
+    let ev = ev.unchecked_ref::<crate::browser_bridge::PrecisePointerEvent>();
+    canvas_coords_from_client(canvas, ev.client_x_f64(), ev.client_y_f64())
 }
 
 fn touch_coords(canvas: &HtmlCanvasElement, touch: &Touch) -> Option<(i16, i16)> {
-    canvas_coords_from_client(canvas, touch.client_x(), touch.client_y())
+    canvas_coords_from_client(canvas, touch.client_x() as f64, touch.client_y() as f64)
 }
 
 fn canvas_coords(canvas: &HtmlCanvasElement, ev: &MouseEvent) -> Option<(i16, i16)> {
-    canvas_coords_from_client(canvas, ev.client_x(), ev.client_y())
+    canvas_coords_from_client(canvas, ev.client_x() as f64, ev.client_y() as f64)
 }
 
 fn logical_pointer_position(
@@ -4540,8 +4541,8 @@ fn canvas_output_scale(canvas: &HtmlCanvasElement, logical: (u32, u32)) -> u32 {
 
 fn canvas_coords_from_client(
     canvas: &HtmlCanvasElement,
-    client_x: i32,
-    client_y: i32,
+    client_x: f64,
+    client_y: f64,
 ) -> Option<(i16, i16)> {
     let rect = canvas.get_bounding_client_rect();
     let rw = rect.width();
@@ -4551,7 +4552,7 @@ fn canvas_coords_from_client(
     }
     let scale = canvas_backing_scale(canvas) as f64;
     Some(logical_pointer_position(
-        (client_x as f64 - rect.x(), client_y as f64 - rect.y()),
+        (client_x - rect.x(), client_y - rect.y()),
         (rw, rh),
         (canvas.width(), canvas.height()),
         scale,
