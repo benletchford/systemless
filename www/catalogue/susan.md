@@ -65,7 +65,8 @@ compatibility:
       above unchanged minimum 50, no console errors. Guarded already-clear
       HiliteMenu no-op and exact idle proof fix #4780 merged after all nine
       exact-head checks passed; tested source 069c7a46 has the same Rust tree
-      as merged b28a9599. Four menu tests and all 85 idle-proof tests. Native same eight gameplay checks and
+      as merged b28a9599. Four menu tests and all 85 idle-proof tests pass.
+      Native same eight gameplay checks and
       both complete captures remain unchanged at 1112 frontend / 1706 guest ticks,
       zero exhaustion. Native binary SHA-256
       d4bea97db4e1d77e0456c1c51c98dc31594305714663d429bf2bea1035b28b4e;
