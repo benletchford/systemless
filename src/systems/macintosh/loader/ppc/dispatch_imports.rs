@@ -1833,6 +1833,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::GetGray
         | PpcImportDispatcherTarget::ForeColor
         | PpcImportDispatcherTarget::BackColor
+        | PpcImportDispatcherTarget::SetThemePen
         | PpcImportDispatcherTarget::RGBForeColor
         | PpcImportDispatcherTarget::RGBBackColor
         | PpcImportDispatcherTarget::OpColor

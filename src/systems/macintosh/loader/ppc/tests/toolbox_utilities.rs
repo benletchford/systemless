@@ -1748,3 +1748,95 @@ fn netsprocket_initialize_reports_missing_transport_without_mutating_arguments()
         assert_eq!(loaded.cpu.gpr[1], stack);
     }
 }
+
+#[test]
+fn theme_pen_sets_current_port_solid_colors_and_preserves_pen_geometry() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetThemePen")).unwrap();
+    assert_eq!(
+        dispatcher_target_for_import("CarbonLib", "SetThemePen"),
+        PpcImportDispatcherTarget::SetThemePen
+    );
+    let port = *loaded.current_gworld;
+    let marker = PPC_DATA_BASE + 0x1000;
+    loaded.memory.add_region(marker, vec![0x5a; 8]);
+    loaded.memory.write_u32_be(port + 58, marker).unwrap();
+    loaded
+        .memory
+        .write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 3)
+        .unwrap();
+    loaded
+        .memory
+        .write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2, 7)
+        .unwrap();
+    loaded.quickdraw_fore_indices.insert(port, 103);
+    loaded.toolbox_startup.quickdraw_pen_pattern = [0x55; 8];
+    for (brush, expected) in [
+        (-1i16, PPC_RGB_BLACK),
+        (-2, PPC_RGB_WHITE),
+        (
+            5,
+            ppc_theme_rgb(
+                ppc_ui_theme(&loaded.gworlds)
+                    .provider()
+                    .palette()
+                    .window_background,
+            ),
+        ),
+    ] {
+        loaded.cpu.gpr[3] = (brush as u16 as u32) | 0x1234_0000;
+        loaded.cpu.gpr[4] = 0x5678_0010;
+        loaded.cpu.gpr[5] = 0x9abc_0001;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetThemePen);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.quickdraw_fore_color, expected);
+        assert_eq!(
+            ppc_read_rgb_color(
+                &mut loaded.memory,
+                port + PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET
+            ),
+            Some(expected)
+        );
+        assert_eq!(loaded.memory.read_u32_be(port + 58), Some(0));
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET),
+            Some(3)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2),
+            Some(7)
+        );
+        assert_eq!(loaded.toolbox_startup.quickdraw_pen_pattern, [0xff; 8]);
+        assert!(!loaded.quickdraw_fore_indices.contains_key(&port));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, marker, 8),
+            Some(vec![0x5a; 8])
+        );
+    }
+}
+
+#[test]
+fn theme_pen_rejects_invalid_or_unimplemented_brushes_without_mutation() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"SetThemePen")).unwrap();
+    for (brush, depth, color_device, error) in [
+        (0, 16, 1, -30560),
+        (49, 16, 1, -30560),
+        (5, 3, 1, -30567),
+        (9, 16, 1, -4),
+        (5, 1, 0, -4),
+        (5, 16, 0x100, -4),
+    ] {
+        let foreground = loaded.quickdraw_fore_color;
+        let pattern = loaded.toolbox_startup.quickdraw_pen_pattern;
+        loaded.cpu.gpr[3] = brush as u32;
+        loaded.cpu.gpr[4] = depth;
+        loaded.cpu.gpr[5] = color_device;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetThemePen);
+        assert_eq!(loaded.cpu.gpr[3] as i32, error);
+        assert_eq!(loaded.quickdraw_fore_color, foreground);
+        assert_eq!(loaded.toolbox_startup.quickdraw_pen_pattern, pattern);
+    }
+}

@@ -472,7 +472,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 413 | Yacht-3D | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 414 | Abalone | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 415 | Bakudanjin | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 416 | Candy Crisis | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 416 | Candy Crisis | Author GPLv2 project; library correspondence review pending | Original 1.2 publisher binary/source verified | PPC only | Candidate reaches shareware dialog; Not Yet halts at PC zero | Pending | Pending | Held; [#4789](https://github.com/benletchford/systemless/issues/4789) |
 | 417 | DragonMaze | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 418 | ExaChess_Lite | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 419 | Fanorona | [CD-ROM grant; web/source scope held](CATALOGUE-SOURCES.md#fanorona-original-java-package--target-607) | Original archive; both files/four forks matched | [Launcher dependency alert; Java gameplay unqualified](https://github.com/benletchford/systemless/issues/4520) | MRJ runtime/CPU route unqualified | Pending | Intake documented; unhosted | Pending |

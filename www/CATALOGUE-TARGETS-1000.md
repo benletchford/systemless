@@ -468,7 +468,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 413 | 601 | Yacht-3D | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/y/); [Garden](https://macintoshgarden.org/games/yacht-3d) |
 | 414 | 602 | Abalone | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/a/) |
 | 415 | 603 | Bakudanjin | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/b/) |
-| 416 | 604 | Candy Crisis | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
+| 416 | 604 | Candy Crisis | Original 1.2 PPC only; startup/continuation under test | S | [Archive index](https://www.vintageapplemac.com/software/games/c/) |
 | 417 | 605 | DragonMaze | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/d/) |
 | 418 | 606 | ExaChess_Lite | Verify 68K/PPC | S | [Archive index](https://www.vintageapplemac.com/software/games/e/) |
 | 419 | 607 | Fanorona | Original Java/MRJ game; native CPU routes unqualified | U | [Original package and runtime/rights findings](CATALOGUE-SOURCES.md#fanorona-original-java-package--target-607) |
