@@ -247,8 +247,13 @@ impl PpcLoadedApp {
         let Some(callback_sp) = callback_sp else {
             return false;
         };
+        // An unconditional branch to itself cannot make progress when resumed.
+        // Keep the callback watchdog for that terminal loop, while allowing
+        // finite work to retain its context across execution slices.
+        let terminal_self_branch = self.memory.read_u32_be(self.cpu.pc) == Some(0x4800_0000);
         let native_slice = allow_native_slice
-            && matches!(probe.result, PpcRunResult::CycleLimit { .. });
+            && matches!(probe.result, PpcRunResult::CycleLimit { .. })
+            && !terminal_self_branch;
         if !entry.may_park
             || probe.unsupported_import_index.is_some()
             || (!native_slice
