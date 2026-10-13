@@ -17390,6 +17390,30 @@ impl super::TrapDispatcher {
                             }
                         }
                     }
+                    // PlotIconSuite: RectPtr, alignment, transform, suite;
+                    // reverse Pascal order, twelve argument bytes and OSErr.
+                    0x0306 => {
+                        let sp = cpu.read_reg(Register::A7);
+                        let suite = bus.read_long(sp);
+                        let transform = bus.read_word(sp + 4);
+                        let alignment = bus.read_word(sp + 6);
+                        let rect_ptr = bus.read_long(sp + 8);
+                        let error = if rect_ptr == 0
+                            || !rect_ptr
+                                .checked_add(8)
+                                .is_some_and(|end| end <= bus.ram_size())
+                        {
+                            -50
+                        } else {
+                            let port = self.effective_the_port(bus, cpu.read_reg(Register::A5));
+                            let rect = super::types::read_rect(bus, rect_ptr);
+                            self.plot_loaded_icon_suite(bus, port, rect, alignment, transform, suite)
+                        };
+                        bus.write_word(sp + 12, error as u16);
+                        cpu.write_reg(Register::A7, sp + 12);
+                        cpu.write_reg(Register::D0, error as i32 as u32);
+                        Ok(())
+                    }
                     // PlotCIconHandle. The Icon Utilities glue passes, in
                     // reverse Pascal order, the CIconHandle, transform and
                     // alignment words, and destination Rect pointer. PlotCIcon
