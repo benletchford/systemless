@@ -10,6 +10,7 @@ architectures:
 - 68k
 default_architecture: 68k
 category: Strategy
+launch_enabled: true
 compatibility:
   status: playable
   verified:
@@ -47,6 +48,33 @@ compatibility:
       does not qualify browser launch or public gameplay.
     status: broken
     evidence: https://github.com/benletchford/systemless/issues/4779
+  - date: "2026-10-13"
+    tester: Catalogue maintainer
+    systemless_version: 069c7a4651b5a3a7a2870c7bf82dd8893bbc1b40
+    architecture: 68k
+    environment: >-
+      Browser launch approved after two fresh optimized Chrome 151 Worker/Canvas2D
+      staging replays of the actual managed original archive, default 25 MHz,
+      800x600. Private frontend bridge only; no archive fixture or security override.
+      Ordinary held About close and two legal player placements produce computer
+      responses and return to Black's Turn. Actual captures inspected. The fresh
+      repeat passes eight fixed player-stone checks across the two placements.
+      Opponent reply positions vary across fresh starts; a supplementary fixed
+      native-opponent-square check failed and is excluded from browser assertions.
+      Steady pacing after the replies is 60.054558 / 58.998550 guest ticks/sec,
+      above unchanged minimum 50, no console errors. Guarded already-clear
+      HiliteMenu no-op and exact idle proof candidate #4780 passes four menu
+      tests and all 85 idle-proof tests. Native same eight gameplay checks and
+      both complete captures remain unchanged at 1112 frontend / 1706 guest ticks,
+      zero exhaustion. Native binary SHA-256
+      d4bea97db4e1d77e0456c1c51c98dc31594305714663d429bf2bea1035b28b4e;
+      optimized Wasm SHA-256
+      77ea550597b8f4966125d12ffa65eba3ec6f50cf80098cdddfcea7ded9a0f5a2.
+      Original archive and screenshot managed GETs match pinned bytes/hashes.
+      Runtime PR must land before entry merge. Full games, sliding, learning
+      persistence, saves, audio and direct public replay remain unverified.
+    status: playable
+    evidence: https://github.com/benletchford/systemless/issues/4774
 runtime:
   executable_path: SUSAN™ 2.5 ƒ/SUSAN™ 2.5
   show_menu_bar: true
@@ -109,9 +137,9 @@ Surround an opponent's stone to win. The complete original manual explains
 sliding, draws and strategy; both optional art sets and the trained intelligence
 file remain in the unchanged free download.
 
-One placement and computer reply are verified natively. Two placements work
-in the staged browser, but pacing fails the launch gate and launching remains
-disabled. Full games, sliding, learning persistence, saves and audio remain
-pending.
+One placement and computer reply are verified natively. Two placements,
+computer responses and pacing pass in the staged browser. Full games,
+sliding, learning persistence, saves and audio remain unverified.
+Human release and direct public gameplay qualification remain pending.
 
 ![Susan original board after a placement and reply](https://assets.systemless.org/catalogue/media/sha256/c4/c4cd13cae56280c6734cf4086992097393154ea84e4c23a714b216f1d31c6adc.png)
