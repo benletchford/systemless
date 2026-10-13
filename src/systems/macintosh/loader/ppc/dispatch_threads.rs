@@ -166,6 +166,13 @@ pub(super) fn dispatch_thread_import(
     } = context;
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::MpYield => {
+            // Apple Multiprocessing.h: void MPYield(void). Relinquish the
+            // current execution slice after completing the procedure return.
+            // Yield alone would retain this import and re-enter it forever.
+            cpu.pc = cpu.lr;
+            Some(PpcImportAction::Yield(1))
+        }
         PpcImportDispatcherTarget::MpCreateSemaphore => {
             // Multiprocessing Services Reference (2008), MPCreateSemaphore.
             let (maximum, initial, out) = (cpu.gpr[3], cpu.gpr[4], cpu.gpr[5]);
