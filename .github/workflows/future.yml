@@ -1,0 +1,19 @@
+name: Future runtime
+on:
+  pull_request:
+    paths: ['future/**', '.github/workflows/future.yml']
+  push:
+    branches: ['dev/future']
+    paths: ['future/**', '.github/workflows/future.yml']
+jobs:
+  cpu-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo test --manifest-path future/Cargo.toml --locked
+      - run: cargo clippy --manifest-path future/Cargo.toml --locked --all-targets -- -D warnings
+      # Real-GPU acceptance is explicit and documented in future/docs/progress.md.
+      # The default suite reports those tests ignored, never as passed.

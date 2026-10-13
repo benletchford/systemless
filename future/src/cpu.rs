@@ -1,0 +1,234 @@
+use crate::{
+    memory::{GuestPtr, Memory},
+    Error, Result,
+};
+use m68k::{AddressBus, CpuCore, CpuType, StepResult};
+use ppc::{PpcCpu, PpcStepResult};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Architecture {
+    M68k,
+    PowerPc,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Call {
+    Add(u32),
+    Draw(GuestPtr),
+    Callback(GuestPtr),
+    Exit(u32),
+}
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Continue,
+    Service(Call),
+    Return,
+}
+// Private fixture import gates, not Macintosh trap numbers or CFM descriptors.
+pub const IMPORT_BASE: u32 = 0x8000;
+pub const RETURN_GATE: u32 = 0x8100;
+pub enum Cpu {
+    M68k(Box<CpuCore>),
+    PowerPc(Box<PpcCpu>),
+}
+impl Cpu {
+    pub fn new(arch: Architecture, pc: u32, sp: u32) -> Self {
+        match arch {
+            Architecture::M68k => {
+                let mut c = Box::new(CpuCore::new());
+                c.set_cpu_type(CpuType::M68020);
+                c.set_sr(0);
+                c.pc = pc;
+                c.dar[15] = sp;
+                Self::M68k(c)
+            }
+            Architecture::PowerPc => {
+                let mut c = Box::new(PpcCpu::new());
+                c.pc = pc;
+                c.gpr[1] = sp;
+                c.lr = RETURN_GATE;
+                Self::PowerPc(c)
+            }
+        }
+    }
+    pub fn architecture(&self) -> Architecture {
+        match self {
+            Self::M68k(_) => Architecture::M68k,
+            Self::PowerPc(_) => Architecture::PowerPc,
+        }
+    }
+    pub fn pc(&self) -> u32 {
+        match self {
+            Self::M68k(c) => c.pc,
+            Self::PowerPc(c) => c.pc,
+        }
+    }
+    pub fn result(&self) -> u32 {
+        match self {
+            Self::M68k(c) => c.dar[0],
+            Self::PowerPc(c) => c.gpr[3],
+        }
+    }
+    pub fn set_result(&mut self, v: u32) {
+        match self {
+            Self::M68k(c) => c.dar[0] = v,
+            Self::PowerPc(c) => c.gpr[3] = v,
+        }
+    }
+    pub fn step(&mut self, memory: &mut Memory) -> Result<Outcome> {
+        if self.pc() == RETURN_GATE {
+            return Ok(Outcome::Return);
+        }
+        match self {
+            Self::M68k(c) => {
+                memory.fetch(GuestPtr(c.pc), 2, 2)?;
+                let mut bus = Bus {
+                    memory,
+                    fault: None,
+                };
+                let outcome = c.step(&mut bus);
+                if let Some(fault) = bus.fault {
+                    return Err(fault);
+                }
+                match outcome {
+                    StepResult::Ok { .. } => Ok(Outcome::Continue),
+                    StepResult::AlineTrap { opcode } => {
+                        let argument = bus.memory.u32(GuestPtr(c.dar[15]))?;
+                        let call = decode(u32::from(opcode & 0xfff), argument)?;
+                        c.dar[15] = c.dar[15]
+                            .checked_add(4)
+                            .ok_or_else(|| Error::Cpu("stack overflow".into()))?;
+                        Ok(Outcome::Service(call))
+                    }
+                    other => Err(Error::Cpu(format!("68K {other:?}"))),
+                }
+            }
+            Self::PowerPc(c) => {
+                if (IMPORT_BASE..IMPORT_BASE + 16).contains(&c.pc) && c.pc % 4 == 0 {
+                    let call = decode((c.pc - IMPORT_BASE) / 4, c.gpr[3])?;
+                    c.pc = c.lr;
+                    return Ok(Outcome::Service(call));
+                }
+                let word =
+                    u32::from_be_bytes(memory.fetch(GuestPtr(c.pc), 4, 4)?.try_into().unwrap());
+                let mut bus = Bus {
+                    memory,
+                    fault: None,
+                };
+                let outcome = c.step(&mut bus, word);
+                if let Some(fault) = bus.fault {
+                    return Err(fault);
+                }
+                match outcome {
+                    PpcStepResult::Stepped => Ok(Outcome::Continue),
+                    other => Err(Error::Cpu(format!("PPC {other:?}"))),
+                }
+            }
+        }
+    }
+}
+fn decode(id: u32, arg: u32) -> Result<Call> {
+    match id {
+        0 => Ok(Call::Add(arg)),
+        1 => Ok(Call::Draw(GuestPtr(arg))),
+        2 => Ok(Call::Callback(GuestPtr(arg))),
+        3 => Ok(Call::Exit(arg)),
+        _ => Err(Error::Service(id)),
+    }
+}
+
+// The engines borrow the same authoritative mapping. Retain the first fault;
+// suppress further transactions while a 68K engine unwinds an exception.
+struct Bus<'a> {
+    memory: &'a mut Memory,
+    fault: Option<Error>,
+}
+impl Bus<'_> {
+    fn read<const N: usize>(&mut self, a: u32) -> Option<[u8; N]> {
+        if self.fault.is_some() {
+            return None;
+        }
+        match self.memory.read(GuestPtr(a), N) {
+            Ok(v) => Some(v.try_into().unwrap()),
+            Err(e) => {
+                self.fault = Some(e);
+                None
+            }
+        }
+    }
+    fn fetch<const N: usize>(&mut self, a: u32) -> Option<[u8; N]> {
+        if self.fault.is_some() {
+            return None;
+        }
+        match self.memory.fetch(GuestPtr(a), N, 2) {
+            Ok(v) => Some(v.try_into().unwrap()),
+            Err(e) => {
+                self.fault = Some(e);
+                None
+            }
+        }
+    }
+    fn write(&mut self, a: u32, b: &[u8]) -> Option<()> {
+        if self.fault.is_some() {
+            return None;
+        }
+        match self.memory.write(GuestPtr(a), b) {
+            Ok(()) => Some(()),
+            Err(e) => {
+                self.fault = Some(e);
+                None
+            }
+        }
+    }
+}
+impl AddressBus for Bus<'_> {
+    fn read_immediate_word(&mut self, a: u32) -> u16 {
+        u16::from_be_bytes(self.fetch(a).unwrap_or([0; 2]))
+    }
+    fn read_immediate_long(&mut self, a: u32) -> u32 {
+        u32::from_be_bytes(self.fetch(a).unwrap_or([0; 4]))
+    }
+    fn read_byte(&mut self, a: u32) -> u8 {
+        self.read::<1>(a).unwrap_or([0])[0]
+    }
+    fn read_word(&mut self, a: u32) -> u16 {
+        u16::from_be_bytes(self.read(a).unwrap_or([0; 2]))
+    }
+    fn read_long(&mut self, a: u32) -> u32 {
+        u32::from_be_bytes(self.read(a).unwrap_or([0; 4]))
+    }
+    fn write_byte(&mut self, a: u32, v: u8) {
+        self.write(a, &[v]);
+    }
+    fn write_word(&mut self, a: u32, v: u16) {
+        self.write(a, &v.to_be_bytes());
+    }
+    fn write_long(&mut self, a: u32, v: u32) {
+        self.write(a, &v.to_be_bytes());
+    }
+}
+impl ppc::PpcMemory for Bus<'_> {
+    fn read_u8(&mut self, a: u32) -> Option<u8> {
+        Some(self.read::<1>(a)?[0])
+    }
+    fn read_u16_be(&mut self, a: u32) -> Option<u16> {
+        Some(u16::from_be_bytes(self.read(a)?))
+    }
+    fn read_u32_be(&mut self, a: u32) -> Option<u32> {
+        Some(u32::from_be_bytes(self.read(a)?))
+    }
+    fn read_u64_be(&mut self, a: u32) -> Option<u64> {
+        Some(u64::from_be_bytes(self.read(a)?))
+    }
+    fn write_u8(&mut self, a: u32, v: u8) -> Option<()> {
+        self.write(a, &[v])
+    }
+    fn write_u16_be(&mut self, a: u32, v: u16) -> Option<()> {
+        self.write(a, &v.to_be_bytes())
+    }
+    fn write_u32_be(&mut self, a: u32, v: u32) -> Option<()> {
+        self.write(a, &v.to_be_bytes())
+    }
+    fn write_u64_be(&mut self, a: u32, v: u64) -> Option<()> {
+        self.write(a, &v.to_be_bytes())
+    }
+}
