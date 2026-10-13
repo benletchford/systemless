@@ -63,7 +63,7 @@ fn exact_idle_cycle_requires_cpu_and_memory_repeat() {
     // it restores every touched byte before returning to the boundary.
     runner.bus.write_long(scratch, 0xAABB_CCDD);
     runner.bus.write_long(scratch, 0x1122_3344);
-    runner.note_idle_cycle_trap_result(0xA971, runner.m68k.cpu.read_reg(Register::D0)); // null EventAvail result at SP
+    runner.note_idle_cycle_trap_result(0xA971, runner.m68k.cpu.read_reg(Register::D0), false); // null EventAvail result at SP
 
     assert!(runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
     assert_eq!(runner.guest_tick(), 105);
@@ -189,7 +189,7 @@ fn a_site_that_keeps_failing_gets_two_probes_per_tick_then_none() {
     assert!(runner.idle_cycle_probe.is_some());
     runner.bus.write_long(scratch, 0xAAAA_AAAA);
     runner.bus.write_long(scratch, 0x3333_3333);
-    runner.note_idle_cycle_trap_result(0xA971, runner.m68k.cpu.read_reg(Register::D0));
+    runner.note_idle_cycle_trap_result(0xA971, runner.m68k.cpu.read_reg(Register::D0), false);
     assert!(runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
     assert_eq!(runner.guest_tick(), 105);
     assert!(runner.idle_cycle_sleep.is_some());
@@ -214,7 +214,7 @@ fn journal_complete_traps_do_not_cancel_an_idle_probe() {
         0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xA9EB, 0xA9EC, 0xA870, 0xA871, 0xA917, 0xA924,
         0xA92C, 0xA9DA, 0xA8AD, 0xAC70, 0xAC71, 0xAD17, 0xAD24, 0xAD2C, 0xADDA, 0xACAD,
     ] {
-        runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0));
+        runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0), false);
         assert!(
             runner.idle_cycle_probe.is_some(),
             "journal-complete trap {opcode:04X} must not cancel the probe"
@@ -226,7 +226,11 @@ fn journal_complete_traps_do_not_cancel_an_idle_probe() {
     for selector in [0x0008_0005u32, 0x0008_0006] {
         runner.m68k.cpu.write_reg(Register::D0, selector);
         for opcode in [0xAB1Du16, 0xAF1D] {
-            runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0));
+            runner.note_idle_cycle_trap_result(
+                opcode,
+                runner.m68k.cpu.read_reg(Register::D0),
+                false,
+            );
             assert!(
                 runner.idle_cycle_probe.is_some(),
                 "admitted QDExtensions selector {selector:08X} must not cancel the probe"
@@ -235,7 +239,7 @@ fn journal_complete_traps_do_not_cancel_an_idle_probe() {
     }
     // MoveTo mirrors pnLoc into dispatcher state the journal cannot
     // see; anything with host-cached consequences must cancel.
-    runner.note_idle_cycle_trap_result(0xA893, runner.m68k.cpu.read_reg(Register::D0));
+    runner.note_idle_cycle_trap_result(0xA893, runner.m68k.cpu.read_reg(Register::D0), false);
     assert!(runner.idle_cycle_probe.is_none());
 }
 
@@ -260,7 +264,7 @@ fn handle_locks_and_rejected_sound_commands_do_not_cancel_an_idle_probe() {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     probe(&mut runner);
     for opcode in [0xA029u16, 0xA02A, 0xA229, 0xA42A] {
-        runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0));
+        runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0), false);
         assert!(
             runner.idle_cycle_probe.is_some(),
             "handle lock trap {opcode:04X} must not cancel the probe"
@@ -269,21 +273,21 @@ fn handle_locks_and_rejected_sound_commands_do_not_cancel_an_idle_probe() {
     // SndDoCommand pops to its OSErr result.
     runner.bus.write_word(0x0010_0000, (-203i16) as u16); // queueFull
     for opcode in [0xA803u16, 0xAC03] {
-        runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0));
+        runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0), false);
         assert!(
             runner.idle_cycle_probe.is_some(),
             "rejected SndDoCommand {opcode:04X} must not cancel the probe"
         );
     }
     runner.bus.write_word(0x0010_0000, 0); // noErr: the command was taken
-    runner.note_idle_cycle_trap_result(0xA803, runner.m68k.cpu.read_reg(Register::D0));
+    runner.note_idle_cycle_trap_result(0xA803, runner.m68k.cpu.read_reg(Register::D0), false);
     assert!(
         runner.idle_cycle_probe.is_none(),
         "an accepted command must cancel"
     );
 
     probe(&mut runner);
-    runner.note_idle_cycle_trap_result(0xA064, runner.m68k.cpu.read_reg(Register::D0)); // MoveHHi
+    runner.note_idle_cycle_trap_result(0xA064, runner.m68k.cpu.read_reg(Register::D0), false); // MoveHHi
     assert!(runner.idle_cycle_probe.is_none(), "MoveHHi must cancel");
 }
 
@@ -471,7 +475,7 @@ fn repeated_trap_cancels_back_a_site_off_and_a_closed_proof_resets_it() {
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
         assert!(runner.idle_cycle_probe.is_some());
-        runner.note_idle_cycle_trap_result(0xA893, runner.m68k.cpu.read_reg(Register::D0)); // MoveTo cancels
+        runner.note_idle_cycle_trap_result(0xA893, runner.m68k.cpu.read_reg(Register::D0), false); // MoveTo cancels
         assert!(runner.idle_cycle_probe.is_none());
     }
 
@@ -652,7 +656,7 @@ fn window_and_textedit_mutators_still_cancel_an_idle_probe() {
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
         assert!(runner.idle_cycle_probe.is_some());
-        runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0));
+        runner.note_idle_cycle_trap_result(opcode, runner.m68k.cpu.read_reg(Register::D0), false);
         assert!(
             runner.idle_cycle_probe.is_none(),
             "{opcode:04X} must cancel the probe"
@@ -702,7 +706,7 @@ fn teidle_inside_a_proof_parks_when_idle_and_fails_on_memory_when_it_blinks() {
                 .dispatch_dialog(true, 0x1DA, &mut runner.m68k.cpu, &mut runner.bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(runner.m68k.cpu.read_reg(Register::A7), sp);
-        runner.note_idle_cycle_trap_result(0xA9DA, runner.m68k.cpu.read_reg(Register::D0));
+        runner.note_idle_cycle_trap_result(0xA9DA, runner.m68k.cpu.read_reg(Register::D0), false);
         assert!(runner.idle_cycle_probe.is_some(), "TEIdle is admitted");
         assert_eq!(
             before,
@@ -756,12 +760,12 @@ fn input_poll_cycle_proves_and_parks_like_a_null_event_cycle() {
     // Button and TickCount report unchanged host state, SANE recomputes
     // the same scroll position into a scratch long.
     runner.bus.write_long(keymap, 0);
-    runner.note_idle_cycle_trap_result(0xA976, runner.m68k.cpu.read_reg(Register::D0));
-    runner.note_idle_cycle_trap_result(0xA974, runner.m68k.cpu.read_reg(Register::D0));
-    runner.note_idle_cycle_trap_result(0xA975, runner.m68k.cpu.read_reg(Register::D0));
+    runner.note_idle_cycle_trap_result(0xA976, runner.m68k.cpu.read_reg(Register::D0), false);
+    runner.note_idle_cycle_trap_result(0xA974, runner.m68k.cpu.read_reg(Register::D0), false);
+    runner.note_idle_cycle_trap_result(0xA975, runner.m68k.cpu.read_reg(Register::D0), false);
     runner.bus.write_long(keymap + 16, 0x0001_0000);
     runner.bus.write_long(keymap + 16, 0x0001_0000);
-    runner.note_idle_cycle_trap_result(0xA9EB, runner.m68k.cpu.read_reg(Register::D0));
+    runner.note_idle_cycle_trap_result(0xA9EB, runner.m68k.cpu.read_reg(Register::D0), false);
     assert!(
         runner.idle_cycle_probe.is_some(),
         "cycle traps kept the probe"
@@ -1051,7 +1055,7 @@ fn exact_idle_cycle_rejects_changed_memory_and_non_quiescent_traps() {
     assert_eq!(runner.guest_tick(), 100);
 
     runner.m68k.cpu.write_reg(Register::D0, 0x0004_0001); // LockPixels
-    runner.note_idle_cycle_trap_result(0xAB1D, runner.m68k.cpu.read_reg(Register::D0)); // non-admitted QDExtensions selector
+    runner.note_idle_cycle_trap_result(0xAB1D, runner.m68k.cpu.read_reg(Register::D0), false); // non-admitted QDExtensions selector
     assert!(runner.idle_cycle_probe.is_none());
     assert!(runner.idle_cycle_last_seen.is_none());
     assert!(runner.bus.fast_mem_window().is_some());
@@ -3095,7 +3099,11 @@ fn zero_sleep_wait_next_event_proves_a_cycle_and_wakes_for_input() {
             .dispatch(0xA860, &mut runner.m68k.cpu, &mut runner.bus)
             .unwrap();
         assert_eq!(runner.bus.read_word(event), 0);
-        assert!(runner.note_idle_cycle_trap_result(0xA860, runner.m68k.cpu.read_reg(Register::D0)));
+        assert!(runner.note_idle_cycle_trap_result(
+            0xA860,
+            runner.m68k.cpu.read_reg(Register::D0),
+            false
+        ));
         assert_eq!(
             runner.try_exact_null_event_cycle_fastfwd(trap_pc, Some(100)),
             iteration == 2
@@ -3133,7 +3141,11 @@ fn wait_next_event_sleep_and_delivered_events_reject_an_idle_probe() {
             .dispatcher
             .dispatch(0xA860, &mut runner.m68k.cpu, &mut runner.bus)
             .unwrap();
-        assert!(!runner.note_idle_cycle_trap_result(0xA860, runner.m68k.cpu.read_reg(Register::D0)));
+        assert!(!runner.note_idle_cycle_trap_result(
+            0xA860,
+            runner.m68k.cpu.read_reg(Register::D0),
+            false
+        ));
         assert!(runner.idle_cycle_probe.is_none());
         if !deliver_event {
             assert_eq!(runner.dispatcher.pending_wait_sleep_ticks, sleep);
@@ -3271,7 +3283,7 @@ fn calendar_conversion_and_help_getters_preserve_an_exact_idle_probe() {
         .dispatcher
         .dispatch(0xA9C6, &mut runner.m68k.cpu, &mut runner.bus)
         .unwrap();
-    runner.note_idle_cycle_trap_result(0xA9C6, 0);
+    runner.note_idle_cycle_trap_result(0xA9C6, 0, false);
     assert!(runner.idle_cycle_probe.is_some());
     for selector in [0x0003, 0x0007] {
         runner.m68k.cpu.write_reg(Register::D0, selector);
@@ -3282,7 +3294,7 @@ fn calendar_conversion_and_help_getters_preserve_an_exact_idle_probe() {
             .unwrap();
         assert_eq!(runner.m68k.cpu.read_reg(Register::D0), 0);
         assert_eq!(runner.bus.read_word(0x0010_0000), 0);
-        runner.note_idle_cycle_trap_result(0xA830, input_selector);
+        runner.note_idle_cycle_trap_result(0xA830, input_selector, false);
         assert!(
             runner.idle_cycle_probe.is_some(),
             "use the input selector, not its FALSE result"
@@ -3309,7 +3321,7 @@ fn help_mutations_and_unknown_selectors_still_reject_idle_probes() {
             .dispatcher
             .dispatch(0xA830, &mut runner.m68k.cpu, &mut runner.bus)
             .unwrap();
-        runner.note_idle_cycle_trap_result(0xA830, selector);
+        runner.note_idle_cycle_trap_result(0xA830, selector, false);
         assert!(
             runner.idle_cycle_probe.is_none(),
             "reject selector {selector:04X}"
@@ -3374,4 +3386,96 @@ fn deferred_guest_calendar_help_loop_proves_with_clobbered_d0() {
     }
     assert_eq!(runner.bus.read_word(event), 1);
     assert!(runner.idle_cycle_sleep.is_none());
+}
+
+#[test]
+fn deferred_guest_menu_clear_loop_parks_and_delivers_mouse_input() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let base = 0x0002_0000;
+    let event = 0x0003_0100;
+    let mut words = vec![
+        0x4267,
+        0xA938, // CLR.W -(SP); already-clear HiliteMenu(0)
+        0xA9B4, // idle SystemTask
+        0x4267,
+        0x3F3C,
+        0xFFFF,
+        0x4879,
+        (event >> 16) as u16,
+        event as u16,
+        0xA970,
+        0x548F, // null GetNextEvent; discard Boolean
+    ];
+    words.extend(std::iter::repeat_n(0x4E71, 70));
+    words.push(0x6000);
+    let displacement = -((words.len() * 2) as i16);
+    words.push(displacement as u16);
+    for (index, word) in words.into_iter().enumerate() {
+        runner.bus.write_word(base + index as u32 * 2, word);
+    }
+    runner.m68k.cpu.write_reg(Register::PC, base);
+    runner.m68k.cpu.write_reg(Register::A7, 0x0010_0000);
+    runner.m68k.cpu.write_reg(Register::A0, 0x0003_0000);
+    runner.set_guest_tick_for_test(100);
+    runner.bus.write_long(0x016A, 100);
+    runner.dispatcher.set_sent_open_app_event_for_test(true);
+    for _ in 0..12 {
+        let (steps, running) = runner.run_gui_cpu_slice(64, 100);
+        assert!(running);
+        assert!(steps <= 64);
+        if runner.idle_cycle_sleep.is_some() {
+            break;
+        }
+    }
+    assert!(runner.idle_cycle_sleep.is_some());
+    assert_eq!(runner.guest_tick(), 100);
+    runner.push_mouse_down(20, 30);
+    for _ in 0..4 {
+        runner.run_gui_cpu_slice(64, 100);
+        if runner.bus.read_word(event) == 1 {
+            break;
+        }
+    }
+    assert_eq!(runner.bus.read_word(event), 1);
+    assert!(runner.idle_cycle_sleep.is_none());
+}
+
+#[test]
+fn changing_menu_clear_cancels_an_idle_probe_before_it_can_park() {
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let site = 0x0002_0000;
+    let sp = 0x0010_0000;
+    runner.m68k.cpu.write_reg(Register::A7, sp);
+    runner.bus.write_word(sp, 0);
+    runner
+        .bus
+        .write_word(crate::memory::globals::addr::THE_MENU, 243);
+    runner.set_guest_tick_for_test(100);
+    assert!(!runner.try_exact_idle_cycle_fastfwd(site, 101, Some(100)));
+    assert!(!runner.try_exact_idle_cycle_fastfwd(site, 101, Some(100)));
+    let was_noop = runner.dispatcher.hilite_menu_clear_is_noop(&runner.bus, 0);
+    assert!(!was_noop);
+    runner
+        .dispatcher
+        .dispatch(0xA938, &mut runner.m68k.cpu, &mut runner.bus)
+        .unwrap();
+    assert_eq!(
+        runner.bus.read_word(crate::memory::globals::addr::THE_MENU),
+        0
+    );
+    runner.note_idle_cycle_trap_result(0xA938, 0, was_noop);
+    assert!(runner.idle_cycle_probe.is_none());
+    assert!(runner.idle_cycle_sleep.is_none());
+    assert!(!idle_cycle_trap_is_journal_complete(
+        0xA938, true, true, true, 0, false
+    ));
+    assert!(!idle_cycle_trap_is_journal_complete(
+        0xAD38, true, true, true, 0, false
+    ));
+    assert!(idle_cycle_trap_is_journal_complete(
+        0xA938, true, true, true, 0, true
+    ));
+    assert!(idle_cycle_trap_is_journal_complete(
+        0xAD38, true, true, true, 0, true
+    ));
 }

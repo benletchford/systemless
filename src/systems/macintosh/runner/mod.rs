@@ -1312,6 +1312,7 @@ fn idle_cycle_trap_is_journal_complete(
     system_task_idle: bool,
     sound_command_rejected: bool,
     selector: u32,
+    hilite_menu_noop: bool,
 ) -> bool {
     match canonical_trap_number(opcode) {
         (true, 0x0170) | (true, 0x0171) => null_event,
@@ -1321,6 +1322,11 @@ fn idle_cycle_trap_is_journal_complete(
         // revokes the proof through the non-null result. The result classifier
         // rejects pending sleep and retained SystemTask continuations.
         (true, 0x0060) => null_event,
+        // Admit only the already-clear HiliteMenu(0) path: it pops its
+        // argument without touching pixels, menu tracking or host caches.
+        // The pre-dispatch fact must survive classification after dispatch;
+        // actually clearing a title/dropdown remains excluded.
+        (true, 0x0138) => hilite_menu_noop,
         // Secs2Date is a pure Gregorian conversion of D0 into the fourteen
         // DateTimeRec bytes at A0; every result write passes through the bus.
         (true, 0x01C6) => true,
@@ -5905,7 +5911,12 @@ impl FixtureRunner {
     /// the frontend is executing on its event thread: newly arrived host input
     /// cannot be injected until the slice returns. SystemTask is quiescent only
     /// while the HLE has no periodic desk-accessory or driver work.
-    fn note_idle_cycle_trap_result(&mut self, opcode: u16, input_selector: u32) -> bool {
+    fn note_idle_cycle_trap_result(
+        &mut self,
+        opcode: u16,
+        input_selector: u32,
+        hilite_menu_noop: bool,
+    ) -> bool {
         let null_event_poll = match canonical_trap_number(opcode) {
             (true, 0x0170) | (true, 0x0171) => true,
             (true, 0x0060) => {
@@ -5931,6 +5942,7 @@ impl FixtureRunner {
             !self.dispatcher.system_task_has_periodic_work(&self.bus),
             sound_command_rejected,
             input_selector,
+            hilite_menu_noop,
         );
         if !quiescent {
             ws_note_cancel_trap(opcode);
@@ -7444,6 +7456,12 @@ impl FixtureRunner {
                     // Pre-dispatch the null-event and SystemTask outcomes
                     // are not yet known, so they pass here optimistically
                     // and are classified for real after dispatch.
+                    let hilite_menu_noop = canonical_trap_number(opcode) == (true, 0x0138)
+                        && !self.dispatcher.has_native_trap_patch(&self.bus, opcode)
+                        && self.dispatcher.hilite_menu_clear_is_noop(
+                            &self.bus,
+                            self.bus.read_word(self.m68k.cpu.core.a(7)) as i16,
+                        );
                     if self.idle_cycle_probe.is_some()
                         && !idle_cycle_trap_is_journal_complete(
                             opcode,
@@ -7451,6 +7469,7 @@ impl FixtureRunner {
                             true,
                             true,
                             self.m68k.cpu.read_reg(Register::D0),
+                            hilite_menu_noop,
                         )
                     {
                         if opcode == 0xAB1D {
@@ -7477,8 +7496,11 @@ impl FixtureRunner {
                     let dispatch_result = self.dispatch_classic_with_process_services(opcode);
                     match dispatch_result {
                         Ok(()) => {
-                            let null_event =
-                                self.note_idle_cycle_trap_result(opcode, input_selector);
+                            let null_event = self.note_idle_cycle_trap_result(
+                                opcode,
+                                input_selector,
+                                hilite_menu_noop,
+                            );
                             // TickCount spin-loop acceleration is a post-dispatch
                             // control-flow optimization. The generated trap gateway,
                             // native-patch routing, canonical Toolbox operation, and
