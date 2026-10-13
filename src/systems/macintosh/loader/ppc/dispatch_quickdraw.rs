@@ -169,6 +169,52 @@ pub(super) fn dispatch_quickdraw_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::SetThemePen => {
+            // Apple Appearance.h: ThemeBrush and depth are SInt16, and
+            // Boolean occupies the low byte. Current providers use solid
+            // background colors; unimplemented textured brushes return errors.
+            let brush = cpu.gpr[3] as i16;
+            let depth = cpu.gpr[4] as i16;
+            let color_device = cpu.gpr[5] as u8 != 0;
+            let palette = ppc_ui_theme(gworlds).provider().palette();
+            let result = if !matches!(depth, 1 | 2 | 4 | 8 | 16 | 32) {
+                Err(-30567i32) // themeMonitorDepthNotSupportedErr
+            } else {
+                match brush {
+                    -1 => Ok(PPC_RGB_BLACK),
+                    -2 => Ok(PPC_RGB_WHITE),
+                    1..=8 | 15 | 16 if depth > 1 && color_device => {
+                        Ok(ppc_theme_rgb(palette.window_background))
+                    }
+                    1..=48 => Err(-4), // unimpErr: other brushes/patterns
+                    _ => Err(-30560), // themeInvalidBrushErr
+                }
+            };
+            let result = match result {
+                Err(error) => error,
+                Ok(color) => {
+                    if current_gworld == 0
+                        || ppc_write_port_rgb_color(
+                            memory,
+                            current_gworld,
+                            PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET,
+                            color,
+                        ).is_none()
+                    {
+                        i32::from(PPC_PARAM_ERR)
+                    } else {
+                        *quickdraw_fore_color = color;
+                        quickdraw_fore_indices.remove(&current_gworld);
+                        toolbox_startup.quickdraw_pen_pattern = [0xff; 8];
+                        // Retire the selected PixPat without disposing a
+                        // caller-owned handle; the solid foreground now paints.
+                        let _ = memory.write_u32_be(current_gworld + 58, 0);
+                        0
+                    }
+                }
+            };
+            Some(PpcImportAction::Return(result as u32))
+        }
         PpcImportDispatcherTarget::RGBForeColor => {
             if let Some(color) = ppc_read_rgb_color(memory, cpu.gpr[3]) {
                 *quickdraw_fore_color = color;
