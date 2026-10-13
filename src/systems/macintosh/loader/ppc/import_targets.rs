@@ -1251,6 +1251,7 @@ pub enum PpcImportDispatcherTarget {
     NewOTNotifyUPP,
     NewRoutineDescriptor,
     NewIOCompletionUPP,
+    NewSndCallBackUPP,
     DisposeIOCompletionUPP,
     NewControlUserPaneDrawUPP,
     DisposeControlUserPaneDrawUPP,
@@ -4675,6 +4676,8 @@ pub(crate) fn dispatcher_target_for_import(
         ("InterfaceLib", "DisposeUserItemUPP" | "disposeuseritemupp") => {
             PpcImportDispatcherTarget::DisposeUserItemUPP
         }
+        ("InterfaceLib", "NewSndCallBackUPP") => PpcImportDispatcherTarget::NewSndCallBackUPP,
+        ("InterfaceLib", "DisposeSndCallBackUPP") => PpcImportDispatcherTarget::DisposeRoutineDescriptor,
         ("InterfaceLib", "NewControlActionUPP") => PpcImportDispatcherTarget::NewControlActionUPP,
         ("InterfaceLib", "DisposeControlActionUPP") => {
             PpcImportDispatcherTarget::DisposeControlActionUPP

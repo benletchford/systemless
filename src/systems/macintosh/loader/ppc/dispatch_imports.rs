@@ -2730,6 +2730,7 @@ pub(crate) fn dispatch_supported_import(
         | PpcImportDispatcherTarget::DisposeModalFilterUPP
         | PpcImportDispatcherTarget::NewUserItemUPP
         | PpcImportDispatcherTarget::DisposeUserItemUPP
+        | PpcImportDispatcherTarget::NewSndCallBackUPP
         | PpcImportDispatcherTarget::NewControlActionUPP
         | PpcImportDispatcherTarget::DisposeControlActionUPP
         | PpcImportDispatcherTarget::NewControlKeyFilterUPP

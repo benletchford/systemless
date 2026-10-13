@@ -284,6 +284,20 @@ pub(super) fn dispatch_mixed_mode_import(
                 &mut toolbox_startup.system_allocations,
             ))))
         }
+        PpcImportDispatcherTarget::NewSndCallBackUPP => {
+            // Apple Sound.h: Pascal void callback, SndChannelPtr and
+            // SndCommandPtr. A real owned Mixed Mode descriptor is required.
+            Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
+                cpu.gpr[3],
+                0x000003C0,
+                PPC_ROUTINE_RECORD_POWERPC_ISA,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                &mut toolbox_startup.system_allocations,
+            ))))
+        }
         PpcImportDispatcherTarget::NewControlActionUPP => {
             Some(Some(PpcImportAction::Return(ppc_new_routine_descriptor(
                 cpu.gpr[3],
