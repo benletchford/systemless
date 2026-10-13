@@ -1224,3 +1224,89 @@ fn carbon_mp_delay_until_retains_and_resumes_native_call() {
     assert_eq!(loaded.cpu.gpr[3], 0);
     assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
 }
+
+#[test]
+fn sound_callback_slice_retains_command_and_resumes_before_restoring_caller() {
+    let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TickCount")).unwrap();
+    loaded.toolbox_startup.execution.calls().start_native_engine();
+    assert!(loaded.toolbox_startup.execution.calls().bind_task_entry_isa(
+        crate::guest_call::ExecutionTaskId::APPLICATION,
+        crate::guest_procedure::GuestIsa::PowerPc,
+    ));
+    let code = PPC_CODE_BASE + 0x1000;
+    let output = PPC_DATA_BASE + 0x3000;
+    let vector = PPC_DATA_BASE + 0x4000;
+    let words = [
+        0x38c00014u32,
+        0x38c6ffff,
+        0x2c060000,
+        0x4082fff8,
+        0x3ca00000 | (output >> 16),
+        0x60a50000 | (output & 0xffff),
+        0x90650000,
+        0x90850004,
+        0x4e800020,
+    ];
+    loaded.memory.add_region(
+        code,
+        words.iter().flat_map(|word| word.to_be_bytes()).collect(),
+    );
+    loaded.memory.add_region(output, vec![0; 0x200]);
+    loaded.memory.add_region(vector, vec![0; 8]);
+    loaded.memory.write_u32_be(vector, code).unwrap();
+    loaded.cpu.pc = PPC_HALT_PC;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0x12345678;
+    let original = loaded.cpu.capture_execution_context();
+    let channel = output + 0x100;
+    let probe = loaded.run_sound_completion_callback(
+        PpcSoundCompletionRecord {
+            file_playback_index: 0,
+            channel,
+            completion: vector,
+            command: Some(PpcSndCommandRecord {
+                channel,
+                command: 13,
+                param1: 7,
+                param2: 42,
+            }),
+            tick: 0,
+            instruction_count: 0,
+            scheduled_tick: 0,
+            scheduled_instruction_count: 0,
+        },
+        4,
+        false,
+        false,
+    );
+    assert!(matches!(
+        probe.invocation.result,
+        PpcRunResult::CycleLimit { .. }
+    ));
+    assert!(loaded.parked_interrupt_callback.is_some());
+    assert!(loaded.interrupt_continuation_ready());
+    assert!(loaded.interrupts_masked());
+    assert!(loaded.event_loop_timers_masked());
+    assert_eq!(loaded.memory.read_u32_be(output), Some(0));
+    let mut completed = false;
+    for _ in 0..20 {
+        let next = loaded.run_with_hle_imports(8);
+        assert_eq!(next.unsupported_import_index, None);
+        if loaded.parked_interrupt_callback.is_none() {
+            completed = true;
+            break;
+        }
+        assert!(matches!(next.result, PpcRunResult::CycleLimit { .. }));
+    }
+    assert!(completed, "finite callback must resume and retire");
+    assert!(!loaded.interrupts_masked());
+    assert_eq!(
+        loaded.cpu.capture_execution_context().architectural(),
+        original.architectural()
+    );
+    assert_eq!(loaded.memory.read_u32_be(output), Some(channel));
+    let command = loaded.memory.read_u32_be(output + 4).unwrap();
+    assert_eq!(loaded.memory.read_u16_be(command), Some(13));
+    assert_eq!(loaded.memory.read_u16_be(command + 2), Some(7));
+    assert_eq!(loaded.memory.read_u32_be(command + 4), Some(42));
+}

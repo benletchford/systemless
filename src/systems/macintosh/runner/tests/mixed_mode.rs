@@ -2174,7 +2174,7 @@ fn parked_callback_return_is_matched_by_task_and_stack() {
             } else {
                 other
             },
-            awaited_call,
+            awaited_call: Some(awaited_call),
             callback_sp: CALLBACK_SP,
             interrupted,
             interrupted_refnum: None,

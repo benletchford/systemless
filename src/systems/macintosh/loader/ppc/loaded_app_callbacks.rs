@@ -173,7 +173,7 @@ impl PpcLoadedApp {
                     .execution
                     .calls()
                     .task_top_call_id(parked.task)
-                    .is_none_or(|call| call < parked.awaited_call),
+                    .is_none_or(|call| parked.awaited_call.is_some_and(|awaited| call < awaited)),
             })
     }
 
@@ -195,7 +195,7 @@ impl PpcLoadedApp {
                 parked.task == calls.current_task()
                     && calls
                         .top_call_id()
-                        .is_none_or(|call| call < parked.awaited_call)
+                        .is_none_or(|call| parked.awaited_call.is_some_and(|awaited| call < awaited))
             })
     }
 
@@ -214,6 +214,8 @@ impl PpcLoadedApp {
         }
     }
 
+    /// A sound callback that exhausts its execution slice retains its native
+    /// registers and command/frame ownership, then resumes in native slices.
     /// A callback that stopped on a 68K Mixed Mode call it submitted stays
     /// installed: that call captures the callback's registers when it starts
     /// and resumes the callback when it returns. Park what it interrupted
@@ -231,7 +233,7 @@ impl PpcLoadedApp {
     ///   delivery stays masked until the owning task resumes and the
     ///   callback returns.
     #[allow(clippy::too_many_arguments)]
-    fn park_interrupt_callback_if_awaiting_m68k(
+    fn park_unfinished_interrupt_callback(
         &mut self,
         level: PpcCallbackLevel,
         entry: PpcInterruptEntry,
@@ -240,13 +242,22 @@ impl PpcLoadedApp {
         interrupted: &PpcExecutionContext,
         interrupted_refnum: Option<i16>,
         on_return: PpcInterruptReturnWork,
+        allow_native_slice: bool,
     ) -> bool {
         let Some(callback_sp) = callback_sp else {
             return false;
         };
+        // An unconditional branch to itself cannot make progress when resumed.
+        // Keep the callback watchdog for that terminal loop, while allowing
+        // finite work to retain its context across execution slices.
+        let terminal_self_branch = self.memory.read_u32_be(self.cpu.pc) == Some(0x4800_0000);
+        let native_slice = allow_native_slice
+            && matches!(probe.result, PpcRunResult::CycleLimit { .. })
+            && !terminal_self_branch;
         if !entry.may_park
             || probe.unsupported_import_index.is_some()
-            || !matches!(probe.result, PpcRunResult::Halted { pc, .. } if pc != self.halt_pc)
+            || (!native_slice
+                && !matches!(probe.result, PpcRunResult::Halted { pc, .. } if pc != self.halt_pc))
         {
             return false;
         }
@@ -254,16 +265,21 @@ impl PpcLoadedApp {
         if calls.current_task() != entry.task {
             return false;
         }
-        let Some(awaited_call) = calls
-            .unstarted_m68k_call()
-            .filter(|call| entry.top_call.is_none_or(|top| *call > top))
-        else {
-            return false;
+        let awaited_call = if native_slice {
+            None
+        } else {
+            let Some(call) = calls
+                .unstarted_m68k_call()
+                .filter(|call| entry.top_call.is_none_or(|top| *call > top))
+            else {
+                return false;
+            };
+            Some(call)
         };
         self.interrupt_callback_parks = self.interrupt_callback_parks.saturating_add(1);
         if ppc_hle_trace_enabled() {
             eprintln!(
-                "[PPC-TRACE] {level:?}-level callback parked on 68K call: pc=${:08X} callback_sp=${callback_sp:08X} interrupted_pc=${:08X} parks={}",
+                "[PPC-TRACE] {level:?}-level callback parked awaiting {awaited_call:?}: pc=${:08X} callback_sp=${callback_sp:08X} interrupted_pc=${:08X} parks={}",
                 self.cpu.pc,
                 interrupted.architectural().pc,
                 self.interrupt_callback_parks,
@@ -393,7 +409,7 @@ impl PpcLoadedApp {
         } else {
             self.interrupt_callback_stack_fault()
         };
-        let parked = self.park_interrupt_callback_if_awaiting_m68k(
+        let parked = self.park_unfinished_interrupt_callback(
             PpcCallbackLevel::Interrupt,
             interrupt,
             callback_frame,
@@ -401,6 +417,7 @@ impl PpcLoadedApp {
             &saved_context,
             None,
             PpcInterruptReturnWork::None,
+            false,
         );
         if !parked {
             // Inside Macintosh: Files (1992), "Completion Routines": the callback
@@ -585,7 +602,7 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        let parked = self.park_interrupt_callback_if_awaiting_m68k(
+        let parked = self.park_unfinished_interrupt_callback(
             PpcCallbackLevel::Interrupt,
             interrupt,
             callback_frame,
@@ -593,6 +610,7 @@ impl PpcLoadedApp {
             &saved_context,
             None,
             PpcInterruptReturnWork::None,
+            true,
         );
         if !parked && entered {
             self.cpu.install_execution_context(saved_context);
@@ -934,7 +952,7 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        let parked = self.park_interrupt_callback_if_awaiting_m68k(
+        let parked = self.park_unfinished_interrupt_callback(
             level,
             interrupt,
             callback_frame,
@@ -942,6 +960,7 @@ impl PpcLoadedApp {
             &saved_context,
             Some(saved_current_resource_refnum),
             PpcInterruptReturnWork::None,
+            false,
         );
         if !parked {
             if entered {
@@ -1141,7 +1160,7 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        let parked = self.park_interrupt_callback_if_awaiting_m68k(
+        let parked = self.park_unfinished_interrupt_callback(
             PpcCallbackLevel::Interrupt,
             interrupt,
             callback_frame,
@@ -1149,6 +1168,7 @@ impl PpcLoadedApp {
             &saved_context,
             Some(saved_current_resource_refnum),
             PpcInterruptReturnWork::VblTask { task_ptr },
+            false,
         );
         if !parked {
             if entered {
@@ -1229,7 +1249,7 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        let parked = self.park_interrupt_callback_if_awaiting_m68k(
+        let parked = self.park_unfinished_interrupt_callback(
             PpcCallbackLevel::Interrupt,
             interrupt,
             callback_frame,
@@ -1237,6 +1257,7 @@ impl PpcLoadedApp {
             &saved_context,
             Some(saved_current_resource_refnum),
             PpcInterruptReturnWork::None,
+            false,
         );
         if !parked {
             if entered {
@@ -1336,7 +1357,7 @@ impl PpcLoadedApp {
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
         let cycles = ppc_run_result_cycles(probe.result);
-        let parked = self.park_interrupt_callback_if_awaiting_m68k(
+        let parked = self.park_unfinished_interrupt_callback(
             PpcCallbackLevel::Interrupt,
             interrupt,
             callback_frame,
@@ -1344,6 +1365,7 @@ impl PpcLoadedApp {
             &saved_context,
             None,
             PpcInterruptReturnWork::DoubleBack(doubleback),
+            true,
         );
         if !parked && entered {
             self.cpu.install_execution_context(saved_context);

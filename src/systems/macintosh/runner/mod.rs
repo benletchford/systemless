@@ -9428,7 +9428,8 @@ impl FixtureRunner {
             }
 
             let callback_failed = invocation.unsupported_import_index.is_some()
-                || !matches!(invocation.result, PpcRunResult::Halted { .. });
+                || (!matches!(invocation.result, PpcRunResult::Halted { .. })
+                    && ppc_app.interrupt_callback_parks == parks);
             if callback_failed {
                 self.halted = true;
                 self.halted_pc = Some(invocation.end_pc);
@@ -9609,7 +9610,8 @@ impl FixtureRunner {
             self.prepare_ppc_execution_clock(&mut ppc_app);
 
             let callback_failed = invocation.unsupported_import_index.is_some()
-                || !matches!(invocation.result, PpcRunResult::Halted { .. });
+                || (!matches!(invocation.result, PpcRunResult::Halted { .. })
+                    && ppc_app.interrupt_callback_parks == parks);
             if callback_failed {
                 self.halted = true;
                 self.halted_pc = Some(invocation.end_pc);
