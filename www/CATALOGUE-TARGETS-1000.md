@@ -239,7 +239,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 194 | 382 | Alien Nations | PPC era; verify | D | [Demo index](https://classicmacdemos.com/alien-nations) |
 | 195 | 383 | Alone in the Dark 2 | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/alone-in-the-dark-2) |
 | 196 | 384 | Alone in the Dark 3: Ghosts in Town | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/alone-in-the-dark-3-ghosts-in-town) |
-| 197 | 385 | AmoebArena | Verify 68K/PPC | D | [Demo index](https://classicmacdemos.com/amoebarena); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
+| 197 | 385 | AmoebArena | 68K + PPC executable verified; gameplay pending | D | [Demo index](https://classicmacdemos.com/amoebarena); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
 | 198 | 386 | AstroRock 2000 | PPC era; verify | D | [Demo index](https://classicmacdemos.com/astrorock-2000); [Archive index](https://www.vintageapplemac.com/software/games/a/) |
 | 199 | 387 | Backyard Football | PPC era; verify | D | [Demo index](https://classicmacdemos.com/backyard-football) |
 | 200 | 388 | Bad Milk | PPC era; verify | D | [Demo index](https://classicmacdemos.com/bad-milk); [Archive index](https://www.vintageapplemac.com/software/games/b/) |

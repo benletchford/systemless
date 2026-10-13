@@ -251,7 +251,7 @@ Only a human may trigger releases or merge release-please PRs. Agents may merge 
 | 194 | Alien Nations | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 195 | Alone in the Dark 2 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 196 | Alone in the Dark 3: Ghosts in Town | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
-| 197 | AmoebArena | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| 197 | AmoebArena | README inspected; no explicit redistribution grant found | Demo archive identified | 68K + PPC executable verified | 68K title, player setup and empty placement board reached; PPC toolbox alert | Pending | Pending | Held; [#4783](https://github.com/benletchford/systemless/issues/4783) |
 | 198 | AstroRock 2000 | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 199 | Backyard Football | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
 | 200 | Bad Milk | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
