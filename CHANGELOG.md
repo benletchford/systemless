@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.98.0](https://github.com/benletchford/systemless/compare/v0.97.0...v0.98.0) (2026-10-13)
+
+
+### Features
+
+* **catalogue:** add original Yahtzee with verified scoring and browser launch ([800d5a1](https://github.com/benletchford/systemless/commit/800d5a18b73f5994352fd592496df418577f6f94))
+* **catalogue:** add the complete Susan 2.5 original game ([d64ea27](https://github.com/benletchford/systemless/commit/d64ea276cf5bfc5d227ec564f2894cc806c530b0))
+* **catalogue:** add the original Airburst shareware package ([6c3bf1f](https://github.com/benletchford/systemless/commit/6c3bf1fd57006221d728b9363dfb5f0809148a35))
+
+
+### Bug Fixes
+
+* decode JPEG and PNG artwork in QuickTime pictures ([634c0e9](https://github.com/benletchford/systemless/commit/634c0e9120a695224d71c621fbbe33709670d707))
+* draw loaded classic icon suites with their original masks ([4095f24](https://github.com/benletchford/systemless/commit/4095f24492ae8a3faed737eb6d49fea14962ff85))
+* **math:** bind implemented math exports for Carbon applications ([47941e3](https://github.com/benletchford/systemless/commit/47941e300cc6d1c2d07ed7fc1a63ed599654c055))
+* **ppc:** bind sound callback routine descriptor wrappers ([f209a25](https://github.com/benletchford/systemless/commit/f209a2504b792fa69ea97384272c180cdbc0179d))
+* **ppc:** resolve MPYield and relinquish the current execution slice ([863366d](https://github.com/benletchford/systemless/commit/863366df26d999e2393b0f627b2a80be0c2107f1))
+* **ppc:** return the documented NetSprocket missing-transport error ([22a10e0](https://github.com/benletchford/systemless/commit/22a10e0e782a4e41dd04c8710609fa37d9608cf6))
+* **ppc:** support solid native theme pens ([e14fad1](https://github.com/benletchford/systemless/commit/e14fad18abe590c46a9685ff1c9093e92268bbb2))
+* **quickdraw:** bind native PixMap32Bit addressing query ([8bfab95](https://github.com/benletchford/systemless/commit/8bfab95406a6875ab53dc281a8cc8aa1faec8823))
+* **quickdraw:** decode direct-colour PixPat patterns ([3ab3192](https://github.com/benletchford/systemless/commit/3ab3192ed8ae3f904441528e86c9aefb3181fd21))
+* **quickdraw:** expose live random seed without advancing it ([025006d](https://github.com/benletchford/systemless/commit/025006ded4c7416252ee2e7ccbff0d0aefe2a67d))
+* **quickdraw:** implement native SaveEntries colour-table packing ([5b903c3](https://github.com/benletchford/systemless/commit/5b903c39c9b0c63f0083ea25d57f8cf62102a91f))
+* **quickdraw:** preserve device table size during palette activation ([e27b567](https://github.com/benletchford/systemless/commit/e27b56726244ce9dcef77f6efbd82a57768c982e))
+* **quickdraw:** resolve native colour-port bitmap proxies ([c103d67](https://github.com/benletchford/systemless/commit/c103d671e2f52d3004d66f5262bf30eeab0f2f33))
+* **quickdraw:** return current port through Carbon global accessor ([2ee84e5](https://github.com/benletchford/systemless/commit/2ee84e518a98be90ba1b243e598c00b1f64eaa97))
+* **quickdraw:** return live colour port PixMap handles ([d57f038](https://github.com/benletchford/systemless/commit/d57f03869909e8b4d1864ece0c9491005b47099a))
+* **quicktime:** bind implemented Carbon movie and controller operations ([4acf0a2](https://github.com/benletchford/systemless/commit/4acf0a208e15eba5868c246f5616aa18f6c147a1))
+* **quicktime:** deliver owned native movie callbacks ([a8fe92e](https://github.com/benletchford/systemless/commit/a8fe92e087f4ce5838cf9e8da9988fa6818d5925))
+* **quicktime:** implement owned guest fullscreen lifecycle ([3139986](https://github.com/benletchford/systemless/commit/313998682f1cb9c8e787d36c38b61f59b8e37066))
+* resume finite native sound callbacks across execution slices ([1fc6adf](https://github.com/benletchford/systemless/commit/1fc6adf3305a552ce66b9a72f874ce49341dce7d))
+
+
+### Performance Improvements
+
+* avoid redrawing already cleared menu titles during idle polls ([b28a959](https://github.com/benletchford/systemless/commit/b28a959975d7193f1c0bc11b03f355c39fa65dea))
+* **macintosh:** prove calendar and help status idle loops ([f80a8e4](https://github.com/benletchford/systemless/commit/f80a8e4e565e60695c9a6bbe8f5bd1c56aa7d247))
+* **macintosh:** retain exact event-loop proofs across browser slices ([1440d13](https://github.com/benletchford/systemless/commit/1440d1368794ee60ffcd82043f072438416bbc80))
+
 ## [0.97.0](https://github.com/benletchford/systemless/compare/v0.96.0...v0.97.0) (2026-10-12)
 
 
