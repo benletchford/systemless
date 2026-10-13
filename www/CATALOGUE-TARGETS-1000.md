@@ -789,7 +789,7 @@ Each number is an intake slot. The apparent catalogue total in the second column
 | 729 | 917 | Kirei! | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/k/) |
 | 730 | 918 | Lord of the Deck | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/l/) |
 | 731 | 919 | MacBandit | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/m/) |
-| 732 | 920 | Nim | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/n/) |
+| 732 | 920 | Friends of Nim 1.0 (listed as Nim) | 68K only: six CODE resources, no cfrg | GPL-2.0-or-later notice verified; original source found, matching control-library source/terms review pending | [Exact archive, source/resource correspondence and bounded native move](CATALOGUE-SOURCES.md#friends-of-nim-10--primary-732); [intake #4777](https://github.com/benletchford/systemless/issues/4777), [icon-suite fix #4778](https://github.com/benletchford/systemless/issues/4778); unhosted |
 | 733 | 921 | O!Kay! CD-ROMs 2000 | Verify 68K/PPC | U | [Garden](https://macintoshgarden.org/games/okay-cd-roms-2000) |
 | 734 | 922 | Pentominoes | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/p/) |
 | 735 | 923 | QuickTile | Verify 68K/PPC | U | [Archive index](https://www.vintageapplemac.com/software/games/q/) |

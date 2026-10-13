@@ -18,6 +18,8 @@ use crate::trap::pict;
 use crate::Result;
 use std::sync::OnceLock;
 
+mod icon_suite;
+
 #[derive(Clone, Copy)]
 pub(super) struct CopyBitmapInfo {
     pub(super) base: u32,
