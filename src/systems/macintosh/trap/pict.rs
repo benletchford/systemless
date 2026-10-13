@@ -1652,12 +1652,15 @@ fn parse_compressed_quicktime(
 
     let is_smc = codec == u32::from_be_bytes(*b"smc ");
     let is_rle = codec == u32::from_be_bytes(*b"rle ");
+    let is_still_image = codec == u32::from_be_bytes(*b"jpeg")
+        || codec == u32::from_be_bytes(*b"png ");
 
-    if (!is_smc && !is_rle) || width == 0 || height == 0 {
+    if (!is_smc && !is_rle && !is_still_image) || width == 0 || height == 0 {
         return (end, Some(source_clut));
     }
     let data_start = cursor.saturating_add(description_size);
-    if data_start.saturating_add(data_size) > end {
+    if description_size < 86 || data_start.saturating_add(data_size) > end
+        || (is_still_image && data_size > 64 * 1024 * 1024) {
         return (end, Some(source_clut));
     }
     let compressed = bus.read_bytes(data_start, data_size as usize);
@@ -1675,7 +1678,34 @@ fn parse_compressed_quicktime(
     let crop_bottom = i32::from(src_bottom).max(crop_top).min(height as i32);
     let crop_right = i32::from(src_right).max(crop_left).min(width as i32);
 
-    if is_rle && depth == 16 {
+    if is_still_image {
+        let Some(pixels) = super::pict_image::decode(codec, &compressed, width, height) else {
+            return (end, None);
+        };
+        for source_y in crop_top..crop_bottom {
+            for source_x in crop_left..crop_right {
+                if clip_region.is_some_and(|clip| !clip.contains(source_y, source_x)) {
+                    continue;
+                }
+                let x = ((source_x - i32::from(frame_left)) as f64 * scale_x) as i32
+                    + i32::from(dst_left);
+                let y = ((source_y - i32::from(frame_top)) as f64 * scale_y) as i32
+                    + i32::from(dst_top);
+                let [r, g, b] = pixels.get_pixel(source_x as u32, source_y as u32).0;
+                let rgb = [u16::from(r) * 257, u16::from(g) * 257, u16::from(b) * 257];
+                match pixel_size {
+                    16 => write_rgb555_pixel_clipped(bus, screen_base, screen_rb, x, y,
+                        (u16::from(r >> 3) << 10) | (u16::from(g >> 3) << 5) | u16::from(b >> 3),
+                        screen_w, screen_h, dst_clip),
+                    32 => write_rgb32_pixel_clipped(bus, screen_base, screen_rb, x, y,
+                        rgb, screen_w, screen_h, dst_clip),
+                    _ => write_pixel_clipped(bus, screen_base, screen_rb, x, y,
+                        closest_clut_index(rgb[0], rgb[1], rgb[2], device_clut),
+                        screen_w, screen_h, pixel_size, dst_clip),
+                }
+            }
+        }
+    } else if is_rle && depth == 16 {
         let mut decoder = super::qtrle::QtRle16Decoder::new(width, height);
         let Ok(pixels) = decoder.decode(&compressed) else {
             return (end, Some(source_clut));
@@ -1804,7 +1834,7 @@ fn parse_compressed_quicktime(
         end
     };
 
-    (final_pos, Some(source_clut))
+    (final_pos, if is_still_image { None } else { Some(source_clut) })
 }
 
 pub(crate) fn peek_initial_packbits_clut(
@@ -7248,3 +7278,7 @@ fn parse_direct_bits_rect(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "pict/still_images.rs"]
+mod still_image_tests;

@@ -27,6 +27,7 @@ mod memory;
 pub(crate) mod menu;
 mod movie_media;
 pub(crate) mod pict;
+mod pict_image;
 mod qtrle;
 mod quickdraw;
 mod resource;
