@@ -1165,3 +1165,41 @@ fn hle_import_runner_thread_critical_sections_cross_both_abi_edges() {
     assert_eq!(cpu.read_reg(Register::D0), 0);
     assert_eq!(classic.guest_calls.critical_depth(), 0);
 }
+
+
+#[test]
+fn mp_yield_resolves_weak_transition_vector_and_yields_after_void_return() {
+    let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+        b"CarbonLib",
+        b"MPYield",
+        0x82,
+        &[sm_index_reloc(0x30, 0)],
+    ));
+    let mut loaded = load_pef_application(&pef).unwrap();
+    let binding = &loaded.imports[0];
+    assert!(binding.weak);
+    assert_eq!(
+        binding.dispatcher_target,
+        PpcImportDispatcherTarget::MpYield
+    );
+    assert_ne!(binding.address, 0);
+    assert_eq!(
+        loaded.memory.read_u32_be(PPC_DATA_BASE),
+        Some(binding.address)
+    );
+    let trap = binding.trap_pc;
+    loaded.cpu.pc = trap;
+    loaded.cpu.lr = PPC_HALT_PC;
+    loaded.cpu.gpr[3] = 0x12345678;
+    loaded.cpu.gpr[2] = 0x87654321;
+    let registers = loaded.cpu.gpr;
+    let first = loaded.run_with_hle_imports(64);
+    assert_eq!(first.handled_import_count, 1);
+    assert_eq!(first.unsupported_import_index, None);
+    assert!(matches!(first.result, PpcRunResult::CycleLimit { cycles } if cycles < 64));
+    assert_eq!(loaded.cpu.pc, PPC_HALT_PC);
+    assert_eq!(loaded.cpu.gpr, registers);
+    let resumed = loaded.run_with_hle_imports(64);
+    assert_eq!(resumed.handled_import_count, 0);
+    assert!(matches!(resumed.result, PpcRunResult::Halted { .. }));
+}
