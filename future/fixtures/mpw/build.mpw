@@ -8,3 +8,7 @@ Rez -append -o probe.68k probe.r
 Rez -append -o probe.ppc probe.r
 MrC -sym off -opt off jump.c -o jump.ppc.o
 PPCLink jump.ppc.o "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o jump.ppc
+SC -sym off events.c -o events.68k.o
+Link -d -t 'APPL' -c 'FUTR' events.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o events.68k
+MrC -sym off -opt off events.c -o events.ppc.o
+PPCLink events.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o events.ppc

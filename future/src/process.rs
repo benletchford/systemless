@@ -16,6 +16,7 @@ const MEM_BAD: i16 = -111;
 pub struct Process {
     pub resources: ResourceFork,
     pub files: crate::files::Files,
+    pub input: crate::events::Input,
     resource_ref: i16,
     pub mem_error: i16,
     pub res_error: i16,

@@ -9,6 +9,13 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    PostEvent,
+    GetOSEvent,
+    OSEventAvail,
+    FlushEvents,
+    SetEventMask,
+    GetEvQHdr,
+
     CExit,
     BreakPoint,
     SetJump,
@@ -39,6 +46,7 @@ pub enum Reply {
     M68kHandle,
     M68kA0,
     M68kFileError,
+    M68kOSEvent,
     M68kD0,
     M68kError,
 }
@@ -73,6 +81,12 @@ impl Abi {
             return None;
         }
         match symbol {
+            b"PostEvent" => Some(Service::PostEvent),
+            b"GetOSEvent" => Some(Service::GetOSEvent),
+            b"OSEventAvail" => Some(Service::OSEventAvail),
+            b"FlushEvents" => Some(Service::FlushEvents),
+            b"SetEventMask" => Some(Service::SetEventMask),
+            b"GetEvQHdr" => Some(Service::GetEvQHdr),
             b"GetOSTrapAddress" => Some(Service::GetOSTrapAddress),
             b"GetToolboxTrapAddress" | b"GetToolTrapAddress" => {
                 Some(Service::GetToolboxTrapAddress)
@@ -97,6 +111,29 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa02f => Ok((
+                Call::PostEvent {
+                    what: c.dar[8] as u16,
+                    message: c.dar[0],
+                },
+                Reply::M68kFileError,
+            )),
+            0xa030 | 0xa031 => Ok((
+                Call::OSEvent {
+                    mask: c.dar[0] as u16,
+                    destination: GuestPtr(c.dar[8]),
+                    remove: opcode == 0xa031,
+                },
+                Reply::M68kOSEvent,
+            )),
+            0xa032 => Ok((
+                Call::FlushEvents {
+                    which: c.dar[0] as u16,
+                    stop: (c.dar[0] >> 16) as u16,
+                },
+                Reply::M68kD0,
+            )),
+
             0xa346 | 0xa746 => Ok((
                 Call::TrapAddress {
                     number: c.dar[0] as u16,
@@ -167,6 +204,22 @@ impl Abi {
     }
     pub fn import(service: Service, c: &ppc::PpcCpu) -> (Call, Reply) {
         let call = match service {
+            Service::PostEvent => Call::PostEvent {
+                what: c.gpr[3] as u16,
+                message: c.gpr[4],
+            },
+            Service::GetOSEvent | Service::OSEventAvail => Call::OSEvent {
+                mask: c.gpr[3] as u16,
+                destination: GuestPtr(c.gpr[4]),
+                remove: service == Service::GetOSEvent,
+            },
+            Service::FlushEvents => Call::FlushEvents {
+                which: c.gpr[3] as u16,
+                stop: c.gpr[4] as u16,
+            },
+            Service::SetEventMask => Call::SetEventMask(c.gpr[3] as u16),
+            Service::GetEvQHdr => Call::GetEventQueue,
+
             Service::CExit => Call::CExit(c.gpr[3]),
             Service::BreakPoint => Call::BreakPoint(GuestPtr(c.gpr[3])),
             Service::SetJump => Call::SetJump(GuestPtr(c.gpr[3])),
@@ -205,7 +258,13 @@ impl Abi {
         };
         (
             call,
-            if matches!(service, Service::ExitToShell | Service::DisposeHandle) {
+            if matches!(
+                service,
+                Service::ExitToShell
+                    | Service::DisposeHandle
+                    | Service::FlushEvents
+                    | Service::SetEventMask
+            ) {
                 Reply::None
             } else {
                 Reply::PpcR3
@@ -219,8 +278,17 @@ impl Reply {
             Self::None => {}
             Self::StackLong(p) => memory.write(p, &value.to_be_bytes())?,
             Self::StackWord(p) => memory.write(p, &(value as u16).to_be_bytes())?,
-            Self::M68kFileError => match cpu {
+            Self::M68kFileError | Self::M68kOSEvent => match cpu {
                 Cpu::M68k(c) => {
+                    let value = if self == Self::M68kOSEvent {
+                        if value == 0 {
+                            u32::MAX
+                        } else {
+                            0
+                        }
+                    } else {
+                        value
+                    };
                     c.dar[0] = value;
                     let sr = c.get_sr() & !0xf;
                     c.set_sr(

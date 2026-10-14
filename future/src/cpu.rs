@@ -12,6 +12,22 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    PostEvent {
+        what: u16,
+        message: u32,
+    },
+    OSEvent {
+        mask: u16,
+        destination: GuestPtr,
+        remove: bool,
+    },
+    FlushEvents {
+        which: u16,
+        stop: u16,
+    },
+    SetEventMask(u16),
+    GetEventQueue,
+
     CExit(u32),
     BreakPoint(GuestPtr),
     SetJump(GuestPtr),

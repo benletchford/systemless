@@ -39,5 +39,13 @@ symbols, non-AltiVec jump buffers and C exit are implemented. C exit records
 phase/status and invokes the shared CFM termination path. Stdio, atexit,
 MPW shell cleanup hooks and interactive debugger support remain unavailable;
 unknown required imports and explicit breakpoint calls fail. No graphics,
-events, original commercial application or broader compiler-runtime
+Toolbox events, original commercial application or broader compiler-runtime
 compatibility is claimed.
+
+The `events.c` program passes on both architectures. It checks the default
+key-up posting mask, enables all low-level events, posts multiple types, peeks
+twice without removing, selectively removes an event, flushes with and without
+a stop mask, and directly reads the guest queue header and event elements.
+The test requires a final posted success marker before ExitToShell, so returning
+an error from 68K main cannot pass. This exercises the Operating System event
+queue; it does not claim window activation/update events or WaitNextEvent.

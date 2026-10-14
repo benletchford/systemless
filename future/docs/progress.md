@@ -282,3 +282,30 @@ slice on both architectures, then connect real QuickDraw port/drawing calls
 to the existing wgpu graphics model. Keep C runtime cleanup expansion and
 real Mixed Mode descriptors explicit remaining work. Window presentation
 acceptance and the complete rebuild remain unfinished.
+
+
+### Shared OS event queue and compiled event program
+
+Added PostEvent, GetOSEvent, OSEventAvail, FlushEvents, SetEventMask and
+GetEvQHdr through the architecture adapters. The guest-linked 20-entry queue,
+packed records and system mask are shared authorities. Event input/time
+snapshots are deterministic; queue overflow evicts the oldest entry, invalid
+links fault, and invalid output storage cannot consume an event.
+
+The same MPW `events.c` program passes on 68K and PPC, exercising masks,
+posting, peeking, selective removal, flush stop masks and direct queue reads.
+A separate test posts from real 68K instructions and consumes from PPC within
+one loaded runtime, proving live shared state rather than comparing two queues.
+Boundary tests cover twenty-entry overflow, guest mutation, record bytes,
+null events, invalid output and cyclic links.
+
+All 61 tests passed, including two GPU checks and four MPW acceptance tests
+(the new compiled event test exercises both architectures). Strict all-target
+Clippy passed. The default suite leaves six optional GPU/compiler tests ignored.
+Generated artifacts remain under ignored target/mpw-probe. These are compiler
+fixtures, not original-app compatibility evidence.
+
+Next executable work: connect Toolbox event waiting/yielding to deterministic
+scheduling, then QuickDraw port state and real drawing calls to wgpu. OS queue
+support alone does not implement GetNextEvent/WaitNextEvent, window update or
+activation, host input, or autorepeat. The full rebuild remains active.

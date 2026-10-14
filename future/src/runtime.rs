@@ -93,6 +93,51 @@ impl Runtime {
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::PostEvent { what, message } => {
+                            let ticks = self.tick_count()?;
+                            let result = crate::events::post(
+                                &mut self.memory,
+                                what,
+                                message,
+                                ticks,
+                                self.process.input,
+                            )?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                result as i32 as u32,
+                                0,
+                            )?;
+                        }
+                        Call::OSEvent {
+                            mask,
+                            destination,
+                            remove,
+                        } => {
+                            let ticks = self.tick_count()?;
+                            let found = crate::events::receive(
+                                &mut self.memory,
+                                mask,
+                                destination,
+                                remove,
+                                ticks,
+                                self.process.input,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, u32::from(found), 0)?;
+                        }
+                        Call::FlushEvents { which, stop } => {
+                            let stopped = crate::events::flush(&mut self.memory, which, stop)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, stopped.into(), 0)?;
+                        }
+                        Call::SetEventMask(mask) => self
+                            .memory
+                            .write(crate::events::SYSTEM_MASK, &mask.to_be_bytes())?,
+                        Call::GetEventQueue => reply.apply(
+                            &mut self.cpu,
+                            &mut self.memory,
+                            crate::events::QUEUE_HEADER.0,
+                            0,
+                        )?,
                         Call::BreakPoint(pointer) => {
                             return Err(Error::Cpu(format!(
                                 "PPC debugger breakpoint requested at {:#x}",
@@ -219,7 +264,12 @@ impl Runtime {
                 Outcome::Service(call) => {
                     self.services.calls.push(call);
                     match call {
-                        Call::CExit(_)
+                        Call::PostEvent { .. }
+                        | Call::OSEvent { .. }
+                        | Call::FlushEvents { .. }
+                        | Call::SetEventMask(_)
+                        | Call::GetEventQueue
+                        | Call::CExit(_)
                         | Call::BreakPoint(_)
                         | Call::SetJump(_)
                         | Call::LongJump { .. }

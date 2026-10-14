@@ -1,5 +1,6 @@
 pub mod abi;
 pub mod cpu;
+pub mod events;
 pub mod files;
 pub mod fixtures;
 pub mod graphics;

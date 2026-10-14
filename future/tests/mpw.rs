@@ -88,3 +88,28 @@ fn compiled_ppc_nonlocal_jumps_and_main_return_complete() {
     assert_eq!(app.runtime.advance(100).unwrap(), Stop::Exit(37));
     assert_eq!(app.runtime.instructions, before);
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture; see fixtures/mpw/README.md"]
+fn compiled_event_program_passes_on_both_architectures() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("events.68k.rsrc")).expect("build the MPW probe first");
+    let pef = std::fs::read(root.join("events.ppc")).unwrap();
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, None).unwrap(),
+    ] {
+        assert_eq!(app.runtime.advance(10_000).unwrap(), Stop::Exit(0));
+        let calls = &app.runtime.services.calls;
+        assert_eq!(
+            &calls[calls.len() - 2..],
+            &[
+                Call::PostEvent {
+                    what: 7,
+                    message: 0x600d
+                },
+                Call::Exit(0)
+            ]
+        );
+    }
+}

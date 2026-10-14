@@ -227,3 +227,34 @@ Both search modes visit the current single application map; additional maps and
 search chains are future work. Primary references: IM: Files (1992), pp. 2-237–238,
 [FCB layout](https://dev.os9.ca/techpubs/mac/Files/Files-122.html), and
 [GetNamedResource](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-52.html).
+
+
+## Operating System event queue
+
+`events.rs` operates directly on the shared guest address space. The low-memory
+system event mask (0x144), queue header (0x14a), and twenty 22-byte event queue
+elements in a reserved mapped arena are authoritative. Elements use 24-byte
+slots, preserving the packed Macintosh field offsets. Link traversal is bounded
+and validates arena membership, loops, and head/tail consistency. Imported
+`GetEvQHdr` and the 68K inline implementation expose that same header. Direct
+guest changes to valid event records are observed on retrieval.
+
+PostEvent snapshots the process input coordinates/modifiers and deterministic
+guest ticks. Unsupported event types or disabled mask bits return evtNotEnb.
+A full queue evicts its oldest element. GetOSEvent and OSEventAvail select the
+first matching event; only GetOSEvent removes it. Null events carry current
+input/time. FlushEvents removes matching elements until the first stop-mask
+match. Output memory is checked before consuming an event. ABI adapters convert
+the logical result to the raw 68K 0/-1 convention or PPC Boolean 1/0.
+
+Host keyboard/mouse ingestion, autorepeat generation, Toolbox event synthesis,
+WaitNextEvent scheduling, and arbitrary guest-inserted queue allocations remain
+pending. The process input snapshot is an explicit host boundary, not a second
+copy of the queue. Real Mixed Mode callbacks remain separate unfinished work.
+
+Primary contracts: Apple's [PostEvent](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-67.html),
+[GetOSEvent](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-60.html),
+[OSEventAvail](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-61.html),
+[FlushEvents](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-56.html), and
+[Introduction to Events](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-29.html),
+plus MPW Events.h/OSUtils.h for inline traps, record layout and evType=4.
