@@ -681,3 +681,21 @@ write fault at $010000FC inside a CODE segment, PC $01000270, after 92039 bounda
 Next: investigate startup relocation and CODE permissions, then the Toolbox trap.
 No application interaction acceptance is claimed; full rebuild remains active.
 GitHub publication remains pending the user's response to the approval request.
+
+
+### Writable classic CODE and startup relocation
+
+Centaurian's blocked write was verified as startup relocation of an embedded JSR
+operand: adding A5 changes $00000028 into $00400028. Classic CODE segments now
+map read/write/execute, consistent with classic RAM code semantics; all accesses
+still obey mapped bounds. PEF permissions remain independently selected by kind.
+A generated guest test relocates a longword, patches a MOVEQ instruction and
+executes the updated instruction through the real 68K engine, then verifies that
+writing beyond the segment is rejected.
+
+All 98 tests pass, including thirteen optional GPU/MPW checks, and strict Clippy
+passes. Centaurian now completes these relocations and reaches unsupported $A647
+at PC $010000C0 after 96660 boundaries. D0 selects LoadSeg and A0 points into the
+application, identifying trap replacement as the next loader-related work.
+Super Mines remains at $A8FE. Original application interactions, presentation and
+real Mixed Mode remain unfinished. The rebuild goal remains active.

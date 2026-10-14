@@ -20,6 +20,11 @@ impl Permissions {
         write: true,
         execute: false,
     };
+    pub const RWX: Self = Self {
+        read: true,
+        write: true,
+        execute: true,
+    };
     pub const RX: Self = Self {
         read: true,
         write: false,

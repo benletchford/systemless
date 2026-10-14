@@ -849,3 +849,34 @@ fn code_startup_can_initialize_globals_through_low_memory_launch_metadata() {
     assert_eq!(cpu.dar[0], A5_BASE);
     assert_eq!(cpu.dar[1] as u16, 32);
 }
+
+#[test]
+fn classic_code_relocates_operands_and_executes_patched_instructions() {
+    let fork = code_program(&[
+        0x2038, 0x0904, // MOVE.L CurrentA5,D0
+        0xd1b9, 0x0100, 0x001c, // ADD.L D0,$0100001C (embedded pointer)
+        0x33fc, 0x702a, 0x0100, 0x0018, // MOVE.W #$702A,$01000018
+        0x4ef9, 0x0100, 0x0018, // JMP to the patched instruction
+        0x7000, // originally MOVEQ #0,D0, now MOVEQ #42,D0
+        0xa9f4, // ExitToShell
+        0x0000, 0x0028, // relocation addend: jump-table offset
+    ]);
+    let mut app = LoadedApplication::code(&fork).unwrap();
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Exit(0));
+    assert_eq!(
+        app.runtime.memory.u32(GuestPtr(0x0100001c)).unwrap(),
+        A5_BASE + 40
+    );
+    let Cpu::M68k(cpu) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(cpu.dar[0], 42);
+    // Permission compatibility does not extend mappings beyond their bounds.
+    assert!(matches!(
+        app.runtime.memory.write(GuestPtr(0x01000020), &[1]),
+        Err(Error::Memory {
+            access: Access::Write,
+            ..
+        })
+    ));
+}

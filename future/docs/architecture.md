@@ -132,7 +132,13 @@ commands in progress.md. No stage is complete before executable acceptance.
 `load` constructs a fresh checked Memory and only publishes a Runtime on success.
 Resource maps preserve raw name bytes and signed IDs, reject overlapping tables
 and payloads, and enforce input/count limits. Near CODE loading eagerly maps
-referenced segments and patches the A5 jump table. PEF materializes sections,
+referenced segments and patches the A5 jump table. Classic RAM CODE mappings are
+read/write/execute: startup may relocate embedded operands or patch instructions.
+Writes and instruction fetches use the same canonical bytes; no simulated cache
+requires a flush. Mapping boundaries remain enforced. PEF section permissions
+remain determined separately by section kind. Apple documents classic
+[self-modifying CODE usage and its environment limitations](https://dev.os9.ca/techpubs/mac/pdf/Processes/Time_Manager.pdf)
+(Time Manager, page 3-13). PEF materializes sections,
 pattern data and BSS, applies bounded relocation streams using existing addends,
 resolves registered InterfaceLib imports, and enters the relocated main transition
 vector. Unknown strong imports fail; unresolved weak imports remain zero.

@@ -211,7 +211,9 @@ fn code(resources: ResourceFork) -> Result<LoadedApplication> {
                 .and_then(|v| v.checked_add(15))
                 .map(|v| v & !15)
                 .ok_or_else(|| invalid("CODE address overflow"))?;
-            memory.map(GuestPtr(base), payload.to_vec(), Permissions::RX)?;
+            // Classic RAM CODE can contain startup-relocated operands and
+            // self-modifying instructions. Fetches share these canonical bytes.
+            memory.map(GuestPtr(base), payload.to_vec(), Permissions::RWX)?;
             section_info.push((base, payload.len() as u32));
             slot.insert((base, payload.len(), first / 8, count));
         }
@@ -226,15 +228,7 @@ fn code(resources: ResourceFork) -> Result<LoadedApplication> {
         world[p + 4..p + 8].copy_from_slice(&(base + offset as u32).to_be_bytes());
     }
     // Classic jump tables are writable executable guest structures.
-    memory.map(
-        GuestPtr(world_base),
-        world,
-        Permissions {
-            read: true,
-            write: true,
-            execute: true,
-        },
-    )?;
+    memory.map(GuestPtr(world_base), world, Permissions::RWX)?;
     let mut app = finish(
         memory,
         Architecture::M68k,
