@@ -36,6 +36,7 @@ struct HandleBlock {
     size: u32,
     locked: bool,
 }
+#[derive(Clone)]
 struct Heap {
     free: BTreeMap<u32, u32>,
     allocated: BTreeMap<u32, u32>,
@@ -275,6 +276,65 @@ impl Process {
             },
         );
         heap.release(data);
+        Ok(())
+    }
+    /// Stage a group of payload/size changes without changing live allocation
+    /// metadata. Every master keeps its identity; locked blocks cannot move.
+    pub(crate) fn replace_handles(
+        &mut self,
+        memory: &mut Memory,
+        changes: Vec<(u32, Vec<u8>)>,
+    ) -> Result<()> {
+        if changes.is_empty() {
+            self.mem_error = 0;
+            return Ok(());
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        for (handle, bytes) in &changes {
+            if !unique.insert(*handle) {
+                return Err(Error::Load("duplicate staged handle".into()));
+            }
+            self.handle_size(memory, *handle)?;
+            if self.mem_error != 0 {
+                return Ok(());
+            }
+            if bytes.len() > HEAP_SIZE as usize {
+                self.mem_error = MEM_FULL;
+                return Ok(());
+            }
+            memory.validate_write(GuestPtr(*handle), 4)?;
+        }
+        memory.validate_write(GuestPtr(HEAP_BASE), HEAP_SIZE as usize)?;
+        let mut staged = self.heap.as_ref().unwrap().clone();
+        let mut placements = Vec::new();
+        for (handle, bytes) in changes {
+            let block = self.handles[&handle];
+            let size = bytes.len() as u32;
+            let data = if staged.resize_in_place(block.data, size) {
+                block.data
+            } else {
+                if block.locked {
+                    self.mem_error = MEM_FULL;
+                    return Ok(());
+                }
+                let Some(data) = staged.allocate(size) else {
+                    self.mem_error = MEM_FULL;
+                    return Ok(());
+                };
+                staged.release(block.data);
+                data
+            };
+            placements.push((handle, data, bytes));
+        }
+        for (handle, data, bytes) in placements {
+            memory.write(GuestPtr(data), &bytes)?;
+            memory.write(GuestPtr(handle), &data.to_be_bytes())?;
+            let block = self.handles.get_mut(&handle).unwrap();
+            block.data = data;
+            block.size = bytes.len() as u32;
+        }
+        self.heap = Some(staged);
+        self.mem_error = 0;
         Ok(())
     }
     pub fn dispose_handle(&mut self, memory: &mut Memory, handle: u32) -> Result<()> {

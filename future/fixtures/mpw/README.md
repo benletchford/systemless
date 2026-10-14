@@ -199,3 +199,10 @@ captured port attributes/metrics, style sentinels, nested tables and empty text
 handles, queries style/text handles, disposes and creates another record, then
 posts its success marker. The acceptance test runs both MPW architectures without
 requiring a GPU; it exercises allocation/lifetime rather than editing or redraw.
+
+
+The TextEdit probe now replaces plain/styled text, checks insertion-point placement,
+word-wrapped line starts, recalculates after changing destination width, verifies
+styled line-table size/run sentinel, handles explicit CRLF bytes, and empties the
+record before disposal. These checks run through both real calling conventions.
+Rendering and interactive editing remain the next acceptance slice.

@@ -18,6 +18,12 @@ pub enum Op {
     GetText(u32),
     GetStyle(u32),
     Dispose(u32),
+    SetText {
+        source: GuestPtr,
+        length: u32,
+        handle: u32,
+    },
+    Calculate(u32),
 }
 #[derive(Default)]
 pub struct Manager {
@@ -165,6 +171,33 @@ impl Manager {
                 process.mem_error = 0;
                 Ok(handle)
             }
+            Op::SetText {
+                source,
+                length,
+                handle,
+            } => {
+                if length > 32767 {
+                    return Err(bad("TextEdit text length exceeds 32767"));
+                }
+                let bytes = if length == 0 {
+                    vec![]
+                } else {
+                    memory.read(source, length as usize)?.to_vec()
+                };
+                self.layout(memory, process, handle, bytes, true)
+            }
+            Op::Calculate(handle) => {
+                self.call(memory, process, Op::GetText(handle), ticks)?;
+                let data = pointer(memory, process, handle, 128)?;
+                let length = memory.u16(GuestPtr(data.0 + 60))?;
+                if length > 32767 {
+                    return Err(bad("invalid TextEdit text length"));
+                }
+                let text = memory.u32(GuestPtr(data.0 + 62))?;
+                let data = pointer(memory, process, text, u32::from(length))?;
+                let bytes = memory.read(data, usize::from(length))?.to_vec();
+                self.layout(memory, process, handle, bytes, false)
+            }
             Op::GetText(handle) | Op::GetStyle(handle) | Op::Dispose(handle) => {
                 let owned = self
                     .records
@@ -214,4 +247,162 @@ impl Manager {
             }
         }
     }
+    fn layout(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        handle: u32,
+        bytes: Vec<u8>,
+        replace: bool,
+    ) -> Result<u32> {
+        self.call(memory, process, Op::GetText(handle), 0)?;
+        let owned = self.records[&handle].clone();
+        let data = pointer(memory, process, handle, 128)?;
+        let mut record = memory.read(data, 128)?.to_vec();
+        if memory.u32(GuestPtr(data.0 + 38))? != 0 || memory.u32(GuestPtr(data.0 + 66))? != 0 {
+            return Err(bad("custom TextEdit layout callbacks are unsupported"));
+        }
+        let styled = owned.len() == 7;
+        let mut style = if styled {
+            let table = pointer(memory, process, owned[6], 28)?;
+            if memory.u16(table)? != 1 || memory.u16(GuestPtr(table.0 + 2))? != 1 {
+                return Err(bad("mixed-style layout is not implemented"));
+            }
+            if memory.u16(GuestPtr(table.0 + 20))? != 0
+                || memory.u16(GuestPtr(table.0 + 22))? != 0
+                || memory.u16(GuestPtr(table.0 + 26))? != 0xffff
+            {
+                return Err(bad("invalid single-style TextEdit run"));
+            }
+
+            memory
+                .read(pointer(memory, process, owned[2], 18)?, 18)?
+                .to_vec()
+        } else {
+            vec![]
+        };
+        let (font, size, face) = if styled {
+            (
+                i16::from_be_bytes(style[6..8].try_into().unwrap()),
+                i16::from_be_bytes(style[10..12].try_into().unwrap()),
+                style[8],
+            )
+        } else {
+            (
+                i16::from_be_bytes(record[74..76].try_into().unwrap()),
+                i16::from_be_bytes(record[80..82].try_into().unwrap()),
+                record[76],
+            )
+        };
+        let source = crate::text::font_bytes(memory, process, font, size, face)?;
+        let strike = crate::font::Strike::parse(&source)?;
+        let width = (i32::from(i16::from_be_bytes(record[6..8].try_into().unwrap()))
+            - i32::from(i16::from_be_bytes(record[2..4].try_into().unwrap())))
+        .clamp(1, 32767);
+        let starts = line_starts(&bytes, width, record[72..74] != [0, 0], |byte| {
+            i32::from(strike.glyph(byte).advance)
+        });
+        let height = i16::try_from(
+            i32::from(strike.metrics.ascent)
+                + i32::from(strike.metrics.descent)
+                + i32::from(strike.metrics.leading),
+        )
+        .map_err(|_| bad("TextEdit line-height overflow"))?;
+        if height <= 0 {
+            return Err(bad("invalid TextEdit line height"));
+        }
+        record.resize(128.max(96 + (starts.len() + 2) * 2), 0);
+        record[94..96].copy_from_slice(&(starts.len() as u16).to_be_bytes());
+        for (index, start) in starts
+            .iter()
+            .copied()
+            .chain([bytes.len() as u16, 0])
+            .enumerate()
+        {
+            record[96 + index * 2..98 + index * 2].copy_from_slice(&start.to_be_bytes());
+        }
+        record[60..62].copy_from_slice(&(bytes.len() as u16).to_be_bytes());
+        if replace {
+            record[32..34].copy_from_slice(&(bytes.len() as u16).to_be_bytes());
+            record[34..36].copy_from_slice(&(bytes.len() as u16).to_be_bytes());
+        }
+        let mut changes = Vec::new();
+        if replace {
+            changes.push((owned[1], bytes.clone()));
+        }
+        if styled {
+            style[2..4].copy_from_slice(&height.to_be_bytes());
+            style[4..6].copy_from_slice(&strike.metrics.ascent.to_be_bytes());
+            changes.push((owned[2], style));
+            let mut lines = Vec::new();
+            for _ in 0..=starts.len() {
+                lines.extend(height.to_be_bytes());
+                lines.extend(strike.metrics.ascent.to_be_bytes());
+            }
+            changes.push((owned[3], lines));
+            let mut table = memory
+                .read(pointer(memory, process, owned[6], 28)?, 28)?
+                .to_vec();
+            table[24..26].copy_from_slice(&((bytes.len() + 1) as u16).to_be_bytes());
+            changes.push((owned[6], table));
+        } else {
+            record[24..26].copy_from_slice(&height.to_be_bytes());
+            record[26..28].copy_from_slice(&strike.metrics.ascent.to_be_bytes());
+        }
+        changes.push((handle, record));
+        process.replace_handles(memory, changes)?;
+        Ok(0)
+    }
+}
+
+fn line_starts(text: &[u8], width: i32, cr_only: bool, advance: impl Fn(u8) -> i32) -> Vec<u16> {
+    let mut starts = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        starts.push(start as u16);
+        let mut index = start;
+        let mut used = 0;
+        let mut break_after = None;
+        let mut done = false;
+        while index < text.len() {
+            if matches!(text[index], b'\r' | b'\n') {
+                start = index + 1;
+                if text[index] == b'\r' && text.get(start) == Some(&b'\n') {
+                    start += 1;
+                }
+                done = true;
+                break;
+            }
+            let next = used + advance(text[index]);
+            if !cr_only && index > start && next > width {
+                start = if text[index] <= b' ' {
+                    let mut end = index + 1;
+                    while end < text.len()
+                        && text[end] <= b' '
+                        && !matches!(text[end], b'\r' | b'\n')
+                    {
+                        end += 1;
+                    }
+                    end
+                } else {
+                    break_after.unwrap_or(index)
+                };
+                done = true;
+                break;
+            }
+            used = next;
+            if text[index] <= b' ' && (index == start || text[index - 1] > b' ') {
+                let mut end = index + 1;
+                while end < text.len() && text[end] <= b' ' && !matches!(text[end], b'\r' | b'\n') {
+                    end += 1;
+                }
+                break_after = Some(end);
+            }
+            index += 1;
+        }
+        if !done {
+            break;
+        }
+    }
+    starts
 }

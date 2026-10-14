@@ -46,9 +46,22 @@ fn font_data(
             "font metrics in color ports are unsupported".into(),
         ));
     }
-    let mut family = memory.u16(GuestPtr(port.0 + 68))? as i16;
-    let mut size = memory.u16(GuestPtr(port.0 + 74))? as i16;
-    if memory.read(GuestPtr(port.0 + 70), 1)?[0] != 0 {
+    font_bytes(
+        memory,
+        process,
+        memory.u16(GuestPtr(port.0 + 68))? as i16,
+        memory.u16(GuestPtr(port.0 + 74))? as i16,
+        memory.read(GuestPtr(port.0 + 70), 1)?[0],
+    )
+}
+pub(crate) fn font_bytes(
+    memory: &mut Memory,
+    process: &mut crate::process::Process,
+    mut family: i16,
+    mut size: i16,
+    face: u8,
+) -> Result<Vec<u8>> {
+    if face != 0 {
         return Err(Error::Graphics(
             "styled font metrics are not implemented".into(),
         ));

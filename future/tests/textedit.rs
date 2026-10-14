@@ -145,7 +145,11 @@ fn real_cpu_adapters_share_styled_textedit_record_and_owned_lifetime() {
         runtime::Stop,
     };
     let (source, process, _) = setup();
-    let f = support::pef_program(&[0x4e800020], &[b"TEStyleNew", b"TEGetText"], 32);
+    let f = support::pef_program(
+        &[0x4e800020],
+        &[b"TEStyleNew", b"TEGetText", b"TESetText", b"TECalText"],
+        32,
+    );
     let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
     app.runtime
         .process
@@ -202,7 +206,7 @@ fn real_cpu_adapters_share_styled_textedit_record_and_owned_lifetime() {
         .memory
         .map(
             GuestPtr(0x50000000),
-            vec![0xa8, 0x3d, 0xa9, 0xcd],
+            vec![0xa8, 0x3d, 0xa9, 0xcd, 0xa9, 0xcf, 0xa9, 0xd0],
             Permissions::RX,
         )
         .unwrap();
@@ -239,6 +243,51 @@ fn real_cpu_adapters_share_styled_textedit_record_and_owned_lifetime() {
             .unwrap(),
         0
     );
+
+    app.runtime
+        .memory
+        .map(GuestPtr(0x3000), b"AB CD EF".to_vec(), Permissions::RW)
+        .unwrap();
+    let mut frame = handle.to_be_bytes().to_vec();
+    frame.extend(8u32.to_be_bytes());
+    frame.extend(0x3000u32.to_be_bytes());
+    frame.extend([0x5a; 4]);
+    app.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000004, stack);
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::M68k(c) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(c.dar[15], stack + 12);
+    assert_eq!(
+        app.runtime.memory.u16(GuestPtr(stack + 12)).unwrap(),
+        0x5a5a
+    );
+    let data = ptr(&app.runtime.memory, handle);
+    assert_eq!(app.runtime.memory.u16(GuestPtr(data.0 + 60)).unwrap(), 8);
+    assert_eq!(
+        app.runtime
+            .memory
+            .read(ptr(&app.runtime.memory, text), 8)
+            .unwrap(),
+        b"AB CD EF"
+    );
+    app.runtime
+        .memory
+        .write(GuestPtr(data.0 + 6), &13i16.to_be_bytes())
+        .unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::PowerPc, gate(&app, 3), stack);
+    if let Cpu::PowerPc(c) = &mut app.runtime.cpu {
+        c.gpr[3] = handle;
+    }
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    assert_eq!(
+        app.runtime
+            .memory
+            .u16(GuestPtr(ptr(&app.runtime.memory, handle).0 + 94))
+            .unwrap(),
+        3
+    );
     app.runtime
         .memory
         .write(GuestPtr(stack), &handle.to_be_bytes())
@@ -248,4 +297,241 @@ fn real_cpu_adapters_share_styled_textedit_record_and_owned_lifetime() {
     assert_eq!(app.runtime.memory.u32(GuestPtr(handle)).unwrap(), 0);
     assert_eq!(app.runtime.memory.u32(GuestPtr(style)).unwrap(), 0);
     assert_eq!(app.runtime.memory.u32(GuestPtr(text)).unwrap(), 0);
+}
+
+#[test]
+fn replacement_layout_and_recalculation_preserve_handles_and_capture_record_fonts() {
+    let (mut m, mut p, mut manager) = setup();
+    let handle = manager.call(&mut m, &mut p, new(true), 0).unwrap();
+    let text = manager
+        .call(&mut m, &mut p, Op::GetText(handle), 0)
+        .unwrap();
+    let data = ptr(&m, handle);
+    m.write(GuestPtr(data.0 + 6), &13i16.to_be_bytes()).unwrap(); // destination width 10
+    m.map(GuestPtr(0x3000), b"AB CD EF".to_vec(), Permissions::RW)
+        .unwrap();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 8,
+                handle,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(p.mem_error, 0);
+    assert_eq!(
+        manager
+            .call(&mut m, &mut p, Op::GetText(handle), 0)
+            .unwrap(),
+        text
+    );
+    assert_eq!(m.read(ptr(&m, text), 8).unwrap(), b"AB CD EF");
+    let data = ptr(&m, handle);
+    assert_eq!(m.u16(GuestPtr(data.0 + 94)).unwrap(), 3);
+    assert_eq!(
+        m.read(GuestPtr(data.0 + 96), 10).unwrap(),
+        [0, 0, 0, 3, 0, 6, 0, 8, 0, 0]
+    );
+    assert_eq!(m.u16(GuestPtr(data.0 + 32)).unwrap(), 8);
+    assert_eq!(m.u16(GuestPtr(data.0 + 34)).unwrap(), 8);
+    let style = manager
+        .call(&mut m, &mut p, Op::GetStyle(handle), 0)
+        .unwrap();
+    let table = ptr(&m, style);
+    assert_eq!(m.u16(GuestPtr(table.0 + 24)).unwrap(), 9);
+    let lines = m.u32(GuestPtr(table.0 + 8)).unwrap();
+    assert_eq!(p.handle_size(&m, lines).unwrap(), 16);
+    // Current port changes do not replace captured TextEdit attributes.
+    m.write(GuestPtr(0x1080 + 68), &99i16.to_be_bytes())
+        .unwrap();
+    manager
+        .call(&mut m, &mut p, Op::Calculate(handle), 0)
+        .unwrap();
+    assert_eq!(m.u16(GuestPtr(ptr(&m, handle).0 + 94)).unwrap(), 3);
+    let source = ptr(&m, text);
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source,
+                length: 2,
+                handle,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(m.read(ptr(&m, text), 2).unwrap(), b"AB");
+    assert_eq!(m.u16(GuestPtr(ptr(&m, handle).0 + 94)).unwrap(), 1);
+    let data = ptr(&m, handle);
+    m.write(GuestPtr(data.0 + 72), &(-1i16).to_be_bytes())
+        .unwrap();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 8,
+                handle,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(m.u16(GuestPtr(ptr(&m, handle).0 + 94)).unwrap(), 1);
+    m.write(GuestPtr(0x3000), b"AB\r\nCD").unwrap();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 6,
+                handle,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(
+        m.read(GuestPtr(ptr(&m, handle).0 + 96), 8).unwrap(),
+        [0, 0, 0, 4, 0, 6, 0, 0]
+    );
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(u32::MAX),
+                length: 0,
+                handle,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(p.handle_size(&m, text).unwrap(), 0);
+    assert_eq!(m.u16(GuestPtr(ptr(&m, handle).0 + 94)).unwrap(), 0);
+    m.write(GuestPtr(ptr(&m, handle).0 + 72), &0u16.to_be_bytes())
+        .unwrap();
+    m.map(GuestPtr(0x4000), vec![b' '; 32767], Permissions::RW)
+        .unwrap();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x4000),
+                length: 32767,
+                handle,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(m.u16(GuestPtr(ptr(&m, handle).0 + 60)).unwrap(), 32767);
+    assert_eq!(m.u16(GuestPtr(ptr(&m, handle).0 + 94)).unwrap(), 1);
+    assert_eq!(m.u16(GuestPtr(ptr(&m, style).0 + 24)).unwrap(), 32768);
+}
+#[test]
+fn failed_text_group_resize_preserves_record_text_and_style_payloads() {
+    let (mut m, mut p, mut manager) = setup();
+    let handle = manager.call(&mut m, &mut p, new(true), 0).unwrap();
+    let text = manager
+        .call(&mut m, &mut p, Op::GetText(handle), 0)
+        .unwrap();
+    m.map(GuestPtr(0x3000), vec![b'A'; 100], Permissions::RW)
+        .unwrap();
+    let data = ptr(&m, handle);
+    m.write(GuestPtr(data.0 + 6), &4i16.to_be_bytes()).unwrap();
+    let held = p.new_pointer(&mut m, HEAP_SIZE - 512, false).unwrap();
+    assert_ne!(held, 0);
+    let original = m.read(ptr(&m, handle), 128).unwrap().to_vec();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 100,
+                handle,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(p.mem_error, -108);
+    assert_eq!(m.read(ptr(&m, handle), 128).unwrap(), original);
+    assert_eq!(p.handle_size(&m, text).unwrap(), 0);
+    p.dispose_pointer(held);
+    p.set_handle_lock(&m, text, true).unwrap();
+    let before = m.read(ptr(&m, handle), 128).unwrap().to_vec();
+    let style = manager
+        .call(&mut m, &mut p, Op::GetStyle(handle), 0)
+        .unwrap();
+    let before_style = m.read(ptr(&m, style), 28).unwrap().to_vec();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 100,
+                handle,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(p.mem_error, -108);
+    assert_eq!(m.read(ptr(&m, handle), 128).unwrap(), before);
+    assert_eq!(m.read(ptr(&m, style), 28).unwrap(), before_style);
+    assert_eq!(p.handle_size(&m, text).unwrap(), 0);
+    p.set_handle_lock(&m, text, false).unwrap();
+    p.set_handle_lock(&m, handle, true).unwrap();
+    m.write(GuestPtr(ptr(&m, handle).0 + 6), &4i16.to_be_bytes())
+        .unwrap();
+    let before = m.read(ptr(&m, handle), 128).unwrap().to_vec();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 100,
+                handle,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(p.mem_error, -108);
+    assert_eq!(m.read(ptr(&m, handle), 128).unwrap(), before);
+    assert_eq!(p.handle_size(&m, text).unwrap(), 0);
+    p.set_handle_lock(&m, handle, false).unwrap();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 100,
+                handle,
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(p.mem_error, 0);
+    assert_eq!(m.u16(GuestPtr(ptr(&m, handle).0 + 94)).unwrap(), 100);
+    assert_eq!(p.handle_size(&m, text).unwrap(), 100);
+    assert!(manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 32768,
+                handle
+            },
+            0
+        )
+        .is_err());
 }

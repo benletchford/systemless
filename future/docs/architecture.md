@@ -760,3 +760,15 @@ Disposal validates the entire graph before mutation. Fonts supply actual initial
 metrics; buffer drawing is available for the next layout/redraw integration.
 Native 68K/PPC adapters marshal the same typed operations. Editing, style/handle
 adoption and callback defaults remain explicit gaps in this first lifecycle slice.
+
+
+## TextEdit grouped updates
+
+Replacement/layout read captured guest attributes and prepare immutable payloads
+for the text, record and style/line handles. The shared heap stages every resize
+against cloned allocator metadata, respecting locked blocks and existing master
+identities. It validates writes and commits only after all allocations succeed.
+This prevents partial TextEdit updates on heap exhaustion or locked-record growth.
+Word wrapping and line-table construction use decoded shared strike advances;
+redraw will consume the same guest tables rather than a cached host layout.
+Only one style run is currently supported, with explicit limits/callback failures.

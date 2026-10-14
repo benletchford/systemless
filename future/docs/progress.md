@@ -1340,3 +1340,46 @@ integration. Full rebuild acceptance and real Mixed Mode remain outstanding.
 
 Validation: all 165 tests pass (146 default, 19 optional GPU/MPW); the MPW
 rebuild and strict all-target Clippy pass.
+
+
+### TextEdit replacement and line layout
+
+TESetText and TECalText now share the live record/text/style graph across both
+adapters. Replacement snapshots caller bytes (including aliases of hText), retains
+CharsHandle identity, moves selection endpoints to the new end, and updates the
+record length/line starts. Recalculation reads live text and captured record/style
+attributes rather than substituting the current port's font. Plain records update
+line metrics; single-style records update style metrics, the per-line/caret-height
+table and terminal run marker. CR/LF pairs, whitespace word wrapping, hard wrapping
+of long words, empty text and the crOnly no-wrap flag are supported. Long whitespace
+runs are scanned linearly. Text is bounded at 32767 bytes; invalid ranges and larger
+lengths fault explicitly rather than silently truncating data. Mixed-style runs,
+custom layout callbacks and synthetic style metrics remain unsupported.
+
+The heap now stages grouped handle payload/size updates against a cloned allocator
+map. All master identities remain stable, locked blocks cannot move, and no live
+payload/master/size metadata is published unless every resize succeeds. This costs
+a copy of allocator metadata per update, not a copy of the heap's guest bytes. All
+writes are validated before commitment. Text, record and line-table allocation
+failures therefore preserve the prior logical state even after earlier staged
+allocations. Original TextEdit ownership metadata continues to track the same
+handles after relocation.
+
+Legacy PPC TextEdit and wrap_classic_text provide the argument/layout reference;
+transactional resize and checked text limits strengthen the existing sequential
+update behavior. Tests exercise text-handle identity, input aliasing, word/CRLF
+breaks, captured fonts, no-wrap mode, style/caret metrics, 32767-byte whitespace,
+recalculation, real 68K replacement/PPC recalculation on one record, and allocation/
+lock failures after other changes have been staged. The MPW fixture checks plain
+and styled replacement, selection endpoints, line starts, recalculation after
+changing the destination width, CRLF, empty replacement and disposal on both CPUs.
+Its CRLF data uses explicit bytes 13/10 rather than compiler newline escapes.
+
+All 167 tests passed in the full suite; the final expanded long-whitespace case
+also passed independently with the same production code. MPW rebuild and strict
+all-target Clippy pass. The count is 148 default and 19 optional GPU/MPW checks.
+Redraw, caret/selection geometry, editing commands, mixed styles, clipboard and
+callbacks are still unfinished. Next: TEUpdate drawing the laid-out lines through
+shared font/wgpu services, then selection/editing and window/menu integration.
+Original stops remain InitMenus on 68K and SndDisposeChannel at PPC strong-import
+validation. Full rebuild acceptance and real Mixed Mode remain outstanding.

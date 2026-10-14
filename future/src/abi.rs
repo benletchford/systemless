@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 pub enum Service {
     Random,
     TENew(bool),
+    TESetText,
+    TECalText,
     TEInit,
     TEGetText,
     TEGetStyleHandle,
@@ -150,6 +152,8 @@ impl Abi {
             b"MoveTo" => Some(Service::MoveTo),
             b"TENew" => Some(Service::TENew(false)),
             b"TEStyleNew" => Some(Service::TENew(true)),
+            b"TESetText" => Some(Service::TESetText),
+            b"TECalText" => Some(Service::TECalText),
             b"TEInit" => Some(Service::TEInit),
             b"TEGetText" => Some(Service::TEGetText),
             b"TEGetStyleHandle" => Some(Service::TEGetStyleHandle),
@@ -431,6 +435,33 @@ impl Abi {
                         styled: opcode == 0xa83e,
                     }),
                     Reply::StackLong(GuestPtr(result)),
+                ))
+            }
+            0xa9cf => {
+                let args = memory.read(GuestPtr(sp), 12)?;
+                let handle = u32::from_be_bytes(args[..4].try_into().unwrap());
+                let length = u32::from_be_bytes(args[4..8].try_into().unwrap());
+                let source = GuestPtr(u32::from_be_bytes(args[8..12].try_into().unwrap()));
+                c.dar[15] = sp
+                    .checked_add(12)
+                    .ok_or_else(|| Error::Cpu("TextEdit stack overflow".into()))?;
+                Ok((
+                    Call::TextEdit(crate::textedit::Op::SetText {
+                        source,
+                        length,
+                        handle,
+                    }),
+                    Reply::None,
+                ))
+            }
+            0xa9d0 => {
+                let handle = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("TextEdit stack overflow".into()))?;
+                Ok((
+                    Call::TextEdit(crate::textedit::Op::Calculate(handle)),
+                    Reply::None,
                 ))
             }
             0xa9cc => Ok((Call::TextEdit(crate::textedit::Op::Init), Reply::None)),
@@ -877,6 +908,12 @@ impl Abi {
                 view: GuestPtr(c.gpr[4]),
                 styled,
             }),
+            Service::TESetText => Call::TextEdit(crate::textedit::Op::SetText {
+                source: GuestPtr(c.gpr[3]),
+                length: c.gpr[4],
+                handle: c.gpr[5],
+            }),
+            Service::TECalText => Call::TextEdit(crate::textedit::Op::Calculate(c.gpr[3])),
             Service::TEInit => Call::TextEdit(crate::textedit::Op::Init),
             Service::TEGetText => Call::TextEdit(crate::textedit::Op::GetText(c.gpr[3])),
             Service::TEGetStyleHandle => Call::TextEdit(crate::textedit::Op::GetStyle(c.gpr[3])),
@@ -1032,6 +1069,8 @@ impl Abi {
                                 | crate::windows::Op::Close
                                 | crate::windows::Op::Dispose
                         )
+                        | Service::TESetText
+                        | Service::TECalText
                         | Service::TEInit
                         | Service::TEDispose
                         | Service::MoveTo
