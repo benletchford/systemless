@@ -678,6 +678,18 @@ impl Runtime {
                                 }
                             }
                         }
+                        Call::MovePortTo { left, top } => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            ports.move_port_to(&mut self.memory, left, top)?;
+                        }
+                        Call::PortSize { width, height } => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            ports.port_size(&mut self.memory, width, height)?;
+                        }
                         Call::PenSize { width, height } => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -1096,6 +1108,8 @@ impl Runtime {
                         | Call::FragmentQuery(_)
                         | Call::InitGraf { .. }
                         | Call::Port { .. }
+                        | Call::MovePortTo { .. }
+                        | Call::PortSize { .. }
                         | Call::PenSize { .. }
                         | Call::PenMode(_)
                         | Call::WaitEvent { .. }

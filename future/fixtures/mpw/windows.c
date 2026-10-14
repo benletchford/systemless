@@ -4,6 +4,7 @@
 #include <Controls.h>
 #include <ControlDefinitions.h>
 #include <Memory.h>
+#include <Resources.h>
 #include <Events.h>
 #include <Processes.h>
 #include <Menus.h>
@@ -16,6 +17,8 @@ int main(void) {
     Rect local={0,0,20,20};
     WindowPtr first, next, hidden;
     GrafPtr old;
+    GrafPort offscreen;
+    PicHandle picture;
     Point point;
     EventRecord event;
     Rect dirty={43,42,49,48};
@@ -36,6 +39,12 @@ int main(void) {
     if (old!=(GrafPtr)first || first->portRect.bottom!=20 || first->portRect.right!=20) return 3;
     PenSize(2,3); if (first->pnSize.h!=2 || first->pnSize.v!=3) return 46; PenSize(1,1);
     if (!RectInRgn(&local,first->visRgn)) return 47;
+    picture=GetPicture(322);
+    if (!picture || (Handle)picture!=GetResource('PICT',322) || GetHandleSize((Handle)picture)!=14) return 48;
+    ReleaseResource((Handle)picture);
+    OpenPort(&offscreen); PortSize(8,4); MovePortTo(2,1);
+    if (offscreen.portRect.right!=8 || offscreen.portRect.bottom!=4 || offscreen.portBits.bounds.left!=-2 || offscreen.portBits.bounds.top!=-1 || offscreen.portBits.bounds.right!=510 || offscreen.portBits.bounds.bottom!=341) return 49;
+    ClosePort(&offscreen); SetPort((GrafPtr)first);
     saved=NewRgn(); CopyRgn(first->visRgn,saved);
     RectRgn(((WindowPeek)first)->updateRgn,&dirty);
     if (OSEventAvail(updateMask,&event)) return 15;

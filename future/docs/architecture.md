@@ -1036,3 +1036,22 @@ RectInRgn uses positive-area overlap against decoded region spans, including
 holes/disjoint rows, rather than region bounding boxes. Both adapters share it;
 the 68K Boolean writes one byte and preserves the caller's padding. Output
 permissions are validated before consuming the argument stack.
+
+GetPicture ($A9BC / InterfaceLib) decodes only the resource ID and invokes the
+existing shared GetResource service with type PICT. It preserves cache identity,
+resource ownership, release/reload behavior and ResErr. Loading exposes the
+original bytes without treating them as a validated or drawable picture.
+
+PortSize changes only the current portRect bottom/right, preserving its origin,
+bitmap mapping, clip and visibility handles. MovePortTo shifts BitMap bounds so
+portRect.topLeft minus bounds.topLeft equals the requested global position,
+preserving bitmap dimensions and all local port/region coordinates. These are
+GrafPort operations, not Window Manager movement/composition. Both adapters
+invoke the same shared operations; all output bytes are checked as one write.
+Word-coordinate arithmetic wraps explicitly. Color MovePortTo remains rejected.
+
+Next picture slice: decode bounded v1/v2 streams into drawing commands, keeping
+PackBits/packed-bit conversion on the CPU and scaling, transfer and composition
+on wgpu. PICT 202 in Super Mines is a v1 PackBitsRect bitmap with srcOr; its
+loading and offscreen port setup now execute, but DrawPicture remains unsupported.
+Unknown drawing opcodes must fault explicitly rather than silently disappear.

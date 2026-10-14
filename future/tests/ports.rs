@@ -333,3 +333,26 @@ fn color_setters_change_only_current_guest_port_and_reject_invalid_storage() {
     assert!(ports.set_color(&mut memory, false, 30).is_err());
     assert_eq!(memory.u32(GuestPtr(first.0 + 80)).unwrap(), 0xdeadbeef);
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn gpu_port_mapping_and_size_control_draw_destination_without_changing_regions() {
+    let (mut memory, mut process, ports) = setup();
+    let port = GuestPtr(0x1080);
+    ports.open(&mut memory, &mut process, port).unwrap();
+    let vis = memory.u32(GuestPtr(port.0 + 24)).unwrap();
+    let data = memory.u32(GuestPtr(vis)).unwrap();
+    let saved = memory.read(GuestPtr(data), 10).unwrap().to_vec();
+    ports.port_size(&mut memory, 6, 3).unwrap();
+    ports.move_port_to(&mut memory, 2, 1).unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let gpu = pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x4000))).unwrap();
+    ports
+        .paint_rect(&gpu, &mut memory, Rect::new(0, 0, 6, 3))
+        .unwrap();
+    assert_eq!(
+        memory.read(GuestPtr(0x2000), 8).unwrap(),
+        [0, 0, 0x3f, 0, 0x3f, 0, 0x3f, 0]
+    );
+    assert_eq!(memory.read(GuestPtr(data), 10).unwrap(), saved);
+}

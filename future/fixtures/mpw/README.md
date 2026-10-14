@@ -303,3 +303,8 @@ words and PPC imports are verified through the real headers/compiler.
 The window acceptance guests also call SystemTask with no periodic registrations,
 set/reset PenSize and inspect the live GrafPort dimensions, and use RectInRgn
 on the visible region. Both compiler outputs exercise the shared services.
+
+The window probes load PICT 322 through GetPicture and GetResource, compare
+handle identity/size, release it, and verify PortSize/MovePortTo fields in a
+temporary GrafPort before restoring the window. This verifies setup and loading;
+it does not claim DrawPicture execution.

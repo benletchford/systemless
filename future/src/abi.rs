@@ -89,6 +89,8 @@ pub enum Service {
     Port(crate::quickdraw::PortOp),
     PenMode,
     PenSize,
+    PortSize,
+    MovePortTo,
     WaitNextEvent,
     PostEvent,
     GetOSEvent,
@@ -123,6 +125,7 @@ pub enum Service {
     GetResource,
     GetPattern,
     GetCursor,
+    GetPicture,
     SetSoundVol,
     GetSoundVol,
     PBControlSync,
@@ -314,6 +317,8 @@ impl Abi {
             b"ClipRect" => Some(Service::Port(crate::quickdraw::PortOp::ClipRect)),
             b"PaintRect" => Some(Service::Port(crate::quickdraw::PortOp::PaintRect)),
             b"PenPat" => Some(Service::Port(crate::quickdraw::PortOp::PenPat)),
+            b"MovePortTo" => Some(Service::MovePortTo),
+            b"PortSize" => Some(Service::PortSize),
             b"PenSize" => Some(Service::PenSize),
             b"PenMode" => Some(Service::PenMode),
             b"WaitNextEvent" => Some(Service::WaitNextEvent),
@@ -351,6 +356,7 @@ impl Abi {
             b"StripAddress" => Some(Service::StripAddress),
             b"HLock" => Some(Service::HLock),
             b"HUnlock" => Some(Service::HUnlock),
+            b"GetPicture" => Some(Service::GetPicture),
             b"GetCursor" => Some(Service::GetCursor),
             b"GetPattern" => Some(Service::GetPattern),
             b"GetResource" => Some(Service::GetResource),
@@ -1162,14 +1168,26 @@ impl Abi {
                 };
                 Ok((call, Reply::None))
             }
-            0xa89b => {
+            0xa89b | 0xa876 | 0xa877 => {
                 let args = memory.read(GuestPtr(sp), 4)?;
                 let height = i16::from_be_bytes(args[..2].try_into().unwrap());
                 let width = i16::from_be_bytes(args[2..].try_into().unwrap());
                 c.dar[15] = sp
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("QuickDraw stack overflow".into()))?;
-                Ok((Call::PenSize { width, height }, Reply::None))
+                Ok((
+                    if opcode == 0xa877 {
+                        Call::MovePortTo {
+                            left: width,
+                            top: height,
+                        }
+                    } else if opcode == 0xa876 {
+                        Call::PortSize { width, height }
+                    } else {
+                        Call::PenSize { width, height }
+                    },
+                    Reply::None,
+                ))
             }
             0xa89c => {
                 let mode = memory.u16(GuestPtr(sp))? as i16;
@@ -1299,7 +1317,7 @@ impl Abi {
                     Reply::None,
                 ))
             }
-            0xa9b8 | 0xa9b9 => {
+            0xa9b8 | 0xa9b9 | 0xa9bc => {
                 let id = memory.u16(GuestPtr(sp))? as i16;
                 let result = sp
                     .checked_add(2)
@@ -1308,7 +1326,11 @@ impl Abi {
                 c.dar[15] = result;
                 Ok((
                     Call::GetResource {
-                        kind: if opcode == 0xa9b9 { *b"CURS" } else { *b"PAT " },
+                        kind: match opcode {
+                            0xa9b9 => *b"CURS",
+                            0xa9bc => *b"PICT",
+                            _ => *b"PAT ",
+                        },
                         id,
                     },
                     Reply::StackLong(GuestPtr(result)),
@@ -1656,6 +1678,14 @@ impl Abi {
                 op,
                 pointer: GuestPtr(c.gpr[3]),
             },
+            Service::MovePortTo => Call::MovePortTo {
+                left: c.gpr[3] as i16,
+                top: c.gpr[4] as i16,
+            },
+            Service::PortSize => Call::PortSize {
+                width: c.gpr[3] as i16,
+                height: c.gpr[4] as i16,
+            },
             Service::PenSize => Call::PenSize {
                 width: c.gpr[3] as i16,
                 height: c.gpr[4] as i16,
@@ -1731,6 +1761,10 @@ impl Abi {
                 size: c.gpr[4],
             },
             Service::GetHandleSize => Call::HandleSize(c.gpr[3]),
+            Service::GetPicture => Call::GetResource {
+                kind: *b"PICT",
+                id: c.gpr[3] as i16,
+            },
             Service::GetCursor => Call::GetResource {
                 kind: *b"CURS",
                 id: c.gpr[3] as i16,
@@ -1833,6 +1867,8 @@ impl Abi {
                         | Service::RoundRect(_)
                         | Service::CombineRegions(_)
                         | Service::Port(_)
+                        | Service::MovePortTo
+                        | Service::PortSize
                         | Service::PenSize
                         | Service::PenMode
                         | Service::ExitToShell

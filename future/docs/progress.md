@@ -2093,3 +2093,30 @@ native presentation remain outstanding. Full rebuild goal remains active.
 
 Validation: 210 tests pass (178 default, 32 optional GPU/MPW), strict all-target
 Clippy passes, and MPW fixtures rebuild. No GPU tests were skipped.
+
+### Picture resources and offscreen port setup
+
+GetPicture delegates to the shared PICT resource lookup, preserving identity and
+release/reload semantics across architectures. PortSize and MovePortTo implement
+the ordinary GrafPort setup that Super Mines performs before DrawPicture.
+PortSize preserves the local origin and regions; MovePortTo preserves bitmap
+dimensions and changes only its global mapping. These APIs do not recompose
+window geometry or provide color GrafPort support.
+
+New generated tests cover missing resources/ResErr, negative IDs, shared
+GetResource/GetPicture identity, modified bytes, release/reload, native result
+permissions/padding, port dimensions/mapping and both CPU conventions. An
+offscreen GPU check verifies exact pixels after resizing/repositioning the port
+and confirms visibility storage is unchanged. MPW window guests now load a PICT
+resource and inspect the setup fields through the real headers.
+
+Super Mines loads PICT 202 and reaches DrawPicture ($A8F6), PC $01000BB2, index
+17979. Its picture is v1 PackBitsRect/srcOr. Next: a bounded picture decoder with
+GPU bitmap scaling/transfer and clip composition, checked with generated streams
+and original resource evidence. Unknown operations must remain explicit errors.
+Original UI interaction, production Mixed Mode and native presentation are still
+unfinished. Full rebuild goal remains active.
+
+Validation: all 213 tests pass (180 default, 33 optional GPU/MPW), MPW fixtures
+rebuild and strict all-target Clippy passes. The strengthened port parity check
+also passes in a focused rerun; production code was unchanged throughout.

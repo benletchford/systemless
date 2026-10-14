@@ -13,7 +13,9 @@ traces; original UI interaction and native presentation remain unverified.**
 Resource-fork/CODE and PowerPC PEF loaders share one Macintosh world. Resources,
 allocation, virtual directories/file metadata, OS/update events, Basic QuickDraw,
 fonts, plain TextEdit, cursor state, window records and controls use common
-services. Menus and dialogs currently provide startup/parameter subsets. Real
+services. GetPicture shares PICT loading with the Resource Manager; PortSize
+and MovePortTo support offscreen port setup. DrawPicture remains pending.
+Menus and dialogs currently provide startup/parameter subsets. Real
 Mixed Mode, custom WDEF/CDEF callbacks and complete application compatibility
 remain unfinished. Private fixture gateways are disabled for loaded applications.
 See [architecture](docs/architecture.md) and [progress](docs/progress.md).

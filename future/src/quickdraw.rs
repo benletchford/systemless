@@ -63,6 +63,33 @@ impl Ports {
         let value = next as i16;
         Ok(if value == i16::MIN { 0 } else { value })
     }
+    pub fn move_port_to(&self, memory: &mut Memory, left: i16, top: i16) -> Result<()> {
+        let port = self.current(memory)?;
+        if memory.u16(offset(port, 6)?)? & 0xc000 != 0 {
+            return Err(Error::Graphics("color GrafPorts are unsupported".into()));
+        }
+        let bytes = memory.read(offset(port, 8)?, 16)?;
+        let word = |i| i16::from_be_bytes(bytes[i..i + 2].try_into().unwrap());
+        let new_top = word(8).wrapping_sub(top);
+        let new_left = word(10).wrapping_sub(left);
+        let bottom = new_top.wrapping_add(word(4).wrapping_sub(word(0)));
+        let right = new_left.wrapping_add(word(6).wrapping_sub(word(2)));
+        let mut bounds = [0; 8];
+        for (i, v) in [new_top, new_left, bottom, right].into_iter().enumerate() {
+            bounds[i * 2..i * 2 + 2].copy_from_slice(&v.to_be_bytes());
+        }
+        memory.write(offset(port, 8)?, &bounds)
+    }
+    pub fn port_size(&self, memory: &mut Memory, width: i16, height: i16) -> Result<()> {
+        let port = self.current(memory)?;
+        let origin = memory.read(offset(port, 16)?, 4)?;
+        let top = i16::from_be_bytes(origin[..2].try_into().unwrap());
+        let left = i16::from_be_bytes(origin[2..].try_into().unwrap());
+        let mut bytes = [0; 4];
+        bytes[..2].copy_from_slice(&top.wrapping_add(height).to_be_bytes());
+        bytes[2..].copy_from_slice(&left.wrapping_add(width).to_be_bytes());
+        memory.write(offset(port, 20)?, &bytes)
+    }
     pub fn set_color(&self, memory: &mut Memory, background: bool, color: u32) -> Result<()> {
         let port = self.current(memory)?;
         if memory.u16(offset(port, 6)?)? & 0xc000 != 0 {

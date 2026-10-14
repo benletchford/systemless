@@ -93,6 +93,14 @@ pub enum Call {
         pointer: GuestPtr,
     },
     PenMode(i16),
+    MovePortTo {
+        left: i16,
+        top: i16,
+    },
+    PortSize {
+        width: i16,
+        height: i16,
+    },
     PenSize {
         width: i16,
         height: i16,
