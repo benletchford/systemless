@@ -27,13 +27,15 @@ fork path and a maximum instruction count, and prints register/opcode context.
   eventually faulting at $1000. Its CODE 0 declares 6678 bytes below A5. Publishing
   the start of those globals ($003FE5EA) fixes this specific loader defect. The
   original startup now initializes through $00400000, then passes ReleaseResource and stops at unsupported
-  trap $A8FE at PC $0100D004 (trace index 13511).
+  trap InitMenus ($A930) at PC $0100D012 (trace index 13516), after
+  completing InitFonts, InitWindows and FlushEvents with graphics enabled.
 - Centaurian's 68K path originally faulted writing $010000FC at PC $01000270
   (trace index 92039). The target is a JSR operand containing $00000028; startup
   adds A5 to relocate it to $00400028. Classic CODE now permits writes and these
   relocations complete. Startup now also installs Toolbox replacements for
   LoadSeg ($A9F0), UnloadSeg ($A9F1), and ExitToShell ($A9F4). The next stop is
-  unsupported $A8FE at PC $10004462 (trace index 103860), after passing HLock,
+  unsupported InitMenus ($A930) at PC $10004466 (trace index 103862), after
+  InitFonts/InitWindows (graphics enabled), HLock,
   StripAddress and executing resource-loaded code from heap RAM. The prior $A204
   request was Sound Driver Control(-4, 2), setting volume to 3. That state update
   now completes. No window interaction or audio playback is proven.
@@ -55,7 +57,8 @@ its error behavior and changed-resource retention follow Apple’s
 [ReleaseResource contract](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-85.html).
 Next: implement substantive Font Manager startup and text drawing, followed by
 window update/activation events and original application interaction.
-$A8FE is InitFonts; the legacy no-op relies on built-in fonts absent from the rebuild.
+$A8FE InitFonts now loads a guest system font or allocates the licensed fallback.
+The next shared 68K startup requirement is InitMenus ($A930).
 Dynamic memory loading is verified with the MPW resource-plugin fixture;
 Centaurian has not yet executed its own GetMemFragment calls. Full acceptance
 still requires original application interactions on both architectures.

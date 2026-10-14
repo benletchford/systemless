@@ -2,8 +2,8 @@
 use systemless_future::{cpu::Cpu, load::LoadedApplication, runtime::Stop};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT".into());
+    if !(args.len() == 3 || (args.len() == 4 && args[3] == "--graphics")) {
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics]".into());
     }
     let file = std::fs::File::open(&args[1])?;
     use std::io::Read;
@@ -15,6 +15,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "pef" => LoadedApplication::pef(&data, None)?,
         _ => return Err("expected code or pef".into()),
     };
+    if args.len() == 4 {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        app.runtime.graphics = Some(pollster::block_on(
+            systemless_future::graphics::Graphics::new(
+                &instance,
+                None,
+                512,
+                342,
+                systemless_future::memory::GuestPtr(0x4000),
+            ),
+        )?);
+    }
     let budget: u64 = args[2].parse()?;
     for _ in 0..budget {
         match &app.runtime.cpu {

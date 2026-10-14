@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    InitFonts,
     FontInfo,
     TextState(crate::text::Field),
     NewWindow,
@@ -130,6 +131,7 @@ impl Abi {
             b"TextMode" => Some(Service::TextState(crate::text::Field::Mode)),
             b"TextSize" => Some(Service::TextState(crate::text::Field::Size)),
             b"GetFontInfo" => Some(Service::FontInfo),
+            b"InitFonts" => Some(Service::InitFonts),
             b"Random" => Some(Service::Random),
             b"FindSymbol" => Some(Service::FindSymbol),
             b"CountSymbols" => Some(Service::CountSymbols),
@@ -324,6 +326,7 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("font metrics stack overflow".into()))?;
                 Ok((Call::FontInfo(destination), Reply::None))
             }
+            0xa8fe => Ok((Call::InitFonts, Reply::None)),
             0xa861 => {
                 memory.validate_write(GuestPtr(sp), 2)?;
                 Ok((Call::Random, Reply::StackWord(GuestPtr(sp))))
@@ -699,6 +702,7 @@ impl Abi {
                 value: c.gpr[3] as u16,
             },
             Service::FontInfo => Call::FontInfo(GuestPtr(c.gpr[3])),
+            Service::InitFonts => Call::InitFonts,
             Service::Random => Call::Random,
             Service::GetMemFragment => Call::LoadFragment(crate::cfm::LoadRequest {
                 source: GuestPtr(c.gpr[3]),
@@ -850,6 +854,7 @@ impl Abi {
                                 | crate::windows::Op::Close
                                 | crate::windows::Op::Dispose
                         )
+                        | Service::InitFonts
                         | Service::FontInfo
                         | Service::TextState(_)
                         | Service::RoundRect(_)

@@ -721,3 +721,16 @@ architecture font state exists. Mask extraction only decodes source storage;
 wgpu glyph composition remains the next drawing boundary. Default font
 initialization, NFNT/FOND association selection, optional tables, color fonts,
 styles/scaling and outline fallbacks are explicit outstanding work.
+
+
+## Font initialization and fallback ownership
+
+The shared Font Manager initializes a guest system strike from an application
+FONT resource or a licensed outline substitute. Fallback generation on the CPU
+produces canonical packed source-font data; it does not render destination pixels.
+The process stores only fallback handle identities and initialization metadata.
+Default family/size selection reads guest low-memory globals on every metrics call,
+and the current strike is reparsed from live handle bytes. Cached generated strikes
+are bounded by count and supported point sizes. Resource priority, fallback
+approximation, thresholding, licenses and rasterization costs are explicit.
+Application text composition through wgpu remains the next shared drawing service.

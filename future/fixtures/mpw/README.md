@@ -174,3 +174,9 @@ The drawing probe selects family 3 at size 9 and calls GetFontInfo on an origina
 synthetic FONT resource (ID 393). It checks ascent 2, descent 1, maximum width 4
 and leading -1 on both CPUs. The resource contains tiny test glyphs, not copied
 font artwork. Glyph drawing and system-font fallback remain pending.
+
+
+The drawing fixture includes Fonts.h, runs InitFonts twice, and queries positive
+system metrics before selecting its explicit FONT resource. This tests the default
+strike and idempotent initialization through both real compilers. The fallback is
+an OFL-licensed Nimbus Sans substitute; glyph pixel equivalence is not asserted.

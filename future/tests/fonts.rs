@@ -145,3 +145,138 @@ fn real_get_font_info_adapters_share_mutable_guest_font_resource() {
         h
     );
 }
+
+#[test]
+fn init_fonts_allocates_once_and_default_globals_select_live_metrics_on_both_cpus() {
+    let f = pef_program(&[0x4e800020], &[b"InitFonts", b"GetFontInfo"], 64);
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), vec![0; 512], Permissions::RW)
+        .unwrap();
+    let ports = systemless_future::quickdraw::Ports {
+        current_slot: GuestPtr(0x51000000),
+        screen_bitmap: GuestPtr(0),
+    };
+    app.runtime
+        .memory
+        .write(ports.current_slot, &0x51000100u32.to_be_bytes())
+        .unwrap();
+    app.runtime.process.ports = Some(ports);
+    let stack = STACK_BASE + 0x8000;
+    let out = app.info.toc_or_a5 + 32;
+    let gate = |app: &LoadedApplication, index: u32| {
+        let vector = app
+            .runtime
+            .memory
+            .u32(GuestPtr(app.info.toc_or_a5 + 8 + index * 4))
+            .unwrap();
+        app.runtime.memory.u32(GuestPtr(vector)).unwrap()
+    };
+    app.runtime.cpu = Cpu::new(Architecture::PowerPc, gate(&app, 0), stack);
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    assert!(app.runtime.process.fonts.initialized);
+    assert_eq!(app.runtime.memory.u16(GuestPtr(0xba8)).unwrap(), 12);
+    assert_eq!(app.runtime.memory.u16(GuestPtr(0x984)).unwrap(), 3);
+    app.runtime.cpu = Cpu::new(Architecture::PowerPc, gate(&app, 1), stack);
+    if let Cpu::PowerPc(c) = &mut app.runtime.cpu {
+        c.gpr[3] = out;
+    }
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    let metrics = app.runtime.memory.read(GuestPtr(out), 8).unwrap().to_vec();
+    assert!(app.runtime.memory.u16(GuestPtr(out)).unwrap() > 0);
+    let first = app
+        .runtime
+        .process
+        .new_pointer(&mut app.runtime.memory, 4, false)
+        .unwrap();
+    app.runtime
+        .memory
+        .map(
+            GuestPtr(0x50000000),
+            vec![0xa8, 0xfe, 0xa8, 0x8b],
+            Permissions::RX,
+        )
+        .unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000000, stack);
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    let second = app
+        .runtime
+        .process
+        .new_pointer(&mut app.runtime.memory, 4, false)
+        .unwrap();
+    assert_eq!(second, first + 4);
+    app.runtime
+        .memory
+        .write(GuestPtr(stack), &out.to_be_bytes())
+        .unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000002, stack);
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    assert_eq!(app.runtime.memory.read(GuestPtr(out), 8).unwrap(), metrics);
+    app.runtime
+        .memory
+        .write(GuestPtr(0x51000100 + 68), &1u16.to_be_bytes())
+        .unwrap();
+    systemless_future::text::font_info(
+        &mut app.runtime.memory,
+        &mut app.runtime.process,
+        ports,
+        GuestPtr(out),
+    )
+    .unwrap();
+    assert_eq!(app.runtime.memory.read(GuestPtr(out), 8).unwrap(), metrics);
+    app.runtime
+        .memory
+        .write(GuestPtr(0xba8), &9u16.to_be_bytes())
+        .unwrap();
+    systemless_future::text::font_info(
+        &mut app.runtime.memory,
+        &mut app.runtime.process,
+        ports,
+        GuestPtr(out),
+    )
+    .unwrap();
+    assert_ne!(app.runtime.memory.read(GuestPtr(out), 8).unwrap(), metrics);
+}
+
+#[test]
+fn guest_system_font_resource_precedes_the_substitute_and_survives_reinitialization() {
+    use systemless_future::{
+        load::resource::ResourceFork, memory::Memory, process::Process, quickdraw::Ports,
+    };
+    let fork = resource(vec![(*b"FONT", 12, None, strike())]);
+    let mut process = Process::default();
+    process.install_application_resources(ResourceFork::parse(&fork).unwrap());
+    let mut memory = Memory::default();
+    memory
+        .map(GuestPtr(0), vec![0; 4096], Permissions::RW)
+        .unwrap();
+    memory
+        .map(GuestPtr(0x5000), vec![0; 512], Permissions::RW)
+        .unwrap();
+    let ports = Ports {
+        current_slot: GuestPtr(0x5000),
+        screen_bitmap: GuestPtr(0),
+    };
+    memory
+        .write(ports.current_slot, &0x5100u32.to_be_bytes())
+        .unwrap();
+    systemless_future::font::initialize(&mut memory, &mut process).unwrap();
+    let handle = process.get_resource(&mut memory, *b"FONT", 12).unwrap();
+    let data = memory.u32(GuestPtr(handle)).unwrap();
+    systemless_future::text::font_info(&mut memory, &mut process, ports, GuestPtr(0x5080)).unwrap();
+    assert_eq!(
+        memory.read(GuestPtr(0x5080), 8).unwrap(),
+        [0, 2, 0, 1, 0, 4, 255, 255]
+    );
+    memory
+        .write(GuestPtr(data + 6), &99i16.to_be_bytes())
+        .unwrap();
+    systemless_future::font::initialize(&mut memory, &mut process).unwrap();
+    systemless_future::text::font_info(&mut memory, &mut process, ports, GuestPtr(0x5080)).unwrap();
+    assert_eq!(memory.u16(GuestPtr(0x5084)).unwrap(), 99);
+    assert_eq!(
+        process.get_resource(&mut memory, *b"FONT", 12).unwrap(),
+        handle
+    );
+}

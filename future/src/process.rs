@@ -18,6 +18,7 @@ pub struct Process {
     pub(crate) fragments: crate::cfm::Connections,
     pub files: crate::files::Files,
     pub input: crate::events::Input,
+    pub fonts: crate::font::Manager,
     pub windows: crate::windows::Windows,
     pub ports: Option<crate::quickdraw::Ports>,
     resource_ref: i16,

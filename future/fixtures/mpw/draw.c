@@ -1,5 +1,6 @@
 #include <Types.h>
 #include <Quickdraw.h>
+#include <Fonts.h>
 #include <Resources.h>
 #include <Memory.h>
 #include <Events.h>
@@ -25,6 +26,8 @@ int main(void) {
     Handle resized;
     RgnHandle visible, clipping, saved, temporary;
     InitGraf(&qd.thePort);
+    InitFonts();
+    InitFonts();
     if (qd.thePort != 0 || qd.randSeed != 1) return 1;
     if (Random() != 16807 || qd.randSeed != 16807) return 28;
     if (Random() != 15089 || qd.randSeed != 282475249) return 29;
@@ -41,6 +44,8 @@ int main(void) {
     SetPort(&port);
     GetPort(&current);
     if (current != &port) return 2;
+    GetFontInfo(&fontInfo);
+    if (fontInfo.ascent<=0 || fontInfo.descent<0 || fontInfo.widMax<=0) return 48;
     TextFont(-123);
     TextSize(18);
     TextFace(bold | italic);

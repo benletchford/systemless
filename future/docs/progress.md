@@ -1176,3 +1176,52 @@ wgpu glyph drawing, then TextEdit and title-bearing windows.
 
 Validation: all 155 tests pass (138 default and 17 optional GPU/MPW); the MPW
 fixtures rebuild successfully and strict all-target Clippy passes.
+
+
+### Font Manager initialization and licensed fallback
+
+InitFonts ($A8FE / InterfaceLib) now loads and validates an available guest
+system FONT resource, otherwise generates a real monochrome source strike from
+an unmodified OFL-licensed Nimbus Sans asset. Initialization publishes the default
+SysFontSize ($BA8, 12 when unset) and ApFontID ($984, 3 when unset). SysFontFam
+($BA6) is honored. The addresses are confirmed by MPW LowMem.h inline getters.
+Repeated initialization retains live guest storage and does not allocate again.
+FONT resources override the substitute. GetFontInfo now follows system/application
+selectors and default point size through these guest globals; changes take effect
+on subsequent calls. Fallback handles and initialization belong to the shared
+Process, with no duplicated architecture font manager or cached host metrics.
+
+`ab_glyph` 0.2.32 was already pinned in the dependency graph; it is now an explicit
+source-font dependency. Its APIs were checked against primary documentation.
+The generator converts screen points at 72 dpi to pixels per em, maps Mac Roman,
+rounds logical advances and thresholds outline coverage at 0.5 into packed source
+bits. CPU outline rasterization generates font source data; it does not modify
+application pixel memory. Glyph drawing through wgpu remains outstanding. Sizes
+1–96 and 32 cached guest fallback strikes are bounded. Families 0, 3 and 21 share
+this initial Sans substitute. Other missing families, synthetic styles and
+advanced font selection continue to fail explicitly.
+
+The asset and unchanged OFL license/provenance are in future/assets/fonts. SHA-256
+matches the repository's source asset. No Apple artwork was introduced. The
+legacy font pipeline uses a different rasterizer and compatibility advances,
+including Coppet for Geneva 9; this first substitute does not claim equal glyph
+pixels or layout. Tests verify generated strikes at small/default/extended-offset
+sizes, Mac Roman missing-glyph handling, real PPC/68K initialization and default
+metrics, idempotence, guest-global changes and resource precedence/mutation. The
+MPW drawing fixture initializes twice and queries system and resource metrics on
+both architectures.
+
+Original 68K progress, with the graphics option enabled: Super Mines completes
+InitFonts, InitWindows and FlushEvents, then stops at unsupported InitMenus
+($A930), PC $0100D012, trace index 13516. Centaurian completes InitFonts and
+InitWindows, then stops at InitMenus, PC $10004466, index 103862. These are bounded
+startup traces, not original application interaction acceptance. The trace example
+now accepts an optional --graphics flag for this evidence. PPC Centaurian still
+stops at strong import TEStyleNew before application execution.
+
+Validation: the full suite passed 157 tests, then the added resource-precedence
+check passed independently on the same production implementation, for 158 verified
+tests (141 default, 17 optional GPU/MPW). MPW rebuild and strict all-target Clippy
+pass. Next: shared text measurement and wgpu glyph drawing, then TextEdit, title
+WDEFs and substantive menu initialization. Real Mixed Mode and full rebuild
+acceptance remain outstanding; the goal stays active.

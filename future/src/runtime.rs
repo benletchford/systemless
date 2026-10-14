@@ -222,6 +222,9 @@ impl Runtime {
                                 destination,
                             )?;
                         }
+                        Call::InitFonts => {
+                            crate::font::initialize(&mut self.memory, &mut self.process)?
+                        }
                         Call::Random => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -660,7 +663,8 @@ impl Runtime {
                     // fields carry operation outputs only, never readback authority.
                     if matches!(
                         call,
-                        Call::FontInfo(_)
+                        Call::InitFonts
+                            | Call::FontInfo(_)
                             | Call::NewWindow(_)
                             | Call::Window { .. }
                             | Call::NewPointer { .. }
@@ -709,6 +713,7 @@ impl Runtime {
                         | Call::NewWindow(_)
                         | Call::Window { .. }
                         | Call::TextState { .. }
+                        | Call::InitFonts
                         | Call::FontInfo(_)
                         | Call::Random
                         | Call::LoadFragment(_)

@@ -6,6 +6,7 @@ pub mod events;
 pub mod files;
 pub mod fixtures;
 pub mod font;
+mod font_fallback;
 pub mod graphics;
 pub mod host_input;
 mod jump;

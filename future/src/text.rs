@@ -51,21 +51,41 @@ pub fn font_info(
             "font metrics in color ports are unsupported".into(),
         ));
     }
-    let family = memory.u16(GuestPtr(port.0 + 68))? as i16;
-    let size = memory.u16(GuestPtr(port.0 + 74))? as i16;
-    if family < 2 || size <= 0 || size >= 128 || memory.read(GuestPtr(port.0 + 70), 1)?[0] != 0 {
+    let mut family = memory.u16(GuestPtr(port.0 + 68))? as i16;
+    let mut size = memory.u16(GuestPtr(port.0 + 74))? as i16;
+    if memory.read(GuestPtr(port.0 + 70), 1)?[0] != 0 {
         return Err(Error::Graphics(
-            "default, styled or scaled font metrics are not implemented".into(),
+            "styled font metrics are not implemented".into(),
         ));
+    }
+    if family == 0 {
+        family = memory.u16(GuestPtr(0xba6))? as i16;
+    } else if family == 1 {
+        family = memory.u16(GuestPtr(0x984))? as i16;
+    }
+    if size == 0 {
+        size = memory.u16(GuestPtr(0xba8))? as i16;
+    }
+    if family < 0 || size <= 0 || size >= 128 {
+        return Err(Error::Graphics("invalid font family or size".into()));
     }
     let id = i16::try_from(i32::from(family) * 128 + i32::from(size))
         .map_err(|_| Error::Graphics("FONT family/size resource ID overflow".into()))?;
-    let handle = process.get_resource(memory, *b"FONT", id)?;
-    if handle == 0 {
-        return Err(Error::Graphics(
-            "selected FONT strike is unavailable".into(),
-        ));
-    }
+    let handle = if process.resources.get(*b"FONT", id).is_some() {
+        process.get_resource(memory, *b"FONT", id)?
+    } else {
+        if !process.fonts.initialized {
+            return Err(Error::Graphics(
+                "Font Manager has not been initialized".into(),
+            ));
+        }
+        if !matches!(family, 0 | 3 | 21) {
+            return Err(Error::Graphics(
+                "selected font family has no resource or fallback".into(),
+            ));
+        }
+        crate::font::fallback(memory, process, size)?
+    };
     let length = process.handle_size(memory, handle)? as usize;
     let data = GuestPtr(memory.u32(GuestPtr(handle))?);
     let metrics = crate::font::Strike::parse(memory.read(data, length)?)?.metrics;

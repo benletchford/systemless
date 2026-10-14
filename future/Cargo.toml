@@ -10,6 +10,7 @@ publish = false
 [workspace]
 
 [dependencies]
+ab_glyph = "=0.2.32"
 m68k = "=0.14.4"
 ppc = "=0.7.2"
 wgpu = "=30.0.1"

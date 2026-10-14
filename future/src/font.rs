@@ -147,3 +147,64 @@ impl<'a> Strike<'a> {
         })
     }
 }
+
+/// Font Manager owns only guest handles and initialization state. Fallback
+/// strikes remain editable guest bytes, not cached host metrics or glyphs.
+#[derive(Default)]
+pub struct Manager {
+    pub initialized: bool,
+    pub(crate) fallback: std::collections::BTreeMap<i16, u32>,
+}
+pub fn initialize(
+    memory: &mut crate::memory::Memory,
+    process: &mut crate::process::Process,
+) -> Result<()> {
+    if process.fonts.initialized {
+        return Ok(());
+    }
+    let size = memory.u16(crate::memory::GuestPtr(0xba8))? as i16;
+    let size = if size == 0 { 12 } else { size };
+    let family = memory.u16(crate::memory::GuestPtr(0xba6))? as i16;
+    let id = i16::try_from(i32::from(family) * 128 + i32::from(size))
+        .map_err(|_| bad("system FONT resource ID overflow"))?;
+    if process.resources.get(*b"FONT", id).is_some() {
+        let handle = process.get_resource(memory, *b"FONT", id)?;
+        let length = process.handle_size(memory, handle)? as usize;
+        let data = crate::memory::GuestPtr(memory.u32(crate::memory::GuestPtr(handle))?);
+        Strike::parse(memory.read(data, length)?)?;
+    } else {
+        if !matches!(family, 0 | 3 | 21) {
+            return Err(bad("system font has no resource or fallback"));
+        }
+        fallback(memory, process, size)?;
+    }
+    if memory.u16(crate::memory::GuestPtr(0xba8))? == 0 {
+        memory.write(crate::memory::GuestPtr(0xba8), &12u16.to_be_bytes())?;
+    }
+    if memory.u16(crate::memory::GuestPtr(0x984))? == 0 {
+        memory.write(crate::memory::GuestPtr(0x984), &3u16.to_be_bytes())?;
+    }
+    process.fonts.initialized = true;
+    Ok(())
+}
+pub(crate) fn fallback(
+    memory: &mut crate::memory::Memory,
+    process: &mut crate::process::Process,
+    size: i16,
+) -> Result<u32> {
+    if let Some(handle) = process.fonts.fallback.get(&size) {
+        return Ok(*handle);
+    }
+    if process.fonts.fallback.len() >= 32 {
+        return Err(bad("fallback font strike count limit exceeded"));
+    }
+    let bytes = crate::font_fallback::strike(size)?;
+    let handle = process.new_handle(memory, bytes.len() as u32, false)?;
+    if handle == 0 {
+        return Err(bad("fallback font heap allocation failed"));
+    }
+    let data = crate::memory::GuestPtr(memory.u32(crate::memory::GuestPtr(handle))?);
+    memory.write(data, &bytes)?;
+    process.fonts.fallback.insert(size, handle);
+    Ok(handle)
+}
