@@ -150,3 +150,26 @@ required `StdCLib:_BreakPoint`. These are the next concrete startup requirements
 to investigate, before events and QuickDraw. Do not bypass startup or resolve
 imports with silent stubs to make the probe appear compatible. Generated binaries
 remain ignored; the original checkout is still clean and unchanged.
+
+## 2026-10-14: compiler-observed CODE startup return contract
+
+The MPW trace established that startup reads and compares the caller's code
+bytes; it was not consuming a Finder parameter structure. CODE launch now maps a
+readable, immutable, executable ExitToShell trampoline and puts that address on
+the initial stack. A guest fixture reads its instruction bytes and returns
+through it, verifying actual service dispatch rather than private-sentinel exit.
+
+The compiled 68K probe advances through global initialization to GetOSTrapAddress
+(A346) at boundary 759, querying Gestalt (A1AD). Trap address lookup needs coherent
+Unimplemented identity and callable supported entries; a constant success or
+arbitrary dummy address would violate the documented contract. Primary evidence:
+https://dev.os9.ca/techpubs/mac/OSUtilities/OSUtilities-175.html and
+https://dev.os9.ca/techpubs/mac/OSUtilities/OSUtilities-177.html.
+
+The compiled PPC import inventory is recorded in the probe README, including
+StdCLib data symbols. The next executable milestone is still both ordinary
+compiler-generated probes reaching and completing their resource/handle checks,
+then extending them through events and QuickDraw. The rebuild remains incomplete.
+
+Validation for the return-trampoline fix: all 35 tests pass, including both
+explicit GPU tests, and strict all-target clippy passes on Apple M1/Metal.

@@ -5,7 +5,7 @@ mod reloc;
 pub mod resource;
 use crate::{
     abi::Abi,
-    cpu::{Architecture, Cpu, RETURN_GATE},
+    cpu::{Architecture, Cpu},
     memory::{GuestPtr, Memory, Permissions},
     runtime::Runtime,
     Error, Result,
@@ -16,6 +16,7 @@ pub const IMAGE_LIMIT: usize = 64 * 1024 * 1024;
 pub const SECTION_BASE: u32 = 0x0100_0000;
 pub const STACK_BASE: u32 = 0x0080_0000;
 pub const STACK_SIZE: u32 = 0x10000;
+pub const APPLICATION_RETURN: u32 = 0x8200;
 pub const A5_BASE: u32 = 0x0040_0000;
 #[derive(Debug)]
 pub struct LoadInfo {
@@ -84,10 +85,19 @@ pub(super) fn finish(
         Permissions::RW,
     )?;
     let sp = STACK_BASE + STACK_SIZE - 0x100;
-    memory.write(GuestPtr(sp), &RETURN_GATE.to_be_bytes())?;
     let mut cpu = Cpu::new(arch, entry, sp);
     match &mut cpu {
-        Cpu::M68k(c) => c.dar[13] = context,
+        Cpu::M68k(c) => {
+            c.dar[13] = context;
+            // MPW startup inspects the caller's instruction bytes. Give loaded
+            // applications an actual ExitToShell return target, not a private gate.
+            memory.map(
+                GuestPtr(APPLICATION_RETURN),
+                vec![0xa9, 0xf4, 0x4a, 0xfc],
+                Permissions::RX,
+            )?;
+            memory.write(GuestPtr(sp), &APPLICATION_RETURN.to_be_bytes())?;
+        }
         Cpu::PowerPc(c) => {
             c.gpr[2] = context;
             memory.write(GuestPtr(sp), &0u32.to_be_bytes())?;

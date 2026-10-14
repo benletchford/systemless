@@ -441,3 +441,23 @@ fn pef_faults_do_not_run_cleanup_and_cleanup_itself_is_budgeted() {
     assert_eq!(app.runtime.instructions, 200);
     assert_eq!(app.runtime.memory.u32(GuestPtr(data + 24)).unwrap(), 2);
 }
+
+#[test]
+fn code_startup_can_inspect_and_return_through_exit_to_shell() {
+    // MOVEA.L (SP),A0; MOVE.L (A0),D0; MOVE.L D0,-4(A5); RTS.
+    let file = code_program(&[0x2057, 0x2010, 0x2b40, 0xfffc, 0x4e75]);
+    let mut app = LoadedApplication::code(&file).unwrap();
+    assert_eq!(app.runtime.advance(20).unwrap(), Stop::Exit(0));
+    assert_eq!(
+        app.runtime
+            .memory
+            .u32(GuestPtr(systemless_future::load::A5_BASE - 4))
+            .unwrap(),
+        0xa9f44afc
+    );
+    assert!(app
+        .runtime
+        .memory
+        .write(GuestPtr(systemless_future::load::APPLICATION_RETURN), &[0])
+        .is_err());
+}
