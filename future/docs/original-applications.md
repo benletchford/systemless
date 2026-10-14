@@ -26,16 +26,16 @@ fork path and a maximum instruction count, and prints register/opcode context.
 - Super Mines initially wrote through zero after reading CurStackBase ($0908),
   eventually faulting at $1000. Its CODE 0 declares 6678 bytes below A5. Publishing
   the start of those globals ($003FE5EA) fixes this specific loader defect. The
-  original startup now initializes through $00400000, then passes ReleaseResource and stops at unsupported
-  trap InitMenus ($A930) at PC $0100D012 (trace index 13516), after
-  completing InitFonts, InitWindows and FlushEvents with graphics enabled.
+  original startup now initializes through $00400000, then passes ReleaseResource,
+  InitFonts, InitWindows, FlushEvents and InitMenus with graphics enabled. It stops
+  at unsupported InitCursor ($A850), PC $0100D014 (trace index 13517).
 - Centaurian's 68K path originally faulted writing $010000FC at PC $01000270
   (trace index 92039). The target is a JSR operand containing $00000028; startup
   adds A5 to relocate it to $00400028. Classic CODE now permits writes and these
   relocations complete. Startup now also installs Toolbox replacements for
   LoadSeg ($A9F0), UnloadSeg ($A9F1), and ExitToShell ($A9F4). The next stop is
-  unsupported InitMenus ($A930) at PC $10004466 (trace index 103862), after
-  InitFonts/InitWindows (graphics enabled), HLock,
+  unsupported InitCursor ($A850) at PC $1000446A (trace index 103864), after
+  InitFonts/InitWindows/InitMenus/TEInit (graphics enabled), HLock,
   StripAddress and executing resource-loaded code from heap RAM. The prior $A204
   request was Sound Driver Control(-4, 2), setting volume to 3. That state update
   now completes. No window interaction or audio playback is proven.
@@ -55,10 +55,12 @@ Semantics are documented in Apple's [Memory Manager summary](https://dev.os9.ca/
 (global variables, III-227). ReleaseResource now invalidates loaded resource identity and permits reloads;
 its error behavior and changed-resource retention follow Apple’s
 [ReleaseResource contract](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-85.html).
-Next: implement substantive Font Manager startup and text drawing, followed by
-window update/activation events and original application interaction.
-$A8FE InitFonts now loads a guest system font or allocates the licensed fallback.
-The next shared 68K startup requirement is InitMenus ($A930).
+InitFonts ($A8FE) now loads a guest system font or allocates the licensed fallback.
+InitMenus ($A930) owns and draws an empty bar through shared guest state/wgpu.
+The next shared original 68K startup requirement is InitCursor ($A850). Fresh
+traces after menu initialization retain the stops above. Cursor presentation,
+menu construction, window activation/update events and original application
+interaction remain unfinished.
 Dynamic memory loading is verified with the MPW resource-plugin fixture;
 Centaurian has not yet executed its own GetMemFragment calls. Full acceptance
 still requires original application interactions on both architectures.

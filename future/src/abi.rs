@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    Menu(crate::menus::Op),
     TENew(bool),
     TEUpdate,
     TESetText,
@@ -167,6 +168,10 @@ impl Abi {
             b"TEIdle" => Some(Service::TEIdle),
             b"TEActivate" => Some(Service::TEActivate(true)),
             b"TEDeactivate" => Some(Service::TEActivate(false)),
+            b"InitMenus" => Some(Service::Menu(crate::menus::Op::Init)),
+            b"DrawMenuBar" => Some(Service::Menu(crate::menus::Op::Draw)),
+            b"ClearMenuBar" => Some(Service::Menu(crate::menus::Op::Clear)),
+            b"GetMenuBar" => Some(Service::Menu(crate::menus::Op::Snapshot)),
             b"TEInit" => Some(Service::TEInit),
             b"TEGetText" => Some(Service::TEGetText),
             b"TEGetStyleHandle" => Some(Service::TEGetStyleHandle),
@@ -477,6 +482,21 @@ impl Abi {
                         handle,
                     }),
                     Reply::None,
+                ))
+            }
+            0xa930 | 0xa934 | 0xa937 => Ok((
+                Call::Menu(match opcode {
+                    0xa930 => crate::menus::Op::Init,
+                    0xa934 => crate::menus::Op::Clear,
+                    _ => crate::menus::Op::Draw,
+                }),
+                Reply::None,
+            )),
+            0xa93b => {
+                memory.validate_write(GuestPtr(sp), 4)?;
+                Ok((
+                    Call::Menu(crate::menus::Op::Snapshot),
+                    Reply::StackLong(GuestPtr(sp)),
                 ))
             }
             0xa9dc => {
@@ -985,6 +1005,7 @@ impl Abi {
                 active,
             }),
             Service::TEIdle => Call::TextEdit(crate::textedit::Op::Idle(c.gpr[3])),
+            Service::Menu(op) => Call::Menu(op),
             Service::TEKey => Call::TextEdit(crate::textedit::Op::Key {
                 handle: c.gpr[4],
                 byte: c.gpr[3] as u8,
@@ -1139,7 +1160,9 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Empty))
                 || matches!(
                     service,
-                    Service::InitGraf
+                    Service::Menu(
+                        crate::menus::Op::Init | crate::menus::Op::Draw | crate::menus::Op::Clear
+                    ) | Service::InitGraf
                         | Service::PortColor(_)
                         | Service::Window(
                             crate::windows::Op::Init

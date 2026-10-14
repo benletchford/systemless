@@ -1551,3 +1551,51 @@ Next: substantive Menu Manager initialization/loading to advance the original
 selRect/selPoint synchronization, mixed styles, clipboard and callbacks remain
 unfinished, as do host keyboard input and real Mixed Mode. The full rebuild
 acceptance remains unproven and the goal stays active.
+
+### Shared Menu Manager initialization and empty-bar lifecycle
+
+InitMenus ($A930 / InterfaceLib) now owns stable guest DynamicMenuList and
+MenuCInfo handles in the shared process. It resets the current list/selection,
+sets the standard 20-pixel menu height, and merges bounded, checked 30-byte
+MCEntry records from optional mctb 0. Resource Manager handles remain canonical: an
+already loaded mctb modified by the guest is read on reinitialization. Color table
+identity and unrelated entries persist. Missing color resources preserve ResErr;
+resource lookup and allocation results publish their shared error globals.
+
+Initialization stages heap updates before publishing MenuList ($A1C), MenuCInfo
+($D50), MBarHeight ($BAA) and TheMenu ($A26). Partial new-handle allocation rolls
+back. If Window Manager's GrayRgn exists, its desktop geometry is intersected
+with the area below the menu bar in the same heap transaction. Reserving the bar
+for existing windows when the height changes remains an explicit unsupported
+path rather than leaving their visibility inconsistent.
+
+The empty bar draws through wgpu directly into the guest screen bitmap, honoring
+live black/white RGB4 background information, its bottom border and the legacy
+standard corner mask. Application port/clip/pen fields remain untouched.
+DrawMenuBar ($A937), GetMenuBar ($A93B) and ClearMenuBar ($A934) share this state
+through both adapters. Snapshots copy validated regular/hierarchical list
+records into caller-owned handles; referenced menus are not disposed. Clearing
+removes list references and TheMenu without drawing. Populated menu drawing,
+custom definitions and nonmonochrome backgrounds explicitly fail. Menu creation,
+MENU/MBAR resource expansion, title/item rendering, tracking and callbacks are
+not implemented yet. GPU faults after state publication remain terminal.
+
+All 176 tests pass (151 default, 25 optional GPU/MPW), MPW fixtures rebuild and
+strict all-target Clippy passes. Checks cover cross-CPU shared state, caller-owned
+snapshots, canonical loaded-resource edits, malformed color payload rejection,
+color identity/retention, pixel-exact borders/corners, preserved desktop pixels,
+port state, GrayRgn clipping, allocation rollback and ABI result validation. The
+compiled fixture initializes windows/menus, loads mctb, snapshots/clears/reinitializes
+the bar, and checks exact pixels and preserved application port fields on both
+CPUs. Its initial below-bar assertion was corrected to preserve InitWindows'
+existing gray desktop, rather than assuming untouched pixels were zero.
+
+Fresh original 68K traces pass InitMenus. Super Mines now stops at InitCursor
+($A850), PC $0100D014, trace index 13517. Centaurian passes InitMenus and TEInit
+then stops at InitCursor, PC $1000446A, index 103864. The original PPC Centaurian
+load still rejects strong InterfaceLib:SndDisposeChannel before executing its
+instructions. These are startup observations, not application interaction
+acceptance. Next: shared cursor initialization/state and GPU/host presentation,
+then further menu construction/resource expansion and application startup. Real
+Mixed Mode, controls, interactive originals and full rebuild acceptance remain
+outstanding. The goal remains active.

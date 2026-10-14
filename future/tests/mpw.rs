@@ -451,3 +451,36 @@ fn compiled_textedit_records_and_style_lifetime_complete_on_both_cpus() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW menus fixture and real wgpu adapter"]
+fn compiled_menu_initialization_colors_and_snapshot_lifetime_match_on_both_cpus() {
+    use systemless_future::{graphics::Graphics, memory::GuestPtr, quickdraw::SCREEN};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("menus.68k.rsrc")).unwrap();
+    let pef = std::fs::read(root.join("menus.ppc")).unwrap();
+    let resources = std::fs::read(root.join("menus.ppc.rsrc")).unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut outputs = Vec::new();
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, Some(&resources)).unwrap(),
+    ] {
+        app.runtime.graphics = Some(
+            pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
+        );
+        assert_eq!(app.runtime.advance(20000).unwrap(), Stop::Exit(0));
+        assert_eq!(
+            &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],
+            &[
+                Call::PostEvent {
+                    what: 7,
+                    message: 0x600d
+                },
+                Call::Exit(0)
+            ]
+        );
+        outputs.push(app.runtime.memory.read(SCREEN, 64 * 342).unwrap().to_vec());
+    }
+    assert_eq!(outputs[0], outputs[1]);
+}

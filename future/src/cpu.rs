@@ -13,6 +13,7 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    Menu(crate::menus::Op),
     TextEdit(crate::textedit::Op),
     TextDraw(crate::text::Input),
     TextWidth(crate::text::Input),

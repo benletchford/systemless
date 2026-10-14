@@ -18,6 +18,7 @@ pub struct Process {
     pub(crate) fragments: crate::cfm::Connections,
     pub files: crate::files::Files,
     pub input: crate::events::Input,
+    pub menus: crate::menus::Menus,
     pub textedit: crate::textedit::Manager,
     pub fonts: crate::font::Manager,
     pub windows: crate::windows::Windows,

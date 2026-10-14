@@ -13,6 +13,7 @@ mod jump;
 mod lifecycle;
 pub mod load;
 pub mod memory;
+pub mod menus;
 pub mod process;
 pub mod quickdraw;
 pub mod region_geometry;

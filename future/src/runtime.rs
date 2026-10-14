@@ -261,6 +261,23 @@ impl Runtime {
                             })?;
                             crate::text::move_to(&mut self.memory, ports, h, v)?;
                         }
+                        Call::Menu(op) => {
+                            let mut manager = std::mem::take(&mut self.process.menus);
+                            let result = manager.call(
+                                &mut self.memory,
+                                &mut self.process,
+                                self.graphics.as_ref(),
+                                op,
+                            );
+                            self.process.menus = manager;
+                            let value = result?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                value,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::TextEdit(op) => {
                             let ticks = self.tick_count()?;
                             let mut manager = std::mem::take(&mut self.process.textedit);
@@ -799,7 +816,8 @@ impl Runtime {
                     // fields carry operation outputs only, never readback authority.
                     if matches!(
                         call,
-                        Call::TextEdit(_)
+                        Call::Menu(_)
+                            | Call::TextEdit(_)
                             | Call::TextDraw(_)
                             | Call::TextWidth(_)
                             | Call::InitFonts
@@ -831,7 +849,8 @@ impl Runtime {
                     }
                     if matches!(
                         call,
-                        Call::FontInfo(_)
+                        Call::Menu(crate::menus::Op::Init)
+                            | Call::FontInfo(_)
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
                             | Call::ReleaseResource(_)
@@ -852,6 +871,7 @@ impl Runtime {
                         | Call::NewWindow(_)
                         | Call::Window { .. }
                         | Call::TextState { .. }
+                        | Call::Menu(_)
                         | Call::TextEdit(_)
                         | Call::MoveTo { .. }
                         | Call::TextDraw(_)

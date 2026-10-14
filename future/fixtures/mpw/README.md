@@ -230,3 +230,11 @@ The drawing probe now posts/retrieves a keyDown event and feeds its byte to
 TEKey. It checks insertion and active caret pixels, left/right movement,
 replacement, backspace and final cleanup on both compiled CPUs. This validates
 guest event-to-edit behavior; host keyboard input remains unfinished.
+
+`menus.c` and `menus.r` initialize windows/menus with a compiled mctb 0, check
+shared low-memory handles and the desktop's top boundary, assert exact menu-bar
+borders/corners and preserved pixels below the bar, copy/dispose GetMenuBar
+snapshots, clear/reinitialize without changing manager handle identities, and
+verify resource bytes and retained application port state. The optional test runs
+both compiled CPUs through a real GPU and compares final screen bytes. Populated
+menus, callbacks and tracking are not exercised.

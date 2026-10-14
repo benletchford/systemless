@@ -814,3 +814,18 @@ Left/right movement uses the shared selection route. Successful changes redraw
 through wgpu, with rendering faults remaining terminal after publication.
 Guest event-to-TEKey acceptance uses the same queue and services on both CPUs.
 Host keyboard routing and vertical/click navigation are still incomplete.
+
+
+## Menu state and screen composition
+
+The shared Menu Manager retains allocation identities, with DynamicMenuList and
+MCEntry payloads canonical in guest memory. Color resources are read through
+the same Resource Manager handles visible to the application. List/color and
+desktop-region replacement uses the grouped heap transaction before publishing
+low-memory globals. Menu snapshots belong to the caller and share menu references.
+The empty bar draws through the GPU screen-bitmap boundary independently of the
+application's current port/clip; its pixels never use a legacy CPU renderer.
+Populated drawing, custom definitions and color modes outside the current
+monochrome screen policy are explicit missing routes. No menu callback shim or
+silent success placeholder is installed. Menu resource expansion and tracking
+remain future shared services, with callbacks belonging to the Mixed Mode work.
