@@ -80,6 +80,7 @@ struct State {
     bind: wgpu::BindGroup,
     execution: Option<Execution>,
     clock: std::time::Instant,
+    pointer: systemless_future::host_input::Pointer,
 }
 impl State {
     fn new(
@@ -183,6 +184,7 @@ impl State {
             bind,
             execution,
             clock: std::time::Instant::now(),
+            pointer: Default::default(),
         })
     }
     fn resize(&mut self, width: u32, height: u32) {
@@ -344,6 +346,7 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Occluded(false) => window.request_redraw(),
             WindowEvent::Resized(size) => {
+                state.pointer.leave();
                 state.resize(size.width, size.height);
                 window.request_redraw();
             }
@@ -409,6 +412,54 @@ impl ApplicationHandler for App {
                             Some(std::time::Instant::now() + std::time::Duration::from_millis(16));
                     }
                 }
+            }
+            WindowEvent::CursorMoved { position, .. }
+                if state.execution.as_ref().is_some_and(|e| !e.finished) =>
+            {
+                let gpu = state.rt.graphics.as_ref().unwrap();
+                state.pointer.motion(
+                    &mut state.rt.process.input,
+                    position.x,
+                    position.y,
+                    (state.config.width, state.config.height),
+                    (gpu.width, gpu.height),
+                );
+            }
+            WindowEvent::CursorLeft { .. } => state.pointer.leave(),
+            WindowEvent::ModifiersChanged(modifiers)
+                if state.execution.as_ref().is_some_and(|e| !e.finished) =>
+            {
+                let keys = modifiers.state();
+                state.rt.process.input.modifiers = (state.rt.process.input.modifiers & !0x1b00)
+                    | if keys.super_key() { 0x100 } else { 0 }
+                    | if keys.shift_key() { 0x200 } else { 0 }
+                    | if keys.alt_key() { 0x800 } else { 0 }
+                    | if keys.control_key() { 0x1000 } else { 0 };
+            }
+            WindowEvent::Focused(false)
+                if state.execution.as_ref().is_some_and(|e| !e.finished) =>
+            {
+                if let Err(error) = state
+                    .pointer
+                    .unfocus(&mut state.rt.memory, &mut state.rt.process.input)
+                {
+                    self.fail(event_loop, error);
+                }
+            }
+            WindowEvent::MouseInput {
+                state: pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } if state.execution.as_ref().is_some_and(|e| !e.finished) => {
+                if let Err(error) = state.pointer.button(
+                    &mut state.rt.memory,
+                    &mut state.rt.process.input,
+                    pressed == winit::event::ElementState::Pressed,
+                ) {
+                    self.fail(event_loop, error);
+                    return;
+                }
+                window.request_redraw();
             }
             // Host demo interaction; not claimed to be Macintosh Event Manager support.
             WindowEvent::MouseInput {

@@ -377,7 +377,26 @@ CPU timing. Zero-sized windows suspend drawing/execution until restored.
 After guest exit the host retains the final screen until close. Surface retries
 and application execution share the existing paced redraw path. The synthetic
 fixture's palette-click demonstration is disabled for loaded applications;
-real host input translation is still pending. Tests verify scheduler budgets,
+host left-button pointer input now feeds the shared OS queue. Keyboard
+events and Caps Lock remain pending. Tests verify scheduler budgets,
 waiting and terminal behavior without a GPU. Bounded surface smoke must still
 prove actual presentation on an available desktop; guest completion alone does
 not count as a successful window smoke.
+
+
+## Host mouse input
+
+The host maps physical window coordinates through the same centered aspect fit
+as presentation. Coordinates are clamped to the guest screen; presses in the
+letterbox or outside the window are ignored. Releases after a guest press are
+retained outside the viewport so the guest button cannot remain stuck. Focus
+loss releases a held button and clears modifier state. Resizing invalidates
+press eligibility until another motion event supplies current coordinates.
+
+Left-button transitions post mouseDown/mouseUp through `events::post`, carrying
+the guest clock, global guest coordinates and modifiers. Duplicate transitions
+do not post twice; system-mask suppression still updates physical button state.
+Command, Shift, Option and Control map from host modifiers. Caps Lock, keyboard
+translation, cursor imagery and Window Manager dispatch are not implemented.
+These records follow Apple's [Event Record](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-45.html)
+and [low-level event handling](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-40.html).

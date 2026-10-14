@@ -5,6 +5,7 @@ pub mod events;
 pub mod files;
 pub mod fixtures;
 pub mod graphics;
+pub mod host_input;
 mod jump;
 mod lifecycle;
 pub mod load;

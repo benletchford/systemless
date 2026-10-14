@@ -77,5 +77,7 @@ canonical screen memory, including direct guest writes. The graphics CLI calls
 it after execution. Loaded applications can also use `--window` (which supplies graphics), with
 `--smoke` for bounded presentation/resize verification. Their CPU execution is
 sliced across redraws, waits use elapsed host ticks, and the final screen remains
-until the window closes. Host input delivery remains pending. Window integration
+until the window closes. Left-button mouse input and Command/Shift/Option/Control modifiers now feed
+the shared event queue. Keyboard events, Caps Lock and live interaction
+verification remain pending. Window integration
 is implemented but presentation is still unverified on this host.

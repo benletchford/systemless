@@ -477,3 +477,23 @@ is therefore unverified; guest completion does not count as visible rendering.
 Real host input delivery, window-manager services, real Mixed Mode and original
 application acceptance remain unfinished. Next: host input mapping and the
 port/region/window services needed by representative application interactions.
+
+
+### Host mouse delivery into the shared event queue
+
+Added a host pointer adapter and wired loaded-window pointer motion, left-button
+transitions, modifier changes and focus loss. Physical coordinates account for
+aspect-fit letterboxing; outside presses are ignored, while an outstanding
+release remains deliverable outside the viewport. Masked events still update
+physical button state. Both CPUs continue consuming the same guest queue.
+
+Three new tests verify coordinates/invalid inputs, a real loaded PPC
+WaitNextEvent waking on host mouse input with exact timestamp/position/modifiers,
+and masked button changes plus focus-loss cleanup. All 80 tests and strict
+Clippy pass, including twelve explicitly enabled optional GPU/MPW tests.
+The default suite now contains 68 tests.
+
+Live desktop interaction and presentation remain unverified. Keyboard events,
+Caps Lock, cursor drawing and Window Manager dispatch remain unfinished. Next:
+keyboard delivery and complete application-driven port/region/window services;
+original application acceptance and real Mixed Mode are still outstanding.
