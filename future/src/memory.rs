@@ -59,6 +59,22 @@ impl Memory {
         });
         Ok(())
     }
+    /// Adopt prepared mappings without cloning existing guest storage. On any
+    /// overlap the destination is unchanged, including otherwise valid mappings
+    /// preceding the conflict in the incoming image.
+    pub(crate) fn adopt(&mut self, mut image: Self) -> Result<()> {
+        for incoming in &image.mappings {
+            let end = u64::from(incoming.base) + incoming.bytes.len() as u64;
+            if self.mappings.iter().any(|existing| {
+                u64::from(incoming.base) < u64::from(existing.base) + existing.bytes.len() as u64
+                    && u64::from(existing.base) < end
+            }) {
+                return Err(Error::Mapping(incoming.base));
+            }
+        }
+        self.mappings.append(&mut image.mappings);
+        Ok(())
+    }
     fn locate(&self, p: GuestPtr, len: usize, access: Access) -> Result<(usize, usize)> {
         let end = u64::from(p.0)
             .checked_add(len as u64)
@@ -107,5 +123,45 @@ impl Memory {
     }
     pub fn u32(&self, p: GuestPtr) -> Result<u32> {
         Ok(u32::from_be_bytes(self.read(p, 4)?.try_into().unwrap()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn image_adoption_is_atomic_and_preserves_permissions_and_existing_bytes() {
+        let mut memory = Memory::default();
+        memory
+            .map(GuestPtr(0x1000), vec![9; 16], Permissions::RW)
+            .unwrap();
+        let mut conflict = Memory::default();
+        conflict
+            .map(GuestPtr(0x2000), vec![1; 16], Permissions::RX)
+            .unwrap();
+        conflict
+            .map(GuestPtr(0x100f), vec![2; 16], Permissions::RW)
+            .unwrap();
+        assert!(memory.adopt(conflict).is_err());
+        assert!(memory.read(GuestPtr(0x2000), 1).is_err());
+        assert_eq!(memory.read(GuestPtr(0x1000), 16).unwrap(), &[9; 16]);
+        let mut image = Memory::default();
+        image
+            .map(GuestPtr(0x1010), vec![3; 16], Permissions::RX)
+            .unwrap();
+        image
+            .map(GuestPtr(0xffff_fffc), vec![4; 4], Permissions::RW)
+            .unwrap();
+        memory.adopt(image).unwrap();
+        assert_eq!(memory.fetch(GuestPtr(0x1010), 4, 4).unwrap(), &[3; 4]);
+        assert!(memory.write(GuestPtr(0x1010), &[0]).is_err());
+        assert!(memory.fetch(GuestPtr(0xffff_fffc), 4, 4).is_err());
+        memory.write(GuestPtr(0xffff_ffff), &[5]).unwrap();
+        memory.write(GuestPtr(0x1000), &[8]).unwrap();
+        assert_eq!(memory.read(GuestPtr(0x1000), 2).unwrap(), &[8, 9]);
+        assert_eq!(
+            memory.read(GuestPtr(0xffff_fffc), 4).unwrap(),
+            &[4, 4, 4, 5]
+        );
     }
 }

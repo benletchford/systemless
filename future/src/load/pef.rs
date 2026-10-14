@@ -11,8 +11,6 @@ use crate::{
     Result,
 };
 use std::collections::BTreeSet;
-const GATES: u32 = 0x7000_0000;
-const VECTORS: u32 = 0x7001_0000;
 struct Section {
     base: u32,
     default: u32,
@@ -26,20 +24,76 @@ struct Section {
 struct PreparedImage {
     memory: Memory,
     abi: Abi,
-    main: crate::lifecycle::Routine,
+    main: Option<crate::lifecycle::Routine>,
+    stdlib_data: bool,
     init: Option<crate::lifecycle::Routine>,
     term: Option<crate::lifecycle::Routine>,
     sections: Vec<(u32, u32)>,
 }
-const INIT_BLOCK: u32 = 0x6800_0000;
+// Host-chosen reservations, never values taken from the PEF default addresses.
+// Gates occupy address space even though the CPU adapter intercepts them.
+#[derive(Clone, Copy)]
+struct Placement {
+    sections: u32,
+    section_limit: u32,
+    gates: u32,
+    vectors: u32,
+    container: u32,
+    init_block: u32,
+}
+impl Placement {
+    const APPLICATION: Self = Self {
+        sections: SECTION_BASE,
+        section_limit: crate::process::HEAP_BASE,
+        gates: 0x7000_0000,
+        vectors: 0x7001_0000,
+        container: 0x6000_0000,
+        init_block: 0x6800_0000,
+    };
+    fn validate(self, container_size: usize) -> Result<()> {
+        let section_size = self
+            .section_limit
+            .checked_sub(self.sections)
+            .filter(|n| *n > 0)
+            .ok_or_else(|| invalid("PEF section reservation"))?;
+        let spans = [
+            (self.sections, section_size as usize),
+            (self.gates, 4096 * 4),
+            (self.vectors, 4096 * 8),
+            (self.container, container_size),
+            (self.init_block, 49),
+        ];
+        for (i, &(base, size)) in spans.iter().enumerate() {
+            let end = u64::from(base) + size as u64;
+            if !base.is_multiple_of(4)
+                || end > 1u64 << 32
+                || spans[..i].iter().any(|&(other, length)| {
+                    u64::from(base) < u64::from(other) + length as u64 && u64::from(other) < end
+                })
+            {
+                return Err(invalid("overlapping or invalid PEF reservations"));
+            }
+        }
+        Ok(())
+    }
+}
 
 pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplication> {
-    let image = prepare(input)?;
+    let placement = Placement::APPLICATION;
+    let image = prepare(input, placement)?;
+    let main = image
+        .main
+        .ok_or_else(|| invalid("PEF application has no main routine"))?;
+    let mut memory = Memory::default();
+    if image.stdlib_data {
+        crate::stdlib::install(&mut memory)?;
+    }
+    memory.adopt(image.memory)?;
     let mut app = finish(
-        image.memory,
+        memory,
         Architecture::PowerPc,
-        image.main.entry,
-        image.main.toc,
+        main.entry,
+        main.toc,
         resources,
         image.sections,
         image.abi,
@@ -48,13 +102,14 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
         &mut app.runtime.cpu,
         image.init,
         image.term,
-        INIT_BLOCK,
+        placement.init_block,
     ));
     Ok(app)
 }
 
-fn prepare(input: &[u8]) -> Result<PreparedImage> {
+fn prepare(input: &[u8], placement: Placement) -> Result<PreparedImage> {
     limit(input.len())?;
+    placement.validate(input.len())?;
     if bytes(input, 0, 12)? != b"Joy!peffpwpc" || u32_at(input, 12)? != 1 || u32_at(input, 36)? != 0
     {
         return Err(invalid("unsupported PEF header/architecture/version"));
@@ -70,7 +125,7 @@ fn prepare(input: &[u8]) -> Result<PreparedImage> {
     let mut loader = None;
     let mut ranges = Vec::new();
     let mut total = 0usize;
-    let mut next = SECTION_BASE;
+    let mut next = placement.sections;
     for i in 0..count {
         let h = 40 + i * 28;
         let default = u32_at(input, h + 4)?;
@@ -120,7 +175,7 @@ fn prepare(input: &[u8]) -> Result<PreparedImage> {
                 .checked_add(size as u32)
                 .and_then(|v| v.checked_add(15))
                 .map(|v| v & !15)
-                .filter(|v| *v < crate::process::HEAP_BASE)
+                .filter(|v| *v <= placement.section_limit)
                 .ok_or_else(|| invalid("PEF exceeds address reservation"))?;
             sections.push(Section {
                 base,
@@ -138,8 +193,6 @@ fn prepare(input: &[u8]) -> Result<PreparedImage> {
     }
     let l = loader.ok_or_else(|| invalid("missing PEF loader"))?;
     bytes(l, 0, 56)?;
-    let main = u32_at(l, 0)? as usize;
-    let main_offset = u32_at(l, 4)? as usize;
     let libraries = u32_at(l, 24)? as usize;
     let symbols = u32_at(l, 28)? as usize;
     let relocs = u32_at(l, 32)? as usize;
@@ -210,12 +263,12 @@ fn prepare(input: &[u8]) -> Result<PreparedImage> {
                 return Err(invalid("invalid PEF symbol class"));
             }
             let address = if let Some(service) = Abi::resolve(name, symbol) {
-                let gate = GATES + index as u32 * 4;
+                let gate = placement.gates + index as u32 * 4;
                 abi.imports.insert(gate, service);
                 match class & 15 {
                     0 | 4 => gate,
                     2 => {
-                        let ptr = VECTORS + vectors.len() as u32;
+                        let ptr = placement.vectors + vectors.len() as u32;
                         vectors.extend(gate.to_be_bytes());
                         vectors.extend(0u32.to_be_bytes());
                         ptr
@@ -280,7 +333,6 @@ fn prepare(input: &[u8]) -> Result<PreparedImage> {
             &mut work_budget,
         )?;
     }
-    let main = routine(&sections, main, main_offset)?;
     let special = |field| -> Result<Option<crate::lifecycle::Routine>> {
         let section = u32_at(l, field)?;
         if section == u32::MAX {
@@ -289,12 +341,10 @@ fn prepare(input: &[u8]) -> Result<PreparedImage> {
             routine(&sections, section as usize, u32_at(l, field + 4)? as usize).map(Some)
         }
     };
+    let main = special(0)?;
     let init = special(8)?;
     let term = special(16)?;
     let mut memory = Memory::default();
-    if stdlib_data {
-        crate::stdlib::install(&mut memory)?;
-    }
     let mut info = Vec::new();
     for section in sections {
         info.push((section.base, section.data.len() as u32));
@@ -316,7 +366,7 @@ fn prepare(input: &[u8]) -> Result<PreparedImage> {
     }
     if !vectors.is_empty() {
         memory.map(
-            GuestPtr(VECTORS),
+            GuestPtr(placement.vectors),
             vectors,
             Permissions {
                 read: true,
@@ -325,12 +375,9 @@ fn prepare(input: &[u8]) -> Result<PreparedImage> {
             },
         )?;
     }
-    // Main TOC must refer to instantiated storage, never a host pointer.
-    memory.read(GuestPtr(main.toc), 1)?;
     // Byte-slice loading is a memory container, even when the host CLI read a file.
     // System 7 CFragInitBlock: IDs at 0/4/8, locator at 12, name at 28.
-    const CONTAINER: u32 = 0x6000_0000;
-    for routine in [init, term].into_iter().flatten() {
+    for routine in [main, init, term].into_iter().flatten() {
         memory.fetch(GuestPtr(routine.entry), 4, 4)?;
         memory.read(GuestPtr(routine.toc), 1)?;
     }
@@ -340,19 +387,19 @@ fn prepare(input: &[u8]) -> Result<PreparedImage> {
             write: false,
             execute: false,
         };
-        memory.map(GuestPtr(CONTAINER), input.to_vec(), ro)?;
+        memory.map(GuestPtr(placement.container), input.to_vec(), ro)?;
         let mut block = vec![0; 49];
         for (offset, value) in [
             (0, 1u32),
             (4, 1),
             (8, 1),
-            (16, CONTAINER),
+            (16, placement.container),
             (20, input.len() as u32),
-            (28, INIT_BLOCK + 48),
+            (28, placement.init_block + 48),
         ] {
             block[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
         }
-        memory.map(GuestPtr(INIT_BLOCK), block, ro)?;
+        memory.map(GuestPtr(placement.init_block), block, ro)?;
     }
     Ok(PreparedImage {
         memory,
@@ -361,6 +408,7 @@ fn prepare(input: &[u8]) -> Result<PreparedImage> {
         init,
         term,
         sections: info,
+        stdlib_data,
     })
 }
 fn routine(sections: &[Section], index: usize, offset: usize) -> Result<crate::lifecycle::Routine> {
@@ -507,8 +555,179 @@ fn reserve_repeat(
     Ok(())
 }
 #[cfg(test)]
+#[path = "../../tests/support/mod.rs"]
+mod fixtures;
+#[cfg(test)]
 mod tests {
+    use super::fixtures::{lifecycle_pef, pef, w32};
     use super::*;
+
+    fn relocated() -> Placement {
+        Placement {
+            sections: 0x0200_0000,
+            section_limit: 0x0300_0000,
+            gates: 0x7010_0000,
+            vectors: 0x7011_0000,
+            container: 0x6100_0000,
+            init_block: 0x6810_0000,
+        }
+    }
+    #[test]
+    fn relocated_fragment_executes_real_imports_at_assigned_addresses() {
+        let f = pef();
+        let place = relocated();
+        let image = prepare(&f.bytes, place).unwrap();
+        let main = image.main.unwrap();
+        assert_eq!(main.entry, place.sections);
+        assert_eq!(
+            image.memory.u32(GuestPtr(main.toc + 8)).unwrap(),
+            place.vectors
+        );
+        assert_eq!(
+            image.memory.u32(GuestPtr(place.vectors)).unwrap(),
+            place.gates
+        );
+        assert!(image
+            .memory
+            .read(GuestPtr(Placement::APPLICATION.sections), 1)
+            .is_err());
+        assert!(!image
+            .abi
+            .imports
+            .contains_key(&Placement::APPLICATION.gates));
+        let mut app = finish(
+            image.memory,
+            Architecture::PowerPc,
+            main.entry,
+            main.toc,
+            ResourceFork::default(),
+            image.sections,
+            image.abi,
+        )
+        .unwrap();
+        assert_eq!(
+            app.runtime.advance(100).unwrap(),
+            crate::runtime::Stop::Exit(0)
+        );
+        assert_eq!(app.runtime.services.calls.len(), 2);
+    }
+    #[test]
+    fn two_prepared_fragments_share_memory_without_aliasing_imports_or_data() {
+        let f = pef();
+        let first = prepare(&f.bytes, Placement::APPLICATION).unwrap();
+        let second = prepare(&f.bytes, relocated()).unwrap();
+        let first_main = first.main.unwrap();
+        let second_main = second.main.unwrap();
+        let mut memory = first.memory;
+        memory
+            .write(GuestPtr(first_main.toc + 16), &123u32.to_be_bytes())
+            .unwrap();
+        memory.adopt(second.memory).unwrap();
+        assert_eq!(memory.u32(GuestPtr(first_main.toc + 16)).unwrap(), 123);
+        assert_eq!(memory.u32(GuestPtr(second_main.toc + 16)).unwrap(), 0);
+        let mut abi = first.abi;
+        for (address, service) in second.abi.imports {
+            assert!(abi.imports.insert(address, service).is_none());
+        }
+        let mut app = finish(
+            memory,
+            Architecture::PowerPc,
+            second_main.entry,
+            second_main.toc,
+            ResourceFork::default(),
+            second.sections,
+            abi,
+        )
+        .unwrap();
+        assert_eq!(
+            app.runtime.advance(100).unwrap(),
+            crate::runtime::Stop::Exit(0)
+        );
+        assert_eq!(
+            app.runtime
+                .memory
+                .u32(GuestPtr(first_main.toc + 16))
+                .unwrap(),
+            123
+        );
+    }
+    #[test]
+    fn library_without_main_prepares_relocated_lifecycle_but_cannot_launch() {
+        let mut f = lifecycle_pef(0);
+        w32(&mut f.bytes, f.loader, u32::MAX);
+        let place = relocated();
+        let image = prepare(&f.bytes, place).unwrap();
+        assert!(image.main.is_none());
+        assert_eq!(image.init.unwrap().entry, place.sections + 20);
+        assert_eq!(image.term.unwrap().entry, place.sections + 40);
+        let memory = &image.memory;
+        assert_eq!(
+            memory.u32(GuestPtr(place.init_block + 16)).unwrap(),
+            place.container
+        );
+        assert_eq!(
+            memory.u32(GuestPtr(place.init_block + 28)).unwrap(),
+            place.init_block + 48
+        );
+        assert_eq!(
+            memory
+                .read(GuestPtr(place.container), f.bytes.len())
+                .unwrap(),
+            f.bytes
+        );
+        assert!(load(&f.bytes, ResourceFork::default())
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("no main"));
+        // A missing main does not exempt init/term vectors from validation.
+        w32(&mut f.bytes, f.data + 16, 0x0040_0000);
+        assert!(prepare(&f.bytes, place).is_err());
+    }
+    #[test]
+    fn fragment_reservations_reject_overlap_overflow_and_exhaustion() {
+        let f = pef();
+        let place = relocated();
+        for bad in [
+            Placement {
+                gates: place.sections,
+                ..place
+            },
+            Placement {
+                vectors: place.gates,
+                ..place
+            },
+            Placement {
+                container: place.init_block,
+                ..place
+            },
+            Placement {
+                gates: 0xffff_fff0,
+                ..place
+            },
+            Placement {
+                init_block: 0xffff_fff0,
+                ..place
+            },
+            Placement {
+                vectors: place.vectors + 1,
+                ..place
+            },
+            Placement {
+                section_limit: place.sections,
+                ..place
+            },
+            Placement {
+                section_limit: place.sections + 16,
+                ..place
+            },
+        ] {
+            assert!(prepare(&f.bytes, bad).is_err());
+        }
+        let mut bad_main = pef();
+        w32(&mut bad_main.bytes, bad_main.data, 0x0040_0000);
+        assert!(prepare(&bad_main.bytes, place).is_err());
+    }
     #[test]
     fn all_pidata_operations_and_extended_count() {
         assert_eq!(

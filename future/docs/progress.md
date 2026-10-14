@@ -799,3 +799,31 @@ a dedicated guest continuation before publishing load results. Failure cleanup
 and eventual CloseConnection termination must preserve existing process state.
 Fixed addresses and the application-only lifecycle are not dynamic CFM support.
 The full rebuild goal remains active.
+
+
+### Relocatable prepared fragments and atomic memory adoption
+
+PEF preparation accepts explicit section, import-gate, transition-vector,
+container and initialization-block reservations. Reservations reject overlap,
+misalignment, overflow and section exhaustion. Main routines are optional during
+preparation (Apple PEF loader header, mainSection = -1); application launch still
+requires one. All present routine entry points and TOCs are validated before
+adoption. StdCLib storage is installed by application startup, not preparation.
+
+Memory can adopt a prepared image without cloning live storage; any mapping
+collision leaves the destination unchanged. Tests run relocated imports through
+the real PPC backend, place two images in one memory space while preserving the
+first image's changed data, inspect relocated initializer/container pointers,
+and reject invalid reservations and malformed lifecycle vectors. Boundary tests
+cover partial collision rollback, permissions and storage ending at 2^32.
+
+All 117 tests pass, including thirteen optional GPU/MPW checks; strict all-target
+Clippy passes. This is loader machinery, not GetMemFragment support. There is no
+active connection allocator yet; future CFM allocation must track every live
+reservation, including intercepted gates which do not have memory mappings.
+Next: retained/validated exports, connection identity and allocation, initializer
+continuations in the running process, and failure/unload cleanup. Initializer
+IDs remain application defaults until connection tracking lands. Original
+application stopping points are unchanged; the full rebuild remains active.
+
+Specification: https://leopard-adc.pepas.com/documentation/mac/runtimehtml/RTArch-96.html
