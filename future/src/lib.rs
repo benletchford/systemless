@@ -1,12 +1,17 @@
+pub mod abi;
 pub mod cpu;
 pub mod fixtures;
 pub mod graphics;
+pub mod load;
 pub mod memory;
+pub mod process;
 pub mod runtime;
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("application load: {0}")]
+    Load(String),
     #[error("invalid/overlapping mapping at {0:#x}")]
     Mapping(u32),
     #[error("guest {access:?} fault at {address:#x}")]

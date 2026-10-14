@@ -70,15 +70,11 @@ foundation complete until it passes. Continue independent loader work meanwhile.
 Keep working in this worktree/branch. Read architecture.md and run the above
 contracts before broad changes. Do not port either old runtime wholesale.
 
-1. Add a checked resource-fork parser with bounds/overlap/type/id tests. Read
-   baseline loader/resource parsing as evidence and verify on-disk layouts
-   against primary Apple documentation. Return unsupported/malformed errors.
-2. Add minimal CODE 0 jump-table/segment loading and PEF section, relocation,
-   import and transition-vector loading into the same Memory. Use the ppc
-   crate's focused PEF parser only after checking its API and semantics.
-3. Introduce canonical process state: shared heap/handles with guest master
-   pointers, resource identity, VFS forks and deterministic event queue. Keep
-   host paths/input policy out of ABI handlers.
+1. Resource/CODE/PEF loading and a shared resource/handle slice are implemented
+   below. Extend through executable application behavior, not isolated stubs.
+2. Add process lifecycle support for PEF initializers/terminators.
+3. Add shared VFS forks and a deterministic event queue, preserving host-policy
+   separation from ABI handlers.
 4. Build one minimal reproducible ordinary Toolbox application in both ISAs
    that allocates memory, reads a resource, draws, consumes an event, and exits.
    Add actual 68K stack/register and PPC CFM adapters for precisely those calls.
@@ -97,3 +93,30 @@ region masks, archive intake, persistence, audio or guest UI. The fixture CLI
 is deliberately small. CPU faults terminate rather than deliver restartable
 Macintosh exceptions. Callback stack slots are private runtime reservations;
 a real allocator must reserve them before application address-space loading.
+
+## 2026-10-14: resource/CODE/PEF and shared process slice
+
+Implemented checked resource maps, near CODE/A5 jump tables, PEF sections, all
+pattern-data operations and documented relocation opcode families, bounded
+import resolution and main transition vectors. Both architectures now invoke
+actual Macintosh ABI adapters for resource lookup, handles, timing and exit.
+A single process owns the heap/resource cache; a test switches CPU architecture
+inside one loaded Runtime and verifies preserved handle identity and mutated data.
+
+Verification on Apple M1/Metal:
+
+- Full explicit-GPU suite: 29 tests passed (6 unit, 11 contracts, 12 loading).
+- Strict local all-target clippy passed. The foundation CI used a newer compiler
+  and found constant `chunks_exact` calls; these are replaced with `as_chunks`.
+  Remote verification of this correction remains pending until pushed.
+- Generated CODE application: Exit(0), 23 instructions, 5 service calls.
+- Generated PEF application with resource fork: Exit(0), 46 instructions,
+  5 service calls. Reproduction commands are in the README.
+- Malformed/truncated inputs, relocation addends/repeats/budgets, weak/strong
+  imports, allocation reuse/exhaustion, cleared memory, resource identity and
+  low-memory error/tick visibility have focused tests.
+
+No original application has been run. Window acceptance remains pending as
+recorded above. Far-model CODE, compressed resources, full CFM lifecycle, files,
+events, QuickDraw ABI, real Mixed Mode descriptors and complete application
+interactions remain unfinished. **The rebuild goal remains active and incomplete.**

@@ -34,8 +34,8 @@ ABI call values only; services never see CPU registers. `graphics -> memory`
 for synchronized pixel access and wgpu for exact integer compute/presentation.
 `memory` knows neither CPU nor host. One Runtime owns one address space,
 service state, deterministic instruction clock and trace, graphics device, and
-an execution continuation stack. Future process-owned resources, handles,
-files, windows, menus and event queues belong here, never in CPU backends.
+an execution continuation stack. Process-owned resources and handles live here; future files, windows, menus
+and event queues also belong here, never in CPU backends.
 Avoid a generic CPU register interface: an enum owns architecture-specific
 engines; ABI adapters decode calls and apply results. Explicit outcomes are
 continue, service, callback, return, yield/budget, fault, and exit.
@@ -58,8 +58,7 @@ restartable guest exception delivery requires a later explicit contract.
 First executable fixtures are raw code with an explicitly private test ABI,
 not CODE/PEF compatibility claims. 68K uses A-line gateways with a big-endian
 stack argument; PPC uses registered import addresses with r3 arguments and LR
-return. Both decode into the same service enum and dispatcher. Real Toolbox
-ABI entries will be added alongside this fixture ABI with primary citations.
+return. Both decode into the same service enum and dispatcher. Loaded applications select the separate Macintosh ABI described below.
 Unknown calls fault, never silently succeed. Instruction budgets include
 service gateways and returns, making guest loops bounded. Time is deterministic
 instruction count; host wall clock cannot change fixture results.
@@ -125,3 +124,38 @@ native-oracle behavior and legacy comparisons. GPU tests are opt-in ignored
 Rust tests: run explicitly on a real adapter, with failure if unavailable;
 default suites report them ignored, never passed. Record adapter and exact
 commands in progress.md. No stage is complete before executable acceptance.
+
+## Implemented loader and process slice (2026-10-14)
+
+`load` constructs a fresh checked Memory and only publishes a Runtime on success.
+Resource maps preserve raw name bytes and signed IDs, reject overlapping tables
+and payloads, and enforce input/count limits. Near CODE loading eagerly maps
+referenced segments and patches the A5 jump table. PEF materializes sections,
+pattern data and BSS, applies bounded relocation streams using existing addends,
+resolves registered InterfaceLib imports, and enters the relocated main transition
+vector. Unknown strong imports fail; unresolved weak imports remain zero.
+Initializer/terminator functions are rejected until lifecycle sequencing exists.
+This custom focused parser has no dependency on the legacy loader.
+
+`abi` decodes 68K Pascal stack and register conventions or PPC CFM registers into
+typed service calls, then applies results through architecture-specific replies.
+Loaded applications cannot access private fixture gateways. The implemented
+services are TickCount, ExitToShell, NewHandle/NewHandleClear, DisposeHandle,
+GetHandleSize, GetResource and error queries. Unsupported calls terminate clearly.
+
+`process` owns a bounded first-fit heap, guest master pointers, resource identity
+and operation errors. Disposal coalesces free blocks. Both CPUs see the same
+resource handles and guest-modified contents; cleared allocations zero reused
+blocks. This is not yet a relocatable or purgeable Macintosh heap. The guest
+low-memory globals hold MemErr, ResErr and Ticks; deterministic scheduling advances
+Ticks every 1000 instructions, with no claim of hardware timing fidelity.
+
+Format evidence: Apple's *Mac OS Runtime Architectures* (1997), chapters 8 and 10,
+[PEF sections](https://dev.os9.ca/techpubs/mac/runtimehtml/RTArch-92.html),
+[relocations](https://dev.os9.ca/techpubs/mac/runtimehtml/RTArch-98.html),
+[CODE layout](https://dev.os9.ca/techpubs/mac/runtimehtml/RTArch-118.html);
+*Inside Macintosh: More Macintosh Toolbox* (1993),
+[resource layout](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-99.html) and
+[GetResource](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-50.html).
+Hand-assembled files exercise these contracts; compiler-generated and original
+applications remain separate acceptance work.

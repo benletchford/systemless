@@ -25,6 +25,8 @@ pub struct Runtime {
     pub graphics: Option<Graphics>,
     pub cpu: Cpu,
     pub instructions: u64,
+    pub abi: crate::abi::Abi,
+    pub process: crate::process::Process,
     continuations: Vec<Continuation>,
     terminal: Option<Stop>,
     faulted: bool,
@@ -37,6 +39,8 @@ impl Runtime {
             graphics,
             services: Services::default(),
             instructions: 0,
+            abi: crate::abi::Abi::fixtures(),
+            process: crate::process::Process::default(),
             continuations: Vec::new(),
             terminal: None,
             faulted: false,
@@ -61,7 +65,11 @@ impl Runtime {
                 .instructions
                 .checked_add(1)
                 .ok_or_else(|| Error::Cpu("instruction clock overflow".into()))?;
-            match self.cpu.step(&mut self.memory)? {
+            if !self.abi.fixture && self.instructions.is_multiple_of(1000) {
+                let ticks = self.memory.u32(GuestPtr(0x16a))?.wrapping_add(1);
+                self.memory.write(GuestPtr(0x16a), &ticks.to_be_bytes())?;
+            }
+            match self.cpu.step_with_abi(&mut self.memory, &self.abi)? {
                 Outcome::Continue => {}
                 Outcome::Return => {
                     let value = self.cpu.result();
@@ -74,9 +82,91 @@ impl Runtime {
                         return Ok(stop);
                     }
                 }
+                Outcome::Macintosh(call, reply) => {
+                    self.services.calls.push(call);
+                    match call {
+                        Call::Ticks => {
+                            let value = self.tick_count()?;
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
+                        Call::Exit(v) => {
+                            let stop = Stop::Exit(v);
+                            self.terminal = Some(stop);
+                            return Ok(stop);
+                        }
+                        Call::NewHandle { size, clear } => {
+                            let v = self.process.new_handle(&mut self.memory, size, clear)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                v,
+                                self.process.mem_error,
+                            )?;
+                        }
+                        Call::DisposeHandle(h) => {
+                            self.process.dispose_handle(&mut self.memory, h)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                0,
+                                self.process.mem_error,
+                            )?;
+                        }
+                        Call::HandleSize(h) => {
+                            let v = self.process.handle_size(&self.memory, h)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                v,
+                                self.process.mem_error,
+                            )?;
+                        }
+                        Call::GetResource { kind, id } => {
+                            let v = self.process.get_resource(&mut self.memory, kind, id)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
+                        }
+                        Call::MemError => {
+                            let value = self.memory.u16(GuestPtr(0x220))? as i16 as i32 as u32;
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
+                        Call::ResError => {
+                            let value = self.memory.u16(GuestPtr(0xa60))? as i16 as i32 as u32;
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
+                        _ => return Err(Error::Cpu("invalid Macintosh service route".into())),
+                    }
+                    // Guest globals are the ABI-visible error authorities. Process
+                    // fields carry operation outputs only, never readback authority.
+                    if matches!(
+                        call,
+                        Call::NewHandle { .. }
+                            | Call::DisposeHandle(_)
+                            | Call::HandleSize(_)
+                            | Call::GetResource { .. }
+                    ) {
+                        self.memory
+                            .write(GuestPtr(0x220), &self.process.mem_error.to_be_bytes())?;
+                    }
+                    if matches!(call, Call::GetResource { .. }) {
+                        self.memory
+                            .write(GuestPtr(0xa60), &self.process.res_error.to_be_bytes())?;
+                    }
+                }
                 Outcome::Service(call) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::NewHandle { .. }
+                        | Call::DisposeHandle(_)
+                        | Call::HandleSize(_)
+                        | Call::GetResource { .. }
+                        | Call::MemError
+                        | Call::ResError => {
+                            return Err(Error::Cpu("Macintosh service on fixture route".into()))
+                        }
+                        Call::Ticks => {
+                            let value = self.tick_count()?;
+                            self.cpu.set_result(value);
+                        }
                         Call::Add(v) => {
                             self.services.accumulator = self.services.accumulator.wrapping_add(v);
                             self.cpu.set_result(self.services.accumulator);
@@ -121,6 +211,15 @@ impl Runtime {
             }
         }
         Ok(Stop::Budget)
+    }
+    // Deterministic scheduling policy: 1000 retired boundaries per 60 Hz tick.
+    // Host wall time never enters guest time; future hosts pace execution budgets.
+    fn tick_count(&self) -> Result<u32> {
+        if self.abi.fixture {
+            Ok((self.instructions / 1000) as u32)
+        } else {
+            self.memory.u32(GuestPtr(0x16a))
+        }
     }
     fn enter_callback(&mut self, descriptor: GuestPtr) -> Result<()> {
         if self.continuations.len() >= 32 {

@@ -278,8 +278,10 @@ impl Graphics {
         let bytes = self.map_read(&readback)?;
         self.check_error()?;
         let guest: Vec<_> = bytes
-            .chunks_exact(4)
-            .map(|v| u32::from_le_bytes(v.try_into().unwrap()) as u8)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|v| u32::from_le_bytes(*v) as u8)
             .collect();
         memory.write(self.base, &guest)
     }

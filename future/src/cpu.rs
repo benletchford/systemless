@@ -13,6 +13,13 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Add(u32),
+    Ticks,
+    NewHandle { size: u32, clear: bool },
+    DisposeHandle(u32),
+    HandleSize(u32),
+    GetResource { kind: [u8; 4], id: i16 },
+    MemError,
+    ResError,
     Draw(GuestPtr),
     Callback(GuestPtr),
     Exit(u32),
@@ -21,6 +28,7 @@ pub enum Call {
 pub enum Outcome {
     Continue,
     Service(Call),
+    Macintosh(Call, crate::abi::Reply),
     Return,
 }
 // Private fixture import gates, not Macintosh trap numbers or CFM descriptors.
@@ -75,6 +83,9 @@ impl Cpu {
         }
     }
     pub fn step(&mut self, memory: &mut Memory) -> Result<Outcome> {
+        self.step_with_abi(memory, &crate::abi::Abi::fixtures())
+    }
+    pub fn step_with_abi(&mut self, memory: &mut Memory, abi: &crate::abi::Abi) -> Result<Outcome> {
         if self.pc() == RETURN_GATE {
             return Ok(Outcome::Return);
         }
@@ -92,6 +103,10 @@ impl Cpu {
                 match outcome {
                     StepResult::Ok { .. } => Ok(Outcome::Continue),
                     StepResult::AlineTrap { opcode } => {
+                        if !abi.fixture {
+                            let (call, reply) = crate::abi::Abi::trap(opcode, c, bus.memory)?;
+                            return Ok(Outcome::Macintosh(call, reply));
+                        }
                         let argument = bus.memory.u32(GuestPtr(c.dar[15]))?;
                         let call = decode(u32::from(opcode & 0xfff), argument)?;
                         c.dar[15] = c.dar[15]
@@ -103,7 +118,12 @@ impl Cpu {
                 }
             }
             Self::PowerPc(c) => {
-                if (IMPORT_BASE..IMPORT_BASE + 16).contains(&c.pc) && c.pc % 4 == 0 {
+                if let Some(service) = abi.imports.get(&c.pc) {
+                    let (call, reply) = crate::abi::Abi::import(*service, c);
+                    c.pc = c.lr;
+                    return Ok(Outcome::Macintosh(call, reply));
+                }
+                if abi.fixture && (IMPORT_BASE..IMPORT_BASE + 16).contains(&c.pc) && c.pc % 4 == 0 {
                     let call = decode((c.pc - IMPORT_BASE) / 4, c.gpr[3])?;
                     c.pc = c.lr;
                     return Ok(Outcome::Service(call));

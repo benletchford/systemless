@@ -14,6 +14,15 @@ use winit::{
 };
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--code" || a == "--pef") {
+        return run_file(&args);
+    }
+    if args
+        .iter()
+        .any(|a| !matches!(a.as_str(), "--ppc" | "--window" | "--smoke"))
+    {
+        return Err("unknown option; use --code RESOURCE_FORK or --pef DATA_FORK [--resources RESOURCE_FORK] [--budget N]".into());
+    }
     let arch = if args.iter().any(|a| a == "--ppc") {
         Architecture::PowerPc
     } else {
@@ -364,4 +373,74 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+}
+
+fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    use systemless_future::load::LoadedApplication;
+    let mut executable = None;
+    let mut resources = None;
+    let mut budget = 1_000_000u64;
+    let mut i = 0;
+    while i < args.len() {
+        let option = &args[i];
+        let value = args.get(i + 1).ok_or("option needs a value")?;
+        match option.as_str() {
+            "--code" | "--pef" => {
+                if executable
+                    .replace((option.as_str(), value.as_str()))
+                    .is_some()
+                {
+                    return Err("choose one application format".into());
+                }
+            }
+            "--resources" => {
+                if resources.replace(value.as_str()).is_some() {
+                    return Err("duplicate resource fork".into());
+                }
+            }
+            "--budget" => {
+                budget = value.parse()?;
+                if budget == 0 {
+                    return Err("budget must be positive".into());
+                }
+            }
+            _ => return Err(format!("unknown application option {option}").into()),
+        }
+        i += 2;
+    }
+    let (format, path) = executable.ok_or("missing application")?;
+    let data = read_bounded(path)?;
+    let fork = resources.map(read_bounded).transpose()?;
+    let mut app = match format {
+        "--code" => {
+            if fork.is_some() {
+                return Err("--code already selects the resource fork".into());
+            }
+            LoadedApplication::code(&data)?
+        }
+        _ => LoadedApplication::pef(&data, fork.as_deref())?,
+    };
+    let stop = app.runtime.advance(budget)?;
+    println!(
+        "{:?}: {stop:?}, instructions={}, service_calls={}, entry={:#x}",
+        app.info.architecture,
+        app.runtime.instructions,
+        app.runtime.services.calls.len(),
+        app.info.entry
+    );
+    if stop == Stop::Budget {
+        return Err("guest execution budget exhausted".into());
+    }
+    Ok(())
+}
+fn read_bounded(path: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(systemless_future::load::IMAGE_LIMIT as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > systemless_future::load::IMAGE_LIMIT {
+        return Err("input exceeds 64 MiB limit".into());
+    }
+    Ok(bytes)
 }
