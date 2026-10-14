@@ -687,3 +687,25 @@ Visibility must update drawing clips and exposure events across all windows.
 The legacy NewWindow trap documents an eight-argument ABI (26 Pascal bytes,
 then a long result; PPC r3–r10), including Boolean values in the high byte of
 68K stack words. These are continuation requirements, not implemented services.
+
+
+## Shared basic Window Manager
+
+`windows` owns only allocation/lifecycle metadata. Guest WindowList links,
+WindowRecord fields and region handles supply ordering, coordinates, visibility
+and drawing state. The first implemented definition is plainDBox. Both ABIs
+marshal into typed requests and invoke the same manager. Runtime temporarily
+moves the manager out of Process to borrow shared heap/ports, then restores it
+even when an operation returns an error. Window storage is nonrelocatable;
+regions and titles are handles. CloseWindow releases internal handles, and
+DisposeWindow also releases a live NewPtr record. Static caller storage uses
+CloseWindow and can be initialized again.
+
+The manager's screen port provides temporary drawing context for global frame,
+background and desktop coverage. Window content ports refer to the same guest
+screen pixels, with bitmap bounds shifted to local coordinates. CPU region
+Boolean operations produce visibility/exposure coverage; wgpu performs all
+pixel operations. Closing queues exposure geometrically in updateRgn; Toolbox
+update-event delivery and BeginUpdate/EndUpdate remain the next integration.
+Builtin plain windows currently have nil windowDefProc; real guest WDEF calls
+belong to the Mixed Mode/callback work, and other styles fail explicitly.

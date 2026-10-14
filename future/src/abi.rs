@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    NewWindow,
+    Window(crate::windows::Op),
     PortColor(bool),
     RoundRect(bool),
     GetMemFragment,
@@ -116,6 +118,11 @@ impl Abi {
             b"PaintRoundRect" => Some(Service::RoundRect(false)),
             b"ForeColor" => Some(Service::PortColor(false)),
             b"BackColor" => Some(Service::PortColor(true)),
+            b"NewWindow" => Some(Service::NewWindow),
+            b"InitWindows" => Some(Service::Window(crate::windows::Op::Init)),
+            b"FrontWindow" => Some(Service::Window(crate::windows::Op::Front)),
+            b"CloseWindow" => Some(Service::Window(crate::windows::Op::Close)),
+            b"DisposeWindow" => Some(Service::Window(crate::windows::Op::Dispose)),
             b"Random" => Some(Service::Random),
             b"FindSymbol" => Some(Service::FindSymbol),
             b"CountSymbols" => Some(Service::CountSymbols),
@@ -228,6 +235,62 @@ impl Abi {
                     Call::PortColor {
                         background: opcode == 0xa863,
                         color,
+                    },
+                    Reply::None,
+                ))
+            }
+            0xa913 => {
+                let bytes = memory.read(GuestPtr(sp), 26)?;
+                let long =
+                    |offset| u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap());
+                let result = sp
+                    .checked_add(26)
+                    .ok_or_else(|| Error::Cpu("window stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 4)?;
+                let request = crate::windows::NewWindow {
+                    storage: GuestPtr(long(22)),
+                    bounds: GuestPtr(long(18)),
+                    title: GuestPtr(long(14)),
+                    visible: bytes[12] != 0,
+                    proc_id: i16::from_be_bytes(bytes[10..12].try_into().unwrap()),
+                    behind: long(6),
+                    go_away: bytes[4] != 0,
+                    ref_con: long(0),
+                };
+                c.dar[15] = result;
+                Ok((Call::NewWindow(request), Reply::StackLong(GuestPtr(result))))
+            }
+            0xa912 | 0xa924 => {
+                let op = if opcode == 0xa912 {
+                    crate::windows::Op::Init
+                } else {
+                    crate::windows::Op::Front
+                };
+                if opcode == 0xa924 {
+                    memory.validate_write(GuestPtr(sp), 4)?;
+                }
+                Ok((
+                    Call::Window { op, pointer: 0 },
+                    if opcode == 0xa924 {
+                        Reply::StackLong(GuestPtr(sp))
+                    } else {
+                        Reply::None
+                    },
+                ))
+            }
+            0xa92d | 0xa914 => {
+                let pointer = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("window stack overflow".into()))?;
+                Ok((
+                    Call::Window {
+                        op: if opcode == 0xa92d {
+                            crate::windows::Op::Close
+                        } else {
+                            crate::windows::Op::Dispose
+                        },
+                        pointer,
                     },
                     Reply::None,
                 ))
@@ -588,6 +651,20 @@ impl Abi {
                 background,
                 color: c.gpr[3],
             },
+            Service::NewWindow => Call::NewWindow(crate::windows::NewWindow {
+                storage: GuestPtr(c.gpr[3]),
+                bounds: GuestPtr(c.gpr[4]),
+                title: GuestPtr(c.gpr[5]),
+                visible: c.gpr[6] as u8 != 0,
+                proc_id: c.gpr[7] as i16,
+                behind: c.gpr[8],
+                go_away: c.gpr[9] as u8 != 0,
+                ref_con: c.gpr[10],
+            }),
+            Service::Window(op) => Call::Window {
+                op,
+                pointer: c.gpr[3],
+            },
             Service::Random => Call::Random,
             Service::GetMemFragment => Call::LoadFragment(crate::cfm::LoadRequest {
                 source: GuestPtr(c.gpr[3]),
@@ -734,6 +811,11 @@ impl Abi {
                     service,
                     Service::InitGraf
                         | Service::PortColor(_)
+                        | Service::Window(
+                            crate::windows::Op::Init
+                                | crate::windows::Op::Close
+                                | crate::windows::Op::Dispose
+                        )
                         | Service::RoundRect(_)
                         | Service::CombineRegions(_)
                         | Service::Port(_)

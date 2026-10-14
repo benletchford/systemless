@@ -159,8 +159,16 @@ pub fn combine(a: &[u8], b: &[u8], op: Boolean) -> Result<Vec<u8>> {
     }
     encode(&output)
 }
-fn encode(rectangles: &[Rect]) -> Result<Vec<u8>> {
+pub(crate) fn encode(rectangles: &[Rect]) -> Result<Vec<u8>> {
     use std::collections::BTreeMap;
+    if rectangles
+        .iter()
+        .flat_map(|r| [r.left, r.top, r.right, r.bottom])
+        .any(|v| i16::try_from(v).is_err())
+    {
+        return Err(invalid());
+    }
+
     let Some(first) = rectangles.first().copied() else {
         return Ok(vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]);
     };

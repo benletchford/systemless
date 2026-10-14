@@ -153,3 +153,12 @@ checks its logical size, blocks growth with an adjacent allocation, verifies
 failed growth preserves bytes, frees the blocker, grows and shrinks in place,
 and disposes both pointers. These checks run through MPW-generated 68K and PPC
 calling conventions and inspect MemError after each mutation.
+
+
+`windows.c` exercises InitWindows and plainDBox NewWindow through both compilers.
+It inspects the WindowRecord and local GrafPort, creates two overlapping windows,
+checks visRgn membership, draws into the covered window, closes/disposes runtime
+storage, reuses static caller storage for hidden windows, and posts a success
+marker. The Rust acceptance test checks that both architectures finish with no
+linked windows and exactly the same desktop pattern bytes. This does not verify
+title-bar WDEFs, update-event delivery or original application interaction.

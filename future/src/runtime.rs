@@ -175,6 +175,36 @@ impl Runtime {
                             })?;
                             ports.set_color(&mut self.memory, background, color)?;
                         }
+                        Call::NewWindow(_) | Call::Window { .. } => {
+                            let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                Error::Graphics("Window Manager requires a GPU".into())
+                            })?;
+                            let mut windows = std::mem::take(&mut self.process.windows);
+                            let result = match call {
+                                Call::NewWindow(request) => windows.create(
+                                    &mut self.memory,
+                                    &mut self.process,
+                                    gpu,
+                                    request,
+                                ),
+                                Call::Window { op, pointer } => windows.call(
+                                    &mut self.memory,
+                                    &mut self.process,
+                                    gpu,
+                                    op,
+                                    pointer,
+                                ),
+                                _ => unreachable!(),
+                            };
+                            self.process.windows = windows;
+                            let value = result?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                value,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::Random => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -613,7 +643,9 @@ impl Runtime {
                     // fields carry operation outputs only, never readback authority.
                     if matches!(
                         call,
-                        Call::NewPointer { .. }
+                        Call::NewWindow(_)
+                            | Call::Window { .. }
+                            | Call::NewPointer { .. }
                             | Call::PointerSize(_)
                             | Call::SetPointerSize { .. }
                             | Call::DisposePointer(_)
@@ -655,6 +687,8 @@ impl Runtime {
                         | Call::PointerSize(_)
                         | Call::SetPointerSize { .. }
                         | Call::DisposePointer(_)
+                        | Call::NewWindow(_)
+                        | Call::Window { .. }
                         | Call::Random
                         | Call::LoadFragment(_)
                         | Call::CloseFragment(_)

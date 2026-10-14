@@ -13,6 +13,11 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    NewWindow(crate::windows::NewWindow),
+    Window {
+        op: crate::windows::Op,
+        pointer: u32,
+    },
     PortColor {
         background: bool,
         color: u32,

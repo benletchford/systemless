@@ -38,7 +38,7 @@ fork path and a maximum instruction count, and prints register/opcode context.
   request was Sound Driver Control(-4, 2), setting volume to 3. That state update
   now completes. No window interaction or audio playback is proven.
 - Centaurian's PPC load rejects the unresolved strong InterfaceLib import
-  `NewWindow`. GetPattern, ForeColor/BackColor, FrameRoundRect, Random, GetMemFragment and the symbol-query imports now resolve, but no PPC
+  `TextFont`. NewWindow (plainDBox), InitWindows, GetPattern, ForeColor/BackColor, FrameRoundRect, Random, GetMemFragment and the symbol-query imports now resolve, but no PPC
   application instruction executes because remaining strong imports are still
   validated before launch.
 
@@ -53,7 +53,8 @@ Semantics are documented in Apple's [Memory Manager summary](https://dev.os9.ca/
 (global variables, III-227). ReleaseResource now invalidates loaded resource identity and permits reloads;
 its error behavior and changed-resource retention follow Apple’s
 [ReleaseResource contract](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-85.html).
-Next: implement shared window management and substantive Font Manager startup.
+Next: implement substantive Font Manager startup and text drawing, followed by
+window update/activation events and original application interaction.
 $A8FE is InitFonts; the legacy no-op relies on built-in fonts absent from the rebuild.
 Dynamic memory loading is verified with the MPW resource-plugin fixture;
 Centaurian has not yet executed its own GetMemFragment calls. Full acceptance

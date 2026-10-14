@@ -259,7 +259,7 @@ impl Ports {
         };
         self.paint_coverage(gpu, memory, r, Some(&coverage))
     }
-    fn paint_coverage(
+    pub(crate) fn paint_coverage(
         &self,
         gpu: &Graphics,
         memory: &mut Memory,

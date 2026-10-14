@@ -20,6 +20,7 @@ pub mod runtime;
 pub mod sound;
 mod stdlib;
 pub mod traps;
+pub mod windows;
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]

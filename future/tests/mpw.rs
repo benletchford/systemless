@@ -356,3 +356,62 @@ fn compiled_resource_plugin_initializes_executes_and_terminates_in_one_runtime()
         .read(systemless_future::memory::GuestPtr(0x80000000), 1)
         .is_err());
 }
+
+#[test]
+#[ignore = "requires MPW fixture and real wgpu adapter"]
+fn compiled_plain_window_lifecycle_has_record_and_screen_parity() {
+    use systemless_future::{graphics::Graphics, memory::GuestPtr};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("windows.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("windows.ppc")).unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut screens = Vec::new();
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, None).unwrap(),
+    ] {
+        app.runtime.graphics = Some(
+            pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
+        );
+        assert_eq!(app.runtime.advance(20_000).unwrap(), Stop::Exit(0));
+        assert_eq!(
+            app.runtime
+                .memory
+                .u32(systemless_future::windows::LIST)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|c| matches!(c, Call::NewWindow(_)))
+                .count(),
+            4
+        );
+        assert_eq!(
+            &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],
+            &[
+                Call::PostEvent {
+                    what: 7,
+                    message: 0x600d
+                },
+                Call::Exit(0)
+            ]
+        );
+        screens.push(
+            app.runtime
+                .memory
+                .read(systemless_future::quickdraw::SCREEN, 64 * 342)
+                .unwrap()
+                .to_vec(),
+        );
+    }
+    assert_eq!(screens[0], screens[1]);
+    for y in 0..342 {
+        for x in 0..64 {
+            assert_eq!(screens[0][y * 64 + x], if y % 2 == 0 { 0xaa } else { 0x55 });
+        }
+    }
+}

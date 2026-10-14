@@ -1047,3 +1047,55 @@ acceptance remains outstanding.
 
 Validation: all 146 tests pass, including 15 optional GPU/MPW checks; MPW
 fixtures rebuild successfully and strict all-target Clippy passes.
+
+
+### First shared Window Manager lifecycle
+
+InitWindows, NewWindow, FrontWindow, CloseWindow and DisposeWindow now share
+Window Manager state across both CPU adapters. The implemented standard WDEF
+variant is plainDBox (procID 2). Other definitions fault explicitly while font,
+title-bar chrome and custom callback support are rebuilt. NewWindow marshals
+eight PPC register arguments or 26 reverse Pascal argument bytes; Boolean values
+come from the high byte of their 68K stack slots, and the reserved long result
+is validated before popping arguments.
+
+WindowRecords use the documented 156-byte basic layout and contain their own
+GrafPort. Nil wStorage allocates a stable pointer; caller storage remains reusable
+after CloseWindow, and DisposeWindow requires a live NewPtr allocation. Title,
+clip, visible, structure, content and update regions use shared heap handles.
+WindowList ($09D6) and nextWindow are the guest z-order authority. WMgrPort
+($09DE) and GrayRgn ($09EE) are stable guest objects. Bitmap bounds translate
+global screen pixels into each window's local coordinates. Structure/content/
+update regions remain global; visRgn is local and subtracts visible structures
+above it. The front visible record has hilited set. No duplicate host geometry
+or separate PPC window model was introduced.
+
+Creation erases exposed content and draws the one-pixel border through wgpu.
+Closing subtracts covering windows, erases newly exposed content with the live
+window background pattern/colors, accumulates updateRgn, and repaints exposed
+desktop pixels. Existing application pixels outside the exposure are preserved.
+The manager temporarily changes its drawing fields and restores the current
+port afterward. All drawing uses the canonical shared screen bitmap. The
+64-window and existing bounded region/GPU work limits are explicit. Invalid
+input and initial record/handle allocation failure do not publish a new window;
+region-growth failure during visibility recomputation is still a terminal fault.
+
+Legacy comparison: trap/window.rs confirms record offsets, Pascal layout,
+behind ordering and plainDBox's one-pixel structure outset. Tests cover local
+visibility, occlusion, XOR-safe shared drawing infrastructure, preserving
+unexposed pixels, update-region accumulation, hidden windows, owned/static/
+caller-allocated storage, record reuse, exhausted heap and invalid parameters.
+A real MPW application creates overlapping visible windows and hidden caller
+windows, draws, closes and disposes through both ABIs, then returns exactly the
+same gray desktop bytes. All 149 tests pass: 132 default and 17 optional GPU/MPW.
+Strict all-target Clippy and the MPW rebuild pass.
+
+Limitations: no activation/update event delivery, BeginUpdate/EndUpdate, show/
+hide/move/select operations, GetNewWindow/WIND resources, menus/controls, title
+styles or custom WDEF callbacks yet. The builtin definition uses internal shared
+services; windowDefProc is nil and titleWidth is not measured for plain windows.
+Original Centaurian PPC now stops at TextFont during strong-import validation;
+none of its own PPC code has run. The original 68K InitFonts stop is unchanged.
+Next: Font Manager initialization, shared text state/metrics/rendering, then
+window event/update handling and original application interaction. Real Mixed
+Mode and full rebuild acceptance remain unfinished; the goal stays active.
