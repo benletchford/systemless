@@ -24,6 +24,11 @@ pub enum Op {
         handle: u32,
     },
     Calculate(u32),
+    Select {
+        start: u32,
+        end: u32,
+        handle: u32,
+    },
     Update {
         rect: GuestPtr,
         handle: u32,
@@ -190,6 +195,23 @@ impl Manager {
                     memory.read(source, length as usize)?.to_vec()
                 };
                 self.layout(memory, process, handle, bytes, true)
+            }
+            Op::Select { start, end, handle } => {
+                self.call(memory, process, Op::GetText(handle), ticks)?;
+                let data = pointer(memory, process, handle, 128)?;
+                if memory.u16(GuestPtr(data.0 + 36))? != 0 {
+                    return Err(bad("active TextEdit selection painting is unsupported"));
+                }
+                let length = memory.u16(GuestPtr(data.0 + 60))?;
+                if length > 32767 {
+                    return Err(bad("invalid TextEdit text length"));
+                }
+                let start = start.min(u32::from(length)) as u16;
+                let end = end.min(u32::from(length)) as u16;
+                let mut selection = start.to_be_bytes().to_vec();
+                selection.extend(end.to_be_bytes());
+                memory.write(GuestPtr(data.0 + 32), &selection)?;
+                Ok(0)
             }
             Op::Calculate(handle) => {
                 self.call(memory, process, Op::GetText(handle), ticks)?;

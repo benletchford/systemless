@@ -14,6 +14,7 @@ pub enum Service {
     TEUpdate,
     TESetText,
     TECalText,
+    TESetSelect,
     TEInit,
     TEGetText,
     TEGetStyleHandle,
@@ -156,6 +157,7 @@ impl Abi {
             b"TEUpdate" => Some(Service::TEUpdate),
             b"TESetText" => Some(Service::TESetText),
             b"TECalText" => Some(Service::TECalText),
+            b"TESetSelect" => Some(Service::TESetSelect),
             b"TEInit" => Some(Service::TEInit),
             b"TEGetText" => Some(Service::TEGetText),
             b"TEGetStyleHandle" => Some(Service::TEGetStyleHandle),
@@ -465,6 +467,19 @@ impl Abi {
                         length,
                         handle,
                     }),
+                    Reply::None,
+                ))
+            }
+            0xa9d1 => {
+                let args = memory.read(GuestPtr(sp), 12)?;
+                let handle = u32::from_be_bytes(args[..4].try_into().unwrap());
+                let end = u32::from_be_bytes(args[4..8].try_into().unwrap());
+                let start = u32::from_be_bytes(args[8..12].try_into().unwrap());
+                c.dar[15] = sp
+                    .checked_add(12)
+                    .ok_or_else(|| Error::Cpu("TextEdit stack overflow".into()))?;
+                Ok((
+                    Call::TextEdit(crate::textedit::Op::Select { start, end, handle }),
                     Reply::None,
                 ))
             }
@@ -931,6 +946,11 @@ impl Abi {
                 length: c.gpr[4],
                 handle: c.gpr[5],
             }),
+            Service::TESetSelect => Call::TextEdit(crate::textedit::Op::Select {
+                start: c.gpr[3],
+                end: c.gpr[4],
+                handle: c.gpr[5],
+            }),
             Service::TECalText => Call::TextEdit(crate::textedit::Op::Calculate(c.gpr[3])),
             Service::TEInit => Call::TextEdit(crate::textedit::Op::Init),
             Service::TEGetText => Call::TextEdit(crate::textedit::Op::GetText(c.gpr[3])),
@@ -1090,6 +1110,7 @@ impl Abi {
                         | Service::TEUpdate
                         | Service::TESetText
                         | Service::TECalText
+                        | Service::TESetSelect
                         | Service::TEInit
                         | Service::TEDispose
                         | Service::MoveTo

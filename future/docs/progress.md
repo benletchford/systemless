@@ -1419,3 +1419,21 @@ clipboard and menu/window integration remain unfinished. Original application
 stops are unchanged. Next: selection/caret state and editing through the same
 layout/redraw machinery, then substantive menu initialization and original app
 interaction. Full rebuild acceptance and real Mixed Mode remain outstanding.
+
+### Inactive TextEdit selection endpoints
+
+TESetSelect ($A9D1 / InterfaceLib) now writes the live selection endpoints through
+one shared service. The 68K adapter consumes two long offsets and a TEHandle;
+PPC reads r3/r4/r5 and preserves its void result. Both endpoints independently
+clamp to the live text length, following legacy Systemless's PPC implementation.
+Reversed endpoints are preserved as in that reference; this is legacy comparison
+evidence, not a native System 7 compatibility claim. Plain and styled records
+are supported. Active records fail explicitly before changing selection because
+highlight/caret painting remains unfinished.
+
+The MPW fixture calls TESetSelect on both kinds of record and executes on both
+CPUs. Unit checks cover clamping, reversed ranges and unchanged active records
+on failure. All 169 tests pass (149 default, 20 optional GPU/MPW), freshly rebuilt
+MPW TextEdit fixtures pass and strict all-target Clippy passes. Editing, active
+selection geometry/drawing and original-application acceptance remain unfinished;
+continue with those executable slices. The full rebuild goal remains active.

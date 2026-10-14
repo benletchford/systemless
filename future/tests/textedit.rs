@@ -676,3 +676,65 @@ fn redraw_honors_complex_clip_update_view_and_restores_ports_even_on_failure() {
         .unwrap();
     assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), before);
 }
+
+#[test]
+fn inactive_selection_clamps_live_length_and_rejects_active_records() {
+    for styled in [false, true] {
+        let (mut m, mut p, mut manager) = setup();
+        let handle = manager.call(&mut m, &mut p, new(styled), 0).unwrap();
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0x1040),
+                    length: 8,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::Select {
+                    start: 2,
+                    end: u32::MAX,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        let data = ptr(&m, handle);
+        assert_eq!(m.read(GuestPtr(data.0 + 32), 4).unwrap(), [0, 2, 0, 8]);
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::Select {
+                    start: 7,
+                    end: 1,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        assert_eq!(m.read(GuestPtr(data.0 + 32), 4).unwrap(), [0, 7, 0, 1]);
+        m.write(GuestPtr(data.0 + 36), &1u16.to_be_bytes()).unwrap();
+        let before = m.read(data, 128).unwrap().to_vec();
+        assert!(manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::Select {
+                    start: 0,
+                    end: 0,
+                    handle
+                },
+                0
+            )
+            .is_err());
+        assert_eq!(m.read(data, 128).unwrap(), before);
+    }
+}

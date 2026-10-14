@@ -33,6 +33,10 @@ int main(void) {
     TESetText("AB CD EF",8,plain);
     if (TEGetText(plain)!=(*plain)->hText || (*plain)->teLength!=8 || (*plain)->selStart!=8 || (*plain)->selEnd!=8 || (*plain)->nLines!=3) return 11;
     if ((*plain)->lineStarts[0]!=0 || (*plain)->lineStarts[1]!=3 || (*plain)->lineStarts[2]!=6 || (*plain)->lineStarts[3]!=8) return 12;
+    TESetSelect(2,32767,plain);
+    if ((*plain)->selStart!=2 || (*plain)->selEnd!=8) return 18;
+    TESetSelect(3,3,styled);
+    if ((*styled)->selStart || (*styled)->selEnd) return 19;
     (*plain)->destRect.right=(*plain)->destRect.left+200;
     TECalText(plain); if ((*plain)->nLines!=1 || (*plain)->lineStarts[1]!=8) return 13;
     TESetText("AB CD EF",8,styled);

@@ -212,3 +212,7 @@ The GPU drawing probe now creates a TextEdit record, installs its resource glyph
 uses TEUpdate on a partial rectangle, checks A1/41 glyph rows with untouched rows
 outside the update, and verifies current port and pen restoration before disposal.
 Both architectures then complete the same final pixel image and success marker.
+
+The TextEdit probe also calls TESetSelect for an inactive plain range and an
+empty styled record, checking endpoint clamping through both compiled ABIs.
+Active selection painting and editing commands remain unsupported.
