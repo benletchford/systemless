@@ -580,3 +580,23 @@ Complex region contents can be stored/copied but are not yet interpreted for
 drawing; PaintRect still rejects them explicitly. Next: bounded region geometry
 and Boolean operations, then GPU clipping and Window Manager application slices.
 The full rebuild and original-application/mixed-mode acceptance remain unfinished.
+
+
+### Bounded complex-region decoding and hit testing
+
+Added inversion-point decoding with ordered rows/endpoints, closure/bounds
+validation and a 65,536-rectangle expansion ceiling. PtInRgn and EmptyRgn share
+this geometry across the 68K/PPC ABI adapters. Three tests verify donut holes,
+disjoint negative-coordinate spans, exact half-open edges, malformed/truncated
+records and a small encoded input that would expand excessively.
+
+Both MPW drawing applications were rebuilt with EmptyRgn/PtInRgn checks; they
+pass with unchanged expected drawing pixels and CLI execution. All 91 tests and
+strict Clippy pass (79 default plus twelve optional GPU/MPW tests). Previous
+handle-resizing CI was confirmed successful; the newer region-storage CI was
+still running when checked.
+
+Complex decoding is validated with independent synthetic geometry, not a native
+Macintosh oracle. GPU clipping still rejects complex regions. Next: feed the
+validated geometry into the wgpu clipping path, then add Boolean region APIs
+and complete window/application interactions. The full rebuild remains active.

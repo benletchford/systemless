@@ -451,3 +451,23 @@ drawing still rejects nonrectangular region records explicitly. These storage
 contracts follow Apple's [region routines](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-131.html)
 and MPW Quickdraw.h. Complex-region decoding, Boolean operations and GPU clipping
 remain the next geometry boundary.
+
+
+## Bounded region geometry
+
+A separate decoder expands inversion-point rows into nonoverlapping half-open
+rectangles. Horizontal endpoints toggle the active spans at each vertical change;
+32767 terminates each row and the whole stream. Ten-byte records use the bounding
+rectangle directly. Decoding checks lengths, ordered coordinates, even endpoint
+counts, closure, exact bounding boxes and a maximum of 65,536 output rectangles.
+The expansion cap can reject unusually intricate otherwise valid input; it is
+an explicit runtime bound, not a native QuickDraw compatibility claim.
+
+PtInRgn and EmptyRgn use this decoder through both real ABIs. Signed points and
+half-open right/bottom boundaries are retained. GPU clipping has not yet adopted
+the decoder. Apple's public Region documentation describes the payload as
+proprietary; inversion-point interpretation follows the first-hand published
+analysis [ConvertPict2Rgn](https://preserve.mactech.com/articles/mactech/Vol.05/05.06/ConvertPict2Rgn/index.html).
+Hand-built donut/disjoint-region tests verify geometry independently; they are
+not a native Macintosh comparison. MPW programs verify rectangular hit-testing
+and empty-region results through actual trap/import calls.

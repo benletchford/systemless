@@ -88,6 +88,8 @@ impl Abi {
             return None;
         }
         match symbol {
+            b"PtInRgn" => Some(Service::Region(crate::regions::Op::Contains)),
+            b"EmptyRgn" => Some(Service::Region(crate::regions::Op::Empty)),
             b"NewRgn" => Some(Service::Region(crate::regions::Op::New)),
             b"DisposeRgn" => Some(Service::Region(crate::regions::Op::Dispose)),
             b"CopyRgn" => Some(Service::Region(crate::regions::Op::Copy)),
@@ -137,6 +139,31 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa8e8 | 0xa8e2 => {
+                use crate::regions::Op;
+                let pair = opcode == 0xa8e8;
+                let n = if pair { 8 } else { 4 };
+                let args = memory.read(GuestPtr(sp), n + 2)?;
+                let h = u32::from_be_bytes(args[..4].try_into().unwrap());
+                let (op, a, b) = if pair {
+                    (
+                        Op::Contains,
+                        u32::from_be_bytes(args[4..8].try_into().unwrap()),
+                        h,
+                    )
+                } else {
+                    (Op::Empty, h, 0)
+                };
+                let result = sp
+                    .checked_add(n as u32)
+                    .ok_or_else(|| Error::Cpu("region stack overflow".into()))?;
+                c.dar[15] = result;
+                Ok((
+                    Call::Region { op, a, b },
+                    Reply::StackByte(GuestPtr(result)),
+                ))
+            }
+
             0xa8d8 => {
                 memory.read(GuestPtr(sp), 4)?;
                 Ok((
@@ -406,7 +433,7 @@ impl Abi {
         };
         (
             call,
-            if matches!(service, Service::Region(op) if op != crate::regions::Op::New)
+            if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Empty))
                 || matches!(
                     service,
                     Service::InitGraf

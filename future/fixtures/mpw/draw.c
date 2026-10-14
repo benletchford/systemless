@@ -16,6 +16,7 @@ int main(void) {
     Rect clip = {1,1,3,7};
     Rect patch = {1,2,2,4};
     EventRecord event;
+    Point inside, outside;
     Handle data;
     Handle resized;
     RgnHandle visible, clipping, saved, temporary;
@@ -36,7 +37,10 @@ int main(void) {
     saved = NewRgn();
     temporary = NewRgn();
     if (!saved || !temporary) return 14;
+    if (!EmptyRgn(saved)) return 15;
     GetClip(saved);
+    inside.v=1; inside.h=2; outside.v=3; outside.h=7;
+    if (!PtInRgn(inside,saved) || PtInRgn(outside,saved) || EmptyRgn(saved)) return 16;
     RectRgn(temporary,&patch);
     SetClip(temporary);
     CopyRgn(saved,temporary);

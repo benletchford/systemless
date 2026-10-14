@@ -84,3 +84,6 @@ contents, GetHandleSize and MemError through each architecture's real ABI.
 
 The drawing fixture saves and restores its clip using NewRgn/GetClip/RectRgn/
 SetClip/CopyRgn/DisposeRgn before pixel verification on both architectures.
+
+EmptyRgn and PtInRgn are checked against empty and rectangular regions, including
+right/bottom exclusion, through both native calling conventions.

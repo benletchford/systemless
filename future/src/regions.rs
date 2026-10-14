@@ -8,6 +8,8 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     New,
+    Contains,
+    Empty,
     Dispose,
     Copy,
     Rect,
@@ -36,6 +38,20 @@ fn write(memory: &mut Memory, process: &mut Process, handle: u32, bytes: &[u8]) 
 }
 pub fn call(memory: &mut Memory, process: &mut Process, op: Op, a: u32, b: u32) -> Result<u32> {
     match op {
+        Op::Contains | Op::Empty => {
+            let bytes = read(memory, process, if op == Op::Contains { b } else { a })?;
+            let rectangles = crate::region_geometry::decode(&bytes)?;
+            let y = (a >> 16) as i16 as i32;
+            let x = a as i16 as i32;
+            return Ok(u32::from(if op == Op::Empty {
+                rectangles.is_empty()
+            } else {
+                rectangles
+                    .iter()
+                    .any(|r| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+            }));
+        }
+
         Op::New => {
             let handle = process.new_handle(memory, 10, true)?;
             if handle != 0 {
