@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|a| !matches!(a.as_str(), "--ppc" | "--window" | "--smoke"))
     {
-        return Err("unknown option; use --code RESOURCE_FORK or --pef DATA_FORK [--resources RESOURCE_FORK] [--budget N]".into());
+        return Err("unknown option; use --code RESOURCE_FORK or --pef DATA_FORK [--resources RESOURCE_FORK] [--budget N] [--graphics]".into());
     }
     let arch = if args.iter().any(|a| a == "--ppc") {
         Architecture::PowerPc
@@ -380,9 +380,18 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut executable = None;
     let mut resources = None;
     let mut budget = 1_000_000u64;
+    let mut graphics = false;
     let mut i = 0;
     while i < args.len() {
         let option = &args[i];
+        if option == "--graphics" {
+            if graphics {
+                return Err("duplicate graphics option".into());
+            }
+            graphics = true;
+            i += 1;
+            continue;
+        }
         let value = args.get(i + 1).ok_or("option needs a value")?;
         match option.as_str() {
             "--code" | "--pef" => {
@@ -420,6 +429,19 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => LoadedApplication::pef(&data, fork.as_deref())?,
     };
+    if graphics {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let mut gpu = pollster::block_on(Graphics::new(
+            &instance,
+            None,
+            512,
+            342,
+            GuestPtr(0x7500_0000),
+        ))?;
+        gpu.palette[0] = [255, 255, 255, 255];
+        gpu.palette[1] = [0, 0, 0, 255];
+        app.runtime.graphics = Some(gpu);
+    }
     // Deterministic headless policy: no external input; advance virtual time
     // to each requested wakeup while retaining one total instruction budget.
     let started = app.runtime.instructions;

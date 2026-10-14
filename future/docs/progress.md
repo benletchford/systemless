@@ -410,3 +410,26 @@ limitations include fixed monochrome screen policy, matching bitmap/GPU extents,
 rectangular clipping, no custom QDProcs/recording, no color ports or windows,
 and no original-app compatibility evidence. Window presentation and real Mixed
 Mode remain unverified/incomplete. Keep the full rebuild goal active.
+
+
+### File-mode graphics and differently sized bitmap targets
+
+The file CLI now accepts `--graphics` for CODE and PEF runs and creates one
+512x342 monochrome GPU backend. CPU-only runs retain their GPU-free path.
+Packed bitmap drawing can use a different extent through a temporary texture
+on the same device, queue, compute pipeline and shared error state. Guest bytes
+remain authoritative and are synchronized before the scratch texture is dropped.
+
+Both compiled drawing applications completed through the actual CLI: 68K used
+1701 instruction boundaries and 33 services; PPC used 341 and 21. The acceptance
+test compares CLI completion and execution counts with the run that verifies
+success-marker ordering and exact pixels. A separate GPU test draws a padded
+10x2 bitmap through a 512x342 backend and checks packed bytes and padding.
+All 73 tests and strict all-target Clippy pass. Eleven tests require optional
+GPU/MPW dependencies; the default suite retains 62 tests.
+
+This does not verify window presentation or original application compatibility.
+Scratch targets are recreated per differently sized draw. Equal-sized offscreen
+drawing can replace the backend texture, so future presentation must refresh
+screen memory explicitly. Next: screen presentation from canonical guest memory,
+port disposal and the region/window services required by application slices.

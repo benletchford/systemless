@@ -135,6 +135,42 @@ impl Graphics {
             error,
         })
     }
+    /// A scratch drawing target on the same device. Guest memory remains the
+    /// authority; callers need not retain this texture after synchronized drawing.
+    pub fn target(&self, width: u32, height: u32) -> Result<Self> {
+        self.check_error()?;
+        if width == 0 || height == 0 || width > 4096 || height > 4096 {
+            return Err(Error::Graphics("invalid dimensions".into()));
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("QuickDraw bitmap target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        Ok(Self {
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            adapter: self.adapter.clone(),
+            texture,
+            width,
+            height,
+            base: self.base,
+            palette: self.palette,
+            pipeline: self.pipeline.clone(),
+            error: self.error.clone(),
+        })
+    }
     pub fn check_error(&self) -> Result<()> {
         if let Some(e) = self.error.lock().unwrap().as_ref() {
             return Err(Error::Graphics(e.clone()));

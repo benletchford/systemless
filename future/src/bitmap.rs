@@ -86,10 +86,11 @@ impl Bitmap {
     /// encode storage; all pixel operations still execute through wgpu.
     pub fn execute(&self, gpu: &Graphics, memory: &mut Memory, draw: Draw) -> Result<()> {
         let (width, height) = self.extent()?;
-        if (width, height) != (gpu.width as usize, gpu.height as usize) {
-            return Err(Error::Graphics("bitmap/GPU extent mismatch".into()));
-        }
         memory.validate_write(self.base, self.byte_len()?)?;
+        if (width, height) != (gpu.width as usize, gpu.height as usize) {
+            let target = gpu.target(width as u32, height as u32)?;
+            return self.execute(&target, memory, draw);
+        }
         let coordinate = |value: i32, origin: i32| {
             value
                 .checked_sub(origin)

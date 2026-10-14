@@ -65,8 +65,9 @@ polls do not execute instructions. The file CLI advances virtual time to each
 wake deadline while retaining one total instruction budget. The bounded trace
 example reports a wait and returns control to its caller.
 
-The compiled drawing acceptance harness explicitly supplies an 8x4 GPU target;
-the file CLI does not yet prepare a graphics device for loaded apps. Basic
-QuickDraw currently describes a fixed 512x342 monochrome screen and supports
-matching-size offscreen GPU bitmaps. Nonrectangular clipping, color ports,
+Use `--graphics` with `--code` or `--pef` to acquire a headless GPU for loaded
+applications. Without that option, CPU-only programs need no GPU and drawing
+fails explicitly. Basic QuickDraw describes a fixed 512x342 monochrome screen;
+other bitmap sizes use temporary targets on the same device. The compiled
+drawing acceptance test also runs both programs through this CLI path. Nonrectangular clipping, color ports,
 recording, custom QDProcs, windows and full graphics compatibility remain pending.

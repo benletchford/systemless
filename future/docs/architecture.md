@@ -300,7 +300,8 @@ processed by the existing wgpu compute commands, then packed back into the
 canonical guest bitmap before returning. CPU work is storage conversion only,
 not a drawing fallback. Padding bytes and unused bits of partial rows retain
 their prior values. Each draw reloads guest bytes; a direct guest write between
-operations is therefore visible. GPU and bitmap extents must currently match.
+operations is therefore visible. A different bitmap extent uses a temporary texture on the same GPU device;
+the synchronized guest result outlives this scratch target.
 A monochrome presentation uses palette index 0 for white and 1 for black.
 
 This bitmap/backend boundary also serves loaded applications through the
@@ -338,9 +339,14 @@ builds own their QDGlobals; no invented InterfaceLib data symbol is exported.
 
 The current screen policy reserves packed pixels for a 512x342 monochrome
 screen. No GPU is acquired during loading or initialization. An embedding host
-must supply a Graphics target before PaintRect, with dimensions matching the
-selected bitmap. File-mode GPU preparation and dynamic target sizing remain
-pending; missing GPU setup produces an explicit error.
+must supply a Graphics target before PaintRect. The file CLI does so when
+`--graphics` is selected, preserving GPU-free execution for CPU-only programs.
+Different bitmap sizes share the device, queue, pipeline and error state but
+use a temporary texture. This correctness-first path recreates that texture
+on each differently sized draw. Missing GPU setup produces an explicit error.
+The graphics texture is a drawing result, not yet a composed display: drawing
+to an equal-sized offscreen bitmap can replace its contents. Future window
+presentation must explicitly refresh from screen memory before presenting.
 
 Real adapters currently expose InitGraf, OpenPort, SetPort, GetPort,
 SetPortBits, ClipRect, PaintRect, PenMode and PenPat. 68K Pascal parameters are

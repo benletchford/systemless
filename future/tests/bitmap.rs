@@ -93,3 +93,33 @@ fn gpu_monochrome_drawing_preserves_padding_origin_pattern_and_guest_writes() {
     assert_eq!(&rgba[..8], &[0, 0, 0, 255, 0, 0, 0, 255]);
     assert!(rgba[8..].iter().all(|v| *v == 255));
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn offscreen_bitmap_can_differ_from_host_target_size() {
+    let (mut memory, bitmap) = fixture();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let gpu =
+        pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap();
+    bitmap
+        .execute(
+            &gpu,
+            &mut memory,
+            Draw::Fill {
+                rect: bitmap.bounds,
+                clip: bitmap.bounds,
+                pattern: [255; 8],
+                foreground: 1,
+                background: 0,
+                mode: Transfer::Copy,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        memory.read(bitmap.base, 8).unwrap(),
+        &[255, 255, 0xaa, 0xbb, 255, 255, 0xcc, 0xdd]
+    );
+    assert_eq!((gpu.width, gpu.height), (512, 342));
+    assert!(gpu.target(0, 1).is_err());
+    assert!(gpu.target(4097, 1).is_err());
+}

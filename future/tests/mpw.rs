@@ -208,6 +208,37 @@ fn compiled_resource_drawing_and_event_app_has_pixel_parity() {
             ]
         );
         results.push(app.runtime.graphics.as_ref().unwrap().read_rgba().unwrap());
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_systemless-future"));
+        match app.info.architecture {
+            systemless_future::cpu::Architecture::M68k => {
+                command.arg("--code").arg(root.join("draw.68k.rsrc"));
+            }
+            systemless_future::cpu::Architecture::PowerPc => {
+                command
+                    .arg("--pef")
+                    .arg(root.join("draw.ppc"))
+                    .arg("--resources")
+                    .arg(root.join("draw.ppc.rsrc"));
+            }
+        }
+        let output = command
+            .args(["--graphics", "--budget", "10000"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            stdout.contains(&format!(
+                "Exit(0), instructions={}, service_calls={},",
+                app.runtime.instructions,
+                calls.len()
+            )),
+            "{stdout}"
+        );
     }
     assert_eq!(results[0], results[1]);
     let expected: Vec<u8> = [0x80u8, 0x56, 0x2a, 0]
