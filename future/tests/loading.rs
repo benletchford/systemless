@@ -610,3 +610,106 @@ fn current_resource_file_is_shared_process_state_on_both_abis() {
         Stop::Returned(app.runtime.process.current_resource_file() as u32)
     );
 }
+
+#[test]
+fn named_resources_are_case_sensitive_and_share_cached_handles_with_id_lookup() {
+    let fork = resource(vec![(*b"DATA", 7, Some(vec![0x80, b'X']), vec![3, 4, 5])]);
+    let f = pef();
+    let mut app = LoadedApplication::pef(&f.bytes, Some(&fork)).unwrap();
+    let pointer = GuestPtr(0x50000000);
+    app.runtime
+        .memory
+        .map(
+            pointer,
+            vec![2, 0x80, b'X'],
+            systemless_future::memory::Permissions::RW,
+        )
+        .unwrap();
+    let h = app
+        .runtime
+        .process
+        .get_named_resource(&mut app.runtime.memory, *b"DATA", pointer, false)
+        .unwrap();
+    assert_ne!(h, 0);
+    assert_eq!(
+        h,
+        app.runtime
+            .process
+            .get_resource(&mut app.runtime.memory, *b"DATA", 7)
+            .unwrap()
+    );
+    assert_eq!(
+        h,
+        app.runtime
+            .process
+            .get_named_resource(&mut app.runtime.memory, *b"DATA", pointer, true)
+            .unwrap()
+    );
+    app.runtime.memory.write(pointer, &[2, 0x80, b'x']).unwrap();
+    assert_eq!(
+        app.runtime
+            .process
+            .get_named_resource(&mut app.runtime.memory, *b"DATA", pointer, true)
+            .unwrap(),
+        0
+    );
+    assert_eq!(app.runtime.process.res_error, -192);
+    assert_eq!(
+        app.runtime
+            .process
+            .get_named_resource(&mut app.runtime.memory, *b"NONE", pointer, false)
+            .unwrap(),
+        0
+    );
+    assert_eq!(app.runtime.process.res_error, 0);
+    app.runtime.memory.write(pointer, &[255]).unwrap();
+    assert!(app
+        .runtime
+        .process
+        .get_named_resource(&mut app.runtime.memory, *b"DATA", pointer, false)
+        .is_err());
+}
+
+#[test]
+fn named_resource_stack_and_cfm_adapters_return_the_same_resource_contents() {
+    let f = pef_program(
+        &[
+            0x7fc802a6, 0x3c604441, 0x60635441, 0x3c805000, 0x81820008, 0x800c0000, 0x804c0004,
+            0x7c0903a6, 0x4e800421, 0x7fc803a6, 0x4e800020,
+        ],
+        &[b"Get1NamedResource"],
+        16,
+    );
+    let fork = resource(vec![(*b"DATA", 7, Some(b"test".to_vec()), vec![3, 4, 5])]);
+    let mut p = LoadedApplication::pef(&f.bytes, Some(&fork)).unwrap();
+    let code = code_program(&[
+        0x598f, 0x2f3c, 0x4441, 0x5441, 0x2f3c, 0x5000, 0, 0xa820, 0x201f, 0x2b40, 0xfffc, 0xa9f4,
+    ]);
+    let mut m = LoadedApplication::code(&code).unwrap();
+    m.runtime.process.resources = ResourceFork::parse(&fork).unwrap();
+    for app in [&mut p, &mut m] {
+        app.runtime
+            .memory
+            .map(
+                GuestPtr(0x50000000),
+                b"\x04test".to_vec(),
+                systemless_future::memory::Permissions::RW,
+            )
+            .unwrap();
+        let stop = app.runtime.advance(100).unwrap();
+        let h = match stop {
+            Stop::Returned(h) => h,
+            Stop::Exit(0) => app
+                .runtime
+                .memory
+                .u32(GuestPtr(systemless_future::load::A5_BASE - 4))
+                .unwrap(),
+            _ => panic!("{stop:?}"),
+        };
+        let ptr = app.runtime.memory.u32(GuestPtr(h)).unwrap();
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(ptr), 3).unwrap(),
+            &[3, 4, 5]
+        );
+    }
+}

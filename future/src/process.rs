@@ -15,6 +15,7 @@ const MEM_BAD: i16 = -111;
 #[derive(Default)]
 pub struct Process {
     pub resources: ResourceFork,
+    pub files: crate::files::Files,
     resource_ref: i16,
     pub mem_error: i16,
     pub res_error: i16,
@@ -65,6 +66,16 @@ impl Process {
     pub fn install_application_resources(&mut self, resources: ResourceFork) {
         self.resources = resources;
         self.resource_ref = 1;
+    }
+    pub(crate) fn install_files(&mut self, data: &[u8], resource: Option<&[u8]>) {
+        self.files = crate::files::Files::application(data, resource);
+        self.resource_ref = if resource.is_some() {
+            self.files
+                .open(crate::files::Fork::Resource)
+                .expect("fresh application fork")
+        } else {
+            0
+        };
     }
     pub fn current_resource_file(&self) -> i16 {
         self.resource_ref
@@ -133,6 +144,33 @@ impl Process {
         self.resource_handles.retain(|_, h| *h != handle);
         self.mem_error = 0;
         Ok(())
+    }
+    pub fn get_named_resource(
+        &mut self,
+        memory: &mut Memory,
+        kind: [u8; 4],
+        name: GuestPtr,
+        _current_only: bool,
+    ) -> Result<u32> {
+        // Both search modes currently visit the single application map. Names
+        // are case-sensitive raw Macintosh bytes (IM: More Toolbox, pp. 1-75–77).
+        let length = memory.read(name, 1)?[0] as usize;
+        let bytes = &memory.read(name, length + 1)?[1..];
+        let id = self
+            .resources
+            .entries()
+            .find(|r| r.kind == kind && r.name.as_deref() == Some(bytes))
+            .map(|r| r.id);
+        if let Some(id) = id {
+            self.get_resource(memory, kind, id)
+        } else {
+            self.res_error = if self.resources.entries().any(|r| r.kind == kind) {
+                -192
+            } else {
+                0
+            };
+            Ok(0)
+        }
     }
     pub fn get_resource(&mut self, memory: &mut Memory, kind: [u8; 4], id: i16) -> Result<u32> {
         self.res_error = 0;

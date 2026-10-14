@@ -22,6 +22,9 @@ pub enum Service {
     MemError,
     ResError,
     CurResFile,
+    GetNamedResource,
+    Get1NamedResource,
+    FcbInfo,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reply {
@@ -31,6 +34,7 @@ pub enum Reply {
     PpcR3,
     M68kHandle,
     M68kA0,
+    M68kFileError,
     M68kD0,
     M68kError,
 }
@@ -69,6 +73,9 @@ impl Abi {
             b"GetHandleSize" => Some(Service::GetHandleSize),
             b"GetResource" => Some(Service::GetResource),
             b"MemError" => Some(Service::MemError),
+            b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
+            b"GetNamedResource" => Some(Service::GetNamedResource),
+            b"Get1NamedResource" => Some(Service::Get1NamedResource),
             b"CurResFile" => Some(Service::CurResFile),
             b"ResError" => Some(Service::ResError),
             _ => None,
@@ -114,6 +121,26 @@ impl Abi {
                     Reply::StackLong(GuestPtr(result)),
                 ))
             }
+            0xa260 if c.dar[0] as u16 == 8 => {
+                Ok((Call::FcbInfo(GuestPtr(c.dar[8])), Reply::M68kFileError))
+            }
+            0xa9a1 | 0xa820 => {
+                let args = memory.read(GuestPtr(sp), 12)?;
+                let name = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let kind = args[4..8].try_into().unwrap();
+                let result = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("resource ABI stack overflow".into()))?;
+                c.dar[15] = result;
+                Ok((
+                    Call::GetNamedResource {
+                        kind,
+                        name,
+                        current_only: opcode == 0xa820,
+                    },
+                    Reply::StackLong(GuestPtr(result)),
+                ))
+            }
             0xa994 => {
                 memory.read(GuestPtr(sp), 2)?;
                 Ok((Call::CurResFile, Reply::StackWord(GuestPtr(sp))))
@@ -149,6 +176,12 @@ impl Abi {
             Service::MemError => Call::MemError,
             Service::ResError => Call::ResError,
             Service::CurResFile => Call::CurResFile,
+            Service::GetNamedResource | Service::Get1NamedResource => Call::GetNamedResource {
+                kind: c.gpr[3].to_be_bytes(),
+                name: GuestPtr(c.gpr[4]),
+                current_only: service == Service::Get1NamedResource,
+            },
+            Service::FcbInfo => Call::FcbInfo(GuestPtr(c.gpr[3])),
         };
         (
             call,
@@ -166,6 +199,22 @@ impl Reply {
             Self::None => {}
             Self::StackLong(p) => memory.write(p, &value.to_be_bytes())?,
             Self::StackWord(p) => memory.write(p, &(value as u16).to_be_bytes())?,
+            Self::M68kFileError => match cpu {
+                Cpu::M68k(c) => {
+                    c.dar[0] = value;
+                    let sr = c.get_sr() & !0xf;
+                    c.set_sr(
+                        sr | if value as i16 == 0 {
+                            4
+                        } else if (value as i16) < 0 {
+                            8
+                        } else {
+                            0
+                        },
+                    );
+                }
+                _ => return Err(Error::Cpu("68K result on PPC".into())),
+            },
             Self::M68kA0 => match cpu {
                 Cpu::M68k(c) => c.dar[8] = value,
                 _ => return Err(Error::Cpu("68K result on PPC".into())),

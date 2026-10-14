@@ -4,7 +4,8 @@ An independent replacement runtime on `dev/future`. One guest address space and
 service dispatcher serve real 68K and PowerPC engines. Indexed drawing, palette
 expansion and presentation use wgpu. This build does not link the legacy runtime.
 
-**Current scope: generated executable fixtures; no original application verified.**
+**Current scope: generated fixtures and one MPW-compiled 68K resource/handle app;
+no original application verified.**
 Resource-fork/CODE and PowerPC PEF loaders use a small real Macintosh ABI slice
 for resources, handles, timing and exit. The graphics fixtures still use private
 gateways, which are disabled for loaded applications.
@@ -15,7 +16,7 @@ From the repository root:
 ```sh
 cargo test --manifest-path future/Cargo.toml --locked
 # Explicit GPU acceptance; requires a real adapter and fails if unavailable.
-cargo test --manifest-path future/Cargo.toml --locked -- --include-ignored --nocapture
+cargo test --manifest-path future/Cargo.toml --locked --test contracts -- --include-ignored --nocapture
 cargo run --manifest-path future/Cargo.toml --locked
 cargo run --manifest-path future/Cargo.toml --locked -- --ppc
 cargo run --manifest-path future/Cargo.toml --locked -- --window
@@ -30,7 +31,8 @@ palette entries as a host presentation demonstration. Resizing changes only
 the host viewport. `--smoke` verifies presentation, physical resize to 640×360,
 and the zero-size suspension branch, then exits.
 
-The default test command reports GPU tests **ignored**. They are not counted
+The default test command reports GPU and MPW compiler tests **ignored**.
+Build and run the compiler fixture using [its instructions](fixtures/mpw/README.md). They are not counted
 as passed until explicitly run. Native blocking GPU synchronization is the
 first correctness boundary; browser integration and optimization are pending.
 

@@ -31,16 +31,20 @@ pub struct LoadedApplication {
 }
 impl LoadedApplication {
     pub fn code(resource_fork: &[u8]) -> Result<Self> {
-        code(ResourceFork::parse(resource_fork)?)
+        let mut app = code(ResourceFork::parse(resource_fork)?)?;
+        app.runtime.process.install_files(&[], Some(resource_fork));
+        Ok(app)
     }
     pub fn pef(data_fork: &[u8], resource_fork: Option<&[u8]>) -> Result<Self> {
-        pef::load(
+        let mut app = pef::load(
             data_fork,
             resource_fork
                 .map(ResourceFork::parse)
                 .transpose()?
                 .unwrap_or_default(),
-        )
+        )?;
+        app.runtime.process.install_files(data_fork, resource_fork);
+        Ok(app)
     }
 }
 pub(super) fn invalid(message: impl Into<String>) -> Error {

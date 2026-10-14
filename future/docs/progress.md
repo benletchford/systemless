@@ -191,3 +191,30 @@ startup requests. Do not supply arbitrary successful file metadata. Relevant
 primary layouts: https://dev.os9.ca/techpubs/mac/Files/Files-122.html and
 https://dev.os9.ca/techpubs/mac/Files/Files-301A.html. PPC StdCLib support and both
 compiler-generated applications reaching their C main remain incomplete.
+
+## 2026-10-14: virtual file metadata and compiled 68K acceptance
+
+Application loading now retains original fork bytes in a process-owned read-only
+virtual file. PBGetFCBInfo reports actual fork metadata through both CPU ABIs,
+with indexed/direct-reference lookup, error results, big-endian parameter blocks,
+68K condition codes and validation of all output ranges before mutation. Named
+resource lookup uses exact names and the same handle cache as ID lookup.
+
+The unmodified MPW-generated 68K probe now completes startup and its C main:
+1308 boundaries, 18 service calls, Exit(0). Its C checks verify resource presence
+and length, cleared allocation contents and disposal. The explicit MPW acceptance
+test checks the ordered service trace and is ignored unless its generated binary
+exists; see fixtures/mpw/README.md to build and run it. This is one controlled
+compiler-generated app, not original-app or general Toolbox compatibility.
+
+Validation: all 47 tests passed with explicit GPU and MPW tests on Apple M1/Metal;
+strict all-target clippy passed. Default suites have 44 passing/3 ignored tests.
+New tests cover both FCB ABIs, real fork bytes/lengths, reference and volume errors,
+atomic output faults, missing resource forks, named-resource case/raw bytes,
+truncated Pascal names, cached identity and both named-resource ABIs.
+
+Next: implement the PPC probe's StdCLib functions/data contracts, preserving the
+real startup path. Then extend both compiled apps through deterministic events
+and actual QuickDraw drawing. Virtual file read/open/close and additional resource
+maps, async callbacks, window acceptance and real Mixed Mode are still incomplete.
+The full rebuild goal remains active.

@@ -200,3 +200,28 @@ currently creates one map; opening and switching additional maps must be tied to
 the forthcoming VFS. Primary contracts: [trap lookup](https://dev.os9.ca/techpubs/mac/OSUtilities/OSUtilities-177.html),
 [OS trap D1 parameter](https://dev.os9.ca/techpubs/mac/PPCSoftware/PPCSoftware-16.html),
 and [application resource opening](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-20.html).
+
+### Virtual application file and named resources
+
+The process retains the original loaded data/resource fork bytes in one read-only
+virtual application file (default guest name `Application`, configurable with a raw
+Macintosh Str31). The virtual volume has reference -1, drive 1, root directory ID
+2 and application file ID 16, with 4096-byte allocation units. File opens have
+distinct references and independent marks; resource-map identity is the reference
+of the resource fork opened at launch. No resource fork supplied means no open
+resource reference, not a fabricated empty open file. Host paths are not exposed.
+
+PBGetFCBInfoSync and HFSDispatch selector 8 report actual fork length, allocation
+extent, read-only/resource flags, mark, name, volume and parent. Indexed and direct
+reference queries share the same table. Parameter/name destinations are validated
+before either is written. Asynchronous I/O, directory operations, guest open/read/
+write/close and persistence remain pending. This is a virtual volume model, not an
+HFS disk-image implementation. Source fork bytes remain separate from mutable
+resource handles until an explicit save/flush model exists.
+
+GetNamedResource/Get1NamedResource compare exact raw names, retain absent-type vs
+absent-name error behavior, and resolve to the same cached handle as ID lookup.
+Both search modes visit the current single application map; additional maps and
+search chains are future work. Primary references: IM: Files (1992), pp. 2-237–238,
+[FCB layout](https://dev.os9.ca/techpubs/mac/Files/Files-122.html), and
+[GetNamedResource](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-52.html).

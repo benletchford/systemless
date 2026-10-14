@@ -2,9 +2,9 @@
 
 This ordinary C application reads a DATA resource, checks its handle size,
 allocates cleared memory, disposes it and exits. It uses the existing pinned MPW
-toolchain and standard startup libraries, so it exposes requirements absent from
-hand-assembled programs. It is a development probe, **not a passing compatibility
-fixture**. Generated binaries stay in ignored `future/target/mpw-probe`.
+toolchain and standard startup libraries. The 68K build now passes this complete
+interaction; PPC still needs StdCLib support. Generated binaries stay in ignored
+`future/target/mpw-probe` and are not required by the default test suite.
 
 From the repository root, build the compiler image if needed and generate forks:
 
@@ -16,18 +16,19 @@ cargo run --manifest-path future/Cargo.toml --locked -- --pef future/target/mpw-
 cargo run --manifest-path future/Cargo.toml --locked --example trace_application -- code future/target/mpw-probe/probe.68k.rsrc 100
 ```
 
-Observed on 2026-10-14: compilation and fork generation succeed. MPW 68K startup
-inspects its caller's instruction bytes. Loaded CODE applications now receive a
-readable/executable ExitToShell return trampoline instead of an unmapped private
-sentinel, and a regression checks both inspection and return execution. Startup
-now passes global initialization, trap availability checks and CurResFile. At
-instruction boundary 902 it requests PBGetFCBInfo (HFSDispatch A260, selector 8),
-which requires a real virtual file/fork record for its resource-file reference.
-This file-system service is the next missing startup requirement.
+Verified on 2026-10-14: the 68K build completes standard startup and C main in
+1308 instruction boundaries, with 18 service calls. It passes return-code
+inspection, trap availability checks, CurResFile, PBGetFCBInfo and the optional
+static-constructor resource lookup, then checks its DATA resource and cleared
+allocation, disposes the handle and exits. The acceptance test requires the
+ordered resource/size/allocation/disposal calls; an early CRT return is not success.
 
-PPC preparation stops at required import `StdCLib:_BreakPoint`. The other StdCLib
+```sh
+cargo test --manifest-path future/Cargo.toml --locked --test mpw -- --ignored
+```
+
+PPC preparation still stops at required import `StdCLib:_BreakPoint`. Other StdCLib
 imports are `__setjmp`, `_IntEnv`, `__C_phase`, `__target_for_exit`, `_exit_status`,
 `exit` and `__NubAt3`; several are data symbols and need shared guest storage.
-Neither application has reached its C main or passed the resource/handle checks.
-Inspect the startup libraries and authoritative trap/StdCLib contracts before
-implementing the missing semantics; do not bypass startup or add silent stubs.
+The PPC application has not reached C main. No graphics, events, original
+commercial application or broader compiler-runtime compatibility is claimed.

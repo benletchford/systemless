@@ -140,6 +140,19 @@ impl Runtime {
                                 self.process.mem_error,
                             )?;
                         }
+                        Call::GetNamedResource {
+                            kind,
+                            name,
+                            current_only,
+                        } => {
+                            let value = self.process.get_named_resource(
+                                &mut self.memory,
+                                kind,
+                                name,
+                                current_only,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
                         Call::GetResource { kind, id } => {
                             let v = self.process.get_resource(&mut self.memory, kind, id)?;
                             reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
@@ -147,6 +160,15 @@ impl Runtime {
                         Call::MemError => {
                             let value = self.memory.u16(GuestPtr(0x220))? as i16 as i32 as u32;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
+                        Call::FcbInfo(pointer) => {
+                            let error = self.process.files.fcb_info(&mut self.memory, pointer)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
                         }
                         Call::CurResFile => {
                             let value = self.process.current_resource_file() as i32 as u32;
@@ -166,11 +188,15 @@ impl Runtime {
                             | Call::DisposeHandle(_)
                             | Call::HandleSize(_)
                             | Call::GetResource { .. }
+                            | Call::GetNamedResource { .. }
                     ) {
                         self.memory
                             .write(GuestPtr(0x220), &self.process.mem_error.to_be_bytes())?;
                     }
-                    if matches!(call, Call::GetResource { .. }) {
+                    if matches!(
+                        call,
+                        Call::GetResource { .. } | Call::GetNamedResource { .. }
+                    ) {
                         self.memory
                             .write(GuestPtr(0xa60), &self.process.res_error.to_be_bytes())?;
                     }
@@ -185,7 +211,9 @@ impl Runtime {
                         | Call::GetResource { .. }
                         | Call::MemError
                         | Call::ResError
-                        | Call::CurResFile => {
+                        | Call::CurResFile
+                        | Call::GetNamedResource { .. }
+                        | Call::FcbInfo(_) => {
                             return Err(Error::Cpu("Macintosh service on fixture route".into()))
                         }
                         Call::Ticks => {

@@ -82,6 +82,9 @@ impl Memory {
         let (i, o) = self.locate(p, len, Access::Read)?;
         Ok(&self.mappings[i].bytes[o..o + len])
     }
+    pub fn validate_write(&self, p: GuestPtr, len: usize) -> Result<()> {
+        self.locate(p, len, Access::Write).map(|_| ())
+    }
     pub fn write(&mut self, p: GuestPtr, bytes: &[u8]) -> Result<()> {
         let (i, o) = self.locate(p, bytes.len(), Access::Write)?;
         self.mappings[i].bytes[o..o + bytes.len()].copy_from_slice(bytes);

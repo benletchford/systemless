@@ -14,14 +14,29 @@ pub enum Architecture {
 pub enum Call {
     Add(u32),
     Ticks,
-    TrapAddress { number: u16, toolbox: bool },
-    NewHandle { size: u32, clear: bool },
+    TrapAddress {
+        number: u16,
+        toolbox: bool,
+    },
+    NewHandle {
+        size: u32,
+        clear: bool,
+    },
     DisposeHandle(u32),
     HandleSize(u32),
-    GetResource { kind: [u8; 4], id: i16 },
+    GetResource {
+        kind: [u8; 4],
+        id: i16,
+    },
     MemError,
     ResError,
     CurResFile,
+    GetNamedResource {
+        kind: [u8; 4],
+        name: GuestPtr,
+        current_only: bool,
+    },
+    FcbInfo(GuestPtr),
     Draw(GuestPtr),
     Callback(GuestPtr),
     Exit(u32),
