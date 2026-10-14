@@ -1019,3 +1019,20 @@ matching the legacy Systemless comparison; no new native System 7 test was run.
 InvalRect/ValidRect translate current-window local rectangles to global content
 and update the shared update region, including during BeginUpdate. Custom window
 definitions, dragging/growing/zooming and native presentation remain unfinished.
+
+SystemTask ($A9B4 / InterfaceLib) is an explicit shared service boundary. The
+current runtime has no registered desk accessories or periodic device driver
+chains, so the dispatch has no work and preserves CPU results, event queues and
+guest memory. It does not introduce an extra clock step: instruction-boundary
+and host tick progression retain ownership of time. Loading such drivers or
+accessories will require real periodic callback dispatch, not this empty case.
+Legacy Systemless provides the comparison contract; native System 7 was not run.
+
+PenSize writes the signed vertical/horizontal words together at GrafPort +52;
+68K decodes height then width on its Pascal stack, PPC decodes width/height in
+r3/r4. Existing wgpu frame coverage reads these live dimensions. A zero/zero pen
+produces no frame coverage; negative dimensions remain rejected by drawing.
+RectInRgn uses positive-area overlap against decoded region spans, including
+holes/disjoint rows, rather than region bounding boxes. Both adapters share it;
+the 68K Boolean writes one byte and preserves the caller's padding. Output
+permissions are validated before consuming the argument stack.

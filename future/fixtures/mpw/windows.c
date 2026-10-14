@@ -6,6 +6,8 @@
 #include <Memory.h>
 #include <Events.h>
 #include <Processes.h>
+#include <Menus.h>
+#include <Devices.h>
 QDGlobals qd;
 static WindowRecord storage;
 int main(void) {
@@ -25,13 +27,15 @@ int main(void) {
     if (firstBounds.top!=39 || firstBounds.left!=43 || firstBounds.bottom!=55 || firstBounds.right!=61) return 14;
     SetRect(&firstBounds,40,40,60,60);
     InitGraf(&qd.thePort); InitFonts();
-    InitWindows();
+    InitWindows(); SystemTask();
     GetPort(&old);
     if (old!=0 || FrontWindow()!=0) return 1;
     first=NewWindow(0,&firstBounds,"\ptest",true,plainDBox,(WindowPtr)-1,false,0x12345678);
     if (!first || ((WindowPeek)first)->windowKind!=8 || ((WindowPeek)first)->refCon!=0x12345678 || FrontWindow()!=first) return 2;
     GetPort(&old);
     if (old!=(GrafPtr)first || first->portRect.bottom!=20 || first->portRect.right!=20) return 3;
+    PenSize(2,3); if (first->pnSize.h!=2 || first->pnSize.v!=3) return 46; PenSize(1,1);
+    if (!RectInRgn(&local,first->visRgn)) return 47;
     saved=NewRgn(); CopyRgn(first->visRgn,saved);
     RectRgn(((WindowPeek)first)->updateRgn,&dirty);
     if (OSEventAvail(updateMask,&event)) return 15;

@@ -2069,3 +2069,27 @@ presentation remain open. The full rebuild goal remains active.
 
 Full validation: 207 tests pass (175 default, 32 optional GPU/MPW), including
 the rebuilt paired compiled window fixtures. No GPU tests were skipped.
+
+### Empty periodic service and application-driven QuickDraw state
+
+SystemTask now has checked 68K/PPC entry points into one shared runtime service.
+With no supported desk-accessory/periodic driver registrations it preserves
+guest state, event queues and registers, following the legacy Systemless
+comparison. This does not implement driver callbacks or add a clock step.
+PenSize now updates the live GrafPort words consumed by existing frame drawing.
+RectInRgn tests actual decoded region intersections, preserving holes and
+half-open edges. Read-only native Boolean outputs fail before the ABI pops args.
+
+Generated guests verify general-purpose register and low-memory preservation
+for SystemTask,
+vertical/horizontal pen ordering and word truncation, rectangular queries within
+complex-region holes, empty/inverted rectangles, edge contact and native result
+padding/permissions. Rebuilt MPW 68K/PPC windows exercise all three services.
+Fresh Super Mines startup reaches GetPicture ($A9BC), PC $01000AE2, trace index
+17789. Next: connect picture resource loading to the shared Resource Manager,
+then implement picture drawing through wgpu with bounded fixtures. Original
+application interaction, PPC sound, Color QuickDraw, production Mixed Mode and
+native presentation remain outstanding. Full rebuild goal remains active.
+
+Validation: 210 tests pass (178 default, 32 optional GPU/MPW), strict all-target
+Clippy passes, and MPW fixtures rebuild. No GPU tests were skipped.

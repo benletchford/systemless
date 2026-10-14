@@ -299,3 +299,7 @@ unlinking and automatic freeing when the owner window is disposed.
 The window fixture also sets/gets WRefCon, resizes its resource-defined window,
 hides/reveals it with ShowHide and redraws existing controls. Native 68K trap
 words and PPC imports are verified through the real headers/compiler.
+
+The window acceptance guests also call SystemTask with no periodic registrations,
+set/reset PenSize and inspect the live GrafPort dimensions, and use RectInRgn
+on the visible region. Both compiler outputs exercise the shared services.

@@ -343,6 +343,12 @@ impl Runtime {
                                 self.receive_toolbox_event(mask, destination, remove, ticks)?;
                             reply.apply(&mut self.cpu, &mut self.memory, u32::from(found), 0)?;
                         }
+                        Call::SystemTask => {
+                            // There are no registered desk accessories or periodic device
+                            // drivers in this runtime. SystemTask has no work to dispatch;
+                            // ordinary instruction/host tick progression remains authoritative.
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::SysEnvirons { version, record } => {
                             let result =
                                 crate::environment::query(&mut self.memory, version, record)?;
@@ -671,6 +677,16 @@ impl Runtime {
                                     ports.paint_rect(gpu, &mut self.memory, r)?;
                                 }
                             }
+                        }
+                        Call::PenSize { width, height } => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            let p = ports.current(&self.memory)?;
+                            let mut bytes = [0; 4];
+                            bytes[..2].copy_from_slice(&height.to_be_bytes());
+                            bytes[2..].copy_from_slice(&width.to_be_bytes());
+                            self.memory.write(GuestPtr(p.0 + 52), &bytes)?;
                         }
                         Call::PenMode(mode) => {
                             let ports = self.process.ports.ok_or_else(|| {
@@ -1060,6 +1076,7 @@ impl Runtime {
                         | Call::TextState { .. }
                         | Call::Rectangle(_)
                         | Call::ToolboxEvent { .. }
+                        | Call::SystemTask
                         | Call::SysEnvirons { .. }
                         | Call::MaxApplZone
                         | Call::GetApplLimit
@@ -1079,6 +1096,7 @@ impl Runtime {
                         | Call::FragmentQuery(_)
                         | Call::InitGraf { .. }
                         | Call::Port { .. }
+                        | Call::PenSize { .. }
                         | Call::PenMode(_)
                         | Call::WaitEvent { .. }
                         | Call::PostEvent { .. }

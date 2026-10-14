@@ -9,6 +9,7 @@ use crate::{
 pub enum Op {
     New,
     Contains,
+    Intersects,
     Equal,
     Empty,
     Dispose,
@@ -39,6 +40,21 @@ fn write(memory: &mut Memory, process: &mut Process, handle: u32, bytes: &[u8]) 
 }
 pub fn call(memory: &mut Memory, process: &mut Process, op: Op, a: u32, b: u32) -> Result<u32> {
     match op {
+        Op::Intersects => {
+            let rectangle = read_rect(memory, GuestPtr(a))?;
+            let bytes = read(memory, process, b)?;
+            let spans = crate::region_geometry::decode(&bytes)?;
+            return Ok(u32::from(
+                rectangle.left < rectangle.right
+                    && rectangle.top < rectangle.bottom
+                    && spans.iter().any(|r| {
+                        rectangle.left < r.right
+                            && r.left < rectangle.right
+                            && rectangle.top < r.bottom
+                            && r.top < rectangle.bottom
+                    }),
+            ));
+        }
         Op::Equal => {
             let left = read(memory, process, a)?;
             let right = read(memory, process, b)?;

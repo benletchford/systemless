@@ -41,6 +41,7 @@ pub enum Service {
     GetNextEvent,
     EventAvail,
     SysEnvirons,
+    SystemTask,
     MaxApplZone,
     GetApplLimit,
     BlockMove,
@@ -87,6 +88,7 @@ pub enum Service {
     Region(crate::regions::Op),
     Port(crate::quickdraw::PortOp),
     PenMode,
+    PenSize,
     WaitNextEvent,
     PostEvent,
     GetOSEvent,
@@ -250,6 +252,7 @@ impl Abi {
             b"EventAvail" => Some(Service::EventAvail),
             b"BeginUpdate" => Some(Service::Window(crate::windows::Op::Begin)),
             b"EndUpdate" => Some(Service::Window(crate::windows::Op::End)),
+            b"SystemTask" => Some(Service::SystemTask),
             b"SysEnvirons" => Some(Service::SysEnvirons),
             b"MaxApplZone" => Some(Service::MaxApplZone),
             b"GetApplLimit" => Some(Service::GetApplLimit),
@@ -277,6 +280,7 @@ impl Abi {
             b"FindSymbol" => Some(Service::FindSymbol),
             b"CountSymbols" => Some(Service::CountSymbols),
             b"GetIndSymbol" => Some(Service::GetIndSymbol),
+            b"RectInRgn" => Some(Service::Region(crate::regions::Op::Intersects)),
             b"PtInRgn" => Some(Service::Region(crate::regions::Op::Contains)),
             b"EqualRgn" => Some(Service::Region(crate::regions::Op::Equal)),
             b"EmptyRgn" => Some(Service::Region(crate::regions::Op::Empty)),
@@ -310,6 +314,7 @@ impl Abi {
             b"ClipRect" => Some(Service::Port(crate::quickdraw::PortOp::ClipRect)),
             b"PaintRect" => Some(Service::Port(crate::quickdraw::PortOp::PaintRect)),
             b"PenPat" => Some(Service::Port(crate::quickdraw::PortOp::PenPat)),
+            b"PenSize" => Some(Service::PenSize),
             b"PenMode" => Some(Service::PenMode),
             b"WaitNextEvent" => Some(Service::WaitNextEvent),
             b"PostEvent" => Some(Service::PostEvent),
@@ -833,6 +838,7 @@ impl Abi {
                     Reply::StackByte(GuestPtr(result)),
                 ))
             }
+            0xa9b4 => Ok((Call::SystemTask, Reply::None)),
             0xa090 => Ok((
                 Call::SysEnvirons {
                     version: c.dar[0] as i16,
@@ -1060,15 +1066,19 @@ impl Abi {
                 Ok((call, Reply::None))
             }
 
-            0xa8e8 | 0xa8e2 => {
+            0xa8e8 | 0xa8e9 | 0xa8e2 => {
                 use crate::regions::Op;
-                let pair = opcode == 0xa8e8;
+                let pair = opcode != 0xa8e2;
                 let n = if pair { 8 } else { 4 };
                 let args = memory.read(GuestPtr(sp), n + 2)?;
                 let h = u32::from_be_bytes(args[..4].try_into().unwrap());
                 let (op, a, b) = if pair {
                     (
-                        Op::Contains,
+                        if opcode == 0xa8e9 {
+                            Op::Intersects
+                        } else {
+                            Op::Contains
+                        },
                         u32::from_be_bytes(args[4..8].try_into().unwrap()),
                         h,
                     )
@@ -1078,6 +1088,7 @@ impl Abi {
                 let result = sp
                     .checked_add(n as u32)
                     .ok_or_else(|| Error::Cpu("region stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 1)?;
                 c.dar[15] = result;
                 Ok((
                     Call::Region { op, a, b },
@@ -1150,6 +1161,15 @@ impl Abi {
                     }
                 };
                 Ok((call, Reply::None))
+            }
+            0xa89b => {
+                let args = memory.read(GuestPtr(sp), 4)?;
+                let height = i16::from_be_bytes(args[..2].try_into().unwrap());
+                let width = i16::from_be_bytes(args[2..].try_into().unwrap());
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("QuickDraw stack overflow".into()))?;
+                Ok((Call::PenSize { width, height }, Reply::None))
             }
             0xa89c => {
                 let mode = memory.u16(GuestPtr(sp))? as i16;
@@ -1465,6 +1485,7 @@ impl Abi {
                     }
                 })
             }
+            Service::SystemTask => Call::SystemTask,
             Service::SysEnvirons => Call::SysEnvirons {
                 version: c.gpr[3] as i16,
                 record: GuestPtr(c.gpr[4]),
@@ -1635,6 +1656,10 @@ impl Abi {
                 op,
                 pointer: GuestPtr(c.gpr[3]),
             },
+            Service::PenSize => Call::PenSize {
+                width: c.gpr[3] as i16,
+                height: c.gpr[4] as i16,
+            },
             Service::PenMode => Call::PenMode(c.gpr[3] as i16),
 
             Service::WaitNextEvent => Call::WaitEvent {
@@ -1740,10 +1765,11 @@ impl Abi {
         };
         Ok((
             call,
-            if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Empty | crate::regions::Op::Equal))
+            if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Intersects | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::InvalRect
+                    Service::SystemTask
+                        | Service::InvalRect
                         | Service::ValidRect
                         | Service::MoveWindow
                         | Service::SelectWindow
@@ -1807,6 +1833,7 @@ impl Abi {
                         | Service::RoundRect(_)
                         | Service::CombineRegions(_)
                         | Service::Port(_)
+                        | Service::PenSize
                         | Service::PenMode
                         | Service::ExitToShell
                         | Service::SetPointerSize

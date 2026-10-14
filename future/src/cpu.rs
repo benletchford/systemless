@@ -13,6 +13,7 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    SystemTask,
     Rectangle(crate::rectangles::Op),
     ToolboxEvent {
         mask: u16,
@@ -92,6 +93,10 @@ pub enum Call {
         pointer: GuestPtr,
     },
     PenMode(i16),
+    PenSize {
+        width: i16,
+        height: i16,
+    },
     CombineRegions {
         op: crate::region_geometry::Boolean,
         a: u32,
