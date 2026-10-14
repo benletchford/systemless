@@ -826,3 +826,26 @@ fn stdlib_breakpoint_faults_instead_of_silently_continuing() {
     );
     assert!(app.runtime.advance(100).is_err());
 }
+
+#[test]
+fn code_startup_can_initialize_globals_through_low_memory_launch_metadata() {
+    let fork = code_program(&[
+        0x2278, 0x0908, // MOVEA.L CurStackBase,A1
+        0x32bc, 0x1234, // MOVE.W #$1234,(A1)
+        0x2038, 0x0904, // MOVE.L CurrentA5,D0
+        0x3238, 0x0934, // MOVE.W CurJTOffset,D1
+        0xa9f4, // ExitToShell
+    ]);
+    let mut app = LoadedApplication::code(&fork).unwrap();
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Exit(0));
+    assert_eq!(
+        app.runtime.memory.u16(GuestPtr(A5_BASE - 256)).unwrap(),
+        0x1234
+    );
+    let Cpu::M68k(cpu) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(cpu.dar[9], A5_BASE - 256);
+    assert_eq!(cpu.dar[0], A5_BASE);
+    assert_eq!(cpu.dar[1] as u16, 32);
+}

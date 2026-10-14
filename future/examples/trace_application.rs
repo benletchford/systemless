@@ -19,8 +19,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..budget {
         match &app.runtime.cpu {
             Cpu::M68k(c) => println!(
-                "{} pc={:08x} sp={:08x} a5={:08x} a0={:08x} d0={:08x}",
-                app.runtime.instructions, c.pc, c.dar[15], c.dar[13], c.dar[8], c.dar[0]
+                "{} pc={:08x} sp={:08x} a5={:08x} a0={:08x} d0={:08x} regs={:08x?} opcode={:04x?}",
+                app.runtime.instructions,
+                c.pc,
+                c.dar[15],
+                c.dar[13],
+                c.dar[8],
+                c.dar[0],
+                c.dar,
+                app.runtime
+                    .memory
+                    .u16(systemless_future::memory::GuestPtr(c.pc))
             ),
             Cpu::PowerPc(c) => println!(
                 "{} pc={:08x} sp={:08x} toc={:08x} lr={:08x} r3={:08x}",

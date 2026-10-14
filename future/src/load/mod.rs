@@ -145,6 +145,7 @@ fn code(resources: ResourceFork) -> Result<LoadedApplication> {
     if jt_len == 0
         || jt_len % 8 != 0
         || jt_offset < 32
+        || jt_offset > u16::MAX as u32
         || jt_offset.checked_add(jt_len).is_none_or(|end| end > above)
     {
         return Err(invalid("invalid CODE 0 A5/jump-table layout"));
@@ -234,7 +235,7 @@ fn code(resources: ResourceFork) -> Result<LoadedApplication> {
             execute: true,
         },
     )?;
-    finish(
+    let mut app = finish(
         memory,
         Architecture::M68k,
         A5_BASE + jt_offset + 2,
@@ -242,5 +243,12 @@ fn code(resources: ResourceFork) -> Result<LoadedApplication> {
         resources,
         section_info,
         Abi::macintosh(),
-    )
+    )?;
+    // Inside Macintosh: Memory, Memory Manager summary: CurStackBase is
+    // the start of application globals. It is not our separate stack mapping.
+    let memory = &mut app.runtime.memory;
+    memory.write(GuestPtr(0x0904), &A5_BASE.to_be_bytes())?; // CurrentA5
+    memory.write(GuestPtr(0x0908), &world_base.to_be_bytes())?; // CurStackBase
+    memory.write(GuestPtr(0x0934), &(jt_offset as u16).to_be_bytes())?; // CurJTOffset
+    Ok(app)
 }

@@ -641,3 +641,20 @@ Native comparison remains outstanding. General region recording, shape drawing,
 transforms and Window Manager interactions are unfinished. Next: use the region
 model in complete window/application slices. Presentation, keyboard delivery,
 real Mixed Mode and original application acceptance still prevent rebuild completion.
+
+
+### Original-application launch metadata
+
+External Super Mines Demo and Centaurian FAT binaries now drive bounded startup
+checks; hashes and exact limits are in [original-applications.md](original-applications.md).
+Super Mines exposed a missing CurStackBase, causing startup writes through zero.
+CODE launches now publish CurrentA5, CurStackBase and word-sized CurJTOffset from
+the validated A5 layout. Oversized jump-table offsets are rejected. The trace
+example includes all 68K registers and the current opcode.
+
+A generated regression reads these globals and writes through CurStackBase.
+Super Mines now initializes its globals and reaches unsupported trap $A9A3;
+Centaurian 68K reaches the same trap. Centaurian PPC rejects unresolved SetSoundVol.
+All 95 tests pass, including thirteen optional GPU/MPW checks; strict Clippy passes.
+Next: resource lifetime behavior needed by original startup, then bounded reruns.
+No original application acceptance is claimed. The full rebuild remains active.
