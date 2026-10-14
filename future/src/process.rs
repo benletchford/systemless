@@ -141,6 +141,38 @@ impl Process {
         }
         Ok(())
     }
+    /// Loaded applications reserve their complete fixed heap before execution.
+    pub(crate) fn initialize_heap(&mut self, memory: &mut Memory) -> Result<()> {
+        memory.validate_write(GuestPtr(0x114), 4)?;
+        memory.validate_write(GuestPtr(0x130), 4)?;
+        self.ensure_heap(memory)?;
+        let end = HEAP_BASE + HEAP_SIZE;
+        memory.write(GuestPtr(0x114), &end.to_be_bytes())?;
+        memory.write(GuestPtr(0x130), &end.to_be_bytes())?;
+        Ok(())
+    }
+    pub fn maximize_heap(&mut self, memory: &mut Memory) -> Result<()> {
+        let end = HEAP_BASE + HEAP_SIZE;
+        if memory.u32(GuestPtr(0x130))? != end {
+            return Err(Error::Cpu(
+                "application limit differs from the fixed heap reservation".into(),
+            ));
+        }
+        memory.validate_write(GuestPtr(0x114), 4)?;
+        self.ensure_heap(memory)?;
+        memory.write(GuestPtr(0x114), &end.to_be_bytes())?;
+        self.mem_error = 0;
+        Ok(())
+    }
+    pub fn application_limit(&self, memory: &Memory) -> Result<u32> {
+        let limit = memory.u32(GuestPtr(0x130))?;
+        if limit != HEAP_BASE + HEAP_SIZE {
+            return Err(Error::Cpu(
+                "application limit differs from the fixed heap reservation".into(),
+            ));
+        }
+        Ok(limit)
+    }
     /// Nonrelocatable allocations share extents with handles, but have distinct
     /// ownership: a handle master or data address is never a disposable Ptr.
     pub fn new_pointer(&mut self, memory: &mut Memory, size: u32, clear: bool) -> Result<u32> {

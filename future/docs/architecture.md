@@ -868,3 +868,21 @@ ranges, checks mappings/permissions before mutation, and observes the image
 execution bound. Both CPUs execute from canonical writable code storage; there
 is no private instruction-byte cache to invalidate. Bitmap memory writes use
 the existing GPU synchronization boundary on subsequent drawing/presentation.
+
+
+## Environment profile and fixed heap reservation
+
+SysEnvirons describes one virtual Macintosh compatibility world rather than
+branching on the calling CPU. Its legacy processor field denotes the 68020
+compatibility backend; the native PPC engine retains its own execution state
+and semantics. Public capability flags describe implemented Macintosh services,
+so internal GPU palette support does not advertise Color QuickDraw. Unknown
+machine/keyboard values avoid pretending to emulate a particular hardware model.
+Version errors/layout follow Apple's Gestalt Manager reference and OV16.
+
+Loaded CODE and PEF processes map the complete fixed 4 MiB heap during common
+preparation and publish bounds that match its allocator. MaxApplZone preserves
+allocations while reasserting the full mapped extent. It does not create a
+second CPU-specific heap or accept a limit the allocator cannot honor. General
+zone resizing and SetApplLimit support are still missing. Standalone Process
+unit fixtures retain lazy mapping when they are not created by the loader.

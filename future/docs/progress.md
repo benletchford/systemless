@@ -1706,3 +1706,50 @@ unfinished. Next: truthful system-environment and application-heap startup
 contracts to advance those stops, then further resource/menu/dialog application
 slices. Original PPC strong sound imports and real Mixed Mode remain outstanding;
 the full rebuild goal stays active.
+
+### Shared system environment and maximized heap startup
+
+SysEnvirons ($A090 / InterfaceLib) now reports one 16-byte virtual Macintosh
+record independent of caller ISA: version 2, unknown virtual machine/keyboard,
+System 7 compatibility target, and the 68020 compatibility processor. FPU and
+Color QuickDraw are false because those 68K hardware/public Color QuickDraw
+capabilities are not implemented. Internal GPU palettes do not imply public
+Color QuickDraw support. AppleTalk and installed-System-file references are zero.
+This intentionally differs from the legacy reference's hardcoded machine/FPU/
+Color QuickDraw claims. It does not claim complete System 7 compatibility or
+physical PowerPC hardware identity.
+
+Versions 1/2 receive the available version-2 record; a newer request receives
+the same record with envVersTooBig (-5502). Nonpositive versions return
+envBadVers (-5501) without modifying output; NIL records return paramErr.
+Record writes use checked guest memory and preserve neighboring bytes. Version
+and layout contracts follow Apple's [Gestalt Manager reference](https://dev.os9.ca/techpubs/mac/pdf/Operating_System_Utilities/Gestalt_Manager.pdf)
+and [technical note OV16](https://leopard-adc.pepas.com/technotes/ov/ov_16.html),
+with MPW OSUtils.h/MacErrors.h providing primary declarations/constants.
+
+The common CODE/PEF loader now reserves the entire fixed 4 MiB application heap
+before guest execution, publishing HeapEnd ($114) and ApplLimit ($130) as
+$10400000. Both reflect the actual mapped allocator extent rather than zero or
+an unbacked projection. MaxApplZone ($A063 / InterfaceLib) validates the fixed
+application limit and restores HeapEnd to that full extent, preserving all
+existing handles/pointers and free space. GetApplLimit reads the same validated
+bound. Heap limit changes/zone restructuring are still unsupported; foreign
+limit values fail before mutation rather than pretending to grow the allocator.
+
+All 187 tests pass (159 default, 28 optional GPU/MPW), MPW fixtures rebuild and
+strict all-target Clippy passes. Checks cover cross-CPU identical environment
+records, version errors, read-only output, full-heap allocations, preserved
+allocated bytes, repeatable maximize calls and inconsistent-limit rejection.
+The compiled fixture calls SysEnvirons for supported/bad/newer versions, reads
+low-memory heap limits, maximizes, queries GetApplLimit and uses a live pointer
+across another maximize on both CPUs. Existing loader, CFM, resource, graphics
+and application fixtures still pass with eager heap mapping.
+
+Fresh original startup traces now pass the preceding stops. Super Mines reaches
+EventAvail ($A971), PC $0100C458, index 13824. Centaurian passes MaxApplZone and
+reaches SetRect ($A8A7), PC $0100061C, index 104601. No original application
+interaction acceptance is claimed. Next: shared rectangle mutation and Toolbox
+event availability with proper window/event integration, then further application
+resource/menu/dialog slices. Native windows/cursor presentation, original PPC
+strong sound imports and real Mixed Mode remain unfinished. The full rebuild
+goal stays active.

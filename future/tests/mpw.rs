@@ -523,3 +523,27 @@ fn compiled_dialog_startup_and_parameter_strings_complete_on_both_cpus() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW environment fixture"]
+fn compiled_environment_and_maximum_heap_contracts_complete_on_both_cpus() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("environment.68k.rsrc")).unwrap();
+    let pef = std::fs::read(root.join("environment.ppc")).unwrap();
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, None).unwrap(),
+    ] {
+        assert_eq!(app.runtime.advance(20000).unwrap(), Stop::Exit(0));
+        assert_eq!(
+            &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],
+            &[
+                Call::PostEvent {
+                    what: 7,
+                    message: 0x600d
+                },
+                Call::Exit(0)
+            ]
+        );
+    }
+}

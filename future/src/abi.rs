@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    SysEnvirons,
+    MaxApplZone,
+    GetApplLimit,
     BlockMove,
     InitDialogs,
     ParamText,
@@ -178,6 +181,9 @@ impl Abi {
             b"TEIdle" => Some(Service::TEIdle),
             b"TEActivate" => Some(Service::TEActivate(true)),
             b"TEDeactivate" => Some(Service::TEActivate(false)),
+            b"SysEnvirons" => Some(Service::SysEnvirons),
+            b"MaxApplZone" => Some(Service::MaxApplZone),
+            b"GetApplLimit" => Some(Service::GetApplLimit),
             b"BlockMove" | b"BlockMoveData" => Some(Service::BlockMove),
             b"InitDialogs" => Some(Service::InitDialogs),
             b"ParamText" => Some(Service::ParamText),
@@ -507,6 +513,14 @@ impl Abi {
                     Reply::None,
                 ))
             }
+            0xa090 => Ok((
+                Call::SysEnvirons {
+                    version: c.dar[0] as i16,
+                    record: GuestPtr(c.dar[8]),
+                },
+                Reply::M68kD0,
+            )),
+            0xa063 => Ok((Call::MaxApplZone, Reply::M68kD0)),
             0xa02e | 0xa22e => Ok((
                 Call::MoveBytes {
                     source: GuestPtr(c.dar[8]),
@@ -1081,6 +1095,12 @@ impl Abi {
                 active,
             }),
             Service::TEIdle => Call::TextEdit(crate::textedit::Op::Idle(c.gpr[3])),
+            Service::SysEnvirons => Call::SysEnvirons {
+                version: c.gpr[3] as i16,
+                record: GuestPtr(c.gpr[4]),
+            },
+            Service::MaxApplZone => Call::MaxApplZone,
+            Service::GetApplLimit => Call::GetApplLimit,
             Service::BlockMove => Call::MoveBytes {
                 source: GuestPtr(c.gpr[3]),
                 destination: GuestPtr(c.gpr[4]),
@@ -1259,7 +1279,8 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Empty))
                 || matches!(
                     service,
-                    Service::BlockMove
+                    Service::MaxApplZone
+                        | Service::BlockMove
                         | Service::InitDialogs
                         | Service::ParamText
                         | Service::GetParamText

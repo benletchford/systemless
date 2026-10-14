@@ -122,6 +122,7 @@ pub(super) fn finish(
     )?;
     let mut runtime = Runtime::new(memory, cpu, None);
     runtime.abi = abi;
+    runtime.process.initialize_heap(&mut runtime.memory)?;
     runtime.process.install_application_resources(resources);
     Ok(LoadedApplication {
         runtime,

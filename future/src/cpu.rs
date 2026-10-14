@@ -13,6 +13,12 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    SysEnvirons {
+        version: i16,
+        record: GuestPtr,
+    },
+    MaxApplZone,
+    GetApplLimit,
     MoveBytes {
         source: GuestPtr,
         destination: GuestPtr,

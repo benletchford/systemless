@@ -253,3 +253,9 @@ which executes the shared indexed LMGetDAStrings and BlockMoveData routes. That
 object is PPC-only; 68K uses a guest loop over the documented low-memory
 StringHandles. Callback invocation, alert sound and dialog rendering are not
 exercised. The optional test requires the MPW build but no GPU.
+
+`environment.c` checks the shared virtual SysEnvRec, supported/nonpositive/newer
+version behavior, actual low-memory application heap bounds, MaxApplZone and
+GetApplLimit, then preserves a pointer's bytes across another maximize. Both
+compiled CPUs post the success marker without a GPU. The profile's capability
+flags describe the current rebuild; no complete System 7 support is implied.

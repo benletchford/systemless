@@ -266,6 +266,24 @@ impl Runtime {
                             })?;
                             crate::text::move_to(&mut self.memory, ports, h, v)?;
                         }
+                        Call::SysEnvirons { version, record } => {
+                            let result =
+                                crate::environment::query(&mut self.memory, version, record)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                result as i32 as u32,
+                                0,
+                            )?;
+                        }
+                        Call::MaxApplZone => {
+                            self.process.maximize_heap(&mut self.memory)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::GetApplLimit => {
+                            let value = self.process.application_limit(&self.memory)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
                         Call::MoveBytes {
                             source,
                             destination,
@@ -850,7 +868,10 @@ impl Runtime {
                     // fields carry operation outputs only, never readback authority.
                     if matches!(
                         call,
-                        Call::Dialog(crate::dialogs::Op::Init(_) | crate::dialogs::Op::Param(_))
+                        Call::MaxApplZone
+                            | Call::Dialog(
+                                crate::dialogs::Op::Init(_) | crate::dialogs::Op::Param(_)
+                            )
                             | Call::Menu(_)
                             | Call::TextEdit(_)
                             | Call::TextDraw(_)
@@ -906,6 +927,9 @@ impl Runtime {
                         | Call::NewWindow(_)
                         | Call::Window { .. }
                         | Call::TextState { .. }
+                        | Call::SysEnvirons { .. }
+                        | Call::MaxApplZone
+                        | Call::GetApplLimit
                         | Call::MoveBytes { .. }
                         | Call::Dialog(_)
                         | Call::Cursor(_)

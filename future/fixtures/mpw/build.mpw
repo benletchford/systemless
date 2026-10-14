@@ -45,3 +45,7 @@ SC -sym off dialogs.c -o dialogs.68k.o
 Link -d -t 'APPL' -c 'FUTR' dialogs.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o dialogs.68k
 MrC -sym off -opt off dialogs.c -o dialogs.ppc.o
 PPCLink dialogs.ppc.o "{PPCLibraries}"CarbonAccessors.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o dialogs.ppc
+SC -sym off environment.c -o environment.68k.o
+Link -d -t 'APPL' -c 'FUTR' environment.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o environment.68k
+MrC -sym off -opt off environment.c -o environment.ppc.o
+PPCLink environment.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o environment.ppc
