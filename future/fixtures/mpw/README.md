@@ -275,3 +275,7 @@ The environment fixture now creates a parent and nested directory through
 PBDirCreateSync, queries their IDs/parent/count/name, rejects duplicate creation
 and resolves a colon path on both compiled CPU targets. This modifies only the
 process-local virtual catalog.
+
+The environment fixture checks PBHGetFInfoSync's application metadata, flat
+PBGetFInfoSync's root lookup, and missing named files inside a created directory.
+Both compiled CPU targets use MPW's HParamBlockRec layout.

@@ -166,6 +166,10 @@ pub enum Call {
     },
     FcbInfo(GuestPtr),
     CatalogInfo(GuestPtr),
+    FileInfo {
+        pointer: GuestPtr,
+        hierarchical: bool,
+    },
     CreateDirectory(GuestPtr),
     Draw(GuestPtr),
     Callback(GuestPtr),

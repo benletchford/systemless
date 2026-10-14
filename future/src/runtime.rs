@@ -871,6 +871,22 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::FileInfo {
+                            pointer,
+                            hierarchical,
+                        } => {
+                            let error = self.process.files.file_info(
+                                &mut self.memory,
+                                pointer,
+                                hierarchical,
+                            )?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::CatalogInfo(pointer) => {
                             let error =
                                 self.process.files.catalog_info(&mut self.memory, pointer)?;
@@ -1015,6 +1031,7 @@ impl Runtime {
                         | Call::CurResFile
                         | Call::GetNamedResource { .. }
                         | Call::CreateDirectory(_)
+                        | Call::FileInfo { .. }
                         | Call::CatalogInfo(_)
                         | Call::FcbInfo(_) => {
                             return Err(Error::Cpu("Macintosh service on fixture route".into()))

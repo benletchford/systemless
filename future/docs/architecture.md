@@ -927,3 +927,13 @@ calendar clock and parent modification dates are not yet implemented.
 Directories are in-memory process state: application bytes remain read-only,
 file creation/write/delete, persistence, working-directory references and
 MacRoman folding remain unfinished.
+
+PBGetFInfoSync and PBHGetFInfoSync share the catalog's application metadata
+projection, with their own 80-byte guest parameter layout. Hierarchical lookup
+uses ioDirID for parent/indexed queries; flat lookup selects the root. Queries
+return first open reference, open-fork/locked attributes, logical/physical sizes
+and file ID. Named closed-file queries preserve caller pathnames; indexed/open
+queries return the leaf name. Parameter and optional name output are validated
+together. These query only the loaded application; writable file creation and
+additional virtual files remain unfinished. Finder metadata/dates still default
+to zero.

@@ -202,6 +202,96 @@ impl Files {
         memory.write(pointer, &pb)?;
         Ok(error)
     }
+    fn fill_application_info(&self, pb: &mut [u8]) {
+        let reference = self.open.keys().next().copied().unwrap_or(0);
+        pb[24..26].copy_from_slice(&reference.to_be_bytes());
+        pb[30] = self.open.values().fold(1, |flags, fork| {
+            flags
+                | 0x80
+                | match fork.kind {
+                    Fork::Resource => 4,
+                    Fork::Data => 8,
+                }
+        });
+        pb[32..48].fill(0);
+        pb[48..52].copy_from_slice(&16u32.to_be_bytes());
+        let data = self.data.len() as u32;
+        let resource = self.resource.as_ref().map_or(0, |bytes| bytes.len() as u32);
+        pb[52..54].copy_from_slice(&(if data == 0 { 0u16 } else { 1 }).to_be_bytes());
+        pb[62..64].copy_from_slice(
+            &(if resource == 0 {
+                0u16
+            } else {
+                1 + data.div_ceil(4096) as u16
+            })
+            .to_be_bytes(),
+        );
+        for (at, value) in [
+            (54, data),
+            (58, data.div_ceil(4096) * 4096),
+            (64, resource),
+            (68, resource.div_ceil(4096) * 4096),
+        ] {
+            pb[at..at + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        pb[72..80].fill(0);
+    }
+    /// PB[H]GetFInfo synchronous projection of the same application fork state.
+    pub fn file_info(
+        &self,
+        memory: &mut Memory,
+        pointer: GuestPtr,
+        hierarchical: bool,
+    ) -> Result<i16> {
+        let header = memory.read(pointer, 52)?.to_vec();
+        let volume = i16::from_be_bytes(header[22..24].try_into().unwrap());
+        let index = i16::from_be_bytes(header[28..30].try_into().unwrap());
+        let parent = if hierarchical {
+            u32::from_be_bytes(header[48..52].try_into().unwrap())
+        } else {
+            2
+        };
+        let parent = if parent == 0 { 2 } else { parent };
+        let name_ptr = GuestPtr(u32::from_be_bytes(header[18..22].try_into().unwrap()));
+        let selected = if !matches!(volume, -1..=1) {
+            Err(-35)
+        } else if self.name.is_empty() {
+            Err(-43)
+        } else if index > 0 {
+            if !self.directory_exists(parent) {
+                Err(-120)
+            } else if parent == 2 && index == 1 {
+                Ok(16)
+            } else {
+                Err(-43)
+            }
+        } else {
+            self.path(&Self::name_input(memory, name_ptr)?, parent)
+                .and_then(|id| if id == 16 { Ok(id) } else { Err(-43) })
+        };
+        let error: i16 = selected.err().unwrap_or(0);
+        memory.validate_write(GuestPtr(pointer.0 + 12), 6)?;
+        if error != 0 {
+            memory.write(GuestPtr(pointer.0 + 12), &[0; 4])?;
+            memory.write(GuestPtr(pointer.0 + 16), &error.to_be_bytes())?;
+            return Ok(error);
+        }
+        let mut pb = memory.read(pointer, 80)?.to_vec();
+        memory.validate_write(pointer, 80)?;
+        let output_name = name_ptr.0 != 0 && (index > 0 || !self.open.is_empty());
+        let mut name = vec![self.name.len() as u8];
+        name.extend(&self.name);
+        if output_name {
+            memory.validate_write(name_ptr, name.len())?;
+        }
+        pb[12..18].fill(0);
+        self.fill_application_info(&mut pb);
+        if output_name {
+            memory.write(name_ptr, &name)?;
+        }
+        memory.write(pointer, &pb)?;
+        Ok(0)
+    }
     /// Catalog queries for the application and the process-local directory tree.
     pub fn catalog_info(&self, memory: &mut Memory, pointer: GuestPtr) -> Result<i16> {
         let header = memory.read(pointer, 52)?.to_vec();
@@ -288,26 +378,8 @@ impl Files {
                 + usize::from(node == 2);
             pb[52..54].copy_from_slice(&(children as u16).to_be_bytes());
         } else {
-            let data = self.data.len() as u32;
-            let resource = self.resource.as_ref().map_or(0, |bytes| bytes.len() as u32);
-            pb[52..54].copy_from_slice(&(if data == 0 { 0u16 } else { 1 }).to_be_bytes());
-            pb[62..64].copy_from_slice(
-                &(if resource == 0 {
-                    0u16
-                } else {
-                    1 + data.div_ceil(4096) as u16
-                })
-                .to_be_bytes(),
-            );
-            for (at, value) in [
-                (54, data),
-                (58, data.div_ceil(4096) * 4096),
-                (64, resource),
-                (68, resource.div_ceil(4096) * 4096),
-                (104, 4096),
-            ] {
-                pb[at..at + 4].copy_from_slice(&value.to_be_bytes());
-            }
+            self.fill_application_info(&mut pb);
+            pb[104..108].copy_from_slice(&4096u32.to_be_bytes());
         }
         pb[72..100].fill(0); // deterministic dates and extended Finder info.
         let parent = if node == 2 {

@@ -11,6 +11,7 @@ int main(void) {
     CInfoPBRec catalog;
     Str255 name;
     long folder;
+    HParamBlockRec file;
     if (SysEnvirons(1,&world) || world.environsVersion!=2 || world.machineType!=envMachUnknown || world.processor!=env68020 || world.systemVersion!=0x0700 || world.hasFPU || world.hasColorQD || world.keyBoardType!=envUnknownKbd || world.atDrvrVersNum || world.sysVRefNum) return 1;
     world.environsVersion=123;
     if (SysEnvirons(0,&world)!=envBadVers || world.environsVersion!=123) return 2;
@@ -40,5 +41,11 @@ int main(void) {
     if (PBGetCatInfoSync(&catalog) || catalog.dirInfo.ioDrNmFls!=1) return 15;
     catalog.dirInfo.ioNamePtr="\p:Prefs:Nested"; catalog.dirInfo.ioFDirIndex=0;
     if (PBGetCatInfoSync(&catalog) || catalog.dirInfo.ioDrParID!=folder) return 16;
+    file.fileParam.ioNamePtr=name; file.fileParam.ioVRefNum=0; file.fileParam.ioFDirIndex=1; file.fileParam.ioDirID=2;
+    if (PBHGetFInfoSync(&file) || file.fileParam.ioResult || file.fileParam.ioDirID!=16 || !(file.fileParam.ioFlAttrib&1) || (!file.fileParam.ioFlLgLen && !file.fileParam.ioFlRLgLen)) return 17;
+    file.fileParam.ioDirID=folder;
+    if (PBGetFInfoSync((ParmBlkPtr)&file)) return 18;
+    file.fileParam.ioNamePtr="\pMissing"; file.fileParam.ioFDirIndex=0; file.fileParam.ioDirID=folder;
+    if (PBHGetFInfoSync(&file)!=fnfErr || file.fileParam.ioResult!=fnfErr) return 19;
     PostEvent(diskEvt,0x600d); ExitToShell(); return 0;
 }

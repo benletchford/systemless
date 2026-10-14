@@ -1856,3 +1856,37 @@ strong sound imports remain outstanding, along with native presentation and real
 Mixed Mode. Next: shared file metadata/access and mutable fork operations, then
 further application-driven menu/dialog/graphics slices. Full rebuild goal stays
 active.
+
+### Shared file-information queries
+
+PBGetFInfoSync and PBHGetFInfoSync/native $A00C and $A20C now use one File
+Manager service and the same application fork metadata projection as catalog
+queries. The 80-byte parameter block returns first open reference, file ID,
+locked/open-fork attributes, logical/physical fork lengths and allocation
+blocks. Hierarchical indexed queries honor the parent directory; flat calls
+select the root. Named missing files and invalid volume/parent errors are
+reported via ioResult and the CPU ABI. Synchronous completion is cleared.
+
+Named queries preserve the caller pathname when the file is closed, accepting
+a read-only input string. Indexed/open-file queries return the leaf name.
+Both guest destinations are checked before mutation, and bytes after the
+80-byte record remain untouched. Contracts follow MPW Files.h and Apple's
+[File Manager reference](https://leopard-adc.pepas.com/documentation/mac/pdf/Files/File_Manager.pdf),
+pp. 2-194–2-195. Finder metadata and dates remain zero defaults; additional
+virtual files, mutable forks and asynchronous requests remain unfinished.
+
+All 196 tests pass (168 default, 28 optional GPU/MPW), strict all-target Clippy
+passes and MPW fixtures rebuild. Focused reruns also pass with the rebuilt
+compiled fixture and closed-file pathname assertion. Generated real-CPU guests
+exercise both flat/hierarchical imports/traps with exact fork values; boundary
+tests cover error outputs, directory separation, atomic read-only destination
+failure and unchanged neighboring bytes. Both compiled CPU guests query
+application metadata and missing files in a created directory.
+
+Super Mines now reaches resource-defined GetNewWindow ($A9BD), PC $01010D04,
+trace index 14410. This is bounded startup evidence, not original application
+interaction acceptance. Centaurian 68K still needs GetGDevice; original PPC
+sound imports, native presentation and real Mixed Mode remain unfinished. Next:
+load WIND resource definitions into real shared window creation/graphics, then
+continue application-driven file, menu/dialog and graphics slices. Full rebuild
+goal remains active.

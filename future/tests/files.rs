@@ -324,3 +324,132 @@ fn directory_paths_duplicates_errors_and_failed_outputs_preserve_catalog() {
     assert_eq!(files.catalog_info(m, GuestPtr(PB)).unwrap(), 0);
     assert_eq!(m.u16(GuestPtr(PB + 52)).unwrap(), 1);
 }
+
+#[test]
+fn file_info_reaches_shared_fork_metadata_through_both_cpu_abis() {
+    for hierarchical in [false, true] {
+        let opcode = if hierarchical { 0xa20c } else { 0xa00c };
+        let fork = code_program(&[0x207c, 0x5000, 0, opcode, 0xa9f4]);
+        let mut m = LoadedApplication::code(&fork).unwrap();
+        let symbol = if hierarchical {
+            b"PBHGetFInfoSync".as_slice()
+        } else {
+            b"PBGetFInfoSync".as_slice()
+        };
+        let f = pef_program(
+            &[
+                0x7fc802a6, 0x3c605000, 0x81820008, 0x800c0000, 0x804c0004, 0x7c0903a6, 0x4e800421,
+                0x7fc803a6, 0x4e800020,
+            ],
+            &[symbol],
+            16,
+        );
+        let mut p = LoadedApplication::pef(&f.bytes, Some(&fork)).unwrap();
+        for app in [&mut m, &mut p] {
+            app.runtime.process.files.set_name(b"Probe").unwrap();
+            setup(app, 0, 0);
+            app.runtime
+                .memory
+                .write(GuestPtr(PB + 128), b"\x06:pRoBe")
+                .unwrap();
+            app.runtime
+                .memory
+                .write(GuestPtr(PB + 80), &[0xa5; 28])
+                .unwrap();
+            let expected_data = app
+                .runtime
+                .process
+                .files
+                .fork_bytes(Fork::Data)
+                .unwrap()
+                .len() as u32;
+            assert!(matches!(
+                app.runtime.advance(100).unwrap(),
+                Stop::Exit(0) | Stop::Returned(0)
+            ));
+            let mem = &app.runtime.memory;
+            assert_eq!(mem.u16(GuestPtr(PB + 16)).unwrap(), 0);
+            assert_eq!(mem.u32(GuestPtr(PB + 48)).unwrap(), 16);
+            assert_eq!(mem.u32(GuestPtr(PB + 54)).unwrap(), expected_data);
+            assert_eq!(mem.u32(GuestPtr(PB + 64)).unwrap(), fork.len() as u32);
+            assert_eq!(mem.read(GuestPtr(PB + 30), 1).unwrap(), [0x85]);
+            assert_eq!(mem.read(GuestPtr(PB + 128), 6).unwrap(), b"\x05Probe");
+            assert_eq!(mem.read(GuestPtr(PB + 80), 28).unwrap(), [0xa5; 28]);
+        }
+    }
+}
+
+#[test]
+fn file_info_checks_directory_lookup_index_errors_and_atomic_outputs() {
+    let mut app = LoadedApplication::code(&code()).unwrap();
+    setup(&mut app, 0, 0);
+    let (files, m) = (&mut app.runtime.process.files, &mut app.runtime.memory);
+    m.write(GuestPtr(PB + 128), b"\x05Prefs").unwrap();
+    assert_eq!(files.create_directory(m, GuestPtr(PB)).unwrap(), 0);
+    m.write(GuestPtr(PB + 128), b"\x07Missing").unwrap();
+    assert_eq!(files.file_info(m, GuestPtr(PB), true).unwrap(), -43);
+    m.write(GuestPtr(PB + 28), &1u16.to_be_bytes()).unwrap();
+    assert_eq!(files.file_info(m, GuestPtr(PB), true).unwrap(), -43);
+    // Flat indexed lookup ignores the HFS directory field.
+    assert_eq!(files.file_info(m, GuestPtr(PB), false).unwrap(), 0);
+    for (volume, index, dir, error) in [(99, 1, 2, -35i16), (0, 1, 999, -120), (0, 2, 2, -43)] {
+        m.write(GuestPtr(PB + 22), &(volume as i16).to_be_bytes())
+            .unwrap();
+        m.write(GuestPtr(PB + 28), &(index as i16).to_be_bytes())
+            .unwrap();
+        m.write(GuestPtr(PB + 48), &(dir as u32).to_be_bytes())
+            .unwrap();
+        let mut before = m.read(GuestPtr(PB), 80).unwrap().to_vec();
+        before[12..16].fill(0);
+        w16(&mut before, 16, error as u16);
+        assert_eq!(files.file_info(m, GuestPtr(PB), true).unwrap(), error);
+        assert_eq!(m.read(GuestPtr(PB), 80).unwrap(), before);
+    }
+    m.map(GuestPtr(PB + 512), vec![0; 32], Permissions::RX)
+        .unwrap();
+    m.write(GuestPtr(PB + 22), &0u16.to_be_bytes()).unwrap();
+    m.write(GuestPtr(PB + 28), &1u16.to_be_bytes()).unwrap();
+    m.write(GuestPtr(PB + 48), &2u32.to_be_bytes()).unwrap();
+    m.write(GuestPtr(PB + 18), &(PB + 512).to_be_bytes())
+        .unwrap();
+    let before = m.read(GuestPtr(PB), 80).unwrap().to_vec();
+    assert!(files.file_info(m, GuestPtr(PB), true).is_err());
+    assert_eq!(m.read(GuestPtr(PB), 80).unwrap(), before);
+    // Data-only PEF has no open access path: named lookup retains the full
+    // caller pathname and accepts a read-only input string.
+    let image = pef();
+    let mut closed = LoadedApplication::pef(&image.bytes, None).unwrap();
+    setup(&mut closed, 0, 0);
+    closed
+        .runtime
+        .memory
+        .map(
+            GuestPtr(PB + 512),
+            b"\x1eApplication Volume:Application".to_vec(),
+            Permissions::RX,
+        )
+        .unwrap();
+    closed
+        .runtime
+        .memory
+        .write(GuestPtr(PB + 18), &(PB + 512).to_be_bytes())
+        .unwrap();
+    assert_eq!(
+        closed
+            .runtime
+            .process
+            .files
+            .file_info(&mut closed.runtime.memory, GuestPtr(PB), true)
+            .unwrap(),
+        0
+    );
+    assert_eq!(closed.runtime.memory.u16(GuestPtr(PB + 24)).unwrap(), 0);
+    assert_eq!(
+        closed.runtime.memory.read(GuestPtr(PB + 30), 1).unwrap(),
+        [1]
+    );
+    assert_eq!(
+        closed.runtime.memory.read(GuestPtr(PB + 512), 31).unwrap(),
+        b"\x1eApplication Volume:Application"
+    );
+}

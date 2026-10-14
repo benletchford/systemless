@@ -106,6 +106,7 @@ pub enum Service {
     Get1NamedResource,
     FcbInfo,
     CatalogInfo,
+    FileInfo(bool),
     CreateDirectory,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,6 +297,8 @@ impl Abi {
             b"MemError" => Some(Service::MemError),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
             b"PBGetCatInfoSync" => Some(Service::CatalogInfo),
+            b"PBGetFInfoSync" => Some(Service::FileInfo(false)),
+            b"PBHGetFInfoSync" => Some(Service::FileInfo(true)),
             b"PBDirCreateSync" => Some(Service::CreateDirectory),
             b"GetNamedResource" => Some(Service::GetNamedResource),
             b"Get1NamedResource" => Some(Service::Get1NamedResource),
@@ -1064,6 +1067,13 @@ impl Abi {
                     Reply::StackLong(GuestPtr(result)),
                 ))
             }
+            0xa00c | 0xa20c => Ok((
+                Call::FileInfo {
+                    pointer: GuestPtr(c.dar[8]),
+                    hierarchical: opcode == 0xa20c,
+                },
+                Reply::M68kFileError,
+            )),
             0xa260 if c.dar[0] as u16 == 6 => Ok((
                 Call::CreateDirectory(GuestPtr(c.dar[8])),
                 Reply::M68kFileError,
@@ -1394,6 +1404,10 @@ impl Abi {
             },
             Service::FcbInfo => Call::FcbInfo(GuestPtr(c.gpr[3])),
             Service::CatalogInfo => Call::CatalogInfo(GuestPtr(c.gpr[3])),
+            Service::FileInfo(hierarchical) => Call::FileInfo {
+                pointer: GuestPtr(c.gpr[3]),
+                hierarchical,
+            },
             Service::CreateDirectory => Call::CreateDirectory(GuestPtr(c.gpr[3])),
         };
         (
