@@ -15,6 +15,7 @@ OSErr FutureInit(const CFragInitBlock *block) {
 int main(void) {
     Handle resource;
     Handle allocated;
+    Handle detached, reloaded;
     Ptr original;
     Ptr fixed, blocker;
     long symbolCount;
@@ -65,6 +66,17 @@ int main(void) {
     if (resource == 0 || **resource != 1 || GetHandleSize(resource) != 3) return 5;
     ReleaseResource(resource);
     if (ResError() != noErr) return 6;
+    detached = GetResource('DATA',128); if (!detached) return 38;
+    original = *detached; **detached = 55;
+    DetachResource(detached);
+    if (ResError() || *detached!=original || **detached!=55) return 39;
+    reloaded = GetResource('DATA',128);
+    if (!reloaded || reloaded==detached || **reloaded!=1) return 40;
+    ReleaseResource(detached);
+    if (ResError()!=resNotFound || **detached!=55) return 41;
+    DetachResource(detached); if (ResError()!=resNotFound) return 42;
+    DisposeHandle(detached); if (MemError() || **reloaded!=1) return 43;
+    ReleaseResource(reloaded); if (ResError()) return 44;
     fixed = NewPtrClear(12);
     if (!fixed || MemError() || GetPtrSize(fixed)!=12 || fixed[0] || fixed[11]) return 31;
     fixed[0]=42; fixed[11]=17;

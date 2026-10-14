@@ -955,3 +955,13 @@ Manager port and clip state are restored after chrome drawing. Visible document
 chrome is repainted when creation/closure changes highlighting, respecting
 z-order occlusion. Activation events, mouse tracking, dragging, resizing, zoom,
 custom WDEF execution, AuxWin records and resource positioning remain unfinished.
+
+DetachResource severs the Resource Manager cache association after validating
+the owned master pointer. It preserves master/data addresses, payload, size,
+lock and allocator ownership; the caller now owns an ordinary handle. Later
+lookup allocates an independent handle from original fork bytes. No clone or
+allocation is required because resource payloads were never shared between
+masters. resChanged blocks detachment with resAttrErr; missing/ordinary/already
+detached handles return resNotFound. MemErr is preserved and ResErr is projected
+through low-memory state on both CPU service paths. Resource-file close,
+AddResource, mutable resource maps and purge state APIs remain unfinished.

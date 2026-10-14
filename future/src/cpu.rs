@@ -143,6 +143,7 @@ pub enum Call {
         locked: bool,
     },
     ReleaseResource(u32),
+    DetachResource(u32),
     Region {
         op: crate::regions::Op,
         a: u32,

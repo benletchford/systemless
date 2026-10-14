@@ -284,3 +284,8 @@ windows.r supplies a visible noGrowDocProc WIND resource. The paired compiled
 window test checks missing resource NIL, resource-driven creation, bounds,
 refCon, goAway flag, and disposal in addition to its plain-window/update cases.
 The PPC loader receives the same compiled resource fork as the CODE fixture.
+
+The resource/memory probe detaches a mutated DATA handle, checks unchanged
+payload identity, reloads original bytes under a new handle, rejects Resource
+Manager operations on the detached handle, then disposes it without affecting
+the reloaded resource. Both MPW CPU targets exercise this lifetime.

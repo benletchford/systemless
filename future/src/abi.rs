@@ -91,6 +91,7 @@ pub enum Service {
     HLock,
     HUnlock,
     ReleaseResource,
+    DetachResource,
     GetHandleSize,
     SetHandleSize,
     GetResource,
@@ -287,6 +288,7 @@ impl Abi {
             b"SetHandleSize" => Some(Service::SetHandleSize),
             b"GetHandleSize" => Some(Service::GetHandleSize),
             b"ReleaseResource" => Some(Service::ReleaseResource),
+            b"DetachResource" => Some(Service::DetachResource),
             b"SetSoundVol" => Some(Service::SetSoundVol),
             b"GetSoundVol" => Some(Service::GetSoundVol),
             b"PBControlSync" => Some(Service::PBControlSync),
@@ -1048,12 +1050,19 @@ impl Abi {
                 Reply::M68kError,
             )),
             0xa025 => Ok((Call::HandleSize(c.dar[8]), Reply::M68kD0)),
-            0xa9a3 => {
+            0xa9a3 | 0xa992 => {
                 let handle = memory.u32(GuestPtr(sp))?;
                 c.dar[15] = sp
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("resource ABI stack overflow".into()))?;
-                Ok((Call::ReleaseResource(handle), Reply::None))
+                Ok((
+                    if opcode == 0xa992 {
+                        Call::DetachResource(handle)
+                    } else {
+                        Call::ReleaseResource(handle)
+                    },
+                    Reply::None,
+                ))
             }
             0xa9b8 | 0xa9b9 => {
                 let id = memory.u16(GuestPtr(sp))? as i16;
@@ -1389,6 +1398,7 @@ impl Abi {
                 clear: service == Service::NewHandleClear,
             },
             Service::ReleaseResource => Call::ReleaseResource(c.gpr[3]),
+            Service::DetachResource => Call::DetachResource(c.gpr[3]),
             Service::HLock | Service::HUnlock => Call::SetHandleLock {
                 handle: c.gpr[3],
                 locked: service == Service::HLock,
@@ -1486,6 +1496,7 @@ impl Abi {
                         | Service::SetPointerSize
                         | Service::DisposePointer
                         | Service::SetHandleSize
+                        | Service::DetachResource
                         | Service::ReleaseResource
                         | Service::SetSoundVol
                         | Service::GetSoundVol

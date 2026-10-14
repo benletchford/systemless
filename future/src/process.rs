@@ -405,6 +405,29 @@ impl Process {
         }
         self.dispose_handle(memory, handle)
     }
+    /// DetachResource retains the owned master/data blocks while severing
+    /// resource identity. Changed resources remain attached with resAttrErr.
+    pub fn detach_resource(&mut self, memory: &Memory, handle: u32) -> Result<()> {
+        self.res_error = 0;
+        let Some((&key, _)) = self.resource_handles.iter().find(|(_, h)| **h == handle) else {
+            self.res_error = -192;
+            return Ok(());
+        };
+        if self
+            .resources
+            .get(key.0, key.1)
+            .is_some_and(|r| r.attributes & 2 != 0)
+        {
+            self.res_error = -198;
+            return Ok(());
+        }
+        let old_error = self.mem_error;
+        let checked = self.handle_size(memory, handle);
+        self.mem_error = old_error;
+        checked?;
+        self.resource_handles.remove(&key);
+        Ok(())
+    }
     pub fn get_named_resource(
         &mut self,
         memory: &mut Memory,

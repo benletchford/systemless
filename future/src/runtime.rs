@@ -837,6 +837,10 @@ impl Runtime {
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
                         }
+                        Call::DetachResource(handle) => {
+                            self.process.detach_resource(&self.memory, handle)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::ReleaseResource(handle) => {
                             self.process.release_resource(&mut self.memory, handle)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
@@ -974,6 +978,7 @@ impl Runtime {
                             | Call::FontInfo(_)
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
+                            | Call::DetachResource(_)
                             | Call::ReleaseResource(_)
                     ) {
                         self.memory
@@ -1041,6 +1046,7 @@ impl Runtime {
                         | Call::StripAddress(_)
                         | Call::MemError
                         | Call::ResError
+                        | Call::DetachResource(_)
                         | Call::ReleaseResource(_)
                         | Call::CurResFile
                         | Call::GetNamedResource { .. }

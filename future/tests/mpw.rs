@@ -47,13 +47,20 @@ fn assert_resource_path(calls: &[Call]) {
         .enumerate()
         .filter(|(_, c)| matches!(c, Call::ReleaseResource(_)))
         .collect();
-    assert_eq!(releases.len(), 3);
+    assert_eq!(releases.len(), 5);
     assert!(allocate < releases[0].0 && releases[0].0 < dispose);
     assert!(dispose < releases[1].0 && releases[1].0 < releases[2].0);
     assert_eq!(
         calls
             .iter()
             .filter(|c| matches!(c, Call::GetResource {kind, id: 128} if kind == b"DATA"))
+            .count(),
+        4
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| matches!(c, Call::DetachResource(_)))
             .count(),
         2
     );

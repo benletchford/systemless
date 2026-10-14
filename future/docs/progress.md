@@ -1929,3 +1929,35 @@ imports and real Mixed Mode remain unfinished; native presentation is still
 unverified. Centaurian 68K remains at GetGDevice. Next: resource detachment and
 application-driven initialization/lifecycle, then further dialog/menu/graphics
 slices. The full rebuild goal stays active.
+
+### Resource detachment and application handle ownership
+
+DetachResource ($A992 / InterfaceLib) now removes the resource-cache association
+while retaining the same owned master pointer, payload address/data, size and
+lock state. Later GetResource calls allocate a separate handle and reload the
+original fork bytes. Detached handles can be resized/unlocked/disposed normally;
+ReleaseResource and repeated DetachResource reject them with resNotFound.
+Detach needs no allocation even when the application heap is full, and preserves
+MemErr. Corrupted guest master pointers fault before identity changes.
+
+Resources marked resChanged remain attached and report resAttrErr (-198),
+following the System 7-era [Resource Manager contract](https://vintageapple.org/inside_r/pdf/More_Macintosh_TB_1993.pdf)
+(p. 1-108) and Apple's [Resource Manager reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Resource_Manager/Reference/reference.html#//apple_ref/c/func/DetachResource).
+This differs from legacy Systemless's zero-error changed-resource handling.
+Its clone-on-detach approach is also unnecessary here: rebuild resource handles
+already own independent allocations. Resource-file close, mutable maps,
+AddResource, dynamic attribute changes and purge-state APIs remain unfinished.
+
+All 201 tests pass (172 default, 29 optional GPU/MPW), strict all-target Clippy
+passes and MPW fixtures rebuild. New checks cover retained locks/addresses/data,
+independent reload/disposal, changed/invalid/repeated detach, corruption rejection,
+full-heap detachment, both native CPU ABIs, void-result preservation and low-memory
+ResErr. Compiled 68K/PPC probes mutate/detach/reload and dispose independent
+handles through real startup/toolbox code.
+
+Super Mines advances through detached resource processing and reaches NewControl
+($A954), PC $0100DBD8, trace index 14973. Its original UI interaction acceptance
+is still absent. Centaurian 68K remains at GetGDevice, original PPC at strong
+sound imports, with native presentation and real Mixed Mode unfinished. Next:
+shared control records, CDEF drawing and dialog/window control lifecycle, then
+continue original application-driven slices. The full rebuild goal stays active.
