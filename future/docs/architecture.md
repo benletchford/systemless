@@ -202,8 +202,21 @@ resolves to the same Unimplemented entry, which faults with dsCoreErr 12 when
 called. Native 68K JSR entries remove the caller return address before ABI decoding,
 then return after the shared service applies its result. OS entries accept the
 original trap word in D1 so modifier variants retain their semantics. PPC CFM
-lookup invokes the same address resolver. This does not yet implement patching,
-daisy chains, or PPC calls through returned 68K pointers (Mixed Mode is pending).
+lookup reads the same process table. Toolbox entries live in canonical guest
+memory at $71100000. SetToolboxTrapAddress ($A647 or the PPC InterfaceLib import)
+replaces the selected ten-bit entry. 68K A-line dispatch enters replacement code
+with its return PC above Pascal arguments; saved built-in veneers remain callable
+for chaining. Auto-pop glue returns to its caller. Patch execution consumes the
+normal instruction budget and permits nested service calls. Invalid targets fault
+when executed, rather than at assignment.
+
+OS trap replacement, come-from patches, legacy low-memory table aliases and
+NSetTrapAddress are not implemented. PPC imports still invoke registered services;
+native PPC patch execution and PPC calls through returned 68K pointers require
+real Mixed Mode. Shared table access does not claim those transitions. Primary
+contracts: [SetToolboxTrapAddress](https://dev.os9.ca/techpubs/mac/OSUtilities/OSUtilities-180.html)
+and [Toolbox dispatch/auto-pop](https://dev.os9.ca/techpubs/mac/pdf/Operating_System_Utilities/Trap_Manager.pdf),
+pages 8-15–8-20.
 
 CurResFile reads the process's installed application-map reference. The loader
 currently creates one map; opening and switching additional maps must be tied to

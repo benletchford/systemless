@@ -27,6 +27,7 @@ pub enum Service {
     SetJump,
     LongJump,
     TickCount,
+    SetToolboxTrapAddress,
     GetOSTrapAddress,
     GetToolboxTrapAddress,
     NGetTrapAddress,
@@ -128,6 +129,9 @@ impl Abi {
             b"FlushEvents" => Some(Service::FlushEvents),
             b"SetEventMask" => Some(Service::SetEventMask),
             b"GetEvQHdr" => Some(Service::GetEvQHdr),
+            b"SetToolboxTrapAddress" | b"SetToolTrapAddress" => {
+                Some(Service::SetToolboxTrapAddress)
+            }
             b"GetOSTrapAddress" => Some(Service::GetOSTrapAddress),
             b"GetToolboxTrapAddress" | b"GetToolTrapAddress" => {
                 Some(Service::GetToolboxTrapAddress)
@@ -313,6 +317,13 @@ impl Abi {
                 Reply::M68kD0,
             )),
 
+            0xa647 => Ok((
+                Call::SetToolboxTrap {
+                    number: c.dar[0] as u16,
+                    target: c.dar[8],
+                },
+                Reply::None,
+            )),
             0xa346 | 0xa746 => Ok((
                 Call::TrapAddress {
                     number: c.dar[0] as u16,
@@ -448,6 +459,10 @@ impl Abi {
                 buffer: GuestPtr(c.gpr[3]),
                 value: c.gpr[4],
             },
+            Service::SetToolboxTrapAddress => Call::SetToolboxTrap {
+                number: c.gpr[4] as u16,
+                target: c.gpr[3],
+            },
             Service::GetOSTrapAddress
             | Service::GetToolboxTrapAddress
             | Service::NGetTrapAddress => Call::TrapAddress {
@@ -496,6 +511,7 @@ impl Abi {
                         | Service::ReleaseResource
                         | Service::DisposeHandle
                         | Service::FlushEvents
+                        | Service::SetToolboxTrapAddress
                         | Service::SetEventMask
                 )
             {

@@ -699,3 +699,23 @@ at PC $010000C0 after 96660 boundaries. D0 selects LoadSeg and A0 points into th
 application, identifying trap replacement as the next loader-related work.
 Super Mines remains at $A8FE. Original application interactions, presentation and
 real Mixed Mode remain unfinished. The rebuild goal remains active.
+
+
+### Shared Toolbox replacement table and patch execution
+
+SetToolboxTrapAddress now updates a guest-resident table used by both ABI lookup
+paths and 68K A-line dispatch. Guest patches run with normal budgets, can call
+other Pascal services and chain to saved built-in veneers. Auto-pop glue and
+restoring original entries preserve stack behavior. Invalid pointers fault on
+execution. A test installs a pointer through PPC and executes that 68K routine
+against the same memory. This is shared state, not a Mixed Mode transition.
+
+All 101 tests passed with optional GPU/MPW checks enabled; an additional nested
+Pascal-service regression then passed with the four-test patch suite. Total: 102
+passing tests. Strict all-target Clippy passes. An initial address collision with
+StdCLib was corrected before verification; the table is now at $71100000.
+Centaurian passes replacement of LoadSeg, UnloadSeg and ExitToShell, then stops at
+HLock ($A029), PC $01000384, after 96700 instruction boundaries. Next: handle locks
+and continued original-app execution. OS replacement, come-from patches, native
+PPC patch dispatch and real Mixed Mode remain unfinished. Rebuild remains active.
+The user approved pushing the accumulated commits to dev/future.

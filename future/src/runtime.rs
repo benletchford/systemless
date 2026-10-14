@@ -303,8 +303,12 @@ impl Runtime {
                         Call::LongJump { buffer, value } => {
                             crate::jump::restore(&mut self.cpu, &self.memory, buffer, value)?
                         }
+                        Call::SetToolboxTrap { number, target } => {
+                            crate::traps::set_toolbox(&mut self.memory, number, target)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::TrapAddress { number, toolbox } => {
-                            let value = crate::traps::address(number, toolbox);
+                            let value = crate::traps::lookup(&self.memory, number, toolbox)?;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
                         }
                         Call::Ticks => {
@@ -455,6 +459,7 @@ impl Runtime {
                         | Call::BreakPoint(_)
                         | Call::SetJump(_)
                         | Call::LongJump { .. }
+                        | Call::SetToolboxTrap { .. }
                         | Call::TrapAddress { .. }
                         | Call::NewHandle { .. }
                         | Call::DisposeHandle(_)

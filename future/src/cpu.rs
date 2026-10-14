@@ -62,6 +62,10 @@ pub enum Call {
         number: u16,
         toolbox: bool,
     },
+    SetToolboxTrap {
+        number: u16,
+        target: u32,
+    },
     NewHandle {
         size: u32,
         clear: bool,
@@ -196,6 +200,33 @@ impl Cpu {
                     StepResult::Ok { .. } => Ok(Outcome::Continue),
                     StepResult::AlineTrap { opcode } => {
                         if !abi.fixture {
+                            let mut opcode = opcode;
+                            if opcode & 0x800 != 0 {
+                                let target = crate::traps::lookup(bus.memory, opcode, true)?;
+                                let auto_pop = opcode & 0x400 != 0;
+                                opcode &= !0x400;
+                                if target != crate::traps::address(opcode, true) {
+                                    // A Toolbox patch receives the return PC above its
+                                    // Pascal arguments. Auto-pop glue already has it.
+                                    bus.memory.fetch(GuestPtr(target), 2, 2)?;
+                                    if !auto_pop {
+                                        let sp = c.dar[15].checked_sub(4).ok_or_else(|| {
+                                            Error::Cpu("trap patch stack underflow".into())
+                                        })?;
+                                        bus.memory.write(GuestPtr(sp), &c.pc.to_be_bytes())?;
+                                        c.dar[15] = sp;
+                                    }
+                                    c.pc = target;
+                                    return Ok(Outcome::Continue);
+                                }
+                                if auto_pop {
+                                    let ret = bus.memory.u32(GuestPtr(c.dar[15]))?;
+                                    c.dar[15] = c.dar[15].checked_add(4).ok_or_else(|| {
+                                        Error::Cpu("auto-pop stack overflow".into())
+                                    })?;
+                                    c.pc = ret;
+                                }
+                            }
                             let (call, reply) = crate::abi::Abi::trap(opcode, c, bus.memory)?;
                             return Ok(Outcome::Macintosh(call, reply));
                         }

@@ -31,9 +31,9 @@ fork path and a maximum instruction count, and prints register/opcode context.
 - Centaurian's 68K path originally faulted writing $010000FC at PC $01000270
   (trace index 92039). The target is a JSR operand containing $00000028; startup
   adds A5 to relocate it to $00400028. Classic CODE now permits writes and these
-  relocations complete. The next stop is unsupported trap $A647 at PC $010000C0
-  (trace index 96660), with D0 selecting LoadSeg ($A9F0) and A0=$01000326.
-  Trap replacement is not yet supported.
+  relocations complete. Startup now also installs Toolbox replacements for
+  LoadSeg ($A9F0), UnloadSeg ($A9F1), and ExitToShell ($A9F4). The next stop is
+  unsupported HLock ($A029) at PC $01000384 (trace index 96700).
 - Centaurian's PPC load rejects the unresolved strong InterfaceLib import
   `SetSoundVol`. No PPC application instruction executes.
 
@@ -48,6 +48,6 @@ Semantics are documented in Apple's [Memory Manager summary](https://dev.os9.ca/
 (global variables, III-227). ReleaseResource now invalidates loaded resource identity and permits reloads;
 its error behavior and changed-resource retention follow Apple’s
 [ReleaseResource contract](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-85.html).
-Next: implement coherent trap replacement for Centaurian’s startup and investigate
-Super Mines’ next Toolbox trap. Full acceptance
+Next: implement handle locking needed by Centaurian and investigate Super Mines’
+next Toolbox trap. Full acceptance
 still requires original application interactions on both architectures.
