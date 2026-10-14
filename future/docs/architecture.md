@@ -348,8 +348,8 @@ The graphics texture is a drawing result, not yet a composed display: drawing
 to an equal-sized offscreen bitmap can replace its contents. `Runtime::refresh_screen` explicitly refreshes from fixed screen memory and
 is independent of the current port and application-modifiable screenBits copy.
 It accepts an immutable guest address space and only updates the GPU texture.
-File-mode graphics runs call it after execution; window integration remains
-pending. Hosts must call it before presenting a loaded application.
+File-mode graphics runs call it after execution. The shared winit host also
+calls it before presenting a loaded application.
 
 Real adapters currently expose InitGraf, OpenPort, SetPort, GetPort,
 SetPortBits, ClipRect, PaintRect, PenMode and PenPat. 68K Pascal parameters are
@@ -362,3 +362,22 @@ Initialization reference: Apple's [InitGraf](https://dev.os9.ca/techpubs/mac/Qui
 Cursor appearance and broader native QuickDraw behavior have not been compared
 against a native Macintosh oracle; the current acceptance is the documented
 record/service subset and explicit test pixels.
+
+
+## Loaded applications in the window host
+
+`--code` and `--pef` accept `--window`, selecting a 512x342 monochrome GPU
+and the existing nearest/aspect-preserving surface pipeline. Each redraw runs
+at most 10,000 CPU instruction boundaries under one total application budget.
+WaitNextEvent returns to the host without spinning; elapsed host time adds
+60 Hz ticks before the next slice, alongside the runtime's existing deterministic
+instruction-derived ticks. This is a host pacing policy, not calibrated Macintosh
+CPU timing. Zero-sized windows suspend drawing/execution until restored.
+
+After guest exit the host retains the final screen until close. Surface retries
+and application execution share the existing paced redraw path. The synthetic
+fixture's palette-click demonstration is disabled for loaded applications;
+real host input translation is still pending. Tests verify scheduler budgets,
+waiting and terminal behavior without a GPU. Bounded surface smoke must still
+prove actual presentation on an available desktop; guest completion alone does
+not count as a successful window smoke.

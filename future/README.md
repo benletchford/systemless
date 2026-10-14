@@ -74,5 +74,8 @@ recording, custom QDProcs, windows and full graphics compatibility remain pendin
 
 For embedding hosts, `Runtime::refresh_screen` updates the display texture from
 canonical screen memory, including direct guest writes. The graphics CLI calls
-it after execution. This is offscreen verification; loaded-application window
-presentation and host input are still pending.
+it after execution. Loaded applications can also use `--window` (which supplies graphics), with
+`--smoke` for bounded presentation/resize verification. Their CPU execution is
+sliced across redraws, waits use elapsed host ticks, and the final screen remains
+until the window closes. Host input delivery remains pending. Window integration
+is implemented but presentation is still unverified on this host.

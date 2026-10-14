@@ -454,3 +454,26 @@ Window presentation is still unverified and loaded apps are not yet integrated
 with the window event loop. Next: connect this refresh boundary to loaded-app
 window presentation and implement port disposal/region services. The complete
 rebuild, real Mixed Mode and original-application acceptance remain unfinished.
+
+
+### Loaded applications in the shared window event loop
+
+CODE/PEF file runs now accept `--window` and optional `--smoke`. Both use the
+same surface/presentation path as the graphics fixture, with a fixed 512x342
+screen refreshed from canonical guest bytes. CPU work is sliced at 10,000
+boundaries per redraw under one total budget; event waits return control to
+the host and use elapsed ticks. Guest exit preserves the final display until
+window close. Fixture-only mouse palette changes are disabled for loaded apps.
+
+All 77 tests and strict Clippy pass. Three new GPU-independent tests cover
+cross-slice budget exhaustion, waiting without spinning followed by timeout,
+and terminal execution on both CPUs. Default tests number 65; twelve optional
+GPU/MPW tests were also enabled and passed locally.
+
+Both compiled drawing applications completed inside the actual window loop:
+68K at 1701 boundaries and PPC at 341. The fixture, 68K and PPC bounded presentation
+smokes still failed to acquire/present/resize within 600 attempts. Window output
+is therefore unverified; guest completion does not count as visible rendering.
+Real host input delivery, window-manager services, real Mixed Mode and original
+application acceptance remain unfinished. Next: host input mapping and the
+port/region/window services needed by representative application interactions.
