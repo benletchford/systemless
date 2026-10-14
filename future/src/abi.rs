@@ -10,6 +10,13 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    BlockMove,
+    InitDialogs,
+    ParamText,
+    GetParamText,
+    GetDAString,
+    SetDialogFont,
+    ErrorSound,
     Cursor(crate::cursor::Op),
     SetCursor,
     Menu(crate::menus::Op),
@@ -171,6 +178,13 @@ impl Abi {
             b"TEIdle" => Some(Service::TEIdle),
             b"TEActivate" => Some(Service::TEActivate(true)),
             b"TEDeactivate" => Some(Service::TEActivate(false)),
+            b"BlockMove" | b"BlockMoveData" => Some(Service::BlockMove),
+            b"InitDialogs" => Some(Service::InitDialogs),
+            b"ParamText" => Some(Service::ParamText),
+            b"LMGetDAStrings" => Some(Service::GetDAString),
+            b"GetParamText" => Some(Service::GetParamText),
+            b"SetDialogFont" | b"SetDAFont" => Some(Service::SetDialogFont),
+            b"ErrorSound" => Some(Service::ErrorSound),
             b"InitCursor" => Some(Service::Cursor(crate::cursor::Op::Init)),
             b"HideCursor" => Some(Service::Cursor(crate::cursor::Op::Hide)),
             b"ShowCursor" => Some(Service::Cursor(crate::cursor::Op::Show)),
@@ -492,6 +506,40 @@ impl Abi {
                     }),
                     Reply::None,
                 ))
+            }
+            0xa02e | 0xa22e => Ok((
+                Call::MoveBytes {
+                    source: GuestPtr(c.dar[8]),
+                    destination: GuestPtr(c.dar[9]),
+                    count: c.dar[0] as i32,
+                },
+                Reply::M68kD0,
+            )),
+            0xa97b | 0xa98c => {
+                let pointer = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("dialog stack overflow".into()))?;
+                Ok((
+                    Call::Dialog(if opcode == 0xa97b {
+                        crate::dialogs::Op::Init(pointer)
+                    } else {
+                        crate::dialogs::Op::Sound(pointer)
+                    }),
+                    Reply::None,
+                ))
+            }
+            0xa98b => {
+                let args = memory.read(GuestPtr(sp), 16)?;
+                let inputs = std::array::from_fn(|i| {
+                    GuestPtr(u32::from_be_bytes(
+                        args[12 - i * 4..16 - i * 4].try_into().unwrap(),
+                    ))
+                });
+                c.dar[15] = sp
+                    .checked_add(16)
+                    .ok_or_else(|| Error::Cpu("dialog stack overflow".into()))?;
+                Ok((Call::Dialog(crate::dialogs::Op::Param(inputs)), Reply::None))
             }
             0xa850 | 0xa852 | 0xa853 | 0xa856 => Ok((
                 Call::Cursor(match opcode {
@@ -1033,6 +1081,23 @@ impl Abi {
                 active,
             }),
             Service::TEIdle => Call::TextEdit(crate::textedit::Op::Idle(c.gpr[3])),
+            Service::BlockMove => Call::MoveBytes {
+                source: GuestPtr(c.gpr[3]),
+                destination: GuestPtr(c.gpr[4]),
+                count: c.gpr[5] as i32,
+            },
+            Service::GetDAString => Call::Dialog(crate::dialogs::Op::Slot(c.gpr[3] as i16)),
+            Service::InitDialogs => Call::Dialog(crate::dialogs::Op::Init(c.gpr[3])),
+            Service::ErrorSound => Call::Dialog(crate::dialogs::Op::Sound(c.gpr[3])),
+            Service::SetDialogFont => Call::Dialog(crate::dialogs::Op::Font(c.gpr[3] as i16)),
+            Service::ParamText | Service::GetParamText => {
+                let pointers = std::array::from_fn(|i| GuestPtr(c.gpr[3 + i]));
+                Call::Dialog(if service == Service::ParamText {
+                    crate::dialogs::Op::Param(pointers)
+                } else {
+                    crate::dialogs::Op::Get(pointers)
+                })
+            }
             Service::Cursor(op) => Call::Cursor(op),
             Service::SetCursor => Call::Cursor(crate::cursor::Op::Set(GuestPtr(c.gpr[3]))),
             Service::Menu(op) => Call::Menu(op),
@@ -1194,7 +1259,13 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Empty))
                 || matches!(
                     service,
-                    Service::Cursor(_)
+                    Service::BlockMove
+                        | Service::InitDialogs
+                        | Service::ParamText
+                        | Service::GetParamText
+                        | Service::SetDialogFont
+                        | Service::ErrorSound
+                        | Service::Cursor(_)
                         | Service::SetCursor
                         | Service::Menu(
                             crate::menus::Op::Init

@@ -848,3 +848,23 @@ guest's requested image or hide level. Direct cursor low-memory compatibility,
 color/animated cursors and shielding remain missing paths. The windowed smoke
 could not complete presentation/resize; offscreen tests do not prove onscreen
 behavior.
+
+
+## Dialog startup and parameter ownership
+
+The shared Dialog Manager retains only owned parameter-handle identities.
+DAStrings and their Pascal payloads are authoritative guest memory, read by
+both service accessors and compiled SDK glue. ParamText freezes all source
+inputs before grouped handle replacement; GetParamText freezes source values
+and validates all outputs before writing. Reset validates globals/ownership,
+clears the public slots, and releases its heap graph. Font, alert-stage, resume
+and sound globals have one guest representation. Procedure values are stored
+without a callback shim; invocation remains part of the real Mixed Mode work.
+NIL DABeeper records the explicit legacy no-sound limit, not an implemented
+standard alert sound. Dialog/window/control construction remains incomplete.
+
+BlockMove/BlockMoveData snapshots source bytes before writing overlapping
+ranges, checks mappings/permissions before mutation, and observes the image
+execution bound. Both CPUs execute from canonical writable code storage; there
+is no private instruction-byte cache to invalidate. Bitmap memory writes use
+the existing GPU synchronization boundary on subsequent drawing/presentation.

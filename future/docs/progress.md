@@ -1652,3 +1652,57 @@ strong-import gap is unchanged. Next: substantive Dialog Manager initialization
 and resource/window/control integration, then menu construction and further
 original startup. Real Mixed Mode and full rebuild acceptance remain incomplete.
 The rebuild goal stays active.
+
+### Shared Dialog Manager startup and parameter StringHandles
+
+InitDialogs ($A97B / InterfaceLib) now publishes ResumeProc ($A8C), resets
+AlertStage ($A9A) and DlgFont ($AFA), and clears DAStrings ($AA0..AAF) while
+releasing its owned parameter handles. ANumber ($A98) stays unchanged. Resume
+and ErrorSound procedure values are stored for future callback routes, not
+invoked during initialization. DABeeper ($A9C) resets to NIL, the explicit legacy
+Systemless no-sound boundary; default alert sound/menu flashing are still absent.
+No fake beeper or resume callback shim is installed.
+
+ParamText ($A98B / InterfaceLib) snapshots non-NIL Pascal inputs before resizing
+and publishes their payloads through one grouped heap transaction. NIL arguments
+preserve existing slots; non-NIL empty strings replace their value. DAStrings
+contain checked, live Pascal StringHandles, with stable existing identities.
+GetParamText reads those same guest payloads and validates all non-NIL outputs
+before writing, including aliasing and read-only failures. SetDialogFont/SetDAFont
+and ErrorSound ($A98C) write the canonical font/sound globals. Replaced slot
+pointers or malformed owned strings explicitly fail rather than being hidden
+by a host text cache. Startup validates its complete write set before mutation.
+
+The SDK's PPC CarbonAccessors.o implements GetParamText using the indexed
+InterfaceLib LMGetDAStrings(short) accessor and BlockMoveData. The shared indexed
+accessor returns the actual guest StringHandle, as declared by LowMem.h; it is
+not the legacy helper's no-argument array-address interpretation. BlockMove and
+BlockMoveData now share checked, overlap-safe guest-memory copying through both
+ABIs. Nonpositive counts are no-ops; positive copies are capped at the 64 MiB
+image execution limit and validate source/destination before mutation. There is
+no separate simulated instruction cache; copying into writable executable
+storage is visible to the next guest instruction. Pixel-memory copies remain
+raw guest writes, synchronized by the existing bitmap drawing/presentation
+boundaries. They are not a CPU graphics renderer.
+
+All 183 tests pass (156 default, 27 optional GPU/MPW), MPW fixtures rebuild and
+strict all-target Clippy passes. Checks cover shared cross-CPU globals/strings,
+MacRoman bytes, source/output aliasing, stable handles, failed locked growth,
+partial allocation cleanup, whole-heap reclamation, read-only output/startup
+atomicity, overlap in both directions, bounded counts and execution of copied
+code. The compiled fixture stores/reads dialog globals, replaces parameters,
+checks empty/reset values and posts its success marker on both CPUs. PPC links
+and executes Apple's CarbonAccessors.o; the bundled object is PPC-only, so the
+68K fixture uses a guest loop over documented DAStrings. The shared PPC
+GetParamText service is independently exercised by a real CPU test. The fixture
+uses the SDK's SoundUPP type for ErrorSound; callback invocation is not proven.
+
+Fresh original 68K startup traces pass InitDialogs. Super Mines now stops at
+SysEnvirons ($A090), PC $0100C484, index 13776. Centaurian stops at MaxApplZone
+($A063), PC $10004472, index 103867. These are startup observations, not original
+application interactions. Dialog/alert construction and rendering, controls,
+modal dispatch, substitution rendering and callback/sound execution remain
+unfinished. Next: truthful system-environment and application-heap startup
+contracts to advance those stops, then further resource/menu/dialog application
+slices. Original PPC strong sound imports and real Mixed Mode remain outstanding;
+the full rebuild goal stays active.

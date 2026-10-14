@@ -13,6 +13,12 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    MoveBytes {
+        source: GuestPtr,
+        destination: GuestPtr,
+        count: i32,
+    },
+    Dialog(crate::dialogs::Op),
     Cursor(crate::cursor::Op),
     Menu(crate::menus::Op),
     TextEdit(crate::textedit::Op),

@@ -17,6 +17,7 @@ pub struct Process {
     pub resources: ResourceFork,
     pub(crate) fragments: crate::cfm::Connections,
     pub files: crate::files::Files,
+    pub dialogs: crate::dialogs::Dialogs,
     pub cursor: crate::cursor::Cursor,
     pub input: crate::events::Input,
     pub menus: crate::menus::Menus,

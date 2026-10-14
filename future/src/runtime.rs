@@ -266,6 +266,31 @@ impl Runtime {
                             })?;
                             crate::text::move_to(&mut self.memory, ports, h, v)?;
                         }
+                        Call::MoveBytes {
+                            source,
+                            destination,
+                            count,
+                        } => {
+                            self.memory.move_bytes(source, destination, count)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::Dialog(op) => {
+                            let value = if let crate::dialogs::Op::Slot(index) = op {
+                                crate::dialogs::slot(&self.memory, index)?
+                            } else {
+                                let mut manager = std::mem::take(&mut self.process.dialogs);
+                                let result = manager.call(&mut self.memory, &mut self.process, op);
+                                self.process.dialogs = manager;
+                                result?;
+                                0
+                            };
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                value,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::Cursor(op) => {
                             crate::cursor::call(&self.memory, &mut self.process, op)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
@@ -825,7 +850,8 @@ impl Runtime {
                     // fields carry operation outputs only, never readback authority.
                     if matches!(
                         call,
-                        Call::Menu(_)
+                        Call::Dialog(crate::dialogs::Op::Init(_) | crate::dialogs::Op::Param(_))
+                            | Call::Menu(_)
                             | Call::TextEdit(_)
                             | Call::TextDraw(_)
                             | Call::TextWidth(_)
@@ -880,6 +906,8 @@ impl Runtime {
                         | Call::NewWindow(_)
                         | Call::Window { .. }
                         | Call::TextState { .. }
+                        | Call::MoveBytes { .. }
+                        | Call::Dialog(_)
                         | Call::Cursor(_)
                         | Call::Menu(_)
                         | Call::TextEdit(_)

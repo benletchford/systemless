@@ -245,3 +245,11 @@ acceptance test composites that image through wgpu after exit and checks exact
 RGBA cursor pixels while packed guest screen pixels stay unchanged. Windowed
 smoke completed guest execution but did not finish presentation/resize on this
 host; actual onscreen pointer behavior is still unverified.
+
+`dialogs.c` verifies InitDialogs globals, preserved ANumber, ParamText handle
+payloads, NIL/empty replacement, font/sound pointer setters and reset/cleanup
+on both CPUs. PPC links Apple's bundled CarbonAccessors.o for GetParamText,
+which executes the shared indexed LMGetDAStrings and BlockMoveData routes. That
+object is PPC-only; 68K uses a guest loop over the documented low-memory
+StringHandles. Callback invocation, alert sound and dialog rendering are not
+exercised. The optional test requires the MPW build but no GPU.

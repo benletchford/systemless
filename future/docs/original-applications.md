@@ -28,15 +28,15 @@ fork path and a maximum instruction count, and prints register/opcode context.
   the start of those globals ($003FE5EA) fixes this specific loader defect. The
   original startup now initializes through $00400000, then passes ReleaseResource,
   InitFonts, InitWindows, FlushEvents and InitMenus with graphics enabled. It stops
-  after InitCursor and TEInit at unsupported InitDialogs ($A97B), PC $0100D01A
-  (trace index 13520).
+  after InitCursor, TEInit and InitDialogs at unsupported SysEnvirons ($A090),
+  PC $0100C484 (trace index 13776).
 - Centaurian's 68K path originally faulted writing $010000FC at PC $01000270
   (trace index 92039). The target is a JSR operand containing $00000028; startup
   adds A5 to relocate it to $00400028. Classic CODE now permits writes and these
   relocations complete. Startup now also installs Toolbox replacements for
   LoadSeg ($A9F0), UnloadSeg ($A9F1), and ExitToShell ($A9F4). The next stop is
-  unsupported InitDialogs ($A97B) at PC $10004470 (trace index 103866), after
-  InitFonts/InitWindows/InitMenus/TEInit/InitCursor (graphics enabled), HLock,
+  unsupported MaxApplZone ($A063) at PC $10004472 (trace index 103867), after
+  InitFonts/InitWindows/InitMenus/TEInit/InitCursor/InitDialogs (graphics enabled), HLock,
   StripAddress and executing resource-loaded code from heap RAM. The prior $A204
   request was Sound Driver Control(-4, 2), setting volume to 3. That state update
   now completes. No window interaction or audio playback is proven.
@@ -59,10 +59,11 @@ its error behavior and changed-resource retention follow Apple’s
 InitFonts ($A8FE) now loads a guest system font or allocates the licensed fallback.
 InitMenus ($A930) owns and draws an empty bar through shared guest state/wgpu.
 InitCursor ($A850) now initializes shared cursor state for the GPU presentation
-overlay. The next original 68K startup requirement is InitDialogs ($A97B). Fresh
-cursor-stage traces retain the stops above. Actual onscreen cursor behavior,
-menu/dialog construction, window activation/update events and original application
-interaction remain unfinished.
+overlay. InitDialogs ($A97B) now initializes shared dialog globals and parameter
+StringHandles. Fresh startup traces reach SysEnvirons in Super Mines and
+MaxApplZone in Centaurian. Actual onscreen cursor behavior, system/heap startup
+contracts, menu/dialog construction, window activation/update events and original
+application interaction remain unfinished.
 Dynamic memory loading is verified with the MPW resource-plugin fixture;
 Centaurian has not yet executed its own GetMemFragment calls. Full acceptance
 still requires original application interactions on both architectures.

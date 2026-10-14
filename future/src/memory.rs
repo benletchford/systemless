@@ -126,6 +126,29 @@ impl Memory {
         self.mappings[i].bytes[o..o + bytes.len()].copy_from_slice(bytes);
         Ok(())
     }
+    /// Bounded memmove semantics for Macintosh BlockMove/BlockMoveData.
+    /// CPU adapters read instruction bytes from this same storage; no separate
+    /// simulated instruction cache needs flushing.
+    pub fn move_bytes(
+        &mut self,
+        source: GuestPtr,
+        destination: GuestPtr,
+        count: i32,
+    ) -> Result<()> {
+        if count <= 0 {
+            return Ok(());
+        }
+        let size = count as usize;
+        if size > crate::load::IMAGE_LIMIT {
+            return Err(Error::Cpu(
+                "BlockMove exceeds the 64 MiB execution limit".into(),
+            ));
+        }
+        let source = self.read(source, size)?;
+        self.validate_write(destination, size)?;
+        let snapshot = source.to_vec();
+        self.write(destination, &snapshot)
+    }
     pub fn fetch(&self, p: GuestPtr, len: usize, alignment: u32) -> Result<&[u8]> {
         if alignment == 0 || !p.0.is_multiple_of(alignment) {
             return Err(Error::Alignment(p.0));

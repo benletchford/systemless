@@ -3,6 +3,7 @@ pub mod bitmap;
 pub mod cfm;
 pub mod cpu;
 pub mod cursor;
+pub mod dialogs;
 pub mod events;
 pub mod files;
 pub mod fixtures;
