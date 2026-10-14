@@ -7,6 +7,10 @@ use crate::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+mod dynamic;
+pub use dynamic::LoadRequest;
+pub(crate) use dynamic::{CloseAction, LoadAction};
+
 pub(crate) const APPLICATION_CONNECTION: u32 = 1;
 const BAD_CONNECTION: i16 = -2801;
 const MISSING_SYMBOL: i16 = -2802;
@@ -33,16 +37,33 @@ pub enum Query {
 }
 #[derive(Default)]
 pub(crate) struct Connections {
-    entries: BTreeMap<u32, Arc<[Export]>>,
+    entries: BTreeMap<u32, Connection>,
+    next_id: u32,
+    stdlib_installed: bool,
+}
+struct Connection {
+    exports: Arc<[Export]>,
+    dynamic: Option<dynamic::Fragment>,
 }
 impl Connections {
-    pub(crate) fn install_application(&mut self, exports: Arc<[Export]>) -> Result<()> {
+    pub(crate) fn install_application(
+        &mut self,
+        exports: Arc<[Export]>,
+        stdlib_installed: bool,
+    ) -> Result<()> {
         if !self.entries.is_empty() {
             return Err(Error::Load(
                 "CFM application connection already installed".into(),
             ));
         }
-        self.entries.insert(APPLICATION_CONNECTION, exports);
+        self.entries.insert(
+            APPLICATION_CONNECTION,
+            Connection {
+                exports,
+                dynamic: None,
+            },
+        );
+        self.stdlib_installed = stdlib_installed;
         Ok(())
     }
     pub(crate) fn query(&self, memory: &mut Memory, query: Query) -> Result<i16> {
@@ -51,9 +72,10 @@ impl Connections {
             | Query::Find { connection, .. }
             | Query::Indexed { connection, .. } => connection,
         };
-        let Some(exports) = self.entries.get(&connection) else {
+        let Some(connection) = self.entries.get(&connection) else {
             return Ok(BAD_CONNECTION);
         };
+        let exports = &connection.exports;
         let (symbol, name_out, address, class) = match query {
             Query::Count { count, .. } => {
                 memory.write(count, &(exports.len() as u32).to_be_bytes())?;

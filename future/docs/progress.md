@@ -877,3 +877,36 @@ continuations and CloseConnection remain unfinished. No new original-application
 acceptance or real Mixed Mode is claimed. Next: use these process-owned
 connections for dynamic fragment loads with rollback and termination. The full
 rebuild remains active.
+
+
+### Resource-based PPC fragments load, run and unload in one runtime
+
+GetMemFragment now adopts prepared images into the current memory/process,
+registers their exports and runs initializers with preserved caller CPU/stack
+state. Nested calls are budgeted guest execution. Reference/find/private-copy
+options, monotonic IDs and bounded address reservations are implemented. Main
+is a symbol address (possibly data or absent), not an automatically dereferenced
+code pointer. CloseConnection runs the final terminator and removes mappings
+and gates; process exit also closes remaining dynamic roots. Failed initializers
+return -2821 with fragment diagnostics and do not publish load outputs or run
+termination. Shared StdCLib globals are installed once and survive unloading.
+
+Eleven deterministic tests cover shared memory, full caller-state preservation,
+source/name/ID init metadata, queries, failed/corrupt/unresolved loads, reference
+lifetimes, independent private data, nested loading and termination order,
+budgets, data/absent main symbols, invalid outputs, address exhaustion/reuse and
+shared StdCLib storage. The new MPW-built resource plugin completes actual C
+GetResource/HLock/GetMemFragment/FindSymbol/function-call/CloseConnection/
+HUnlock/ReleaseResource flow and posts a success marker. All 136 tests pass
+(122 default plus fourteen optional GPU/MPW checks); strict all-target Clippy
+passes. Full-suite output precedes two additional focused dynamic tests, which
+also pass on the same production code.
+
+Centaurian PPC now stops at unresolved InterfaceLib:Random rather than
+GetMemFragment; no original PPC application instruction has executed. 68K
+originals remain blocked at $A8FE. Next: Random and the shared 68K startup
+requirement. Dynamic loading is a bounded PPC memory-fragment subset: fourteen
+slots, built-in imports only, no in-place/disk/shared-library loading or
+dependency closure ordering. 68K-to-PPC load/unload calls fault explicitly;
+real Mixed Mode, presentation and original application interaction acceptance
+remain unfinished. The full rebuild goal remains active.

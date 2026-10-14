@@ -23,6 +23,12 @@ pub mod traps;
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("application load: unresolved import {library}:{symbol}")]
+    UnresolvedImport {
+        library: String,
+        symbol: String,
+        library_bytes: Vec<u8>,
+    },
     #[error("application load: {0}")]
     Load(String),
     #[error("invalid/overlapping mapping at {0:#x}")]

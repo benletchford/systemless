@@ -22,3 +22,8 @@ MrC -sym off -opt off draw.c -o draw.ppc.o
 PPCLink draw.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o draw.ppc
 Rez -append -o draw.68k probe.r
 Rez -append -o draw.ppc probe.r
+MrC -sym off -opt off plugin.c -o plugin.ppc.o
+PPCLink plugin.ppc.o "{SharedLibraries}"InterfaceLib -xm sharedlibrary -main PluginMain -init PluginInit -term PluginTerm -export PluginMain -sym off -o plugin.ppc
+MrC -sym off -opt off dynamic.c -o dynamic.ppc.o
+PPCLink dynamic.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o dynamic.ppc
+Rez -append -o dynamic.ppc dynamic.r

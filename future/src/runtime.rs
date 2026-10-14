@@ -19,6 +19,24 @@ pub struct Services {
 // The whole CPU is suspended, retaining even engine-private FPU/control state.
 struct Continuation {
     caller: Cpu,
+    resume: Resume,
+}
+enum Resume {
+    Fixture,
+    Loaded {
+        connection: u32,
+        request: crate::cfm::LoadRequest,
+        reply: crate::abi::Reply,
+    },
+    Closed {
+        connection: u32,
+        destination: GuestPtr,
+        reply: crate::abi::Reply,
+    },
+    Shutdown {
+        connection: u32,
+        stop: Stop,
+    },
 }
 struct EventWait {
     mask: u16,
@@ -117,8 +135,9 @@ impl Runtime {
                 Outcome::Return => {
                     let value = self.cpu.result();
                     if let Some(frame) = self.continuations.pop() {
-                        self.cpu = frame.caller;
-                        self.cpu.set_result(value);
+                        if let Some(stop) = self.resume(frame, value)? {
+                            return Ok(stop);
+                        }
                     } else {
                         let stop = if let Some(lifecycle) = &mut self.lifecycle {
                             lifecycle.returned(&mut self.cpu)?
@@ -126,14 +145,74 @@ impl Runtime {
                             Some(Stop::Returned(value))
                         };
                         if let Some(stop) = stop {
-                            self.terminal = Some(stop);
-                            return Ok(stop);
+                            if let Some(stop) = self.finish_process(stop)? {
+                                return Ok(stop);
+                            }
                         }
                     }
                 }
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::LoadFragment(request) => {
+                            self.validate_fragment_call()?;
+                            match self.process.fragments.load_memory(
+                                &mut self.memory,
+                                &mut self.abi,
+                                request,
+                            )? {
+                                crate::cfm::LoadAction::Complete(error) => reply.apply(
+                                    &mut self.cpu,
+                                    &mut self.memory,
+                                    error as i32 as u32,
+                                    error,
+                                )?,
+                                crate::cfm::LoadAction::Initialize {
+                                    connection,
+                                    routine,
+                                    block,
+                                } => {
+                                    self.enter_fragment(
+                                        routine,
+                                        Some(block),
+                                        Resume::Loaded {
+                                            connection,
+                                            request,
+                                            reply,
+                                        },
+                                    )?;
+                                }
+                            }
+                        }
+                        Call::CloseFragment(destination) => {
+                            self.validate_fragment_call()?;
+                            match self.process.fragments.close(
+                                &mut self.memory,
+                                &mut self.abi,
+                                destination,
+                            )? {
+                                crate::cfm::CloseAction::Complete(error) => reply.apply(
+                                    &mut self.cpu,
+                                    &mut self.memory,
+                                    error as i32 as u32,
+                                    error,
+                                )?,
+                                crate::cfm::CloseAction::Terminate {
+                                    connection,
+                                    routine,
+                                } => {
+                                    self.enter_fragment(
+                                        routine,
+                                        None,
+                                        Resume::Closed {
+                                            connection,
+                                            destination,
+                                            reply,
+                                        },
+                                    )?;
+                                }
+                            }
+                        }
                         Call::FragmentQuery(query) => {
                             let error = self.process.fragments.query(&mut self.memory, query)?;
                             reply.apply(
@@ -332,6 +411,13 @@ impl Runtime {
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
                         }
                         Call::Exit(v) | Call::CExit(v) => {
+                            if self
+                                .continuations
+                                .iter()
+                                .any(|c| !matches!(c.resume, Resume::Fixture))
+                            {
+                                return Err(Error::Cpu("process exit during CFM init/term".into()));
+                            }
                             if matches!(call, Call::CExit(_)) {
                                 crate::stdlib::exit(&mut self.memory, v)?;
                             }
@@ -342,8 +428,9 @@ impl Runtime {
                             };
                             self.continuations.clear();
                             if let Some(stop) = stop {
-                                self.terminal = Some(stop);
-                                return Ok(stop);
+                                if let Some(stop) = self.finish_process(stop)? {
+                                    return Ok(stop);
+                                }
                             }
                         }
                         Call::NewHandle { size, clear } => {
@@ -494,7 +581,9 @@ impl Runtime {
                 Outcome::Service(call) => {
                     self.services.calls.push(call);
                     match call {
-                        Call::FragmentQuery(_)
+                        Call::LoadFragment(_)
+                        | Call::CloseFragment(_)
+                        | Call::FragmentQuery(_)
                         | Call::InitGraf { .. }
                         | Call::Port { .. }
                         | Call::PenMode(_)
@@ -603,6 +692,82 @@ impl Runtime {
             .apply(&mut self.cpu, &mut self.memory, u32::from(found), 0)?;
         Ok(None)
     }
+    fn validate_fragment_call(&self) -> Result<()> {
+        if self.continuations.len() >= 32 {
+            return Err(Error::Cpu("CFM callback depth exceeded".into()));
+        }
+        crate::lifecycle::Lifecycle::validate_nested(&self.cpu, &self.memory)?;
+        Ok(())
+    }
+    fn enter_fragment(
+        &mut self,
+        routine: crate::lifecycle::Routine,
+        argument: Option<u32>,
+        resume: Resume,
+    ) -> Result<()> {
+        self.validate_fragment_call()?;
+        let callee =
+            crate::lifecycle::Lifecycle::nested(&self.cpu, &mut self.memory, routine, argument)?;
+        let caller = std::mem::replace(&mut self.cpu, callee);
+        self.continuations.push(Continuation { caller, resume });
+        Ok(())
+    }
+    fn resume(&mut self, frame: Continuation, value: u32) -> Result<Option<Stop>> {
+        self.cpu = frame.caller;
+        match frame.resume {
+            Resume::Fixture => self.cpu.set_result(value),
+            Resume::Loaded {
+                connection,
+                request,
+                reply,
+            } => {
+                let error = self.process.fragments.initialized(
+                    &mut self.memory,
+                    &mut self.abi,
+                    connection,
+                    request,
+                    value as i16,
+                )?;
+                reply.apply(&mut self.cpu, &mut self.memory, error as i32 as u32, error)?;
+            }
+            Resume::Closed {
+                connection,
+                destination,
+                reply,
+            } => {
+                self.process.fragments.closed(
+                    &mut self.memory,
+                    &mut self.abi,
+                    connection,
+                    destination,
+                )?;
+                reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+            }
+            Resume::Shutdown { connection, stop } => {
+                self.process.fragments.closed(
+                    &mut self.memory,
+                    &mut self.abi,
+                    connection,
+                    GuestPtr(0),
+                )?;
+                return self.finish_process(stop);
+            }
+        }
+        Ok(None)
+    }
+    fn finish_process(&mut self, stop: Stop) -> Result<Option<Stop>> {
+        if let Some((connection, routine)) = self
+            .process
+            .fragments
+            .shutdown(&mut self.memory, &mut self.abi)?
+        {
+            self.enter_fragment(routine, None, Resume::Shutdown { connection, stop })?;
+            Ok(None)
+        } else {
+            self.terminal = Some(stop);
+            Ok(Some(stop))
+        }
+    }
     // Deterministic scheduling policy: 1000 retired boundaries per 60 Hz tick.
     // Host wall time never enters guest time; future hosts pace execution budgets.
     fn tick_count(&self) -> Result<u32> {
@@ -645,7 +810,10 @@ impl Runtime {
             Cpu::PowerPc(c) => c.gpr[2] = toc,
         }
         let caller = std::mem::replace(&mut self.cpu, callee);
-        self.continuations.push(Continuation { caller });
+        self.continuations.push(Continuation {
+            caller,
+            resume: Resume::Fixture,
+        });
         Ok(())
     }
 }

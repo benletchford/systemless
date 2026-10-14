@@ -21,20 +21,20 @@ struct Section {
 // resources, low memory, stacks, and CPU startup are installed by `load` below.
 // Keeping this boundary explicit prevents future CFM loads from calling finish
 // and accidentally constructing another Macintosh process.
-struct PreparedImage {
-    memory: Memory,
-    abi: Abi,
-    main: Option<crate::lifecycle::Routine>,
-    stdlib_data: bool,
-    init: Option<crate::lifecycle::Routine>,
-    term: Option<crate::lifecycle::Routine>,
+pub(crate) struct PreparedImage {
+    pub(crate) memory: Memory,
+    pub(crate) abi: Abi,
+    pub(crate) main_address: Option<u32>,
+    pub(crate) stdlib_data: bool,
+    pub(crate) init: Option<crate::lifecycle::Routine>,
+    pub(crate) term: Option<crate::lifecycle::Routine>,
     sections: Vec<(u32, u32)>,
-    exports: std::sync::Arc<[super::Export]>,
+    pub(crate) exports: std::sync::Arc<[super::Export]>,
 }
 // Host-chosen reservations, never values taken from the PEF default addresses.
 // Gates occupy address space even though the CPU adapter intercepts them.
 #[derive(Clone, Copy)]
-struct Placement {
+pub(crate) struct Placement {
     sections: u32,
     section_limit: u32,
     gates: u32,
@@ -43,6 +43,30 @@ struct Placement {
     init_block: u32,
 }
 impl Placement {
+    pub(crate) fn dynamic(slot: u32) -> Self {
+        let base = 0x8000_0000 + slot * 0x0800_0000;
+        let metadata = 0x7500_0000 + slot * 0x10000;
+        Self {
+            sections: base,
+            section_limit: base + 0x0400_0000,
+            container: base + 0x0400_0000,
+            gates: metadata,
+            vectors: metadata + 0x4000,
+            init_block: metadata + 0xc000,
+        }
+    }
+    pub(crate) fn block(self) -> u32 {
+        self.init_block
+    }
+    pub(crate) fn available(self, memory: &Memory, abi: &Abi) -> bool {
+        memory.range_available(GuestPtr(self.sections), 0x0800_0000)
+            && memory.range_available(GuestPtr(self.gates), 0x10000)
+            && abi
+                .imports
+                .range(self.gates..self.gates + 0x10000)
+                .next()
+                .is_none()
+    }
     const APPLICATION: Self = Self {
         sections: SECTION_BASE,
         section_limit: crate::process::HEAP_BASE,
@@ -62,7 +86,7 @@ impl Placement {
             (self.gates, 4096 * 4),
             (self.vectors, 4096 * 8),
             (self.container, container_size),
-            (self.init_block, 49),
+            (self.init_block, 112),
         ];
         for (i, &(base, size)) in spans.iter().enumerate() {
             let end = u64::from(base) + size as u64;
@@ -82,9 +106,7 @@ impl Placement {
 pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplication> {
     let placement = Placement::APPLICATION;
     let image = prepare(input, placement)?;
-    let main = image
-        .main
-        .ok_or_else(|| invalid("PEF application has no main routine"))?;
+    let main = image.main_routine()?;
     let mut memory = Memory::default();
     if image.stdlib_data {
         crate::stdlib::install(&mut memory)?;
@@ -102,7 +124,7 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
     app.runtime
         .process
         .fragments
-        .install_application(image.exports.clone())?;
+        .install_application(image.exports.clone(), image.stdlib_data)?;
     app.info.exports = image.exports;
     app.runtime.lifecycle = Some(crate::lifecycle::Lifecycle::start(
         &mut app.runtime.cpu,
@@ -114,6 +136,24 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
 }
 
 fn prepare(input: &[u8], placement: Placement) -> Result<PreparedImage> {
+    prepare_fragment(
+        input,
+        placement,
+        crate::cfm::APPLICATION_CONNECTION,
+        &[],
+        None,
+    )
+}
+pub(crate) fn prepare_fragment(
+    input: &[u8],
+    placement: Placement,
+    connection: u32,
+    name: &[u8],
+    source: Option<GuestPtr>,
+) -> Result<PreparedImage> {
+    if name.len() > 63 {
+        return Err(invalid("CFM fragment name exceeds Str63"));
+    }
     limit(input.len())?;
     placement.validate(input.len())?;
     if bytes(input, 0, 12)? != b"Joy!peffpwpc" || u32_at(input, 12)? != 1 || u32_at(input, 36)? != 0
@@ -268,11 +308,11 @@ fn prepare(input: &[u8], placement: Placement) -> Result<PreparedImage> {
             } else if options & 0x40 != 0 || class & 0x80 != 0 {
                 0
             } else {
-                return Err(invalid(format!(
-                    "unresolved import {}:{}",
-                    String::from_utf8_lossy(name),
-                    String::from_utf8_lossy(symbol)
-                )));
+                return Err(crate::Error::UnresolvedImport {
+                    library: String::from_utf8_lossy(name).into_owned(),
+                    symbol: String::from_utf8_lossy(symbol).into_owned(),
+                    library_bytes: name.to_vec(),
+                });
             };
             *slot = Some(address);
         }
@@ -335,7 +375,19 @@ fn prepare(input: &[u8], placement: Placement) -> Result<PreparedImage> {
             routine(&sections, section as usize, u32_at(l, field + 4)? as usize).map(Some)
         }
     };
-    let main = special(0)?;
+    let main_section = u32_at(l, 0)?;
+    let main_address = if main_section == u32::MAX {
+        None
+    } else {
+        let section = sections
+            .get(main_section as usize)
+            .ok_or_else(|| invalid("PEF main section"))?;
+        let offset = u32_at(l, 4)?;
+        if offset as usize >= section.data.len() {
+            return Err(invalid("PEF main offset"));
+        }
+        Some(section.base + offset)
+    };
     let init = special(8)?;
     let term = special(16)?;
     let mut memory = Memory::default();
@@ -371,7 +423,7 @@ fn prepare(input: &[u8], placement: Placement) -> Result<PreparedImage> {
     }
     // Byte-slice loading is a memory container, even when the host CLI read a file.
     // System 7 CFragInitBlock: IDs at 0/4/8, locator at 12, name at 28.
-    for routine in [main, init, term].into_iter().flatten() {
+    for routine in [init, term].into_iter().flatten() {
         memory.fetch(GuestPtr(routine.entry), 4, 4)?;
         memory.read(GuestPtr(routine.toc), 1)?;
     }
@@ -381,13 +433,17 @@ fn prepare(input: &[u8], placement: Placement) -> Result<PreparedImage> {
             write: false,
             execute: false,
         };
-        memory.map(GuestPtr(placement.container), input.to_vec(), ro)?;
-        let mut block = vec![0; 49];
+        if source.is_none() {
+            memory.map(GuestPtr(placement.container), input.to_vec(), ro)?;
+        }
+        let mut block = vec![0; 49 + name.len()];
+        block[48] = name.len() as u8;
+        block[49..].copy_from_slice(name);
         for (offset, value) in [
             (0, 1u32),
-            (4, 1),
-            (8, crate::cfm::APPLICATION_CONNECTION),
-            (16, placement.container),
+            (4, connection),
+            (8, connection),
+            (16, source.map_or(placement.container, |p| p.0)),
             (20, input.len() as u32),
             (28, placement.init_block + 48),
         ] {
@@ -398,13 +454,28 @@ fn prepare(input: &[u8], placement: Placement) -> Result<PreparedImage> {
     Ok(PreparedImage {
         memory,
         abi,
-        main,
+        main_address,
         init,
         term,
         sections: info,
         exports: exports.into(),
         stdlib_data,
     })
+}
+impl PreparedImage {
+    fn main_routine(&self) -> Result<crate::lifecycle::Routine> {
+        let address = self
+            .main_address
+            .ok_or_else(|| invalid("PEF application has no main routine"))?;
+        if !address.is_multiple_of(4) {
+            return Err(invalid("unaligned PEF transition vector"));
+        }
+        let entry = self.memory.u32(GuestPtr(address))?;
+        let toc = self.memory.u32(GuestPtr(address + 4))?;
+        self.memory.fetch(GuestPtr(entry), 4, 4)?;
+        self.memory.read(GuestPtr(toc), 1)?;
+        Ok(crate::lifecycle::Routine { entry, toc })
+    }
 }
 fn routine(sections: &[Section], index: usize, offset: usize) -> Result<crate::lifecycle::Routine> {
     let section = sections
@@ -572,7 +643,7 @@ mod tests {
         let f = pef();
         let place = relocated();
         let image = prepare(&f.bytes, place).unwrap();
-        let main = image.main.unwrap();
+        let main = image.main_routine().unwrap();
         assert_eq!(main.entry, place.sections);
         assert_eq!(
             image.memory.u32(GuestPtr(main.toc + 8)).unwrap(),
@@ -611,8 +682,8 @@ mod tests {
         let f = pef();
         let first = prepare(&f.bytes, Placement::APPLICATION).unwrap();
         let second = prepare(&f.bytes, relocated()).unwrap();
-        let first_main = first.main.unwrap();
-        let second_main = second.main.unwrap();
+        let first_main = first.main_routine().unwrap();
+        let second_main = second.main_routine().unwrap();
         let mut memory = first.memory;
         memory
             .write(GuestPtr(first_main.toc + 16), &123u32.to_be_bytes())
@@ -652,7 +723,7 @@ mod tests {
         w32(&mut f.bytes, f.loader, u32::MAX);
         let place = relocated();
         let image = prepare(&f.bytes, place).unwrap();
-        assert!(image.main.is_none());
+        assert!(image.main_address.is_none());
         assert_eq!(image.init.unwrap().entry, place.sections + 20);
         assert_eq!(image.term.unwrap().entry, place.sections + 40);
         let memory = &image.memory;
@@ -721,7 +792,7 @@ mod tests {
         }
         let mut bad_main = pef();
         w32(&mut bad_main.bytes, bad_main.data, 0x0040_0000);
-        assert!(prepare(&bad_main.bytes, place).is_err());
+        assert!(load(&bad_main.bytes, ResourceFork::default()).is_err());
     }
     #[test]
     fn all_pidata_operations_and_extended_count() {

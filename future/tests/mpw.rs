@@ -312,3 +312,37 @@ fn compiled_resource_drawing_and_event_app_has_pixel_parity() {
         .collect();
     assert_eq!(results[0], expected);
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture; see fixtures/mpw/README.md"]
+fn compiled_resource_plugin_initializes_executes_and_terminates_in_one_runtime() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let bytes = std::fs::read(root.join("dynamic.ppc")).expect("build MPW fixtures first");
+    let resources = std::fs::read(root.join("dynamic.ppc.rsrc")).unwrap();
+    let mut app = LoadedApplication::pef(&bytes, Some(&resources)).unwrap();
+    assert_eq!(app.runtime.advance(20_000).unwrap(), Stop::Exit(0));
+    assert!(app.runtime.services.calls.iter().any(|call| matches!(
+        call,
+        Call::PostEvent {
+            message: 0x600D,
+            ..
+        }
+    )));
+    assert!(app
+        .runtime
+        .services
+        .calls
+        .iter()
+        .any(|call| matches!(call, Call::LoadFragment(_))));
+    assert!(app
+        .runtime
+        .services
+        .calls
+        .iter()
+        .any(|call| matches!(call, Call::CloseFragment(_))));
+    assert!(app
+        .runtime
+        .memory
+        .read(systemless_future::memory::GuestPtr(0x80000000), 1)
+        .is_err());
+}

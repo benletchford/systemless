@@ -2,7 +2,7 @@
 //! owned staging state before a new Runtime can execute any guest instruction.
 mod exports;
 pub use exports::Export;
-mod pef;
+pub(crate) mod pef;
 mod reloc;
 pub mod resource;
 use crate::{

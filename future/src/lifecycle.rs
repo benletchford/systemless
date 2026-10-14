@@ -47,6 +47,35 @@ impl Lifecycle {
             stack,
         }
     }
+    pub(crate) fn validate_nested(cpu: &Cpu, memory: &crate::memory::Memory) -> Result<u32> {
+        let Cpu::PowerPc(c) = cpu else {
+            return Err(Error::Cpu(
+                "PPC CFM init/term from 68K requires Mixed Mode".into(),
+            ));
+        };
+        let stack = c.gpr[1]
+            .checked_sub(64)
+            .filter(|sp| sp.is_multiple_of(16))
+            .ok_or_else(|| Error::Cpu("invalid CFM caller stack".into()))?;
+        memory.validate_write(crate::memory::GuestPtr(stack), 64)?;
+        Ok(stack)
+    }
+    pub(crate) fn nested(
+        cpu: &Cpu,
+        memory: &mut crate::memory::Memory,
+        routine: Routine,
+        argument: Option<u32>,
+    ) -> Result<Cpu> {
+        let stack = Self::validate_nested(cpu, memory)?;
+        let mut frame = [0; 64];
+        frame[..4].copy_from_slice(&(stack + 64).to_be_bytes());
+        memory.write(crate::memory::GuestPtr(stack), &frame)?;
+        let mut callee = Self::callee(routine, stack);
+        if let (Cpu::PowerPc(c), Some(argument)) = (&mut callee, argument) {
+            c.gpr[3] = argument;
+        }
+        Ok(callee)
+    }
     fn callee(routine: Routine, stack: u32) -> Cpu {
         let mut cpu = Cpu::new(Architecture::PowerPc, routine.entry, stack);
         if let Cpu::PowerPc(c) = &mut cpu {

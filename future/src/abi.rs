@@ -9,6 +9,8 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    GetMemFragment,
+    CloseConnection,
     FindSymbol,
     CountSymbols,
     GetIndSymbol,
@@ -100,6 +102,8 @@ impl Abi {
             return None;
         }
         match symbol {
+            b"GetMemFragment" => Some(Service::GetMemFragment),
+            b"CloseConnection" => Some(Service::CloseConnection),
             b"FindSymbol" => Some(Service::FindSymbol),
             b"CountSymbols" => Some(Service::CountSymbols),
             b"GetIndSymbol" => Some(Service::GetIndSymbol),
@@ -182,6 +186,8 @@ impl Abi {
                 use crate::cfm::Query;
                 let selector = memory.u16(GuestPtr(sp))?;
                 let size = match selector {
+                    3 => 30,
+                    4 => 6,
                     5 => 18,
                     6 => 10,
                     7 => 22,
@@ -189,24 +195,34 @@ impl Abi {
                 };
                 let args = memory.read(GuestPtr(sp), size)?;
                 let word = |i| u32::from_be_bytes(args[i..i + 4].try_into().unwrap());
-                let query = match selector {
-                    5 => Query::Find {
+                let call = match selector {
+                    3 => Call::LoadFragment(crate::cfm::LoadRequest {
+                        source: GuestPtr(word(26)),
+                        length: word(22),
+                        name: GuestPtr(word(18)),
+                        options: word(14),
+                        connection: GuestPtr(word(10)),
+                        main: GuestPtr(word(6)),
+                        error: GuestPtr(word(2)),
+                    }),
+                    4 => Call::CloseFragment(GuestPtr(word(2))),
+                    5 => Call::FragmentQuery(Query::Find {
                         connection: word(14),
                         name: GuestPtr(word(10)),
                         address: GuestPtr(word(6)),
                         class: GuestPtr(word(2)),
-                    },
-                    6 => Query::Count {
+                    }),
+                    6 => Call::FragmentQuery(Query::Count {
                         connection: word(6),
                         count: GuestPtr(word(2)),
-                    },
-                    7 => Query::Indexed {
+                    }),
+                    7 => Call::FragmentQuery(Query::Indexed {
                         connection: word(18),
                         index: word(14),
                         name: GuestPtr(word(10)),
                         address: GuestPtr(word(6)),
                         class: GuestPtr(word(2)),
-                    },
+                    }),
                     _ => unreachable!(),
                 };
                 let result = sp
@@ -214,10 +230,7 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("CFM stack overflow".into()))?;
                 memory.validate_write(GuestPtr(result), 2)?;
                 c.dar[15] = result;
-                Ok((
-                    Call::FragmentQuery(query),
-                    Reply::StackWord(GuestPtr(result)),
-                ))
+                Ok((call, Reply::StackWord(GuestPtr(result))))
             }
             0xa8e4..=0xa8e7 => {
                 use crate::region_geometry::Boolean;
@@ -483,6 +496,16 @@ impl Abi {
     }
     pub fn import(service: Service, c: &ppc::PpcCpu) -> (Call, Reply) {
         let call = match service {
+            Service::GetMemFragment => Call::LoadFragment(crate::cfm::LoadRequest {
+                source: GuestPtr(c.gpr[3]),
+                length: c.gpr[4],
+                name: GuestPtr(c.gpr[5]),
+                options: c.gpr[6],
+                connection: GuestPtr(c.gpr[7]),
+                main: GuestPtr(c.gpr[8]),
+                error: GuestPtr(c.gpr[9]),
+            }),
+            Service::CloseConnection => Call::CloseFragment(GuestPtr(c.gpr[3])),
             Service::CountSymbols => Call::FragmentQuery(crate::cfm::Query::Count {
                 connection: c.gpr[3],
                 count: GuestPtr(c.gpr[4]),

@@ -105,3 +105,12 @@ one-byte class result with a neighboring canary. Both compiled architectures
 verify the invalid-connection error without modifying the count output. This
 extends CFM ABI acceptance; it is not a native CFM semantic comparison or a
 dynamic fragment load.
+
+The `dynamic.c` PPC application loads `plugin.c` from a `plug` resource. The plugin
+has a custom initializer/terminator, exports PluginMain and uses the same
+InterfaceLib services as its caller. The application locks the resource, calls
+GetMemFragment, counts and finds exports, invokes the returned transition vector,
+and verifies the terminator modifies its own stack-local counter. It then closes
+the connection, unlocks/releases the resource and posts a required success
+marker. The ignored MPW acceptance test checks completion and mapping removal.
+This fixture has no 68K dynamic counterpart until actual Mixed Mode is supported.

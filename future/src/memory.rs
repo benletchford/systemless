@@ -75,6 +75,21 @@ impl Memory {
         self.mappings.append(&mut image.mappings);
         Ok(())
     }
+    pub(crate) fn range_available(&self, base: GuestPtr, size: usize) -> bool {
+        let end = u64::from(base.0) + size as u64;
+        size != 0
+            && end <= 1u64 << 32
+            && !self.mappings.iter().any(|m| {
+                u64::from(base.0) < u64::from(m.base) + m.bytes.len() as u64
+                    && u64::from(m.base) < end
+            })
+    }
+    pub(crate) fn mapping_bases(&self) -> Vec<u32> {
+        self.mappings.iter().map(|m| m.base).collect()
+    }
+    pub(crate) fn remove_mappings(&mut self, bases: &[u32]) {
+        self.mappings.retain(|m| !bases.contains(&m.base));
+    }
     fn locate(&self, p: GuestPtr, len: usize, access: Access) -> Result<(usize, usize)> {
         let end = u64::from(p.0)
             .checked_add(len as u64)

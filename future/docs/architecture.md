@@ -185,9 +185,10 @@ All phases share the normal instruction budget and service dispatcher. Nonzero
 OSErr initialization results fault the preparation before main; CPU faults do not
 run cleanup. ExitToShell from an initializer or terminator reports an explicit
 error. A looping initializer or terminator exhausts budgets rather than blocking
-the host. This implements one application fragment; shared-library closure
-ordering and dynamic GetMemFragment/CloseConnection remain future work. The mapped
-container and initialization block remain valid for the Runtime lifetime.
+the host. This state machine owns the application fragment. Dynamic fragments
+use the process connections and continuations described below. Shared-library
+dependency closure ordering remains unfinished. The application container and
+initialization block remain valid for the Runtime lifetime.
 
 Primary references: [CFM special symbols](https://dev.os9.ca/techpubs/mac/runtimehtml/RTArch-26.html),
 [PEF loader header](https://dev.os9.ca/techpubs/mac/runtimehtml/RTArch-96.html),
@@ -603,9 +604,54 @@ selectors and a requested Str255 conversion of a longer PEF name fault explicitl
 GetIndSymbol uses zero-based indexing, following the later Apple Code Fragment
 Manager reference. The 1994 Inside Macintosh manual instead documents one-based
 indexing; native comparison remains outstanding. Compiler-generated MPW calls
-verify ABI behavior, not that historical semantic discrepancy. Dynamic allocation,
-connection references/unloading and real Mixed Mode are still unfinished.
+verify ABI behavior, not that historical semantic discrepancy. Dynamic PPC
+connections extend this table as described below; real Mixed Mode remains unfinished.
 
 References: [CFM API reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Code_Fragment_Manager/DeprecationAppendix/AppendixADeprecatedAPI.html),
 [older CFM usage](https://leopard-adc.pepas.com/documentation/mac/PPCSoftware/PPCSoftware-42.html),
 and the pinned MPW toolchain's `Interfaces/CIncludes/CodeFragments.h`.
+
+
+### Dynamic memory fragments in the existing runtime
+
+GetMemFragment prepares PEF sections/imports/exports in staging memory, then adopts
+the mappings into the existing guest address space. It does not create a runtime
+or replace resources, files, heap, events or graphics. Main is retained as a
+symbol address: a library can expose data or omit main, while application launch
+still validates a callable transition vector. First-use StdCLib storage is
+process-owned and survives fragment unload; later imports never reset it.
+
+Connections track source pointer/length identity, monotonic IDs, references,
+initializing/ready/closing state, and owned mappings/gates. Reference, find and
+private-copy options (1/2/5) are supported. Fourteen explicit reservations start
+at $80000000 with $08000000 spacing; each admits up to 64 MiB of section storage.
+Per-slot gates/vectors/init blocks occupy 64 KiB at $75000000 + slot*$10000.
+Reservations check live memory and intercepted import gates. Exhaustion returns
+-2810; closing frees a slot without recycling its connection ID. Other options,
+including in-place loading, fault explicitly. Guest library dependency binding,
+GetSharedLibrary and disk-based CFM loading remain unsupported.
+
+PPC init/term calls suspend the complete caller CPU and use a separate 64-byte
+linkage/argument frame below its stack pointer. They execute through the normal
+dispatcher and instruction budget, including nested loads. The initializer sees
+its live connection ID, closure ID, Pascal name and original memory locator.
+Success publishes connection/main outputs only after initialization returns.
+Nonzero initializer results return -2821 and remove the failed fragment's
+mappings, gates and connection, without running its terminator. Arbitrary guest
+side effects (including explicitly nested loads) are not transactional. CPU
+faults retain the existing terminal-fault policy, rather than executing cleanup.
+
+CloseConnection decrements references, clears its ID output on success, and
+executes the final terminator before removing owned mappings and gates. After
+application lifecycle completion, remaining dynamic roots terminate in reverse
+creation order under the same instruction budget, regardless of reference count.
+Dependency-aware ordering is not yet implemented. Exit during dynamic init/term
+is an explicit fault. Callers retain responsibility for locking resource
+containers until close. Loading/unloading PPC fragments while executing 68K
+faults explicitly until real Mixed Mode transitions are implemented; symbol
+queries continue to work through both adapters.
+
+The MPW dynamic fixture loads a locked resource plugin, queries and calls its
+exported function, observes a terminator's write to application storage, closes
+and releases the resource, then posts its success marker. This proves the
+resource-to-CFM path in one runtime, not broad original-application acceptance.
