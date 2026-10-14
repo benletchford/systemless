@@ -546,3 +546,22 @@ startup-mode behavior, preserving all address bits without dereferencing the
 pointer. 24-bit startup/address translation is unsupported. See
 [Memory Management Utilities](https://dev.os9.ca/techpubs/mac/Memory/Memory-181.html)
 for heap-code execution and StripAddress semantics.
+
+
+### Sound Driver volume state
+
+Legacy volume is the low three bits of the canonical guest SdVolume byte ($0260),
+identified by Apple's MPW LowMem.h LMGetSdVolume inline instruction. SetSoundVol
+and GetSoundVol PPC imports share that state with the 68K immediate/synchronous
+Control(-4, 2) path, whose csParam contains an inline volume word. Changes preserve
+unrelated high bits; getters observe direct guest writes. Control validates its
+result destination before changing volume and writes noErr to ioResult.
+
+This slice supports levels 0–7 and faults explicitly for other levels, drivers,
+control selectors and asynchronous requests. It implements observable volume
+state only: synthesizers, sample playback, channels, completion callbacks and host
+audio output remain unfinished. Startup initializes low memory to zero, including
+volume. No host device settings are modified. Contracts: Apple’s Inside Macintosh
+II, Sound Driver, pp. 232–236 (the GetSoundVol/SdVolume relationship), and the
+[Device Manager parameter layout](https://dev.os9.ca/techpubs/mac/Devices/Devices-52.html).
+The original Centaurian glue independently establishes the -4/2/inline-word call.

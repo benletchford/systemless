@@ -397,6 +397,23 @@ impl Runtime {
                             let v = self.process.get_resource(&mut self.memory, kind, id)?;
                             reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
                         }
+                        Call::SoundVolume(level) => {
+                            crate::sound::set_volume(&mut self.memory, level)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::GetSoundVolume(destination) => {
+                            crate::sound::get_volume(&mut self.memory, destination)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::DeviceControl(pointer) => {
+                            let error = crate::sound::control(&mut self.memory, pointer)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::StripAddress(address) => {
                             // This runtime starts in 32-bit mode. IM: Memory
                             // Utilities specifies an unchanged address in that mode.
@@ -484,6 +501,9 @@ impl Runtime {
                         | Call::HandleSize(_)
                         | Call::SetHandleSize { .. }
                         | Call::GetResource { .. }
+                        | Call::SoundVolume(_)
+                        | Call::GetSoundVolume(_)
+                        | Call::DeviceControl(_)
                         | Call::StripAddress(_)
                         | Call::MemError
                         | Call::ResError

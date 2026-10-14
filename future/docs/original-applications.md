@@ -33,11 +33,13 @@ fork path and a maximum instruction count, and prints register/opcode context.
   adds A5 to relocate it to $00400028. Classic CODE now permits writes and these
   relocations complete. Startup now also installs Toolbox replacements for
   LoadSeg ($A9F0), UnloadSeg ($A9F1), and ExitToShell ($A9F4). The next stop is
-  unsupported $A204 at PC $10002B32 (trace index 103852), after passing HLock,
-  StripAddress and executing resource-loaded code from heap RAM. The next
-  investigation is the I/O request at that trap; no window interaction is proven.
+  unsupported $A8FE at PC $10004462 (trace index 103860), after passing HLock,
+  StripAddress and executing resource-loaded code from heap RAM. The prior $A204
+  request was Sound Driver Control(-4, 2), setting volume to 3. That state update
+  now completes. No window interaction or audio playback is proven.
 - Centaurian's PPC load rejects the unresolved strong InterfaceLib import
-  `SetSoundVol`. No PPC application instruction executes.
+  `LocalToGlobal`. SetSoundVol now resolves, but no PPC application instruction
+  executes because remaining strong imports are still validated before launch.
 
 The loader now also publishes CurrentA5 ($0904) and the word CurJTOffset ($0934).
 CurStackBase denotes the start of application globals; the current separate,
@@ -50,5 +52,6 @@ Semantics are documented in Apple's [Memory Manager summary](https://dev.os9.ca/
 (global variables, III-227). ReleaseResource now invalidates loaded resource identity and permits reloads;
 its error behavior and changed-resource retention follow Apple’s
 [ReleaseResource contract](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-85.html).
-Next: inspect Centaurian’s $A204 I/O request and Super Mines’ next Toolbox trap. Full acceptance
+Next: investigate the shared $A8FE startup requirement and add the QuickDraw
+coordinate transforms required by Centaurian’s PPC imports. Full acceptance
 still requires original application interactions on both architectures.

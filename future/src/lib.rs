@@ -12,9 +12,10 @@ pub mod load;
 pub mod memory;
 pub mod process;
 pub mod quickdraw;
-pub mod regions;
 pub mod region_geometry;
+pub mod regions;
 pub mod runtime;
+pub mod sound;
 mod stdlib;
 pub mod traps;
 

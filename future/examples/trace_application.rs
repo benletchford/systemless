@@ -37,7 +37,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
         }
         let calls = app.runtime.services.calls.len();
-        let stop = app.runtime.advance(1)?;
+        let stop = match app.runtime.advance(1) {
+            Ok(stop) => stop,
+            Err(error) => {
+                if let Cpu::M68k(c) = &app.runtime.cpu {
+                    println!(
+                        "fault A0 memory={:02x?}",
+                        app.runtime
+                            .memory
+                            .read(systemless_future::memory::GuestPtr(c.dar[8]), 64)
+                    );
+                }
+                return Err(error.into());
+            }
+        };
         for call in &app.runtime.services.calls[calls..] {
             println!("service {call:?}");
         }

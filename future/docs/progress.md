@@ -741,3 +741,25 @@ rerun. Centaurian now reaches $A204 at PC $10002B32 after 103852 boundaries. Nex
 inspect that I/O request and proceed with original application-driven slices.
 Purging, compaction, 24-bit mode, real Mixed Mode, presentation and application
 interaction acceptance remain unfinished. The full rebuild remains active.
+
+
+### Sound Driver volume shared across original startup paths
+
+The diagnostic trace now prints a bounded A0 memory window on 68K faults.
+Centaurian's $A204 parameter block identified Sound Driver reference -4, selector
+2 and inline volume 3. That control path and PPC SetSoundVol/GetSoundVol now share
+SdVolume's low three bits at $0260, preserving other bits and observing direct
+guest writes. PBControlSync uses the same implementation. Unsupported drivers,
+selectors, asynchronous requests and out-of-range levels remain explicit faults.
+
+Three tests cover both ABIs, parameter/output preservation, read-only and invalid
+memory, direct writes and unsupported requests. All 110 tests pass with optional
+GPU/MPW checks enabled; strict Clippy passes. This implements observable volume
+state only; playback and host audio are not implemented or claimed.
+
+Centaurian 68K advances to $A8FE at PC $10004462 after 103860 boundaries, the same
+trap blocking Super Mines. Centaurian PPC now rejects LocalToGlobal instead of
+SetSoundVol during strong-import validation; no application instructions execute.
+Next: the common $A8FE startup requirement and QuickDraw coordinate transforms.
+Original application interactions, presentation, audio playback and real Mixed
+Mode still prevent rebuild completion. The goal remains active.

@@ -41,6 +41,9 @@ pub enum Service {
     GetHandleSize,
     SetHandleSize,
     GetResource,
+    SetSoundVol,
+    GetSoundVol,
+    PBControlSync,
     StripAddress,
     MemError,
     ResError,
@@ -148,6 +151,9 @@ impl Abi {
             b"SetHandleSize" => Some(Service::SetHandleSize),
             b"GetHandleSize" => Some(Service::GetHandleSize),
             b"ReleaseResource" => Some(Service::ReleaseResource),
+            b"SetSoundVol" => Some(Service::SetSoundVol),
+            b"GetSoundVol" => Some(Service::GetSoundVol),
+            b"PBControlSync" => Some(Service::PBControlSync),
             b"StripAddress" => Some(Service::StripAddress),
             b"HLock" => Some(Service::HLock),
             b"HUnlock" => Some(Service::HUnlock),
@@ -352,6 +358,10 @@ impl Abi {
                 },
                 Reply::M68kHandle,
             )),
+            0xa004 | 0xa204 => Ok((
+                Call::DeviceControl(GuestPtr(c.dar[8])),
+                Reply::M68kFileError,
+            )),
             0xa055 => Ok((Call::StripAddress(c.dar[0]), Reply::M68kD0)),
             0xa029 | 0xa02a => Ok((
                 Call::SetHandleLock {
@@ -505,6 +515,9 @@ impl Abi {
                 kind: c.gpr[3].to_be_bytes(),
                 id: c.gpr[4] as i16,
             },
+            Service::SetSoundVol => Call::SoundVolume(c.gpr[3] as i16),
+            Service::GetSoundVol => Call::GetSoundVolume(GuestPtr(c.gpr[3])),
+            Service::PBControlSync => Call::DeviceControl(GuestPtr(c.gpr[3])),
             Service::StripAddress => Call::StripAddress(c.gpr[3]),
             Service::MemError => Call::MemError,
             Service::ResError => Call::ResError,
@@ -528,6 +541,8 @@ impl Abi {
                         | Service::ExitToShell
                         | Service::SetHandleSize
                         | Service::ReleaseResource
+                        | Service::SetSoundVol
+                        | Service::GetSoundVol
                         | Service::HLock
                         | Service::HUnlock
                         | Service::DisposeHandle
