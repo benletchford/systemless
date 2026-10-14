@@ -33,6 +33,7 @@ pub enum Service {
     NewHandleClear,
     DisposeHandle,
     GetHandleSize,
+    SetHandleSize,
     GetResource,
     MemError,
     ResError,
@@ -114,6 +115,7 @@ impl Abi {
             b"NewHandle" => Some(Service::NewHandle),
             b"NewHandleClear" => Some(Service::NewHandleClear),
             b"DisposeHandle" => Some(Service::DisposeHandle),
+            b"SetHandleSize" => Some(Service::SetHandleSize),
             b"GetHandleSize" => Some(Service::GetHandleSize),
             b"GetResource" => Some(Service::GetResource),
             b"MemError" => Some(Service::MemError),
@@ -229,6 +231,13 @@ impl Abi {
                 Reply::M68kHandle,
             )),
             0xa023 => Ok((Call::DisposeHandle(c.dar[8]), Reply::M68kError)),
+            0xa024 => Ok((
+                Call::SetHandleSize {
+                    handle: c.dar[8],
+                    size: c.dar[0],
+                },
+                Reply::M68kError,
+            )),
             0xa025 => Ok((Call::HandleSize(c.dar[8]), Reply::M68kD0)),
             0xa9a0 => {
                 let args = memory.read(GuestPtr(sp), 10)?;
@@ -330,6 +339,10 @@ impl Abi {
                 clear: service == Service::NewHandleClear,
             },
             Service::DisposeHandle => Call::DisposeHandle(c.gpr[3]),
+            Service::SetHandleSize => Call::SetHandleSize {
+                handle: c.gpr[3],
+                size: c.gpr[4],
+            },
             Service::GetHandleSize => Call::HandleSize(c.gpr[3]),
             Service::GetResource => Call::GetResource {
                 kind: c.gpr[3].to_be_bytes(),
@@ -353,6 +366,7 @@ impl Abi {
                     | Service::Port(_)
                     | Service::PenMode
                     | Service::ExitToShell
+                    | Service::SetHandleSize
                     | Service::DisposeHandle
                     | Service::FlushEvents
                     | Service::SetEventMask

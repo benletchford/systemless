@@ -40,6 +40,33 @@ impl Heap {
         self.allocated.insert(base, extent);
         Some(base)
     }
+    fn resize_in_place(&mut self, base: u32, size: u32) -> bool {
+        let extent = (size.max(1) + 3) & !3;
+        let old = self.allocated[&base];
+        if extent == old {
+            return true;
+        }
+        if extent < old {
+            self.allocated.insert(base, extent);
+            self.allocated.insert(base + extent, old - extent);
+            self.release(base + extent);
+            return true;
+        }
+        let end = base + old;
+        let needed = extent - old;
+        let Some(&available) = self.free.get(&end) else {
+            return false;
+        };
+        if available < needed {
+            return false;
+        }
+        self.free.remove(&end);
+        if available > needed {
+            self.free.insert(end + needed, available - needed);
+        }
+        self.allocated.insert(base, extent);
+        true
+    }
     fn release(&mut self, base: u32) -> bool {
         let Some(mut size) = self.allocated.remove(&base) else {
             return false;
@@ -131,6 +158,37 @@ impl Process {
         }
         self.mem_error = 0;
         Ok(size)
+    }
+    pub fn set_handle_size(&mut self, memory: &mut Memory, handle: u32, size: u32) -> Result<()> {
+        let old_size = self.handle_size(memory, handle)?;
+        if self.mem_error != 0 {
+            return Ok(());
+        }
+        if size > HEAP_SIZE {
+            self.mem_error = MEM_FULL;
+            return Ok(());
+        }
+        let data = self.handles[&handle].0;
+        // The heap is one checked writable mapping. Validate it before changing
+        // allocator metadata or master pointers, including the relocation case.
+        memory.validate_write(GuestPtr(HEAP_BASE), HEAP_SIZE as usize)?;
+        let heap = self.heap.as_mut().unwrap();
+        if heap.resize_in_place(data, size) {
+            self.handles.insert(handle, (data, size));
+            return Ok(());
+        }
+        let preserved = memory
+            .read(GuestPtr(data), old_size.min(size) as usize)?
+            .to_vec();
+        let Some(replacement) = heap.allocate(size) else {
+            self.mem_error = MEM_FULL;
+            return Ok(());
+        };
+        memory.write(GuestPtr(replacement), &preserved)?;
+        memory.write(GuestPtr(handle), &replacement.to_be_bytes())?;
+        self.handles.insert(handle, (replacement, size));
+        heap.release(data);
+        Ok(())
     }
     pub fn dispose_handle(&mut self, memory: &mut Memory, handle: u32) -> Result<()> {
         if !self.handles.contains_key(&handle) {

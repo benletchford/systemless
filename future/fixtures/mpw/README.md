@@ -78,3 +78,6 @@ that closing an inactive port preserves the current selection.
 The fixture also resets a modified port with InitPort and checks that both
 region handles retain identity while the current port, bitmap and pen defaults
 are restored.
+
+The drawing program also grows and shrinks a guest handle, checking retained
+contents, GetHandleSize and MemError through each architecture's real ABI.

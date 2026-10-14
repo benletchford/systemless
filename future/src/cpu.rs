@@ -62,6 +62,10 @@ pub enum Call {
     },
     DisposeHandle(u32),
     HandleSize(u32),
+    SetHandleSize {
+        handle: u32,
+        size: u32,
+    },
     GetResource {
         kind: [u8; 4],
         id: i16,

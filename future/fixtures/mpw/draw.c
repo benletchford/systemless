@@ -17,6 +17,7 @@ int main(void) {
     Rect patch = {1,2,2,4};
     EventRecord event;
     Handle data;
+    Handle resized;
     RgnHandle visible, clipping;
     InitGraf(&qd.thePort);
     if (qd.thePort != 0 || qd.randSeed != 1) return 1;
@@ -45,6 +46,14 @@ int main(void) {
     if (pixels[1] != 0x33 || pixels[3] != 0x44 || pixels[5] != 0x55 || pixels[7] != 0x66) return 5;
     PostEvent(keyDown,42);
     if (!WaitNextEvent(keyDownMask,&event,0,0) || event.message != 42) return 6;
+    resized = NewHandle(3);
+    if (!resized) return 11;
+    (*resized)[0] = 17; (*resized)[1] = 34; (*resized)[2] = 51;
+    SetHandleSize(resized,64);
+    if (MemError() || GetHandleSize(resized) != 64 || (*resized)[2] != 51) return 12;
+    SetHandleSize(resized,1);
+    if (MemError() || GetHandleSize(resized) != 1 || **resized != 17) return 13;
+    DisposeHandle(resized);
     visible = port.visRgn;
     clipping = port.clipRgn;
     SetPort(&other);

@@ -308,6 +308,16 @@ impl Runtime {
                                 self.process.mem_error,
                             )?;
                         }
+                        Call::SetHandleSize { handle, size } => {
+                            self.process
+                                .set_handle_size(&mut self.memory, handle, size)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                0,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::HandleSize(h) => {
                             let v = self.process.handle_size(&self.memory, h)?;
                             reply.apply(
@@ -370,6 +380,7 @@ impl Runtime {
                             }
                             | Call::DisposeHandle(_)
                             | Call::HandleSize(_)
+                            | Call::SetHandleSize { .. }
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
                     ) {
@@ -404,6 +415,7 @@ impl Runtime {
                         | Call::NewHandle { .. }
                         | Call::DisposeHandle(_)
                         | Call::HandleSize(_)
+                        | Call::SetHandleSize { .. }
                         | Call::GetResource { .. }
                         | Call::MemError
                         | Call::ResError

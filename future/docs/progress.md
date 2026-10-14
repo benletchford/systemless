@@ -540,3 +540,22 @@ full QuickDraw compatibility. Next work remains region storage/operations and
 Window Manager behavior driven by representative applications. Presentation,
 keyboard input, real Mixed Mode and original-application acceptance are still
 unfinished; the rebuild goal remains active.
+
+
+### Resizable shared guest handles
+
+Implemented SetHandleSize on the shared heap through 68K A024 and PPC imports.
+Handles retain identity while data can move; shrinking frees the aligned tail,
+adjacent growth remains in place, and relocation preserves the original prefix.
+Allocation failure leaves the original block intact. Zero-size, nil, disposed
+and guest-corrupted master pointers have explicit tested behavior.
+
+Three new heap tests cover relocation/in-place resize, complete coalescing after
+disposal, OOM atomicity, zero size and invalid handles. Rebuilt both MPW drawing
+programs with grow/shrink, contents, GetHandleSize and MemError checks. All 86
+tests and strict Clippy pass (74 default plus twelve optional GPU/MPW tests).
+
+This provides storage needed for complex QuickDraw regions. Region operations
+still need to adopt it; handle locking, purging, grow-zone callbacks and general
+heap compaction remain unimplemented. The complete rebuild goal remains active,
+with original-application acceptance and real Mixed Mode still outstanding.

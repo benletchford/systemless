@@ -143,12 +143,14 @@ This custom focused parser has no dependency on the legacy loader.
 typed service calls, then applies results through architecture-specific replies.
 Loaded applications cannot access private fixture gateways. The implemented
 services are TickCount, ExitToShell, NewHandle/NewHandleClear, DisposeHandle,
-GetHandleSize, GetResource and error queries. Unsupported calls terminate clearly.
+GetHandleSize/SetHandleSize, GetResource and error queries. Unsupported calls terminate clearly.
 
 `process` owns a bounded first-fit heap, guest master pointers, resource identity
 and operation errors. Disposal coalesces free blocks. Both CPUs see the same
 resource handles and guest-modified contents; cleared allocations zero reused
-blocks. This is not yet a relocatable or purgeable Macintosh heap. The guest
+blocks. Explicit SetHandleSize may relocate data while preserving the master
+pointer address. General heap compaction, handle locking and purging remain
+unimplemented. The guest
 low-memory globals hold MemErr, ResErr and Ticks; deterministic scheduling advances
 Ticks every 1000 instructions, with no claim of hardware timing fidelity.
 
@@ -420,3 +422,14 @@ contents are reset. Port, globals slot and both region destinations are checked
 before mutation. The current subset requires owned ten-byte regions; resetting
 complex regions awaits handle resizing. Color-port initialization is unsupported.
 This follows *Imaging With QuickDraw*, pages 2-39–2-40 and MPW Quickdraw.h.
+
+
+SetHandleSize shares one process implementation for 68K A024 (A0 handle, D0
+size/result) and PPC InterfaceLib (r3/r4, void result plus MemErr). Shrinking
+releases the unused aligned extent; growth first consumes adjacent free space,
+then tries a new block while retaining the old allocation until success. The
+preserved prefix is copied and the guest master pointer is updated before old
+storage is reclaimed. Newly exposed bytes are unspecified. Failure preserves
+size, master pointer and data; nil/disposed handles report Memory Manager errors.
+Zero logical size retains a valid handle. No compaction or grow-zone callbacks
+are attempted. See Apple's [Memory Manager, pages 2-40–2-41](https://dev.os9.ca/techpubs/mac/pdf/Memory/Memory_Manager.pdf).

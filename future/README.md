@@ -56,7 +56,7 @@ Supported loading is near-model CODE and PowerPC PEF, including pattern data and
 relocations. PEF initialization and termination run with bounded execution and a guest
 initialization block. Compressed resources, far-model CODE and unknown required
 imports fail explicitly. Guest file I/O, Toolbox window/high-level event synthesis, mouse regions, the remaining
-QuickDraw operations, movable/purgeable handles and original-app compatibility
+QuickDraw operations, handle locking/purging and general heap compaction and original-app compatibility
 remain pending. The rebuild goal is incomplete.
 
 Loaded applications can yield `Stop::Waiting { ticks }` from WaitNextEvent.
