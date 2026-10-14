@@ -143,3 +143,36 @@ fn close_port_rejects_bad_second_handle_before_freeing_first() {
     assert!(ports.close(&mut memory, &mut process, port).is_err());
     assert_eq!(process.handle_size(&memory, visible).unwrap(), 10);
 }
+
+#[test]
+fn init_port_restores_defaults_in_place_and_rejects_invalid_regions_atomically() {
+    let (mut memory, mut process, ports) = setup();
+    let port = GuestPtr(0x1080);
+    ports.open(&mut memory, &mut process, port).unwrap();
+    let original = memory.read(port, 108).unwrap().to_vec();
+    let visible = memory.u32(GuestPtr(port.0 + 24)).unwrap();
+    let clip = memory.u32(GuestPtr(port.0 + 28)).unwrap();
+    let visible_data = GuestPtr(memory.u32(GuestPtr(visible)).unwrap());
+    let clip_data = GuestPtr(memory.u32(GuestPtr(clip)).unwrap());
+    let original_visible = memory.read(visible_data, 10).unwrap().to_vec();
+    let original_clip = memory.read(clip_data, 10).unwrap().to_vec();
+    ports.clip_rect(&mut memory, Rect::new(1, 1, 2, 2)).unwrap();
+    memory
+        .write(GuestPtr(port.0 + 56), &10u16.to_be_bytes())
+        .unwrap();
+    memory
+        .write(ports.current_slot, &0u32.to_be_bytes())
+        .unwrap();
+    ports.init(&mut memory, &mut process, port).unwrap();
+    assert_eq!(memory.read(port, 108).unwrap(), original);
+    assert_eq!(memory.read(visible_data, 10).unwrap(), original_visible);
+    assert_eq!(memory.read(clip_data, 10).unwrap(), original_clip);
+    assert_eq!(ports.current(&memory).unwrap(), port);
+    memory
+        .write(GuestPtr(port.0 + 28), &0u32.to_be_bytes())
+        .unwrap();
+    let invalid = memory.read(port, 108).unwrap().to_vec();
+    assert!(ports.init(&mut memory, &mut process, port).is_err());
+    assert_eq!(memory.read(port, 108).unwrap(), invalid);
+    assert_eq!(memory.read(visible_data, 10).unwrap(), original_visible);
+}

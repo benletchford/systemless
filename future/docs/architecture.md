@@ -351,7 +351,7 @@ It accepts an immutable guest address space and only updates the GPU texture.
 File-mode graphics runs call it after execution. The shared winit host also
 calls it before presenting a loaded application.
 
-Real adapters currently expose InitGraf, OpenPort, ClosePort, SetPort, GetPort,
+Real adapters currently expose InitGraf, OpenPort, InitPort, ClosePort, SetPort, GetPort,
 SetPortBits, ClipRect, PaintRect, PenMode and PenPat. 68K Pascal parameters are
 popped at the trap boundary; PPC parameters come through CFM registers. The
 shared services own globals, heap regions, clipping and GPU drawing. A compiled
@@ -411,3 +411,12 @@ The contract follows Apple's *Imaging With QuickDraw*, Basic QuickDraw, page
 2-40 ([manual](https://vintageapple.org/inside_r/pdf/Imaging_With_QuickDraw_1994.pdf));
 the trap word is checked against MPW Quickdraw.h. Freed-field contents and other
 undefined use-after-close behavior are not claimed to reproduce native systems.
+
+
+InitPort (68K A86D / InterfaceLib) resets an existing basic port and makes it
+current, sharing OpenPort's defaults implementation without allocating new
+regions. Existing visible/clip handles retain identity and their rectangular
+contents are reset. Port, globals slot and both region destinations are checked
+before mutation. The current subset requires owned ten-byte regions; resetting
+complex regions awaits handle resizing. Color-port initialization is unsupported.
+This follows *Imaging With QuickDraw*, pages 2-39–2-40 and MPW Quickdraw.h.

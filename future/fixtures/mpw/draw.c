@@ -17,6 +17,7 @@ int main(void) {
     Rect patch = {1,2,2,4};
     EventRecord event;
     Handle data;
+    RgnHandle visible, clipping;
     InitGraf(&qd.thePort);
     if (qd.thePort != 0 || qd.randSeed != 1) return 1;
     GetPort(&current);
@@ -44,6 +45,13 @@ int main(void) {
     if (pixels[1] != 0x33 || pixels[3] != 0x44 || pixels[5] != 0x55 || pixels[7] != 0x66) return 5;
     PostEvent(keyDown,42);
     if (!WaitNextEvent(keyDownMask,&event,0,0) || event.message != 42) return 6;
+    visible = port.visRgn;
+    clipping = port.clipRgn;
+    SetPort(&other);
+    InitPort(&port);
+    GetPort(&current);
+    if (current != &port || port.visRgn != visible || port.clipRgn != clipping) return 9;
+    if (port.pnMode != patCopy || port.portBits.baseAddr != qd.screenBits.baseAddr) return 10;
     ClosePort(&other);
     GetPort(&current);
     if (current != &port) return 8;

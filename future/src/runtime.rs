@@ -150,6 +150,9 @@ impl Runtime {
                                 PortOp::Open => {
                                     ports.open(&mut self.memory, &mut self.process, pointer)?
                                 }
+                                PortOp::Init => {
+                                    ports.init(&mut self.memory, &mut self.process, pointer)?;
+                                }
                                 PortOp::Close => {
                                     ports.close(&mut self.memory, &mut self.process, pointer)?
                                 }
@@ -361,7 +364,8 @@ impl Runtime {
                         Call::NewHandle { .. }
                             | Call::Port {
                                 op: crate::quickdraw::PortOp::Open
-                                    | crate::quickdraw::PortOp::Close,
+                                    | crate::quickdraw::PortOp::Close
+                                    | crate::quickdraw::PortOp::Init,
                                 ..
                             }
                             | Call::DisposeHandle(_)

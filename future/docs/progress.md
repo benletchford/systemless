@@ -518,3 +518,25 @@ The default suite contains 70 tests; twelve optional GPU/MPW tests were enabled
 locally. Presentation remains unverified; keyboard input, complex regions,
 Window Manager services, real Mixed Mode and original-app acceptance remain
 unfinished. Next: continue the complete port/region/window application slice.
+
+
+### Existing-port initialization
+
+Implemented InitPort through both real ABIs. OpenPort and InitPort now share one
+defaults implementation; initialization retains both region handles, resets
+their bounds, restores drawing fields/screen bitmap, and selects the target port.
+All destination validation precedes mutation. Complex-region resizing and color
+ports remain unsupported with explicit errors.
+
+Rebuilt both MPW drawing applications with checks for region-handle identity,
+current-port selection, restored bitmap and pen mode. Both retain exact GPU
+pixel parity and complete through the file CLI. A new unit test compares the
+entire reset port and both region records, and verifies malformed input leaves
+port/region bytes unchanged. All 83 tests and strict Clippy pass (71 default,
+twelve optional GPU/MPW tests explicitly enabled).
+
+This completes the currently supported basic rectangular-port lifecycle, not
+full QuickDraw compatibility. Next work remains region storage/operations and
+Window Manager behavior driven by representative applications. Presentation,
+keyboard input, real Mixed Mode and original-application acceptance are still
+unfinished; the rebuild goal remains active.

@@ -110,6 +110,44 @@ impl Ports {
             process.mem_error = -108;
             return Err(Error::Graphics("OpenPort region allocation failed".into()));
         }
+        self.reset(memory, port, screen, bitmap, visible, clip)
+    }
+    pub fn init(&self, memory: &mut Memory, process: &mut Process, port: GuestPtr) -> Result<()> {
+        memory.validate_write(port, PORT_SIZE)?;
+        memory.validate_write(self.current_slot, 4)?;
+        let bytes = memory.read(port, PORT_SIZE)?;
+        if u16::from_be_bytes(bytes[6..8].try_into().unwrap()) & 0xc000 != 0 {
+            return Err(Error::Graphics(
+                "InitPort does not support color ports".into(),
+            ));
+        }
+        let visible = u32::from_be_bytes(bytes[24..28].try_into().unwrap());
+        let clip = u32::from_be_bytes(bytes[28..32].try_into().unwrap());
+        if visible == clip {
+            return Err(Error::Graphics("InitPort requires distinct regions".into()));
+        }
+        for handle in [visible, clip] {
+            if process.handle_size(memory, handle)? != 10 {
+                return Err(Error::Graphics(
+                    "InitPort requires owned rectangular regions".into(),
+                ));
+            }
+            let data = GuestPtr(memory.u32(GuestPtr(handle))?);
+            memory.validate_write(data, 10)?;
+        }
+        let screen = Bitmap::read(memory, self.screen_bitmap)?;
+        let bitmap = memory.read(self.screen_bitmap, 14)?.try_into().unwrap();
+        self.reset(memory, port, screen, bitmap, visible, clip)
+    }
+    fn reset(
+        &self,
+        memory: &mut Memory,
+        port: GuestPtr,
+        screen: Bitmap,
+        bitmap: [u8; 14],
+        visible: u32,
+        clip: u32,
+    ) -> Result<()> {
         for (h, r) in [
             (visible, screen.bounds),
             (clip, Rect::new(-32768, -32768, 32767, 32767)),
@@ -272,6 +310,7 @@ pub(crate) fn initialize(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortOp {
     Open,
+    Init,
     Close,
     Set,
     Get,
