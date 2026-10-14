@@ -146,3 +146,10 @@ ID, draws the resource bytes, and releases the handle. ForeColor/BackColor then
 reverse the selected port's black/white values without changing another port.
 The final pixel image is the inverse gray pattern: 55 AA 55 AA, with unchanged
 row-padding bytes. Earlier drawing results are checked before color reversal.
+
+
+The resource/memory probe now also allocates a cleared nonrelocatable pointer,
+checks its logical size, blocks growth with an adjacent allocation, verifies
+failed growth preserves bytes, frees the blocker, grows and shrinks in place,
+and disposes both pointers. These checks run through MPW-generated 68K and PPC
+calling conventions and inspect MemError after each mutation.

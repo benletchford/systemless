@@ -40,6 +40,10 @@ pub enum Service {
     GetToolboxTrapAddress,
     NGetTrapAddress,
     ExitToShell,
+    NewPointer(bool),
+    PointerSize,
+    SetPointerSize,
+    DisposePointer,
     NewHandle,
     NewHandleClear,
     DisposeHandle,
@@ -166,6 +170,11 @@ impl Abi {
             b"NGetTrapAddress" => Some(Service::NGetTrapAddress),
             b"TickCount" => Some(Service::TickCount),
             b"ExitToShell" => Some(Service::ExitToShell),
+            b"NewPtr" => Some(Service::NewPointer(false)),
+            b"NewPtrClear" => Some(Service::NewPointer(true)),
+            b"GetPtrSize" => Some(Service::PointerSize),
+            b"SetPtrSize" => Some(Service::SetPointerSize),
+            b"DisposePtr" => Some(Service::DisposePointer),
             b"NewHandle" => Some(Service::NewHandle),
             b"NewHandleClear" => Some(Service::NewHandleClear),
             b"DisposeHandle" => Some(Service::DisposeHandle),
@@ -460,6 +469,22 @@ impl Abi {
                 Ok((Call::Ticks, Reply::StackLong(GuestPtr(sp))))
             }
             0xa9f4 => Ok((Call::Exit(0), Reply::None)),
+            0xa01e | 0xa11e | 0xa31e => Ok((
+                Call::NewPointer {
+                    size: c.dar[0],
+                    clear: opcode & 0x200 != 0,
+                },
+                Reply::M68kHandle,
+            )),
+            0xa01f => Ok((Call::DisposePointer(c.dar[8]), Reply::M68kError)),
+            0xa020 => Ok((
+                Call::SetPointerSize {
+                    pointer: c.dar[8],
+                    size: c.dar[0],
+                },
+                Reply::M68kError,
+            )),
+            0xa021 => Ok((Call::PointerSize(c.dar[8]), Reply::M68kD0)),
             0xa122 | 0xa022 | 0xa322 => Ok((
                 Call::NewHandle {
                     size: c.dar[0],
@@ -655,6 +680,16 @@ impl Abi {
             },
             Service::TickCount => Call::Ticks,
             Service::ExitToShell => Call::Exit(0),
+            Service::NewPointer(clear) => Call::NewPointer {
+                size: c.gpr[3],
+                clear,
+            },
+            Service::PointerSize => Call::PointerSize(c.gpr[3]),
+            Service::SetPointerSize => Call::SetPointerSize {
+                pointer: c.gpr[3],
+                size: c.gpr[4],
+            },
+            Service::DisposePointer => Call::DisposePointer(c.gpr[3]),
             Service::NewHandle | Service::NewHandleClear => Call::NewHandle {
                 size: c.gpr[3],
                 clear: service == Service::NewHandleClear,
@@ -704,6 +739,8 @@ impl Abi {
                         | Service::Port(_)
                         | Service::PenMode
                         | Service::ExitToShell
+                        | Service::SetPointerSize
+                        | Service::DisposePointer
                         | Service::SetHandleSize
                         | Service::ReleaseResource
                         | Service::SetSoundVol

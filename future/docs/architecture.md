@@ -667,3 +667,23 @@ subtract the inset rounded shape, reading pnSize and pnVis from guest memory;
 pen patterns, modes and colors remain shared. Geometry uses wide fixed-point
 integer intermediates and accepts classic signed-word coordinates. The runtime
 has no dependency on the legacy comparison harness in `fixtures`.
+
+
+## Stable pointers and window ownership
+
+Nonrelocatable pointers share the process heap's free extents with handles.
+A separate ownership table records logical pointer sizes, so DisposePtr and
+SetPtrSize cannot operate on handle masters or handle data. Resizing uses only
+adjacent free space and never relocates the block. Zero-sized blocks retain a
+minimum aligned extent and a unique live address. Disposal returns the extent
+to the same coalescing allocator. System-heap variants remain unsupported.
+
+This is the storage prerequisite for Window Manager records: caller-provided
+wStorage must remain caller-owned, while nil wStorage requires a stable runtime
+allocation whose disposal is tied to the window lifecycle. Window creation must
+also initialize its embedded GrafPort, resource/title ownership, ordered window
+list and global structure/content/update regions before publishing the window.
+Visibility must update drawing clips and exposure events across all windows.
+The legacy NewWindow trap documents an eight-argument ABI (26 Pascal bytes,
+then a long result; PPC r3–r10), including Boolean values in the high byte of
+68K stack words. These are continuation requirements, not implemented services.

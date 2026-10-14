@@ -16,6 +16,7 @@ int main(void) {
     Handle resource;
     Handle allocated;
     Ptr original;
+    Ptr fixed, blocker;
     long symbolCount;
 #if TARGET_CPU_PPC
     Ptr symbolAddress;
@@ -64,6 +65,21 @@ int main(void) {
     if (resource == 0 || **resource != 1 || GetHandleSize(resource) != 3) return 5;
     ReleaseResource(resource);
     if (ResError() != noErr) return 6;
+    fixed = NewPtrClear(12);
+    if (!fixed || MemError() || GetPtrSize(fixed)!=12 || fixed[0] || fixed[11]) return 31;
+    fixed[0]=42; fixed[11]=17;
+    blocker=NewPtr(4);
+    if (!blocker) return 32;
+    SetPtrSize(fixed,64);
+    if (MemError()!=memFullErr || GetPtrSize(fixed)!=12 || fixed[0]!=42 || fixed[11]!=17) return 33;
+    DisposePtr(blocker);
+    if (MemError()) return 34;
+    SetPtrSize(fixed,64);
+    if (MemError() || GetPtrSize(fixed)!=64 || fixed[0]!=42 || fixed[11]!=17) return 35;
+    SetPtrSize(fixed,1);
+    if (MemError() || GetPtrSize(fixed)!=1 || fixed[0]!=42) return 36;
+    DisposePtr(fixed);
+    if (MemError()) return 37;
     ExitToShell();
     return 0;
 }

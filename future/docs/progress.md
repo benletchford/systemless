@@ -1014,3 +1014,36 @@ Centaurian PPC now stops on NewWindow before application execution. Next:
 shared window records, ownership and drawing/visibility integration, alongside
 substantive Font Manager startup for the 68K InitFonts stop. Original app
 interaction and real Mixed Mode remain required for full rebuild acceptance.
+
+
+### Stable pointer allocation for Window Manager storage
+
+Inspection of NewWindow showed that nil wStorage needs a stable nonrelocatable
+allocation. Added NewPtr/NewPtrClear, GetPtrSize, SetPtrSize and DisposePtr to
+both ABI adapters and the shared process heap. Pointers and handles consume the
+same coalescing allocator, with separate ownership tables. Resizing never moves
+a pointer; it can shrink or grow into adjacent free space and otherwise reports
+memFullErr without changing its contents or logical size. Zero-sized pointers
+retain unique live addresses. The low-memory MemErr result remains shared.
+
+Invalid, interior, disposed or handle-owned addresses report memWZErr (-111)
+without freeing or resizing any allocation; invalid GetPtrSize returns that
+signed error. This is an explicit defensive policy, not native validation of
+undefined stale-pointer uses. The application-only 4 MiB heap, no compaction or
+grow-zone callbacks, and unsupported system-heap variants remain limitations.
+Legacy comparison: memory.rs SetPtrSize documents the same stable-address
+contract; the new allocator can additionally grow into reclaimed adjacent space.
+Apple's [nonrelocatable block reference](https://dev.os9.ca/techpubs/mac/Memory/Memory-74.html)
+and [Memory Manager reference](https://dev.os9.ca/techpubs/mac/pdf/Memory/Memory_Manager.pdf)
+provide the allocation and resizing contracts (pp. 2-36–2-43).
+
+Three tests cover coalescing/reuse, clearing, zero size, exhaustion, blocked
+resize, pointer/handle ownership isolation, and real PPC/68K operations on one
+allocation. The MPW probe also checks successful/failed resize and retained
+bytes through both compiled ABIs. NewWindow remains unresolved; this implements
+its memory prerequisite, not window creation. Next: window ownership/records,
+visibility and update integration, plus Font Manager startup. Full rebuild
+acceptance remains outstanding.
+
+Validation: all 146 tests pass, including 15 optional GPU/MPW checks; MPW
+fixtures rebuild successfully and strict all-target Clippy passes.

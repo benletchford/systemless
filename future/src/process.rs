@@ -24,6 +24,7 @@ pub struct Process {
     pub res_error: i16,
     heap: Option<Heap>,
     handles: BTreeMap<u32, HandleBlock>,
+    pointers: BTreeMap<u32, u32>,
     resource_handles: BTreeMap<([u8; 4], i16), u32>,
 }
 #[derive(Clone, Copy)]
@@ -132,6 +133,55 @@ impl Process {
             });
         }
         Ok(())
+    }
+    /// Nonrelocatable allocations share extents with handles, but have distinct
+    /// ownership: a handle master or data address is never a disposable Ptr.
+    pub fn new_pointer(&mut self, memory: &mut Memory, size: u32, clear: bool) -> Result<u32> {
+        self.ensure_heap(memory)?;
+        self.mem_error = MEM_FULL;
+        if size > HEAP_SIZE {
+            return Ok(0);
+        }
+        let Some(pointer) = self.heap.as_mut().unwrap().allocate(size) else {
+            return Ok(0);
+        };
+        if clear {
+            memory.write(GuestPtr(pointer), &vec![0; size as usize])?;
+        }
+        self.pointers.insert(pointer, size);
+        self.mem_error = 0;
+        Ok(pointer)
+    }
+    pub fn pointer_size(&mut self, pointer: u32) -> u32 {
+        match self.pointers.get(&pointer) {
+            Some(size) => {
+                self.mem_error = 0;
+                *size
+            }
+            None => {
+                self.mem_error = MEM_BAD;
+                MEM_BAD as i32 as u32
+            }
+        }
+    }
+    pub fn set_pointer_size(&mut self, pointer: u32, size: u32) {
+        self.pointer_size(pointer);
+        if self.mem_error != 0 {
+            return;
+        }
+        if size > HEAP_SIZE || !self.heap.as_mut().unwrap().resize_in_place(pointer, size) {
+            self.mem_error = MEM_FULL;
+            return;
+        }
+        self.pointers.insert(pointer, size);
+    }
+    pub fn dispose_pointer(&mut self, pointer: u32) {
+        if self.pointers.remove(&pointer).is_none() {
+            self.mem_error = MEM_BAD;
+            return;
+        }
+        self.heap.as_mut().unwrap().release(pointer);
+        self.mem_error = 0;
     }
     pub fn new_handle(&mut self, memory: &mut Memory, size: u32, clear: bool) -> Result<u32> {
         self.ensure_heap(memory)?;

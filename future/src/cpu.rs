@@ -80,6 +80,16 @@ pub enum Call {
         number: u16,
         target: u32,
     },
+    NewPointer {
+        size: u32,
+        clear: bool,
+    },
+    PointerSize(u32),
+    SetPointerSize {
+        pointer: u32,
+        size: u32,
+    },
+    DisposePointer(u32),
     NewHandle {
         size: u32,
         clear: bool,

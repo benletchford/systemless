@@ -461,6 +461,42 @@ impl Runtime {
                                 }
                             }
                         }
+                        Call::NewPointer { size, clear } => {
+                            let value = self.process.new_pointer(&mut self.memory, size, clear)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                value,
+                                self.process.mem_error,
+                            )?;
+                        }
+                        Call::PointerSize(pointer) => {
+                            let value = self.process.pointer_size(pointer);
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                value,
+                                self.process.mem_error,
+                            )?;
+                        }
+                        Call::SetPointerSize { pointer, size } => {
+                            self.process.set_pointer_size(pointer, size);
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                0,
+                                self.process.mem_error,
+                            )?;
+                        }
+                        Call::DisposePointer(pointer) => {
+                            self.process.dispose_pointer(pointer);
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                0,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::NewHandle { size, clear } => {
                             let v = self.process.new_handle(&mut self.memory, size, clear)?;
                             reply.apply(
@@ -577,7 +613,11 @@ impl Runtime {
                     // fields carry operation outputs only, never readback authority.
                     if matches!(
                         call,
-                        Call::NewHandle { .. }
+                        Call::NewPointer { .. }
+                            | Call::PointerSize(_)
+                            | Call::SetPointerSize { .. }
+                            | Call::DisposePointer(_)
+                            | Call::NewHandle { .. }
                             | Call::Port {
                                 op: crate::quickdraw::PortOp::Open
                                     | crate::quickdraw::PortOp::Close
@@ -611,6 +651,10 @@ impl Runtime {
                     match call {
                         Call::RoundRect { .. }
                         | Call::PortColor { .. }
+                        | Call::NewPointer { .. }
+                        | Call::PointerSize(_)
+                        | Call::SetPointerSize { .. }
+                        | Call::DisposePointer(_)
                         | Call::Random
                         | Call::LoadFragment(_)
                         | Call::CloseFragment(_)
