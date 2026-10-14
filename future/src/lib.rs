@@ -3,11 +3,13 @@ pub mod cpu;
 pub mod files;
 pub mod fixtures;
 pub mod graphics;
+mod jump;
 mod lifecycle;
 pub mod load;
 pub mod memory;
 pub mod process;
 pub mod runtime;
+mod stdlib;
 pub mod traps;
 
 pub type Result<T> = std::result::Result<T, Error>;

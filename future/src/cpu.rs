@@ -12,6 +12,11 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    SetJump(GuestPtr),
+    LongJump {
+        buffer: GuestPtr,
+        value: u32,
+    },
     Add(u32),
     Ticks,
     TrapAddress {

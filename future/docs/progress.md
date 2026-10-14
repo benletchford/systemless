@@ -218,3 +218,35 @@ real startup path. Then extend both compiled apps through deterministic events
 and actual QuickDraw drawing. Virtual file read/open/close and additional resource
 maps, async callbacks, window acceptance and real Mixed Mode are still incomplete.
 The full rebuild goal remains active.
+
+### PPC StdCLib jump ABI (in progress)
+
+Implemented `StdCLib:__setjmp` and `StdCLib:longjmp` import routing and the
+non-AltiVec MPW 256-byte guest jump buffer. Architecture-specific register
+marshalling stays in `jump.rs`; the shared runtime dispatches typed calls.
+Buffers retain reserved bytes, can be copied by the guest, and restore LR,
+SP, TOC, nonvolatile integer/floating registers and FPSCR. Longjmp resumes
+at the saved LR and converts a zero result to one, with MPW's CR0 behavior.
+Evidence: MPW `setjmp.h` and the corresponding Apple StdCLib instruction
+sequence, inspected using MPW DumpPEF. No Apple library implementation is
+included in the runtime.
+
+Validation: all 51 tests passed, including both offscreen GPU checks and
+the compiled 68K MPW probe; strict all-target Clippy passed. New unit checks
+cover copied buffers, register restoration, reserved bytes, and atomic
+memory-fault behavior. A loaded generated PEF additionally exercises real PPC
+instructions and CFM vectors, returning through the saved continuation.
+
+Typed data imports for `_IntEnv`, `__C_phase`, `__target_for_exit`,
+`_exit_status`, and `__NubAt3` now share writable process guest storage.
+The standalone environment provides the SH signature, zero argc and guest
+null-terminated argv/envp arrays; shell environment services remain absent.
+Tests check import identity, byte layout and rejection of data/function
+class mismatches, including weak imports.
+
+End-to-end compiled PPC startup remains unverified: breakpoint and C exit
+contracts still block loading. Continue with these contracts and a compiled
+setjmp/longjmp probe; do not count generated fixtures as compiled PPC
+compatibility. Apple StdCLib exit delegates to _RTExit, which also handles
+shell context and registered cleanup. Inspect those semantics before
+implementing application exit; do not silently discard cleanup work.

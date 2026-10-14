@@ -9,6 +9,8 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    SetJump,
+    LongJump,
     TickCount,
     GetOSTrapAddress,
     GetToolboxTrapAddress,
@@ -56,6 +58,13 @@ impl Abi {
         }
     }
     pub fn resolve(library: &[u8], symbol: &[u8]) -> Option<Service> {
+        if library == b"StdCLib" {
+            return match symbol {
+                b"__setjmp" => Some(Service::SetJump),
+                b"longjmp" => Some(Service::LongJump),
+                _ => None,
+            };
+        }
         if library != b"InterfaceLib" {
             return None;
         }
@@ -154,6 +163,11 @@ impl Abi {
     }
     pub fn import(service: Service, c: &ppc::PpcCpu) -> (Call, Reply) {
         let call = match service {
+            Service::SetJump => Call::SetJump(GuestPtr(c.gpr[3])),
+            Service::LongJump => Call::LongJump {
+                buffer: GuestPtr(c.gpr[3]),
+                value: c.gpr[4],
+            },
             Service::GetOSTrapAddress
             | Service::GetToolboxTrapAddress
             | Service::NGetTrapAddress => Call::TrapAddress {

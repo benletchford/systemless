@@ -713,3 +713,81 @@ fn named_resource_stack_and_cfm_adapters_return_the_same_resource_contents() {
         );
     }
 }
+
+#[test]
+fn stdlib_data_imports_share_guest_storage_and_enforce_symbol_classes() {
+    let names: &[&[u8]] = &[
+        b"_IntEnv",
+        b"__C_phase",
+        b"__target_for_exit",
+        b"_exit_status",
+        b"__NubAt3",
+        b"__C_phase",
+    ];
+    let mut fixture = pef_program(&[0x38600000, 0x4e800020], names, 32);
+    fixture.bytes[fixture.strings..fixture.strings + 8].copy_from_slice(b"StdCLib\0");
+    for i in 0..names.len() {
+        fixture.bytes[fixture.loader + 80 + i * 4] = 1;
+    }
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    let toc = app.info.toc_or_a5;
+    let memory = &mut app.runtime.memory;
+    let mut pointers = Vec::new();
+    for i in 0..names.len() {
+        pointers.push(memory.u32(GuestPtr(toc + 8 + i as u32 * 4)).unwrap());
+    }
+    assert_eq!(pointers[1], pointers[5]);
+    assert_ne!(pointers[1], pointers[3]);
+    let env = pointers[0];
+    assert_eq!(memory.u16(GuestPtr(env)).unwrap(), 0x5348);
+    assert_eq!(memory.u32(GuestPtr(env + 2)).unwrap(), 0);
+    for offset in [6, 10] {
+        let array = memory.u32(GuestPtr(env + offset)).unwrap();
+        assert_ne!(array, 0);
+        assert_eq!(memory.u32(GuestPtr(array)).unwrap(), 0);
+    }
+    assert_eq!(memory.read(GuestPtr(pointers[2]), 256).unwrap(), &[0; 256]);
+    assert_eq!(memory.u32(GuestPtr(pointers[4])).unwrap(), 0);
+    memory
+        .write(GuestPtr(pointers[1]), &2u32.to_be_bytes())
+        .unwrap();
+    assert_eq!(memory.u32(GuestPtr(pointers[5])).unwrap(), 2);
+    assert_eq!(app.runtime.advance(10).unwrap(), Stop::Returned(0));
+    fixture.bytes[fixture.loader + 80] = 2;
+    assert!(
+        matches!(LoadedApplication::pef(&fixture.bytes,None),Err(Error::Load(message)) if message.contains("data imported as function"))
+    );
+    fixture.bytes[fixture.loader + 80] = 0x82; // weak still must match the known symbol's type
+    assert!(LoadedApplication::pef(&fixture.bytes, None).is_err());
+}
+
+#[test]
+fn pef_stdlib_jump_calls_resume_saved_guest_execution() {
+    // Real PPC instructions and CFM transition-vector calls. longjmp returns
+    // through the earlier setjmp continuation, never its own following opcode.
+    let mut fixture = pef_program(
+        &[
+            0x7fc802a6, // mflr r30
+            0x7c5f1378, // mr r31,r2
+            0x80620010, // lwz r3,16(r2): guest jump buffer
+            0x81820008, 0x800c0000, 0x804c0004, 0x7c0903a6, 0x4e800421,
+            0x7fe2fb78, // mr r2,r31
+            0x2c030000, // cmpwi r3,0
+            0x40820024, // bne saved return path
+            0x80620010, 0x38800007, // buffer, result 7
+            0x8182000c, 0x800c0000, 0x804c0004, 0x7c0903a6, 0x4e800421,
+            0x00000000, // unreachable: longjmp must not return here
+            0x7fc803a6, 0x4e800020, // mtlr r30; blr
+        ],
+        &[b"__setjmp", b"longjmp", b"__target_for_exit"],
+        20,
+    );
+    fixture.bytes[fixture.strings..fixture.strings + 8].copy_from_slice(b"StdCLib\0");
+    fixture.bytes[fixture.loader + 88] = 1;
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Returned(7));
+    assert!(matches!(
+        app.runtime.services.calls.as_slice(),
+        [Call::SetJump(_), Call::LongJump { value: 7, .. }]
+    ));
+}

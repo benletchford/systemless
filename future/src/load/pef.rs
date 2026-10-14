@@ -151,6 +151,7 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
     let mut abi = Abi::macintosh();
     let mut resolved = vec![None; symbols];
     let mut vectors = Vec::new();
+    let mut stdlib_data = false;
     for i in 0..libraries {
         let p = 56 + i * 24;
         let name = cstring(strings, u32_at(l, p)? as usize, 63)?;
@@ -186,6 +187,12 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
                     }
                     _ => return Err(invalid("function imported as data/TOC")),
                 }
+            } else if let Some(pointer) = crate::stdlib::data(name, symbol) {
+                if class & 15 != 1 {
+                    return Err(invalid("data imported as function/TOC"));
+                }
+                stdlib_data = true;
+                pointer.0
             } else if options & 0x40 != 0 || class & 0x80 != 0 {
                 0
             } else {
@@ -253,6 +260,9 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
     let entry = main.entry;
     let toc = main.toc;
     let mut memory = Memory::default();
+    if stdlib_data {
+        crate::stdlib::install(&mut memory)?;
+    }
     let mut info = Vec::new();
     for section in sections {
         info.push((section.base, section.data.len() as u32));

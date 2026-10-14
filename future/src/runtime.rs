@@ -93,6 +93,12 @@ impl Runtime {
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::SetJump(buffer) => {
+                            crate::jump::save(&mut self.cpu, &mut self.memory, buffer)?
+                        }
+                        Call::LongJump { buffer, value } => {
+                            crate::jump::restore(&mut self.cpu, &self.memory, buffer, value)?
+                        }
                         Call::TrapAddress { number, toolbox } => {
                             let value = crate::traps::address(number, toolbox);
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
@@ -204,7 +210,9 @@ impl Runtime {
                 Outcome::Service(call) => {
                     self.services.calls.push(call);
                     match call {
-                        Call::TrapAddress { .. }
+                        Call::SetJump(_)
+                        | Call::LongJump { .. }
+                        | Call::TrapAddress { .. }
                         | Call::NewHandle { .. }
                         | Call::DisposeHandle(_)
                         | Call::HandleSize(_)
