@@ -35,16 +35,16 @@ export function createSystemlessRenderer(canvas, generation, owner) {
     });
     const frame = handle.pending;
     handle.pending = null;
-    if (frame) handle.client.paint(frame.width, frame.height, frame.pixels);
+    if (frame) handle.client.paint(frame.width, frame.height, frame.pixels, frame.cursorCss);
   }).catch(error => { if (!handle.disposed) handle.error = String(error?.message || error); })
     .finally(() => { clearInterval(handle.timer); handle.timer = null; });
   return handle;
 }
 
-export function paintSystemlessRenderer(handle, width, height, pixels) {
+export function paintSystemlessRenderer(handle, width, height, pixels, cursorCss) {
   if (handle.disposed || handle.error) return;
-  if (handle.client) handle.client.paint(width, height, pixels);
-  else handle.pending = { width, height, pixels };
+  if (handle.client) handle.client.paint(width, height, pixels, cursorCss);
+  else handle.pending = { width, height, pixels, cursorCss };
 }
 
 export function paintSystemlessPacket(handle, frame) {
@@ -79,7 +79,13 @@ extern "C" {
         owner: &web_sys::Worker,
     ) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(js_name = paintSystemlessRenderer)]
-    pub fn paint_renderer(handle: &JsValue, width: u32, height: u32, pixels: &Uint8Array);
+    pub fn paint_renderer(
+        handle: &JsValue,
+        width: u32,
+        height: u32,
+        pixels: &Uint8Array,
+        cursor_css: &str,
+    );
     #[wasm_bindgen(js_name = paintSystemlessPacket)]
     pub fn paint_packet(handle: &JsValue, frame: &JsValue);
     #[wasm_bindgen(js_name = systemlessRendererStatus)]

@@ -2,10 +2,100 @@ use js_sys::{Array, Object};
 use wasm_bindgen::{prelude::wasm_bindgen, JsValue};
 use web_sys::Worker;
 
+// PointerEvent exposes fractional CSS coordinates, but web-sys inherits the
+// integer MouseEvent getters. Preserve that precision until guest-pixel rounding.
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(extends = web_sys::PointerEvent, js_name = PointerEvent)]
+    pub type PrecisePointerEvent;
+
+    #[wasm_bindgen(method, getter, structural, js_name = clientX)]
+    pub fn client_x_f64(this: &PrecisePointerEvent) -> f64;
+
+    #[wasm_bindgen(method, getter, structural, js_name = clientY)]
+    pub fn client_y_f64(this: &PrecisePointerEvent) -> f64;
+}
+
 #[wasm_bindgen(inline_js = r#"
 const archivePrefetches = new Map();
 const archiveFetchCancellations = new WeakMap();
 const MAX_ARCHIVE_PREFETCHES = 2;
+
+// CSS image cursors use screen DIPs, while getBoundingClientRect() uses page
+// CSS pixels. devicePixelRatio includes both page zoom and display density,
+// so using it directly would double a cursor on an unzoomed Retina display.
+// PointerEvent screen/client deltas let us measure zoom without guessing the
+// size of browser borders, side panels or docked developer tools.
+let cursorZoom = 1;
+let cursorGeometry;
+let cursorAnchor;
+let cursorSpan = 0;
+let cursorZoomListening = false;
+
+function cursorWindowGeometry() {
+  return [window.devicePixelRatio, window.screenX, window.screenY,
+    window.screen.width, window.screen.height, window.innerWidth,
+    window.innerHeight, window.outerWidth, window.outerHeight,
+    window.visualViewport?.scale || 1,
+    window.visualViewport?.offsetLeft || 0, window.visualViewport?.offsetTop || 0];
+}
+
+function updateCursorGeometry() {
+  const next = cursorWindowGeometry();
+  if (cursorGeometry) {
+    // Follow keyboard zoom even while the mouse is stationary. Moving the
+    // window to another display preserves page zoom; its next mouse movement
+    // recalibrates independently of that display's pixel density.
+    if (next[0] !== cursorGeometry[0]
+        && next.slice(1, 5).every((value, index) => value === cursorGeometry[index + 1])) {
+      cursorZoom *= next[0] / cursorGeometry[0];
+    }
+  }
+  if (!cursorGeometry || next.some((value, index) => value !== cursorGeometry[index])) {
+    cursorAnchor = null;
+    cursorSpan = 0;
+  }
+  cursorGeometry = next;
+}
+
+function observeCursorZoom(event) {
+  if (!event.isTrusted || event.pointerType !== "mouse") return;
+  updateCursorGeometry();
+  const point = [event.clientX, event.clientY, event.screenX, event.screenY];
+  if (!point.every(Number.isFinite)) return;
+  if (!cursorAnchor) {
+    cursorAnchor = point;
+    return;
+  }
+  const delta = point.map((value, index) => value - cursorAnchor[index]);
+  const axis = Math.abs(delta[0]) >= Math.abs(delta[1]) ? 0 : 1;
+  const span = Math.abs(delta[axis]);
+  // A longer baseline reduces the effect of browsers rounding coordinates.
+  if (span < Math.max(8, cursorSpan)) return;
+  const scale = delta[axis + 2] / delta[axis];
+  if (!(scale >= 0.1 && scale <= 10)
+      || Math.abs(delta[2] - scale * delta[0]) > 1
+      || Math.abs(delta[3] - scale * delta[1]) > 1) {
+    cursorAnchor = point;
+    cursorSpan = 0;
+    return;
+  }
+  cursorSpan = span;
+  const zoom = scale / cursorGeometry[9];
+  if (Math.abs(zoom - cursorZoom) > Math.max(zoom, cursorZoom) * 0.001) cursorZoom = zoom;
+}
+
+export function systemlessCursorZoom() {
+  if (typeof window === "undefined") return 1;
+  if (!cursorZoomListening) {
+    window.addEventListener("pointermove", observeCursorZoom, { capture: true, passive: true });
+    cursorZoomListening = true;
+  }
+  updateCursorGeometry();
+  // Until the first mouse movement, assume an unzoomed page. Subsequent zoom
+  // changes track DPR immediately, with pointer coordinates as the authority.
+  return cursorZoom * cursorGeometry[9];
+}
 
 export function cancelArchiveFetch(promise) {
   archiveFetchCancellations.get(promise)?.();
@@ -289,6 +379,8 @@ export function bootSystemlessWorker(worker, message, transfer, timeoutMs, onPro
 
 "#)]
 extern "C" {
+    #[wasm_bindgen(js_name = systemlessCursorZoom)]
+    pub fn systemless_cursor_zoom() -> f64;
     #[wasm_bindgen(js_name = cancelArchiveFetch)]
     pub fn cancel_archive_fetch(promise: &js_sys::Promise);
     #[wasm_bindgen(js_name = prefetchArchive)]

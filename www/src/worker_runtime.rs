@@ -81,7 +81,7 @@ pub struct WorkerMachine {
 impl WorkerMachine {
     #[wasm_bindgen(js_name = runtimeProtocolVersion)]
     pub fn runtime_protocol_version() -> u32 {
-        7
+        8
     }
 
     #[wasm_bindgen(js_name = create)]
@@ -162,9 +162,11 @@ impl WorkerMachine {
         indexed_render: bool,
         compact_render: bool,
         measure_presentation: bool,
+        cursor_scale: f64,
     ) -> Object {
         let started = measured_now(measure_presentation);
         self.machine.set_output_scale(output_scale);
+        self.machine.set_cursor_scale(cursor_scale);
         self.machine
             .set_external_q3_renderer_enabled(self.gpu_renderer_enabled && !debug);
         self.machine.set_worker_audio_queue_samples(
@@ -254,6 +256,7 @@ impl WorkerMachine {
         if let Some(error) = self.machine.take_save_error() {
             set_string(&result, "saveError", &error);
         }
+        set_string(&result, "cursorCss", self.machine.cursor_css());
         set_bool(&result, "running", frame_result.running);
         set_bool(&result, "uiTracking", self.machine.is_ui_tracking_active());
         set_bool(&result, "visualWork", frame_result.visual_work);
