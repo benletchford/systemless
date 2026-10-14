@@ -13,6 +13,10 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    PortColor {
+        background: bool,
+        color: u32,
+    },
     RoundRect {
         pointer: GuestPtr,
         width: i16,

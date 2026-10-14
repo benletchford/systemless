@@ -982,3 +982,35 @@ Font Manager initialization/text slice, followed by original app interaction.
 
 Validation: all 141 tests pass, including 15 optional GPU/MPW checks. The MPW
 fixtures rebuilt successfully and strict all-target Clippy passes.
+
+
+### Pattern resources and port color setters
+
+GetPattern ($A9B8 / InterfaceLib) is now an ABI adapter for the shared
+GetResource('PAT ', signed ID) service. It retains resource handle identity,
+loads actual fork bytes, exposes guest mutations, and uses the same resource
+errors and lifetime as direct GetResource calls. The 68K adapter validates the
+reserved long result before lookup. No default pattern is invented on a miss.
+Legacy comparison: `trap/dialog.rs` GetPattern and PPC `dispatch_resources.rs`
+use the same typed-resource lookup contract. The rebuild still has only its
+application resource map; system resource-chain search remains unfinished.
+
+ForeColor ($A862) and BackColor ($A863) now write the selected basic GrafPort's
+32-bit fgColor/bkColor fields through one service. Rendering reads those same
+guest fields. Setters preserve the full value; drawing currently accepts only
+black/white and faults on unsupported colors. Color GrafPort setters fail
+explicitly. This supports the basic-port slice, not legacy Systemless's broader
+RGB/color-port behavior. No host color cache was introduced.
+
+A real-CPU test alternates GetPattern between PPC and 68K, checking one handle,
+signed IDs, guest mutations and misses. The MPW fixture retrieves a signed-ID
+PAT resource, compares its handle with GetResource, draws through its bytes,
+releases it, reverses foreground/background, and checks the exact inverse gray
+pattern on both architectures. Port tests cover selection and read-only or
+color-port rejection. All 143 tests pass (128 default, 15 optional GPU/MPW),
+fixtures rebuild, and strict all-target Clippy passes.
+
+Centaurian PPC now stops on NewWindow before application execution. Next:
+shared window records, ownership and drawing/visibility integration, alongside
+substantive Font Manager startup for the 68K InitFonts stop. Original app
+interaction and real Mixed Mode remain required for full rebuild acceptance.

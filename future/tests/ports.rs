@@ -302,3 +302,34 @@ fn point_conversion_rejects_invalid_ports_and_outputs_without_partial_writes() {
     assert!(ports.convert_point(&mut m, point, true).is_err());
     assert_eq!(m.read(point, 4).unwrap(), [0, 3, 0, 4]);
 }
+
+#[test]
+fn color_setters_change_only_current_guest_port_and_reject_invalid_storage() {
+    let (mut memory, mut process, ports) = setup();
+    let first = GuestPtr(0x1080);
+    let second = GuestPtr(0x1100);
+    ports.open(&mut memory, &mut process, first).unwrap();
+    ports.open(&mut memory, &mut process, second).unwrap();
+    let original = memory.read(first, 108).unwrap().to_vec();
+    ports.set_color(&mut memory, false, 30).unwrap();
+    ports.set_color(&mut memory, true, 33).unwrap();
+    assert_eq!(memory.read(first, 108).unwrap(), original);
+    assert_eq!(memory.u32(GuestPtr(second.0 + 80)).unwrap(), 30);
+    assert_eq!(memory.u32(GuestPtr(second.0 + 84)).unwrap(), 33);
+    ports.set(&mut memory, first).unwrap();
+    ports.set_color(&mut memory, false, 0xdeadbeef).unwrap();
+    assert_eq!(memory.u32(GuestPtr(first.0 + 80)).unwrap(), 0xdeadbeef);
+    let saved = memory.read(first, 108).unwrap().to_vec();
+    memory
+        .map(GuestPtr(0x3000), saved.clone(), Permissions::RX)
+        .unwrap();
+    ports.set(&mut memory, GuestPtr(0x3000)).unwrap();
+    assert!(ports.set_color(&mut memory, false, 30).is_err());
+    assert_eq!(memory.read(GuestPtr(0x3000), 108).unwrap(), saved);
+    ports.set(&mut memory, first).unwrap();
+    memory
+        .write(GuestPtr(first.0 + 6), &0xc000u16.to_be_bytes())
+        .unwrap();
+    assert!(ports.set_color(&mut memory, false, 30).is_err());
+    assert_eq!(memory.u32(GuestPtr(first.0 + 80)).unwrap(), 0xdeadbeef);
+}

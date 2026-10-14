@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    PortColor(bool),
     RoundRect(bool),
     GetMemFragment,
     CloseConnection,
@@ -48,6 +49,7 @@ pub enum Service {
     GetHandleSize,
     SetHandleSize,
     GetResource,
+    GetPattern,
     SetSoundVol,
     GetSoundVol,
     PBControlSync,
@@ -108,6 +110,8 @@ impl Abi {
             b"CloseConnection" => Some(Service::CloseConnection),
             b"FrameRoundRect" => Some(Service::RoundRect(true)),
             b"PaintRoundRect" => Some(Service::RoundRect(false)),
+            b"ForeColor" => Some(Service::PortColor(false)),
+            b"BackColor" => Some(Service::PortColor(true)),
             b"Random" => Some(Service::Random),
             b"FindSymbol" => Some(Service::FindSymbol),
             b"CountSymbols" => Some(Service::CountSymbols),
@@ -174,6 +178,7 @@ impl Abi {
             b"StripAddress" => Some(Service::StripAddress),
             b"HLock" => Some(Service::HLock),
             b"HUnlock" => Some(Service::HUnlock),
+            b"GetPattern" => Some(Service::GetPattern),
             b"GetResource" => Some(Service::GetResource),
             b"MemError" => Some(Service::MemError),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
@@ -201,6 +206,19 @@ impl Abi {
                         width,
                         height,
                         frame: opcode == 0xa8b0,
+                    },
+                    Reply::None,
+                ))
+            }
+            0xa862 | 0xa863 => {
+                let color = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("QuickDraw stack overflow".into()))?;
+                Ok((
+                    Call::PortColor {
+                        background: opcode == 0xa863,
+                        color,
                     },
                     Reply::None,
                 ))
@@ -477,6 +495,18 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("resource ABI stack overflow".into()))?;
                 Ok((Call::ReleaseResource(handle), Reply::None))
             }
+            0xa9b8 => {
+                let id = memory.u16(GuestPtr(sp))? as i16;
+                let result = sp
+                    .checked_add(2)
+                    .ok_or_else(|| Error::Cpu("resource ABI stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 4)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::GetResource { kind: *b"PAT ", id },
+                    Reply::StackLong(GuestPtr(result)),
+                ))
+            }
             0xa9a0 => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let id = i16::from_be_bytes(args[..2].try_into().unwrap());
@@ -528,6 +558,10 @@ impl Abi {
                 width: c.gpr[4] as i16,
                 height: c.gpr[5] as i16,
                 frame,
+            },
+            Service::PortColor(background) => Call::PortColor {
+                background,
+                color: c.gpr[3],
             },
             Service::Random => Call::Random,
             Service::GetMemFragment => Call::LoadFragment(crate::cfm::LoadRequest {
@@ -636,6 +670,10 @@ impl Abi {
                 size: c.gpr[4],
             },
             Service::GetHandleSize => Call::HandleSize(c.gpr[3]),
+            Service::GetPattern => Call::GetResource {
+                kind: *b"PAT ",
+                id: c.gpr[3] as i16,
+            },
             Service::GetResource => Call::GetResource {
                 kind: c.gpr[3].to_be_bytes(),
                 id: c.gpr[4] as i16,
@@ -660,6 +698,7 @@ impl Abi {
                 || matches!(
                     service,
                     Service::InitGraf
+                        | Service::PortColor(_)
                         | Service::RoundRect(_)
                         | Service::CombineRegions(_)
                         | Service::Port(_)

@@ -169,6 +169,12 @@ impl Runtime {
                             })?;
                             ports.round_rect(gpu, &mut self.memory, r, width, height, frame)?;
                         }
+                        Call::PortColor { background, color } => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            ports.set_color(&mut self.memory, background, color)?;
+                        }
                         Call::Random => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -604,6 +610,7 @@ impl Runtime {
                     self.services.calls.push(call);
                     match call {
                         Call::RoundRect { .. }
+                        | Call::PortColor { .. }
                         | Call::Random
                         | Call::LoadFragment(_)
                         | Call::CloseFragment(_)

@@ -308,7 +308,7 @@ fn compiled_resource_drawing_and_event_app_has_pixel_parity() {
         );
     }
     assert_eq!(results[0], results[1]);
-    let expected: Vec<u8> = [0u8, 0x3c, 0x3c, 0]
+    let expected: Vec<u8> = [0x55u8, 0xaa, 0x55, 0xaa]
         .iter()
         .flat_map(|row| {
             (0..8).flat_map(move |x| {

@@ -125,7 +125,7 @@ Systemless comparisons are authorized in place of native System 7 checks.
 
 The drawing fixture now checks FrameRoundRect and PaintRoundRect on both CPUs,
 including XOR cancellation, asymmetric pen size and unchanged row padding. Its
-final expected image contains two centered four-pixel rows. Earlier rectangular
+rounded-rectangle checks include two centered four-pixel rows. Earlier rectangular
 and region results remain checked by the guest before the rounded calls.
 
 For an independent legacy geometry comparison (not native Mac validation):
@@ -138,3 +138,11 @@ rustc --edition=2021 future/fixtures/rounded-comparison.rs -o /tmp/rounded-compa
 The standalone harness includes only the legacy span generator for comparison
 and is never linked into the replacement runtime. It compares 129,600 filled
 shapes and 16,384 frames, without compiling the legacy emulator.
+
+
+GetPattern now supplies the gray drawing pattern from a signed-ID `PAT ` resource.
+The fixture compares GetPattern/GetResource handle identity, checks a missing
+ID, draws the resource bytes, and releases the handle. ForeColor/BackColor then
+reverse the selected port's black/white values without changing another port.
+The final pixel image is the inverse gray pattern: 55 AA 55 AA, with unchanged
+row-padding bytes. Earlier drawing results are checked before color reversal.

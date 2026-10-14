@@ -63,6 +63,16 @@ impl Ports {
         let value = next as i16;
         Ok(if value == i16::MIN { 0 } else { value })
     }
+    pub fn set_color(&self, memory: &mut Memory, background: bool, color: u32) -> Result<()> {
+        let port = self.current(memory)?;
+        if memory.u16(offset(port, 6)?)? & 0xc000 != 0 {
+            return Err(Error::Graphics("color GrafPorts are unsupported".into()));
+        }
+        memory.write(
+            offset(port, if background { 84 } else { 80 })?,
+            &color.to_be_bytes(),
+        )
+    }
     pub fn current(&self, memory: &Memory) -> Result<GuestPtr> {
         let port = GuestPtr(memory.u32(self.current_slot)?);
         memory.read(port, PORT_SIZE)?;
