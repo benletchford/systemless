@@ -13,6 +13,7 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    FontInfo(GuestPtr),
     TextState {
         field: crate::text::Field,
         value: u16,

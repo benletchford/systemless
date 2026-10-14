@@ -709,3 +709,15 @@ pixel operations. Closing queues exposure geometrically in updateRgn; Toolbox
 update-event delivery and BeginUpdate/EndUpdate remain the next integration.
 Builtin plain windows currently have nil windowDefProc; real guest WDEF calls
 belong to the Mixed Mode/callback work, and other styles fail explicitly.
+
+
+## Font strike boundary
+
+`font` parses a borrowed immutable snapshot of guest FONT/NFNT bytes and exposes
+metrics, glyph geometry and one-bit glyph masks. `text` resolves the selected
+old-style FONT through the same resource handles used by both CPUs, so guest
+writes affect subsequent metrics. No mutable global font registry or duplicated
+architecture font state exists. Mask extraction only decodes source storage;
+wgpu glyph composition remains the next drawing boundary. Default font
+initialization, NFNT/FOND association selection, optional tables, color fonts,
+styles/scaling and outline fallbacks are explicit outstanding work.

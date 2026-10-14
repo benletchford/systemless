@@ -9,6 +9,7 @@ QDGlobals qd;
 static unsigned char pixels[8] = {0x80,0x33,0,0x44,0,0x55,0,0x66};
 int main(void) {
     GrafPort port;
+    FontInfo fontInfo;
     GrafPort other;
     GrafPtr current;
     BitMap bitmap;
@@ -51,6 +52,9 @@ int main(void) {
     TextFace(underline);
     if (other.txSize!=9 || other.txFace!=underline || port.txSize!=18) return 46;
     SetPort(&port);
+    TextFont(3); TextSize(9); TextFace(0);
+    GetFontInfo(&fontInfo);
+    if (fontInfo.ascent!=2 || fontInfo.descent!=1 || fontInfo.widMax!=4 || fontInfo.leading!=-1) return 47;
     bitmap.baseAddr = (Ptr)pixels;
     bitmap.rowBytes = 2;
     bitmap.bounds = translated;

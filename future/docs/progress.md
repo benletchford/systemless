@@ -1131,3 +1131,48 @@ independent from the new runtime, and asset licenses must be preserved.
 
 Validation: all 151 tests pass (134 default and 17 optional GPU/MPW); MPW
 fixtures rebuild successfully and strict all-target Clippy passes.
+
+
+### Bitmap-font decoding and resource-backed metrics
+
+Added an independent checked FONT/NFNT strike decoder. It validates the 26-byte
+header, character range, dimensions, bitmap extent, location monotonicity,
+width-table offset, missing glyph and terminal word before exposing glyphs.
+Glyph bearings remain wide signed values (unsigned offset byte plus kernMax),
+advances remain distinct from bitmap widths, and masks retain exact packed-bit
+pixels. Missing characters and -1 width entries resolve to the missing glyph.
+Positive nDescent contributes the high word of the width-table offset; the
+calculation uses wide checked arithmetic, including for 32-bit hosts. Resources
+and per-glyph masks have explicit 16 MiB limits. Color/depth and auxiliary-table
+formats fail explicitly while the first monochrome strike path is implemented.
+
+GetFontInfo ($A88B / InterfaceLib) now resolves an explicitly selected plain
+old-style FONT strike by family*128+pointSize, using the shared Resource Manager.
+It reads live guest handle bytes on each call, preserves signed metric values,
+and validates the eight-byte output before lookup/publication. Both ABIs write
+the same FontInfo layout. Default/system/application font substitution, point
+size zero, styled/scaled metrics, FOND associations and NFNT ID selection are
+still unsupported and fault explicitly. This does not initialize the Font
+Manager or render glyphs yet.
+
+Evidence: Apple's [bitmap font resource](https://leopard-adc.pepas.com/documentation/mac/Text/Text-250.html),
+[font-type bits](https://leopard-adc.pepas.com/documentation/mac/Text/Text-251.html)
+and [extended offset](https://leopard-adc.pepas.com/documentation/mac/Text/Text-252.html)
+references define the parsed layout. Legacy fonts/resources.rs provides a
+separate comparison for packed bitmap locations, missing-glyph lookup and
+bearing arithmetic. The rebuild does not retain its global font cache or clamp
+bearings to i8; it also handles the documented extended offset, which the
+legacy parser does not currently combine with nDescent.
+
+Four focused tests cover exact masks/metrics/advances, signed bearings,
+missing glyphs, every truncated prefix, corrupt table offsets/locations/types,
+extended offsets, and actual PPC/68K GetFontInfo calls sharing mutated guest
+resource data. A small original synthetic FONT resource in the MPW fixture
+also supplies exact metrics through both compiled architectures. No Apple
+font artwork or licensed fallback asset was copied. Centaurian's PPC strong
+import stop remains TEStyleNew and the original 68K InitFonts stop remains.
+Next: licensed system-font fallback and InitFonts, shared measurement and
+wgpu glyph drawing, then TextEdit and title-bearing windows.
+
+Validation: all 155 tests pass (138 default and 17 optional GPU/MPW); the MPW
+fixtures rebuild successfully and strict all-target Clippy passes.

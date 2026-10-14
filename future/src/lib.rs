@@ -5,6 +5,7 @@ pub mod cpu;
 pub mod events;
 pub mod files;
 pub mod fixtures;
+pub mod font;
 pub mod graphics;
 pub mod host_input;
 mod jump;

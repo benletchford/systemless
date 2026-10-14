@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    FontInfo,
     TextState(crate::text::Field),
     NewWindow,
     Window(crate::windows::Op),
@@ -128,6 +129,7 @@ impl Abi {
             b"TextFace" => Some(Service::TextState(crate::text::Field::Face)),
             b"TextMode" => Some(Service::TextState(crate::text::Field::Mode)),
             b"TextSize" => Some(Service::TextState(crate::text::Field::Size)),
+            b"GetFontInfo" => Some(Service::FontInfo),
             b"Random" => Some(Service::Random),
             b"FindSymbol" => Some(Service::FindSymbol),
             b"CountSymbols" => Some(Service::CountSymbols),
@@ -313,6 +315,14 @@ impl Abi {
                     .checked_add(2)
                     .ok_or_else(|| Error::Cpu("text stack overflow".into()))?;
                 Ok((Call::TextState { field, value }, Reply::None))
+            }
+            0xa88b => {
+                let destination = GuestPtr(memory.u32(GuestPtr(sp))?);
+                memory.validate_write(destination, 8)?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("font metrics stack overflow".into()))?;
+                Ok((Call::FontInfo(destination), Reply::None))
             }
             0xa861 => {
                 memory.validate_write(GuestPtr(sp), 2)?;
@@ -688,6 +698,7 @@ impl Abi {
                 field,
                 value: c.gpr[3] as u16,
             },
+            Service::FontInfo => Call::FontInfo(GuestPtr(c.gpr[3])),
             Service::Random => Call::Random,
             Service::GetMemFragment => Call::LoadFragment(crate::cfm::LoadRequest {
                 source: GuestPtr(c.gpr[3]),
@@ -839,6 +850,7 @@ impl Abi {
                                 | crate::windows::Op::Close
                                 | crate::windows::Op::Dispose
                         )
+                        | Service::FontInfo
                         | Service::TextState(_)
                         | Service::RoundRect(_)
                         | Service::CombineRegions(_)

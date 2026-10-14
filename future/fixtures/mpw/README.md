@@ -168,3 +168,9 @@ The drawing probe also selects TextFont, TextSize, TextFace and TextMode on two
 ports and checks their independent guest fields. TextFace uses the Universal
 Interfaces word-sized StyleParameter argument and byte-sized port StyleField.
 These checks do not exercise font loading or glyph drawing.
+
+
+The drawing probe selects family 3 at size 9 and calls GetFontInfo on an original
+synthetic FONT resource (ID 393). It checks ascent 2, descent 1, maximum width 4
+and leading -1 on both CPUs. The resource contains tiny test glyphs, not copied
+font artwork. Glyph drawing and system-font fallback remain pending.
