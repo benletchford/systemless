@@ -14,12 +14,14 @@ pub enum Architecture {
 pub enum Call {
     Add(u32),
     Ticks,
+    TrapAddress { number: u16, toolbox: bool },
     NewHandle { size: u32, clear: bool },
     DisposeHandle(u32),
     HandleSize(u32),
     GetResource { kind: [u8; 4], id: i16 },
     MemError,
     ResError,
+    CurResFile,
     Draw(GuestPtr),
     Callback(GuestPtr),
     Exit(u32),
@@ -92,6 +94,24 @@ impl Cpu {
         match self {
             Self::M68k(c) => {
                 memory.fetch(GuestPtr(c.pc), 2, 2)?;
+                if !abi.fixture {
+                    if let Some(mut opcode) = crate::traps::opcode(c.pc) {
+                        // A JSR to a trap-table routine has a return address above
+                        // the ordinary trap arguments. Remove it before decoding.
+                        let ret = memory.u32(GuestPtr(c.dar[15]))?;
+                        c.dar[15] = c.dar[15]
+                            .checked_add(4)
+                            .ok_or_else(|| Error::Cpu("trap entry stack overflow".into()))?;
+                        // OS patch chains carry the original trap word in D1.
+                        let original = c.dar[1] as u16;
+                        if opcode & 0x800 == 0 && original & 0xf0ff == opcode & 0xf0ff {
+                            opcode = original;
+                        }
+                        let (call, reply) = crate::abi::Abi::trap(opcode, c, memory)?;
+                        c.pc = ret;
+                        return Ok(Outcome::Macintosh(call, reply));
+                    }
+                }
                 let mut bus = Bus {
                     memory,
                     fault: None,

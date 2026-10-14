@@ -20,9 +20,10 @@ Observed on 2026-10-14: compilation and fork generation succeed. MPW 68K startup
 inspects its caller's instruction bytes. Loaded CODE applications now receive a
 readable/executable ExitToShell return trampoline instead of an unmapped private
 sentinel, and a regression checks both inspection and return execution. Startup
-now advances through global initialization to instruction boundary 759, where
-it requests GetOSTrapAddress (A346), querying Gestalt (A1AD). The Trap Manager
-lookup service and its callable entries remain to be implemented.
+now passes global initialization, trap availability checks and CurResFile. At
+instruction boundary 902 it requests PBGetFCBInfo (HFSDispatch A260, selector 8),
+which requires a real virtual file/fork record for its resource-file reference.
+This file-system service is the next missing startup requirement.
 
 PPC preparation stops at required import `StdCLib:_BreakPoint`. The other StdCLib
 imports are `__setjmp`, `_IntEnv`, `__C_phase`, `__target_for_exit`, `_exit_status`,

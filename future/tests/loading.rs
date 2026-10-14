@@ -461,3 +461,152 @@ fn code_startup_can_inspect_and_return_through_exit_to_shell() {
         .write(GuestPtr(systemless_future::load::APPLICATION_RETURN), &[0])
         .is_err());
 }
+
+#[test]
+fn trap_lookup_masks_numbers_preserves_errors_and_calls_toolbox_stack_abi() {
+    use systemless_future::traps::{address, UNIMPLEMENTED};
+    assert_eq!(address(0xa1ad, false), UNIMPLEMENTED);
+    assert_eq!(address(0xa89f, true), UNIMPLEMENTED);
+    assert_eq!(address(0xf975, true), address(0x175, true));
+    assert_ne!(address(0xa975, true), UNIMPLEMENTED);
+    // Get TickCount's address, reserve a long result and JSR through it.
+    let file = code_program(&[
+        0x303c, 0xa975, 0xa746, 0x598f, 0x4e90, 0x201f, 0x2b40, 0xfffc, 0xa9f4,
+    ]);
+    let mut app = LoadedApplication::code(&file).unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0x16a), &42u32.to_be_bytes())
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0x220), &(-108i16).to_be_bytes())
+        .unwrap();
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Exit(0));
+    assert_eq!(
+        app.runtime
+            .memory
+            .u32(GuestPtr(systemless_future::load::A5_BASE - 4))
+            .unwrap(),
+        42
+    );
+    assert_eq!(
+        app.runtime.memory.u16(GuestPtr(0x220)).unwrap() as i16,
+        -108
+    );
+}
+
+#[test]
+fn callable_os_trap_uses_original_word_in_d1_and_shared_heap() {
+    let file = code_program(&[
+        0x303c, 0xa122, 0xa346, 0x700c, 0x323c, 0xa322, 0x4e90, 0x2b48, 0xfffc, 0xa9f4,
+    ]);
+    let mut app = LoadedApplication::code(&file).unwrap();
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Exit(0));
+    let h = app
+        .runtime
+        .memory
+        .u32(GuestPtr(systemless_future::load::A5_BASE - 4))
+        .unwrap();
+    assert_ne!(h, 0);
+    assert_eq!(
+        app.runtime
+            .process
+            .handle_size(&app.runtime.memory, h)
+            .unwrap(),
+        12
+    );
+    let p = app.runtime.memory.u32(GuestPtr(h)).unwrap();
+    assert_eq!(app.runtime.memory.read(GuestPtr(p), 12).unwrap(), &[0; 12]);
+    assert!(app
+        .runtime
+        .services
+        .calls
+        .contains(&systemless_future::cpu::Call::NewHandle {
+            size: 12,
+            clear: true
+        }));
+}
+
+#[test]
+fn unsupported_trap_pointer_is_callable_and_faults_explicitly() {
+    let file = code_program(&[0x303c, 0xa1ad, 0xa346, 0x4e90, 0xa9f4]);
+    let mut app = LoadedApplication::code(&file).unwrap();
+    let error = app.runtime.advance(100).unwrap_err().to_string();
+    assert!(error.contains("dsCoreErr 12"), "{error}");
+    assert!(app.runtime.advance(1).is_err());
+}
+
+#[test]
+fn ppc_trap_lookup_has_the_same_identity_as_68k() {
+    let f = pef_program(
+        &[
+            0x7fc802a6, 0x7c5f1378, 0x3860a975, 0x38800001, 0x819f0008, 0x800c0000, 0x804c0004,
+            0x7c0903a6, 0x4e800421, 0x907f0010, 0x7fc803a6, 0x4e800020,
+        ],
+        &[b"NGetTrapAddress"],
+        24,
+    );
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let expected = systemless_future::traps::address(0xa975, true);
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Returned(expected));
+    assert_eq!(
+        app.runtime
+            .memory
+            .u32(GuestPtr(app.info.sections[1].0 + 16))
+            .unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn callable_resource_trap_pops_arguments_but_preserves_pascal_result() {
+    let f = code_program(&[
+        0x303c, 0xa9a0, 0xa746, 0x598f, 0x2f3c, 0x4441, 0x5441, 0x3f3c, 0xfff9, 0x4e90, 0x201f,
+        0x2b40, 0xfffc, 0xa9f4,
+    ]);
+    let mut app = LoadedApplication::code(&f).unwrap();
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Exit(0));
+    let h = app
+        .runtime
+        .memory
+        .u32(GuestPtr(systemless_future::load::A5_BASE - 4))
+        .unwrap();
+    let p = app.runtime.memory.u32(GuestPtr(h)).unwrap();
+    assert_eq!(app.runtime.memory.read(GuestPtr(p), 3).unwrap(), &[1, 2, 3]);
+    if let systemless_future::cpu::Cpu::M68k(c) = &app.runtime.cpu {
+        assert_eq!(
+            c.dar[15],
+            systemless_future::load::STACK_BASE + systemless_future::load::STACK_SIZE - 0x100
+        );
+    }
+}
+
+#[test]
+fn current_resource_file_is_shared_process_state_on_both_abis() {
+    let file = code_program(&[0x554f, 0xa994, 0x301f, 0x48c0, 0x2b40, 0xfffc, 0xa9f4]);
+    let mut app = LoadedApplication::code(&file).unwrap();
+    let reference = app.runtime.process.current_resource_file();
+    assert!(reference > 0);
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Exit(0));
+    assert_eq!(
+        app.runtime
+            .memory
+            .u32(GuestPtr(systemless_future::load::A5_BASE - 4))
+            .unwrap(),
+        reference as u32
+    );
+    let f = pef_program(
+        &[
+            0x7fc802a6, 0x81820008, 0x800c0000, 0x804c0004, 0x7c0903a6, 0x4e800421, 0x7fc803a6,
+            0x4e800020,
+        ],
+        &[b"CurResFile"],
+        16,
+    );
+    let mut app = LoadedApplication::pef(&f.bytes, Some(&file)).unwrap();
+    assert_eq!(
+        app.runtime.advance(100).unwrap(),
+        Stop::Returned(app.runtime.process.current_resource_file() as u32)
+    );
+}

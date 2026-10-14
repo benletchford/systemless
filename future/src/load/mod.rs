@@ -78,6 +78,7 @@ pub(super) fn finish(
     sections: Vec<(u32, u32)>,
     abi: Abi,
 ) -> Result<LoadedApplication> {
+    crate::traps::install(&mut memory)?;
     memory.map(GuestPtr(0), vec![0; 4096], Permissions::RW)?;
     memory.map(
         GuestPtr(STACK_BASE),
@@ -110,7 +111,7 @@ pub(super) fn finish(
     )?;
     let mut runtime = Runtime::new(memory, cpu, None);
     runtime.abi = abi;
-    runtime.process.resources = resources;
+    runtime.process.install_application_resources(resources);
     Ok(LoadedApplication {
         runtime,
         info: LoadInfo {

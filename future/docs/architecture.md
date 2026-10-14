@@ -183,3 +183,20 @@ Primary references: [CFM special symbols](https://dev.os9.ca/techpubs/mac/runtim
 [PEF loader header](https://dev.os9.ca/techpubs/mac/runtimehtml/RTArch-96.html),
 and Apple's [CFM reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Code_Fragment_Manager/index.html)
 for the System 7 initialization-block layout (680x0 alignment).
+
+### Trap identities and callable entries
+
+Installed OS and Toolbox routines have stable readable executable entry addresses.
+Lookup masks the trap number according to table type; every unsupported routine
+resolves to the same Unimplemented entry, which faults with dsCoreErr 12 when
+called. Native 68K JSR entries remove the caller return address before ABI decoding,
+then return after the shared service applies its result. OS entries accept the
+original trap word in D1 so modifier variants retain their semantics. PPC CFM
+lookup invokes the same address resolver. This does not yet implement patching,
+daisy chains, or PPC calls through returned 68K pointers (Mixed Mode is pending).
+
+CurResFile reads the process's installed application-map reference. The loader
+currently creates one map; opening and switching additional maps must be tied to
+the forthcoming VFS. Primary contracts: [trap lookup](https://dev.os9.ca/techpubs/mac/OSUtilities/OSUtilities-177.html),
+[OS trap D1 parameter](https://dev.os9.ca/techpubs/mac/PPCSoftware/PPCSoftware-16.html),
+and [application resource opening](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-20.html).

@@ -7,6 +7,7 @@ pub mod load;
 pub mod memory;
 pub mod process;
 pub mod runtime;
+pub mod traps;
 
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]

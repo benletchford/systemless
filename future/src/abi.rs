@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     TickCount,
+    GetOSTrapAddress,
+    GetToolboxTrapAddress,
+    NGetTrapAddress,
     ExitToShell,
     NewHandle,
     NewHandleClear,
@@ -18,6 +21,7 @@ pub enum Service {
     GetResource,
     MemError,
     ResError,
+    CurResFile,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reply {
@@ -26,6 +30,7 @@ pub enum Reply {
     StackWord(GuestPtr),
     PpcR3,
     M68kHandle,
+    M68kA0,
     M68kD0,
     M68kError,
 }
@@ -51,6 +56,11 @@ impl Abi {
             return None;
         }
         match symbol {
+            b"GetOSTrapAddress" => Some(Service::GetOSTrapAddress),
+            b"GetToolboxTrapAddress" | b"GetToolTrapAddress" => {
+                Some(Service::GetToolboxTrapAddress)
+            }
+            b"NGetTrapAddress" => Some(Service::NGetTrapAddress),
             b"TickCount" => Some(Service::TickCount),
             b"ExitToShell" => Some(Service::ExitToShell),
             b"NewHandle" => Some(Service::NewHandle),
@@ -59,6 +69,7 @@ impl Abi {
             b"GetHandleSize" => Some(Service::GetHandleSize),
             b"GetResource" => Some(Service::GetResource),
             b"MemError" => Some(Service::MemError),
+            b"CurResFile" => Some(Service::CurResFile),
             b"ResError" => Some(Service::ResError),
             _ => None,
         }
@@ -66,6 +77,16 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa346 | 0xa746 => Ok((
+                Call::TrapAddress {
+                    number: c.dar[0] as u16,
+                    toolbox: opcode & 0x400 != 0,
+                },
+                Reply::M68kA0,
+            )),
+            0xa89f => Err(Error::Cpu(
+                "unimplemented system routine (dsCoreErr 12)".into(),
+            )),
             0xa975 => {
                 memory.read(GuestPtr(sp), 4)?;
                 Ok((Call::Ticks, Reply::StackLong(GuestPtr(sp))))
@@ -93,6 +114,10 @@ impl Abi {
                     Reply::StackLong(GuestPtr(result)),
                 ))
             }
+            0xa994 => {
+                memory.read(GuestPtr(sp), 2)?;
+                Ok((Call::CurResFile, Reply::StackWord(GuestPtr(sp))))
+            }
             0xa9af => {
                 memory.read(GuestPtr(sp), 2)?;
                 Ok((Call::ResError, Reply::StackWord(GuestPtr(sp))))
@@ -102,6 +127,13 @@ impl Abi {
     }
     pub fn import(service: Service, c: &ppc::PpcCpu) -> (Call, Reply) {
         let call = match service {
+            Service::GetOSTrapAddress
+            | Service::GetToolboxTrapAddress
+            | Service::NGetTrapAddress => Call::TrapAddress {
+                number: c.gpr[3] as u16,
+                toolbox: service == Service::GetToolboxTrapAddress
+                    || (service == Service::NGetTrapAddress && c.gpr[4] as u16 != 0),
+            },
             Service::TickCount => Call::Ticks,
             Service::ExitToShell => Call::Exit(0),
             Service::NewHandle | Service::NewHandleClear => Call::NewHandle {
@@ -116,6 +148,7 @@ impl Abi {
             },
             Service::MemError => Call::MemError,
             Service::ResError => Call::ResError,
+            Service::CurResFile => Call::CurResFile,
         };
         (
             call,
@@ -133,6 +166,10 @@ impl Reply {
             Self::None => {}
             Self::StackLong(p) => memory.write(p, &value.to_be_bytes())?,
             Self::StackWord(p) => memory.write(p, &(value as u16).to_be_bytes())?,
+            Self::M68kA0 => match cpu {
+                Cpu::M68k(c) => c.dar[8] = value,
+                _ => return Err(Error::Cpu("68K result on PPC".into())),
+            },
             Self::M68kHandle | Self::M68kD0 | Self::M68kError => match cpu {
                 Cpu::M68k(c) => {
                     if self == Self::M68kHandle {

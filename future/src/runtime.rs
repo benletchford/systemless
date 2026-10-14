@@ -93,6 +93,10 @@ impl Runtime {
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::TrapAddress { number, toolbox } => {
+                            let value = crate::traps::address(number, toolbox);
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
                         Call::Ticks => {
                             let value = self.tick_count()?;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
@@ -144,6 +148,10 @@ impl Runtime {
                             let value = self.memory.u16(GuestPtr(0x220))? as i16 as i32 as u32;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
                         }
+                        Call::CurResFile => {
+                            let value = self.process.current_resource_file() as i32 as u32;
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
                         Call::ResError => {
                             let value = self.memory.u16(GuestPtr(0xa60))? as i16 as i32 as u32;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
@@ -170,12 +178,14 @@ impl Runtime {
                 Outcome::Service(call) => {
                     self.services.calls.push(call);
                     match call {
-                        Call::NewHandle { .. }
+                        Call::TrapAddress { .. }
+                        | Call::NewHandle { .. }
                         | Call::DisposeHandle(_)
                         | Call::HandleSize(_)
                         | Call::GetResource { .. }
                         | Call::MemError
-                        | Call::ResError => {
+                        | Call::ResError
+                        | Call::CurResFile => {
                             return Err(Error::Cpu("Macintosh service on fixture route".into()))
                         }
                         Call::Ticks => {

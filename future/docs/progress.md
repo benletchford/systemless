@@ -173,3 +173,21 @@ then extending them through events and QuickDraw. The rebuild remains incomplete
 
 Validation for the return-trampoline fix: all 35 tests pass, including both
 explicit GPU tests, and strict all-target clippy passes on Apple M1/Metal.
+
+## 2026-10-14: callable trap lookup and current resource map
+
+Implemented GetOSTrapAddress/GetToolboxTrapAddress/NGetTrapAddress, shared
+Unimplemented identity with explicit dsCoreErr failure, and callable 68K OS and
+Toolbox entries. Tests cover number masks, PPC/68K identity, preservation of
+unrelated error state, D1 modifier words, Pascal arguments/results and shared heap
+operations through retrieved addresses. CurResFile now reflects the process's
+installed application resource map through both ABIs.
+
+All 41 tests pass (including both real-GPU tests), as does strict all-target clippy.
+The compiled 68K MPW probe now reaches boundary 902: HFSDispatch A260 selector 8,
+PBGetFCBInfo, with its application's resource-file reference. The next slice needs
+an actual virtual file/fork record supplying this information, then the following
+startup requests. Do not supply arbitrary successful file metadata. Relevant
+primary layouts: https://dev.os9.ca/techpubs/mac/Files/Files-122.html and
+https://dev.os9.ca/techpubs/mac/Files/Files-301A.html. PPC StdCLib support and both
+compiler-generated applications reaching their C main remain incomplete.

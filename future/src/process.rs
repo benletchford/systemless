@@ -15,6 +15,7 @@ const MEM_BAD: i16 = -111;
 #[derive(Default)]
 pub struct Process {
     pub resources: ResourceFork,
+    resource_ref: i16,
     pub mem_error: i16,
     pub res_error: i16,
     heap: Option<Heap>,
@@ -59,6 +60,16 @@ impl Heap {
     }
 }
 impl Process {
+    /// The loader currently owns one application resource map per process.
+    /// Reference numbers are process-local; additional files will receive distinct IDs.
+    pub fn install_application_resources(&mut self, resources: ResourceFork) {
+        self.resources = resources;
+        self.resource_ref = 1;
+    }
+    pub fn current_resource_file(&self) -> i16 {
+        self.resource_ref
+    }
+
     fn ensure_heap(&mut self, memory: &mut Memory) -> Result<()> {
         if self.heap.is_none() {
             memory.map(
