@@ -309,3 +309,31 @@ Next executable work: connect Toolbox event waiting/yielding to deterministic
 scheduling, then QuickDraw port state and real drawing calls to wgpu. OS queue
 support alone does not implement GetNextEvent/WaitNextEvent, window update or
 activation, host input, or autorepeat. The full rebuild remains active.
+
+
+### Cooperative WaitNextEvent and explicit runtime yield
+
+WaitNextEvent now suspends through `Stop::Waiting { ticks }` and preserves its
+pending request/reply. Repeated polling executes no instructions. Hosts can
+inject matching events or call `elapse_ticks` to expire the wait; unmatched
+events remain queued. Zero sleep completes immediately. Guest time wraps at
+32 bits while remaining duration saturates. Mouse-region handles fail explicitly.
+
+The new MPW `wait.c` passes on both architectures: immediate queued delivery,
+three-tick timeout checked through TickCount, then host-injected input during
+a suspended call. Unit/integration checks cover unchanged idle output, zero
+instruction budgets, clock wrap, mask filtering, stopped-clock rejection and
+unsupported regions. A CLI subprocess test verifies it resumes after a wait
+instead of reporting the yield as application completion. Headless CLI policy
+advances virtual time and keeps one total instruction budget across yields.
+
+All 66 tests passed including two GPU checks and five MPW tests. Strict
+all-target Clippy passed. Seven optional checks remain ignored by default.
+This is low-level delivery/null timeout in a windowless process; system event
+interception, mouse regions, window/high-level synthesis, GetNextEvent/EventAvail
+and interactive host pacing remain unfinished.
+
+Next: implement QuickDraw guest port/bitmap/region state and real drawing ABI
+calls backed by the existing wgpu commands. Exercise a compiled app that combines
+resources, drawing, and event consumption on each architecture; keep pixel
+readback authoritative. Full rebuild completion remains unproven and active.

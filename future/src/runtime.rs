@@ -7,6 +7,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stop {
     Budget,
+    Waiting { ticks: u32 },
     Exit(u32),
     Returned(u32),
 }
@@ -19,6 +20,12 @@ pub struct Services {
 struct Continuation {
     caller: Cpu,
 }
+struct EventWait {
+    mask: u16,
+    destination: GuestPtr,
+    reply: crate::abi::Reply,
+    remaining: u32,
+}
 pub struct Runtime {
     pub memory: Memory,
     pub services: Services,
@@ -28,6 +35,7 @@ pub struct Runtime {
     pub abi: crate::abi::Abi,
     pub process: crate::process::Process,
     continuations: Vec<Continuation>,
+    event_wait: Option<EventWait>,
     terminal: Option<Stop>,
     pub(crate) lifecycle: Option<crate::lifecycle::Lifecycle>,
     faulted: bool,
@@ -43,6 +51,7 @@ impl Runtime {
             abi: crate::abi::Abi::fixtures(),
             process: crate::process::Process::default(),
             continuations: Vec::new(),
+            event_wait: None,
             terminal: None,
             lifecycle: None,
             faulted: false,
@@ -61,7 +70,30 @@ impl Runtime {
         }
         result
     }
+    /// Host-controlled deterministic time, including periods with no guest CPU
+    /// execution. A host can inject events before advancing this clock.
+    pub fn elapse_ticks(&mut self, ticks: u32) -> Result<()> {
+        if self.faulted || self.terminal.is_some() {
+            return Err(Error::Cpu("cannot advance a stopped process clock".into()));
+        }
+        let now = self.memory.u32(GuestPtr(0x16a))?;
+        self.memory
+            .write(GuestPtr(0x16a), &now.wrapping_add(ticks).to_be_bytes())?;
+        if let Some(wait) = &mut self.event_wait {
+            wait.remaining = wait.remaining.saturating_sub(ticks);
+        }
+        Ok(())
+    }
     fn advance_inner(&mut self, budget: u64) -> Result<Stop> {
+        if budget == 0 {
+            return Ok(Stop::Budget);
+        }
+        if let Some(wait) = self.event_wait.take() {
+            if let Some(stop) = self.poll_event_wait(wait)? {
+                return Ok(stop);
+            }
+        }
+
         for _ in 0..budget {
             self.instructions = self
                 .instructions
@@ -93,6 +125,28 @@ impl Runtime {
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::WaitEvent {
+                            mask,
+                            destination,
+                            sleep,
+                            region,
+                        } => {
+                            if region.0 != 0 {
+                                return Err(Error::Cpu(
+                                    "WaitNextEvent mouse regions are not implemented".into(),
+                                ));
+                            }
+                            self.memory.validate_write(destination, 16)?;
+                            let wait = EventWait {
+                                mask,
+                                destination,
+                                reply,
+                                remaining: sleep,
+                            };
+                            if let Some(stop) = self.poll_event_wait(wait)? {
+                                return Ok(stop);
+                            }
+                        }
                         Call::PostEvent { what, message } => {
                             let ticks = self.tick_count()?;
                             let result = crate::events::post(
@@ -264,7 +318,8 @@ impl Runtime {
                 Outcome::Service(call) => {
                     self.services.calls.push(call);
                     match call {
-                        Call::PostEvent { .. }
+                        Call::WaitEvent { .. }
+                        | Call::PostEvent { .. }
                         | Call::OSEvent { .. }
                         | Call::FlushEvents { .. }
                         | Call::SetEventMask(_)
@@ -333,6 +388,30 @@ impl Runtime {
             }
         }
         Ok(Stop::Budget)
+    }
+    fn poll_event_wait(&mut self, wait: EventWait) -> Result<Option<Stop>> {
+        let ready = crate::events::available(&self.memory, wait.mask)?;
+        if !ready && wait.remaining != 0 {
+            let ticks = wait.remaining;
+            self.event_wait = Some(wait);
+            return Ok(Some(Stop::Waiting { ticks }));
+        }
+        // Validate deferred ABI output before removing an event.
+        if let crate::abi::Reply::StackByte(p) = wait.reply {
+            self.memory.validate_write(p, 1)?;
+        }
+        let now = self.tick_count()?;
+        let found = crate::events::receive(
+            &mut self.memory,
+            wait.mask,
+            wait.destination,
+            true,
+            now,
+            self.process.input,
+        )?;
+        wait.reply
+            .apply(&mut self.cpu, &mut self.memory, u32::from(found), 0)?;
+        Ok(None)
     }
     // Deterministic scheduling policy: 1000 retired boundaries per 60 Hz tick.
     // Host wall time never enters guest time; future hosts pace execution budgets.

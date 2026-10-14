@@ -248,7 +248,7 @@ match. Output memory is checked before consuming an event. ABI adapters convert
 the logical result to the raw 68K 0/-1 convention or PPC Boolean 1/0.
 
 Host keyboard/mouse ingestion, autorepeat generation, Toolbox event synthesis,
-WaitNextEvent scheduling, and arbitrary guest-inserted queue allocations remain
+mouse-region wakeups, and arbitrary guest-inserted queue allocations remain
 pending. The process input snapshot is an explicit host boundary, not a second
 copy of the queue. Real Mixed Mode callbacks remain separate unfinished work.
 
@@ -258,3 +258,30 @@ Primary contracts: Apple's [PostEvent](https://dev.os9.ca/techpubs/mac/Toolbox/T
 [FlushEvents](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-56.html), and
 [Introduction to Events](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-29.html),
 plus MPW Events.h/OSUtils.h for inline traps, record layout and evType=4.
+
+
+## Cooperative event waiting
+
+WaitNextEvent's adapters marshal a packed 68K Pascal frame/byte result or PPC
+register arguments. Runtime retains the typed request and deferred reply while
+returning `Stop::Waiting { ticks }`; the CPU is not stepped during idle polling.
+The host may add an event to the shared queue or advance deterministic time
+through `elapse_ticks`. Only a matching event or expiration completes the
+request. Unmatched events remain queued. A zero sleep never yields. The event
+record and deferred result are validated before consuming an event.
+
+Wait remaining time is a saturating duration; guest TickCount remains a wrapping
+32-bit value. Time advances explicitly while idle and through the existing
+instruction clock while executing. No host wall clock or sleep is hidden inside
+the runtime. The file CLI advances directly to wakeup times, retaining a single
+instruction budget across all yields. Interactive host pacing remains pending.
+
+This implements low-level event delivery and null-event timeout in the current
+windowless process. Mouse-region handles currently fault explicitly; region
+containment and mouse-moved events must be added with QuickDraw regions.
+Window update/activation, high-level events, system event interception and
+GetNextEvent/EventAvail are still pending. Supporting a wait is not a claim of
+complete Toolbox Event Manager compatibility.
+
+Contract: Apple's [WaitNextEvent reference](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-51.html)
+and MPW Events.h; compiled MPW callers verify both ABI paths.

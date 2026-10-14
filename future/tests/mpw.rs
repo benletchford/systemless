@@ -113,3 +113,65 @@ fn compiled_event_program_passes_on_both_architectures() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture; see fixtures/mpw/README.md"]
+fn compiled_wait_program_yields_times_out_and_wakes_on_input_on_both_cpus() {
+    use systemless_future::{events, memory::GuestPtr};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("wait.68k.rsrc")).expect("build the MPW probe first");
+    let pef = std::fs::read(root.join("wait.ppc")).unwrap();
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, None).unwrap(),
+    ] {
+        assert_eq!(
+            app.runtime.advance(10_000).unwrap(),
+            Stop::Waiting { ticks: 3 }
+        );
+        let before = app.runtime.instructions;
+        assert_eq!(
+            app.runtime.advance(10_000).unwrap(),
+            Stop::Waiting { ticks: 3 }
+        );
+        assert_eq!(app.runtime.instructions, before);
+        app.runtime.elapse_ticks(2).unwrap();
+        assert_eq!(
+            app.runtime.advance(10_000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        app.runtime.elapse_ticks(1).unwrap();
+        assert_eq!(
+            app.runtime.advance(10_000).unwrap(),
+            Stop::Waiting { ticks: 100 }
+        );
+        let ticks = app.runtime.memory.u32(GuestPtr(0x16a)).unwrap();
+        events::post(
+            &mut app.runtime.memory,
+            3,
+            42,
+            ticks,
+            app.runtime.process.input,
+        )
+        .unwrap();
+        assert_eq!(app.runtime.advance(10_000).unwrap(), Stop::Exit(0));
+        let calls = &app.runtime.services.calls;
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| matches!(c, Call::WaitEvent { .. }))
+                .count(),
+            3
+        );
+        assert_eq!(
+            &calls[calls.len() - 2..],
+            &[
+                Call::PostEvent {
+                    what: 7,
+                    message: 0x600d
+                },
+                Call::Exit(0)
+            ]
+        );
+    }
+}

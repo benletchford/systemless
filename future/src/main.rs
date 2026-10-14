@@ -420,7 +420,16 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => LoadedApplication::pef(&data, fork.as_deref())?,
     };
-    let stop = app.runtime.advance(budget)?;
+    // Deterministic headless policy: no external input; advance virtual time
+    // to each requested wakeup while retaining one total instruction budget.
+    let started = app.runtime.instructions;
+    let stop = loop {
+        let remaining = budget.saturating_sub(app.runtime.instructions - started);
+        match app.runtime.advance(remaining)? {
+            Stop::Waiting { ticks } => app.runtime.elapse_ticks(ticks)?,
+            stop => break stop,
+        }
+    };
     println!(
         "{:?}: {stop:?}, instructions={}, service_calls={}, entry={:#x}",
         app.info.architecture,

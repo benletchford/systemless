@@ -49,3 +49,11 @@ a stop mask, and directly reads the guest queue header and event elements.
 The test requires a final posted success marker before ExitToShell, so returning
 an error from 68K main cannot pass. This exercises the Operating System event
 queue; it does not claim window activation/update events or WaitNextEvent.
+
+The `wait.c` acceptance program passes on both architectures. It consumes an
+already queued event immediately, waits three virtual ticks for a null event,
+then suspends for input injected by the Rust acceptance host. Repeated polling
+while suspended must not execute guest instructions or dispatch the call again.
+The test requires the success marker after all three waits. Running this fixture
+with the file CLI alone cannot satisfy the injected-input step; use the MPW test
+command above for acceptance.

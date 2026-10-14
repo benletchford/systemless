@@ -9,6 +9,7 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    WaitNextEvent,
     PostEvent,
     GetOSEvent,
     OSEventAvail,
@@ -41,6 +42,7 @@ pub enum Service {
 pub enum Reply {
     None,
     StackLong(GuestPtr),
+    StackByte(GuestPtr),
     StackWord(GuestPtr),
     PpcR3,
     M68kHandle,
@@ -81,6 +83,7 @@ impl Abi {
             return None;
         }
         match symbol {
+            b"WaitNextEvent" => Some(Service::WaitNextEvent),
             b"PostEvent" => Some(Service::PostEvent),
             b"GetOSEvent" => Some(Service::GetOSEvent),
             b"OSEventAvail" => Some(Service::OSEventAvail),
@@ -111,6 +114,23 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa860 => {
+                let args = memory.read(GuestPtr(sp), 16)?;
+                let word = |i| u32::from_be_bytes(args[i..i + 4].try_into().unwrap());
+                let call = Call::WaitEvent {
+                    region: GuestPtr(word(0)),
+                    sleep: word(4),
+                    destination: GuestPtr(word(8)),
+                    mask: u16::from_be_bytes(args[12..14].try_into().unwrap()),
+                };
+                let result = sp
+                    .checked_add(14)
+                    .ok_or_else(|| Error::Cpu("event ABI stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 1)?;
+                c.dar[15] = result;
+                Ok((call, Reply::StackByte(GuestPtr(result))))
+            }
+
             0xa02f => Ok((
                 Call::PostEvent {
                     what: c.dar[8] as u16,
@@ -204,6 +224,13 @@ impl Abi {
     }
     pub fn import(service: Service, c: &ppc::PpcCpu) -> (Call, Reply) {
         let call = match service {
+            Service::WaitNextEvent => Call::WaitEvent {
+                mask: c.gpr[3] as u16,
+                destination: GuestPtr(c.gpr[4]),
+                sleep: c.gpr[5],
+                region: GuestPtr(c.gpr[6]),
+            },
+
             Service::PostEvent => Call::PostEvent {
                 what: c.gpr[3] as u16,
                 message: c.gpr[4],
@@ -276,6 +303,7 @@ impl Reply {
     pub fn apply(self, cpu: &mut Cpu, memory: &mut Memory, value: u32, error: i16) -> Result<()> {
         match self {
             Self::None => {}
+            Self::StackByte(p) => memory.write(p, &[value as u8])?,
             Self::StackLong(p) => memory.write(p, &value.to_be_bytes())?,
             Self::StackWord(p) => memory.write(p, &(value as u16).to_be_bytes())?,
             Self::M68kFileError | Self::M68kOSEvent => match cpu {

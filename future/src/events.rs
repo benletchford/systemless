@@ -163,3 +163,13 @@ pub fn flush(memory: &mut Memory, which: u16, stop: u16) -> Result<u16> {
     relink(memory, &keep)?;
     Ok(stopped)
 }
+
+/// Readiness probing does not write an event record or consume queue entries.
+pub fn available(memory: &Memory, mask: u16) -> Result<bool> {
+    for p in links(memory)? {
+        if matches(memory.u16(GuestPtr(p + 6))?, mask) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}

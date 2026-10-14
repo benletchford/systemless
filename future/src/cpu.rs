@@ -12,6 +12,12 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    WaitEvent {
+        mask: u16,
+        destination: GuestPtr,
+        sleep: u32,
+        region: GuestPtr,
+    },
     PostEvent {
         what: u16,
         message: u32,
