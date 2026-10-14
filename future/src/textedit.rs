@@ -25,6 +25,11 @@ pub enum Op {
     },
     Calculate(u32),
     Delete(u32),
+    Idle(u32),
+    Activate {
+        handle: u32,
+        active: bool,
+    },
     Select {
         start: u32,
         end: u32,
@@ -59,6 +64,16 @@ fn write_handle(
 ) -> Result<()> {
     let data = pointer(memory, process, handle, bytes.len() as u32)?;
     memory.write(data, bytes)
+}
+fn validate_overlay_hooks(memory: &Memory, data: GuestPtr) -> Result<()> {
+    for offset in [66, 86, 90] {
+        if memory.u32(GuestPtr(data.0 + offset))? != 0 {
+            return Err(bad(
+                "custom TextEdit selection/caret callbacks are unsupported",
+            ));
+        }
+    }
+    Ok(())
 }
 impl Manager {
     pub fn call(
@@ -181,7 +196,7 @@ impl Manager {
                 process.mem_error = 0;
                 Ok(handle)
             }
-            Op::Delete(_) | Op::Update { .. } => {
+            Op::Activate { .. } | Op::Idle(_) | Op::Delete(_) | Op::Update { .. } => {
                 Err(bad("TextEdit redraw requires the graphics route"))
             }
             Op::SetText {
@@ -200,21 +215,7 @@ impl Manager {
                 self.layout(memory, process, handle, bytes, true, None)
             }
             Op::Select { start, end, handle } => {
-                self.call(memory, process, Op::GetText(handle), ticks)?;
-                let data = pointer(memory, process, handle, 128)?;
-                if memory.u16(GuestPtr(data.0 + 36))? != 0 {
-                    return Err(bad("active TextEdit selection painting is unsupported"));
-                }
-                let length = memory.u16(GuestPtr(data.0 + 60))?;
-                if length > 32767 {
-                    return Err(bad("invalid TextEdit text length"));
-                }
-                let start = start.min(u32::from(length)) as u16;
-                let end = end.min(u32::from(length)) as u16;
-                let mut selection = start.to_be_bytes().to_vec();
-                selection.extend(end.to_be_bytes());
-                memory.write(GuestPtr(data.0 + 32), &selection)?;
-                Ok(0)
+                self.select_storage(memory, process, handle, (start, end), false)
             }
             Op::Calculate(handle) => {
                 self.call(memory, process, Op::GetText(handle), ticks)?;
@@ -277,7 +278,112 @@ impl Manager {
             }
         }
     }
-    /// Delete an inactive selection without touching either TextEdit scrap.
+    fn select_storage(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        handle: u32,
+        range: (u32, u32),
+        allow_active: bool,
+    ) -> Result<u32> {
+        self.call(memory, process, Op::GetText(handle), 0)?;
+        let data = pointer(memory, process, handle, 128)?;
+        let active = memory.u16(GuestPtr(data.0 + 36))? != 0;
+        if active && !allow_active {
+            return Err(bad("active TextEdit selection requires the graphics route"));
+        }
+        if active {
+            validate_overlay_hooks(memory, data)?;
+        }
+        let length = memory.u16(GuestPtr(data.0 + 60))?;
+        if length > 32767 {
+            return Err(bad("invalid TextEdit text length"));
+        }
+        let start = range.0.min(u32::from(length)) as u16;
+        let end = range.1.min(u32::from(length)) as u16;
+        let mut selection = start.to_be_bytes().to_vec();
+        selection.extend(end.to_be_bytes());
+        memory.write(GuestPtr(data.0 + 32), &selection)?;
+        Ok(0)
+    }
+    pub fn select(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: Option<&crate::graphics::Graphics>,
+        handle: u32,
+        range: (u32, u32),
+        ticks: u32,
+    ) -> Result<()> {
+        self.call(memory, process, Op::GetText(handle), 0)?;
+        let data = pointer(memory, process, handle, 128)?;
+        let active = memory.u16(GuestPtr(data.0 + 36))? != 0;
+        let gpu = if active {
+            Some(gpu.ok_or_else(|| bad("active TextEdit selection requires a GPU"))?)
+        } else {
+            None
+        };
+        if active {
+            memory.validate_write(GuestPtr(data.0 + 52), 6)?;
+        }
+        self.select_storage(memory, process, handle, range, true)?;
+        if let Some(gpu) = gpu {
+            let mut caret = ticks.to_be_bytes().to_vec();
+            caret.extend(1u16.to_be_bytes());
+            memory.write(GuestPtr(data.0 + 52), &caret)?;
+            self.redraw(memory, process, gpu, GuestPtr(data.0 + 8), handle, true)?;
+        }
+        Ok(())
+    }
+    pub fn idle(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: Option<&crate::graphics::Graphics>,
+        handle: u32,
+        ticks: u32,
+    ) -> Result<()> {
+        self.call(memory, process, Op::GetText(handle), 0)?;
+        let data = pointer(memory, process, handle, 128)?;
+        if memory.u16(GuestPtr(data.0 + 36))? == 0
+            || memory.u16(GuestPtr(data.0 + 32))? != memory.u16(GuestPtr(data.0 + 34))?
+        {
+            return Ok(());
+        }
+        let previous = memory.u32(GuestPtr(data.0 + 52))?;
+        let interval = memory.u32(GuestPtr(0x2f4))?;
+        if ticks.wrapping_sub(previous) < interval {
+            return Ok(());
+        }
+        let gpu = gpu.ok_or_else(|| bad("TextEdit caret blinking requires a GPU"))?;
+        validate_overlay_hooks(memory, data)?;
+        let visible = memory.u16(GuestPtr(data.0 + 56))? == 0;
+        let mut caret = ticks.to_be_bytes().to_vec();
+        caret.extend(u16::from(visible).to_be_bytes());
+        memory.write(GuestPtr(data.0 + 52), &caret)?;
+        self.redraw(memory, process, gpu, GuestPtr(data.0 + 8), handle, true)
+    }
+    pub fn activate(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &crate::graphics::Graphics,
+        handle: u32,
+        active: bool,
+        ticks: u32,
+    ) -> Result<()> {
+        self.call(memory, process, Op::GetText(handle), 0)?;
+        let data = pointer(memory, process, handle, 128)?;
+        validate_overlay_hooks(memory, data)?;
+        memory.validate_write(GuestPtr(data.0 + 36), 2)?;
+        memory.validate_write(GuestPtr(data.0 + 52), 6)?;
+        memory.write(GuestPtr(data.0 + 36), &u16::from(active).to_be_bytes())?;
+        let mut caret = ticks.to_be_bytes().to_vec();
+        caret.extend(u16::from(active).to_be_bytes());
+        memory.write(GuestPtr(data.0 + 52), &caret)?;
+        self.redraw(memory, process, gpu, GuestPtr(data.0 + 8), handle, true)
+    }
+    /// Delete a selection without touching either TextEdit scrap.
     /// Layout publication is transactional; GPU failures after publication are terminal.
     pub fn delete(
         &mut self,
@@ -285,11 +391,12 @@ impl Manager {
         process: &mut Process,
         gpu: &crate::graphics::Graphics,
         handle: u32,
+        ticks: u32,
     ) -> Result<()> {
         self.call(memory, process, Op::GetText(handle), 0)?;
         let data = pointer(memory, process, handle, 128)?;
         if memory.u16(GuestPtr(data.0 + 36))? != 0 {
-            return Err(bad("active TextEdit editing is unsupported"));
+            validate_overlay_hooks(memory, data)?;
         }
         let length = memory.u16(GuestPtr(data.0 + 60))?;
         if length > 32767 {
@@ -306,7 +413,7 @@ impl Manager {
         let source = pointer(memory, process, text, u32::from(length))?;
         let mut bytes = memory.read(source, usize::from(length))?.to_vec();
         bytes.drain(usize::from(start)..usize::from(end));
-        self.layout(memory, process, handle, bytes, true, Some(start))?;
+        self.layout(memory, process, handle, bytes, true, Some((start, ticks)))?;
         if process.mem_error != 0 {
             return Ok(());
         }
@@ -340,11 +447,14 @@ impl Manager {
         let update = memory.read(rect, 8)?.to_vec();
         let data = pointer(memory, process, handle, 128)?;
         let record = memory.read(data, 128)?.to_vec();
-        if record[36..38] != [0, 0] || record[66..70] != [0; 4] {
-            return Err(bad(
-                "active selection or custom TextEdit redraw dispatch is unsupported",
-            ));
+        if record[66..70] != [0; 4] {
+            return Err(bad("custom TextEdit redraw dispatch is unsupported"));
         }
+        let active = record[36..38] != [0, 0];
+        if active {
+            validate_overlay_hooks(memory, data)?;
+        }
+        let erase = erase || active;
         let length = usize::from(u16::from_be_bytes(record[60..62].try_into().unwrap()));
         let count = usize::from(u16::from_be_bytes(record[94..96].try_into().unwrap()));
         if length > 32767 || count > length {
@@ -463,6 +573,9 @@ impl Manager {
             clip
         };
         let clip_rects = region_geometry::decode(&clip)?;
+        if count.saturating_mul(clip_rects.len()) > 1_000_000 {
+            return Err(bad("TextEdit line/clip work limit exceeded"));
+        }
         let dest = read_rect(memory, data)?;
         let just = i16::from_be_bytes(record[58..60].try_into().unwrap());
         if !matches!(just, -2..=1) {
@@ -470,6 +583,11 @@ impl Manager {
         }
         let mut top = dest.top;
         let mut lines = Vec::new();
+        let mut overlays = Vec::new();
+        let a = usize::from(u16::from_be_bytes(record[32..34].try_into().unwrap())).min(length);
+        let b = usize::from(u16::from_be_bytes(record[34..36].try_into().unwrap())).min(length);
+        let selection = a.min(b)..a.max(b);
+        let caret_visible = record[56..58] != [0, 0];
         let mut work = 0usize;
         for line in 0..count {
             let height = i32::from(i16::from_be_bytes(
@@ -482,7 +600,12 @@ impl Manager {
                 return Err(bad("invalid TextEdit line metrics"));
             }
             let start = starts[line];
-            let mut end = starts[line + 1];
+            let raw_end = starts[line + 1];
+            let mut content_end = raw_end;
+            while content_end > start && matches!(text[content_end - 1], b'\r' | b'\n') {
+                content_end -= 1;
+            }
+            let mut end = raw_end;
             while end > start && matches!(text[end - 1], b' ' | b'\r' | b'\n') {
                 end -= 1;
             }
@@ -494,6 +617,31 @@ impl Manager {
                     _ => 0,
                 };
             let baseline = top + ascent;
+            if active {
+                use crate::graphics::Rect;
+                if !selection.is_empty() {
+                    let first = selection.start.max(start);
+                    let last = selection.end.min(raw_end);
+                    if first < last {
+                        let x1 = left + strike.width(&text[start..first.min(content_end)])?;
+                        let x2 = if last > content_end {
+                            read_rect(memory, GuestPtr(data.0 + 8))?.right
+                        } else {
+                            left + strike.width(&text[start..last])?
+                        };
+                        if x1 < x2 {
+                            overlays.push(Rect::new(x1, top, x2, top + height));
+                        }
+                    }
+                } else if caret_visible
+                    && selection.start >= start
+                    && (selection.start < raw_end || (line + 1 == count && content_end == raw_end))
+                {
+                    let offset = selection.start.min(content_end);
+                    let x = left + strike.width(&text[start..offset])? - i32::from(offset > start);
+                    overlays.push(Rect::new(x, top, x + 1, top + height));
+                }
+            }
             if clip_rects.iter().any(|r| {
                 baseline - i32::from(strike.metrics.ascent) < r.bottom
                     && baseline + i32::from(strike.metrics.descent) > r.top
@@ -519,6 +667,39 @@ impl Manager {
             }
             top += height;
         }
+        if active
+            && caret_visible
+            && selection.is_empty()
+            && selection.start == length
+            && (count == 0 || text.last().is_some_and(|c| matches!(c, b'\r' | b'\n')))
+        {
+            let height = i32::from(i16::from_be_bytes(
+                line_metrics[count * 4..count * 4 + 2].try_into().unwrap(),
+            ));
+            if height <= 0 {
+                return Err(bad("invalid TextEdit caret height"));
+            }
+            let left = dest.left
+                + match just {
+                    1 => (dest.right - dest.left) / 2,
+                    -1 => dest.right - dest.left,
+                    _ => 0,
+                };
+            overlays.push(crate::graphics::Rect::new(
+                left,
+                top,
+                left + 1,
+                top + height,
+            ));
+        }
+        overlays.retain(|rect| {
+            clip_rects.iter().any(|clip| {
+                rect.left < clip.right
+                    && rect.right > clip.left
+                    && rect.top < clip.bottom
+                    && rect.bottom > clip.top
+            })
+        });
         if clip_rects.is_empty() {
             return Ok(());
         }
@@ -544,6 +725,15 @@ impl Manager {
                 crate::text::move_to(memory, ports, h, v)?;
                 crate::text::draw_strike(memory, ports, gpu, &text[start..end], &strike)?;
             }
+            if !overlays.is_empty() {
+                memory.write(GuestPtr(port.0 + 56), &10u16.to_be_bytes())?;
+                memory.write(GuestPtr(port.0 + 58), &[255; 8])?;
+                memory.write(GuestPtr(port.0 + 80), &33u32.to_be_bytes())?;
+                memory.write(GuestPtr(port.0 + 84), &30u32.to_be_bytes())?;
+                for rect in overlays {
+                    ports.paint_rect(gpu, memory, rect)?;
+                }
+            }
             Ok(())
         })();
         memory.write(port, &saved)?;
@@ -558,7 +748,7 @@ impl Manager {
         handle: u32,
         bytes: Vec<u8>,
         replace: bool,
-        caret: Option<u16>,
+        caret: Option<(u16, u32)>,
     ) -> Result<u32> {
         self.call(memory, process, Op::GetText(handle), 0)?;
         let owned = self.records[&handle].clone();
@@ -628,9 +818,15 @@ impl Manager {
         }
         record[60..62].copy_from_slice(&(bytes.len() as u16).to_be_bytes());
         if replace {
-            let caret = caret.unwrap_or(bytes.len() as u16);
-            record[32..34].copy_from_slice(&caret.to_be_bytes());
-            record[34..36].copy_from_slice(&caret.to_be_bytes());
+            let offset = caret.map_or(bytes.len() as u16, |(offset, _)| offset);
+            record[32..34].copy_from_slice(&offset.to_be_bytes());
+            record[34..36].copy_from_slice(&offset.to_be_bytes());
+            if record[36..38] != [0, 0] {
+                record[56..58].copy_from_slice(&1u16.to_be_bytes());
+                if let Some((_, ticks)) = caret {
+                    record[52..56].copy_from_slice(&ticks.to_be_bytes());
+                }
+            }
         }
         let mut changes = Vec::new();
         if replace {

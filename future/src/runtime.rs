@@ -262,8 +262,45 @@ impl Runtime {
                             crate::text::move_to(&mut self.memory, ports, h, v)?;
                         }
                         Call::TextEdit(op) => {
+                            let ticks = self.tick_count()?;
                             let mut manager = std::mem::take(&mut self.process.textedit);
                             let result = match op {
+                                crate::textedit::Op::Idle(handle) => manager
+                                    .idle(
+                                        &mut self.memory,
+                                        &mut self.process,
+                                        self.graphics.as_ref(),
+                                        handle,
+                                        ticks,
+                                    )
+                                    .map(|()| 0),
+                                crate::textedit::Op::Select { start, end, handle } => manager
+                                    .select(
+                                        &mut self.memory,
+                                        &mut self.process,
+                                        self.graphics.as_ref(),
+                                        handle,
+                                        (start, end),
+                                        ticks,
+                                    )
+                                    .map(|()| 0),
+                                crate::textedit::Op::Activate { handle, active } => {
+                                    match self.graphics.as_ref() {
+                                        Some(gpu) => manager
+                                            .activate(
+                                                &mut self.memory,
+                                                &mut self.process,
+                                                gpu,
+                                                handle,
+                                                active,
+                                                ticks,
+                                            )
+                                            .map(|()| 0),
+                                        None => Err(Error::Graphics(
+                                            "TextEdit activation requires a GPU".into(),
+                                        )),
+                                    }
+                                }
                                 crate::textedit::Op::Delete(handle) => {
                                     match self.graphics.as_ref() {
                                         Some(gpu) => manager
@@ -272,6 +309,7 @@ impl Runtime {
                                                 &mut self.process,
                                                 gpu,
                                                 handle,
+                                                ticks,
                                             )
                                             .map(|()| 0),
                                         None => Err(Error::Graphics(
@@ -295,12 +333,7 @@ impl Runtime {
                                         )),
                                     }
                                 }
-                                _ => manager.call(
-                                    &mut self.memory,
-                                    &mut self.process,
-                                    op,
-                                    (self.instructions / 1000) as u32,
-                                ),
+                                _ => manager.call(&mut self.memory, &mut self.process, op, ticks),
                             };
                             self.process.textedit = manager;
                             let value = result?;

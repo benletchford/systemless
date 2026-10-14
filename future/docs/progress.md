@@ -1468,3 +1468,49 @@ selection/caret geometry/drawing remain unfinished. Continue with activation and
 selection rendering, then interactive editing and menu/window integration.
 Original app blockers and real Mixed Mode remain outstanding. The rebuild goal
 is still active; this is an executable editing milestone, not rebuild completion.
+
+### Active TextEdit selection, caret and deterministic blinking
+
+TEActivate/TEDeactivate ($A9D8/$A9D9) and TEIdle ($A9DA), plus their
+InterfaceLib imports, now use the shared TextEdit manager and GPU renderer.
+Activation updates the live active/caret phase/time fields and immediately
+redraws the clipped view; deactivation removes overlays. TESetSelect now redraws
+active records, while inactive selection remains usable without a GPU. TEDelete
+also supports active records and transactionally resets the caret timestamp when
+collapsing the selection. Custom dispatch, highlight and caret hooks explicitly
+fail before these state changes.
+
+Highlight rectangles derive from guest line starts, font advances, line metrics
+and alignment. They include selected trailing spaces and extend selected CR/LF
+segments to the view edge. Carets support wrapped lines, empty text, and the
+empty line after a trailing newline. wgpu performs monochrome XOR overlays.
+Active updates clear only the clipped update area with bkPat before redrawing
+text/overlays, making repeated updates stable rather than toggling the highlight.
+Port state and original clip ownership are restored on completion or failure.
+Inactive TEUpdate retains its existing source-mode behavior.
+
+TEIdle blinks only active insertion points after the live low-memory CaretTime
+interval ($02F4), initialized to 32 ticks in the common application loader.
+Interval zero toggles once per call. Blink phase/time are live guest fields;
+wrapping tick subtraction is deterministic. TextEdit now uses the runtime's
+canonical tick count including host-driven elapsed guest time, correcting the
+previous use of retired instruction count alone. No host wall time is involved.
+
+The legacy PPC implementation provides record/ABI/selection geometry references.
+It defers activation drawing and trims selection at visible text; immediate
+activation, newline extension and stable active redraw are independently tested
+here rather than claimed as native System 7 parity. Selection rectangle/point
+field synchronization, click/key handling, insertion, mixed style runs, clipboard,
+custom callbacks and broader window/menu integration remain outstanding.
+
+All 171 tests pass (149 default, 22 optional GPU/MPW), MPW fixtures rebuild and
+strict all-target Clippy passes. The GPU test covers plain/styled activation,
+repeated updates, active selection/deletion, caret phase/timing, wraparound,
+wrapping/newline geometry, partial updates, no-GPU rejection and hook rejection.
+The real PPC constructor test proves elapsed guest ticks reach caretTime. The
+MPW drawing fixture exercises activation/deactivation, selection, active deletion
+and two idle blink phases on both CPUs, checking exact pixels and retained port
+fields. This is not original-application interaction acceptance. Continue with
+TEKey/click interaction and substantive Menu Manager initialization to advance
+the original-app stops. Real Mixed Mode and full rebuild acceptance remain
+outstanding; the goal remains active.

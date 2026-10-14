@@ -794,3 +794,14 @@ route. Unsupported active editing/layout callbacks fail before publication;
 rendering faults after publication are terminal and retain the committed edit.
 Transient port state is restored on rendering failure. Scrap remains independent
 of TEDelete. Active selection/caret interaction is still a separate missing path.
+
+
+Active TextEdit redraw clears the clipped update area, draws the source glyphs,
+and applies monochrome XOR selection/caret overlays using wgpu. This guarantees
+repeatable active updates without maintaining a host-side overlay pixel cache.
+Geometry derives from live guest line/style tables and font advances; port state
+and temporary clip handles follow the existing restoration contract. Selection
+and activation publish guest state before redraw, so GPU faults remain terminal
+with that state retained. TEIdle uses the shared guest tick count and live
+CaretTime low-memory value; it does not sample host wall time. Direct selRect/
+selPoint synchronization and application callback hooks remain pending.

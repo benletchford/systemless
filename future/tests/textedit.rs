@@ -191,6 +191,7 @@ fn real_cpu_adapters_share_styled_textedit_record_and_owned_lifetime() {
             .unwrap();
         app.runtime.memory.u32(GuestPtr(vector)).unwrap()
     };
+    app.runtime.elapse_ticks(123).unwrap();
     app.runtime.cpu = Cpu::new(Architecture::PowerPc, gate(&app, 0), stack);
     if let Cpu::PowerPc(c) = &mut app.runtime.cpu {
         c.gpr[3] = 0x1040;
@@ -202,6 +203,11 @@ fn real_cpu_adapters_share_styled_textedit_record_and_owned_lifetime() {
     };
     let handle = c.gpr[3];
     assert_ne!(handle, 0);
+    let created = ptr(&app.runtime.memory, handle);
+    assert_eq!(
+        app.runtime.memory.u32(GuestPtr(created.0 + 52)).unwrap(),
+        123
+    );
     app.runtime
         .memory
         .map(
@@ -798,7 +804,7 @@ fn deletion_commits_selection_layout_and_erases_stale_pixels_without_touching_sc
                 0,
             )
             .unwrap();
-        manager.delete(&mut m, &mut p, &gpu, handle).unwrap();
+        manager.delete(&mut m, &mut p, &gpu, handle, 129).unwrap();
         assert_eq!(
             manager
                 .call(&mut m, &mut p, Op::GetText(handle), 0)
@@ -821,7 +827,7 @@ fn deletion_commits_selection_layout_and_erases_stale_pixels_without_touching_sc
         assert_eq!(m.u16(GuestPtr(0xab0)).unwrap(), 3);
         // A collapsed selection does not erase even when guest pixels changed.
         m.write(GuestPtr(0x2000), &[0x77]).unwrap();
-        manager.delete(&mut m, &mut p, &gpu, handle).unwrap();
+        manager.delete(&mut m, &mut p, &gpu, handle, 129).unwrap();
         assert_eq!(m.read(GuestPtr(0x2000), 1).unwrap(), [0x77]);
         // Reject unsupported layout callbacks before committing text/selection.
         manager
@@ -838,11 +844,11 @@ fn deletion_commits_selection_layout_and_erases_stale_pixels_without_touching_sc
             .unwrap();
         m.write(GuestPtr(data.0 + 38), &1u32.to_be_bytes()).unwrap();
         let before = m.read(data, 128).unwrap().to_vec();
-        assert!(manager.delete(&mut m, &mut p, &gpu, handle).is_err());
+        assert!(manager.delete(&mut m, &mut p, &gpu, handle, 129).is_err());
         assert_eq!(m.read(data, 128).unwrap(), before);
         assert_eq!(m.read(ptr(&m, text), 1).unwrap(), b"A");
         m.write(GuestPtr(data.0 + 38), &0u32.to_be_bytes()).unwrap();
-        manager.delete(&mut m, &mut p, &gpu, handle).unwrap();
+        manager.delete(&mut m, &mut p, &gpu, handle, 129).unwrap();
         assert_eq!(p.handle_size(&m, text).unwrap(), 0);
         let data = ptr(&m, handle);
         assert_eq!(m.read(GuestPtr(data.0 + 32), 4).unwrap(), [0; 4]);
@@ -892,7 +898,7 @@ fn deletion_commits_selection_layout_and_erases_stale_pixels_without_touching_sc
             &[0xff, 0x33, 0xff, 0x44, 0xff, 0x55, 0xff, 0x66],
         )
         .unwrap();
-        manager.delete(&mut m, &mut p, &gpu, handle).unwrap();
+        manager.delete(&mut m, &mut p, &gpu, handle, 129).unwrap();
         assert_eq!(
             m.read(GuestPtr(0x2000), 8).unwrap(),
             [0xff, 0x33, 0xd7, 0x44, 0xeb, 0x55, 0xff, 0x66]
@@ -930,9 +936,219 @@ fn deletion_commits_selection_layout_and_erases_stale_pixels_without_touching_sc
         m.write(GuestPtr(port.0 + 2), &0x5000u32.to_be_bytes())
             .unwrap();
         let saved = m.read(port, 108).unwrap().to_vec();
-        assert!(manager.delete(&mut m, &mut p, &gpu, handle).is_err());
+        assert!(manager.delete(&mut m, &mut p, &gpu, handle, 129).is_err());
         assert_eq!(p.handle_size(&m, text).unwrap(), 0);
         assert_eq!(m.read(GuestPtr(0x5000), 8).unwrap(), pixels);
+        assert_eq!(m.read(port, 108).unwrap(), saved);
+        assert_eq!(m.u32(ports.current_slot).unwrap(), old);
+    }
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn active_highlight_caret_and_deletion_are_repeatable_and_restore_port_state() {
+    use systemless_future::graphics::Graphics;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let gpu = pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x4000))).unwrap();
+    for styled in [false, true] {
+        let (mut m, mut p, mut manager) = setup();
+        m.write(
+            GuestPtr(0x1040),
+            &[0, 0, 0, 1, 0, 4, 0, 6, 0, 0, 0, 0, 0, 4, 0, 8],
+        )
+        .unwrap();
+        m.map(GuestPtr(0x3000), b"AA\r".to_vec(), Permissions::RW)
+            .unwrap();
+        let handle = manager.call(&mut m, &mut p, new(styled), 0).unwrap();
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0x3000),
+                    length: 1,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::Select {
+                    start: 0,
+                    end: 1,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        let port = GuestPtr(0x1080);
+        let ports = p.ports.unwrap();
+        ports.open(&mut m, &mut p, GuestPtr(0x1180)).unwrap();
+        let old = m.u32(ports.current_slot).unwrap();
+        let saved = m.read(port, 108).unwrap().to_vec();
+        m.write(
+            GuestPtr(0x2000),
+            &[0xff, 0x33, 0xff, 0x44, 0xff, 0x55, 0xff, 0x66],
+        )
+        .unwrap();
+        manager
+            .activate(&mut m, &mut p, &gpu, handle, true, 123)
+            .unwrap();
+        let data = ptr(&m, handle);
+        assert_eq!(m.u16(GuestPtr(data.0 + 36)).unwrap(), 1);
+        assert_eq!(m.u32(GuestPtr(data.0 + 52)).unwrap(), 123);
+        let highlighted = [0x98, 0x33, 0xd8, 0x44, 0x40, 0x55, 0, 0x66];
+        assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), highlighted);
+        manager
+            .update(&mut m, &mut p, &gpu, GuestPtr(data.0 + 8), handle)
+            .unwrap();
+        assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), highlighted);
+        manager
+            .activate(&mut m, &mut p, &gpu, handle, true, 124)
+            .unwrap();
+        assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), highlighted);
+        manager
+            .select(&mut m, &mut p, Some(&gpu), handle, (1, 1), 125)
+            .unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0xe8, 0x33, 0xa8, 0x44, 0x40, 0x55, 0, 0x66]
+        );
+        assert_eq!(m.u16(GuestPtr(data.0 + 56)).unwrap(), 1);
+        assert_eq!(m.u32(GuestPtr(data.0 + 52)).unwrap(), 125);
+        let before = m.read(data, 128).unwrap().to_vec();
+        assert!(manager
+            .select(&mut m, &mut p, None, handle, (0, 0), 126)
+            .is_err());
+        assert_eq!(m.read(data, 128).unwrap(), before);
+        manager
+            .activate(&mut m, &mut p, &gpu, handle, false, 127)
+            .unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0xe0, 0x33, 0xa0, 0x44, 0x40, 0x55, 0, 0x66]
+        );
+        assert_eq!(m.u16(GuestPtr(data.0 + 36)).unwrap(), 0);
+        assert_eq!(m.u16(GuestPtr(data.0 + 56)).unwrap(), 0);
+        manager
+            .activate(&mut m, &mut p, &gpu, handle, true, 128)
+            .unwrap();
+        manager
+            .select(&mut m, &mut p, Some(&gpu), handle, (0, 1), 129)
+            .unwrap();
+        manager.delete(&mut m, &mut p, &gpu, handle, 129).unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0x40, 0x33, 0x40, 0x44, 0, 0x55, 0, 0x66]
+        );
+        let data = ptr(&m, handle);
+        assert_eq!(m.u16(GuestPtr(data.0 + 60)).unwrap(), 0);
+        assert_eq!(m.read(port, 108).unwrap(), saved);
+        assert_eq!(m.u32(ports.current_slot).unwrap(), old);
+        // Caret blinking uses the guest interval and shared wrapping tick value.
+        m.write(GuestPtr(0x2f4), &32u32.to_be_bytes()).unwrap();
+        manager.idle(&mut m, &mut p, None, handle, 160).unwrap();
+        assert_eq!(m.u16(GuestPtr(data.0 + 56)).unwrap(), 1);
+        manager
+            .idle(&mut m, &mut p, Some(&gpu), handle, 161)
+            .unwrap();
+        assert_eq!(m.u16(GuestPtr(data.0 + 56)).unwrap(), 0);
+        // A hidden caret stays hidden during an update.
+        manager
+            .update(&mut m, &mut p, &gpu, GuestPtr(data.0 + 8), handle)
+            .unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0, 0x33, 0, 0x44, 0, 0x55, 0, 0x66]
+        );
+        manager
+            .idle(&mut m, &mut p, Some(&gpu), handle, 193)
+            .unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0x40, 0x33, 0x40, 0x44, 0, 0x55, 0, 0x66]
+        );
+        m.write(GuestPtr(data.0 + 52), &0xfffffff0u32.to_be_bytes())
+            .unwrap();
+        manager
+            .idle(&mut m, &mut p, Some(&gpu), handle, 16)
+            .unwrap();
+        assert_eq!(m.u16(GuestPtr(data.0 + 56)).unwrap(), 0);
+        assert_eq!(m.u32(GuestPtr(data.0 + 52)).unwrap(), 16);
+        // Wrapped lines select separate bands; update clipping leaves other rows intact.
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0x3000),
+                    length: 2,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        manager
+            .select(&mut m, &mut p, Some(&gpu), handle, (0, 2), 130)
+            .unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0x98, 0x33, 0xd8, 0x44, 0x98, 0x55, 0xd8, 0x66]
+        );
+        m.map(
+            GuestPtr(0x3100),
+            vec![0, 1, 0, 0, 0, 3, 0, 8],
+            Permissions::RW,
+        )
+        .unwrap();
+        m.write(GuestPtr(0x2000), &[0x11]).unwrap();
+        m.write(GuestPtr(0x2006), &[0x22]).unwrap();
+        manager
+            .update(&mut m, &mut p, &gpu, GuestPtr(0x3100), handle)
+            .unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0x11, 0x33, 0xd8, 0x44, 0x98, 0x55, 0x22, 0x66]
+        );
+        // A selected newline extends the highlight to the right edge of the view.
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0x3001),
+                    length: 2,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        manager
+            .select(&mut m, &mut p, Some(&gpu), handle, (0, 2), 131)
+            .unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0x9f, 0x33, 0xdf, 0x44, 0x40, 0x55, 0, 0x66]
+        );
+        // The insertion point after a trailing CR lies on the next empty line.
+        manager
+            .select(&mut m, &mut p, Some(&gpu), handle, (2, 2), 132)
+            .unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0xe0, 0x33, 0xa0, 0x44, 0, 0x55, 0x40, 0x66]
+        );
+        let data = ptr(&m, handle);
+        // Application selection hooks must fail before activation state changes.
+        m.write(GuestPtr(data.0 + 86), &1u32.to_be_bytes()).unwrap();
+        let before = m.read(data, 128).unwrap().to_vec();
+        assert!(manager
+            .activate(&mut m, &mut p, &gpu, handle, false, 130)
+            .is_err());
+        assert_eq!(m.read(data, 128).unwrap(), before);
         assert_eq!(m.read(port, 108).unwrap(), saved);
         assert_eq!(m.u32(ports.current_slot).unwrap(), old);
     }

@@ -16,6 +16,8 @@ pub enum Service {
     TECalText,
     TESetSelect,
     TEDelete,
+    TEIdle,
+    TEActivate(bool),
     TEInit,
     TEGetText,
     TEGetStyleHandle,
@@ -160,6 +162,9 @@ impl Abi {
             b"TECalText" => Some(Service::TECalText),
             b"TESetSelect" => Some(Service::TESetSelect),
             b"TEDelete" => Some(Service::TEDelete),
+            b"TEIdle" => Some(Service::TEIdle),
+            b"TEActivate" => Some(Service::TEActivate(true)),
+            b"TEDeactivate" => Some(Service::TEActivate(false)),
             b"TEInit" => Some(Service::TEInit),
             b"TEGetText" => Some(Service::TEGetText),
             b"TEGetStyleHandle" => Some(Service::TEGetStyleHandle),
@@ -485,16 +490,20 @@ impl Abi {
                     Reply::None,
                 ))
             }
-            0xa9d0 | 0xa9d7 => {
+            0xa9d0 | 0xa9d7 | 0xa9d8 | 0xa9d9 | 0xa9da => {
                 let handle = memory.u32(GuestPtr(sp))?;
                 c.dar[15] = sp
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("TextEdit stack overflow".into()))?;
                 Ok((
-                    Call::TextEdit(if opcode == 0xa9d7 {
-                        crate::textedit::Op::Delete(handle)
-                    } else {
-                        crate::textedit::Op::Calculate(handle)
+                    Call::TextEdit(match opcode {
+                        0xa9d7 => crate::textedit::Op::Delete(handle),
+                        0xa9da => crate::textedit::Op::Idle(handle),
+                        0xa9d8 | 0xa9d9 => crate::textedit::Op::Activate {
+                            handle,
+                            active: opcode == 0xa9d8,
+                        },
+                        _ => crate::textedit::Op::Calculate(handle),
                     }),
                     Reply::None,
                 ))
@@ -957,6 +966,11 @@ impl Abi {
                 end: c.gpr[4],
                 handle: c.gpr[5],
             }),
+            Service::TEActivate(active) => Call::TextEdit(crate::textedit::Op::Activate {
+                handle: c.gpr[3],
+                active,
+            }),
+            Service::TEIdle => Call::TextEdit(crate::textedit::Op::Idle(c.gpr[3])),
             Service::TEDelete => Call::TextEdit(crate::textedit::Op::Delete(c.gpr[3])),
             Service::TECalText => Call::TextEdit(crate::textedit::Op::Calculate(c.gpr[3])),
             Service::TEInit => Call::TextEdit(crate::textedit::Op::Init),
@@ -1119,6 +1133,8 @@ impl Abi {
                         | Service::TECalText
                         | Service::TESetSelect
                         | Service::TEDelete
+                        | Service::TEIdle
+                        | Service::TEActivate(_)
                         | Service::TEInit
                         | Service::TEDispose
                         | Service::MoveTo

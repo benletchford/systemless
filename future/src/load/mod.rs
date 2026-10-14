@@ -88,6 +88,7 @@ pub(super) fn finish(
 ) -> Result<LoadedApplication> {
     crate::traps::install(&mut memory)?;
     memory.map(GuestPtr(0), vec![0; 4096], Permissions::RW)?;
+    memory.write(GuestPtr(0x2f4), &32u32.to_be_bytes())?;
     crate::events::install(&mut memory)?;
     crate::quickdraw::install(&mut memory)?;
     memory.map(

@@ -220,3 +220,8 @@ Active selection painting and editing commands remain unsupported.
 The GPU drawing probe now selects and deletes its TextEdit glyph, checks empty
 text and line/selection fields, exact cleared view pixels with preserved row
 padding, and preserved current port/pen fields on both compiled architectures.
+
+The drawing fixture also activates its TextEdit record, verifies an exact XOR
+highlight and stable repeat update, moves to a caret, deletes while active,
+checks the empty-record caret, toggles both TEIdle phases using live CaretTime,
+and deactivates. Both compiled CPU ABIs complete the same final image.
