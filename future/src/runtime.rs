@@ -125,6 +125,54 @@ impl Runtime {
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::InitGraf { slot, anchor } => {
+                            self.process.ports = Some(crate::quickdraw::initialize(
+                                &mut self.memory,
+                                slot,
+                                anchor,
+                            )?)
+                        }
+                        Call::Port { op, pointer } => {
+                            use crate::quickdraw::{read_rect, PortOp};
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            match op {
+                                PortOp::Open => {
+                                    ports.open(&mut self.memory, &mut self.process, pointer)?
+                                }
+                                PortOp::Set => ports.set(&mut self.memory, pointer)?,
+                                PortOp::Get => {
+                                    let p = self.memory.u32(ports.current_slot)?;
+                                    self.memory.write(pointer, &p.to_be_bytes())?;
+                                }
+                                PortOp::SetBits => ports.set_bits(&mut self.memory, pointer)?,
+                                PortOp::ClipRect => {
+                                    let r = read_rect(&self.memory, pointer)?;
+                                    ports.clip_rect(&mut self.memory, r)?;
+                                }
+                                PortOp::PenPat => {
+                                    let pattern: [u8; 8] =
+                                        self.memory.read(pointer, 8)?.try_into().unwrap();
+                                    let p = ports.current(&self.memory)?;
+                                    self.memory.write(GuestPtr(p.0 + 58), &pattern)?;
+                                }
+                                PortOp::PaintRect => {
+                                    let r = read_rect(&self.memory, pointer)?;
+                                    let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                        Error::Graphics("QuickDraw painting requires a GPU".into())
+                                    })?;
+                                    ports.paint_rect(gpu, &mut self.memory, r)?;
+                                }
+                            }
+                        }
+                        Call::PenMode(mode) => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            let p = ports.current(&self.memory)?;
+                            self.memory.write(GuestPtr(p.0 + 56), &mode.to_be_bytes())?;
+                        }
                         Call::WaitEvent {
                             mask,
                             destination,
@@ -299,6 +347,10 @@ impl Runtime {
                     if matches!(
                         call,
                         Call::NewHandle { .. }
+                            | Call::Port {
+                                op: crate::quickdraw::PortOp::Open,
+                                ..
+                            }
                             | Call::DisposeHandle(_)
                             | Call::HandleSize(_)
                             | Call::GetResource { .. }
@@ -318,7 +370,10 @@ impl Runtime {
                 Outcome::Service(call) => {
                     self.services.calls.push(call);
                     match call {
-                        Call::WaitEvent { .. }
+                        Call::InitGraf { .. }
+                        | Call::Port { .. }
+                        | Call::PenMode(_)
+                        | Call::WaitEvent { .. }
                         | Call::PostEvent { .. }
                         | Call::OSEvent { .. }
                         | Call::FlushEvents { .. }

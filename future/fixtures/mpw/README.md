@@ -57,3 +57,16 @@ while suspended must not execute guest instructions or dispatch the call again.
 The test requires the success marker after all three waits. Running this fixture
 with the file CLI alone cannot satisfy the injected-input step; use the MPW test
 command above for acceptance.
+
+The `draw.c` program now passes on both CPUs with an explicitly supplied GPU.
+It initializes application-owned QDGlobals, checks the nil current port, opens
+and switches ports, changes the destination bitmap and clip, loads a resource,
+selects gray/black pen patterns, paints/XORs, modifies guest bitmap bytes directly,
+and consumes an event before its success marker. The test compares both GPU
+RGBA outputs against independently specified bytes, as well as C-side checks of
+packed pixels and untouched row padding. This verifies an 8x4 offscreen drawing
+slice, not windows, arbitrary applications or complete QuickDraw compatibility.
+
+The build script treats MPW compiler/linker diagnostics as failure even when the
+container runner exits zero. Both MPW targets define their own QDGlobals storage;
+this toolchain does not export a `qd` data symbol from InterfaceLib.

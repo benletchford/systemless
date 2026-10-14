@@ -379,3 +379,34 @@ Cursor, five 8-byte patterns, and thePort at offset 202; InitGraf receives the
 address of thePort. GrafPort is 108 bytes. Verify initialization semantics before
 publishing the ABI; do not add a no-op InitGraf. Loaded apps still cannot draw
 through QuickDraw, and the full rebuild remains active.
+
+
+### Real QuickDraw ABI and compiled resource/drawing/event parity
+
+InitGraf now binds application-owned QDGlobals, leaves thePort nil, seeds the
+public globals, and writes the 68K A5 anchor. The loader reserves a fixed
+512x342 packed monochrome screen without acquiring a GPU. OpenPort, SetPort,
+GetPort, SetPortBits, ClipRect, PaintRect, PenMode and PenPat now reach the shared
+port/heap/GPU services through real 68K traps and PPC imports.
+
+The MPW `draw.c` application passes on both CPUs: nil-port validation, two-port
+switching, offscreen bitmap selection, clipping, resource lookup, gray/black
+patterns and XOR, direct bitmap writes, padding checks and event consumption.
+The harness requires the final success marker and compares each GPU RGBA image
+with explicit expected bytes, not just with the other architecture. It supplies
+an 8x4 GPU target; file CLI graphics preparation is not implemented yet.
+
+Compilation established that both targets must define QDGlobals storage for this
+toolchain. The speculative InterfaceLib qd export was removed before commit.
+The build wrapper now detects MPW compiler/linker diagnostics despite zero host
+exit codes. InitGraf validation is tested to avoid partial writes on a bad A5
+anchor. All 72 tests and strict all-target Clippy passed, including four standalone
+GPU checks and six MPW tests (one additionally requires the GPU). Ten tests are
+optional and ignored by default.
+
+Next: support graphics-device preparation/resizing in the ordinary file host,
+then expand through ClosePort, regions and window/event interactions. Current
+limitations include fixed monochrome screen policy, matching bitmap/GPU extents,
+rectangular clipping, no custom QDProcs/recording, no color ports or windows,
+and no original-app compatibility evidence. Window presentation and real Mixed
+Mode remain unverified/incomplete. Keep the full rebuild goal active.

@@ -1,4 +1,4 @@
-//! Basic GrafPort services over guest records. InitGraf/ABI binding is separate.
+//! Basic QuickDraw globals and GrafPort services shared by both Macintosh ABIs.
 use crate::{
     bitmap::Bitmap,
     graphics::{Draw, Graphics, Rect, Transfer},
@@ -183,5 +183,95 @@ impl Ports {
                 },
             },
         )
+    }
+}
+
+#[cfg(test)]
+const GLOBALS: GuestPtr = GuestPtr(0x7400_0000);
+pub const SCREEN: GuestPtr = GuestPtr(0x7410_0000);
+/// Initial monochrome host policy; changing display modes is not implemented.
+pub(crate) fn install(memory: &mut Memory) -> Result<()> {
+    memory.map(SCREEN, vec![0; 64 * 342], crate::memory::Permissions::RW)
+}
+pub(crate) fn initialize(
+    memory: &mut Memory,
+    slot: GuestPtr,
+    anchor: Option<GuestPtr>,
+) -> Result<Ports> {
+    let base = GuestPtr(
+        slot.0
+            .checked_sub(202)
+            .ok_or_else(|| Error::Graphics("invalid QuickDraw globals address".into()))?,
+    );
+    memory.validate_write(base, 206)?;
+    if let Some(anchor) = anchor {
+        memory.validate_write(anchor, 4)?;
+    }
+    let mut bytes = [0; 206];
+    bytes[76..80].copy_from_slice(&1u32.to_be_bytes());
+    bytes[80..84].copy_from_slice(&SCREEN.0.to_be_bytes());
+    bytes[84..86].copy_from_slice(&64u16.to_be_bytes());
+    bytes[86..94].copy_from_slice(&rect_bytes(Rect::new(0, 0, 512, 342))?);
+    let arrow: [u16; 32] = [
+        0x8000, 0xc000, 0xe000, 0xf000, 0xf800, 0xfc00, 0xfe00, 0xff00, 0xff80, 0xfc00, 0xdc00,
+        0x8e00, 0x0600, 0x0700, 0x0300, 0, 0xc000, 0xe000, 0xf000, 0xf800, 0xfc00, 0xfe00, 0xff00,
+        0xff80, 0xffc0, 0xffc0, 0xfe00, 0xdf00, 0x8f00, 0x0780, 0x0780, 0x0380,
+    ];
+    for (i, v) in arrow.into_iter().enumerate() {
+        bytes[94 + i * 2..96 + i * 2].copy_from_slice(&v.to_be_bytes());
+    }
+    bytes[158..162].copy_from_slice(&[0, 1, 0, 1]);
+    bytes[162..170].copy_from_slice(&[0x77, 0xdd, 0x77, 0xdd, 0x77, 0xdd, 0x77, 0xdd]);
+    bytes[170..178].copy_from_slice(&[0x88, 0x22, 0x88, 0x22, 0x88, 0x22, 0x88, 0x22]);
+    bytes[178..186].copy_from_slice(&[0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55]);
+    bytes[186..194].fill(255);
+    memory.write(base, &bytes)?;
+    if let Some(anchor) = anchor {
+        memory.write(anchor, &slot.0.to_be_bytes())?;
+    }
+    Ok(Ports {
+        current_slot: slot,
+        screen_bitmap: offset(base, 80)?,
+    })
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortOp {
+    Open,
+    Set,
+    Get,
+    SetBits,
+    ClipRect,
+    PaintRect,
+    PenPat,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn init_graf_sets_guest_globals_and_68k_anchor_after_validation() {
+        let mut memory = Memory::default();
+        install(&mut memory).unwrap();
+        memory
+            .map(GLOBALS, vec![0; 206], crate::memory::Permissions::RW)
+            .unwrap();
+        memory
+            .map(GuestPtr(0x1000), vec![0; 4], crate::memory::Permissions::RW)
+            .unwrap();
+        let slot = GuestPtr(GLOBALS.0 + 202);
+        assert!(initialize(&mut memory, slot, Some(GuestPtr(0xffff_fffe))).is_err());
+        assert_eq!(memory.read(GLOBALS, 206).unwrap(), &[0; 206]);
+        let ports = initialize(&mut memory, slot, Some(GuestPtr(0x1000))).unwrap();
+        assert_eq!(memory.u32(GuestPtr(0x1000)).unwrap(), slot.0);
+        assert_eq!(memory.u32(slot).unwrap(), 0);
+        assert_eq!(memory.u32(GuestPtr(GLOBALS.0 + 76)).unwrap(), 1);
+        assert_eq!(
+            memory.read(GuestPtr(GLOBALS.0 + 186), 8).unwrap(),
+            &[255; 8]
+        );
+        assert_eq!(memory.read(GuestPtr(GLOBALS.0 + 194), 8).unwrap(), &[0; 8]);
+        let bitmap = Bitmap::read(&memory, ports.screen_bitmap).unwrap();
+        assert_eq!(bitmap.base, SCREEN);
+        assert_eq!(bitmap.extent().unwrap(), (512, 342));
     }
 }

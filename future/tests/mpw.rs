@@ -175,3 +175,52 @@ fn compiled_wait_program_yields_times_out_and_wakes_on_input_on_both_cpus() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires MPW fixture and real wgpu adapter"]
+fn compiled_resource_drawing_and_event_app_has_pixel_parity() {
+    use systemless_future::{graphics::Graphics, memory::GuestPtr};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("draw.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("draw.ppc")).unwrap();
+    let resources = std::fs::read(root.join("draw.ppc.rsrc")).unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut results = Vec::new();
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, Some(&resources)).unwrap(),
+    ] {
+        let mut gpu =
+            pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x75000000))).unwrap();
+        gpu.palette[0] = [255, 255, 255, 255];
+        gpu.palette[1] = [0, 0, 0, 255];
+        app.runtime.graphics = Some(gpu);
+        assert_eq!(app.runtime.advance(10_000).unwrap(), Stop::Exit(0));
+        let calls = &app.runtime.services.calls;
+        assert_eq!(
+            &calls[calls.len() - 2..],
+            &[
+                Call::PostEvent {
+                    what: 7,
+                    message: 0x600d
+                },
+                Call::Exit(0)
+            ]
+        );
+        results.push(app.runtime.graphics.as_ref().unwrap().read_rgba().unwrap());
+    }
+    assert_eq!(results[0], results[1]);
+    let expected: Vec<u8> = [0x80u8, 0x56, 0x2a, 0]
+        .iter()
+        .flat_map(|row| {
+            (0..8).flat_map(move |x| {
+                if row & (0x80 >> x) != 0 {
+                    [0, 0, 0, 255]
+                } else {
+                    [255; 4]
+                }
+            })
+        })
+        .collect();
+    assert_eq!(results[0], expected);
+}

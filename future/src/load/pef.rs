@@ -192,7 +192,6 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
                 if class & 15 != 1 {
                     return Err(invalid("data imported as function/TOC"));
                 }
-                stdlib_data = true;
                 pointer.0
             } else if options & 0x40 != 0 || class & 0x80 != 0 {
                 0

@@ -17,6 +17,7 @@ pub struct Process {
     pub resources: ResourceFork,
     pub files: crate::files::Files,
     pub input: crate::events::Input,
+    pub ports: Option<crate::quickdraw::Ports>,
     resource_ref: i16,
     pub mem_error: i16,
     pub res_error: i16,

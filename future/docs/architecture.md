@@ -303,9 +303,8 @@ their prior values. Each draw reloads guest bytes; a direct guest write between
 operations is therefore visible. GPU and bitmap extents must currently match.
 A monochrome presentation uses palette index 0 for white and 1 for black.
 
-This establishes the bitmap/backend boundary only. GrafPort initialization,
-current-port authority, region clipping and real QuickDraw ABI dispatch remain
-next; loaded applications cannot invoke these drawing operations yet.
+This bitmap/backend boundary also serves loaded applications through the
+GrafPort services and real QuickDraw ABI adapters described below.
 Reference: Apple's [BitMap record](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-26.html)
 and MPW Quickdraw.h.
 
@@ -320,11 +319,37 @@ uses the packed-bitmap wgpu boundary. Pattern phase follows the port rectangle.
 Screen visibility clips screen drawing but does not clip offscreen bitmaps.
 
 Currently only rectangular regions and monochrome colors are supported.
-Picture/region/polygon recording and custom QDProcs fail explicitly. This service
-layer is not wired to CPU traps/imports yet: InitGraf must bind real application
-globals and a host-owned screen description before the ABI can expose it.
-No compiled QuickDraw drawing acceptance is claimed at this stage.
+Picture/region/polygon recording and custom QDProcs fail explicitly. The real 68K/PPC adapters now call this service layer; InitGraf binds
+application-owned globals as described below.
 
 Defaults and layouts follow Apple's [OpenPort reference](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-32.html)
 and [GrafPort reference](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-27.html),
 with packed offsets checked against MPW Quickdraw.h.
+
+
+## InitGraf and real drawing ABI
+
+InitGraf receives the address of thePort, validates its 206-byte QDGlobals
+storage, initializes patterns/cursor data, seed 1 and screenBits, and leaves
+thePort nil. The 68K adapter also supplies the A5 anchor address; initialization
+writes the globals pointer through it after validating both destinations. PPC
+uses the same guest storage contract without the A5 anchor. Both MPW fixture
+builds own their QDGlobals; no invented InterfaceLib data symbol is exported.
+
+The current screen policy reserves packed pixels for a 512x342 monochrome
+screen. No GPU is acquired during loading or initialization. An embedding host
+must supply a Graphics target before PaintRect, with dimensions matching the
+selected bitmap. File-mode GPU preparation and dynamic target sizing remain
+pending; missing GPU setup produces an explicit error.
+
+Real adapters currently expose InitGraf, OpenPort, SetPort, GetPort,
+SetPortBits, ClipRect, PaintRect, PenMode and PenPat. 68K Pascal parameters are
+popped at the trap boundary; PPC parameters come through CFM registers. The
+shared services own globals, heap regions, clipping and GPU drawing. A compiled
+application exercises resources, port switching, patterns, direct bitmap writes
+and event consumption on both architectures, with exact expected RGBA readback.
+
+Initialization reference: Apple's [InitGraf](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-30.html).
+Cursor appearance and broader native QuickDraw behavior have not been compared
+against a native Macintosh oracle; the current acceptance is the documented
+record/service subset and explicit test pixels.

@@ -9,6 +9,9 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    InitGraf,
+    Port(crate::quickdraw::PortOp),
+    PenMode,
     WaitNextEvent,
     PostEvent,
     GetOSEvent,
@@ -83,6 +86,15 @@ impl Abi {
             return None;
         }
         match symbol {
+            b"InitGraf" => Some(Service::InitGraf),
+            b"OpenPort" => Some(Service::Port(crate::quickdraw::PortOp::Open)),
+            b"SetPort" => Some(Service::Port(crate::quickdraw::PortOp::Set)),
+            b"GetPort" => Some(Service::Port(crate::quickdraw::PortOp::Get)),
+            b"SetPortBits" => Some(Service::Port(crate::quickdraw::PortOp::SetBits)),
+            b"ClipRect" => Some(Service::Port(crate::quickdraw::PortOp::ClipRect)),
+            b"PaintRect" => Some(Service::Port(crate::quickdraw::PortOp::PaintRect)),
+            b"PenPat" => Some(Service::Port(crate::quickdraw::PortOp::PenPat)),
+            b"PenMode" => Some(Service::PenMode),
             b"WaitNextEvent" => Some(Service::WaitNextEvent),
             b"PostEvent" => Some(Service::PostEvent),
             b"GetOSEvent" => Some(Service::GetOSEvent),
@@ -114,6 +126,41 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa86e | 0xa86f | 0xa873 | 0xa874 | 0xa875 | 0xa87b | 0xa8a2 | 0xa89d => {
+                use crate::quickdraw::PortOp;
+                let pointer = GuestPtr(memory.u32(GuestPtr(sp))?);
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("QuickDraw stack overflow".into()))?;
+                let call = if opcode == 0xa86e {
+                    Call::InitGraf {
+                        slot: pointer,
+                        anchor: Some(GuestPtr(c.dar[13])),
+                    }
+                } else {
+                    Call::Port {
+                        pointer,
+                        op: match opcode {
+                            0xa86f => PortOp::Open,
+                            0xa873 => PortOp::Set,
+                            0xa874 => PortOp::Get,
+                            0xa875 => PortOp::SetBits,
+                            0xa87b => PortOp::ClipRect,
+                            0xa89d => PortOp::PenPat,
+                            _ => PortOp::PaintRect,
+                        },
+                    }
+                };
+                Ok((call, Reply::None))
+            }
+            0xa89c => {
+                let mode = memory.u16(GuestPtr(sp))? as i16;
+                c.dar[15] = sp
+                    .checked_add(2)
+                    .ok_or_else(|| Error::Cpu("QuickDraw stack overflow".into()))?;
+                Ok((Call::PenMode(mode), Reply::None))
+            }
+
             0xa860 => {
                 let args = memory.read(GuestPtr(sp), 16)?;
                 let word = |i| u32::from_be_bytes(args[i..i + 4].try_into().unwrap());
@@ -224,6 +271,16 @@ impl Abi {
     }
     pub fn import(service: Service, c: &ppc::PpcCpu) -> (Call, Reply) {
         let call = match service {
+            Service::InitGraf => Call::InitGraf {
+                slot: GuestPtr(c.gpr[3]),
+                anchor: None,
+            },
+            Service::Port(op) => Call::Port {
+                op,
+                pointer: GuestPtr(c.gpr[3]),
+            },
+            Service::PenMode => Call::PenMode(c.gpr[3] as i16),
+
             Service::WaitNextEvent => Call::WaitEvent {
                 mask: c.gpr[3] as u16,
                 destination: GuestPtr(c.gpr[4]),
@@ -287,7 +344,10 @@ impl Abi {
             call,
             if matches!(
                 service,
-                Service::ExitToShell
+                Service::InitGraf
+                    | Service::Port(_)
+                    | Service::PenMode
+                    | Service::ExitToShell
                     | Service::DisposeHandle
                     | Service::FlushEvents
                     | Service::SetEventMask

@@ -6,10 +6,12 @@ expansion and presentation use wgpu. This build does not link the legacy runtime
 
 **Current scope: generated fixtures, an MPW-compiled resource/handle app on both
 68K and PPC, event-queue and cooperative-wait programs on both architectures, and a compiled
-PPC nonlocal-jump/main-return probe. No original
+PPC nonlocal-jump/main-return probe. A compiled resource/drawing/event app also
+passes on both CPUs with exact GPU pixel parity. No original
 application verified.**
 Resource-fork/CODE and PowerPC PEF loaders use a small real Macintosh ABI slice
-for resources, handles, OS event queues, bounded event waiting, timing and exit. The graphics fixtures still use private
+for resources, handles, OS event queues, bounded waiting, Basic QuickDraw port
+initialization/clipped rectangle painting, timing and exit. The graphics fixtures still use private
 gateways, which are disabled for loaded applications.
 See [architecture](docs/architecture.md) and [progress](docs/progress.md).
 
@@ -53,8 +55,8 @@ The resource fixtures both load a DATA resource, inspect its handle, allocate cl
 Supported loading is near-model CODE and PowerPC PEF, including pattern data and
 relocations. PEF initialization and termination run with bounded execution and a guest
 initialization block. Compressed resources, far-model CODE and unknown required
-imports fail explicitly. Guest file I/O, Toolbox window/high-level event synthesis, mouse regions, real
-QuickDraw ABI calls, movable/purgeable handles and original-app compatibility
+imports fail explicitly. Guest file I/O, Toolbox window/high-level event synthesis, mouse regions, the remaining
+QuickDraw operations, movable/purgeable handles and original-app compatibility
 remain pending. The rebuild goal is incomplete.
 
 Loaded applications can yield `Stop::Waiting { ticks }` from WaitNextEvent.
@@ -62,3 +64,9 @@ Embedding hosts inject events and call `elapse_ticks` before resuming; waiting
 polls do not execute instructions. The file CLI advances virtual time to each
 wake deadline while retaining one total instruction budget. The bounded trace
 example reports a wait and returns control to its caller.
+
+The compiled drawing acceptance harness explicitly supplies an 8x4 GPU target;
+the file CLI does not yet prepare a graphics device for loaded apps. Basic
+QuickDraw currently describes a fixed 512x342 monochrome screen and supports
+matching-size offscreen GPU bitmaps. Nonrectangular clipping, color ports,
+recording, custom QDProcs, windows and full graphics compatibility remain pending.

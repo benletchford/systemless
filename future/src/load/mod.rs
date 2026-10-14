@@ -85,6 +85,7 @@ pub(super) fn finish(
     crate::traps::install(&mut memory)?;
     memory.map(GuestPtr(0), vec![0; 4096], Permissions::RW)?;
     crate::events::install(&mut memory)?;
+    crate::quickdraw::install(&mut memory)?;
     memory.map(
         GuestPtr(STACK_BASE),
         vec![0; STACK_SIZE as usize],

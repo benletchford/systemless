@@ -12,6 +12,15 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    InitGraf {
+        slot: GuestPtr,
+        anchor: Option<GuestPtr>,
+    },
+    Port {
+        op: crate::quickdraw::PortOp,
+        pointer: GuestPtr,
+    },
+    PenMode(i16),
     WaitEvent {
         mask: u16,
         destination: GuestPtr,
