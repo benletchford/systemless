@@ -295,3 +295,7 @@ using NewControl and the modern MPW header routine names. It checks control
 list ordering/record fields, PPC's ninth stack argument, reference/title/value
 updates, hidden/inactive hit tests, guest-written value redraw, disposal
 unlinking and automatic freeing when the owner window is disposed.
+
+The window fixture also sets/gets WRefCon, resizes its resource-defined window,
+hides/reveals it with ShowHide and redraws existing controls. Native 68K trap
+words and PPC imports are verified through the real headers/compiler.

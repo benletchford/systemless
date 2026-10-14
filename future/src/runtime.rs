@@ -180,6 +180,13 @@ impl Runtime {
                             })?;
                             ports.set_color(&mut self.memory, background, color)?;
                         }
+                        Call::WindowReference { pointer, value } => {
+                            let result =
+                                self.process
+                                    .windows
+                                    .reference(&mut self.memory, pointer, value)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, result, 0)?;
+                        }
                         Call::NewControl(_) | Call::Control(_) => {
                             let mut controls = std::mem::take(&mut self.process.controls);
                             let result = match call {
@@ -200,12 +207,24 @@ impl Runtime {
                             self.process.controls = controls;
                             reply.apply(&mut self.cpu, &mut self.memory, result?, 0)?;
                         }
-                        Call::NewWindow(_) | Call::ResourceWindow { .. } | Call::Window { .. } => {
+                        Call::NewWindow(_)
+                        | Call::WindowChange { .. }
+                        | Call::ResourceWindow { .. }
+                        | Call::Window { .. } => {
                             let gpu = self.graphics.as_ref().ok_or_else(|| {
                                 Error::Graphics("Window Manager requires a GPU".into())
                             })?;
                             let mut windows = std::mem::take(&mut self.process.windows);
                             let result = match call {
+                                Call::WindowChange { pointer, change } => windows
+                                    .change(
+                                        &mut self.memory,
+                                        &mut self.process,
+                                        gpu,
+                                        pointer,
+                                        change,
+                                    )
+                                    .map(|()| 0),
                                 Call::ResourceWindow {
                                     id,
                                     storage,
@@ -969,6 +988,7 @@ impl Runtime {
                             | Call::ResourceWindow { .. }
                             | Call::NewControl(_)
                             | Call::Control(_)
+                            | Call::WindowChange { .. }
                             | Call::NewWindow(_)
                             | Call::Window { .. }
                             | Call::NewPointer { .. }
@@ -1019,6 +1039,8 @@ impl Runtime {
                         | Call::ResourceWindow { .. }
                         | Call::NewControl(_)
                         | Call::Control(_)
+                        | Call::WindowReference { .. }
+                        | Call::WindowChange { .. }
                         | Call::NewWindow(_)
                         | Call::Window { .. }
                         | Call::TextState { .. }

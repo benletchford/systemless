@@ -11,6 +11,10 @@ use std::collections::BTreeMap;
 pub enum Service {
     Random,
     GetNewWindow,
+    SizeWindow,
+    GetWindowReference,
+    SetWindowReference,
+    ShowHide,
     NewControl,
     ControlDraw,
     ControlDrawAll,
@@ -195,6 +199,10 @@ impl Abi {
             b"GetCTitle" | b"GetControlTitle" => Some(Service::ControlTitle),
             b"SetCTitle" | b"SetControlTitle" => Some(Service::ControlSetTitle),
             b"TestControl" => Some(Service::ControlTest),
+            b"GetWRefCon" => Some(Service::GetWindowReference),
+            b"SetWRefCon" => Some(Service::SetWindowReference),
+            b"SizeWindow" => Some(Service::SizeWindow),
+            b"ShowHide" => Some(Service::ShowHide),
             b"GetNewWindow" => Some(Service::GetNewWindow),
             b"NewWindow" => Some(Service::NewWindow),
             b"InitWindows" => Some(Service::Window(crate::windows::Op::Init)),
@@ -377,6 +385,45 @@ impl Abi {
                     },
                     Reply::None,
                 ))
+            }
+            0xa917 | 0xa918 => {
+                let size = if opcode == 0xa917 { 4 } else { 8 };
+                let args = memory.read(GuestPtr(sp), size)?;
+                let pointer = u32::from_be_bytes(args[size - 4..].try_into().unwrap());
+                let value = if opcode == 0xa918 {
+                    Some(u32::from_be_bytes(args[..4].try_into().unwrap()))
+                } else {
+                    None
+                };
+                let result = sp
+                    .checked_add(size as u32)
+                    .ok_or_else(|| Error::Cpu("window stack overflow".into()))?;
+                let reply = if value.is_none() {
+                    memory.validate_write(GuestPtr(result), 4)?;
+                    Reply::StackLong(GuestPtr(result))
+                } else {
+                    Reply::None
+                };
+                c.dar[15] = result;
+                Ok((Call::WindowReference { pointer, value }, reply))
+            }
+            0xa91d | 0xa908 => {
+                let size = if opcode == 0xa91d { 10 } else { 6 };
+                let bytes = memory.read(GuestPtr(sp), size)?;
+                let pointer = u32::from_be_bytes(bytes[size - 4..].try_into().unwrap());
+                let change = if opcode == 0xa91d {
+                    crate::windows::Change::Size {
+                        width: i16::from_be_bytes(bytes[4..6].try_into().unwrap()),
+                        height: i16::from_be_bytes(bytes[2..4].try_into().unwrap()),
+                        update: bytes[0] != 0,
+                    }
+                } else {
+                    crate::windows::Change::Visibility(bytes[0] != 0)
+                };
+                c.dar[15] = sp
+                    .checked_add(size as u32)
+                    .ok_or_else(|| Error::Cpu("window stack overflow".into()))?;
+                Ok((Call::WindowChange { pointer, change }, Reply::None))
             }
             0xa954 => {
                 let bytes = memory.read(GuestPtr(sp), 26)?;
@@ -1455,6 +1502,26 @@ impl Abi {
                 c.gpr[4] as i16,
                 (c.gpr[4] >> 16) as i16,
             )),
+            Service::GetWindowReference => Call::WindowReference {
+                pointer: c.gpr[3],
+                value: None,
+            },
+            Service::SetWindowReference => Call::WindowReference {
+                pointer: c.gpr[3],
+                value: Some(c.gpr[4]),
+            },
+            Service::SizeWindow => Call::WindowChange {
+                pointer: c.gpr[3],
+                change: crate::windows::Change::Size {
+                    width: c.gpr[4] as i16,
+                    height: c.gpr[5] as i16,
+                    update: c.gpr[6] as u8 != 0,
+                },
+            },
+            Service::ShowHide => Call::WindowChange {
+                pointer: c.gpr[3],
+                change: crate::windows::Change::Visibility(c.gpr[4] as u8 != 0),
+            },
             Service::GetNewWindow => Call::ResourceWindow {
                 id: c.gpr[3] as i16,
                 storage: GuestPtr(c.gpr[4]),
@@ -1615,7 +1682,10 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::ControlDraw
+                    Service::SetWindowReference
+                        | Service::SizeWindow
+                        | Service::ShowHide
+                        | Service::ControlDraw
                         | Service::ControlDrawAll
                         | Service::ControlDispose
                         | Service::ControlKill

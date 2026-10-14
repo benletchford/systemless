@@ -37,6 +37,25 @@ pub enum Op {
     Begin,
     End,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    Size {
+        width: i16,
+        height: i16,
+        update: bool,
+    },
+    Visibility(bool),
+}
+struct Shape {
+    window: u32,
+    content: Vec<u8>,
+    structure: Vec<u8>,
+    visible: bool,
+    local: Rect,
+    previous_vis: Vec<u8>,
+    next_vis: Vec<u8>,
+    pending: Vec<u8>,
+}
 #[derive(Default)]
 pub struct Windows {
     manager: u32,
@@ -819,6 +838,194 @@ impl Windows {
         }
         process.mem_error = 0;
         Ok(w)
+    }
+    pub fn reference(&self, memory: &mut Memory, w: u32, value: Option<u32>) -> Result<u32> {
+        if !self.list(memory)?.contains(&w) {
+            return Err(fail("unknown or closed window"));
+        }
+        let pointer = GuestPtr(w + 152);
+        if let Some(value) = value {
+            memory.write(pointer, &value.to_be_bytes())?;
+        }
+        memory.u32(pointer)
+    }
+    /// Commit all affected regions together, then repaint only exposure/frame
+    /// damage. Common visible content keeps its existing guest bitmap pixels.
+    pub fn change(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &Graphics,
+        w: u32,
+        change: Change,
+    ) -> Result<()> {
+        if self.update.is_some() {
+            return Err(fail(
+                "window geometry change during BeginUpdate is unsupported",
+            ));
+        }
+        let list = self.list(memory)?;
+        if !list.contains(&w) {
+            return Err(fail("unknown or closed window"));
+        }
+        if let Change::Size { width, height, .. } = change {
+            if width == 0 && height == 0 {
+                return Ok(());
+            }
+            if width <= 0 || height <= 0 {
+                return Err(fail("invalid window dimensions"));
+            }
+        }
+        let visible = memory.read(GuestPtr(w + 110), 1)?[0] != 0;
+        if let Change::Visibility(show) = change {
+            if show == visible {
+                return Ok(());
+            }
+            memory.validate_write(GuestPtr(w + 110), 1)?;
+        }
+        let mut states = Vec::new();
+        for window in list {
+            let local = read_rect(memory, GuestPtr(window + 8))?;
+            let old_vis = region(memory, process, handle(memory, window, 24)?)?;
+            states.push(Shape {
+                window,
+                content: region(memory, process, handle(memory, window, 118)?)?,
+                structure: region(memory, process, handle(memory, window, 114)?)?,
+                visible: memory.read(GuestPtr(window + 110), 1)?[0] != 0,
+                local,
+                previous_vis: shifted(&old_vis, -local.left, -local.top)?,
+                next_vis: Vec::new(),
+                pending: region(memory, process, handle(memory, window, 122)?)?,
+            });
+        }
+        let index = states.iter().position(|s| s.window == w).unwrap();
+        let old_content = states[index].content.clone();
+        let mut damage = if visible {
+            states[index].structure.clone()
+        } else {
+            rect_bytes(Rect::new(0, 0, 0, 0))?
+        };
+        let mut changes = Vec::new();
+        let mut port_rect = None;
+        match change {
+            Change::Size {
+                width,
+                height,
+                update,
+            } => {
+                let p = GuestPtr(memory.u32(GuestPtr(handle(memory, w, 118)?))? + 2);
+                let r = read_rect(memory, p)?;
+                let content = Rect::new(
+                    r.left,
+                    r.top,
+                    r.left + i32::from(width),
+                    r.top + i32::from(height),
+                );
+                let kind = *self
+                    .definitions
+                    .get(&w)
+                    .ok_or_else(|| fail("missing window definition identity"))?;
+                let margin = if kind == 1 { 8 } else { 1 };
+                let structure = Rect::new(
+                    content.left - margin,
+                    content.top - if kind == 4 { 19 } else { margin },
+                    content.right + if kind == 4 { 2 } else { margin },
+                    content.bottom + if kind == 4 { 2 } else { margin },
+                );
+                let old_local = read_rect(memory, GuestPtr(w + 16))?;
+                let local = rect_bytes(Rect::new(
+                    old_local.left,
+                    old_local.top,
+                    old_local.left + i32::from(width),
+                    old_local.top + i32::from(height),
+                ))?;
+                memory.validate_write(GuestPtr(w + 16), 8)?;
+                port_rect = Some(local[2..].to_vec());
+                states[index].content = rect_bytes(content)?;
+                states[index].structure = rect_bytes(structure)?;
+                states[index].pending = region_geometry::combine(
+                    &states[index].pending,
+                    &states[index].content,
+                    Boolean::Intersection,
+                )?;
+                if update {
+                    let exposed = region_geometry::combine(
+                        &states[index].content,
+                        &old_content,
+                        Boolean::Difference,
+                    )?;
+                    states[index].pending =
+                        region_geometry::combine(&states[index].pending, &exposed, Boolean::Union)?;
+                }
+                changes.push((handle(memory, w, 118)?, states[index].content.clone()));
+                changes.push((handle(memory, w, 114)?, states[index].structure.clone()));
+            }
+            Change::Visibility(show) => states[index].visible = show,
+        }
+        if states[index].visible {
+            damage = region_geometry::combine(&damage, &states[index].structure, Boolean::Union)?;
+        }
+        let desktop = region(memory, process, self.gray)?;
+        let mut covered = rect_bytes(Rect::new(0, 0, 0, 0))?;
+        for state in &mut states {
+            let available = if state.visible {
+                region_geometry::combine(&state.content, &desktop, Boolean::Intersection)?
+            } else {
+                rect_bytes(Rect::new(0, 0, 0, 0))?
+            };
+            state.next_vis = region_geometry::combine(&available, &covered, Boolean::Difference)?;
+            if state.window != w || matches!(change, Change::Visibility(true)) {
+                let exposed = region_geometry::combine(
+                    &state.next_vis,
+                    &state.previous_vis,
+                    Boolean::Difference,
+                )?;
+                state.pending = region_geometry::combine(&state.pending, &exposed, Boolean::Union)?;
+            }
+            changes.push((
+                handle(memory, state.window, 24)?,
+                shifted(&state.next_vis, state.local.left, state.local.top)?,
+            ));
+            changes.push((handle(memory, state.window, 122)?, state.pending.clone()));
+            if state.visible {
+                covered = region_geometry::combine(&covered, &state.structure, Boolean::Union)?;
+            }
+        }
+        process.replace_handles(memory, changes)?;
+        if process.mem_error != 0 {
+            return Err(fail("window region update allocation failed"));
+        }
+        if let Some(rect) = port_rect {
+            memory.write(GuestPtr(w + 16), &rect)?;
+        }
+        if let Change::Visibility(show) = change {
+            memory.write(GuestPtr(w + 110), &[u8::from(show)])?;
+        }
+        // ShowHide preserves highlighting/list order and queues no activation.
+        let mut covered = rect_bytes(Rect::new(0, 0, 0, 0))?;
+        let damage = region_geometry::combine(&damage, &desktop, Boolean::Intersection)?;
+        let mut gray_damage = damage.clone();
+        for state in &states {
+            if !state.visible {
+                continue;
+            }
+            let eligible = region_geometry::combine(&damage, &covered, Boolean::Difference)?;
+            let eligible =
+                region_geometry::combine(&eligible, &state.structure, Boolean::Intersection)?;
+            let preserved = region_geometry::combine(
+                &state.previous_vis,
+                &state.next_vis,
+                Boolean::Intersection,
+            )?;
+            let redraw = region_geometry::combine(&eligible, &preserved, Boolean::Difference)?;
+            self.paint_window(memory, process, gpu, state.window, &redraw)?;
+            gray_damage =
+                region_geometry::combine(&gray_damage, &state.structure, Boolean::Difference)?;
+            covered = region_geometry::combine(&covered, &state.structure, Boolean::Union)?;
+        }
+        self.desktop(memory, process, gpu, &gray_damage)?;
+        self.refresh_chrome(memory, process, gpu, 0)?;
+        Ok(())
     }
     pub fn call(
         &mut self,

@@ -47,6 +47,14 @@ pub enum Call {
         value: u16,
     },
     NewWindow(crate::windows::NewWindow),
+    WindowReference {
+        pointer: u32,
+        value: Option<u32>,
+    },
+    WindowChange {
+        pointer: u32,
+        change: crate::windows::Change,
+    },
     NewControl(crate::controls::NewControl),
     Control(crate::controls::Op),
     ResourceWindow {

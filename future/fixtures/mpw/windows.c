@@ -89,6 +89,10 @@ int main(void) {
     point.v=40;point.h=12; if (TestControl(check,point)!=11) return 35;
     HiliteControl(check,255); if (TestControl(check,point)) return 36; HiliteControl(check,0);
     (*check)->contrlValue=0; Draw1Control(check); if (GetControlValue(check)) return 37;
+    SetWRefCon(first,0x76543210); if (GetWRefCon(first)!=0x76543210) return 39;
+    SizeWindow(first,180,70,true); if (first->portRect.right!=180 || first->portRect.bottom!=70 || (*button)->contrlOwner!=first) return 40;
+    ShowHide(first,false); if (((WindowPeek)first)->visible || FrontWindow()) return 41;
+    ShowHide(first,true); if (!((WindowPeek)first)->visible || FrontWindow()!=first) return 42;
     DrawControls(first); DisposeControl(check); if ((*radio)->nextControl!=button || *check) return 38;
     DisposeWindow(first); if (FrontWindow() || *button || *radio) return 26;
     PostEvent(diskEvt,0x600D);

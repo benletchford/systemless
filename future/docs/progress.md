@@ -2006,3 +2006,41 @@ Centaurian 68K still needs GetGDevice; original PPC sound imports, native
 presentation and real Mixed Mode remain outstanding. Next: shared window sizing/
 visibility and resulting region/update/control redraw behavior, then continue
 application-driven UI slices. Full rebuild goal stays active.
+
+### Window sizing, ShowHide exposure and live reference constants
+
+SizeWindow ($A91D / InterfaceLib) now changes the shared window's local port
+dimensions and global content/structure regions, preserving its origin, caller
+clip and retained visible guest pixels. Newly created content is added to its
+update region only when fUpdate is true, following Apple's [SizeWindow contract](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-251.html).
+Existing invalidation is clipped to the new content. Other windows uncovered by
+shrink receive independent exposure invalidation. All affected region handles
+are staged together and output fields validated before mutation; corrupt aliases
+fail without partially changing port dimensions. GPU drawing repairs frame and
+exposure damage while leaving retained content pixels intact.
+
+ShowHide ($A908 / InterfaceLib) shares the exposure primitive: hiding/revealing
+changes live visibility and update regions while preserving list order and
+highlighting, as [documented by Apple](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-237.html).
+It does not implement ShowWindow/HideWindow activation semantics. Controls remain
+owned and application-driven DrawControls uses the new visibility. GetWRefCon
+($A917) and SetWRefCon ($A918) read/write live refCon memory with checked ABI
+outputs; these do not require graphics or change MemErr.
+
+All 205 tests pass (174 default, 31 optional GPU/MPW), strict all-target Clippy
+passes and MPW fixtures rebuild. New checks cover exact 68K Boolean/word
+marshalling and result faults, cross-CPU full-screen resize parity, direct guest
+pixel retention, fUpdate false/true behavior, caller clip retention, background
+exposure, ShowHide order/highlight preservation, control survival/redraw, live
+references and atomic alias rejection. Paired compiled guests resize/reveal and
+redraw their real control/window records.
+
+Zero/zero size requests are no-ops; other nonpositive dimensions and geometry
+changes during BeginUpdate remain explicit faults. Position/dragging,
+ShowWindow/HideWindow/SelectWindow activation, custom definitions and native
+presentation remain unfinished. Native System 7 parity was not tested. Fresh
+Super Mines startup now reaches MoveWindow ($A91B), PC $0100B972, index 15431,
+after SizeWindow and SetWRefCon. Original UI interaction, Centaurian 68K's
+GetGDevice, original PPC sound imports and real Mixed Mode remain outstanding.
+Next: window movement and activation/visibility lifecycle with correct pixel
+transfer and exposure. Full rebuild goal stays active.

@@ -471,3 +471,326 @@ fn wind_resources_share_live_templates_document_chrome_and_native_result_slots()
         0
     );
 }
+
+#[test]
+fn size_visibility_and_reference_adapters_use_pascal_words_and_preserve_padding() {
+    use systemless_future::{
+        abi::{Abi, Reply, Service},
+        windows::Change,
+    };
+    let mut memory = systemless_future::memory::Memory::default();
+    let mut frame = vec![0x5a; 18];
+    frame[0] = 255;
+    frame[1] = 0xa5;
+    w16(&mut frame, 2, 33);
+    w16(&mut frame, 4, 44);
+    w32(&mut frame, 6, 0x12345678);
+    memory
+        .map(GuestPtr(0x1000), frame, Permissions::RW)
+        .unwrap();
+    let mut cpu = Cpu::new(Architecture::M68k, 0, 0x1000);
+    let Cpu::M68k(c) = &mut cpu else { panic!() };
+    let (call, reply) = Abi::trap(0xa91d, c, &memory).unwrap();
+    assert_eq!(
+        call,
+        systemless_future::cpu::Call::WindowChange {
+            pointer: 0x12345678,
+            change: Change::Size {
+                width: 44,
+                height: 33,
+                update: true
+            }
+        }
+    );
+    assert_eq!(reply, Reply::None);
+    assert_eq!(c.dar[15], 0x100a);
+    assert_eq!(memory.read(GuestPtr(0x100a), 8).unwrap(), [0x5a; 8]);
+    let mut cpu = Cpu::new(Architecture::PowerPc, 0, 0x1000);
+    let Cpu::PowerPc(c) = &mut cpu else { panic!() };
+    c.gpr[3] = 0x12345678;
+    c.gpr[4] = 44;
+    c.gpr[5] = 33;
+    c.gpr[6] = 255;
+    assert_eq!(
+        Abi::import(Service::SizeWindow, c, &memory).unwrap(),
+        (call, Reply::None)
+    );
+    memory
+        .write(GuestPtr(0x1002), &0x12345678u32.to_be_bytes())
+        .unwrap();
+    let mut cpu = Cpu::new(Architecture::M68k, 0, 0x1000);
+    let Cpu::M68k(c) = &mut cpu else { panic!() };
+    assert_eq!(
+        Abi::trap(0xa908, c, &memory).unwrap().0,
+        systemless_future::cpu::Call::WindowChange {
+            pointer: 0x12345678,
+            change: Change::Visibility(true)
+        }
+    );
+    assert_eq!(c.dar[15], 0x1006);
+    memory
+        .map(
+            GuestPtr(0x2000),
+            0x12345678u32.to_be_bytes().to_vec(),
+            Permissions::RW,
+        )
+        .unwrap();
+    memory
+        .map(GuestPtr(0x2004), vec![0; 4], Permissions::RX)
+        .unwrap();
+    let mut cpu = Cpu::new(Architecture::M68k, 0, 0x2000);
+    let Cpu::M68k(c) = &mut cpu else { panic!() };
+    assert!(Abi::trap(0xa917, c, &memory).is_err());
+    assert_eq!(c.dar[15], 0x2000);
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn sizing_preserves_pixels_clip_and_control_state_and_visibility_queues_exposure() {
+    use systemless_future::{
+        controls::NewControl,
+        windows::{Change, Op},
+    };
+    let f = pef_program(
+        &[0x4e800020],
+        &[
+            b"InitGraf",
+            b"InitFonts",
+            b"InitWindows",
+            b"NewWindow",
+            b"SizeWindow",
+            b"ShowHide",
+            b"SetWRefCon",
+            b"GetWRefCon",
+        ],
+        512,
+    );
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let data = app.info.toc_or_a5;
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa9, 0x1d], Permissions::RX)
+        .unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), vec![0; 512], Permissions::RW)
+        .unwrap();
+    invoke(&mut app, 0, &[data + 330]);
+    invoke(&mut app, 1, &[]);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    app.runtime.graphics = Some(
+        pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
+    );
+    invoke(&mut app, 2, &[]);
+    rect(&mut app, 0x51000000, 80, 100, 180, 300);
+    app.runtime
+        .memory
+        .write(GuestPtr(0x51000010), b"\x04back")
+        .unwrap();
+    let back = invoke(
+        &mut app,
+        3,
+        &[0, 0x51000000, 0x51000010, 1, 2, u32::MAX, 0, 0],
+    );
+    rect(&mut app, 0x51000000, 100, 120, 140, 180);
+    let front = invoke(
+        &mut app,
+        3,
+        &[0, 0x51000000, 0x51000010, 1, 2, u32::MAX, 0, 0],
+    );
+    invoke(&mut app, 6, &[front, 0xfedcba98]);
+    assert_eq!(invoke(&mut app, 7, &[front]), 0xfedcba98);
+    let clip = app.runtime.memory.u32(GuestPtr(front + 28)).unwrap();
+    let clip_ptr = GuestPtr(app.runtime.memory.u32(GuestPtr(clip)).unwrap());
+    let clip_size = app
+        .runtime
+        .process
+        .handle_size(&app.runtime.memory, clip)
+        .unwrap();
+    let old_clip = app
+        .runtime
+        .memory
+        .read(clip_ptr, clip_size as usize)
+        .unwrap()
+        .to_vec();
+    // Clear prior invalidation, then mark retained content with a direct guest write.
+    for w in [back, front] {
+        let h = app.runtime.memory.u32(GuestPtr(w + 122)).unwrap();
+        app.runtime
+            .process
+            .set_handle_size(&mut app.runtime.memory, h, 10)
+            .unwrap();
+        let p = GuestPtr(app.runtime.memory.u32(GuestPtr(h)).unwrap());
+        app.runtime
+            .memory
+            .write(p, &[0, 10, 0, 0, 0, 0, 0, 0, 0, 0])
+            .unwrap();
+    }
+    let address = GuestPtr(SCREEN.0 + 110 * 64 + 130 / 8);
+    let old = app.runtime.memory.read(address, 1).unwrap()[0];
+    app.runtime
+        .memory
+        .write(address, &[old | (0x80 >> (130 % 8))])
+        .unwrap();
+    invoke(&mut app, 4, &[front, 80, 60, 1]);
+    assert!(pixel(&app, 130, 110));
+    let grown_pixels = app.runtime.memory.read(SCREEN, 64 * 342).unwrap().to_vec();
+    assert_eq!(region(&app, front, 118), [Rect::new(120, 100, 200, 160)]);
+    assert!(contains(&region(&app, front, 122), 190, 110));
+    assert!(!contains(&region(&app, front, 122), 130, 110));
+    assert!(!contains(&region(&app, back, 24), 100, 40));
+    assert_eq!(
+        app.runtime
+            .memory
+            .read(
+                GuestPtr(app.runtime.memory.u32(GuestPtr(clip)).unwrap()),
+                old_clip.len()
+            )
+            .unwrap(),
+        old_clip
+    );
+    // Compare native size arguments against PPC at the same prior state.
+    invoke(&mut app, 4, &[front, 60, 40, 0]);
+    let mut frame = vec![0; 10];
+    frame[0] = 255;
+    frame[1] = 0xa5;
+    w16(&mut frame, 2, 60);
+    w16(&mut frame, 4, 80);
+    w32(&mut frame, 6, front);
+    m68(&mut app, 0, &frame, 10, false);
+    assert_eq!(
+        app.runtime.memory.read(SCREEN, 64 * 342).unwrap(),
+        grown_pixels
+    );
+    assert_eq!(region(&app, front, 118), [Rect::new(120, 100, 200, 160)]);
+    assert!(pixel(&app, 130, 110));
+    // Growing with fUpdate false does not generate a new content invalidation.
+    let h = app.runtime.memory.u32(GuestPtr(front + 122)).unwrap();
+    app.runtime
+        .process
+        .set_handle_size(&mut app.runtime.memory, h, 10)
+        .unwrap();
+    app.runtime
+        .memory
+        .write(
+            GuestPtr(app.runtime.memory.u32(GuestPtr(h)).unwrap()),
+            &[0, 10, 0, 0, 0, 0, 0, 0, 0, 0],
+        )
+        .unwrap();
+    invoke(&mut app, 4, &[front, 90, 70, 0]);
+    assert!(region(&app, front, 122).is_empty());
+    // Controls stay owned while hidden, and redraw using the new visible region.
+    rect(&mut app, 0x51000000, 5, 5, 25, 65);
+    app.runtime
+        .memory
+        .write(GuestPtr(0x51000010), b"\x02OK")
+        .unwrap();
+    let request = NewControl {
+        owner: GuestPtr(front),
+        bounds: GuestPtr(0x51000000),
+        title: GuestPtr(0x51000010),
+        visible: true,
+        value: 0,
+        min: 0,
+        max: 1,
+        proc_id: 0,
+        ref_con: 7,
+    };
+    let mut controls = std::mem::take(&mut app.runtime.process.controls);
+    let control = controls
+        .create(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            app.runtime.graphics.as_ref(),
+            request,
+        )
+        .unwrap();
+    app.runtime.process.controls = controls;
+    let list = app
+        .runtime
+        .memory
+        .u32(systemless_future::windows::LIST)
+        .unwrap();
+    let highlight = app.runtime.memory.read(GuestPtr(front + 111), 1).unwrap()[0];
+    invoke(&mut app, 5, &[front, 0]);
+    assert!(region(&app, front, 24).is_empty());
+    assert_ne!(app.runtime.memory.u32(GuestPtr(control)).unwrap(), 0);
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(front + 111), 1).unwrap()[0],
+        highlight
+    );
+    assert!(contains(&region(&app, back, 122), 130, 110));
+    assert_eq!(
+        app.runtime
+            .memory
+            .u32(systemless_future::windows::LIST)
+            .unwrap(),
+        list
+    );
+    invoke(&mut app, 5, &[front, 1]);
+    assert!(contains(&region(&app, front, 122), 130, 110));
+    let mut controls = std::mem::take(&mut app.runtime.process.controls);
+    controls
+        .call(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            app.runtime.graphics.as_ref(),
+            systemless_future::controls::Op::DrawAll(front),
+        )
+        .unwrap();
+    app.runtime.process.controls = controls;
+    assert!(pixel(&app, 145, 105));
+    // A malformed shared region handle must fail the whole staged change.
+    let port_before = app
+        .runtime
+        .memory
+        .read(GuestPtr(front + 16), 8)
+        .unwrap()
+        .to_vec();
+    let wrong = app.runtime.memory.u32(GuestPtr(front + 24)).unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(front + 122), &wrong.to_be_bytes())
+        .unwrap();
+    let mut windows = std::mem::take(&mut app.runtime.process.windows);
+    assert!(windows
+        .change(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            app.runtime.graphics.as_ref().unwrap(),
+            front,
+            Change::Size {
+                width: 100,
+                height: 80,
+                update: true
+            }
+        )
+        .is_err());
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(front + 16), 8).unwrap(),
+        port_before
+    );
+    app.runtime
+        .memory
+        .write(GuestPtr(front + 122), &h.to_be_bytes())
+        .unwrap();
+    windows
+        .call(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            app.runtime.graphics.as_ref().unwrap(),
+            Op::Dispose,
+            front,
+        )
+        .unwrap();
+    windows
+        .call(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            app.runtime.graphics.as_ref().unwrap(),
+            Op::Dispose,
+            back,
+        )
+        .unwrap();
+    app.runtime.process.windows = windows;
+}

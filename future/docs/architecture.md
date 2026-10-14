@@ -984,3 +984,21 @@ destroying the owner. Built-in definition identity is currently host dispatch
 metadata: contrlDefProc is NIL, not a callable CDEF handle, and AuxCtlRec is
 unimplemented. Custom definitions/data, tracking/action callbacks, scroll bars,
 CNTL loading and limit setters remain gaps.
+
+SizeWindow and ShowHide use a shared staged geometry/exposure operation. All
+affected visibility/update regions plus resized content/structure handles are
+validated and replaced together before record fields change. Retained global
+visible content keeps its guest bitmap pixels; frame and newly exposed damage
+are repainted through wgpu. SizeWindow adds new content geometry to updateRgn
+only when fUpdate is true, intersects prior invalidation with the resized content
+and preserves clipRgn/local origin/current port. Other exposed windows receive
+update regions independently of fUpdate.
+
+ShowHide updates visibility and queues newly exposed content while preserving
+WindowList order and highlighting. It has no activation semantics; ShowWindow,
+HideWindow and SelectWindow remain unsupported. Controls retain their records
+and local coordinates; application-driven DrawControls observes the changed
+visibility/port bounds. Geometry changes during BeginUpdate and nonpositive
+nonzero dimensions are explicit faults; a zero/zero size request is a no-op.
+Window reference getters/setters access live refCon memory without graphics or
+MemErr changes.
