@@ -74,13 +74,21 @@ fn normalize_hotspots_on_this_browser() -> bool {
             js_sys::Reflect::get(object, &wasm_bindgen::JsValue::from_str(key)).ok()
         };
         let global: wasm_bindgen::JsValue = js_sys::global().into();
-        let Some(navigator) = read(&global, "navigator") else { return false };
-        let ua = read(&navigator, "userAgent").and_then(|v| v.as_string()).unwrap_or_default();
-        let touch = read(&navigator, "maxTouchPoints").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let Some(navigator) = read(&global, "navigator") else {
+            return false;
+        };
+        let ua = read(&navigator, "userAgent")
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        let touch = read(&navigator, "maxTouchPoints")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
         needs_hotspot_normalization(&ua, touch as u32)
     }
     #[cfg(not(target_arch = "wasm32"))]
-    { false }
+    {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,7 +112,8 @@ impl NativeSize {
             return None;
         }
         Some(Self {
-            width, height,
+            width,
+            height,
             hot_h: ((self.hot_h as f64 * scale).round() as usize).min(width - 1),
             hot_v: ((self.hot_v as f64 * scale).round() as usize).min(height - 1),
         })
@@ -133,7 +142,13 @@ fn native_size(image: &CursorImage, scale: f64) -> Option<NativeSize> {
     {
         return None;
     }
-    NativeSize { width: w, height: h, hot_h: hot_h as usize, hot_v: hot_v as usize }.scaled(scale)
+    NativeSize {
+        width: w,
+        height: h,
+        hot_h: hot_h as usize,
+        hot_v: hot_v as usize,
+    }
+    .scaled(scale)
 }
 
 pub(crate) fn native_pointer_supported(
@@ -153,7 +168,11 @@ fn native_css(image: &CursorImage, scale: f64) -> Option<String> {
     native_css_with_layout(image, scale, None)
 }
 
-fn native_css_with_layout(image: &CursorImage, scale: f64, layouts: Option<&mut CursorLayouts>) -> Option<String> {
+fn native_css_with_layout(
+    image: &CursorImage,
+    scale: f64,
+    layouts: Option<&mut CursorLayouts>,
+) -> Option<String> {
     let mut size = native_size(image, scale)?;
     let (w, h, hot_h, hot_v) = match image {
         CursorImage::Mono {
@@ -196,8 +215,16 @@ fn native_css_with_layout(image: &CursorImage, scale: f64, layouts: Option<&mut 
     let mut source = vec![0; w * h * 4];
     display::render_cursor(&mut source, w as u32, h as u32, image, (hot_v, hot_h));
     let layout = layouts.and_then(|layouts| {
-        let source_size = NativeSize { width: w, height: h, hot_h: hot_h as usize, hot_v: hot_v as usize };
-        layouts.observe(source_size, &source).then(|| layouts.plan(scale)).flatten()
+        let source_size = NativeSize {
+            width: w,
+            height: h,
+            hot_h: hot_h as usize,
+            hot_v: hot_v as usize,
+        };
+        layouts
+            .observe(source_size, &source)
+            .then(|| layouts.plan(scale))
+            .flatten()
     });
     let mut scaled = vec![0; out_w * out_h * 4];
     for y in 0..out_h {
@@ -244,47 +271,95 @@ mod tests {
     }
 
     fn decode_cursor(css: &str) -> (image::RgbaImage, (i32, i32)) {
-        let encoded = css.split("base64,").nth(1).unwrap().split('"').next().unwrap();
-        let png = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
-        let mut hot = css.split(") ").nth(1).unwrap().trim_end_matches(", none").split_whitespace();
-        (image::load_from_memory(&png).unwrap().to_rgba8(),
-         (hot.next().unwrap().parse().unwrap(), hot.next().unwrap().parse().unwrap()))
+        let encoded = css
+            .split("base64,")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        let mut hot = css
+            .split(") ")
+            .nth(1)
+            .unwrap()
+            .trim_end_matches(", none")
+            .split_whitespace();
+        (
+            image::load_from_memory(&png).unwrap().to_rgba8(),
+            (
+                hot.next().unwrap().parse().unwrap(),
+                hot.next().unwrap().parse().unwrap(),
+            ),
+        )
     }
 
     fn visible_pixels(css: &str) -> Vec<(i32, i32, [u8; 4])> {
         let (png, hot) = decode_cursor(css);
-        png.enumerate_pixels().filter(|(_, _, p)| p.0[3] != 0)
-            .map(|(x, y, p)| (x as i32 - hot.0, y as i32 - hot.1, p.0)).collect()
+        png.enumerate_pixels()
+            .filter(|(_, _, p)| p.0[3] != 0)
+            .map(|(x, y, p)| (x as i32 - hot.0, y as i32 - hot.1, p.0))
+            .collect()
     }
 
     fn normalized_state() -> HostCursor {
-        HostCursor { layouts: Some(CursorLayouts::default()), ..HostCursor::default() }
+        HostCursor {
+            layouts: Some(CursorLayouts::default()),
+            ..HostCursor::default()
+        }
     }
 
     #[test]
     fn normalization_is_scoped_to_mac_chromium() {
-        assert!(needs_hotspot_normalization("Mozilla/5.0 (Macintosh; Intel Mac OS X) Chrome/155.0", 0));
-        assert!(!needs_hotspot_normalization("Mozilla/5.0 (Macintosh) Chrome/155.0", 5));
-        assert!(!needs_hotspot_normalization("Mozilla/5.0 (Macintosh) Safari/605.1", 0));
-        assert!(!needs_hotspot_normalization("Mozilla/5.0 (Windows NT) Chrome/155.0", 0));
-        assert!(!needs_hotspot_normalization("Mozilla/5.0 (X11; Linux) Chrome/155.0", 0));
+        assert!(needs_hotspot_normalization(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X) Chrome/155.0",
+            0
+        ));
+        assert!(!needs_hotspot_normalization(
+            "Mozilla/5.0 (Macintosh) Chrome/155.0",
+            5
+        ));
+        assert!(!needs_hotspot_normalization(
+            "Mozilla/5.0 (Macintosh) Safari/605.1",
+            0
+        ));
+        assert!(!needs_hotspot_normalization(
+            "Mozilla/5.0 (Windows NT) Chrome/155.0",
+            0
+        ));
+        assert!(!needs_hotspot_normalization(
+            "Mozilla/5.0 (X11; Linux) Chrome/155.0",
+            0
+        ));
     }
 
     #[test]
     fn known_shapes_keep_shared_origin_and_exact_visible_pixels_through_zoom() {
-        let shapes = [solid_cursor((0, 0, 11, 16), (1, 1)),
-            solid_cursor((2, 0, 13, 16), (8, 8)), solid_cursor((1, 1, 15, 15), (7, 7))];
+        let shapes = [
+            solid_cursor((0, 0, 11, 16), (1, 1)),
+            solid_cursor((2, 0, 13, 16), (8, 8)),
+            solid_cursor((1, 1, 15, 15), (7, 7)),
+        ];
         let mut state = normalized_state();
-        for image in &shapes { state.update(Some(image), 1.0); }
+        for image in &shapes {
+            state.update(Some(image), 1.0);
+        }
         assert_eq!(decode_cursor(&state.css).1, (6, 8));
         for scale in [0.25, 0.75, 0.9975, 1.0, 1.2475, 1.355, 2.0, 4.0, 1.0] {
             let mut layout = None;
             for image in &shapes {
                 state.update(Some(image), scale);
                 assert!(!state.software);
-                assert_eq!(visible_pixels(&state.css), visible_pixels(&native_css(image, scale).unwrap()));
+                assert_eq!(
+                    visible_pixels(&state.css),
+                    visible_pixels(&native_css(image, scale).unwrap())
+                );
                 let (png, hot) = decode_cursor(&state.css);
-                if let Some(expected) = layout { assert_eq!(expected, (png.dimensions(), hot)); }
+                if let Some(expected) = layout {
+                    assert_eq!(expected, (png.dimensions(), hot));
+                }
                 layout = Some((png.dimensions(), hot));
             }
         }

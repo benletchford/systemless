@@ -25,7 +25,13 @@ pub(super) struct CursorLayouts {
 impl CursorLayouts {
     /// False leaves an unregistered shape in its original native layout.
     pub(super) fn observe(&mut self, size: NativeSize, pixels: &[u8]) -> bool {
-        let mut shape = Shape { size, left: size.width, top: size.height, right: 0, bottom: 0 };
+        let mut shape = Shape {
+            size,
+            left: size.width,
+            top: size.height,
+            right: 0,
+            bottom: 0,
+        };
         for y in 0..size.height {
             for x in 0..size.width {
                 if pixels[(y * size.width + x) * 4 + 3] != 0 {
@@ -55,7 +61,9 @@ impl CursorLayouts {
         // space needed by the guest shapes themselves.
         let (mut left, mut top, mut right, mut bottom) = (0, 0, 0, 0);
         for shape in &self.shapes {
-            let Some(size) = shape.size.scaled(scale) else { continue };
+            let Some(size) = shape.size.scaled(scale) else {
+                continue;
+            };
             // Nearest sampling selects floor(dest * source_size / dest_size).
             // Transform bounds with that rule, not by rounding their scale.
             let x0 = (shape.left * size.width).div_ceil(shape.size.width);
@@ -73,8 +81,16 @@ impl CursorLayouts {
         // Equal canvas sizes also avoid changing the cursor image dimensions
         // when the guest changes shape. Padding may exceed a browser's native
         // limit even when the original image fits: decline it in that case.
-        let side = (left + right + 1).max(top + bottom + 1).next_power_of_two().max(32);
-        (side <= 128).then_some(NativeSize { width: side, height: side, hot_h: left, hot_v: top })
+        let side = (left + right + 1)
+            .max(top + bottom + 1)
+            .next_power_of_two()
+            .max(32);
+        (side <= 128).then_some(NativeSize {
+            width: side,
+            height: side,
+            hot_h: left,
+            hot_v: top,
+        })
     }
 }
 
@@ -105,7 +121,12 @@ mod tests {
     #[test]
     fn bounded_metadata_deduplicates_colours_and_declines_unseen_shapes() {
         let mut layouts = CursorLayouts::default();
-        let size = NativeSize { width: 16, height: 16, hot_h: 0, hot_v: 0 };
+        let size = NativeSize {
+            width: 16,
+            height: 16,
+            hot_h: 0,
+            hot_v: 0,
+        };
         for index in 0..MAX_SHAPES {
             let mut pixels = vec![0; 16 * 16 * 4];
             pixels[index * 4 + 3] = 255;
@@ -122,16 +143,33 @@ mod tests {
     #[test]
     fn sparse_shapes_with_edge_hotspots_preserve_every_visible_sample() {
         let mut seed = 0x82a19_u32;
-        let mut random = |max| { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; seed as usize % max };
+        let mut random = |max| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as usize % max
+        };
         for _ in 0..40 {
             let mut layouts = CursorLayouts::default();
             let mut family = Vec::new();
             for _ in 0..5 {
                 let (width, height) = (1 + random(24), 1 + random(24));
-                let size = NativeSize { width, height, hot_h: random(width), hot_v: random(height) };
+                let size = NativeSize {
+                    width,
+                    height,
+                    hot_h: random(width),
+                    hot_v: random(height),
+                };
                 let mut pixels = vec![0; width * height * 4];
                 for pixel in pixels.chunks_exact_mut(4) {
-                    if random(4) == 0 { pixel.copy_from_slice(&[random(256) as u8, random(256) as u8, random(256) as u8, 1 + random(255) as u8]); }
+                    if random(4) == 0 {
+                        pixel.copy_from_slice(&[
+                            random(256) as u8,
+                            random(256) as u8,
+                            random(256) as u8,
+                            1 + random(255) as u8,
+                        ]);
+                    }
                 }
                 assert!(layouts.observe(size, &pixels));
                 family.push((size, pixels));
@@ -143,15 +181,27 @@ mod tests {
                     let mut scaled = vec![0; size.width * size.height * 4];
                     for y in 0..size.height {
                         for x in 0..size.width {
-                            let from = ((y * source.height / size.height) * source.width + x * source.width / size.width) * 4;
-                            scaled[(y * size.width + x) * 4..][..4].copy_from_slice(&pixels[from..from + 4]);
+                            let from = ((y * source.height / size.height) * source.width
+                                + x * source.width / size.width)
+                                * 4;
+                            scaled[(y * size.width + x) * 4..][..4]
+                                .copy_from_slice(&pixels[from..from + 4]);
                         }
                     }
-                    let packed = repack(&scaled, size, layout).expect("Plan must enclose all visible samples");
+                    let packed = repack(&scaled, size, layout)
+                        .expect("Plan must enclose all visible samples");
                     let visible = |data: &[u8], s: NativeSize| {
-                        data.chunks_exact(4).enumerate().filter(|(_, p)| p[3] != 0)
-                            .map(|(i, p)| (i as isize % s.width as isize - s.hot_h as isize,
-                                i as isize / s.width as isize - s.hot_v as isize, p.to_vec())).collect::<Vec<_>>()
+                        data.chunks_exact(4)
+                            .enumerate()
+                            .filter(|(_, p)| p[3] != 0)
+                            .map(|(i, p)| {
+                                (
+                                    i as isize % s.width as isize - s.hot_h as isize,
+                                    i as isize / s.width as isize - s.hot_v as isize,
+                                    p.to_vec(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
                     };
                     assert_eq!(visible(&scaled, size), visible(&packed, layout));
                 }
