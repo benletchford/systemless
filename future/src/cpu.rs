@@ -13,6 +13,12 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    RoundRect {
+        pointer: GuestPtr,
+        width: i16,
+        height: i16,
+        frame: bool,
+    },
     FragmentQuery(crate::cfm::Query),
     LoadFragment(crate::cfm::LoadRequest),
     CloseFragment(GuestPtr),

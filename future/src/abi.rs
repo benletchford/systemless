@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    RoundRect(bool),
     GetMemFragment,
     CloseConnection,
     FindSymbol,
@@ -105,6 +106,8 @@ impl Abi {
         match symbol {
             b"GetMemFragment" => Some(Service::GetMemFragment),
             b"CloseConnection" => Some(Service::CloseConnection),
+            b"FrameRoundRect" => Some(Service::RoundRect(true)),
+            b"PaintRoundRect" => Some(Service::RoundRect(false)),
             b"Random" => Some(Service::Random),
             b"FindSymbol" => Some(Service::FindSymbol),
             b"CountSymbols" => Some(Service::CountSymbols),
@@ -184,6 +187,24 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa8b0 | 0xa8b1 => {
+                let bytes = memory.read(GuestPtr(sp), 8)?;
+                let height = i16::from_be_bytes(bytes[..2].try_into().unwrap());
+                let width = i16::from_be_bytes(bytes[2..4].try_into().unwrap());
+                let pointer = GuestPtr(u32::from_be_bytes(bytes[4..8].try_into().unwrap()));
+                c.dar[15] = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("QuickDraw stack overflow".into()))?;
+                Ok((
+                    Call::RoundRect {
+                        pointer,
+                        width,
+                        height,
+                        frame: opcode == 0xa8b0,
+                    },
+                    Reply::None,
+                ))
+            }
             0xa861 => {
                 memory.validate_write(GuestPtr(sp), 2)?;
                 Ok((Call::Random, Reply::StackWord(GuestPtr(sp))))
@@ -502,6 +523,12 @@ impl Abi {
     }
     pub fn import(service: Service, c: &ppc::PpcCpu) -> (Call, Reply) {
         let call = match service {
+            Service::RoundRect(frame) => Call::RoundRect {
+                pointer: GuestPtr(c.gpr[3]),
+                width: c.gpr[4] as i16,
+                height: c.gpr[5] as i16,
+                frame,
+            },
             Service::Random => Call::Random,
             Service::GetMemFragment => Call::LoadFragment(crate::cfm::LoadRequest {
                 source: GuestPtr(c.gpr[3]),
@@ -633,6 +660,7 @@ impl Abi {
                 || matches!(
                     service,
                     Service::InitGraf
+                        | Service::RoundRect(_)
                         | Service::CombineRegions(_)
                         | Service::Port(_)
                         | Service::PenMode

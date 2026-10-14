@@ -154,6 +154,21 @@ impl Runtime {
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::RoundRect {
+                            pointer,
+                            width,
+                            height,
+                            frame,
+                        } => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            let r = crate::quickdraw::read_rect(&self.memory, pointer)?;
+                            let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                Error::Graphics("QuickDraw painting requires a GPU".into())
+                            })?;
+                            ports.round_rect(gpu, &mut self.memory, r, width, height, frame)?;
+                        }
                         Call::Random => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -588,7 +603,8 @@ impl Runtime {
                 Outcome::Service(call) => {
                     self.services.calls.push(call);
                     match call {
-                        Call::Random
+                        Call::RoundRect { .. }
+                        | Call::Random
                         | Call::LoadFragment(_)
                         | Call::CloseFragment(_)
                         | Call::FragmentQuery(_)

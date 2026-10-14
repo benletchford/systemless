@@ -655,3 +655,15 @@ The MPW dynamic fixture loads a locked resource plugin, queries and calls its
 exported function, observes a terminator's write to application storage, closes
 and releases the resource, then posts its success marker. This proves the
 resource-to-CFM path in one runtime, not broad original-application acceptance.
+
+
+## Rounded-rectangle geometry
+
+`rounded` prepares bounded, nonoverlapping scanline coverage for framed and
+painted rounded rectangles. `quickdraw` intersects it with the same live guest
+port/region state used by PaintRect, and `bitmap` submits a patterned fill and
+coverage to wgpu. Vertical runs are coalesced to reduce GPU clip work. Frames
+subtract the inset rounded shape, reading pnSize and pnVis from guest memory;
+pen patterns, modes and colors remain shared. Geometry uses wide fixed-point
+integer intermediates and accepts classic signed-word coordinates. The runtime
+has no dependency on the legacy comparison harness in `fixtures`.

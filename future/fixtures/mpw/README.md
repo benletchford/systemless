@@ -121,3 +121,20 @@ signed sequence, guest QDGlobals.randSeed updates, the -32768-to-zero case and
 zero seed behavior on both architectures. Zero remains zero following published
 Apple QuickDraw source; legacy Systemless instead reseeds zero to one. Existing
 Systemless comparisons are authorized in place of native System 7 checks.
+
+
+The drawing fixture now checks FrameRoundRect and PaintRoundRect on both CPUs,
+including XOR cancellation, asymmetric pen size and unchanged row padding. Its
+final expected image contains two centered four-pixel rows. Earlier rectangular
+and region results remain checked by the guest before the rounded calls.
+
+For an independent legacy geometry comparison (not native Mac validation):
+
+```sh
+rustc --edition=2021 future/fixtures/rounded-comparison.rs -o /tmp/rounded-comparison
+/tmp/rounded-comparison
+```
+
+The standalone harness includes only the legacy span generator for comparison
+and is never linked into the replacement runtime. It compares 129,600 filled
+shapes and 16,384 frames, without compiling the legacy emulator.

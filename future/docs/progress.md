@@ -946,3 +946,39 @@ remain outstanding.
 
 Validation: all 138 tests passed, including 14 optional GPU/MPW tests; the MPW
 fixtures rebuilt successfully and strict all-target Clippy passed.
+
+
+### Rounded-rectangle drawing through the shared GPU path
+
+FrameRoundRect ($A8B0) and PaintRoundRect ($A8B1) now marshal reverse Pascal
+arguments or PPC r3–r5 into one shared service. Framing reads the live guest pen
+size and visibility; painting uses the live pen pattern/mode/colors. Rectangles,
+bitmap bounds, port bounds and complex clip/visible regions share the existing
+synchronous packed-bitmap/wgpu boundary. Repeated XOR frames apply each pixel
+once. Negative pen dimensions, recording and custom QDProcs fail explicitly.
+
+A bounded CPU geometry module uses integer fixed-point ellipse spans and
+subtracts an inset rounded rectangle for frames. Wide intermediates handle
+extreme guest dimensions without the legacy narrow-coordinate arithmetic.
+This is geometry preparation, not a CPU pixel renderer: wgpu performs pattern
+application, transfer modes and indexed pixel writes. Existing geometry/GPU
+work limits still apply, so exceptionally complex draws can fail explicitly.
+
+Comparison evidence: the standalone `future/fixtures/rounded-comparison.rs`
+harness executes the legacy span generator and new coverage generator on
+129,600 filled shapes and 16,384 frames, including odd corners, clamping,
+translation and unequal/zero pen dimensions. All agree in the tested domain.
+This is legacy comparison, not a claim of native Macintosh pixel conformance.
+The runtime does not depend on that harness or legacy code. Fixed pixel tests,
+extreme coordinate tests and a GPU clipping/pattern/direct-write test cover
+additional boundaries. The MPW C fixture runs copy/XOR frames and painting on
+both real architectures and checks every output byte and row padding.
+
+The shared 68K $A8FE stop is InitFonts. The legacy no-op relies on built-in font
+tables; those do not exist in the rebuild, so no unsupported success stub was
+added. Centaurian PPC now resolves FrameRoundRect and stops at GetPattern before
+application execution. Next: pattern-resource access and a substantive shared
+Font Manager initialization/text slice, followed by original app interaction.
+
+Validation: all 141 tests pass, including 15 optional GPU/MPW checks. The MPW
+fixtures rebuilt successfully and strict all-target Clippy passes.

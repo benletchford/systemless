@@ -264,6 +264,16 @@ fn compiled_resource_drawing_and_event_app_has_pixel_parity() {
                 .count(),
             3
         );
+        assert_eq!(
+            calls
+                .iter()
+                .filter_map(|call| match call {
+                    Call::RoundRect { frame, .. } => Some(*frame),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [true, true, false, true]
+        );
         results.push(app.runtime.graphics.as_ref().unwrap().read_rgba().unwrap());
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_systemless-future"));
         match app.info.architecture {
@@ -298,7 +308,7 @@ fn compiled_resource_drawing_and_event_app_has_pixel_parity() {
         );
     }
     assert_eq!(results[0], results[1]);
-    let expected: Vec<u8> = [0x80u8, 0x56, 0x2a, 0]
+    let expected: Vec<u8> = [0u8, 0x3c, 0x3c, 0]
         .iter()
         .flat_map(|row| {
             (0..8).flat_map(move |x| {

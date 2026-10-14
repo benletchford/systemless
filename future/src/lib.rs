@@ -15,6 +15,7 @@ pub mod process;
 pub mod quickdraw;
 pub mod region_geometry;
 pub mod regions;
+pub mod rounded;
 pub mod runtime;
 pub mod sound;
 mod stdlib;

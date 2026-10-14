@@ -222,6 +222,40 @@ impl Ports {
         write_region(memory, handle, r)
     }
     pub fn paint_rect(&self, gpu: &Graphics, memory: &mut Memory, r: Rect) -> Result<()> {
+        self.paint_coverage(gpu, memory, r, None)
+    }
+    pub fn round_rect(
+        &self,
+        gpu: &Graphics,
+        memory: &mut Memory,
+        r: Rect,
+        width: i16,
+        height: i16,
+        frame: bool,
+    ) -> Result<()> {
+        let p = self.current(memory)?;
+        let pen = if frame {
+            Some((
+                memory.u16(offset(p, 54)?)? as i16,
+                memory.u16(offset(p, 52)?)? as i16,
+            ))
+        } else {
+            None
+        };
+        let coverage = if frame && (memory.u16(offset(p, 66)?)? as i16) < 0 {
+            vec![]
+        } else {
+            crate::rounded::coverage(r, width, height, pen)?
+        };
+        self.paint_coverage(gpu, memory, r, Some(&coverage))
+    }
+    fn paint_coverage(
+        &self,
+        gpu: &Graphics,
+        memory: &mut Memory,
+        r: Rect,
+        shape: Option<&[Rect]>,
+    ) -> Result<()> {
         let p = self.current(memory)?;
         let bytes = memory.read(p, PORT_SIZE)?;
         let word = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
@@ -282,6 +316,18 @@ impl Ports {
                     clips.push(r);
                 }
             }
+        }
+        if let Some(shape) = shape {
+            if clips.len().saturating_mul(shape.len()) > 1_000_000 {
+                return Err(Error::Graphics(
+                    "shape intersection work limit exceeded".into(),
+                ));
+            }
+            clips = clips
+                .iter()
+                .flat_map(|clip| shape.iter().map(|part| intersect(*clip, *part)))
+                .filter(|r| r.left < r.right && r.top < r.bottom)
+                .collect();
         }
         bitmap.execute_clipped(
             gpu,
