@@ -859,6 +859,18 @@ impl Runtime {
                             let value = self.memory.u16(GuestPtr(0x220))? as i16 as i32 as u32;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
                         }
+                        Call::CreateDirectory(pointer) => {
+                            let error = self
+                                .process
+                                .files
+                                .create_directory(&mut self.memory, pointer)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::CatalogInfo(pointer) => {
                             let error =
                                 self.process.files.catalog_info(&mut self.memory, pointer)?;
@@ -1002,6 +1014,7 @@ impl Runtime {
                         | Call::ReleaseResource(_)
                         | Call::CurResFile
                         | Call::GetNamedResource { .. }
+                        | Call::CreateDirectory(_)
                         | Call::CatalogInfo(_)
                         | Call::FcbInfo(_) => {
                             return Err(Error::Cpu("Macintosh service on fixture route".into()))

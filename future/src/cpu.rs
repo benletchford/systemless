@@ -166,6 +166,7 @@ pub enum Call {
     },
     FcbInfo(GuestPtr),
     CatalogInfo(GuestPtr),
+    CreateDirectory(GuestPtr),
     Draw(GuestPtr),
     Callback(GuestPtr),
     Exit(u32),

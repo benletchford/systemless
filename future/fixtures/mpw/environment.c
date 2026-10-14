@@ -10,6 +10,7 @@ int main(void) {
     Ptr p;
     CInfoPBRec catalog;
     Str255 name;
+    long folder;
     if (SysEnvirons(1,&world) || world.environsVersion!=2 || world.machineType!=envMachUnknown || world.processor!=env68020 || world.systemVersion!=0x0700 || world.hasFPU || world.hasColorQD || world.keyBoardType!=envUnknownKbd || world.atDrvrVersNum || world.sysVRefNum) return 1;
     world.environsVersion=123;
     if (SysEnvirons(0,&world)!=envBadVers || world.environsVersion!=123) return 2;
@@ -26,5 +27,18 @@ int main(void) {
     if (PBGetCatInfoSync(&catalog) || catalog.hFileInfo.ioDirID!=16 || catalog.hFileInfo.ioFlParID!=2 || (!catalog.hFileInfo.ioFlLgLen && !catalog.hFileInfo.ioFlRLgLen) || !(catalog.hFileInfo.ioFlAttrib&1)) return 9;
     catalog.hFileInfo.ioFDirIndex=2;
     if (PBGetCatInfoSync(&catalog)!=fnfErr || catalog.hFileInfo.ioResult!=fnfErr) return 10;
+    catalog.dirInfo.ioNamePtr="\pPrefs"; catalog.dirInfo.ioVRefNum=0; catalog.dirInfo.ioDrDirID=2;
+    if (PBDirCreateSync((HParmBlkPtr)&catalog) || catalog.dirInfo.ioResult || catalog.dirInfo.ioDrDirID<=16) return 11;
+    folder=catalog.dirInfo.ioDrDirID;
+    catalog.dirInfo.ioNamePtr=name; catalog.dirInfo.ioFDirIndex=-1;
+    if (PBGetCatInfoSync(&catalog) || catalog.dirInfo.ioDrParID!=2 || catalog.dirInfo.ioDrNmFls || name[0]!=5) return 12;
+    catalog.dirInfo.ioNamePtr="\pNested"; catalog.dirInfo.ioDrDirID=folder;
+    if (PBDirCreateSync((HParmBlkPtr)&catalog)) return 13;
+    catalog.dirInfo.ioDrDirID=folder;
+    if (PBDirCreateSync((HParmBlkPtr)&catalog)!=dupFNErr) return 14;
+    catalog.dirInfo.ioNamePtr=name; catalog.dirInfo.ioFDirIndex=-1; catalog.dirInfo.ioDrDirID=folder;
+    if (PBGetCatInfoSync(&catalog) || catalog.dirInfo.ioDrNmFls!=1) return 15;
+    catalog.dirInfo.ioNamePtr="\p:Prefs:Nested"; catalog.dirInfo.ioFDirIndex=0;
+    if (PBGetCatInfoSync(&catalog) || catalog.dirInfo.ioDrParID!=folder) return 16;
     PostEvent(diskEvt,0x600d); ExitToShell(); return 0;
 }

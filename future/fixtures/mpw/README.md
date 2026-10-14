@@ -270,3 +270,8 @@ The environment fixture also calls PBGetCatInfoSync for the virtual root, the
 indexed application and an out-of-range index. It checks returned catalog IDs,
 parent IDs, directory count, name, available fork lengths and ioResult on both
 CPUs, including the PPC data-only application.
+
+The environment fixture now creates a parent and nested directory through
+PBDirCreateSync, queries their IDs/parent/count/name, rejects duplicate creation
+and resolves a colon path on both compiled CPU targets. This modifies only the
+process-local virtual catalog.

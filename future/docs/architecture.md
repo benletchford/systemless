@@ -912,3 +912,18 @@ are written through checked guest memory. Successful parameter/name outputs are
 validated together before either changes. Finder metadata/dates currently have
 deterministic zero defaults; imported metadata, MacRoman name folding, general
 hierarchical paths, writable catalogs and asynchronous completion are unfinished.
+
+PBDirCreateSync/native HFSDispatch selector 6 adds process-local directories to
+the same File Manager catalog as the application. Stable node IDs start at 17;
+the root remains 2 and application 16. Created directories retain name/parent/
+creation date and are visible to named and directory-ID catalog queries. Root
+indexed enumeration includes its direct children; child counts derive from the
+live tree. Colon paths support the virtual volume name, relative prefixes,
+trailing directory separators and parent traversal without escaping the root.
+The 1024-directory limit returns dirFulErr; duplicate names return dupFNErr.
+Guest output is validated before inserting or allocating an ID. Dates come from
+the shared low-memory Time value ($20C), initially zero; advancing/seeding the
+calendar clock and parent modification dates are not yet implemented.
+Directories are in-memory process state: application bytes remain read-only,
+file creation/write/delete, persistence, working-directory references and
+MacRoman folding remain unfinished.

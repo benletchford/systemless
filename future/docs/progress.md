@@ -1823,3 +1823,36 @@ imports, native presentation and real Mixed Mode remain outstanding. Next:
 expand the coherent virtual file catalog with application-driven directory/file
 operations, and implement device contracts needed by the graphics slice.
 The full rebuild goal stays active.
+
+### Process-local virtual directory creation
+
+PBDirCreateSync and native HFSDispatch selector 6 now create real directory
+nodes in the shared File Manager catalog. Returned IDs are stable and distinct
+from the application; parent identity, name, child count and dates can be read
+through PBGetCatInfo. Relative/absolute colon paths and parent traversal resolve
+against that same tree. Named lookup and root enumeration see created nodes,
+duplicate siblings are rejected, and invalid parent/volume/name errors remain
+distinct. Guest output faults preserve both catalog contents and ID allocation.
+The tree is bounded to 1024 created directories with dirFulErr at capacity.
+
+Layout and creation contracts follow MPW Files.h and Apple's [File Manager reference](https://leopard-adc.pepas.com/documentation/mac/pdf/Files/File_Manager.pdf),
+pp. 2-188. Directory dates use the guest low-memory Time value ($20C); it starts
+at zero and an advancing calendar clock remains unfinished. Parent modification
+dates, working-directory references, MacRoman folding, file creation/write/delete
+and persistence remain gaps. This is process-local storage; the loaded
+application's forks remain read-only and no host file changes are made.
+
+Validation: 194 tests (166 default, 28 optional GPU/MPW), MPW rebuild and strict
+all-target Clippy. The generated CPU fixtures create/query the same directory
+state and check date projection. Tests cover nested/absolute/relative/parent
+paths, root enumeration, child counts, duplicate/error replies and atomic output
+faults. Compiled 68K/PPC guests create a parent and child, query the tree and
+reject a duplicate.
+
+A fresh bounded Super Mines trace creates its missing directory and advances to
+PBHGetFInfo ($A20C), PC $0101252A, trace index 14329. Original application
+interaction acceptance is still absent. Centaurian's 68K GetGDevice stop and PPC
+strong sound imports remain outstanding, along with native presentation and real
+Mixed Mode. Next: shared file metadata/access and mutable fork operations, then
+further application-driven menu/dialog/graphics slices. Full rebuild goal stays
+active.
