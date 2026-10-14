@@ -419,7 +419,9 @@ Left-button transitions post mouseDown/mouseUp through `events::post`, carrying
 the guest clock, global guest coordinates and modifiers. Duplicate transitions
 do not post twice; system-mask suppression still updates physical button state.
 Command, Shift, Option and Control map from host modifiers. Caps Lock, keyboard
-translation, cursor imagery and Window Manager dispatch are not implemented.
+translation and complete Window Manager input dispatch are not implemented.
+Monochrome cursor imagery is now a shared process value with GPU presentation
+composition; actual onscreen pointer behavior remains unverified.
 These records follow Apple's [Event Record](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-45.html)
 and [low-level event handling](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-40.html).
 
@@ -829,3 +831,20 @@ Populated drawing, custom definitions and color modes outside the current
 monochrome screen policy are explicit missing routes. No menu callback shim or
 silent success placeholder is installed. Menu resource expansion and tracking
 remain future shared services, with callbacks belonging to the Mixed Mode work.
+
+
+## Cursor composition boundary
+
+SetCursor transfers a 68-byte guest record by value into process state. Both
+CPU adapters use that same image, hide depth and obscuring state; no cursor
+register logic enters shared services. InitCursor reads the guest QuickDraw
+arrow prototype, while GetCursor uses canonical Resource Manager handles.
+Presentation snapshots the packed screen into the existing index upload boundary
+and applies cursor mask/data only to the WGSL texture result. Indexed storage
+and guest bitmap memory retain their underlying pixels. Cursor coordinates are
+signed guest coordinates minus signed hotspots, bounded before upload.
+Host canvas ownership controls native pointer visibility without changing the
+guest's requested image or hide level. Direct cursor low-memory compatibility,
+color/animated cursors and shielding remain missing paths. The windowed smoke
+could not complete presentation/resize; offscreen tests do not prove onscreen
+behavior.

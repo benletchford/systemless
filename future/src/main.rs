@@ -171,6 +171,9 @@ impl State {
             }
             None => (fixtures::runtime(arch, true)?, None),
         };
+        if is_loaded {
+            rt.process.cursor.inside = false;
+        }
         rt.graphics = Some(gpu);
         if !is_loaded && rt.advance(100)? != Stop::Exit(0) {
             return Err("fixture failed to exit".into());
@@ -207,6 +210,12 @@ impl State {
                     std::time::Duration::from_nanos(u64::from(ticks) * 1_000_000_000 / 60);
             }
             execution.step(&mut self.rt, ticks)?;
+            if execution.finished {
+                self.rt.process.cursor.inside = false;
+            }
+            window.set_cursor_visible(
+                !(self.rt.process.cursor.initialized() && self.rt.process.cursor.inside),
+            );
             self.rt.refresh_screen()?;
         }
         let gpu = self.rt.graphics.as_ref().unwrap();
@@ -347,6 +356,7 @@ impl ApplicationHandler for App {
             WindowEvent::Occluded(false) => window.request_redraw(),
             WindowEvent::Resized(size) => {
                 state.pointer.leave();
+                state.rt.process.cursor.inside = false;
                 state.resize(size.width, size.height);
                 window.request_redraw();
             }
@@ -424,8 +434,12 @@ impl ApplicationHandler for App {
                     (state.config.width, state.config.height),
                     (gpu.width, gpu.height),
                 );
+                state.rt.process.cursor.inside = state.pointer.inside();
             }
-            WindowEvent::CursorLeft { .. } => state.pointer.leave(),
+            WindowEvent::CursorLeft { .. } => {
+                state.pointer.leave();
+                state.rt.process.cursor.inside = false;
+            }
             WindowEvent::ModifiersChanged(modifiers)
                 if state.execution.as_ref().is_some_and(|e| !e.finished) =>
             {
@@ -439,6 +453,7 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false)
                 if state.execution.as_ref().is_some_and(|e| !e.finished) =>
             {
+                state.rt.process.cursor.inside = false;
                 if let Err(error) = state
                     .pointer
                     .unfocus(&mut state.rt.memory, &mut state.rt.process.input)

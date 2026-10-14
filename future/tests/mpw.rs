@@ -466,9 +466,11 @@ fn compiled_menu_initialization_colors_and_snapshot_lifetime_match_on_both_cpus(
         LoadedApplication::code(&code).unwrap(),
         LoadedApplication::pef(&pef, Some(&resources)).unwrap(),
     ] {
-        app.runtime.graphics = Some(
-            pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
-        );
+        let mut gpu =
+            pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap();
+        gpu.palette[0] = [255; 4];
+        gpu.palette[1] = [0, 0, 0, 255];
+        app.runtime.graphics = Some(gpu);
         assert_eq!(app.runtime.advance(20000).unwrap(), Stop::Exit(0));
         assert_eq!(
             &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],
@@ -480,6 +482,19 @@ fn compiled_menu_initialization_colors_and_snapshot_lifetime_match_on_both_cpus(
                 Call::Exit(0)
             ]
         );
+        assert!(app.runtime.process.cursor.visible());
+        app.runtime.refresh_screen().unwrap();
+        let rgba = app.runtime.graphics.as_ref().unwrap().read_rgba().unwrap();
+        for (x, black) in [true, false, false, true, true, false, false, false]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                &rgba[x * 4..x * 4 + 4],
+                if black { &[0, 0, 0, 255] } else { &[255; 4] }
+            );
+        }
+        assert_eq!(app.runtime.memory.read(SCREEN, 1).unwrap(), [0xf8]);
         outputs.push(app.runtime.memory.read(SCREEN, 64 * 342).unwrap().to_vec());
     }
     assert_eq!(outputs[0], outputs[1]);

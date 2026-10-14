@@ -31,6 +31,12 @@ pub enum Transfer {
 #[derive(Debug, Clone, Copy)]
 pub enum Draw {
     Present,
+    Cursor {
+        x: i32,
+        y: i32,
+        data: [u16; 16],
+        mask: [u16; 16],
+    },
     Fill {
         rect: Rect,
         clip: Rect,
@@ -191,6 +197,10 @@ impl Graphics {
         p[0] = self.width as i32;
         p[1] = self.height as i32;
         let (rect, clip) = match draw {
+            Draw::Cursor { .. } => {
+                p[2] = 3;
+                (Rect::new(0, 0, 0, 0), Rect::new(0, 0, 0, 0))
+            }
             Draw::Present => (Rect::new(0, 0, 0, 0), Rect::new(0, 0, 0, 0)),
             Draw::Fill {
                 rect,
@@ -260,6 +270,30 @@ impl Graphics {
                     ));
                 }
                 p.extend(coordinates);
+            }
+        }
+        if let Draw::Cursor { x, y, data, mask } = draw {
+            if clips.is_some() {
+                return Err(Error::Graphics(
+                    "cursor presentation cannot use drawing clips".into(),
+                ));
+            }
+            if !(-65535..=65535).contains(&x) || !(-65535..=65535).contains(&y) {
+                return Err(Error::Graphics(
+                    "cursor position exceeds guest coordinate range".into(),
+                ));
+            }
+            p.extend([x, y]);
+            p.extend(data.map(i32::from));
+            p.extend(mask.map(i32::from));
+            if memory
+                .read(self.base, (self.width * self.height) as usize)?
+                .iter()
+                .any(|v| *v > 1)
+            {
+                return Err(Error::Graphics(
+                    "cursor presentation requires monochrome indices".into(),
+                ));
             }
         }
         let indices = words_bytes(

@@ -238,3 +238,10 @@ snapshots, clear/reinitialize without changing manager handle identities, and
 verify resource bytes and retained application port state. The optional test runs
 both compiled CPUs through a real GPU and compares final screen bytes. Populated
 menus, callbacks and tracking are not exercised.
+
+The menu fixture also initializes/hides/shows the cursor, loads its compiled
+CURS -123 resource, sets it while hidden, and balances the hide depth. The paired
+acceptance test composites that image through wgpu after exit and checks exact
+RGBA cursor pixels while packed guest screen pixels stay unchanged. Windowed
+smoke completed guest execution but did not finish presentation/resize on this
+host; actual onscreen pointer behavior is still unverified.

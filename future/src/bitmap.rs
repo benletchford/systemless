@@ -85,13 +85,21 @@ impl Bitmap {
     /// Refresh a presentation texture without changing guest bytes. Unlike a
     /// drawing operation this also accepts read-only guest pixel mappings.
     pub fn present(&self, gpu: &Graphics, memory: &Memory) -> Result<()> {
+        self.present_draw(gpu, memory, Draw::Present)
+    }
+    pub fn present_draw(&self, gpu: &Graphics, memory: &Memory, draw: Draw) -> Result<()> {
+        if !matches!(draw, Draw::Present | Draw::Cursor { .. }) {
+            return Err(Error::Graphics(
+                "presentation requires a presentation command".into(),
+            ));
+        }
         let (width, height) = self.extent()?;
         if (width, height) != (gpu.width as usize, gpu.height as usize) {
             return Err(Error::Graphics("presentation extent mismatch".into()));
         }
         let mut staging = Memory::default();
         staging.map(gpu.base, self.unpack(memory)?, Permissions::RW)?;
-        gpu.execute(&mut staging, Draw::Present)
+        gpu.execute(&mut staging, draw)
     }
     /// Commands use bitmap-local QuickDraw coordinates. Temporary indices only
     /// encode storage; all pixel operations still execute through wgpu.
@@ -125,6 +133,11 @@ impl Bitmap {
             ))
         };
         let draw = match draw {
+            Draw::Cursor { .. } => {
+                return Err(Error::Graphics(
+                    "cursor commands require the presentation route".into(),
+                ))
+            }
             Draw::Present => Draw::Present,
             Draw::Fill {
                 rect: r,

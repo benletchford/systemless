@@ -1599,3 +1599,56 @@ acceptance. Next: shared cursor initialization/state and GPU/host presentation,
 then further menu construction/resource expansion and application startup. Real
 Mixed Mode, controls, interactive originals and full rebuild acceptance remain
 outstanding. The goal remains active.
+
+### Shared monochrome cursor state and GPU presentation
+
+InitCursor/SetCursor/HideCursor/ShowCursor/ObscureCursor ($A850/$A851/$A852/
+$A853/$A856) and their InterfaceLib imports now use one process-owned cursor
+value. InitCursor copies the live QuickDraw arrow prototype, resets hide depth
+and obscuring, and makes the cursor eligible for presentation. SetCursor copies
+a checked 68-byte data/mask/hotspot record by value; nil/truncated records fail
+without replacing the previous image. It preserves hide depth. Hide/show nest
+with a bounded signed level; excess show calls do not create positive depth.
+Obscuring clears only when the shared guest pointer position changes. GetCursor
+($A9B9 / InterfaceLib) reads CURS through the common Resource Manager, preserving
+resource handle identity, ordinary miss/error behavior and both native ABIs.
+
+The cursor is a presentation overlay: WGSL applies (index AND NOT mask) XOR data
+for its 16x16 footprint, including transparent, white, black and inverse pixels.
+It leaves the indexed storage and packed guest screen unchanged. Presentation
+accepts read-only guest pixels, restores the underlying image automatically on
+motion/hide, clips signed hotspots at display edges, and rejects nonmonochrome
+indices or drawing-command misuse. No CPU destination compositor is added.
+Runtime refresh observes shared input and composes the cursor through the same
+GPU texture used by the window frontend. The host hides its native pointer while
+an initialized guest owns the canvas; leaving, losing focus, resizing or ending
+guest execution clears that ownership until eligible motion. Headless display
+refresh can still compose the final guest cursor after process exit.
+
+The legacy cursor ABI/value/hide-depth behavior is reference evidence. The
+legacy ObscureCursor compatibility route is a no-op; this implementation supports
+actual position-change obscuring. This is not a native System 7 parity claim.
+Color cursors, shielding, animated cursor managers, cursor-related low-memory
+globals and full mouse-driver compatibility remain outstanding.
+
+All 178 tests pass (152 default, 26 optional GPU/MPW), MPW fixtures rebuild and
+strict all-target Clippy passes. A real shared-world CPU test interleaves PPC and
+68K cursor calls, verifies copied data, depth, reset, obscuring and bad-source
+rollback. GPU assertions cover all mask/data cases, clipping, motion/hide and
+read-only guest memory. The compiled menu fixture now loads a CURS resource,
+sets it while hidden, balances show calls and verifies actual RGBA composition
+on both CPUs while the original screen byte remains F8.
+
+Window smoke reached the compiled guest's successful exit (1621 instructions),
+but failed to complete acquire/present/resize within 600 paced attempts. Actual
+onscreen cursor appearance and pointer hiding remain unverified on this host.
+The scoped smoke process exited; it is not a passing window test.
+
+Fresh original 68K startup traces pass InitCursor. Super Mines then passes
+TEInit and stops at InitDialogs ($A97B), PC $0100D01A, index 13520. Centaurian
+stops at InitDialogs, PC $10004470, index 103866. Original application interaction
+and original PPC execution remain unproven; the PPC loader's SndDisposeChannel
+strong-import gap is unchanged. Next: substantive Dialog Manager initialization
+and resource/window/control integration, then menu construction and further
+original startup. Real Mixed Mode and full rebuild acceptance remain incomplete.
+The rebuild goal stays active.

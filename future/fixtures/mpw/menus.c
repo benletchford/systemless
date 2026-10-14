@@ -9,6 +9,7 @@ QDGlobals qd;
 int main(void) {
     GrafPort port;
     Handle live,colors,copy;
+    CursHandle cursor;
     RgnHandle gray;
     unsigned char *pixels;
     unsigned char below;
@@ -28,5 +29,8 @@ int main(void) {
     if (((unsigned short *)*colors)[14]!=0xbeef) return 7;
     SetHandleSize(colors,0); DrawMenuBar();
     if (MemError() || pixels[0]!=0xf8 || port.pnMode!=patCopy || qd.thePort!=&port) return 8;
+    InitCursor(); HideCursor(); HideCursor(); ShowCursor();
+    cursor=GetCursor(-123); if (!cursor || GetHandleSize((Handle)cursor)!=68) return 9;
+    SetCursor(*cursor); ShowCursor(); ShowCursor();
     ClosePort(&port); PostEvent(diskEvt,0x600d); ExitToShell(); return 0;
 }

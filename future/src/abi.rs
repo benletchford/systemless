@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    Cursor(crate::cursor::Op),
+    SetCursor,
     Menu(crate::menus::Op),
     TENew(bool),
     TEUpdate,
@@ -77,6 +79,7 @@ pub enum Service {
     SetHandleSize,
     GetResource,
     GetPattern,
+    GetCursor,
     SetSoundVol,
     GetSoundVol,
     PBControlSync,
@@ -168,6 +171,11 @@ impl Abi {
             b"TEIdle" => Some(Service::TEIdle),
             b"TEActivate" => Some(Service::TEActivate(true)),
             b"TEDeactivate" => Some(Service::TEActivate(false)),
+            b"InitCursor" => Some(Service::Cursor(crate::cursor::Op::Init)),
+            b"HideCursor" => Some(Service::Cursor(crate::cursor::Op::Hide)),
+            b"ShowCursor" => Some(Service::Cursor(crate::cursor::Op::Show)),
+            b"ObscureCursor" => Some(Service::Cursor(crate::cursor::Op::Obscure)),
+            b"SetCursor" => Some(Service::SetCursor),
             b"InitMenus" => Some(Service::Menu(crate::menus::Op::Init)),
             b"DrawMenuBar" => Some(Service::Menu(crate::menus::Op::Draw)),
             b"ClearMenuBar" => Some(Service::Menu(crate::menus::Op::Clear)),
@@ -247,6 +255,7 @@ impl Abi {
             b"StripAddress" => Some(Service::StripAddress),
             b"HLock" => Some(Service::HLock),
             b"HUnlock" => Some(Service::HUnlock),
+            b"GetCursor" => Some(Service::GetCursor),
             b"GetPattern" => Some(Service::GetPattern),
             b"GetResource" => Some(Service::GetResource),
             b"MemError" => Some(Service::MemError),
@@ -483,6 +492,22 @@ impl Abi {
                     }),
                     Reply::None,
                 ))
+            }
+            0xa850 | 0xa852 | 0xa853 | 0xa856 => Ok((
+                Call::Cursor(match opcode {
+                    0xa850 => crate::cursor::Op::Init,
+                    0xa852 => crate::cursor::Op::Hide,
+                    0xa853 => crate::cursor::Op::Show,
+                    _ => crate::cursor::Op::Obscure,
+                }),
+                Reply::None,
+            )),
+            0xa851 => {
+                let pointer = GuestPtr(memory.u32(GuestPtr(sp))?);
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("cursor stack overflow".into()))?;
+                Ok((Call::Cursor(crate::cursor::Op::Set(pointer)), Reply::None))
             }
             0xa930 | 0xa934 | 0xa937 => Ok((
                 Call::Menu(match opcode {
@@ -865,7 +890,7 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("resource ABI stack overflow".into()))?;
                 Ok((Call::ReleaseResource(handle), Reply::None))
             }
-            0xa9b8 => {
+            0xa9b8 | 0xa9b9 => {
                 let id = memory.u16(GuestPtr(sp))? as i16;
                 let result = sp
                     .checked_add(2)
@@ -873,7 +898,10 @@ impl Abi {
                 memory.validate_write(GuestPtr(result), 4)?;
                 c.dar[15] = result;
                 Ok((
-                    Call::GetResource { kind: *b"PAT ", id },
+                    Call::GetResource {
+                        kind: if opcode == 0xa9b9 { *b"CURS" } else { *b"PAT " },
+                        id,
+                    },
                     Reply::StackLong(GuestPtr(result)),
                 ))
             }
@@ -1005,6 +1033,8 @@ impl Abi {
                 active,
             }),
             Service::TEIdle => Call::TextEdit(crate::textedit::Op::Idle(c.gpr[3])),
+            Service::Cursor(op) => Call::Cursor(op),
+            Service::SetCursor => Call::Cursor(crate::cursor::Op::Set(GuestPtr(c.gpr[3]))),
             Service::Menu(op) => Call::Menu(op),
             Service::TEKey => Call::TextEdit(crate::textedit::Op::Key {
                 handle: c.gpr[4],
@@ -1133,6 +1163,10 @@ impl Abi {
                 size: c.gpr[4],
             },
             Service::GetHandleSize => Call::HandleSize(c.gpr[3]),
+            Service::GetCursor => Call::GetResource {
+                kind: *b"CURS",
+                id: c.gpr[3] as i16,
+            },
             Service::GetPattern => Call::GetResource {
                 kind: *b"PAT ",
                 id: c.gpr[3] as i16,
@@ -1160,9 +1194,14 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Empty))
                 || matches!(
                     service,
-                    Service::Menu(
-                        crate::menus::Op::Init | crate::menus::Op::Draw | crate::menus::Op::Clear
-                    ) | Service::InitGraf
+                    Service::Cursor(_)
+                        | Service::SetCursor
+                        | Service::Menu(
+                            crate::menus::Op::Init
+                                | crate::menus::Op::Draw
+                                | crate::menus::Op::Clear
+                        )
+                        | Service::InitGraf
                         | Service::PortColor(_)
                         | Service::Window(
                             crate::windows::Op::Init

@@ -37,6 +37,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         value=value & 255u;
         pixels[at]=value;
     }
+    // Cursor data/mask affect presentation only, never canonical pixel storage.
+    if p[2]==3 {
+        let cx=x-p[25]; let cy=y-p[26];
+        if cx>=0 && cy>=0 && cx<16 && cy<16 {
+            let bit=15u-u32(cx);
+            let data=(u32(p[27+cy])>>bit)&1u;
+            let mask=(u32(p[43+cy])>>bit)&1u;
+            value=(value & (~mask)) ^ data;
+        }
+    }
     let rgba=palette[value];
     textureStore(output,vec2<i32>(x,y),vec4<f32>(f32(rgba&255u),f32((rgba>>8u)&255u),f32((rgba>>16u)&255u),f32(rgba>>24u))/255.0);
 }

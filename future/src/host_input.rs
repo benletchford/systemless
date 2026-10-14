@@ -42,6 +42,9 @@ impl Pointer {
             gy.floor()
                 .clamp(0.0, f64::from(screen.1 - 1).min(f64::from(i16::MAX))) as i16;
     }
+    pub fn inside(&self) -> bool {
+        self.inside
+    }
     pub fn leave(&mut self) {
         self.inside = false;
     }

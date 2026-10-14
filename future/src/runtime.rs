@@ -77,12 +77,17 @@ impl Runtime {
     }
     /// Refresh the host display from canonical screen bytes, even after exit.
     /// Offscreen ports and their last drawing texture do not select the display.
-    pub fn refresh_screen(&self) -> Result<()> {
+    pub fn refresh_screen(&mut self) -> Result<()> {
         let gpu = self
             .graphics
             .as_ref()
             .ok_or_else(|| Error::Graphics("screen refresh requires GPU".into()))?;
-        crate::quickdraw::screen_bitmap().present(gpu, &self.memory)
+        self.process.cursor.observe(self.process.input);
+        crate::quickdraw::screen_bitmap().present_draw(
+            gpu,
+            &self.memory,
+            self.process.cursor.draw(self.process.input),
+        )
     }
     pub fn advance(&mut self, budget: u64) -> Result<Stop> {
         if self.faulted {
@@ -260,6 +265,10 @@ impl Runtime {
                                 Error::Graphics("QuickDraw has not been initialized".into())
                             })?;
                             crate::text::move_to(&mut self.memory, ports, h, v)?;
+                        }
+                        Call::Cursor(op) => {
+                            crate::cursor::call(&self.memory, &mut self.process, op)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
                         Call::Menu(op) => {
                             let mut manager = std::mem::take(&mut self.process.menus);
@@ -871,6 +880,7 @@ impl Runtime {
                         | Call::NewWindow(_)
                         | Call::Window { .. }
                         | Call::TextState { .. }
+                        | Call::Cursor(_)
                         | Call::Menu(_)
                         | Call::TextEdit(_)
                         | Call::MoveTo { .. }
