@@ -1890,3 +1890,42 @@ sound imports, native presentation and real Mixed Mode remain unfinished. Next:
 load WIND resource definitions into real shared window creation/graphics, then
 continue application-driven file, menu/dialog and graphics slices. Full rebuild
 goal remains active.
+
+### WIND loading and modal/document window definitions
+
+GetNewWindow ($A9BD / InterfaceLib) now reads the live loaded WIND handle and
+uses shared NewWindow creation, including caller-supplied WindowRecord storage.
+Checked templates provide bounds, procID, visible/goAway flags, refCon and
+Pascal title; missing/truncated resources return NIL. Optional zero positioning
+is accepted; nonzero positioning and unsupported/custom definitions fault
+explicitly. This follows Apple's [GetNewWindow contract](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-226.html)
+and [WIND layout](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-293.html).
+
+The common creator now supports dBoxProc (1) modal double-border geometry and
+noGrowDocProc (4) document title/close/stripe/shadow chrome, alongside plainDBox
+(2). All guest pixel writes use wgpu-backed drawing services. Rectangle ink is
+unioned before inversion-point encoding so overlapping strokes do not cancel.
+Titles use the shared font/text service and the existing licensed fallback when
+a native font resource is absent. Legacy Systemless geometry provided comparison
+evidence; native System 7 pixel parity and Chicago font parity are not claimed.
+Chrome observes live guest title/highlight/goAway state, restores manager port/
+clip state, clips against higher windows, and refreshes when front-window changes
+require active/inactive rendering. Immutable built-in definition identity remains
+registration metadata; no executable WDEF or AuxWin support is implied.
+
+All 197 tests pass (168 default, 29 optional GPU/MPW), strict all-target Clippy
+passes and MPW fixtures rebuild. New GPU tests compare full screen bytes across
+CPU adapters; check native result padding, region geometry, title/close/shadow
+pixels, modal border gaps, active/inactive chrome, live WIND edits and caller
+storage ownership. Compiled 68K/PPC guests read the WIND template, check record
+fields and dispose the created document window. Existing update/clip/lifetime
+fixtures continue to pass.
+
+Fresh Super Mines startup now creates its first hidden modal WIND window and
+reaches DetachResource ($A992), PC $0100D9F8, index 14460. It has not completed
+interactive acceptance. Resource positioning, activation events, window mouse
+tracking, remaining standard/custom WDEFs, AuxWin records, original PPC sound
+imports and real Mixed Mode remain unfinished; native presentation is still
+unverified. Centaurian 68K remains at GetGDevice. Next: resource detachment and
+application-driven initialization/lifecycle, then further dialog/menu/graphics
+slices. The full rebuild goal stays active.

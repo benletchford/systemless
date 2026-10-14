@@ -180,12 +180,24 @@ impl Runtime {
                             })?;
                             ports.set_color(&mut self.memory, background, color)?;
                         }
-                        Call::NewWindow(_) | Call::Window { .. } => {
+                        Call::NewWindow(_) | Call::ResourceWindow { .. } | Call::Window { .. } => {
                             let gpu = self.graphics.as_ref().ok_or_else(|| {
                                 Error::Graphics("Window Manager requires a GPU".into())
                             })?;
                             let mut windows = std::mem::take(&mut self.process.windows);
                             let result = match call {
+                                Call::ResourceWindow {
+                                    id,
+                                    storage,
+                                    behind,
+                                } => windows.from_resource(
+                                    &mut self.memory,
+                                    &mut self.process,
+                                    gpu,
+                                    id,
+                                    storage,
+                                    behind,
+                                ),
                                 Call::NewWindow(request) => windows.create(
                                     &mut self.memory,
                                     &mut self.process,
@@ -930,6 +942,7 @@ impl Runtime {
                             | Call::TextWidth(_)
                             | Call::InitFonts
                             | Call::FontInfo(_)
+                            | Call::ResourceWindow { .. }
                             | Call::NewWindow(_)
                             | Call::Window { .. }
                             | Call::NewPointer { .. }
@@ -976,6 +989,7 @@ impl Runtime {
                         | Call::PointerSize(_)
                         | Call::SetPointerSize { .. }
                         | Call::DisposePointer(_)
+                        | Call::ResourceWindow { .. }
                         | Call::NewWindow(_)
                         | Call::Window { .. }
                         | Call::TextState { .. }

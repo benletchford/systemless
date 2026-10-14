@@ -368,7 +368,7 @@ fn compiled_plain_window_lifecycle_has_record_and_screen_parity() {
     let mut screens = Vec::new();
     for mut app in [
         LoadedApplication::code(&code).unwrap(),
-        LoadedApplication::pef(&pef, None).unwrap(),
+        LoadedApplication::pef(&pef, Some(&code)).unwrap(),
     ] {
         app.runtime.graphics = Some(
             pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),

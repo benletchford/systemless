@@ -47,6 +47,11 @@ pub enum Call {
         value: u16,
     },
     NewWindow(crate::windows::NewWindow),
+    ResourceWindow {
+        id: i16,
+        storage: GuestPtr,
+        behind: u32,
+    },
     Window {
         op: crate::windows::Op,
         pointer: u32,

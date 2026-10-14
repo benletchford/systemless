@@ -31,6 +31,8 @@ SC -sym off windows.c -o windows.68k.o
 Link -d -t 'APPL' -c 'FUTR' windows.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o windows.68k
 MrC -sym off -opt off windows.c -o windows.ppc.o
 PPCLink windows.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o windows.ppc
+Rez -append -o windows.68k windows.r
+Rez -append -o windows.ppc windows.r
 SC -sym off textedit.c -o textedit.68k.o
 Link -d -t 'APPL' -c 'FUTR' textedit.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o textedit.68k
 MrC -sym off -opt off textedit.c -o textedit.ppc.o

@@ -1,4 +1,4 @@
-//! Guest WindowRecords and standard plain-dialog windows (procID 2).
+//! Guest WindowRecords and standard plain-dialog/no-grow document windows.
 //! Layout and ordering compared with legacy trap/window.rs.
 use crate::{
     bitmap::Bitmap,
@@ -42,6 +42,7 @@ pub struct Windows {
     manager: u32,
     gray: u32,
     records: BTreeMap<u32, bool>,
+    definitions: BTreeMap<u32, i16>,
     update: Option<(u32, u32, u32)>,
 }
 fn fail(message: &str) -> Error {
@@ -217,6 +218,255 @@ impl Windows {
             },
         )
     }
+    fn union_rectangles(rectangles: &[Rect]) -> Result<Vec<u8>> {
+        rectangles
+            .iter()
+            .try_fold(rect_bytes(Rect::new(0, 0, 0, 0))?, |region, &r| {
+                region_geometry::combine(&region, &rect_bytes(r)?, Boolean::Union)
+            })
+    }
+    fn refresh_chrome(
+        &self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &Graphics,
+        except: u32,
+    ) -> Result<()> {
+        let list = self.list(memory)?;
+        let desktop = region(memory, process, self.gray)?;
+        let mut covered = rect_bytes(Rect::new(0, 0, 0, 0))?;
+        for w in list {
+            if memory.read(GuestPtr(w + 110), 1)?[0] == 0 {
+                continue;
+            }
+            let structure = region(memory, process, handle(memory, w, 114)?)?;
+            if w != except && self.definitions.get(&w) == Some(&4) {
+                let dirty = region_geometry::combine(&structure, &desktop, Boolean::Intersection)?;
+                let dirty = region_geometry::combine(&dirty, &covered, Boolean::Difference)?;
+                self.chrome(memory, process, gpu, w, &dirty)?;
+            }
+            covered = region_geometry::combine(&covered, &structure, Boolean::Union)?;
+        }
+        Ok(())
+    }
+    fn modal_border(
+        &self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &Graphics,
+        w: u32,
+        dirty: &[u8],
+    ) -> Result<()> {
+        let content = region(memory, process, handle(memory, w, 118)?)?;
+        let r = read_rect(
+            memory,
+            GuestPtr(memory.u32(GuestPtr(handle(memory, w, 118)?))? + 2),
+        )?;
+        let outer = region_geometry::combine(
+            &rect_bytes(Rect::new(r.left - 8, r.top - 8, r.right + 8, r.bottom + 8))?,
+            &rect_bytes(Rect::new(r.left - 7, r.top - 7, r.right + 7, r.bottom + 7))?,
+            Boolean::Difference,
+        )?;
+        let inner = region_geometry::combine(
+            &rect_bytes(Rect::new(r.left - 5, r.top - 5, r.right + 5, r.bottom + 5))?,
+            &rect_bytes(Rect::new(r.left - 3, r.top - 3, r.right + 3, r.bottom + 3))?,
+            Boolean::Difference,
+        )?;
+        let ink = region_geometry::combine(&outer, &inner, Boolean::Union)?;
+        let ink = region_geometry::combine(&ink, &content, Boolean::Difference)?;
+        let ink = region_geometry::combine(&ink, dirty, Boolean::Intersection)?;
+        self.paint(
+            memory,
+            process,
+            gpu,
+            &ink,
+            Paint {
+                pattern: [255; 8],
+                foreground: 33,
+                background: 30,
+            },
+        )
+    }
+    fn chrome(
+        &self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &Graphics,
+        w: u32,
+        dirty: &[u8],
+    ) -> Result<()> {
+        let r = read_rect(
+            memory,
+            GuestPtr(memory.u32(GuestPtr(handle(memory, w, 118)?))? + 2),
+        )?;
+        let menu = i32::from(memory.u16(GuestPtr(0xbaa))? as i16);
+        let top = (r.top - 19).max(menu);
+        let bottom = r.top - 1;
+        let band = Rect::new(r.left - 1, top, r.right + 1, bottom + 1);
+        let coverage = region_geometry::combine(&rect_bytes(band)?, dirty, Boolean::Intersection)?;
+        self.paint(
+            memory,
+            process,
+            gpu,
+            &coverage,
+            Paint {
+                pattern: [0; 8],
+                foreground: 33,
+                background: 30,
+            },
+        )?;
+        let title_handle = handle(memory, w, 134)?;
+        let size = process.handle_size(memory, title_handle)?;
+        let address = GuestPtr(memory.u32(GuestPtr(title_handle))?);
+        let length = usize::from(memory.read(address, 1)?[0]);
+        if length + 1 > size as usize {
+            return Err(fail("invalid window title handle"));
+        }
+        let title = memory.read(GuestPtr(address.0 + 1), length)?.to_vec();
+        let font_data = crate::text::font_bytes(memory, process, 0, 12, 0)?;
+        let font = crate::font::Strike::parse(&font_data)?;
+        let width = font.width(&title)?;
+        let x = r.left - 1 + (r.right - r.left + 2 - width) / 2;
+        let baseline = top
+            + 1
+            + (bottom - top - 1 - i32::from(font.metrics.ascent + font.metrics.descent)) / 2
+            + i32::from(font.metrics.ascent);
+        let active = memory.read(GuestPtr(w + 111), 1)?[0] != 0;
+        let close = active && memory.read(GuestPtr(w + 112), 1)?[0] != 0;
+        let mut ink = vec![
+            Rect::new(r.left - 1, top, r.right + 1, top + 1),
+            Rect::new(r.left - 1, bottom, r.right + 1, bottom + 1),
+            Rect::new(r.left - 1, top, r.left, bottom + 1),
+            Rect::new(r.right, top, r.right + 1, bottom + 1),
+        ];
+        if close {
+            let cx = r.left + 8;
+            let cy = r.top - 15;
+            ink.extend([
+                Rect::new(cx, cy, cx + 11, cy + 1),
+                Rect::new(cx, cy, cx + 1, cy + 11),
+                Rect::new(cx + 9, cy + 2, cx + 10, cy + 10),
+                Rect::new(cx + 2, cy + 9, cx + 10, cy + 10),
+            ]);
+        }
+        if active {
+            let clear_left = if title.is_empty() { r.right - 1 } else { x - 6 };
+            let clear_right = if title.is_empty() {
+                r.right - 1
+            } else {
+                x + width + 6
+            };
+            for y in (top + 2..=bottom - 3).step_by(2) {
+                let first_end = if close { r.left + 7 } else { clear_left };
+                if r.left + 1 < first_end {
+                    ink.push(Rect::new(r.left + 1, y, first_end, y + 1));
+                }
+                if close && r.left + 20 < clear_left {
+                    ink.push(Rect::new(r.left + 20, y, clear_left, y + 1));
+                }
+                if clear_right < r.right - 1 {
+                    ink.push(Rect::new(clear_right, y, r.right - 1, y + 1));
+                }
+            }
+        }
+        ink.extend([
+            Rect::new(r.left - 1, r.top, r.left, r.bottom),
+            Rect::new(r.right, r.top, r.right + 1, r.bottom),
+            Rect::new(r.left - 1, r.bottom, r.right + 1, r.bottom + 1),
+            Rect::new(r.right + 1, top, r.right + 2, r.bottom + 2),
+            Rect::new(r.left, r.bottom + 1, r.right + 2, r.bottom + 2),
+        ]);
+        let ink =
+            region_geometry::combine(&Self::union_rectangles(&ink)?, dirty, Boolean::Intersection)?;
+        self.paint(
+            memory,
+            process,
+            gpu,
+            &ink,
+            Paint {
+                pattern: [255; 8],
+                foreground: 33,
+                background: 30,
+            },
+        )?;
+        if !title.is_empty() {
+            let ports = process
+                .ports
+                .ok_or_else(|| fail("window title requires InitGraf"))?;
+            let old = memory.u32(ports.current_slot)?;
+            let saved = memory.read(GuestPtr(self.manager), 108)?.to_vec();
+            let clip = handle(memory, self.manager, 28)?;
+            let old_clip = region(memory, process, clip)?;
+            let text_rect = Rect::new(r.left + 20, top + 1, r.right - 1, bottom);
+            let text_clip = region_geometry::combine(
+                &rect_bytes(text_rect)?,
+                &coverage,
+                Boolean::Intersection,
+            )?;
+            let result = (|| {
+                put_region(memory, process, clip, &text_clip)?;
+                ports.set(memory, GuestPtr(self.manager))?;
+                memory.write(GuestPtr(self.manager + 80), &33u32.to_be_bytes())?;
+                memory.write(GuestPtr(self.manager + 84), &30u32.to_be_bytes())?;
+                memory.write(GuestPtr(self.manager + 72), &1u16.to_be_bytes())?;
+                crate::text::move_to(
+                    memory,
+                    ports,
+                    i16::try_from(x).map_err(|_| fail("title coordinate overflow"))?,
+                    i16::try_from(baseline).map_err(|_| fail("title coordinate overflow"))?,
+                )?;
+                crate::text::draw_strike(memory, ports, gpu, &title, &font)
+            })();
+            put_region(memory, process, clip, &old_clip)?;
+            memory.write(GuestPtr(self.manager), &saved)?;
+            memory.write(ports.current_slot, &old.to_be_bytes())?;
+            result?;
+        }
+        Ok(())
+    }
+    /// Read the live loaded WIND handle, then reuse the regular window creator.
+    pub fn from_resource(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &Graphics,
+        id: i16,
+        storage: GuestPtr,
+        behind: u32,
+    ) -> Result<u32> {
+        let h = process.get_resource(memory, *b"WIND", id)?;
+        if h == 0 {
+            return Ok(0);
+        }
+        let n = process.handle_size(memory, h)? as usize;
+        let data = GuestPtr(memory.u32(GuestPtr(h))?);
+        let bytes = memory.read(data, n)?;
+        if n < 19 {
+            return Ok(0);
+        }
+        let title_end = 19 + usize::from(bytes[18]);
+        if title_end > n {
+            return Ok(0);
+        }
+        let aligned = (title_end + 1) & !1;
+        if n > aligned && n < aligned + 2 {
+            return Ok(0);
+        }
+        if n >= aligned + 2 && bytes[aligned..aligned + 2] != [0, 0] {
+            return Err(fail("WIND positioning specification is unsupported"));
+        }
+        let request = NewWindow {
+            storage,
+            bounds: data,
+            title: GuestPtr(data.0 + 18),
+            visible: bytes[10] != 0,
+            proc_id: i16::from_be_bytes(bytes[8..10].try_into().unwrap()),
+            behind,
+            go_away: bytes[12] != 0,
+            ref_con: u32::from_be_bytes(bytes[14..18].try_into().unwrap()),
+        };
+        self.create(memory, process, gpu, request)
+    }
     fn paint_window(
         &self,
         memory: &mut Memory,
@@ -252,11 +502,22 @@ impl Windows {
             gpu,
             &border,
             Paint {
-                pattern: [255; 8],
+                pattern: if matches!(self.definitions.get(&w), Some(1 | 4)) {
+                    [0; 8]
+                } else {
+                    [255; 8]
+                },
                 foreground: 33,
                 background: 30,
             },
-        )
+        )?;
+        if self.definitions.get(&w) == Some(&1) {
+            self.modal_border(memory, process, gpu, w, dirty)?;
+        }
+        if self.definitions.get(&w) == Some(&4) {
+            self.chrome(memory, process, gpu, w, dirty)?;
+        }
+        Ok(())
     }
     fn recalculate(&self, memory: &mut Memory, process: &mut Process) -> Result<()> {
         let list = self.list(memory)?;
@@ -381,9 +642,9 @@ impl Windows {
         gpu: &Graphics,
         request: NewWindow,
     ) -> Result<u32> {
-        if request.proc_id != 2 {
+        if !matches!(request.proc_id, 1 | 2 | 4) {
             return Err(fail(
-                "window definition requires unimplemented title-bar or custom WDEF services",
+                "window definition requires an unsupported standard or custom WDEF",
             ));
         }
         if self.manager == 0 {
@@ -413,13 +674,17 @@ impl Windows {
         if bounds.left >= bounds.right || bounds.top >= bounds.bottom {
             return Err(fail("empty window bounds"));
         }
+        let margin = if request.proc_id == 1 { 8 } else { 1 };
         let structure = Rect::new(
-            bounds.left - 1,
-            bounds.top - 1,
-            bounds.right + 1,
-            bounds.bottom + 1,
+            bounds.left - margin,
+            bounds.top - if request.proc_id == 4 { 19 } else { margin },
+            bounds.right + if request.proc_id == 4 { 2 } else { margin },
+            bounds.bottom + if request.proc_id == 4 { 2 } else { margin },
         );
         let structure = rect_bytes(structure)?;
+        if request.proc_id == 4 && request.visible {
+            crate::text::font_bytes(memory, process, 0, 12, 0)?;
+        }
         let content = rect_bytes(bounds)?;
         let screen = Bitmap::read(memory, ports.screen_bitmap)?.bounds;
         let bitmap_bounds = Rect::new(
@@ -522,6 +787,7 @@ impl Windows {
         }
         memory.write(GuestPtr(w), &bytes)?;
         self.records.insert(w, owned);
+        self.definitions.insert(w, request.proc_id);
         list.insert(index, w);
         self.relink(memory, &list)?;
         self.recalculate(memory, process)?;
@@ -543,6 +809,7 @@ impl Windows {
             }
             self.paint_window(memory, process, gpu, w, &dirty)?;
         }
+        self.refresh_chrome(memory, process, gpu, w)?;
         // Classic creation leaves the port unchanged for hidden/backmost windows.
         if !request.visible || request.behind == 0 {
             memory.write(ports.current_slot, &old.to_be_bytes())?;
@@ -585,6 +852,7 @@ impl Windows {
         if op == Op::Dispose && !list.contains(&w) && self.records.get(&w) == Some(&true) {
             process.dispose_pointer(w);
             self.records.remove(&w);
+            self.definitions.remove(&w);
             return Ok(0);
         }
         let index = list
@@ -653,6 +921,7 @@ impl Windows {
             covered = region_geometry::combine(&covered, &structure, Boolean::Union)?;
         }
         self.desktop(memory, process, gpu, &gray_dirty)?;
+        self.refresh_chrome(memory, process, gpu, 0)?;
         for h in handles {
             process.dispose_handle(memory, h)?;
         }
@@ -666,11 +935,13 @@ impl Windows {
         if op == Op::Dispose {
             process.dispose_pointer(w);
             self.records.remove(&w);
+            self.definitions.remove(&w);
         } else if !self.records[&w] {
             if process.pointer_size(w) >= SIZE as u32 && process.mem_error == 0 {
                 self.records.insert(w, true);
             } else {
                 self.records.remove(&w);
+                self.definitions.remove(&w);
             }
         }
         process.mem_error = 0;

@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    GetNewWindow,
     SetRect,
     OffsetRect,
     InsetRect,
@@ -160,6 +161,7 @@ impl Abi {
             b"PaintRoundRect" => Some(Service::RoundRect(false)),
             b"ForeColor" => Some(Service::PortColor(false)),
             b"BackColor" => Some(Service::PortColor(true)),
+            b"GetNewWindow" => Some(Service::GetNewWindow),
             b"NewWindow" => Some(Service::NewWindow),
             b"InitWindows" => Some(Service::Window(crate::windows::Op::Init)),
             b"FrontWindow" => Some(Service::Window(crate::windows::Op::Front)),
@@ -340,6 +342,20 @@ impl Abi {
                     },
                     Reply::None,
                 ))
+            }
+            0xa9bd => {
+                let args = memory.read(GuestPtr(sp), 14)?;
+                let result = sp
+                    .checked_add(10)
+                    .ok_or_else(|| Error::Cpu("window stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 4)?;
+                let call = Call::ResourceWindow {
+                    id: i16::from_be_bytes(args[8..10].try_into().unwrap()),
+                    storage: GuestPtr(u32::from_be_bytes(args[4..8].try_into().unwrap())),
+                    behind: u32::from_be_bytes(args[..4].try_into().unwrap()),
+                };
+                c.dar[15] = result;
+                Ok((call, Reply::StackLong(GuestPtr(result))))
             }
             0xa913 => {
                 let bytes = memory.read(GuestPtr(sp), 26)?;
@@ -1261,6 +1277,11 @@ impl Abi {
             Service::TEGetText => Call::TextEdit(crate::textedit::Op::GetText(c.gpr[3])),
             Service::TEGetStyleHandle => Call::TextEdit(crate::textedit::Op::GetStyle(c.gpr[3])),
             Service::TEDispose => Call::TextEdit(crate::textedit::Op::Dispose(c.gpr[3])),
+            Service::GetNewWindow => Call::ResourceWindow {
+                id: c.gpr[3] as i16,
+                storage: GuestPtr(c.gpr[4]),
+                behind: c.gpr[5],
+            },
             Service::Random => Call::Random,
             Service::GetMemFragment => Call::LoadFragment(crate::cfm::LoadRequest {
                 source: GuestPtr(c.gpr[3]),

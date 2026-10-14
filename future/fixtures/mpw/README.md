@@ -279,3 +279,8 @@ process-local virtual catalog.
 The environment fixture checks PBHGetFInfoSync's application metadata, flat
 PBGetFInfoSync's root lookup, and missing named files inside a created directory.
 Both compiled CPU targets use MPW's HParamBlockRec layout.
+
+windows.r supplies a visible noGrowDocProc WIND resource. The paired compiled
+window test checks missing resource NIL, resource-driven creation, bounds,
+refCon, goAway flag, and disposal in addition to its plain-window/update cases.
+The PPC loader receives the same compiled resource fork as the CODE fixture.

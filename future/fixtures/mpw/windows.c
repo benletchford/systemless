@@ -19,7 +19,7 @@ int main(void) {
     SetRect(&firstBounds,40,40,60,60); OffsetRect(&firstBounds,2,-3); InsetRect(&firstBounds,1,2);
     if (firstBounds.top!=39 || firstBounds.left!=43 || firstBounds.bottom!=55 || firstBounds.right!=61) return 14;
     SetRect(&firstBounds,40,40,60,60);
-    InitGraf(&qd.thePort);
+    InitGraf(&qd.thePort); InitFonts();
     InitWindows();
     GetPort(&old);
     if (old!=0 || FrontWindow()!=0) return 1;
@@ -67,6 +67,10 @@ int main(void) {
     if (hidden!=(WindowPtr)&storage || ((WindowPeek)hidden)->refCon!=12) return 12;
     CloseWindow(hidden);
     if (MemError()) return 13;
+    if (GetNewWindow(322,0,(WindowPtr)-1)) return 24;
+    first=GetNewWindow(321,0,(WindowPtr)-1);
+    if (!first || FrontWindow()!=first || ((WindowPeek)first)->refCon!=0x12345678 || !((WindowPeek)first)->goAwayFlag || first->portRect.right!=160 || first->portRect.bottom!=60) return 25;
+    DisposeWindow(first); if (FrontWindow()) return 26;
     PostEvent(diskEvt,0x600D);
     ExitToShell();
     return 0;

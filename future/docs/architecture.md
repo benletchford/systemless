@@ -937,3 +937,21 @@ queries return the leaf name. Parameter and optional name output are validated
 together. These query only the loaded application; writable file creation and
 additional virtual files remain unfinished. Finder metadata/dates still default
 to zero.
+
+GetNewWindow decodes the live guest-loaded WIND handle through the shared
+Resource Manager and calls the same creator as NewWindow. Bounds, definition
+ID, visibility, close flag, refCon and Pascal title remain guest data. Missing
+or truncated templates return NIL; nonzero optional positioning specifications
+and unsupported/custom definition IDs are explicit faults. Caller storage and
+allocated storage retain the existing WindowRecord lifetime rules.
+
+Built-in definitions now cover plainDBox (2), dBoxProc (1) and noGrowDocProc (4).
+The immutable built-in definition identity is retained with window registration;
+geometry, title, visible/highlight flags and update state remain guest records
+and handles. Modal double borders and document title/close/stripe/shadow chrome
+use region union and GPU QuickDraw transfers. Titles reuse the shared font
+strike/text path; font fallback is not claimed pixel-identical to native Chicago.
+Manager port and clip state are restored after chrome drawing. Visible document
+chrome is repainted when creation/closure changes highlighting, respecting
+z-order occlusion. Activation events, mouse tracking, dragging, resizing, zoom,
+custom WDEF execution, AuxWin records and resource positioning remain unfinished.

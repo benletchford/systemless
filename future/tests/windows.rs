@@ -341,3 +341,133 @@ fn new_window_adapter_checks_result_storage_before_popping_arguments() {
     assert!(Abi::trap(0xa913, &mut cpu, &memory).is_err());
     assert_eq!(cpu.dar[15], 0x1000);
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn wind_resources_share_live_templates_document_chrome_and_native_result_slots() {
+    let mut template = vec![0; 22];
+    for (offset, value) in [(0, 80), (2, 100), (4, 140), (6, 260), (8, 4)] {
+        w16(&mut template, offset, value);
+    }
+    template[10] = 1;
+    template[12] = 1;
+    w32(&mut template, 14, 0x12345678);
+    template[18..].copy_from_slice(b"\x03DOC");
+    let fork = resource(vec![
+        (*b"WIND", 321, None, template),
+        (*b"WIND", 322, None, vec![0; 18]),
+    ]);
+    let f = pef_program(
+        &[0x4e800020],
+        &[
+            b"InitGraf",
+            b"InitFonts",
+            b"InitWindows",
+            b"GetNewWindow",
+            b"DisposeWindow",
+            b"CloseWindow",
+        ],
+        512,
+    );
+    let mut app = LoadedApplication::pef(&f.bytes, Some(&fork)).unwrap();
+    let data = app.info.toc_or_a5;
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa9, 0xbd], Permissions::RX)
+        .unwrap();
+    invoke(&mut app, 0, &[data + 330]);
+    invoke(&mut app, 1, &[]);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    app.runtime.graphics = Some(
+        pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
+    );
+    invoke(&mut app, 2, &[]);
+    let first = invoke(&mut app, 3, &[321, 0, u32::MAX]);
+    assert_ne!(first, 0);
+    assert_eq!(
+        app.runtime.memory.u32(GuestPtr(first + 152)).unwrap(),
+        0x12345678
+    );
+    assert_eq!(region(&app, first, 114), [Rect::new(99, 61, 262, 142)]);
+    assert_eq!(region(&app, first, 118), [Rect::new(100, 80, 260, 140)]);
+    assert!(pixel(&app, 99, 61)); // title outline
+    assert!(pixel(&app, 108, 65)); // close-box top
+    assert!(!pixel(&app, 109, 66)); // close-box interior
+    assert!(pixel(&app, 261, 100)); // shadow
+    assert!(!pixel(&app, 150, 100)); // content is white
+                                     // Glyph pixels lie inside the title gap, away from its stripes.
+    assert!((155..205).any(|x| (64..77).any(|y| pixel(&app, x, y))));
+    let first_screen = app.runtime.memory.read(SCREEN, 64 * 342).unwrap().to_vec();
+    invoke(&mut app, 4, &[first]);
+    let mut frame = vec![0; 10];
+    w32(&mut frame, 0, u32::MAX);
+    w16(&mut frame, 8, 321);
+    let second = m68(&mut app, 0, &frame, 10, true);
+    assert_ne!(second, 0);
+    assert_eq!(
+        app.runtime.memory.read(SCREEN, 64 * 342).unwrap(),
+        first_screen
+    );
+    invoke(&mut app, 4, &[second]);
+    assert_eq!(invoke(&mut app, 3, &[322, 0, u32::MAX]), 0); // truncated WIND
+    assert_eq!(invoke(&mut app, 3, &[999, 0, u32::MAX]), 0);
+    assert_eq!(
+        app.runtime
+            .memory
+            .u32(systemless_future::windows::LIST)
+            .unwrap(),
+        0
+    );
+    // The cached resource handle is guest state: edit the live title and refCon.
+    let h = app
+        .runtime
+        .process
+        .get_resource(&mut app.runtime.memory, *b"WIND", 321)
+        .unwrap();
+    let bytes = GuestPtr(app.runtime.memory.u32(GuestPtr(h)).unwrap());
+    app.runtime
+        .memory
+        .write(GuestPtr(bytes.0 + 14), &7u32.to_be_bytes())
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(bytes.0 + 19), b"RAM")
+        .unwrap();
+    let changed = invoke(&mut app, 3, &[321, 0, u32::MAX]);
+    assert_eq!(app.runtime.memory.u32(GuestPtr(changed + 152)).unwrap(), 7);
+    let title = app.runtime.memory.u32(GuestPtr(changed + 134)).unwrap();
+    let title = GuestPtr(app.runtime.memory.u32(GuestPtr(title)).unwrap());
+    assert_eq!(app.runtime.memory.read(title, 4).unwrap(), b"\x03RAM");
+    app.runtime
+        .memory
+        .write(GuestPtr(bytes.0 + 8), &1u16.to_be_bytes())
+        .unwrap();
+    rect(&mut app, bytes.0, 180, 300, 240, 400);
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), vec![0x5a; 160], Permissions::RW)
+        .unwrap();
+    w32(&mut frame, 4, 0x51000000);
+    let modal = m68(&mut app, 0, &frame, 10, true);
+    assert_eq!(modal, 0x51000000);
+    assert_eq!(region(&app, modal, 114), [Rect::new(292, 172, 408, 248)]);
+    assert!(pixel(&app, 292, 172));
+    assert!(!pixel(&app, 293, 173));
+    assert!(pixel(&app, 295, 175));
+    assert!(!pixel(&app, 297, 177));
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(modal + 156), 4).unwrap(),
+        [0x5a; 4]
+    );
+    assert!(!pixel(&app, 108, 65)); // previous document's close box is inactive.
+    invoke(&mut app, 5, &[modal]);
+    assert!(pixel(&app, 108, 65)); // restored active chrome.
+    invoke(&mut app, 4, &[changed]);
+    assert_eq!(
+        app.runtime
+            .memory
+            .u32(systemless_future::windows::LIST)
+            .unwrap(),
+        0
+    );
+}
