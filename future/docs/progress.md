@@ -1961,3 +1961,48 @@ is still absent. Centaurian 68K remains at GetGDevice, original PPC at strong
 sound imports, with native presentation and real Mixed Mode unfinished. Next:
 shared control records, CDEF drawing and dialog/window control lifecycle, then
 continue original application-driven slices. The full rebuild goal stays active.
+
+### Shared button-family control records, drawing and disposal
+
+NewControl ($A954 / InterfaceLib) now creates real owned 296-byte ControlRecords
+and prepends their handles to the owner's live controlList. Push buttons,
+checkboxes and radio buttons share one service for record access, title/value/
+reference changes, visibility/highlighting, drawing, basic hit testing and
+disposal. Values clamp to the live min/max range; getters read guest fields.
+Native result writes preserve neighboring stack bytes, and PPC's ninth refCon
+argument is checked at r1+56. PPC import decoding is now fallible and leaves the
+return PC untouched on argument faults. Contracts follow Apple's [ControlRecord](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-317.html),
+[NewControl](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-324.html) and
+[SetControlValue](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-335.html) references.
+
+All pixel changes use GPU QuickDraw; geometry follows existing Systemless
+button-family comparisons and titles use the shared font strike path. Multi-line
+titles, initial title truncation, pressed ink, inactive dithering, and owner
+visibility/clip state are included. Owner port, clip and current-port state are
+restored after drawing. Hide/dispose erases visible pixels using the owner's
+background pattern/colors. Native font/CDEF pixel parity is not claimed.
+
+Window close/dispose frees owned controls after validating the entire linked
+list, including cycle/foreign-handle/orphan checks. DisposeControl unlinks and
+frees one control; KillControls handles the whole live list. This follows
+Apple's [removal contract](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-356.html).
+Built-in definition identity remains registration metadata and contrlDefProc is
+currently NIL; callable CDEF handles and AuxCtlRec are not implemented. Custom
+definitions/data fault explicitly. Tracking/action callbacks, scroll bars, CNTL
+loading, move/size and limit setters remain unfinished.
+
+All 203 tests pass (173 default, 30 optional GPU/MPW), strict all-target Clippy
+passes and MPW fixtures rebuild. Focused ABI/compiled reruns verify final result
+slot decoding. New tests cover ninth PPC stack arguments/faults, write-only and
+read-only native result slots, full-screen cross-CPU control parity, checkbox/
+radio pixels, guest value changes, owner port restoration, visibility/hit state,
+corrupt control-list rejection and automatic window-owned cleanup. Both compiled
+CPU guests check list order, record fields, references, titles, clamped values,
+highlight/visibility/hit behavior, redraws and disposal.
+
+Super Mines now creates controls and reaches SizeWindow ($A91D), PC $01010D42,
+trace index 15298. Original application UI interaction is still unverified.
+Centaurian 68K still needs GetGDevice; original PPC sound imports, native
+presentation and real Mixed Mode remain outstanding. Next: shared window sizing/
+visibility and resulting region/update/control redraw behavior, then continue
+application-driven UI slices. Full rebuild goal stays active.

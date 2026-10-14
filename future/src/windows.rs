@@ -100,6 +100,9 @@ fn shifted(bytes: &[u8], dx: i32, dy: i32) -> Result<Vec<u8>> {
     region_geometry::encode(&rects)
 }
 impl Windows {
+    pub fn contains(&self, memory: &Memory, w: u32) -> Result<bool> {
+        Ok(self.list(memory)?.contains(&w))
+    }
     fn list(&self, memory: &Memory) -> Result<Vec<u32>> {
         let mut result = Vec::new();
         let mut next = memory.u32(LIST)?;
@@ -895,6 +898,10 @@ impl Windows {
                 return Err(fail("corrupt window ownership"));
             }
         }
+        let mut controls = std::mem::take(&mut process.controls);
+        let result = controls.close_window(memory, process, w);
+        process.controls = controls;
+        result?;
         list.remove(index);
         self.relink(memory, &list)?;
         self.recalculate(memory, process)?;

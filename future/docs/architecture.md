@@ -965,3 +965,22 @@ masters. resChanged blocks detachment with resAttrErr; missing/ordinary/already
 detached handles return resNotFound. MemErr is preserved and ResErr is projected
 through low-memory state on both CPU service paths. Resource-file close,
 AddResource, mutable resource maps and purge state APIs remain unfinished.
+
+The shared Control Manager registers owned ControlRecord handles with immutable
+owner/standard definition IDs. Fields, title, bounds, value/range, visibility,
+highlight and next links live in guest RAM, starting at WindowRecord+140. Native
+68K and checked PPC import adapters marshal NewControl, getters/setters, drawing,
+visibility, hit testing and disposal into this service. PPC import decoding can
+now fail before returning to LR; NewControl's ninth argument comes from r1+56.
+
+Button (0), checkbox (1) and radio (2) definitions draw through GPU QuickDraw,
+with bounded rounded/ellipse geometry and shared font strikes. Drawing restores
+the owner's port/clip and the previous current port. Titles support multiple
+lines, initial width truncation and clipping; inactive ink is dithered. Region
+visibility prevents drawing into covered/invisible owners. DisposeControl
+unlinks/erases/frees; window close validates the full control list before freeing
+controls, preventing cycles, foreign handles and orphan registration from
+destroying the owner. Built-in definition identity is currently host dispatch
+metadata: contrlDefProc is NIL, not a callable CDEF handle, and AuxCtlRec is
+unimplemented. Custom definitions/data, tracking/action callbacks, scroll bars,
+CNTL loading and limit setters remain gaps.

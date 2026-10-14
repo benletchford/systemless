@@ -4,15 +4,18 @@ An independent replacement runtime on `dev/future`. One guest address space and
 service dispatcher serve real 68K and PowerPC engines. Indexed drawing, palette
 expansion and presentation use wgpu. This build does not link the legacy runtime.
 
-**Current scope: generated fixtures, an MPW-compiled resource/handle app on both
-68K and PPC, event-queue and cooperative-wait programs on both architectures, and a compiled
-PPC nonlocal-jump/main-return probe. A compiled resource/drawing/event app also
-passes on both CPUs with exact GPU pixel parity. No original
-application verified.**
-Resource-fork/CODE and PowerPC PEF loaders use a small real Macintosh ABI slice
-for resources, handles, OS event queues, bounded waiting, Basic QuickDraw port
-initialization/clipped rectangle painting, timing and exit. The graphics fixtures still use private
-gateways, which are disabled for loaded applications.
+**Current acceptance: generated and MPW-compiled guests run across 68K/PPC,
+including shared resource/heap lifetime, CFM loading, events/waits, drawing,
+TextEdit, window updates, resource-defined windows and button-family controls.
+Offscreen GPU output is checked. Original applications have bounded startup
+traces; original UI interaction and native presentation remain unverified.**
+
+Resource-fork/CODE and PowerPC PEF loaders share one Macintosh world. Resources,
+allocation, virtual directories/file metadata, OS/update events, Basic QuickDraw,
+fonts, plain TextEdit, cursor state, window records and controls use common
+services. Menus and dialogs currently provide startup/parameter subsets. Real
+Mixed Mode, custom WDEF/CDEF callbacks and complete application compatibility
+remain unfinished. Private fixture gateways are disabled for loaded applications.
 See [architecture](docs/architecture.md) and [progress](docs/progress.md).
 
 From the repository root:

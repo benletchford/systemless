@@ -1342,7 +1342,7 @@ fn key_adapters_read_the_low_character_byte_and_preserve_void_results() {
     let Cpu::PowerPc(c) = &mut cpu else { panic!() };
     c.gpr[3] = 0xffffff80;
     c.gpr[4] = 0x11223344;
-    let (call, reply) = Abi::import(Service::TEKey, c);
+    let (call, reply) = Abi::import(Service::TEKey, c, &m).unwrap();
     assert_eq!(
         call,
         Call::TextEdit(Op::Key {

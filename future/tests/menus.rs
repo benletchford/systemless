@@ -58,7 +58,7 @@ fn menu_adapters_preserve_void_results_and_validate_snapshot_storage() {
     let mut cpu = Cpu::new(Architecture::PowerPc, 0, 0x1000);
     let Cpu::PowerPc(c) = &mut cpu else { panic!() };
     c.gpr[3] = 0xa55a;
-    let (call, reply) = Abi::import(Service::Menu(Op::Init), c);
+    let (call, reply) = Abi::import(Service::Menu(Op::Init), c, &m).unwrap();
     assert_eq!(call, Call::Menu(Op::Init));
     reply.apply(&mut cpu, &mut m, 99, 0).unwrap();
     let Cpu::PowerPc(c) = &cpu else { panic!() };

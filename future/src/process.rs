@@ -24,6 +24,7 @@ pub struct Process {
     pub textedit: crate::textedit::Manager,
     pub fonts: crate::font::Manager,
     pub windows: crate::windows::Windows,
+    pub controls: crate::controls::Controls,
     pub ports: Option<crate::quickdraw::Ports>,
     resource_ref: i16,
     pub mem_error: i16,

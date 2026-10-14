@@ -1,6 +1,8 @@
 #include <Types.h>
 #include <Quickdraw.h>
 #include <Windows.h>
+#include <Controls.h>
+#include <ControlDefinitions.h>
 #include <Memory.h>
 #include <Events.h>
 #include <Processes.h>
@@ -16,6 +18,9 @@ int main(void) {
     EventRecord event;
     Rect dirty={43,42,49,48};
     RgnHandle saved;
+    ControlHandle button, check, radio;
+    Rect buttonBounds={8,8,28,68},checkBounds={32,8,48,78},radioBounds={32,80,48,150};
+    Str255 controlTitle;
     SetRect(&firstBounds,40,40,60,60); OffsetRect(&firstBounds,2,-3); InsetRect(&firstBounds,1,2);
     if (firstBounds.top!=39 || firstBounds.left!=43 || firstBounds.bottom!=55 || firstBounds.right!=61) return 14;
     SetRect(&firstBounds,40,40,60,60);
@@ -70,7 +75,22 @@ int main(void) {
     if (GetNewWindow(322,0,(WindowPtr)-1)) return 24;
     first=GetNewWindow(321,0,(WindowPtr)-1);
     if (!first || FrontWindow()!=first || ((WindowPeek)first)->refCon!=0x12345678 || !((WindowPeek)first)->goAwayFlag || first->portRect.right!=160 || first->portRect.bottom!=60) return 25;
-    DisposeWindow(first); if (FrontWindow()) return 26;
+    button=NewControl(first,&buttonBounds,"\pOK",true,0,0,1,pushButProc,0x11223344);
+    check=NewControl(first,&checkBounds,"\pCheck",true,0,0,1,checkBoxProc,7);
+    radio=NewControl(first,&radioBounds,"\pRadio",true,1,0,1,radioButProc,8);
+    if (!button || !check || !radio || ((WindowPeek)first)->controlList!=(Handle)radio || (*radio)->nextControl!=check || (*check)->nextControl!=button || GetControlReference(button)!=0x11223344) return 27;
+    if (GetHandleSize((Handle)button)!=296 || (*button)->contrlOwner!=first || (*button)->contrlVis!=255) return 28;
+    SetControlReference(button,9); if (GetControlReference(button)!=9) return 29;
+    SetControlValue(check,5); if (GetControlValue(check)!=1 || GetControlMinimum(check)!=0 || GetControlMaximum(check)!=1) return 30;
+    GetControlTitle(button,controlTitle); if (controlTitle[0]!=2 || controlTitle[1]!='O') return 31;
+    SetControlTitle(button,"\pGo"); GetControlTitle(button,controlTitle); if (controlTitle[1]!='G') return 32;
+    HiliteControl(button,10); if ((*button)->contrlHilite!=10) return 33; HiliteControl(button,0);
+    HideControl(check); if ((*check)->contrlVis) return 34; ShowControl(check);
+    point.v=40;point.h=12; if (TestControl(check,point)!=11) return 35;
+    HiliteControl(check,255); if (TestControl(check,point)) return 36; HiliteControl(check,0);
+    (*check)->contrlValue=0; Draw1Control(check); if (GetControlValue(check)) return 37;
+    DrawControls(first); DisposeControl(check); if ((*radio)->nextControl!=button || *check) return 38;
+    DisposeWindow(first); if (FrontWindow() || *button || *radio) return 26;
     PostEvent(diskEvt,0x600D);
     ExitToShell();
     return 0;

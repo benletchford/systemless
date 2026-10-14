@@ -47,6 +47,8 @@ pub enum Call {
         value: u16,
     },
     NewWindow(crate::windows::NewWindow),
+    NewControl(crate::controls::NewControl),
+    Control(crate::controls::Op),
     ResourceWindow {
         id: i16,
         storage: GuestPtr,
@@ -324,7 +326,7 @@ impl Cpu {
             }
             Self::PowerPc(c) => {
                 if let Some(service) = abi.imports.get(&c.pc) {
-                    let (call, reply) = crate::abi::Abi::import(*service, c);
+                    let (call, reply) = crate::abi::Abi::import(*service, c, memory)?;
                     c.pc = c.lr;
                     return Ok(Outcome::Macintosh(call, reply));
                 }

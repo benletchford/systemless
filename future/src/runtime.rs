@@ -180,6 +180,26 @@ impl Runtime {
                             })?;
                             ports.set_color(&mut self.memory, background, color)?;
                         }
+                        Call::NewControl(_) | Call::Control(_) => {
+                            let mut controls = std::mem::take(&mut self.process.controls);
+                            let result = match call {
+                                Call::NewControl(request) => controls.create(
+                                    &mut self.memory,
+                                    &mut self.process,
+                                    self.graphics.as_ref(),
+                                    request,
+                                ),
+                                Call::Control(op) => controls.call(
+                                    &mut self.memory,
+                                    &mut self.process,
+                                    self.graphics.as_ref(),
+                                    op,
+                                ),
+                                _ => unreachable!(),
+                            };
+                            self.process.controls = controls;
+                            reply.apply(&mut self.cpu, &mut self.memory, result?, 0)?;
+                        }
                         Call::NewWindow(_) | Call::ResourceWindow { .. } | Call::Window { .. } => {
                             let gpu = self.graphics.as_ref().ok_or_else(|| {
                                 Error::Graphics("Window Manager requires a GPU".into())
@@ -947,6 +967,8 @@ impl Runtime {
                             | Call::InitFonts
                             | Call::FontInfo(_)
                             | Call::ResourceWindow { .. }
+                            | Call::NewControl(_)
+                            | Call::Control(_)
                             | Call::NewWindow(_)
                             | Call::Window { .. }
                             | Call::NewPointer { .. }
@@ -995,6 +1017,8 @@ impl Runtime {
                         | Call::SetPointerSize { .. }
                         | Call::DisposePointer(_)
                         | Call::ResourceWindow { .. }
+                        | Call::NewControl(_)
+                        | Call::Control(_)
                         | Call::NewWindow(_)
                         | Call::Window { .. }
                         | Call::TextState { .. }

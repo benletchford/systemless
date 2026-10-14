@@ -289,3 +289,9 @@ The resource/memory probe detaches a mutated DATA handle, checks unchanged
 payload identity, reloads original bytes under a new handle, rejects Resource
 Manager operations on the detached handle, then disposes it without affecting
 the reloaded resource. Both MPW CPU targets exercise this lifetime.
+
+The window fixture now exercises push buttons, checkboxes and radio buttons
+using NewControl and the modern MPW header routine names. It checks control
+list ordering/record fields, PPC's ninth stack argument, reference/title/value
+updates, hidden/inactive hit tests, guest-written value redraw, disposal
+unlinking and automatic freeing when the owner window is disposed.

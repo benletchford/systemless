@@ -1,6 +1,7 @@
 pub mod abi;
 pub mod bitmap;
 pub mod cfm;
+pub mod controls;
 pub mod cpu;
 pub mod cursor;
 pub mod dialogs;

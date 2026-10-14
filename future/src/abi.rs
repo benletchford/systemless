@@ -11,6 +11,22 @@ use std::collections::BTreeMap;
 pub enum Service {
     Random,
     GetNewWindow,
+    NewControl,
+    ControlDraw,
+    ControlDrawAll,
+    ControlDispose,
+    ControlKill,
+    ControlVisible(bool),
+    ControlHilite,
+    ControlValue,
+    ControlMin,
+    ControlMax,
+    ControlSetValue,
+    ControlReference,
+    ControlSetReference,
+    ControlTitle,
+    ControlSetTitle,
+    ControlTest,
     SetRect,
     OffsetRect,
     InsetRect,
@@ -162,6 +178,23 @@ impl Abi {
             b"PaintRoundRect" => Some(Service::RoundRect(false)),
             b"ForeColor" => Some(Service::PortColor(false)),
             b"BackColor" => Some(Service::PortColor(true)),
+            b"NewControl" => Some(Service::NewControl),
+            b"Draw1Control" => Some(Service::ControlDraw),
+            b"DrawControls" => Some(Service::ControlDrawAll),
+            b"DisposeControl" => Some(Service::ControlDispose),
+            b"KillControls" => Some(Service::ControlKill),
+            b"ShowControl" => Some(Service::ControlVisible(true)),
+            b"HideControl" => Some(Service::ControlVisible(false)),
+            b"HiliteControl" => Some(Service::ControlHilite),
+            b"GetCtlValue" | b"GetControlValue" => Some(Service::ControlValue),
+            b"GetCtlMin" | b"GetControlMinimum" => Some(Service::ControlMin),
+            b"GetCtlMax" | b"GetControlMaximum" => Some(Service::ControlMax),
+            b"SetCtlValue" | b"SetControlValue" => Some(Service::ControlSetValue),
+            b"GetCRefCon" | b"GetControlReference" => Some(Service::ControlReference),
+            b"SetCRefCon" | b"SetControlReference" => Some(Service::ControlSetReference),
+            b"GetCTitle" | b"GetControlTitle" => Some(Service::ControlTitle),
+            b"SetCTitle" | b"SetControlTitle" => Some(Service::ControlSetTitle),
+            b"TestControl" => Some(Service::ControlTest),
             b"GetNewWindow" => Some(Service::GetNewWindow),
             b"NewWindow" => Some(Service::NewWindow),
             b"InitWindows" => Some(Service::Window(crate::windows::Op::Init)),
@@ -344,6 +377,96 @@ impl Abi {
                     },
                     Reply::None,
                 ))
+            }
+            0xa954 => {
+                let bytes = memory.read(GuestPtr(sp), 26)?;
+                let long = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
+                let word = |o| i16::from_be_bytes(bytes[o..o + 2].try_into().unwrap());
+                let result = sp
+                    .checked_add(26)
+                    .ok_or_else(|| Error::Cpu("control stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 4)?;
+                let request = crate::controls::NewControl {
+                    owner: GuestPtr(long(22)),
+                    bounds: GuestPtr(long(18)),
+                    title: GuestPtr(long(14)),
+                    visible: bytes[12] != 0,
+                    value: word(10),
+                    min: word(8),
+                    max: word(6),
+                    proc_id: word(4),
+                    ref_con: long(0),
+                };
+                c.dar[15] = result;
+                Ok((
+                    Call::NewControl(request),
+                    Reply::StackLong(GuestPtr(result)),
+                ))
+            }
+            0xa955..=0xa958 | 0xa95a | 0xa960..=0xa962 | 0xa969 | 0xa96d => {
+                use crate::controls::Op;
+                let h = memory.u32(GuestPtr(sp))?;
+                let result = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("control stack overflow".into()))?;
+                let op = match opcode {
+                    0xa955 => Op::Dispose(h),
+                    0xa956 => Op::Kill(h),
+                    0xa957 => Op::Visible(h, true),
+                    0xa958 => Op::Visible(h, false),
+                    0xa95a => Op::Reference(h),
+                    0xa960 => Op::Value(h),
+                    0xa961 => Op::Min(h),
+                    0xa962 => Op::Max(h),
+                    0xa969 => Op::DrawAll(h),
+                    _ => Op::Draw(h),
+                };
+                let reply = if opcode == 0xa95a {
+                    memory.validate_write(GuestPtr(result), 4)?;
+                    Reply::StackLong(GuestPtr(result))
+                } else if matches!(opcode, 0xa960..=0xa962) {
+                    memory.validate_write(GuestPtr(result), 2)?;
+                    Reply::StackWord(GuestPtr(result))
+                } else {
+                    Reply::None
+                };
+                c.dar[15] = result;
+                Ok((Call::Control(op), reply))
+            }
+            0xa95b | 0xa95d..=0xa95f | 0xa963 | 0xa966 => {
+                use crate::controls::Op;
+                let size = if matches!(opcode, 0xa95d | 0xa963) {
+                    6
+                } else {
+                    8
+                };
+                let bytes = memory.read(GuestPtr(sp), size)?;
+                let h = u32::from_be_bytes(bytes[size - 4..].try_into().unwrap());
+                let word = |o| i16::from_be_bytes(bytes[o..o + 2].try_into().unwrap());
+                let value = if size == 8 {
+                    u32::from_be_bytes(bytes[..4].try_into().unwrap())
+                } else {
+                    0
+                };
+                let op = match opcode {
+                    0xa95b => Op::SetReference(h, value),
+                    0xa95d => Op::Hilite(h, word(0) as u8),
+                    0xa95e => Op::Title(h, GuestPtr(value)),
+                    0xa95f => Op::SetTitle(h, GuestPtr(value)),
+                    0xa963 => Op::SetValue(h, word(0)),
+                    _ => Op::Test(h, word(2), word(0)),
+                };
+                let result = sp
+                    .checked_add(size as u32)
+                    .ok_or_else(|| Error::Cpu("control stack overflow".into()))?;
+                let reply = if opcode == 0xa966 {
+                    memory.validate_write(GuestPtr(result), 2)?;
+                    Reply::StackWord(GuestPtr(result))
+                } else {
+                    Reply::None
+                };
+                c.dar[15] = result;
+                Ok((Call::Control(op), reply))
             }
             0xa9bd => {
                 let args = memory.read(GuestPtr(sp), 14)?;
@@ -1137,7 +1260,7 @@ impl Abi {
             _ => Err(Error::Service(opcode.into())),
         }
     }
-    pub fn import(service: Service, c: &ppc::PpcCpu) -> (Call, Reply) {
+    pub fn import(service: Service, c: &ppc::PpcCpu, memory: &Memory) -> Result<(Call, Reply)> {
         let call = match service {
             Service::RoundRect(frame) => Call::RoundRect {
                 pointer: GuestPtr(c.gpr[3]),
@@ -1286,6 +1409,52 @@ impl Abi {
             Service::TEGetText => Call::TextEdit(crate::textedit::Op::GetText(c.gpr[3])),
             Service::TEGetStyleHandle => Call::TextEdit(crate::textedit::Op::GetStyle(c.gpr[3])),
             Service::TEDispose => Call::TextEdit(crate::textedit::Op::Dispose(c.gpr[3])),
+            Service::NewControl => Call::NewControl(crate::controls::NewControl {
+                owner: GuestPtr(c.gpr[3]),
+                bounds: GuestPtr(c.gpr[4]),
+                title: GuestPtr(c.gpr[5]),
+                visible: c.gpr[6] as u8 != 0,
+                value: c.gpr[7] as i16,
+                min: c.gpr[8] as i16,
+                max: c.gpr[9] as i16,
+                proc_id: c.gpr[10] as i16,
+                ref_con: memory.u32(GuestPtr(
+                    c.gpr[1]
+                        .checked_add(56)
+                        .ok_or_else(|| Error::Cpu("control PPC stack overflow".into()))?,
+                ))?,
+            }),
+            Service::ControlDraw => Call::Control(crate::controls::Op::Draw(c.gpr[3])),
+            Service::ControlDrawAll => Call::Control(crate::controls::Op::DrawAll(c.gpr[3])),
+            Service::ControlDispose => Call::Control(crate::controls::Op::Dispose(c.gpr[3])),
+            Service::ControlKill => Call::Control(crate::controls::Op::Kill(c.gpr[3])),
+            Service::ControlVisible(visible) => {
+                Call::Control(crate::controls::Op::Visible(c.gpr[3], visible))
+            }
+            Service::ControlHilite => {
+                Call::Control(crate::controls::Op::Hilite(c.gpr[3], c.gpr[4] as u8))
+            }
+            Service::ControlValue => Call::Control(crate::controls::Op::Value(c.gpr[3])),
+            Service::ControlMin => Call::Control(crate::controls::Op::Min(c.gpr[3])),
+            Service::ControlMax => Call::Control(crate::controls::Op::Max(c.gpr[3])),
+            Service::ControlSetValue => {
+                Call::Control(crate::controls::Op::SetValue(c.gpr[3], c.gpr[4] as i16))
+            }
+            Service::ControlReference => Call::Control(crate::controls::Op::Reference(c.gpr[3])),
+            Service::ControlSetReference => {
+                Call::Control(crate::controls::Op::SetReference(c.gpr[3], c.gpr[4]))
+            }
+            Service::ControlTitle => {
+                Call::Control(crate::controls::Op::Title(c.gpr[3], GuestPtr(c.gpr[4])))
+            }
+            Service::ControlSetTitle => {
+                Call::Control(crate::controls::Op::SetTitle(c.gpr[3], GuestPtr(c.gpr[4])))
+            }
+            Service::ControlTest => Call::Control(crate::controls::Op::Test(
+                c.gpr[3],
+                c.gpr[4] as i16,
+                (c.gpr[4] >> 16) as i16,
+            )),
             Service::GetNewWindow => Call::ResourceWindow {
                 id: c.gpr[3] as i16,
                 storage: GuestPtr(c.gpr[4]),
@@ -1441,12 +1610,22 @@ impl Abi {
             },
             Service::CreateDirectory => Call::CreateDirectory(GuestPtr(c.gpr[3])),
         };
-        (
+        Ok((
             call,
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::SetRect
+                    Service::ControlDraw
+                        | Service::ControlDrawAll
+                        | Service::ControlDispose
+                        | Service::ControlKill
+                        | Service::ControlVisible(_)
+                        | Service::ControlHilite
+                        | Service::ControlSetValue
+                        | Service::ControlSetReference
+                        | Service::ControlTitle
+                        | Service::ControlSetTitle
+                        | Service::SetRect
                         | Service::OffsetRect
                         | Service::InsetRect
                         | Service::MaxApplZone
@@ -1512,7 +1691,7 @@ impl Abi {
             } else {
                 Reply::PpcR3
             },
-        )
+        ))
     }
 }
 impl Reply {
