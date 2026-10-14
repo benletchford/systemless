@@ -265,6 +265,23 @@ impl Runtime {
                             let ticks = self.tick_count()?;
                             let mut manager = std::mem::take(&mut self.process.textedit);
                             let result = match op {
+                                crate::textedit::Op::Key { handle, byte } => {
+                                    match self.graphics.as_ref() {
+                                        Some(gpu) => manager
+                                            .key(
+                                                &mut self.memory,
+                                                &mut self.process,
+                                                gpu,
+                                                handle,
+                                                byte,
+                                                ticks,
+                                            )
+                                            .map(|()| 0),
+                                        None => Err(Error::Graphics(
+                                            "TextEdit key editing requires a GPU".into(),
+                                        )),
+                                    }
+                                }
                                 crate::textedit::Op::Idle(handle) => manager
                                     .idle(
                                         &mut self.memory,

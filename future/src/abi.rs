@@ -16,6 +16,7 @@ pub enum Service {
     TECalText,
     TESetSelect,
     TEDelete,
+    TEKey,
     TEIdle,
     TEActivate(bool),
     TEInit,
@@ -162,6 +163,7 @@ impl Abi {
             b"TECalText" => Some(Service::TECalText),
             b"TESetSelect" => Some(Service::TESetSelect),
             b"TEDelete" => Some(Service::TEDelete),
+            b"TEKey" => Some(Service::TEKey),
             b"TEIdle" => Some(Service::TEIdle),
             b"TEActivate" => Some(Service::TEActivate(true)),
             b"TEDeactivate" => Some(Service::TEActivate(false)),
@@ -474,6 +476,18 @@ impl Abi {
                         length,
                         handle,
                     }),
+                    Reply::None,
+                ))
+            }
+            0xa9dc => {
+                let args = memory.read(GuestPtr(sp), 6)?;
+                let handle = u32::from_be_bytes(args[..4].try_into().unwrap());
+                let byte = u16::from_be_bytes(args[4..6].try_into().unwrap()) as u8;
+                c.dar[15] = sp
+                    .checked_add(6)
+                    .ok_or_else(|| Error::Cpu("TextEdit stack overflow".into()))?;
+                Ok((
+                    Call::TextEdit(crate::textedit::Op::Key { handle, byte }),
                     Reply::None,
                 ))
             }
@@ -971,6 +985,10 @@ impl Abi {
                 active,
             }),
             Service::TEIdle => Call::TextEdit(crate::textedit::Op::Idle(c.gpr[3])),
+            Service::TEKey => Call::TextEdit(crate::textedit::Op::Key {
+                handle: c.gpr[4],
+                byte: c.gpr[3] as u8,
+            }),
             Service::TEDelete => Call::TextEdit(crate::textedit::Op::Delete(c.gpr[3])),
             Service::TECalText => Call::TextEdit(crate::textedit::Op::Calculate(c.gpr[3])),
             Service::TEInit => Call::TextEdit(crate::textedit::Op::Init),
@@ -1133,6 +1151,7 @@ impl Abi {
                         | Service::TECalText
                         | Service::TESetSelect
                         | Service::TEDelete
+                        | Service::TEKey
                         | Service::TEIdle
                         | Service::TEActivate(_)
                         | Service::TEInit

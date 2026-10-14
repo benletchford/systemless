@@ -25,6 +25,10 @@ pub enum Op {
     },
     Calculate(u32),
     Delete(u32),
+    Key {
+        handle: u32,
+        byte: u8,
+    },
     Idle(u32),
     Activate {
         handle: u32,
@@ -196,9 +200,11 @@ impl Manager {
                 process.mem_error = 0;
                 Ok(handle)
             }
-            Op::Activate { .. } | Op::Idle(_) | Op::Delete(_) | Op::Update { .. } => {
-                Err(bad("TextEdit redraw requires the graphics route"))
-            }
+            Op::Key { .. }
+            | Op::Activate { .. }
+            | Op::Idle(_)
+            | Op::Delete(_)
+            | Op::Update { .. } => Err(bad("TextEdit redraw requires the graphics route")),
             Op::SetText {
                 source,
                 length,
@@ -381,6 +387,82 @@ impl Manager {
         let mut caret = ticks.to_be_bytes().to_vec();
         caret.extend(u16::from(active).to_be_bytes());
         memory.write(GuestPtr(data.0 + 52), &caret)?;
+        self.redraw(memory, process, gpu, GuestPtr(data.0 + 8), handle, true)
+    }
+    pub fn key(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &crate::graphics::Graphics,
+        handle: u32,
+        byte: u8,
+        ticks: u32,
+    ) -> Result<()> {
+        if matches!(byte, 0x1e | 0x1f) {
+            return Err(bad("vertical TextEdit key navigation is not implemented"));
+        }
+        self.call(memory, process, Op::GetText(handle), 0)?;
+        let data = pointer(memory, process, handle, 128)?;
+        if memory.u16(GuestPtr(data.0 + 36))? != 0 {
+            validate_overlay_hooks(memory, data)?;
+        }
+        let length = memory.u16(GuestPtr(data.0 + 60))?;
+        if length > 32767 {
+            return Err(bad("invalid TextEdit text length"));
+        }
+        let a = memory.u16(GuestPtr(data.0 + 32))?.min(length);
+        let b = memory.u16(GuestPtr(data.0 + 34))?.min(length);
+        let mut start = a.min(b);
+        let end = a.max(b);
+        if matches!(byte, 0x1c | 0x1d) {
+            let caret = if start != end {
+                if byte == 0x1c {
+                    start
+                } else {
+                    end
+                }
+            } else if byte == 0x1c {
+                start.saturating_sub(1)
+            } else {
+                end.saturating_add(1).min(length)
+            };
+            return self.select(
+                memory,
+                process,
+                Some(gpu),
+                handle,
+                (u32::from(caret), u32::from(caret)),
+                ticks,
+            );
+        }
+        let deletion = matches!(byte, 0x08 | 0x7f);
+        if deletion && start == end {
+            start = start.saturating_sub(1);
+        }
+        let added = u16::from(!deletion);
+        let new_length = length - (end - start) + added;
+        if new_length > 32767 {
+            return Err(bad("TextEdit text length exceeds 32767"));
+        }
+        let text = memory.u32(GuestPtr(data.0 + 62))?;
+        let source = pointer(memory, process, text, u32::from(length))?;
+        let mut bytes = memory.read(source, usize::from(length))?.to_vec();
+        bytes.splice(
+            usize::from(start)..usize::from(end),
+            (!deletion).then_some(byte),
+        );
+        self.layout(
+            memory,
+            process,
+            handle,
+            bytes,
+            true,
+            Some((start + added, ticks)),
+        )?;
+        if process.mem_error != 0 {
+            return Ok(());
+        }
+        let data = pointer(memory, process, handle, 128)?;
         self.redraw(memory, process, gpu, GuestPtr(data.0 + 8), handle, true)
     }
     /// Delete a selection without touching either TextEdit scrap.

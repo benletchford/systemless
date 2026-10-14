@@ -1153,3 +1153,212 @@ fn active_highlight_caret_and_deletion_are_repeatable_and_restore_port_state() {
         assert_eq!(m.u32(ports.current_slot).unwrap(), old);
     }
 }
+
+fn live_text(m: &Memory, handle: u32) -> Vec<u8> {
+    let data = ptr(m, handle);
+    let length = m.u16(GuestPtr(data.0 + 60)).unwrap() as usize;
+    let text = m.u32(GuestPtr(data.0 + 62)).unwrap();
+    m.read(ptr(m, text), length).unwrap().to_vec()
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn key_editing_uses_live_selection_preserves_scrap_and_rolls_back_failed_growth() {
+    use systemless_future::graphics::Graphics;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let gpu = pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x4000))).unwrap();
+    for styled in [false, true] {
+        let (mut m, mut p, mut manager) = setup();
+        m.write(
+            GuestPtr(0x1040),
+            &[0, 0, 0, 1, 0, 4, 0, 6, 0, 0, 0, 0, 0, 4, 0, 8],
+        )
+        .unwrap();
+        manager.call(&mut m, &mut p, Op::Init, 0).unwrap();
+        let scrap = m.u32(GuestPtr(0xab4)).unwrap();
+        p.set_handle_size(&mut m, scrap, 3).unwrap();
+        m.write(ptr(&m, scrap), b"xyz").unwrap();
+        m.write(GuestPtr(0xab0), &3u16.to_be_bytes()).unwrap();
+        let handle = manager.call(&mut m, &mut p, new(styled), 0).unwrap();
+        let text = manager
+            .call(&mut m, &mut p, Op::GetText(handle), 0)
+            .unwrap();
+        let ports = p.ports.unwrap();
+        let port = GuestPtr(0x1080);
+        ports.open(&mut m, &mut p, GuestPtr(0x1180)).unwrap();
+        let saved = m.read(port, 108).unwrap().to_vec();
+        let old = m.u32(ports.current_slot).unwrap();
+        m.write(GuestPtr(0x2000), &[0, 0x33, 0, 0x44, 0, 0x55, 0, 0x66])
+            .unwrap();
+        // Growing past the locked four-byte allocation cannot move its block.
+        m.map(GuestPtr(0x3000), b"AAAA".to_vec(), Permissions::RW)
+            .unwrap();
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0x3000),
+                    length: 4,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        p.set_handle_lock(&m, text, true).unwrap();
+        let data = ptr(&m, handle);
+        let before = m.read(data, 128).unwrap().to_vec();
+        manager.key(&mut m, &mut p, &gpu, handle, b'A', 1).unwrap();
+        assert_eq!(p.mem_error, -108);
+        assert_eq!(m.read(data, 128).unwrap(), before);
+        assert_eq!(live_text(&m, handle), b"AAAA");
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0, 0x33, 0, 0x44, 0, 0x55, 0, 0x66]
+        );
+        p.set_handle_lock(&m, text, false).unwrap();
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0),
+                    length: 0,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        manager.key(&mut m, &mut p, &gpu, handle, b'A', 2).unwrap();
+        assert_eq!(live_text(&m, handle), b"A");
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0xe0, 0x33, 0xa0, 0x44, 0x40, 0x55, 0, 0x66]
+        );
+        manager
+            .activate(&mut m, &mut p, &gpu, handle, true, 3)
+            .unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0xe8, 0x33, 0xa8, 0x44, 0x40, 0x55, 0, 0x66]
+        );
+        for (byte, expected, caret) in [
+            (0x1c, &b"A"[..], 0),
+            (b'B', &b"BA"[..], 1),
+            (0x1d, &b"BA"[..], 2),
+            (0x08, &b"B"[..], 1),
+            (0x7f, &b""[..], 0),
+            (0x08, &b""[..], 0),
+            (0x80, &[0x80][..], 1),
+            (0x08, &b""[..], 0),
+            (13, &[13][..], 1),
+            (0x1c, &[13][..], 0),
+            (0x1d, &[13][..], 1),
+            (0x08, &b""[..], 0),
+        ] {
+            manager.key(&mut m, &mut p, &gpu, handle, byte, 10).unwrap();
+            assert_eq!(live_text(&m, handle), expected);
+            let data = ptr(&m, handle);
+            assert_eq!(m.u16(GuestPtr(data.0 + 32)).unwrap(), caret);
+            assert_eq!(m.u16(GuestPtr(data.0 + 34)).unwrap(), caret);
+            assert_eq!(m.u32(GuestPtr(data.0 + 52)).unwrap(), 10);
+            assert_eq!(
+                manager
+                    .call(&mut m, &mut p, Op::GetText(handle), 0)
+                    .unwrap(),
+                text
+            );
+        }
+        // Guest-written reversed selection is normalized once during replacement.
+        manager.key(&mut m, &mut p, &gpu, handle, b'A', 11).unwrap();
+        manager.key(&mut m, &mut p, &gpu, handle, b'B', 12).unwrap();
+        manager
+            .select(&mut m, &mut p, Some(&gpu), handle, (2, 0), 13)
+            .unwrap();
+        manager.key(&mut m, &mut p, &gpu, handle, b'A', 14).unwrap();
+        assert_eq!(live_text(&m, handle), b"A");
+        let data = ptr(&m, handle);
+        let before = m.read(data, 128).unwrap().to_vec();
+        assert!(manager.key(&mut m, &mut p, &gpu, handle, 0x1e, 15).is_err());
+        assert_eq!(m.read(data, 128).unwrap(), before);
+        assert_eq!(m.read(port, 108).unwrap(), saved);
+        assert_eq!(m.u32(ports.current_slot).unwrap(), old);
+        assert_eq!(m.read(ptr(&m, scrap), 3).unwrap(), b"xyz");
+        assert_eq!(m.u16(GuestPtr(0xab0)).unwrap(), 3);
+        // Length overflow must fail before allocation or editing.
+        m.map(GuestPtr(0x6000), vec![b'A'; 32767], Permissions::RW)
+            .unwrap();
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0x6000),
+                    length: 32767,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        let data = ptr(&m, handle);
+        let before = m.read(data, 128).unwrap().to_vec();
+        assert!(manager.key(&mut m, &mut p, &gpu, handle, b'A', 16).is_err());
+        assert_eq!(m.read(data, 128).unwrap(), before);
+        assert_eq!(p.handle_size(&m, text).unwrap(), 32767);
+        assert_eq!(live_text(&m, handle), vec![b'A'; 32767]);
+    }
+}
+
+#[test]
+fn key_adapters_read_the_low_character_byte_and_preserve_void_results() {
+    use systemless_future::{
+        abi::{Abi, Reply, Service},
+        cpu::{Architecture, Call, Cpu},
+    };
+    let mut m = Memory::default();
+    m.map(
+        GuestPtr(0x1000),
+        vec![0x11, 0x22, 0x33, 0x44, 0xab, 0x80, 0x5a, 0xa5],
+        Permissions::RW,
+    )
+    .unwrap();
+    let mut cpu = Cpu::new(Architecture::M68k, 0, 0x1000);
+    let Cpu::M68k(c) = &mut cpu else { panic!() };
+    c.dar[0] = 0x1234;
+    let (call, reply) = Abi::trap(0xa9dc, c, &m).unwrap();
+    assert_eq!(
+        call,
+        Call::TextEdit(Op::Key {
+            handle: 0x11223344,
+            byte: 0x80
+        })
+    );
+    assert_eq!(reply, Reply::None);
+    assert_eq!(c.dar[15], 0x1006);
+    reply.apply(&mut cpu, &mut m, 0xffff, 0).unwrap();
+    let Cpu::M68k(c) = &cpu else { panic!() };
+    assert_eq!(c.dar[0], 0x1234);
+    assert_eq!(m.read(GuestPtr(0x1006), 2).unwrap(), [0x5a, 0xa5]);
+    let mut cpu = Cpu::new(Architecture::PowerPc, 0, 0x1000);
+    let Cpu::PowerPc(c) = &mut cpu else { panic!() };
+    c.gpr[3] = 0xffffff80;
+    c.gpr[4] = 0x11223344;
+    let (call, reply) = Abi::import(Service::TEKey, c);
+    assert_eq!(
+        call,
+        Call::TextEdit(Op::Key {
+            handle: 0x11223344,
+            byte: 0x80
+        })
+    );
+    reply.apply(&mut cpu, &mut m, 0xffff, 0).unwrap();
+    let Cpu::PowerPc(c) = &cpu else { panic!() };
+    assert_eq!(c.gpr[3], 0xffffff80);
+    let mut short = Memory::default();
+    short
+        .map(GuestPtr(0x1000), vec![0; 4], Permissions::RW)
+        .unwrap();
+    let mut cpu = Cpu::new(Architecture::M68k, 0, 0x1000);
+    let Cpu::M68k(c) = &mut cpu else { panic!() };
+    assert!(Abi::trap(0xa9dc, c, &short).is_err());
+    assert_eq!(c.dar[15], 0x1000);
+}

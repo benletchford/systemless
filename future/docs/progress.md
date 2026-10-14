@@ -1514,3 +1514,40 @@ fields. This is not original-application interaction acceptance. Continue with
 TEKey/click interaction and substantive Menu Manager initialization to advance
 the original-app stops. Real Mixed Mode and full rebuild acceptance remain
 outstanding; the goal remains active.
+
+### Shared TextEdit key editing from compiled event loops
+
+TEKey ($A9DC / InterfaceLib) now edits through the shared manager and grouped
+layout transaction. Ordinary MacRoman bytes replace the normalized live
+selection or insert at its caret; bytes 8 and 127 delete the selection or
+preceding character, matching legacy Systemless's TextEditBuffer. Left/right
+bytes 28/29 move or collapse the selection without inserting control bytes.
+Active changes reset caret timing using the canonical guest clock and redraw
+with the existing clipped GPU background/glyph/overlay path. Text handle
+identity and TextEdit scrap remain unchanged.
+
+The 68K adapter reads the low byte of the word CharParameter after the TEHandle
+and consumes six bytes. PPC reads the low byte of r3 and TEHandle in r4, with a
+void result that preserves r3. Up/down bytes 30/31 explicitly fail until vertical
+layout navigation is implemented; they are not silently inserted as text.
+
+Tests cover plain/styled insertion, active/inactive pixels, reversed selection
+replacement, backspace at an empty caret, MacRoman bytes, CR insertion and
+left/right movement, retained handle identity/scrap/port state, the 32767-byte
+limit, and a locked four-byte text block failing growth without changing record,
+text or pixels. The allocator permits growth within its four-byte alignment;
+the failure test deliberately crosses that boundary. ABI checks cover high
+parameter bits, void results and truncated 68K frames before stack mutation.
+
+The MPW drawing fixture posts a keyDown event, retrieves it with WaitNextEvent,
+feeds it to TEKey, and checks exact active text/caret pixels, arrow movement,
+selection replacement and backspace on both CPUs. It requires a GPU and is a
+compiled synthetic application acceptance slice, not an original app interaction
+claim or host keyboard acceptance. All 173 tests pass (150 default, 23 optional
+GPU/MPW), MPW fixtures rebuild and strict all-target Clippy passes.
+
+Next: substantive Menu Manager initialization/loading to advance the original
+68K applications past InitMenus. TextEdit vertical navigation, click/drag,
+selRect/selPoint synchronization, mixed styles, clipboard and callbacks remain
+unfinished, as do host keyboard input and real Mixed Mode. The full rebuild
+acceptance remains unproven and the goal stays active.

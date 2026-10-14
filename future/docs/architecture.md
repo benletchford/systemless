@@ -805,3 +805,12 @@ and activation publish guest state before redraw, so GPU faults remain terminal
 with that state retained. TEIdle uses the shared guest tick count and live
 CaretTime low-memory value; it does not sample host wall time. Direct selRect/
 selPoint synchronization and application callback hooks remain pending.
+
+
+TEKey snapshots live text and normalizes selection only at the edit boundary.
+Insertion/deletion publishes text, caret and line/style changes in the same
+grouped heap transaction; failed allocation does not draw or partially edit.
+Left/right movement uses the shared selection route. Successful changes redraw
+through wgpu, with rendering faults remaining terminal after publication.
+Guest event-to-TEKey acceptance uses the same queue and services on both CPUs.
+Host keyboard routing and vertical/click navigation are still incomplete.

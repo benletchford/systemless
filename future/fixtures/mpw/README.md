@@ -225,3 +225,8 @@ The drawing fixture also activates its TextEdit record, verifies an exact XOR
 highlight and stable repeat update, moves to a caret, deletes while active,
 checks the empty-record caret, toggles both TEIdle phases using live CaretTime,
 and deactivates. Both compiled CPU ABIs complete the same final image.
+
+The drawing probe now posts/retrieves a keyDown event and feeds its byte to
+TEKey. It checks insertion and active caret pixels, left/right movement,
+replacement, backspace and final cleanup on both compiled CPUs. This validates
+guest event-to-edit behavior; host keyboard input remains unfinished.
