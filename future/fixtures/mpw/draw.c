@@ -44,6 +44,13 @@ int main(void) {
     if (pixels[1] != 0x33 || pixels[3] != 0x44 || pixels[5] != 0x55 || pixels[7] != 0x66) return 5;
     PostEvent(keyDown,42);
     if (!WaitNextEvent(keyDownMask,&event,0,0) || event.message != 42) return 6;
+    ClosePort(&other);
+    GetPort(&current);
+    if (current != &port) return 8;
+    OpenPort(&other);
+    SetPort(&other);
+    ClosePort(&port);
+    ClosePort(&other);
     PostEvent(diskEvt,0x600D);
     ExitToShell();
     return 0;

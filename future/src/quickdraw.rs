@@ -68,6 +68,33 @@ impl Ports {
         }
         memory.write(self.current_slot, &port.0.to_be_bytes())
     }
+    pub fn close(&self, memory: &mut Memory, process: &mut Process, port: GuestPtr) -> Result<()> {
+        let bytes = memory.read(port, PORT_SIZE)?;
+        if u16::from_be_bytes(bytes[6..8].try_into().unwrap()) & 0xc000 != 0 {
+            return Err(Error::Graphics(
+                "ClosePort does not support color ports".into(),
+            ));
+        }
+        let visible = u32::from_be_bytes(bytes[24..28].try_into().unwrap());
+        let clip = u32::from_be_bytes(bytes[28..32].try_into().unwrap());
+        if visible == clip {
+            return Err(Error::Graphics(
+                "ClosePort requires distinct region handles".into(),
+            ));
+        }
+        // Validate both before releasing either; malformed guest state must not
+        // leave a half-closed port. The caller owns the port record and bitmap.
+        for handle in [visible, clip] {
+            if process.handle_size(memory, handle)? < 10 {
+                return Err(Error::Graphics(
+                    "ClosePort requires owned region handles".into(),
+                ));
+            }
+            memory.validate_write(GuestPtr(handle), 4)?;
+        }
+        process.dispose_handle(memory, visible)?;
+        process.dispose_handle(memory, clip)
+    }
     pub fn open(&self, memory: &mut Memory, process: &mut Process, port: GuestPtr) -> Result<()> {
         memory.validate_write(port, PORT_SIZE)?;
         memory.validate_write(self.current_slot, 4)?;
@@ -245,6 +272,7 @@ pub(crate) fn initialize(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortOp {
     Open,
+    Close,
     Set,
     Get,
     SetBits,

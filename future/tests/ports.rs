@@ -104,3 +104,42 @@ fn guest_port_clip_and_pen_changes_drive_gpu_pixels() {
         &[0, 0, 0x20, 0, 0x20, 0, 0, 0]
     );
 }
+
+#[test]
+fn close_port_reclaims_regions_but_preserves_caller_storage_and_current_port() {
+    let (mut memory, mut process, ports) = setup();
+    let port = GuestPtr(0x1080);
+    ports.open(&mut memory, &mut process, port).unwrap();
+    let visible = memory.u32(GuestPtr(port.0 + 24)).unwrap();
+    let clip = memory.u32(GuestPtr(port.0 + 28)).unwrap();
+    let original = memory.read(port, 108).unwrap().to_vec();
+    ports.close(&mut memory, &mut process, port).unwrap();
+    assert_eq!(memory.read(port, 108).unwrap(), original);
+    assert_eq!(ports.current(&memory).unwrap(), port);
+    assert_eq!(memory.read(GuestPtr(0x2000), 8).unwrap(), &[0; 8]);
+    assert_eq!(process.handle_size(&memory, visible).unwrap(), 0);
+    assert_ne!(process.mem_error, 0);
+    assert_eq!(process.handle_size(&memory, clip).unwrap(), 0);
+    assert_ne!(process.mem_error, 0);
+    // Reopening uses the freed storage instead of leaking two regions per cycle.
+    ports.open(&mut memory, &mut process, port).unwrap();
+    assert_eq!(memory.u32(GuestPtr(port.0 + 24)).unwrap(), visible);
+    assert_eq!(memory.u32(GuestPtr(port.0 + 28)).unwrap(), clip);
+}
+#[test]
+fn close_port_rejects_bad_second_handle_before_freeing_first() {
+    let (mut memory, mut process, ports) = setup();
+    let port = GuestPtr(0x1080);
+    ports.open(&mut memory, &mut process, port).unwrap();
+    let visible = memory.u32(GuestPtr(port.0 + 24)).unwrap();
+    memory
+        .write(GuestPtr(port.0 + 28), &0u32.to_be_bytes())
+        .unwrap();
+    assert!(ports.close(&mut memory, &mut process, port).is_err());
+    assert_eq!(process.handle_size(&memory, visible).unwrap(), 10);
+    memory
+        .write(GuestPtr(port.0 + 28), &visible.to_be_bytes())
+        .unwrap();
+    assert!(ports.close(&mut memory, &mut process, port).is_err());
+    assert_eq!(process.handle_size(&memory, visible).unwrap(), 10);
+}

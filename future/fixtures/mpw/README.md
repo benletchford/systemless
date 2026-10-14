@@ -70,3 +70,7 @@ slice, not windows, arbitrary applications or complete QuickDraw compatibility.
 The build script treats MPW compiler/linker diagnostics as failure even when the
 container runner exits zero. Both MPW targets define their own QDGlobals storage;
 this toolchain does not export a `qd` data symbol from InterfaceLib.
+
+The drawing fixture also closes and reopens ports. Its acceptance test requires
+three ClosePort calls on each CPU before the final success marker, and checks
+that closing an inactive port preserves the current selection.

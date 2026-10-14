@@ -351,7 +351,7 @@ It accepts an immutable guest address space and only updates the GPU texture.
 File-mode graphics runs call it after execution. The shared winit host also
 calls it before presenting a loaded application.
 
-Real adapters currently expose InitGraf, OpenPort, SetPort, GetPort,
+Real adapters currently expose InitGraf, OpenPort, ClosePort, SetPort, GetPort,
 SetPortBits, ClipRect, PaintRect, PenMode and PenPat. 68K Pascal parameters are
 popped at the trap boundary; PPC parameters come through CFM registers. The
 shared services own globals, heap regions, clipping and GPU drawing. A compiled
@@ -400,3 +400,14 @@ Command, Shift, Option and Control map from host modifiers. Caps Lock, keyboard
 translation, cursor imagery and Window Manager dispatch are not implemented.
 These records follow Apple's [Event Record](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-45.html)
 and [low-level event handling](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-40.html).
+
+
+ClosePort releases the visible and clipping region handles through the shared
+process heap. It preserves the caller-owned port record, bitmap and current-port
+slot. Both handles are validated before either is disposed; malformed, aliased
+or unowned handles fault explicitly. Color ports remain unsupported. The 68K
+A87D Pascal trap and InterfaceLib ClosePort import share this implementation.
+The contract follows Apple's *Imaging With QuickDraw*, Basic QuickDraw, page
+2-40 ([manual](https://vintageapple.org/inside_r/pdf/Imaging_With_QuickDraw_1994.pdf));
+the trap word is checked against MPW Quickdraw.h. Freed-field contents and other
+undefined use-after-close behavior are not claimed to reproduce native systems.

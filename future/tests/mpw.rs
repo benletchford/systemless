@@ -207,6 +207,19 @@ fn compiled_resource_drawing_and_event_app_has_pixel_parity() {
                 Call::Exit(0)
             ]
         );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| matches!(
+                    call,
+                    Call::Port {
+                        op: systemless_future::quickdraw::PortOp::Close,
+                        ..
+                    }
+                ))
+                .count(),
+            3
+        );
         results.push(app.runtime.graphics.as_ref().unwrap().read_rgba().unwrap());
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_systemless-future"));
         match app.info.architecture {

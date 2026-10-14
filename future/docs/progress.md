@@ -497,3 +497,24 @@ Live desktop interaction and presentation remain unverified. Keyboard events,
 Caps Lock, cursor drawing and Window Manager dispatch remain unfinished. Next:
 keyboard delivery and complete application-driven port/region/window services;
 original application acceptance and real Mixed Mode are still outstanding.
+
+
+### Basic port disposal through both ABIs
+
+Implemented ClosePort using the shared process heap, with 68K A87D Pascal and
+PPC InterfaceLib adapters. Both region handles are preflighted before freeing
+either. Caller-owned bitmap/port storage and the current-port selection remain
+unchanged. Color ports and malformed handles produce explicit errors.
+
+Unit tests verify region reclamation, reuse on reopen, preserved caller storage,
+and invalid/aliased second handles without partial disposal. Rebuilt the MPW
+drawing application on both architectures; it now closes an inactive port,
+checks the current port, reopens, switches, then closes both ports. Acceptance
+requires three ClosePort calls, final success marking and exact pixel parity,
+including CLI execution. All 82 tests and strict Clippy pass; the six MPW tests
+were rerun after rebuilding and strengthening the acceptance check.
+
+The default suite contains 70 tests; twelve optional GPU/MPW tests were enabled
+locally. Presentation remains unverified; keyboard input, complex regions,
+Window Manager services, real Mixed Mode and original-app acceptance remain
+unfinished. Next: continue the complete port/region/window application slice.

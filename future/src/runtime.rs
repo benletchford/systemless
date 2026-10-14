@@ -150,6 +150,9 @@ impl Runtime {
                                 PortOp::Open => {
                                     ports.open(&mut self.memory, &mut self.process, pointer)?
                                 }
+                                PortOp::Close => {
+                                    ports.close(&mut self.memory, &mut self.process, pointer)?
+                                }
                                 PortOp::Set => ports.set(&mut self.memory, pointer)?,
                                 PortOp::Get => {
                                     let p = self.memory.u32(ports.current_slot)?;
@@ -357,7 +360,8 @@ impl Runtime {
                         call,
                         Call::NewHandle { .. }
                             | Call::Port {
-                                op: crate::quickdraw::PortOp::Open,
+                                op: crate::quickdraw::PortOp::Open
+                                    | crate::quickdraw::PortOp::Close,
                                 ..
                             }
                             | Call::DisposeHandle(_)

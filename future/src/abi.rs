@@ -87,6 +87,7 @@ impl Abi {
         }
         match symbol {
             b"InitGraf" => Some(Service::InitGraf),
+            b"ClosePort" => Some(Service::Port(crate::quickdraw::PortOp::Close)),
             b"OpenPort" => Some(Service::Port(crate::quickdraw::PortOp::Open)),
             b"SetPort" => Some(Service::Port(crate::quickdraw::PortOp::Set)),
             b"GetPort" => Some(Service::Port(crate::quickdraw::PortOp::Get)),
@@ -126,7 +127,7 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
-            0xa86e | 0xa86f | 0xa873 | 0xa874 | 0xa875 | 0xa87b | 0xa8a2 | 0xa89d => {
+            0xa86e | 0xa86f | 0xa87d | 0xa873 | 0xa874 | 0xa875 | 0xa87b | 0xa8a2 | 0xa89d => {
                 use crate::quickdraw::PortOp;
                 let pointer = GuestPtr(memory.u32(GuestPtr(sp))?);
                 c.dar[15] = sp
@@ -142,6 +143,7 @@ impl Abi {
                         pointer,
                         op: match opcode {
                             0xa86f => PortOp::Open,
+                            0xa87d => PortOp::Close,
                             0xa873 => PortOp::Set,
                             0xa874 => PortOp::Get,
                             0xa875 => PortOp::SetBits,
