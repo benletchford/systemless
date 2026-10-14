@@ -93,6 +93,12 @@ int main(void) {
     SizeWindow(first,180,70,true); if (first->portRect.right!=180 || first->portRect.bottom!=70 || (*button)->contrlOwner!=first) return 40;
     ShowHide(first,false); if (((WindowPeek)first)->visible || FrontWindow()) return 41;
     ShowHide(first,true); if (!((WindowPeek)first)->visible || FrontWindow()!=first) return 42;
+    MoveWindow(first,120,100,false);
+    if (first->portBits.bounds.top!=-100 || first->portBits.bounds.left!=-120 || first->portRect.right!=180) return 43;
+    DrawControls(first);
+    HideWindow(first); if (((WindowPeek)first)->visible || FrontWindow()) return 44;
+    ShowWindow(first); SelectWindow(first);
+    while (GetNextEvent(activMask,&event)) {if (event.what!=activateEvt || event.message!=(long)first) return 45;}
     DrawControls(first); DisposeControl(check); if ((*radio)->nextControl!=button || *check) return 38;
     DisposeWindow(first); if (FrontWindow() || *button || *radio) return 26;
     PostEvent(diskEvt,0x600D);

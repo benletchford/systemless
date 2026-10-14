@@ -89,3 +89,9 @@ Region storage supports NewRgn, DisposeRgn, RectRgn, CopyRgn, GetClip and SetCli
 Variable-sized region payloads can be copied and decoded for hit testing and
 GPU clipping, including holes and disjoint spans. SectRgn, UnionRgn, DiffRgn and XorRgn construct regions through the shared heap.
 Native Macintosh comparison and broader region drawing/transform APIs remain pending.
+
+Window lifecycle now includes MoveWindow, SelectWindow, ShowWindow/HideWindow,
+activation-event delivery and InvalRect/ValidRect. Movement uses wgpu copies from
+a preserved guest-memory snapshot and queues exposed content for application
+redraw. Legacy Systemless is the permitted comparison baseline; native System 7
+verification and complete original application interaction remain pending.

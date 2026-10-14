@@ -55,7 +55,7 @@ impl Bitmap {
     fn byte_len(&self) -> Result<usize> {
         Ok(self.row_bytes * self.extent()?.1)
     }
-    fn unpack(&self, memory: &Memory) -> Result<Vec<u8>> {
+    pub(crate) fn unpack(&self, memory: &Memory) -> Result<Vec<u8>> {
         let (width, height) = self.extent()?;
         let bytes = memory.read(self.base, self.byte_len()?)?;
         let mut indices = Vec::with_capacity(width * height);
@@ -113,11 +113,24 @@ impl Bitmap {
         draw: Draw,
         clips: Option<&[Rect]>,
     ) -> Result<()> {
+        self.execute_source(gpu, memory, draw, clips, None)
+    }
+    pub(crate) fn execute_source(
+        &self,
+        gpu: &Graphics,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+        source: Option<&[u8]>,
+    ) -> Result<()> {
+        if source.is_some_and(|s| s.iter().any(|v| *v > 1)) {
+            return Err(Error::Graphics("non-monochrome copy source".into()));
+        }
         let (width, height) = self.extent()?;
         memory.validate_write(self.base, self.byte_len()?)?;
         if (width, height) != (gpu.width as usize, gpu.height as usize) {
             let target = gpu.target(width as u32, height as u32)?;
-            return self.execute_clipped(&target, memory, draw, clips);
+            return self.execute_source(&target, memory, draw, clips, source);
         }
         let coordinate = |value: i32, origin: i32| {
             value
@@ -184,7 +197,7 @@ impl Bitmap {
         let translated = clips
             .map(|clips| clips.iter().copied().map(rect).collect::<Result<Vec<_>>>())
             .transpose()?;
-        gpu.execute_clipped(&mut staging, draw, translated.as_deref())?;
+        gpu.execute_source(&mut staging, draw, translated.as_deref(), source)?;
         self.pack(memory, staging.read(gpu.base, width * height)?)
     }
 }

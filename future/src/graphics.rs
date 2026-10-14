@@ -192,6 +192,25 @@ impl Graphics {
         draw: Draw,
         clips: Option<&[Rect]>,
     ) -> Result<()> {
+        self.execute_source(memory, draw, clips, None)
+    }
+    /// Optional immutable indices belong to the same extent as the destination.
+    /// This supports window movement after exposure repair has changed pixels.
+    pub(crate) fn execute_source(
+        &self,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+        copy_source: Option<&[u8]>,
+    ) -> Result<()> {
+        if copy_source.is_some() && !matches!(draw, Draw::Copy { .. }) {
+            return Err(Error::Graphics(
+                "external source requires a copy command".into(),
+            ));
+        }
+        if copy_source.is_some_and(|s| s.len() != (self.width * self.height) as usize) {
+            return Err(Error::Graphics("copy source extent mismatch".into()));
+        }
         self.check_error()?;
         let mut p = vec![0i32; 24];
         p[0] = self.width as i32;
@@ -315,9 +334,10 @@ impl Graphics {
             &indices,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         );
+        let source_indices = copy_source.map(|s| words_bytes(s.iter().map(|&b| u32::from(b))));
         let source = buffer(
             "immutable copy source",
-            &indices,
+            source_indices.as_deref().unwrap_or(&indices),
             wgpu::BufferUsages::STORAGE,
         );
         let colors = buffer(

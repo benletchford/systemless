@@ -794,3 +794,174 @@ fn sizing_preserves_pixels_clip_and_control_state_and_visibility_queues_exposure
         .unwrap();
     app.runtime.process.windows = windows;
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn moves_copy_overlapping_pixels_and_selection_visibility_project_activation_slots() {
+    let f = pef_program(
+        &[0x4e800020],
+        &[
+            b"InitGraf",
+            b"InitFonts",
+            b"InitWindows",
+            b"NewWindow",
+            b"MoveWindow",
+            b"SelectWindow",
+            b"HideWindow",
+            b"ShowWindow",
+            b"DisposeWindow",
+            b"SetPort",
+            b"InvalRect",
+            b"ValidRect",
+        ],
+        512,
+    );
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let data = app.info.toc_or_a5;
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa9, 0x1b], Permissions::RX)
+        .unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), vec![0; 512], Permissions::RW)
+        .unwrap();
+    invoke(&mut app, 0, &[data + 330]);
+    invoke(&mut app, 1, &[]);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    app.runtime.graphics = Some(
+        pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
+    );
+    invoke(&mut app, 2, &[]);
+    rect(&mut app, 0x51000000, 80, 100, 180, 300);
+    app.runtime
+        .memory
+        .write(GuestPtr(0x51000010), b"\x04back")
+        .unwrap();
+    let back = invoke(
+        &mut app,
+        3,
+        &[0, 0x51000000, 0x51000010, 1, 2, u32::MAX, 0, 7],
+    );
+    rect(&mut app, 0x51000000, 100, 120, 140, 180);
+    let front = invoke(
+        &mut app,
+        3,
+        &[0, 0x51000000, 0x51000010, 1, 2, u32::MAX, 0, 9],
+    );
+    let slots = app
+        .runtime
+        .memory
+        .read(GuestPtr(0xa64), 8)
+        .unwrap()
+        .to_vec();
+    let local = app
+        .runtime
+        .memory
+        .read(GuestPtr(front + 16), 8)
+        .unwrap()
+        .to_vec();
+    for (x, y) in [(130u32, 110u32), (160, 125)] {
+        let p = GuestPtr(SCREEN.0 + y * 64 + x / 8);
+        let byte = app.runtime.memory.read(p, 1).unwrap()[0];
+        app.runtime
+            .memory
+            .write(p, &[byte | (0x80 >> (x % 8))])
+            .unwrap();
+    }
+    invoke(&mut app, 4, &[front, 130, 110, 0]);
+    assert!(pixel(&app, 140, 120));
+    assert!(pixel(&app, 170, 135));
+    assert!(!pixel(&app, 130, 110));
+    assert!(!pixel(&app, 119, 99));
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(front + 16), 8).unwrap(),
+        local
+    );
+    assert_eq!(region(&app, front, 118), [Rect::new(130, 110, 190, 150)]);
+    assert_eq!(app.runtime.memory.read(GuestPtr(0xa64), 8).unwrap(), slots);
+    let moved = app.runtime.memory.read(SCREEN, 64 * 342).unwrap().to_vec();
+    invoke(&mut app, 4, &[front, 120, 100, 0]);
+    let mut frame = vec![0; 10];
+    frame[1] = 0xa5;
+    w16(&mut frame, 2, 110);
+    w16(&mut frame, 4, 130);
+    w32(&mut frame, 6, front);
+    m68(&mut app, 0, &frame, 10, false);
+    assert_eq!(app.runtime.memory.read(SCREEN, 64 * 342).unwrap(), moved);
+    invoke(&mut app, 5, &[back]);
+    assert_eq!(
+        app.runtime
+            .memory
+            .u32(systemless_future::windows::LIST)
+            .unwrap(),
+        back
+    );
+    assert_eq!(app.runtime.memory.u32(GuestPtr(0xa68)).unwrap(), front);
+    assert_eq!(app.runtime.memory.u32(GuestPtr(0xa64)).unwrap(), back);
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(front + 111), 1).unwrap(),
+        [0]
+    );
+    assert!(region(&app, front, 24).is_empty());
+    assert!(contains(&region(&app, back, 122), 140, 120));
+    assert!(!pixel(&app, 140, 120));
+    // front=TRUE moves and selects without reading covered source pixels.
+    invoke(&mut app, 4, &[front, 140, 120, 1]);
+    assert_eq!(
+        app.runtime
+            .memory
+            .u32(systemless_future::windows::LIST)
+            .unwrap(),
+        front
+    );
+    assert_eq!(app.runtime.memory.u32(GuestPtr(0xa68)).unwrap(), back);
+    assert_eq!(app.runtime.memory.u32(GuestPtr(0xa64)).unwrap(), front);
+    assert!(contains(&region(&app, front, 122), 150, 130));
+    // Hide fronts the next visible window; showing does not restore old order.
+    invoke(&mut app, 6, &[front]);
+    assert_eq!(
+        app.runtime
+            .memory
+            .u32(systemless_future::windows::LIST)
+            .unwrap(),
+        back
+    );
+    invoke(&mut app, 7, &[front]);
+    assert_eq!(
+        app.runtime
+            .memory
+            .u32(systemless_future::windows::LIST)
+            .unwrap(),
+        back
+    );
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(front + 111), 1).unwrap(),
+        [0]
+    );
+    invoke(&mut app, 5, &[front]);
+    invoke(&mut app, 9, &[front]);
+    rect(&mut app, 0x51000000, 1, 2, 8, 9);
+    let h = app.runtime.memory.u32(GuestPtr(front + 122)).unwrap();
+    app.runtime
+        .process
+        .set_handle_size(&mut app.runtime.memory, h, 10)
+        .unwrap();
+    app.runtime
+        .memory
+        .write(
+            GuestPtr(app.runtime.memory.u32(GuestPtr(h)).unwrap()),
+            &[0, 10, 0, 0, 0, 0, 0, 0, 0, 0],
+        )
+        .unwrap();
+    invoke(&mut app, 10, &[0x51000000]);
+    assert_eq!(region(&app, front, 122), [Rect::new(142, 121, 149, 128)]);
+    invoke(&mut app, 11, &[0x51000000]);
+    assert!(region(&app, front, 122).is_empty());
+    invoke(&mut app, 8, &[front]);
+    assert_ne!(app.runtime.memory.u32(GuestPtr(0xa64)).unwrap(), front);
+    assert_ne!(app.runtime.memory.u32(GuestPtr(0xa68)).unwrap(), front);
+    invoke(&mut app, 8, &[back]);
+    assert_eq!(app.runtime.memory.u32(GuestPtr(0xa64)).unwrap(), 0);
+    assert_eq!(app.runtime.memory.u32(GuestPtr(0xa68)).unwrap(), 0);
+}

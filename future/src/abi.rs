@@ -12,6 +12,10 @@ pub enum Service {
     Random,
     GetNewWindow,
     SizeWindow,
+    MoveWindow,
+    SelectWindow,
+    InvalRect,
+    ValidRect,
     GetWindowReference,
     SetWindowReference,
     ShowHide,
@@ -201,10 +205,16 @@ impl Abi {
             b"TestControl" => Some(Service::ControlTest),
             b"GetWRefCon" => Some(Service::GetWindowReference),
             b"SetWRefCon" => Some(Service::SetWindowReference),
+            b"InvalRect" => Some(Service::InvalRect),
+            b"ValidRect" => Some(Service::ValidRect),
+            b"MoveWindow" => Some(Service::MoveWindow),
+            b"SelectWindow" => Some(Service::SelectWindow),
             b"SizeWindow" => Some(Service::SizeWindow),
             b"ShowHide" => Some(Service::ShowHide),
             b"GetNewWindow" => Some(Service::GetNewWindow),
             b"NewWindow" => Some(Service::NewWindow),
+            b"ShowWindow" => Some(Service::Window(crate::windows::Op::Show)),
+            b"HideWindow" => Some(Service::Window(crate::windows::Op::Hide)),
             b"InitWindows" => Some(Service::Window(crate::windows::Op::Init)),
             b"FrontWindow" => Some(Service::Window(crate::windows::Op::Front)),
             b"CloseWindow" => Some(Service::Window(crate::windows::Op::Close)),
@@ -407,6 +417,37 @@ impl Abi {
                 c.dar[15] = result;
                 Ok((Call::WindowReference { pointer, value }, reply))
             }
+            0xa928 | 0xa92a => {
+                let rectangle = GuestPtr(memory.u32(GuestPtr(sp))?);
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("window stack overflow".into()))?;
+                Ok((
+                    Call::WindowInvalidation {
+                        rectangle,
+                        valid: opcode == 0xa92a,
+                    },
+                    Reply::None,
+                ))
+            }
+            0xa91b | 0xa91f => {
+                let size = if opcode == 0xa91b { 10 } else { 4 };
+                let args = memory.read(GuestPtr(sp), size)?;
+                let pointer = u32::from_be_bytes(args[size - 4..].try_into().unwrap());
+                let change = if opcode == 0xa91b {
+                    crate::windows::Change::Move {
+                        horizontal: i16::from_be_bytes(args[4..6].try_into().unwrap()),
+                        vertical: i16::from_be_bytes(args[2..4].try_into().unwrap()),
+                        front: args[0] != 0,
+                    }
+                } else {
+                    crate::windows::Change::Select
+                };
+                c.dar[15] = sp
+                    .checked_add(size as u32)
+                    .ok_or_else(|| Error::Cpu("window stack overflow".into()))?;
+                Ok((Call::WindowChange { pointer, change }, Reply::None))
+            }
             0xa91d | 0xa908 => {
                 let size = if opcode == 0xa91d { 10 } else { 6 };
                 let bytes = memory.read(GuestPtr(sp), size)?;
@@ -568,14 +609,18 @@ impl Abi {
                     },
                 ))
             }
-            0xa92d | 0xa914 | 0xa922 | 0xa923 => {
+            0xa92d | 0xa914 | 0xa922 | 0xa923 | 0xa915 | 0xa916 => {
                 let pointer = memory.u32(GuestPtr(sp))?;
                 c.dar[15] = sp
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("window stack overflow".into()))?;
                 Ok((
                     Call::Window {
-                        op: if opcode == 0xa922 {
+                        op: if opcode == 0xa915 {
+                            crate::windows::Op::Show
+                        } else if opcode == 0xa916 {
+                            crate::windows::Op::Hide
+                        } else if opcode == 0xa922 {
                             crate::windows::Op::Begin
                         } else if opcode == 0xa923 {
                             crate::windows::Op::End
@@ -1510,6 +1555,22 @@ impl Abi {
                 pointer: c.gpr[3],
                 value: Some(c.gpr[4]),
             },
+            Service::InvalRect | Service::ValidRect => Call::WindowInvalidation {
+                rectangle: GuestPtr(c.gpr[3]),
+                valid: service == Service::ValidRect,
+            },
+            Service::MoveWindow => Call::WindowChange {
+                pointer: c.gpr[3],
+                change: crate::windows::Change::Move {
+                    horizontal: c.gpr[4] as i16,
+                    vertical: c.gpr[5] as i16,
+                    front: c.gpr[6] as u8 != 0,
+                },
+            },
+            Service::SelectWindow => Call::WindowChange {
+                pointer: c.gpr[3],
+                change: crate::windows::Change::Select,
+            },
             Service::SizeWindow => Call::WindowChange {
                 pointer: c.gpr[3],
                 change: crate::windows::Change::Size {
@@ -1682,7 +1743,11 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::SetWindowReference
+                    Service::InvalRect
+                        | Service::ValidRect
+                        | Service::MoveWindow
+                        | Service::SelectWindow
+                        | Service::SetWindowReference
                         | Service::SizeWindow
                         | Service::ShowHide
                         | Service::ControlDraw
@@ -1720,6 +1785,8 @@ impl Abi {
                                 | crate::windows::Op::Dispose
                                 | crate::windows::Op::Begin
                                 | crate::windows::Op::End
+                                | crate::windows::Op::Show
+                                | crate::windows::Op::Hide
                         )
                         | Service::TEUpdate
                         | Service::TESetText

@@ -180,6 +180,18 @@ impl Runtime {
                             })?;
                             ports.set_color(&mut self.memory, background, color)?;
                         }
+                        Call::WindowInvalidation { rectangle, valid } => {
+                            let windows = std::mem::take(&mut self.process.windows);
+                            let result = windows.invalidate(
+                                &mut self.memory,
+                                &mut self.process,
+                                rectangle,
+                                valid,
+                            );
+                            self.process.windows = windows;
+                            result?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::WindowReference { pointer, value } => {
                             let result =
                                 self.process
@@ -988,6 +1000,7 @@ impl Runtime {
                             | Call::ResourceWindow { .. }
                             | Call::NewControl(_)
                             | Call::Control(_)
+                            | Call::WindowInvalidation { .. }
                             | Call::WindowChange { .. }
                             | Call::NewWindow(_)
                             | Call::Window { .. }
@@ -1039,6 +1052,7 @@ impl Runtime {
                         | Call::ResourceWindow { .. }
                         | Call::NewControl(_)
                         | Call::Control(_)
+                        | Call::WindowInvalidation { .. }
                         | Call::WindowReference { .. }
                         | Call::WindowChange { .. }
                         | Call::NewWindow(_)
@@ -1155,6 +1169,9 @@ impl Runtime {
         if crate::events::available(&self.memory, mask)? {
             return Ok(true);
         }
+        if mask & (1 << 8) != 0 && crate::windows::Windows::activation(&self.memory)?.is_some() {
+            return Ok(true);
+        }
         if mask & (1 << 6) == 0 {
             return Ok(false);
         }
@@ -1180,6 +1197,22 @@ impl Runtime {
                 ticks,
                 self.process.input,
             );
+        }
+        if mask & (1 << 8) != 0 {
+            if let Some((slot, window, active)) = crate::windows::Windows::activation(&self.memory)?
+            {
+                if remove {
+                    self.memory.validate_write(slot, 4)?;
+                }
+                let mut input = self.process.input;
+                input.modifiers = (input.modifiers & !1) | u16::from(active);
+                self.memory
+                    .write(destination, &crate::events::record(8, window, ticks, input))?;
+                if remove {
+                    self.memory.write(slot, &0u32.to_be_bytes())?;
+                }
+                return Ok(true);
+            }
         }
         if mask & (1 << 6) != 0 {
             let windows = std::mem::take(&mut self.process.windows);

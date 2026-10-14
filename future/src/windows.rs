@@ -2,7 +2,7 @@
 //! Layout and ordering compared with legacy trap/window.rs.
 use crate::{
     bitmap::Bitmap,
-    graphics::{Graphics, Rect},
+    graphics::{Draw, Graphics, Rect, Transfer},
     memory::{GuestPtr, Memory},
     process::Process,
     quickdraw::read_rect,
@@ -36,6 +36,8 @@ pub enum Op {
     Dispose,
     Begin,
     End,
+    Show,
+    Hide,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
@@ -45,6 +47,12 @@ pub enum Change {
         update: bool,
     },
     Visibility(bool),
+    Move {
+        horizontal: i16,
+        vertical: i16,
+        front: bool,
+    },
+    Select,
 }
 struct Shape {
     window: u32,
@@ -149,6 +157,49 @@ impl Windows {
         }
         Ok(())
     }
+    fn active(&self, memory: &Memory) -> Result<u32> {
+        for w in self.list(memory)? {
+            if memory.read(GuestPtr(w + 111), 1)?[0] != 0 {
+                return Ok(w);
+            }
+        }
+        Ok(0)
+    }
+    fn set_active(&self, memory: &mut Memory, active: u32) -> Result<()> {
+        let list = self.list(memory)?;
+        for &w in &list {
+            memory.validate_write(GuestPtr(w + 111), 1)?;
+        }
+        for w in list {
+            memory.write(GuestPtr(w + 111), &[u8::from(w == active)])?;
+        }
+        Ok(())
+    }
+    fn activation_change(memory: &mut Memory, old: u32, new: u32) -> Result<()> {
+        if old == new {
+            return Ok(());
+        }
+        memory.validate_write(GuestPtr(0xa64), 8)?;
+        if old != 0 {
+            memory.write(GuestPtr(0xa68), &old.to_be_bytes())?;
+            if memory.u32(GuestPtr(0xa64))? == old {
+                memory.write(GuestPtr(0xa64), &0u32.to_be_bytes())?;
+            }
+        }
+        if new != 0 {
+            memory.write(GuestPtr(0xa64), &new.to_be_bytes())?;
+        }
+        Ok(())
+    }
+    pub(crate) fn activation(memory: &Memory) -> Result<Option<(GuestPtr, u32, bool)>> {
+        for (slot, active) in [(GuestPtr(0xa68), false), (GuestPtr(0xa64), true)] {
+            let window = memory.u32(slot)?;
+            if window != 0 {
+                return Ok(Some((slot, window, active)));
+            }
+        }
+        Ok(None)
+    }
     pub fn init(
         &mut self,
         memory: &mut Memory,
@@ -187,6 +238,7 @@ impl Windows {
         memory.write(GuestPtr(0x9de), &manager.to_be_bytes())?;
         memory.write(GuestPtr(0x9ee), &gray.to_be_bytes())?;
         memory.write(LIST, &0u32.to_be_bytes())?;
+        memory.write(GuestPtr(0xa64), &[0; 8])?;
         memory.write(ports.current_slot, &old.to_be_bytes())?;
         self.desktop(memory, process, gpu, &rect_bytes(desktop)?)
     }
@@ -545,13 +597,8 @@ impl Windows {
         let list = self.list(memory)?;
         let desktop = region(memory, process, self.gray)?;
         let mut covered = rect_bytes(Rect::new(0, 0, 0, 0))?;
-        let mut front = true;
         for w in list {
             let visible = memory.read(GuestPtr(w + 110), 1)?[0] != 0;
-            memory.write(GuestPtr(w + 111), &[u8::from(visible && front)])?;
-            if visible {
-                front = false;
-            }
             let content = region(memory, process, handle(memory, w, 118)?)?;
             let available = if visible {
                 region_geometry::combine(&content, &desktop, Boolean::Intersection)?
@@ -678,6 +725,8 @@ impl Windows {
         let ports = process
             .ports
             .ok_or_else(|| fail("NewWindow requires InitGraf"))?;
+        let old_active = self.active(memory)?;
+        memory.validate_write(GuestPtr(0xa64), 8)?;
         let mut list = self.list(memory)?;
         let index = if request.behind == u32::MAX {
             0
@@ -813,6 +862,13 @@ impl Windows {
         list.insert(index, w);
         self.relink(memory, &list)?;
         self.recalculate(memory, process)?;
+        let active = if request.visible && request.behind == u32::MAX {
+            w
+        } else {
+            old_active
+        };
+        self.set_active(memory, active)?;
+        Self::activation_change(memory, old_active, active)?;
         if request.visible {
             // Include the one-pixel border, subtracting structures above this window.
             let mut dirty = region_geometry::combine(
@@ -838,6 +894,47 @@ impl Windows {
         }
         process.mem_error = 0;
         Ok(w)
+    }
+    pub fn invalidate(
+        &self,
+        memory: &mut Memory,
+        process: &mut Process,
+        rectangle: GuestPtr,
+        valid: bool,
+    ) -> Result<()> {
+        let ports = process
+            .ports
+            .ok_or_else(|| fail("window invalidation requires InitGraf"))?;
+        let w = ports.current(memory)?.0;
+        if !self.list(memory)?.contains(&w) {
+            return Err(fail("current port is not a live window"));
+        }
+        let r = read_rect(memory, rectangle)?;
+        let local = read_rect(memory, GuestPtr(w + 8))?;
+        let global = rect_bytes(Rect::new(
+            r.left - local.left,
+            r.top - local.top,
+            r.right - local.left,
+            r.bottom - local.top,
+        ))?;
+        let content = region(memory, process, handle(memory, w, 118)?)?;
+        let global = region_geometry::combine(&global, &content, Boolean::Intersection)?;
+        let update = handle(memory, w, 122)?;
+        let old = region(memory, process, update)?;
+        let new = region_geometry::combine(
+            &old,
+            &global,
+            if valid {
+                Boolean::Difference
+            } else {
+                Boolean::Union
+            },
+        )?;
+        process.replace_handles(memory, vec![(update, new)])?;
+        if process.mem_error != 0 {
+            return Err(fail("window invalidation allocation failed"));
+        }
+        Ok(())
     }
     pub fn reference(&self, memory: &mut Memory, w: u32, value: Option<u32>) -> Result<u32> {
         if !self.list(memory)?.contains(&w) {
@@ -865,6 +962,7 @@ impl Windows {
             ));
         }
         let list = self.list(memory)?;
+        let old_active = self.active(memory)?;
         if !list.contains(&w) {
             return Err(fail("unknown or closed window"));
         }
@@ -898,7 +996,7 @@ impl Windows {
                 pending: region(memory, process, handle(memory, window, 122)?)?,
             });
         }
-        let index = states.iter().position(|s| s.window == w).unwrap();
+        let mut index = states.iter().position(|s| s.window == w).unwrap();
         let old_content = states[index].content.clone();
         let mut damage = if visible {
             states[index].structure.clone()
@@ -907,6 +1005,12 @@ impl Windows {
         };
         let mut changes = Vec::new();
         let mut port_rect = None;
+        let mut bitmap_bounds = None;
+        let mut movement = (0, 0);
+        let selecting = matches!(change, Change::Select | Change::Move { front: true, .. });
+        let mut copy_source = None;
+        let mut copy_region = rect_bytes(Rect::new(0, 0, 0, 0))?;
+        let mut copy_bounds = None;
         match change {
             Change::Size {
                 width,
@@ -961,6 +1065,60 @@ impl Windows {
                 changes.push((handle(memory, w, 114)?, states[index].structure.clone()));
             }
             Change::Visibility(show) => states[index].visible = show,
+            Change::Move { .. } | Change::Select => {
+                let r = read_rect(
+                    memory,
+                    GuestPtr(memory.u32(GuestPtr(handle(memory, w, 118)?))? + 2),
+                )?;
+                let (horizontal, vertical) = if let Change::Move {
+                    horizontal,
+                    vertical,
+                    ..
+                } = change
+                {
+                    (i32::from(horizontal), i32::from(vertical))
+                } else {
+                    (r.left, r.top)
+                };
+                let dx = horizontal - r.left;
+                let dy = vertical - r.top;
+                if dx == 0 && dy == 0 && (!selecting || (index == 0 && old_active == w)) {
+                    return Ok(());
+                }
+                movement = (dx, dy);
+                let old = states[index].local;
+                let next = Rect::new(old.left - dx, old.top - dy, old.right - dx, old.bottom - dy);
+                let bytes = rect_bytes(next)?;
+                memory.validate_write(GuestPtr(w + 8), 8)?;
+                bitmap_bounds = Some(bytes[2..].to_vec());
+                states[index].local = next;
+                states[index].content = shifted(&states[index].content, dx, dy)?;
+                states[index].structure = shifted(&states[index].structure, dx, dy)?;
+                states[index].pending = shifted(&states[index].pending, dx, dy)?;
+                changes.push((handle(memory, w, 118)?, states[index].content.clone()));
+                changes.push((handle(memory, w, 114)?, states[index].structure.clone()));
+                copy_bounds = Some((
+                    r,
+                    Rect::new(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy),
+                ));
+                if states[index].visible {
+                    let ports = process
+                        .ports
+                        .ok_or_else(|| fail("window movement requires InitGraf"))?;
+                    copy_source = Some(Bitmap::read(memory, ports.screen_bitmap)?.unpack(memory)?);
+                }
+                if selecting {
+                    memory.validate_write(LIST, 4)?;
+                    memory.validate_write(GuestPtr(0xa64), 8)?;
+                    for state in &states {
+                        memory.validate_write(GuestPtr(state.window + 111), 1)?;
+                        memory.validate_write(GuestPtr(state.window + 144), 4)?;
+                    }
+                    let target = states.remove(index);
+                    states.insert(0, target);
+                    index = 0;
+                }
+            }
         }
         if states[index].visible {
             damage = region_geometry::combine(&damage, &states[index].structure, Boolean::Union)?;
@@ -974,7 +1132,14 @@ impl Windows {
                 rect_bytes(Rect::new(0, 0, 0, 0))?
             };
             state.next_vis = region_geometry::combine(&available, &covered, Boolean::Difference)?;
-            if state.window != w || matches!(change, Change::Visibility(true)) {
+            if state.window == w && copy_bounds.is_some() {
+                let old = shifted(&state.previous_vis, movement.0, movement.1)?;
+                copy_region =
+                    region_geometry::combine(&state.next_vis, &old, Boolean::Intersection)?;
+                let exposed =
+                    region_geometry::combine(&state.next_vis, &copy_region, Boolean::Difference)?;
+                state.pending = region_geometry::combine(&state.pending, &exposed, Boolean::Union)?;
+            } else if state.window != w || matches!(change, Change::Visibility(true)) {
                 let exposed = region_geometry::combine(
                     &state.next_vis,
                     &state.previous_vis,
@@ -995,6 +1160,17 @@ impl Windows {
         if process.mem_error != 0 {
             return Err(fail("window region update allocation failed"));
         }
+        if let Some(bounds) = bitmap_bounds {
+            memory.write(GuestPtr(w + 8), &bounds)?;
+        }
+        if selecting {
+            let order: Vec<_> = states.iter().map(|s| s.window).collect();
+            self.relink(memory, &order)?;
+            for state in &states {
+                memory.write(GuestPtr(state.window + 111), &[u8::from(state.window == w)])?;
+            }
+            Self::activation_change(memory, old_active, w)?;
+        }
         if let Some(rect) = port_rect {
             memory.write(GuestPtr(w + 16), &rect)?;
         }
@@ -1012,11 +1188,15 @@ impl Windows {
             let eligible = region_geometry::combine(&damage, &covered, Boolean::Difference)?;
             let eligible =
                 region_geometry::combine(&eligible, &state.structure, Boolean::Intersection)?;
-            let preserved = region_geometry::combine(
-                &state.previous_vis,
-                &state.next_vis,
-                Boolean::Intersection,
-            )?;
+            let preserved = if state.window == w && copy_bounds.is_some() {
+                copy_region.clone()
+            } else {
+                region_geometry::combine(
+                    &state.previous_vis,
+                    &state.next_vis,
+                    Boolean::Intersection,
+                )?
+            };
             let redraw = region_geometry::combine(&eligible, &preserved, Boolean::Difference)?;
             self.paint_window(memory, process, gpu, state.window, &redraw)?;
             gray_damage =
@@ -1024,6 +1204,25 @@ impl Windows {
             covered = region_geometry::combine(&covered, &state.structure, Boolean::Union)?;
         }
         self.desktop(memory, process, gpu, &gray_damage)?;
+        if let (Some(source), Some((old, new))) = (copy_source, copy_bounds) {
+            let ports = process
+                .ports
+                .ok_or_else(|| fail("window movement requires InitGraf"))?;
+            let screen = Bitmap::read(memory, ports.screen_bitmap)?;
+            screen.execute_source(
+                gpu,
+                memory,
+                Draw::Copy {
+                    rect: new,
+                    clip: screen.bounds,
+                    source_x: old.left,
+                    source_y: old.top,
+                    mode: Transfer::Copy,
+                },
+                Some(&region_geometry::decode(&copy_region)?),
+                Some(&source),
+            )?;
+        }
         self.refresh_chrome(memory, process, gpu, 0)?;
         Ok(())
     }
@@ -1035,6 +1234,44 @@ impl Windows {
         op: Op,
         w: u32,
     ) -> Result<u32> {
+        if matches!(op, Op::Show | Op::Hide) {
+            let list = self.list(memory)?;
+            if !list.contains(&w) {
+                return Err(fail("unknown or closed window"));
+            }
+            let visible = memory.read(GuestPtr(w + 110), 1)?[0] != 0;
+            let show = op == Op::Show;
+            if show == visible {
+                return Ok(0);
+            }
+            let old_active = self.active(memory)?;
+            let mut next = None;
+            if !show && old_active == w {
+                for &other in &list {
+                    if other != w && memory.read(GuestPtr(other + 110), 1)?[0] != 0 {
+                        next = Some(other);
+                        break;
+                    }
+                }
+            }
+            memory.validate_write(GuestPtr(0xa64), 8)?;
+            self.change(memory, process, gpu, w, Change::Visibility(show))?;
+            if show && list.first() == Some(&w) {
+                if old_active != w {
+                    self.change(memory, process, gpu, w, Change::Select)?;
+                } else {
+                    memory.write(GuestPtr(0xa64), &w.to_be_bytes())?;
+                }
+            } else if !show && old_active == w {
+                if let Some(next) = next {
+                    self.change(memory, process, gpu, next, Change::Select)?;
+                } else {
+                    memory.write(GuestPtr(w + 111), &[0])?;
+                    Self::activation_change(memory, w, 0)?;
+                }
+            }
+            return Ok(0);
+        }
         if op == Op::Begin {
             self.begin(memory, process, w)?;
             return Ok(0);
@@ -1105,6 +1342,8 @@ impl Windows {
                 return Err(fail("corrupt window ownership"));
             }
         }
+        let old_active = self.active(memory)?;
+        memory.validate_write(GuestPtr(0xa64), 8)?;
         let mut controls = std::mem::take(&mut process.controls);
         let result = controls.close_window(memory, process, w);
         process.controls = controls;
@@ -1112,6 +1351,22 @@ impl Windows {
         list.remove(index);
         self.relink(memory, &list)?;
         self.recalculate(memory, process)?;
+        for slot in [GuestPtr(0xa64), GuestPtr(0xa68)] {
+            if memory.u32(slot)? == w {
+                memory.write(slot, &0u32.to_be_bytes())?;
+            }
+        }
+        if old_active == w {
+            let mut active = 0;
+            for &other in &list {
+                if memory.read(GuestPtr(other + 110), 1)?[0] != 0 {
+                    active = other;
+                    break;
+                }
+            }
+            self.set_active(memory, active)?;
+            Self::activation_change(memory, 0, active)?;
+        }
         let desktop = region(memory, process, self.gray)?;
         let mut gray_dirty = region_geometry::combine(&dirty, &desktop, Boolean::Intersection)?;
         let mut covered = rect_bytes(Rect::new(0, 0, 0, 0))?;

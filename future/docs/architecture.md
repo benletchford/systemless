@@ -995,10 +995,27 @@ and preserves clipRgn/local origin/current port. Other exposed windows receive
 update regions independently of fUpdate.
 
 ShowHide updates visibility and queues newly exposed content while preserving
-WindowList order and highlighting. It has no activation semantics; ShowWindow,
-HideWindow and SelectWindow remain unsupported. Controls retain their records
+WindowList order and highlighting. It has no activation semantics. ShowWindow, HideWindow and SelectWindow layer
+selection and activation onto this primitive. Controls retain their records
 and local coordinates; application-driven DrawControls observes the changed
 visibility/port bounds. Geometry changes during BeginUpdate and nonpositive
 nonzero dimensions are explicit faults; a zero/zero size request is a no-op.
 Window reference getters/setters access live refCon memory without graphics or
 MemErr changes.
+
+MoveWindow preserves local port coordinates, shifts bitmap bounds and global
+content/structure/update regions, and stages all affected region replacements.
+Visible retained pixels come from an immutable snapshot of canonical guest
+bitmap memory: CPU unpacking supplies indices, while wgpu performs the clipped
+copy after exposure repair. Overlapping moves cannot read already overwritten
+destination pixels. Uncopiable newly visible content receives update invalidation.
+
+SelectWindow and fronting moves publish checked list links and hilite fields.
+CurDeactive ($A68) and CurActivate ($A64) are guest-owned, coalescing pending
+activation slots. Toolbox event delivery peeks or consumes deactivation before
+activation; OS-only retrieval leaves these slots alone. Closing clears slots
+that name the removed window. Hidden front creation preserves existing activation,
+matching the legacy Systemless comparison; no new native System 7 test was run.
+InvalRect/ValidRect translate current-window local rectangles to global content
+and update the shared update region, including during BeginUpdate. Custom window
+definitions, dragging/growing/zooming and native presentation remain unfinished.

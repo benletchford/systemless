@@ -2044,3 +2044,28 @@ after SizeWindow and SetWRefCon. Original UI interaction, Centaurian 68K's
 GetGDevice, original PPC sound imports and real Mixed Mode remain outstanding.
 Next: window movement and activation/visibility lifecycle with correct pixel
 transfer and exposure. Full rebuild goal stays active.
+
+### Window movement, activation and invalidation
+
+MoveWindow now preserves local coordinates and transfers retained visible pixels
+through wgpu from an immutable guest bitmap snapshot, including overlapping
+moves. Exposure damage enters shared update regions. SelectWindow/fronting moves,
+ShowWindow and HideWindow share checked window state. Activation events use the
+live CurDeactive/CurActivate slots; peeking preserves them, consumption clears
+them, and OS-only retrieval excludes them. Hidden creation preserves activation
+and close removes dangling pending pointers. InvalRect/ValidRect operate on the
+current window's content and remain available during BeginUpdate.
+
+Generated cross-CPU tests cover full-screen movement parity, overlap, retained
+pixels, exposure, selection, visibility, activation ordering/peek/consume, output
+faults and invalidation. Real MPW guests exercise MoveWindow, HideWindow,
+ShowWindow, SelectWindow and activation retrieval. Strict all-target Clippy passes.
+Comparison authorization permits legacy Systemless alone; native System 7 parity
+is not claimed. Super Mines reaches unsupported SystemTask ($A9B4), PC $01010D8E,
+trace index 15543 after movement, display and invalidation. Next: implement its
+periodic service contract, then continue original application interaction.
+Centaurian GetGDevice, PPC sound imports, production Mixed Mode and native
+presentation remain open. The full rebuild goal remains active.
+
+Full validation: 207 tests pass (175 default, 32 optional GPU/MPW), including
+the rebuilt paired compiled window fixtures. No GPU tests were skipped.

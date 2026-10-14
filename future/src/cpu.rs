@@ -47,6 +47,10 @@ pub enum Call {
         value: u16,
     },
     NewWindow(crate::windows::NewWindow),
+    WindowInvalidation {
+        rectangle: GuestPtr,
+        valid: bool,
+    },
     WindowReference {
         pointer: u32,
         value: Option<u32>,
