@@ -134,6 +134,27 @@ impl Runtime {
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::CombineRegions {
+                            op,
+                            a,
+                            b,
+                            destination,
+                        } => {
+                            crate::regions::combine(
+                                &mut self.memory,
+                                &mut self.process,
+                                op,
+                                a,
+                                b,
+                                destination,
+                            )?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                0,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::Region { op, a, b } => {
                             let value = crate::regions::call(
                                 &mut self.memory,
@@ -394,6 +415,7 @@ impl Runtime {
                                 ..
                             }
                             | Call::DisposeHandle(_)
+                            | Call::CombineRegions { .. }
                             | Call::Region { .. }
                             | Call::HandleSize(_)
                             | Call::SetHandleSize { .. }
@@ -430,6 +452,7 @@ impl Runtime {
                         | Call::TrapAddress { .. }
                         | Call::NewHandle { .. }
                         | Call::DisposeHandle(_)
+                        | Call::CombineRegions { .. }
                         | Call::Region { .. }
                         | Call::HandleSize(_)
                         | Call::SetHandleSize { .. }

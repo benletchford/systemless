@@ -21,6 +21,12 @@ pub enum Call {
         pointer: GuestPtr,
     },
     PenMode(i16),
+    CombineRegions {
+        op: crate::region_geometry::Boolean,
+        a: u32,
+        b: u32,
+        destination: u32,
+    },
     WaitEvent {
         mask: u16,
         destination: GuestPtr,

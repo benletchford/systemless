@@ -621,3 +621,23 @@ Native comparison, arbitrary region construction/Boolean operations and Window
 Manager application behavior remain outstanding. Window presentation is still
 unverified. Next: region Boolean APIs and representative window interactions;
 the full rebuild and real Mixed Mode acceptance remain unfinished.
+
+
+### Boolean regions constructed by guest applications
+
+Implemented SectRgn, UnionRgn, DiffRgn and XorRgn through the shared region/heap
+layer with real 68K/PPC ABIs. The bounded band sweep constructs result geometry,
+then encodes it before resizing the destination. Empty/rectangular results use
+canonical ten-byte records. Input snapshots support aliased destinations.
+
+An independent point-set test covers all four operations across overlapping,
+negative, empty and holed regions. A service test verifies source/destination
+aliasing and malformed-input preservation. Both MPW programs now build their
+holed clip with DiffRgn rather than a raw byte fixture, exercise all four APIs,
+and check intermediate/final GPU pixels. All 94 tests and strict Clippy pass
+(81 default, thirteen optional GPU/MPW checks enabled locally).
+
+Native comparison remains outstanding. General region recording, shape drawing,
+transforms and Window Manager interactions are unfinished. Next: use the region
+model in complete window/application slices. Presentation, keyboard delivery,
+real Mixed Mode and original application acceptance still prevent rebuild completion.

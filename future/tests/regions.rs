@@ -57,3 +57,32 @@ fn copy_preserves_variable_region_bytes_and_supports_self_copy() {
     assert!(regions::call(&mut m, &mut p, Op::Copy, source, destination).is_err());
     assert_eq!(m.read(data, 36).unwrap(), bytes);
 }
+
+#[test]
+fn boolean_destination_can_alias_sources_and_invalid_source_preserves_it() {
+    use systemless_future::region_geometry::{decode, Boolean};
+    let mut m = Memory::default();
+    let mut p = Process::default();
+    m.map(
+        GuestPtr(0x1000),
+        vec![0, 0, 0, 0, 0, 8, 0, 8, 0, 2, 0, 2, 0, 6, 0, 6],
+        Permissions::RW,
+    )
+    .unwrap();
+    let a = regions::call(&mut m, &mut p, Op::New, 0, 0).unwrap();
+    let b = regions::call(&mut m, &mut p, Op::New, 0, 0).unwrap();
+    regions::call(&mut m, &mut p, Op::Rect, a, 0x1000).unwrap();
+    regions::call(&mut m, &mut p, Op::Rect, b, 0x1008).unwrap();
+    regions::combine(&mut m, &mut p, Boolean::Difference, a, b, b).unwrap();
+    let data = GuestPtr(m.u32(GuestPtr(b)).unwrap());
+    let size = p.handle_size(&m, b).unwrap();
+    let before = m.read(data, size as usize).unwrap().to_vec();
+    assert!(decode(&before).unwrap().len() > 1);
+    let source = GuestPtr(m.u32(GuestPtr(a)).unwrap());
+    m.write(source, &11u16.to_be_bytes()).unwrap();
+    assert!(regions::combine(&mut m, &mut p, Boolean::Union, a, b, b).is_err());
+    assert_eq!(m.read(data, size as usize).unwrap(), before);
+    regions::combine(&mut m, &mut p, Boolean::Xor, b, b, b).unwrap();
+    assert_eq!(p.handle_size(&m, b).unwrap(), 10);
+    assert_eq!(regions::call(&mut m, &mut p, Op::Empty, b, 0).unwrap(), 1);
+}

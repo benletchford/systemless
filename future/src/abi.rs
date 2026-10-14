@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     InitGraf,
+    CombineRegions(crate::region_geometry::Boolean),
     Region(crate::regions::Op),
     Port(crate::quickdraw::PortOp),
     PenMode,
@@ -96,6 +97,18 @@ impl Abi {
             b"RectRgn" => Some(Service::Region(crate::regions::Op::Rect)),
             b"GetClip" => Some(Service::Region(crate::regions::Op::GetClip)),
             b"SetClip" => Some(Service::Region(crate::regions::Op::SetClip)),
+            b"SectRgn" => Some(Service::CombineRegions(
+                crate::region_geometry::Boolean::Intersection,
+            )),
+            b"UnionRgn" => Some(Service::CombineRegions(
+                crate::region_geometry::Boolean::Union,
+            )),
+            b"DiffRgn" => Some(Service::CombineRegions(
+                crate::region_geometry::Boolean::Difference,
+            )),
+            b"XorRgn" => Some(Service::CombineRegions(
+                crate::region_geometry::Boolean::Xor,
+            )),
             b"InitGraf" => Some(Service::InitGraf),
             b"InitPort" => Some(Service::Port(crate::quickdraw::PortOp::Init)),
             b"ClosePort" => Some(Service::Port(crate::quickdraw::PortOp::Close)),
@@ -139,6 +152,28 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa8e4..=0xa8e7 => {
+                use crate::region_geometry::Boolean;
+                let args = memory.read(GuestPtr(sp), 12)?;
+                let word = |i| u32::from_be_bytes(args[i..i + 4].try_into().unwrap());
+                let op = match opcode {
+                    0xa8e4 => Boolean::Intersection,
+                    0xa8e5 => Boolean::Union,
+                    0xa8e6 => Boolean::Difference,
+                    _ => Boolean::Xor,
+                };
+                let call = Call::CombineRegions {
+                    op,
+                    a: word(8),
+                    b: word(4),
+                    destination: word(0),
+                };
+                c.dar[15] = sp
+                    .checked_add(12)
+                    .ok_or_else(|| Error::Cpu("region stack overflow".into()))?;
+                Ok((call, Reply::None))
+            }
+
             0xa8e8 | 0xa8e2 => {
                 use crate::regions::Op;
                 let pair = opcode == 0xa8e8;
@@ -358,6 +393,12 @@ impl Abi {
                 a: c.gpr[3],
                 b: c.gpr[4],
             },
+            Service::CombineRegions(op) => Call::CombineRegions {
+                op,
+                a: c.gpr[3],
+                b: c.gpr[4],
+                destination: c.gpr[5],
+            },
             Service::InitGraf => Call::InitGraf {
                 slot: GuestPtr(c.gpr[3]),
                 anchor: None,
@@ -437,6 +478,7 @@ impl Abi {
                 || matches!(
                     service,
                     Service::InitGraf
+                        | Service::CombineRegions(_)
                         | Service::Port(_)
                         | Service::PenMode
                         | Service::ExitToShell

@@ -93,3 +93,121 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Rect>> {
     }
     Ok(rectangles)
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Boolean {
+    Intersection,
+    Union,
+    Difference,
+    Xor,
+}
+impl Boolean {
+    fn selected(self, state: u8) -> bool {
+        match self {
+            Self::Intersection => state == 3,
+            Self::Union => state != 0,
+            Self::Difference => state == 1,
+            Self::Xor => state == 1 || state == 2,
+        }
+    }
+}
+/// Combine decoded geometry by vertical bands, then encode inversion changes.
+pub fn combine(a: &[u8], b: &[u8], op: Boolean) -> Result<Vec<u8>> {
+    use std::collections::BTreeMap;
+    let a = decode(a)?;
+    let b = decode(b)?;
+    let ys: BTreeSet<_> = a.iter().chain(&b).flat_map(|r| [r.top, r.bottom]).collect();
+    if ys.len().saturating_mul(a.len() + b.len()) > 2_000_000 {
+        return Err(invalid());
+    }
+    let ys: Vec<_> = ys.into_iter().collect();
+    let mut output = Vec::new();
+    for band in ys.windows(2) {
+        let mut edges: BTreeMap<i32, u8> = BTreeMap::new();
+        for (rects, bit) in [(&a, 1), (&b, 2)] {
+            for r in rects {
+                if r.top <= band[0] && r.bottom > band[0] {
+                    *edges.entry(r.left).or_default() ^= bit;
+                    *edges.entry(r.right).or_default() ^= bit;
+                }
+            }
+        }
+        let mut state = 0;
+        let mut left = None;
+        for (x, toggle) in edges {
+            let before = op.selected(state);
+            state ^= toggle;
+            let after = op.selected(state);
+            if !before && after {
+                left = Some(x);
+            }
+            if before && !after {
+                if output.len() >= 65536 {
+                    return Err(invalid());
+                }
+                output.push(Rect::new(
+                    left.take().ok_or_else(invalid)?,
+                    band[0],
+                    x,
+                    band[1],
+                ));
+            }
+        }
+        if state != 0 {
+            return Err(invalid());
+        }
+    }
+    encode(&output)
+}
+fn encode(rectangles: &[Rect]) -> Result<Vec<u8>> {
+    use std::collections::BTreeMap;
+    let Some(first) = rectangles.first().copied() else {
+        return Ok(vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]);
+    };
+    let bounds = rectangles.iter().fold(first, |r, s| {
+        Rect::new(
+            r.left.min(s.left),
+            r.top.min(s.top),
+            r.right.max(s.right),
+            r.bottom.max(s.bottom),
+        )
+    });
+    let mut words = vec![
+        0,
+        bounds.top as i16,
+        bounds.left as i16,
+        bounds.bottom as i16,
+        bounds.right as i16,
+    ];
+    let area = |r: Rect| i64::from(r.right - r.left) * i64::from(r.bottom - r.top);
+    if rectangles.iter().map(|r| area(*r)).sum::<i64>() != area(bounds) {
+        let mut rows: BTreeMap<i32, BTreeSet<i32>> = BTreeMap::new();
+        for r in rectangles {
+            for y in [r.top, r.bottom] {
+                for x in [r.left, r.right] {
+                    if x == 32767 || y == 32767 {
+                        return Err(invalid());
+                    }
+                    let row = rows.entry(y).or_default();
+                    if !row.remove(&x) {
+                        row.insert(x);
+                    }
+                }
+            }
+        }
+        for (y, row) in rows {
+            if row.is_empty() {
+                continue;
+            }
+            words.push(y as i16);
+            words.extend(row.into_iter().map(|x| x as i16));
+            words.push(32767);
+            if words.len() > 16382 {
+                return Err(invalid());
+            }
+        }
+        words.push(32767);
+    }
+    words[0] = (words.len() * 2) as i16;
+    Ok(words.into_iter().flat_map(i16::to_be_bytes).collect())
+}

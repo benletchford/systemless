@@ -92,3 +92,17 @@ pub fn call(memory: &mut Memory, process: &mut Process, op: Op, a: u32, b: u32) 
     }
     Ok(0)
 }
+
+pub fn combine(
+    memory: &mut Memory,
+    process: &mut Process,
+    op: crate::region_geometry::Boolean,
+    a: u32,
+    b: u32,
+    destination: u32,
+) -> Result<()> {
+    let a = read(memory, process, a)?;
+    let b = read(memory, process, b)?;
+    let bytes = crate::region_geometry::combine(&a, &b, op)?;
+    write(memory, process, destination, &bytes)
+}

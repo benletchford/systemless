@@ -7,9 +7,7 @@
 
 QDGlobals qd;
 static unsigned char pixels[8] = {0x80,0x33,0,0x44,0,0x55,0,0x66};
-static short complexClip[22] = {44,0,0,4,8,0,0,8,32767,1,2,6,32767,3,2,6,32767,4,0,8,32767,32767};
 int main(void) {
-    int i;
     GrafPort port;
     GrafPort other;
     GrafPtr current;
@@ -17,6 +15,7 @@ int main(void) {
     Rect all = {0,0,4,8};
     Rect clip = {1,1,3,7};
     Rect patch = {1,2,2,4};
+    Rect hole = {1,2,3,6};
     EventRecord event;
     Point inside, outside;
     Handle data;
@@ -63,9 +62,18 @@ int main(void) {
     PostEvent(keyDown,42);
     if (!WaitNextEvent(keyDownMask,&event,0,0) || event.message != 42) return 6;
     temporary = NewRgn();
-    SetHandleSize((Handle)temporary,44);
+    saved = NewRgn();
+    RectRgn(saved,&all);
+    RectRgn(temporary,&hole);
+    DiffRgn(saved,temporary,temporary);
+    SectRgn(saved,temporary,temporary);
+    XorRgn(saved,temporary,saved);
+    if (!PtInRgn(inside,saved)) return 20;
+    UnionRgn(saved,temporary,saved);
+    XorRgn(saved,saved,saved);
+    if (!EmptyRgn(saved)) return 21;
     if (MemError()) return 17;
-    for (i=0;i<22;i++) ((short *)*temporary)[i]=complexClip[i];
+    DisposeRgn(saved);
     SetClip(temporary);
     PaintRect(&all);
     if (pixels[0]!=0x7f || pixels[2]!=0x95 || pixels[4]!=0xe9 || pixels[6]!=0xff) return 18;

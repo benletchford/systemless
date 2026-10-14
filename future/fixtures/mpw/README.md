@@ -88,6 +88,6 @@ SetClip/CopyRgn/DisposeRgn before pixel verification on both architectures.
 EmptyRgn and PtInRgn are checked against empty and rectangular regions, including
 right/bottom exclusion, through both native calling conventions.
 
-An explicit encoded complex-region fixture clips two XOR draws. The program
+A complex region built with DiffRgn clips two XOR draws. The program
 checks intermediate packed bytes and the restored final image, so a skipped
-draw cannot count as success. This is not a native-generated region oracle.
+draw cannot count as success. The fixture also exercises SectRgn, UnionRgn and XorRgn with aliased destinations; native-system comparison remains outstanding.

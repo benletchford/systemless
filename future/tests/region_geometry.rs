@@ -68,3 +68,60 @@ fn expansion_is_bounded_independently_of_encoded_size() {
     assert!(b.len() < 32766);
     assert!(decode(&b).is_err());
 }
+
+#[test]
+fn boolean_operations_match_independent_point_sets_and_canonicalize_empty_rectangles() {
+    use systemless_future::region_geometry::{combine, Boolean};
+    let mut inputs = Vec::new();
+    for y in -2..2 {
+        for x in -2..2 {
+            inputs.push(bytes(&[0, y, x, y + 3, x + 3]));
+        }
+    }
+    inputs.push(bytes(&[
+        0, 0, 0, 6, 6, 0, 0, 6, 32767, 2, 2, 4, 32767, 4, 2, 4, 32767, 6, 0, 6, 32767, 32767,
+    ]));
+    inputs.push(bytes(&[0, 0, 0, 0, 0]));
+    let contains = |rects: &[systemless_future::graphics::Rect], x, y| {
+        rects
+            .iter()
+            .any(|r| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+    };
+    for a in &inputs {
+        for b in &inputs {
+            for op in [
+                Boolean::Intersection,
+                Boolean::Union,
+                Boolean::Difference,
+                Boolean::Xor,
+            ] {
+                let ar = decode(a).unwrap();
+                let br = decode(b).unwrap();
+                let encoded = combine(a, b, op).unwrap();
+                let actual = decode(&encoded).unwrap();
+                for y in -3..8 {
+                    for x in -3..8 {
+                        let aa = contains(&ar, x, y);
+                        let bb = contains(&br, x, y);
+                        let expected = match op {
+                            Boolean::Intersection => aa && bb,
+                            Boolean::Union => aa || bb,
+                            Boolean::Difference => aa && !bb,
+                            Boolean::Xor => aa ^ bb,
+                        };
+                        assert_eq!(contains(&actual, x, y), expected, "{op:?} {x},{y}");
+                    }
+                }
+            }
+        }
+    }
+    let rectangle = &inputs[0];
+    assert_eq!(
+        combine(rectangle, rectangle, Boolean::Union).unwrap(),
+        *rectangle
+    );
+    assert_eq!(
+        combine(rectangle, rectangle, Boolean::Xor).unwrap(),
+        vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
+}

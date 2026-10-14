@@ -448,7 +448,7 @@ these copying services do not imply that complex-region rasterization works.
 GetClip and SetClip copy region bytes rather than exchange port handles. The
 68K Pascal stack and PPC register adapters use the same implementation. Drawing now decodes nonrectangular records for GPU clipping. These storage
 contracts follow Apple's [region routines](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-131.html)
-and MPW Quickdraw.h. Region Boolean construction remains the next geometry boundary.
+and MPW Quickdraw.h. Region Boolean construction is implemented as described below.
 
 
 ## Bounded region geometry
@@ -486,4 +486,23 @@ explicit limits bound GPU work while the initial linear geometry scan is in use.
 Malformed geometry also fails before pixel publication. Guest memory remains
 canonical, with readback/repacking after each draw as before. Native-system
 pixel comparison is still outstanding; acceptance uses independent expected
-pixel maps and compiled programs containing an explicit complex-region fixture.
+pixel maps and compiled programs constructing complex regions through QuickDraw Boolean APIs.
+
+
+## Region Boolean construction
+
+SectRgn, UnionRgn, DiffRgn and XorRgn snapshot both input payloads before writing
+the destination, allowing it to alias either input. Decoded geometry is swept
+in vertical bands; horizontal endpoint transitions select the requested Boolean
+set. Encoding cancels shared inversion boundaries, emits zero-bounds empty
+regions, and reduces rectangular results to ten-byte records. Resizing and
+master-pointer updates use the shared process heap.
+
+Work is bounded to two million band/rectangle visits and 65,536 output spans;
+encoded results must fit 32,766 bytes. Complex results requiring the reserved
+32767 coordinate fail explicitly. No destination is mutated until geometry and
+encoding succeed. These are deliberate implementation bounds, not claims about
+native system limits. Contracts follow Apple's [DiffRgn](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-144.html)
+and [UnionRgn](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-143.html) references
+and MPW trap declarations. CPU work constructs geometry; pixel drawing remains
+in the GPU pipeline.

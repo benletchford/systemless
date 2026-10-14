@@ -84,5 +84,5 @@ is implemented but presentation is still unverified on this host.
 
 Region storage supports NewRgn, DisposeRgn, RectRgn, CopyRgn, GetClip and SetClip.
 Variable-sized region payloads can be copied and decoded for hit testing and
-GPU clipping, including holes and disjoint spans. Region Boolean construction
-and native Macintosh comparison remain pending.
+GPU clipping, including holes and disjoint spans. SectRgn, UnionRgn, DiffRgn and XorRgn construct regions through the shared heap.
+Native Macintosh comparison and broader region drawing/transform APIs remain pending.
