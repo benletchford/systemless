@@ -1295,3 +1295,48 @@ menu/window integration and full rebuild acceptance remain unfinished.
 
 Validation: all 161 tests pass (143 default and 18 optional GPU/MPW); the MPW
 rebuild and strict all-target Clippy pass.
+
+
+### Shared TextEdit construction and lifetime
+
+TEInit, TENew, TEStyleNew, TEGetText, TEGetStyleHandle and TEDispose now share
+one TextEdit manager in Process. Constructors read destination/view rectangle
+pointers through both native adapters (MPW TextEdit.h), capture current basic-port
+text attributes/metrics, and allocate a movable TEHandle plus empty text handle.
+Styled records install the documented -1 sentinels and TEStyleHandle overlay,
+with real style, line-height, null-style and null-scrap handles. One initial style
+and run are initialized from the current port. Public fields and style data live
+in guest memory; host state retains allocation ownership only. The initial
+foreground color supports black/white and initial font style must currently be
+plain because synthetic metrics remain unfinished.
+
+TEInit allocates a real empty TextEdit scrap handle and publishes TEScrpHandle
+($AB4) and the word TEScrpLength ($AB0), preserving the adjacent reserved word.
+LowMem.h confirmed the word/long widths. Repeated initialization preserves the
+allocation. Constructor allocation failure frees its partial owned graph and
+returns nil with memFullErr. Disposal validates all current master pointers and
+style/text links before freeing anything. Replacement with foreign auxiliary
+handles fails explicitly until adoption APIs are implemented. Record relocation
+through the shared Memory Manager is supported. GetText returns the actual guest
+CharsHandle; GetStyleHandle uses the style record overlay. The 68K styled selector
+4 is decoded explicitly; other selectors remain unsupported.
+
+Evidence: legacy loader/ppc/textedit.rs provides record/table offsets and initial
+run/null-style layout; MPW TextEdit.h verifies the compiled ABI and fields. Three
+focused tests cover record contents, style graphs, reserved bytes, damaged-link
+atomicity, relocated TEHandles, complete disposal/reuse, partial-allocation
+rollback and one record created/query/disposed across real PPC/68K adapters.
+A real MPW application inspects plain/styled records, style-table metrics and
+sentinels, getters and disposal on both architectures. Creation does not claim
+working editing: text changes, selection, layout, redraw, clipboard operations,
+style assignment and callbacks remain unfinished. Default callback/dispatch
+fields are zero pending the callback/Mixed Mode implementation.
+
+Centaurian PPC now resolves TEStyleNew and stops at SndDisposeChannel during
+strong-import validation; no original PPC code has executed. 68K startup stops
+remain InitMenus. Next: text replacement, line layout and redraw through the
+shared buffer/font/wgpu services, followed by selection/editing and menu/window
+integration. Full rebuild acceptance and real Mixed Mode remain outstanding.
+
+Validation: all 165 tests pass (146 default, 19 optional GPU/MPW); the MPW
+rebuild and strict all-target Clippy pass.

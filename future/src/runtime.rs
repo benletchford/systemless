@@ -261,6 +261,23 @@ impl Runtime {
                             })?;
                             crate::text::move_to(&mut self.memory, ports, h, v)?;
                         }
+                        Call::TextEdit(op) => {
+                            let mut manager = std::mem::take(&mut self.process.textedit);
+                            let result = manager.call(
+                                &mut self.memory,
+                                &mut self.process,
+                                op,
+                                (self.instructions / 1000) as u32,
+                            );
+                            self.process.textedit = manager;
+                            let value = result?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                value,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::Random => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -699,7 +716,8 @@ impl Runtime {
                     // fields carry operation outputs only, never readback authority.
                     if matches!(
                         call,
-                        Call::TextDraw(_)
+                        Call::TextEdit(_)
+                            | Call::TextDraw(_)
                             | Call::TextWidth(_)
                             | Call::InitFonts
                             | Call::FontInfo(_)
@@ -751,6 +769,7 @@ impl Runtime {
                         | Call::NewWindow(_)
                         | Call::Window { .. }
                         | Call::TextState { .. }
+                        | Call::TextEdit(_)
                         | Call::MoveTo { .. }
                         | Call::TextDraw(_)
                         | Call::TextWidth(_)

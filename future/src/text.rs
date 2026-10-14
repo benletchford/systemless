@@ -92,9 +92,7 @@ pub fn font_info(
     destination: GuestPtr,
 ) -> Result<()> {
     memory.validate_write(destination, 8)?;
-    let port = ports.current(memory)?;
-    let data = font_data(memory, process, port)?;
-    let metrics = crate::font::Strike::parse(&data)?.metrics;
+    let metrics = metrics(memory, process, ports)?;
     let bytes: Vec<_> = [
         metrics.ascent,
         metrics.descent,
@@ -278,4 +276,14 @@ pub fn draw(
     memory.write(port, &saved)?;
     result?;
     memory.write(GuestPtr(port.0 + 50), &h.to_be_bytes())
+}
+
+pub fn metrics(
+    memory: &mut Memory,
+    process: &mut crate::process::Process,
+    ports: Ports,
+) -> Result<crate::font::Metrics> {
+    let port = ports.current(memory)?;
+    let data = font_data(memory, process, port)?;
+    Ok(crate::font::Strike::parse(&data)?.metrics)
 }

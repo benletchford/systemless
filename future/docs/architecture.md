@@ -747,3 +747,16 @@ pipeline and are restored even on failure. Measurement preserves pnLoc, while
 successful drawing publishes the advanced horizontal word. Geometry preflight is
 bounded; GPU errors remain terminal and can retain earlier completed glyph pixels.
 Synthetic styles, fractional spacing and DrawText/StdText remain explicit gaps.
+
+
+## TextEdit record ownership
+
+`textedit` creates and owns guest TEHandles and their text/style graphs through
+the shared heap. Current records and style fields are read from guest memory,
+including after relocation. Host metadata records allocation ownership and the
+constructor's record kind, preventing corrupt or foreign links from freeing
+unrelated blocks. Constructors stage allocations and roll back on exhaustion.
+Disposal validates the entire graph before mutation. Fonts supply actual initial
+metrics; buffer drawing is available for the next layout/redraw integration.
+Native 68K/PPC adapters marshal the same typed operations. Editing, style/handle
+adoption and callback defaults remain explicit gaps in this first lifecycle slice.

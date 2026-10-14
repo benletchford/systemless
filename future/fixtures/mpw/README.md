@@ -192,3 +192,10 @@ architectures complete these checks before the final color/pattern image.
 DrawText/TextWidth now use a substring of an ordinary byte buffer in the drawing
 probe. Both compiled architectures measure xAB?z at offset 1/count 3 as 10 and
 draw/cancel xAz at offset 1/count 1 with the same exact resource-glyph pixels.
+
+
+`textedit.c` initializes TextEdit, creates plain and styled records, checks
+captured port attributes/metrics, style sentinels, nested tables and empty text
+handles, queries style/text handles, disposes and creates another record, then
+posts its success marker. The acceptance test runs both MPW architectures without
+requiring a GPU; it exercises allocation/lifetime rather than editing or redraw.

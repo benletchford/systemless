@@ -10,6 +10,11 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    TENew(bool),
+    TEInit,
+    TEGetText,
+    TEGetStyleHandle,
+    TEDispose,
     TextDraw(bool),
     TextBuffer(bool),
     TextWidth(bool),
@@ -143,6 +148,12 @@ impl Abi {
             b"CharWidth" => Some(Service::TextWidth(false)),
             b"StringWidth" => Some(Service::TextWidth(true)),
             b"MoveTo" => Some(Service::MoveTo),
+            b"TENew" => Some(Service::TENew(false)),
+            b"TEStyleNew" => Some(Service::TENew(true)),
+            b"TEInit" => Some(Service::TEInit),
+            b"TEGetText" => Some(Service::TEGetText),
+            b"TEGetStyleHandle" => Some(Service::TEGetStyleHandle),
+            b"TEDispose" => Some(Service::TEDispose),
             b"Random" => Some(Service::Random),
             b"FindSymbol" => Some(Service::FindSymbol),
             b"CountSymbols" => Some(Service::CountSymbols),
@@ -401,6 +412,59 @@ impl Abi {
                         Reply::StackWord(GuestPtr(result))
                     } else {
                         Reply::None
+                    },
+                ))
+            }
+            0xa9d2 | 0xa83e => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let view = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let dest = GuestPtr(u32::from_be_bytes(args[4..].try_into().unwrap()));
+                let result = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("TextEdit stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 4)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::TextEdit(crate::textedit::Op::New {
+                        dest,
+                        view,
+                        styled: opcode == 0xa83e,
+                    }),
+                    Reply::StackLong(GuestPtr(result)),
+                ))
+            }
+            0xa9cc => Ok((Call::TextEdit(crate::textedit::Op::Init), Reply::None)),
+            0xa9cb | 0xa9cd | 0xa83d => {
+                let extra = if opcode == 0xa83d {
+                    if memory.u16(GuestPtr(sp))? != 4 {
+                        return Err(Error::Cpu("unsupported TextEdit selector".into()));
+                    }
+                    2
+                } else {
+                    0
+                };
+                let handle = memory
+                    .u32(GuestPtr(sp.checked_add(extra).ok_or_else(|| {
+                        Error::Cpu("TextEdit stack overflow".into())
+                    })?))?;
+                let result = sp
+                    .checked_add(extra + 4)
+                    .ok_or_else(|| Error::Cpu("TextEdit stack overflow".into()))?;
+                if opcode != 0xa9cd {
+                    memory.validate_write(GuestPtr(result), 4)?;
+                }
+                c.dar[15] = result;
+                let op = match opcode {
+                    0xa9cb => crate::textedit::Op::GetText(handle),
+                    0xa9cd => crate::textedit::Op::Dispose(handle),
+                    _ => crate::textedit::Op::GetStyle(handle),
+                };
+                Ok((
+                    Call::TextEdit(op),
+                    if opcode == 0xa9cd {
+                        Reply::None
+                    } else {
+                        Reply::StackLong(GuestPtr(result))
                     },
                 ))
             }
@@ -808,6 +872,15 @@ impl Abi {
                     Call::TextDraw(input)
                 }
             }
+            Service::TENew(styled) => Call::TextEdit(crate::textedit::Op::New {
+                dest: GuestPtr(c.gpr[3]),
+                view: GuestPtr(c.gpr[4]),
+                styled,
+            }),
+            Service::TEInit => Call::TextEdit(crate::textedit::Op::Init),
+            Service::TEGetText => Call::TextEdit(crate::textedit::Op::GetText(c.gpr[3])),
+            Service::TEGetStyleHandle => Call::TextEdit(crate::textedit::Op::GetStyle(c.gpr[3])),
+            Service::TEDispose => Call::TextEdit(crate::textedit::Op::Dispose(c.gpr[3])),
             Service::Random => Call::Random,
             Service::GetMemFragment => Call::LoadFragment(crate::cfm::LoadRequest {
                 source: GuestPtr(c.gpr[3]),
@@ -959,6 +1032,8 @@ impl Abi {
                                 | crate::windows::Op::Close
                                 | crate::windows::Op::Dispose
                         )
+                        | Service::TEInit
+                        | Service::TEDispose
                         | Service::MoveTo
                         | Service::TextBuffer(false)
                         | Service::TextDraw(_)
