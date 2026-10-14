@@ -910,3 +910,39 @@ slots, built-in imports only, no in-place/disk/shared-library loading or
 dependency closure ordering. 68K-to-PPC load/unload calls fault explicitly;
 real Mixed Mode, presentation and original application interaction acceptance
 remain unfinished. The full rebuild goal remains active.
+
+
+### QuickDraw Random and comparison scope
+
+Random now uses one shared service for the 68K $A861 trap and PPC InterfaceLib
+import. The unsigned seed lives at QDGlobals.thePort minus 126, initialized by
+InitGraf; it is never duplicated in host state. Direct guest writes take effect
+on the next call. A selected port and a GPU are unnecessary. The 68K result is
+a reserved stack word; PPC receives a sign-extended short. Invalid storage
+faults explicitly, and the 68K result slot is validated before advancing seed.
+
+The recurrence is `(seed * 16807) % 2147483647`; the low signed word is returned,
+with -32768 mapped to zero. Comparison against the existing Systemless 68K
+handler (`src/systems/macintosh/trap/toolbox.rs`) and PPC `ppc_random_at`
+(`src/systems/macintosh/loader/ppc/loaded_app_execution.rs`) found one intentional
+difference: legacy normalizes zero to one, whereas this implementation leaves
+zero at zero as in the published original Apple QuickDraw
+[Random source](https://raw.githubusercontent.com/jrk/QuickDraw/master/Util.a).
+This is source comparison, not an execution comparison against a native Mac.
+
+The user authorized comparison against existing Systemless instead of native
+System 7. Native comparison is therefore optional, not a completion gate for
+these slices. Historical notes identifying missing native evidence still describe
+the evidence available; legacy agreement must not be labeled native validation.
+
+Two focused tests alternate real CPU adapters on one guest seed and cover direct
+seed writes, unsigned edges, the exceptional output, neighboring memory and
+invalid storage. The MPW drawing fixture additionally checks sequence and seed
+writes through both compiled calling conventions. Centaurian PPC now rejects
+FrameRoundRect at load time; no original PPC application code has run. Next:
+shared $A8FE startup support and rounded-rectangle drawing, then continued
+original application interaction. Real Mixed Mode and full rebuild acceptance
+remain outstanding.
+
+Validation: all 138 tests passed, including 14 optional GPU/MPW tests; the MPW
+fixtures rebuilt successfully and strict all-target Clippy passed.

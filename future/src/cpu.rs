@@ -12,6 +12,7 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    Random,
     FragmentQuery(crate::cfm::Query),
     LoadFragment(crate::cfm::LoadRequest),
     CloseFragment(GuestPtr),

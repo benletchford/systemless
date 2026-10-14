@@ -24,6 +24,14 @@ int main(void) {
     RgnHandle visible, clipping, saved, temporary;
     InitGraf(&qd.thePort);
     if (qd.thePort != 0 || qd.randSeed != 1) return 1;
+    if (Random() != 16807 || qd.randSeed != 16807) return 28;
+    if (Random() != 15089 || qd.randSeed != 282475249) return 29;
+    if (Random() != -21287 || qd.randSeed != 1622650073) return 30;
+    qd.randSeed = 958682087;
+    if (Random() != 0 || qd.randSeed != 32768) return 31;
+    qd.randSeed = 0;
+    if (Random() != 0 || qd.randSeed != 0) return 32;
+    qd.randSeed = 1;
     GetPort(&current);
     if (current != 0) return 7;
     OpenPort(&port);

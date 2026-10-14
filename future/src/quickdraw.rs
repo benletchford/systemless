@@ -49,6 +49,20 @@ fn write_region(memory: &mut Memory, handle: GuestPtr, r: Rect) -> Result<()> {
     memory.write(data, &bytes)
 }
 impl Ports {
+    /// QuickDraw's unsigned seed is part of QDGlobals, independent of the
+    /// selected port and the unrelated low-memory random-seed location.
+    pub fn random(&self, memory: &mut Memory) -> Result<i16> {
+        let seed = GuestPtr(
+            self.current_slot
+                .0
+                .checked_sub(126)
+                .ok_or_else(|| Error::Graphics("invalid QuickDraw globals address".into()))?,
+        );
+        let next = ((u64::from(memory.u32(seed)?) * 16_807) % 2_147_483_647) as u32;
+        memory.write(seed, &next.to_be_bytes())?;
+        let value = next as i16;
+        Ok(if value == i16::MIN { 0 } else { value })
+    }
     pub fn current(&self, memory: &Memory) -> Result<GuestPtr> {
         let port = GuestPtr(memory.u32(self.current_slot)?);
         memory.read(port, PORT_SIZE)?;

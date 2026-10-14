@@ -154,6 +154,13 @@ impl Runtime {
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::Random => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            let value = ports.random(&mut self.memory)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, value as i32 as u32, 0)?;
+                        }
                         Call::LoadFragment(request) => {
                             self.validate_fragment_call()?;
                             match self.process.fragments.load_memory(
@@ -581,7 +588,8 @@ impl Runtime {
                 Outcome::Service(call) => {
                     self.services.calls.push(call);
                     match call {
-                        Call::LoadFragment(_)
+                        Call::Random
+                        | Call::LoadFragment(_)
                         | Call::CloseFragment(_)
                         | Call::FragmentQuery(_)
                         | Call::InitGraf { .. }

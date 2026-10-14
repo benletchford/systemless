@@ -114,3 +114,10 @@ and verifies the terminator modifies its own stack-local counter. It then closes
 the connection, unlocks/releases the resource and posts a required success
 marker. The ignored MPW acceptance test checks completion and mapping removal.
 This fixture has no 68K dynamic counterpart until actual Mixed Mode is supported.
+
+
+The drawing fixture also calls Random before selecting a port, checking its
+signed sequence, guest QDGlobals.randSeed updates, the -32768-to-zero case and
+zero seed behavior on both architectures. Zero remains zero following published
+Apple QuickDraw source; legacy Systemless instead reseeds zero to one. Existing
+Systemless comparisons are authorized in place of native System 7 checks.

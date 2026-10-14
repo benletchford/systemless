@@ -9,6 +9,7 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    Random,
     GetMemFragment,
     CloseConnection,
     FindSymbol,
@@ -104,6 +105,7 @@ impl Abi {
         match symbol {
             b"GetMemFragment" => Some(Service::GetMemFragment),
             b"CloseConnection" => Some(Service::CloseConnection),
+            b"Random" => Some(Service::Random),
             b"FindSymbol" => Some(Service::FindSymbol),
             b"CountSymbols" => Some(Service::CountSymbols),
             b"GetIndSymbol" => Some(Service::GetIndSymbol),
@@ -182,6 +184,10 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa861 => {
+                memory.validate_write(GuestPtr(sp), 2)?;
+                Ok((Call::Random, Reply::StackWord(GuestPtr(sp))))
+            }
             0xaa5a => {
                 use crate::cfm::Query;
                 let selector = memory.u16(GuestPtr(sp))?;
@@ -496,6 +502,7 @@ impl Abi {
     }
     pub fn import(service: Service, c: &ppc::PpcCpu) -> (Call, Reply) {
         let call = match service {
+            Service::Random => Call::Random,
             Service::GetMemFragment => Call::LoadFragment(crate::cfm::LoadRequest {
                 source: GuestPtr(c.gpr[3]),
                 length: c.gpr[4],
