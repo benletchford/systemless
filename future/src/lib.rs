@@ -19,6 +19,7 @@ pub mod rounded;
 pub mod runtime;
 pub mod sound;
 mod stdlib;
+pub mod text;
 pub mod traps;
 pub mod windows;
 

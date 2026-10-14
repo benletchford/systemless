@@ -38,7 +38,7 @@ fork path and a maximum instruction count, and prints register/opcode context.
   request was Sound Driver Control(-4, 2), setting volume to 3. That state update
   now completes. No window interaction or audio playback is proven.
 - Centaurian's PPC load rejects the unresolved strong InterfaceLib import
-  `TextFont`. NewWindow (plainDBox), InitWindows, GetPattern, ForeColor/BackColor, FrameRoundRect, Random, GetMemFragment and the symbol-query imports now resolve, but no PPC
+  `TEStyleNew`. TextFont/TextFace/TextMode/TextSize, NewWindow (plainDBox), InitWindows, GetPattern, ForeColor/BackColor, FrameRoundRect, Random, GetMemFragment and the symbol-query imports now resolve, but no PPC
   application instruction executes because remaining strong imports are still
   validated before launch.
 

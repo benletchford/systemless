@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    TextState(crate::text::Field),
     NewWindow,
     Window(crate::windows::Op),
     PortColor(bool),
@@ -123,6 +124,10 @@ impl Abi {
             b"FrontWindow" => Some(Service::Window(crate::windows::Op::Front)),
             b"CloseWindow" => Some(Service::Window(crate::windows::Op::Close)),
             b"DisposeWindow" => Some(Service::Window(crate::windows::Op::Dispose)),
+            b"TextFont" => Some(Service::TextState(crate::text::Field::Font)),
+            b"TextFace" => Some(Service::TextState(crate::text::Field::Face)),
+            b"TextMode" => Some(Service::TextState(crate::text::Field::Mode)),
+            b"TextSize" => Some(Service::TextState(crate::text::Field::Size)),
             b"Random" => Some(Service::Random),
             b"FindSymbol" => Some(Service::FindSymbol),
             b"CountSymbols" => Some(Service::CountSymbols),
@@ -294,6 +299,20 @@ impl Abi {
                     },
                     Reply::None,
                 ))
+            }
+            0xa887..=0xa88a => {
+                let word = memory.u16(GuestPtr(sp))?;
+                let field = match opcode {
+                    0xa887 => crate::text::Field::Font,
+                    0xa888 => crate::text::Field::Face,
+                    0xa889 => crate::text::Field::Mode,
+                    _ => crate::text::Field::Size,
+                };
+                let value = word;
+                c.dar[15] = sp
+                    .checked_add(2)
+                    .ok_or_else(|| Error::Cpu("text stack overflow".into()))?;
+                Ok((Call::TextState { field, value }, Reply::None))
             }
             0xa861 => {
                 memory.validate_write(GuestPtr(sp), 2)?;
@@ -665,6 +684,10 @@ impl Abi {
                 op,
                 pointer: c.gpr[3],
             },
+            Service::TextState(field) => Call::TextState {
+                field,
+                value: c.gpr[3] as u16,
+            },
             Service::Random => Call::Random,
             Service::GetMemFragment => Call::LoadFragment(crate::cfm::LoadRequest {
                 source: GuestPtr(c.gpr[3]),
@@ -816,6 +839,7 @@ impl Abi {
                                 | crate::windows::Op::Close
                                 | crate::windows::Op::Dispose
                         )
+                        | Service::TextState(_)
                         | Service::RoundRect(_)
                         | Service::CombineRegions(_)
                         | Service::Port(_)

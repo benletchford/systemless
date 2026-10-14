@@ -1099,3 +1099,35 @@ none of its own PPC code has run. The original 68K InitFonts stop is unchanged.
 Next: Font Manager initialization, shared text state/metrics/rendering, then
 window event/update handling and original application interaction. Real Mixed
 Mode and full rebuild acceptance remain unfinished; the goal stays active.
+
+
+### Shared GrafPort text selection
+
+TextFont, TextFace, TextMode and TextSize now marshal into one service that
+writes the selected basic GrafPort's txFont (68), txFace (70), txMode (72) and
+txSize (74). Port memory is authoritative and selecting another port preserves
+each port's values. txFace is one byte; the adjacent filler byte is preserved.
+Color ports and picture recording fail explicitly before changing text fields.
+This selects text state; font loading, metrics and glyph drawing remain pending.
+
+The real MPW fixture caught an ABI distinction: Universal Interfaces declares
+TextFace(StyleParameter), where StyleParameter is short, whereas StyleField in
+the port is unsigned char. The 68K trap therefore consumes a word argument and
+the service stores its low byte. The other setters also consume words. Header
+evidence is MPW QuickdrawText.h TextFace and MacTypes.h StyleParameter/StyleField.
+Legacy quickdraw.rs has a heuristic accepting either byte of the argument word;
+this slice follows the compiled MPW interface rather than guessing a style from
+padding. The fixture verifies font, size, face and mode on two separate ports
+through both architectures. Focused tests verify field widths, padding, argument
+marshalling and invalid/read-only port atomicity.
+
+Centaurian PPC now stops at TEStyleNew during strong-import validation. No
+original PPC application code has executed; 68K applications still require
+InitFonts. Next: Font Manager resource decoding and a licensed system-font
+fallback, metrics and wgpu glyph drawing, followed by TextEdit and title-bearing
+windows. The existing runtime has FONT/NFNT/FOND/sfnt decoders and bundled
+URW/Coppet/Noto fonts as reference evidence; their implementation must remain
+independent from the new runtime, and asset licenses must be preserved.
+
+Validation: all 151 tests pass (134 default and 17 optional GPU/MPW); MPW
+fixtures rebuild successfully and strict all-target Clippy passes.

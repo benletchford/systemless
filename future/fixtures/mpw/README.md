@@ -162,3 +162,9 @@ storage, reuses static caller storage for hidden windows, and posts a success
 marker. The Rust acceptance test checks that both architectures finish with no
 linked windows and exactly the same desktop pattern bytes. This does not verify
 title-bar WDEFs, update-event delivery or original application interaction.
+
+
+The drawing probe also selects TextFont, TextSize, TextFace and TextMode on two
+ports and checks their independent guest fields. TextFace uses the Universal
+Interfaces word-sized StyleParameter argument and byte-sized port StyleField.
+These checks do not exercise font loading or glyph drawing.

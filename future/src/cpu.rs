@@ -13,6 +13,10 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    TextState {
+        field: crate::text::Field,
+        value: u16,
+    },
     NewWindow(crate::windows::NewWindow),
     Window {
         op: crate::windows::Op,

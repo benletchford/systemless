@@ -205,6 +205,12 @@ impl Runtime {
                                 self.process.mem_error,
                             )?;
                         }
+                        Call::TextState { field, value } => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            crate::text::set(&mut self.memory, ports, field, value)?;
+                        }
                         Call::Random => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -689,6 +695,7 @@ impl Runtime {
                         | Call::DisposePointer(_)
                         | Call::NewWindow(_)
                         | Call::Window { .. }
+                        | Call::TextState { .. }
                         | Call::Random
                         | Call::LoadFragment(_)
                         | Call::CloseFragment(_)

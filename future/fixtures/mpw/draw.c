@@ -40,6 +40,17 @@ int main(void) {
     SetPort(&port);
     GetPort(&current);
     if (current != &port) return 2;
+    TextFont(-123);
+    TextSize(18);
+    TextFace(bold | italic);
+    TextMode(srcOr);
+    if (port.txFont!=-123 || port.txSize!=18 || port.txFace!=(bold|italic) || port.txMode!=srcOr) return 44;
+    if (other.txFont || other.txFace || other.txMode!=srcOr) return 45;
+    SetPort(&other);
+    TextSize(9);
+    TextFace(underline);
+    if (other.txSize!=9 || other.txFace!=underline || port.txSize!=18) return 46;
+    SetPort(&port);
     bitmap.baseAddr = (Ptr)pixels;
     bitmap.rowBytes = 2;
     bitmap.bounds = translated;
