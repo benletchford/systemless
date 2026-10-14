@@ -10,8 +10,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if x>=w || y>=h { return; }
     let at=u32(y*w+x);
     var value=pixels[at];
+    var in_region=p[24]<0;
+    for (var n=0; n<p[24] && !in_region; n=n+1) {
+        let at=25+4*n;
+        in_region=x>=p[at] && y>=p[at+1] && x<p[at+2] && y<p[at+3];
+    }
     // rect and clip use half-open guest coordinates.
-    if p[2]!=0 && x>=p[3] && y>=p[4] && x<p[5] && y<p[6] &&
+    if in_region && p[2]!=0 && x>=p[3] && y>=p[4] && x<p[5] && y<p[6] &&
        x>=p[7] && y>=p[8] && x<p[9] && y<p[10] {
         var src=u32(p[11]);
         let row=u32(p[16+(y & 7)]);

@@ -600,3 +600,24 @@ Complex decoding is validated with independent synthetic geometry, not a native
 Macintosh oracle. GPU clipping still rejects complex regions. Next: feed the
 validated geometry into the wgpu clipping path, then add Boolean region APIs
 and complete window/application interactions. The full rebuild remains active.
+
+
+### Complex-region GPU clipping
+
+Connected region decoding and clip/visible intersection to the existing integer
+WGSL drawing pipeline. Geometry is translated at the bitmap boundary and tested
+inside one compute pass; each covered pixel receives its transfer once. CPU
+work remains storage conversion and geometry, with no pixel drawing fallback.
+Intersection and shader-work ceilings reject excessive complexity explicitly.
+
+A GPU test checks a hole, exact XOR pixels, padding, direct writes between draws,
+complex visible/clip intersection and malformed input without pixel changes.
+Both MPW programs were rebuilt with an encoded complex clip and independently
+checked intermediate/final XOR bytes. All 92 tests and strict Clippy pass; the
+extended visible-region test was rerun after adding that coverage. There are
+79 default tests and thirteen optional GPU/MPW checks, all enabled locally.
+
+Native comparison, arbitrary region construction/Boolean operations and Window
+Manager application behavior remain outstanding. Window presentation is still
+unverified. Next: region Boolean APIs and representative window interactions;
+the full rebuild and real Mixed Mode acceptance remain unfinished.

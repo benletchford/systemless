@@ -178,6 +178,14 @@ impl Graphics {
         Ok(())
     }
     pub fn execute(&self, memory: &mut Memory, draw: Draw) -> Result<()> {
+        self.execute_clipped(memory, draw, None)
+    }
+    pub fn execute_clipped(
+        &self,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+    ) -> Result<()> {
         self.check_error()?;
         let mut p = vec![0i32; 24];
         p[0] = self.width as i32;
@@ -234,6 +242,25 @@ impl Graphics {
             return Err(Error::Graphics(
                 "coordinates outside QuickDraw i16 range".into(),
             ));
+        }
+        p.push(clips.map_or(-1, |r| r.len() as i32));
+        if let Some(clips) = clips {
+            if clips.len() > 65536
+                || u64::from(self.width) * u64::from(self.height) * clips.len() as u64 > 32_000_000
+            {
+                return Err(Error::Graphics(
+                    "GPU region clipping work limit exceeded".into(),
+                ));
+            }
+            for r in clips {
+                let coordinates = [r.left, r.top, r.right, r.bottom];
+                if coordinates.iter().any(|v| !(-32768..=32767).contains(v)) {
+                    return Err(Error::Graphics(
+                        "region coordinates outside GPU range".into(),
+                    ));
+                }
+                p.extend(coordinates);
+            }
         }
         let indices = words_bytes(
             memory

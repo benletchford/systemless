@@ -7,7 +7,9 @@
 
 QDGlobals qd;
 static unsigned char pixels[8] = {0x80,0x33,0,0x44,0,0x55,0,0x66};
+static short complexClip[22] = {44,0,0,4,8,0,0,8,32767,1,2,6,32767,3,2,6,32767,4,0,8,32767,32767};
 int main(void) {
+    int i;
     GrafPort port;
     GrafPort other;
     GrafPtr current;
@@ -60,6 +62,17 @@ int main(void) {
     if (pixels[1] != 0x33 || pixels[3] != 0x44 || pixels[5] != 0x55 || pixels[7] != 0x66) return 5;
     PostEvent(keyDown,42);
     if (!WaitNextEvent(keyDownMask,&event,0,0) || event.message != 42) return 6;
+    temporary = NewRgn();
+    SetHandleSize((Handle)temporary,44);
+    if (MemError()) return 17;
+    for (i=0;i<22;i++) ((short *)*temporary)[i]=complexClip[i];
+    SetClip(temporary);
+    PaintRect(&all);
+    if (pixels[0]!=0x7f || pixels[2]!=0x95 || pixels[4]!=0xe9 || pixels[6]!=0xff) return 18;
+    PaintRect(&all);
+    if (pixels[0]!=0x80 || pixels[2]!=0x56 || pixels[4]!=0x2a || pixels[6]!=0) return 19;
+    DisposeRgn(temporary);
+    RectRgn(port.clipRgn,&clip);
     resized = NewHandle(3);
     if (!resized) return 11;
     (*resized)[0] = 17; (*resized)[1] = 34; (*resized)[2] = 51;

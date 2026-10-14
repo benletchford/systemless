@@ -31,14 +31,10 @@ fn rect_bytes(r: Rect) -> Result<[u8; 8]> {
     }
     Ok(b)
 }
-fn region(memory: &Memory, handle: GuestPtr) -> Result<Rect> {
+fn region(memory: &Memory, handle: GuestPtr) -> Result<Vec<Rect>> {
     let data = GuestPtr(memory.u32(handle)?);
-    if memory.u16(data)? != 10 {
-        return Err(Error::Graphics(
-            "nonrectangular QuickDraw region is unsupported".into(),
-        ));
-    }
-    read_rect(memory, offset(data, 2)?)
+    let size = memory.u16(data)? as usize;
+    crate::region_geometry::decode(memory.read(data, size)?)
 }
 fn write_region(memory: &mut Memory, handle: GuestPtr, r: Rect) -> Result<()> {
     let data = GuestPtr(memory.u32(handle)?);
@@ -229,14 +225,28 @@ impl Ports {
         let visible = if bitmap.base == screen.base {
             region(memory, visible_handle)?
         } else {
-            bitmap.bounds
+            vec![bitmap.bounds]
         };
-        bitmap.execute(
+        if visible.len().saturating_mul(clip.len()) > 1_000_000 {
+            return Err(Error::Graphics(
+                "region intersection work limit exceeded".into(),
+            ));
+        }
+        let mut clips = Vec::new();
+        for a in &visible {
+            for b in &clip {
+                let r = intersect(port_rect, intersect(*a, *b));
+                if r.left < r.right && r.top < r.bottom {
+                    clips.push(r);
+                }
+            }
+        }
+        bitmap.execute_clipped(
             gpu,
             memory,
             Draw::Fill {
                 rect: r,
-                clip: intersect(port_rect, intersect(visible, clip)),
+                clip: port_rect,
                 pattern,
                 foreground,
                 background,
@@ -247,6 +257,7 @@ impl Ports {
                     _ => Transfer::Bic,
                 },
             },
+            Some(&clips),
         )
     }
 }

@@ -321,7 +321,7 @@ reads live port bounds, region handles, pattern, colors and transfer mode, then
 uses the packed-bitmap wgpu boundary. Pattern phase follows the port rectangle.
 Screen visibility clips screen drawing but does not clip offscreen bitmaps.
 
-Currently only rectangular regions and monochrome colors are supported.
+Monochrome colors and bounded rectangular/complex clipping regions are supported.
 Picture/region/polygon recording and custom QDProcs fail explicitly. The real 68K/PPC adapters now call this service layer; InitGraf binds
 application-owned globals as described below.
 
@@ -446,11 +446,9 @@ preserves handle identity and supports self-copy. Source sizes must be even,
 these copying services do not imply that complex-region rasterization works.
 
 GetClip and SetClip copy region bytes rather than exchange port handles. The
-68K Pascal stack and PPC register adapters use the same implementation. Existing
-drawing still rejects nonrectangular region records explicitly. These storage
+68K Pascal stack and PPC register adapters use the same implementation. Drawing now decodes nonrectangular records for GPU clipping. These storage
 contracts follow Apple's [region routines](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-131.html)
-and MPW Quickdraw.h. Complex-region decoding, Boolean operations and GPU clipping
-remain the next geometry boundary.
+and MPW Quickdraw.h. Region Boolean construction remains the next geometry boundary.
 
 
 ## Bounded region geometry
@@ -464,10 +462,28 @@ The expansion cap can reject unusually intricate otherwise valid input; it is
 an explicit runtime bound, not a native QuickDraw compatibility claim.
 
 PtInRgn and EmptyRgn use this decoder through both real ABIs. Signed points and
-half-open right/bottom boundaries are retained. GPU clipping has not yet adopted
-the decoder. Apple's public Region documentation describes the payload as
+half-open right/bottom boundaries are retained. GPU clipping uses the same decoder. Apple's public Region documentation describes the payload as
 proprietary; inversion-point interpretation follows the first-hand published
 analysis [ConvertPict2Rgn](https://preserve.mactech.com/articles/mactech/Vol.05/05.06/ConvertPict2Rgn/index.html).
 Hand-built donut/disjoint-region tests verify geometry independently; they are
 not a native Macintosh comparison. MPW programs verify rectangular hit-testing
 and empty-region results through actual trap/import calls.
+
+
+## Complex regions in the GPU drawing path
+
+PaintRect intersects decoded clip and visible geometry with the port rectangle;
+offscreen bitmaps retain the existing rule that visibility does not clip them.
+Geometry intersection is CPU work, with at most one million rectangle pairs.
+The bitmap boundary translates geometry into bitmap-local coordinates alongside
+pattern phase. The compute shader tests coverage and performs the transfer once
+per pixel in a single dispatch, so overlapping coverage cannot apply XOR twice.
+No CPU pixel drawing path is introduced.
+
+Clipping accepts at most 65,536 rectangles and at most 32 million pixel/rectangle
+checks per draw. Exceeding either limit fails before guest pixels change. These
+explicit limits bound GPU work while the initial linear geometry scan is in use.
+Malformed geometry also fails before pixel publication. Guest memory remains
+canonical, with readback/repacking after each draw as before. Native-system
+pixel comparison is still outstanding; acceptance uses independent expected
+pixel maps and compiled programs containing an explicit complex-region fixture.

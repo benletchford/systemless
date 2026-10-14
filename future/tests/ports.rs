@@ -176,3 +176,79 @@ fn init_port_restores_defaults_in_place_and_rejects_invalid_regions_atomically()
     assert_eq!(memory.read(port, 108).unwrap(), invalid);
     assert_eq!(memory.read(visible_data, 10).unwrap(), original_visible);
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn complex_clip_keeps_holes_and_xor_single_pass_with_guest_writes() {
+    let (mut m, mut process, ports) = setup();
+    let port = GuestPtr(0x1080);
+    ports.open(&mut m, &mut process, port).unwrap();
+    let clip = m.u32(GuestPtr(port.0 + 28)).unwrap();
+    let words: [u16; 22] = [
+        44, 0, 0, 4, 8, 0, 0, 8, 32767, 1, 2, 6, 32767, 3, 2, 6, 32767, 4, 0, 8, 32767, 32767,
+    ];
+    process.set_handle_size(&mut m, clip, 44).unwrap();
+    let bytes: Vec<_> = words.into_iter().flat_map(u16::to_be_bytes).collect();
+    let data = GuestPtr(m.u32(GuestPtr(clip)).unwrap());
+    m.write(data, &bytes).unwrap();
+    m.write(GuestPtr(0x2000), &[0, 33, 0, 44, 0, 55, 0, 66])
+        .unwrap();
+    m.write(GuestPtr(port.0 + 56), &10u16.to_be_bytes())
+        .unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut gpu =
+        pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x75000000))).unwrap();
+    gpu.palette[0] = [255; 4];
+    gpu.palette[1] = [0, 0, 0, 255];
+    ports
+        .paint_rect(&gpu, &mut m, Rect::new(0, 0, 8, 4))
+        .unwrap();
+    assert_eq!(
+        m.read(GuestPtr(0x2000), 8).unwrap(),
+        &[255, 33, 0xc3, 44, 0xc3, 55, 255, 66]
+    );
+    let rgba = gpu.read_rgba().unwrap();
+    for y in 0..4 {
+        for x in 0..8 {
+            let black = y == 0 || y == 3 || !(2..6).contains(&x);
+            assert_eq!(
+                &rgba[(y * 8 + x) * 4..(y * 8 + x + 1) * 4],
+                if black { &[0, 0, 0, 255] } else { &[255; 4] }
+            );
+        }
+    }
+    m.write(GuestPtr(0x2000), &[0x7f]).unwrap();
+    ports
+        .paint_rect(&gpu, &mut m, Rect::new(0, 0, 8, 4))
+        .unwrap();
+    assert_eq!(
+        m.read(GuestPtr(0x2000), 8).unwrap(),
+        &[0x80, 33, 0, 44, 0, 55, 0, 66]
+    );
+    // A complex visible region intersects the complex clip for screen drawing.
+    let visible = m.u32(GuestPtr(port.0 + 24)).unwrap();
+    process.set_handle_size(&mut m, visible, 36).unwrap();
+    let visible_words: [u16; 18] = [
+        36, 0, 0, 4, 8, 0, 0, 4, 32767, 2, 4, 8, 32767, 4, 0, 8, 32767, 32767,
+    ];
+    let visible_bytes: Vec<_> = visible_words
+        .into_iter()
+        .flat_map(u16::to_be_bytes)
+        .collect();
+    m.write(GuestPtr(m.u32(GuestPtr(visible)).unwrap()), &visible_bytes)
+        .unwrap();
+    ports
+        .paint_rect(&gpu, &mut m, Rect::new(0, 0, 8, 4))
+        .unwrap();
+    assert_eq!(
+        m.read(GuestPtr(0x2000), 8).unwrap(),
+        &[0x70, 33, 0xc0, 44, 0xc3, 55, 255, 66]
+    );
+    // Geometry fails before drawing; no partial guest pixels are published.
+    m.write(data, &43u16.to_be_bytes()).unwrap();
+    let before = m.read(GuestPtr(0x2000), 8).unwrap().to_vec();
+    assert!(ports
+        .paint_rect(&gpu, &mut m, Rect::new(0, 0, 8, 4))
+        .is_err());
+    assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), before);
+}

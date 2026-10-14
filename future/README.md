@@ -69,7 +69,7 @@ Use `--graphics` with `--code` or `--pef` to acquire a headless GPU for loaded
 applications. Without that option, CPU-only programs need no GPU and drawing
 fails explicitly. Basic QuickDraw describes a fixed 512x342 monochrome screen;
 other bitmap sizes use temporary targets on the same device. The compiled
-drawing acceptance test also runs both programs through this CLI path. Nonrectangular clipping, color ports,
+drawing acceptance test also runs both programs through this CLI path. Color ports,
 recording, custom QDProcs, windows and full graphics compatibility remain pending.
 
 For embedding hosts, `Runtime::refresh_screen` updates the display texture from
@@ -83,5 +83,6 @@ verification remain pending. Window integration
 is implemented but presentation is still unverified on this host.
 
 Region storage supports NewRgn, DisposeRgn, RectRgn, CopyRgn, GetClip and SetClip.
-Variable-sized region payloads can be copied; drawing still requires rectangular
-regions and rejects complex ones explicitly.
+Variable-sized region payloads can be copied and decoded for hit testing and
+GPU clipping, including holes and disjoint spans. Region Boolean construction
+and native Macintosh comparison remain pending.

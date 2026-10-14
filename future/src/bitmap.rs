@@ -96,11 +96,20 @@ impl Bitmap {
     /// Commands use bitmap-local QuickDraw coordinates. Temporary indices only
     /// encode storage; all pixel operations still execute through wgpu.
     pub fn execute(&self, gpu: &Graphics, memory: &mut Memory, draw: Draw) -> Result<()> {
+        self.execute_clipped(gpu, memory, draw, None)
+    }
+    pub fn execute_clipped(
+        &self,
+        gpu: &Graphics,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+    ) -> Result<()> {
         let (width, height) = self.extent()?;
         memory.validate_write(self.base, self.byte_len()?)?;
         if (width, height) != (gpu.width as usize, gpu.height as usize) {
             let target = gpu.target(width as u32, height as u32)?;
-            return self.execute(&target, memory, draw);
+            return self.execute_clipped(&target, memory, draw, clips);
         }
         let coordinate = |value: i32, origin: i32| {
             value
@@ -159,7 +168,10 @@ impl Bitmap {
         };
         let mut staging = Memory::default();
         staging.map(gpu.base, self.unpack(memory)?, Permissions::RW)?;
-        gpu.execute(&mut staging, draw)?;
+        let translated = clips
+            .map(|clips| clips.iter().copied().map(rect).collect::<Result<Vec<_>>>())
+            .transpose()?;
+        gpu.execute_clipped(&mut staging, draw, translated.as_deref())?;
         self.pack(memory, staging.read(gpu.base, width * height)?)
     }
 }
