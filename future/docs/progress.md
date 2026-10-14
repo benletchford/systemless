@@ -781,3 +781,21 @@ no original PPC application instruction has executed. The 68K programs remain
 at $A8FE. Next: dynamic fragment loading and the common 68K startup requirement.
 Color ports, native overflow comparison, real Mixed Mode, presentation and full
 original application interactions remain unfinished. Rebuild goal stays active.
+
+
+### Separate PEF preparation from process startup
+
+PEF parsing, relocation, mappings and import adapters now produce a prepared
+image before application startup installs process resources, low memory, stacks
+and CPU lifecycle state. This is a behavior-preserving boundary for CFM work;
+GetMemFragment remains unresolved and original application stopping points are
+unchanged. All 112 tests pass with optional GPU/MPW tests enabled; strict
+all-target Clippy passes.
+
+Next: parameterize fragment address reservations and shared StdCLib storage,
+retain validated exports and optional main routines, atomically adopt mappings
+into the existing runtime, track connections, and execute initializers through
+a dedicated guest continuation before publishing load results. Failure cleanup
+and eventual CloseConnection termination must preserve existing process state.
+Fixed addresses and the application-only lifecycle are not dynamic CFM support.
+The full rebuild goal remains active.

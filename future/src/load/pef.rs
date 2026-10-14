@@ -19,7 +19,41 @@ struct Section {
     kind: u8,
     data: Vec<u8>,
 }
+// A prepared image owns loader mappings and import adapters. Application
+// resources, low memory, stacks, and CPU startup are installed by `load` below.
+// Keeping this boundary explicit prevents future CFM loads from calling finish
+// and accidentally constructing another Macintosh process.
+struct PreparedImage {
+    memory: Memory,
+    abi: Abi,
+    main: crate::lifecycle::Routine,
+    init: Option<crate::lifecycle::Routine>,
+    term: Option<crate::lifecycle::Routine>,
+    sections: Vec<(u32, u32)>,
+}
+const INIT_BLOCK: u32 = 0x6800_0000;
+
 pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplication> {
+    let image = prepare(input)?;
+    let mut app = finish(
+        image.memory,
+        Architecture::PowerPc,
+        image.main.entry,
+        image.main.toc,
+        resources,
+        image.sections,
+        image.abi,
+    )?;
+    app.runtime.lifecycle = Some(crate::lifecycle::Lifecycle::start(
+        &mut app.runtime.cpu,
+        image.init,
+        image.term,
+        INIT_BLOCK,
+    ));
+    Ok(app)
+}
+
+fn prepare(input: &[u8]) -> Result<PreparedImage> {
     limit(input.len())?;
     if bytes(input, 0, 12)? != b"Joy!peffpwpc" || u32_at(input, 12)? != 1 || u32_at(input, 36)? != 0
     {
@@ -257,8 +291,6 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
     };
     let init = special(8)?;
     let term = special(16)?;
-    let entry = main.entry;
-    let toc = main.toc;
     let mut memory = Memory::default();
     if stdlib_data {
         crate::stdlib::install(&mut memory)?;
@@ -294,11 +326,10 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
         )?;
     }
     // Main TOC must refer to instantiated storage, never a host pointer.
-    memory.read(GuestPtr(toc), 1)?;
+    memory.read(GuestPtr(main.toc), 1)?;
     // Byte-slice loading is a memory container, even when the host CLI read a file.
     // System 7 CFragInitBlock: IDs at 0/4/8, locator at 12, name at 28.
     const CONTAINER: u32 = 0x6000_0000;
-    const INIT_BLOCK: u32 = 0x6800_0000;
     for routine in [init, term].into_iter().flatten() {
         memory.fetch(GuestPtr(routine.entry), 4, 4)?;
         memory.read(GuestPtr(routine.toc), 1)?;
@@ -323,22 +354,14 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
         }
         memory.map(GuestPtr(INIT_BLOCK), block, ro)?;
     }
-    let mut app = finish(
+    Ok(PreparedImage {
         memory,
-        Architecture::PowerPc,
-        entry,
-        toc,
-        resources,
-        info,
         abi,
-    )?;
-    app.runtime.lifecycle = Some(crate::lifecycle::Lifecycle::start(
-        &mut app.runtime.cpu,
+        main,
         init,
         term,
-        INIT_BLOCK,
-    ));
-    Ok(app)
+        sections: info,
+    })
 }
 fn routine(sections: &[Section], index: usize, offset: usize) -> Result<crate::lifecycle::Routine> {
     let section = sections
