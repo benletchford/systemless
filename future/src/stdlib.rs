@@ -34,3 +34,41 @@ pub(crate) fn install(memory: &mut Memory) -> Result<()> {
     bytes[10..14].copy_from_slice(&(BASE + 60).to_be_bytes());
     memory.map(GuestPtr(BASE), bytes, Permissions::RW)
 }
+
+/// Standalone application exit. stdio and atexit are not exported yet, so no
+/// registered C-library cleanup can be silently lost. CFM termination remains
+/// the shared process lifecycle's responsibility.
+pub(crate) fn exit(memory: &mut Memory, status: u32) -> Result<()> {
+    // MPW shell records contain additional exit hooks; accepting such records
+    // without executing them would hide unsupported cleanup.
+    for offset in [22, 36] {
+        if memory.u32(GuestPtr(BASE + offset))? != 0 {
+            return Err(crate::Error::Cpu(
+                "MPW shell exit hooks are unsupported".into(),
+            ));
+        }
+    }
+    memory.validate_write(PHASE, 8)?;
+    let mut values = [0; 8];
+    values[..4].copy_from_slice(&5u32.to_be_bytes());
+    values[4..].copy_from_slice(&status.to_be_bytes());
+    memory.write(PHASE, &values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn exit_publishes_status_but_rejects_unimplemented_shell_cleanup() {
+        let mut memory = Memory::default();
+        install(&mut memory).unwrap();
+        exit(&mut memory, 37).unwrap();
+        assert_eq!(memory.u32(PHASE).unwrap(), 5);
+        assert_eq!(memory.u32(EXIT_STATUS).unwrap(), 37);
+        memory
+            .write(GuestPtr(BASE + 22), &123u32.to_be_bytes())
+            .unwrap();
+        assert!(exit(&mut memory, 99).is_err());
+        assert_eq!(memory.u32(EXIT_STATUS).unwrap(), 37);
+    }
+}

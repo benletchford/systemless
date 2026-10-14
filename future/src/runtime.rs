@@ -93,6 +93,12 @@ impl Runtime {
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::BreakPoint(pointer) => {
+                            return Err(Error::Cpu(format!(
+                                "PPC debugger breakpoint requested at {:#x}",
+                                pointer.0
+                            )));
+                        }
                         Call::SetJump(buffer) => {
                             crate::jump::save(&mut self.cpu, &mut self.memory, buffer)?
                         }
@@ -107,7 +113,10 @@ impl Runtime {
                             let value = self.tick_count()?;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
                         }
-                        Call::Exit(v) => {
+                        Call::Exit(v) | Call::CExit(v) => {
+                            if matches!(call, Call::CExit(_)) {
+                                crate::stdlib::exit(&mut self.memory, v)?;
+                            }
                             let stop = if let Some(lifecycle) = &mut self.lifecycle {
                                 lifecycle.exit(&mut self.cpu, v)?
                             } else {
@@ -210,7 +219,9 @@ impl Runtime {
                 Outcome::Service(call) => {
                     self.services.calls.push(call);
                     match call {
-                        Call::SetJump(_)
+                        Call::CExit(_)
+                        | Call::BreakPoint(_)
+                        | Call::SetJump(_)
                         | Call::LongJump { .. }
                         | Call::TrapAddress { .. }
                         | Call::NewHandle { .. }

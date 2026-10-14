@@ -155,6 +155,7 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
     for i in 0..libraries {
         let p = 56 + i * 24;
         let name = cstring(strings, u32_at(l, p)? as usize, 63)?;
+        stdlib_data |= name == b"StdCLib";
         let first = u32_at(l, p + 16)? as usize;
         let n = u32_at(l, p + 12)? as usize;
         let options = l[p + 20];

@@ -2,8 +2,9 @@
 
 This ordinary C application reads a DATA resource, checks its handle size,
 allocates cleared memory, disposes it and exits. It uses the existing pinned MPW
-toolchain and standard startup libraries. The 68K build now passes this complete
-interaction; PPC still needs StdCLib support. Generated binaries stay in ignored
+toolchain and standard startup libraries. Both the 68K and PPC builds pass this complete
+interaction. A second PPC program checks two nonlocal jumps and returns 37
+from main through the standard startup library. Generated binaries stay in ignored
 `future/target/mpw-probe` and are not required by the default test suite.
 
 From the repository root, build the compiler image if needed and generate forks:
@@ -27,8 +28,16 @@ ordered resource/size/allocation/disposal calls; an early CRT return is not succ
 cargo test --manifest-path future/Cargo.toml --locked --test mpw -- --ignored
 ```
 
-PPC preparation still stops at required import `StdCLib:_BreakPoint`. Other StdCLib
-imports are `__setjmp`, `_IntEnv`, `__C_phase`, `__target_for_exit`, `_exit_status`,
-`exit` and `__NubAt3`; several are data symbols and need shared guest storage.
-The PPC application has not reached C main. No graphics, events, original
-commercial application or broader compiler-runtime compatibility is claimed.
+The PPC resource/handle build reaches C main and exits successfully after 102
+instruction boundaries and 6 service calls. The `jump.c` program additionally
+checks the packed standalone argument environment, longjmp results 7 and 0
+(the latter must become 1), and normal return from main with status 37.
+Tests require all observed jumps and the final CExit(37), not just termination.
+
+StdCLib support is a bounded standalone application subset. Shared guest data
+symbols, non-AltiVec jump buffers and C exit are implemented. C exit records
+phase/status and invokes the shared CFM termination path. Stdio, atexit,
+MPW shell cleanup hooks and interactive debugger support remain unavailable;
+unknown required imports and explicit breakpoint calls fail. No graphics,
+events, original commercial application or broader compiler-runtime
+compatibility is claimed.

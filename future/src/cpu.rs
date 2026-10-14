@@ -12,6 +12,8 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    CExit(u32),
+    BreakPoint(GuestPtr),
     SetJump(GuestPtr),
     LongJump {
         buffer: GuestPtr,
@@ -73,6 +75,9 @@ impl Cpu {
             }
             Architecture::PowerPc => {
                 let mut c = Box::new(PpcCpu::new());
+                // Classic Macintosh ABI structures are packed to two bytes.
+                // Emulate data alignment fixups through the checked memory bus.
+                c.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
                 c.pc = pc;
                 c.gpr[1] = sp;
                 c.lr = RETURN_GATE;

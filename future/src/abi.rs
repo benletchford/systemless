@@ -9,6 +9,8 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    CExit,
+    BreakPoint,
     SetJump,
     LongJump,
     TickCount,
@@ -60,6 +62,8 @@ impl Abi {
     pub fn resolve(library: &[u8], symbol: &[u8]) -> Option<Service> {
         if library == b"StdCLib" {
             return match symbol {
+                b"exit" => Some(Service::CExit),
+                b"_BreakPoint" => Some(Service::BreakPoint),
                 b"__setjmp" => Some(Service::SetJump),
                 b"longjmp" => Some(Service::LongJump),
                 _ => None,
@@ -163,6 +167,8 @@ impl Abi {
     }
     pub fn import(service: Service, c: &ppc::PpcCpu) -> (Call, Reply) {
         let call = match service {
+            Service::CExit => Call::CExit(c.gpr[3]),
+            Service::BreakPoint => Call::BreakPoint(GuestPtr(c.gpr[3])),
             Service::SetJump => Call::SetJump(GuestPtr(c.gpr[3])),
             Service::LongJump => Call::LongJump {
                 buffer: GuestPtr(c.gpr[3]),

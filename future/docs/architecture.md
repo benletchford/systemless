@@ -44,8 +44,10 @@ continue, service, callback, return, yield/budget, fault, and exit.
 
 GuestPtr is u32, never a host pointer. Mappings are non-overlapping checked
 ranges; access arithmetic may not wrap. Multi-byte values are big-endian.
-Unaligned data accesses are allowed by storage; each CPU enforces its own ISA
-alignment, and instruction fetch requires 2/4-byte alignment. Permissions are
+Unaligned data accesses are allowed by storage. PPC uses the engine's
+`EmulateData` policy for Macintosh packed structures, as required by MPW
+startup's two-byte-aligned environment fields. These accesses still traverse
+the checked memory bus; instruction fetch requires 2/4-byte alignment. Permissions are
 read/write/execute. Whole scalar writes validate before mutation. No fastmem
 or CPU instruction caches bypass tracking. Unmapped/protected accesses stop
 execution with a structured fault. The 68K bus records the first fault even

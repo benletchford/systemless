@@ -368,3 +368,35 @@ fn unsupported_gate_and_bad_stack_fault_without_dispatch() {
     assert!(matches!(rt.advance(1), Err(Error::Memory { .. })));
     assert!(rt.services.calls.is_empty());
 }
+
+#[test]
+fn ppc_packed_data_access_preserves_memory_bounds_and_instruction_alignment() {
+    let mut rt = fixtures::runtime(Architecture::PowerPc, false).unwrap();
+    let code: Vec<_> = [0x80606002u32, 0x90606007, 0x9060600e]
+        .iter()
+        .flat_map(|w| w.to_be_bytes())
+        .collect();
+    rt.memory
+        .map(GuestPtr(0x9000), code, Permissions::RX)
+        .unwrap();
+    rt.memory
+        .map(GuestPtr(0x6000), vec![0x11; 16], Permissions::RW)
+        .unwrap();
+    rt.memory
+        .write(GuestPtr(0x6002), &0x12345678u32.to_be_bytes())
+        .unwrap();
+    rt.cpu = Cpu::new(Architecture::PowerPc, 0x9000, 0x2ff0);
+    assert_eq!(rt.advance(2).unwrap(), Stop::Budget);
+    assert_eq!(rt.memory.u32(GuestPtr(0x6007)).unwrap(), 0x12345678);
+    assert!(matches!(
+        rt.advance(1),
+        Err(Error::Memory {
+            address: 0x600e,
+            access: Access::Write
+        })
+    ));
+    assert_eq!(rt.memory.read(GuestPtr(0x600e), 2).unwrap(), &[0x11; 2]);
+    let mut rt = fixtures::runtime(Architecture::PowerPc, false).unwrap();
+    rt.cpu = Cpu::new(Architecture::PowerPc, 0x1002, 0x2ff0);
+    assert!(matches!(rt.advance(1), Err(Error::Alignment(0x1002))));
+}

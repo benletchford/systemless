@@ -250,3 +250,35 @@ setjmp/longjmp probe; do not count generated fixtures as compiled PPC
 compatibility. Apple StdCLib exit delegates to _RTExit, which also handles
 shell context and registered cleanup. Inspect those semantics before
 implementing application exit; do not silently discard cleanup work.
+
+
+### Compiled PPC startup, packed structures and C exit
+
+Both MPW builds of `probe.c` now pass their complete resource/size/cleared
+allocation/disposal/exit interaction. PPC: 102 instruction boundaries, 6
+service calls. The additional compiled `jump.c` validates empty application
+arguments, two real nonlocal jumps (results 7 and zero converted to 1), and a
+return of 37 from main through the standard C startup and C exit import.
+
+PPC uses the engine's `EmulateData` policy: MPW's packed environment is read
+at two-byte offsets. Checked memory bounds, atomic scalar stores and aligned
+instruction fetch remain enforced and tested. No address-specific workaround
+or change to guest structure offsets was used.
+
+Standalone C exit records phase 5 and the status, then uses the existing shared
+fragment lifecycle, including exactly-once CFM termination. This runtime does
+not export stdio or atexit yet, so it cannot accept registrations and silently
+lose them. Nonzero MPW shell exit-hook records fault explicitly. `_BreakPoint`
+is an explicit terminal debugger-request diagnostic, not a silent no-op.
+Normal MPW startup does not call it with the debugger flag clear.
+
+Validation: all 57 tests passed, including two Metal GPU checks and three
+MPW-generated application checks. Strict all-target Clippy passed. Generated
+compiler outputs remain ignored and the five optional checks remain ignored
+in the default suite (52 passing). No original-app compatibility is claimed.
+
+Next: add deterministic event service ABI calls and a compiled event-driven
+slice on both architectures, then connect real QuickDraw port/drawing calls
+to the existing wgpu graphics model. Keep C runtime cleanup expansion and
+real Mixed Mode descriptors explicit remaining work. Window presentation
+acceptance and the complete rebuild remain unfinished.

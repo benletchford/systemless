@@ -4,8 +4,9 @@ An independent replacement runtime on `dev/future`. One guest address space and
 service dispatcher serve real 68K and PowerPC engines. Indexed drawing, palette
 expansion and presentation use wgpu. This build does not link the legacy runtime.
 
-**Current scope: generated fixtures and one MPW-compiled 68K resource/handle app;
-no original application verified.**
+**Current scope: generated fixtures, an MPW-compiled resource/handle app on both
+68K and PPC, and a compiled PPC nonlocal-jump/main-return probe. No original
+application verified.**
 Resource-fork/CODE and PowerPC PEF loaders use a small real Macintosh ABI slice
 for resources, handles, timing and exit. The graphics fixtures still use private
 gateways, which are disabled for loaded applications.

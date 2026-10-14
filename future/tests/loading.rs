@@ -791,3 +791,38 @@ fn pef_stdlib_jump_calls_resume_saved_guest_execution() {
         [Call::SetJump(_), Call::LongJump { value: 7, .. }]
     ));
 }
+
+#[test]
+fn stdlib_exit_uses_shared_fragment_termination_once() {
+    let mut f = lifecycle_exit_pef();
+    f.bytes[f.strings..f.strings + 8].copy_from_slice(b"StdCLib\0");
+    f.bytes[f.strings + 13..f.strings + 18].copy_from_slice(b"exit\0");
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let data = app.info.sections[1].0;
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Exit(0));
+    assert_eq!(app.runtime.memory.u32(GuestPtr(data + 32)).unwrap(), 2);
+    assert_eq!(app.runtime.services.calls, vec![Call::CExit(0)]);
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Exit(0));
+    assert_eq!(app.runtime.memory.u32(GuestPtr(data + 32)).unwrap(), 2);
+}
+
+#[test]
+fn stdlib_breakpoint_faults_instead_of_silently_continuing() {
+    let mut f = pef_program(
+        &[
+            0x81820008, 0x800c0000, 0x804c0004, 0x7c0903a6, 0x4e800421, 0x4e800020,
+        ],
+        &[b"_BreakPoint"],
+        12,
+    );
+    f.bytes[f.strings..f.strings + 8].copy_from_slice(b"StdCLib\0");
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    assert!(
+        matches!(app.runtime.advance(100),Err(Error::Cpu(message)) if message.contains("debugger breakpoint"))
+    );
+    assert_eq!(
+        app.runtime.services.calls,
+        vec![Call::BreakPoint(GuestPtr(0))]
+    );
+    assert!(app.runtime.advance(100).is_err());
+}

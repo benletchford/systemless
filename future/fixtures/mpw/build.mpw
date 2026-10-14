@@ -6,3 +6,5 @@ MrC -sym off -opt off probe.c -o probe.ppc.o
 PPCLink probe.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o probe.ppc
 Rez -append -o probe.68k probe.r
 Rez -append -o probe.ppc probe.r
+MrC -sym off -opt off jump.c -o jump.ppc.o
+PPCLink jump.ppc.o "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o jump.ppc
