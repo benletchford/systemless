@@ -29,6 +29,7 @@ pub struct Runtime {
     pub process: crate::process::Process,
     continuations: Vec<Continuation>,
     terminal: Option<Stop>,
+    pub(crate) lifecycle: Option<crate::lifecycle::Lifecycle>,
     faulted: bool,
 }
 impl Runtime {
@@ -43,6 +44,7 @@ impl Runtime {
             process: crate::process::Process::default(),
             continuations: Vec::new(),
             terminal: None,
+            lifecycle: None,
             faulted: false,
         }
     }
@@ -77,9 +79,15 @@ impl Runtime {
                         self.cpu = frame.caller;
                         self.cpu.set_result(value);
                     } else {
-                        let stop = Stop::Returned(value);
-                        self.terminal = Some(stop);
-                        return Ok(stop);
+                        let stop = if let Some(lifecycle) = &mut self.lifecycle {
+                            lifecycle.returned(&mut self.cpu)?
+                        } else {
+                            Some(Stop::Returned(value))
+                        };
+                        if let Some(stop) = stop {
+                            self.terminal = Some(stop);
+                            return Ok(stop);
+                        }
                     }
                 }
                 Outcome::Macintosh(call, reply) => {
@@ -90,9 +98,16 @@ impl Runtime {
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
                         }
                         Call::Exit(v) => {
-                            let stop = Stop::Exit(v);
-                            self.terminal = Some(stop);
-                            return Ok(stop);
+                            let stop = if let Some(lifecycle) = &mut self.lifecycle {
+                                lifecycle.exit(&mut self.cpu, v)?
+                            } else {
+                                Some(Stop::Exit(v))
+                            };
+                            self.continuations.clear();
+                            if let Some(stop) = stop {
+                                self.terminal = Some(stop);
+                                return Ok(stop);
+                            }
                         }
                         Call::NewHandle { size, clear } => {
                             let v = self.process.new_handle(&mut self.memory, size, clear)?;

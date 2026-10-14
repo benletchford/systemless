@@ -42,9 +42,13 @@ cargo run --manifest-path future/Cargo.toml --locked -- --code /tmp/systemless-l
 cargo run --manifest-path future/Cargo.toml --locked -- --pef /tmp/systemless-load/application.pef --resources /tmp/systemless-load/resources.rsrc --budget 1000
 ```
 
-Both load a DATA resource, inspect its handle, allocate cleared memory and exit.
+The generator also writes `lifecycle.pef`; run it with `--pef` to exercise
+initializer, main and cleanup, returning 7 after 17 instruction boundaries.
+
+The resource fixtures both load a DATA resource, inspect its handle, allocate cleared memory and exit.
 Supported loading is near-model CODE and PowerPC PEF, including pattern data and
-relocations. Compressed resources, far-model CODE, PEF initialization/termination
-routines and unknown required imports fail explicitly. Files and events, real
+relocations. PEF initialization and termination run with bounded execution and a guest
+initialization block. Compressed resources, far-model CODE and unknown required
+imports fail explicitly. Files and events, real
 QuickDraw ABI calls, movable/purgeable handles and original-app compatibility
 remain pending. The rebuild goal is incomplete.

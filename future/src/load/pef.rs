@@ -106,11 +106,6 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
     bytes(l, 0, 56)?;
     let main = u32_at(l, 0)? as usize;
     let main_offset = u32_at(l, 4)? as usize;
-    if u32_at(l, 8)? != u32::MAX || u32_at(l, 16)? != u32::MAX {
-        return Err(invalid(
-            "PEF initializer/terminator requires lifecycle support",
-        ));
-    }
     let libraries = u32_at(l, 24)? as usize;
     let symbols = u32_at(l, 28)? as usize;
     let relocs = u32_at(l, 32)? as usize;
@@ -244,15 +239,19 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
             &mut work_budget,
         )?;
     }
-    let main_section = sections
-        .get(main)
-        .ok_or_else(|| invalid("PEF main section"))?;
-    if !main_offset.is_multiple_of(4) {
-        return Err(invalid("unaligned PEF main transition vector"));
-    }
-    let vector = bytes(&main_section.data, main_offset, 8)?;
-    let entry = u32_at(vector, 0)?;
-    let toc = u32_at(vector, 4)?;
+    let main = routine(&sections, main, main_offset)?;
+    let special = |field| -> Result<Option<crate::lifecycle::Routine>> {
+        let section = u32_at(l, field)?;
+        if section == u32::MAX {
+            Ok(None)
+        } else {
+            routine(&sections, section as usize, u32_at(l, field + 4)? as usize).map(Some)
+        }
+    };
+    let init = special(8)?;
+    let term = special(16)?;
+    let entry = main.entry;
+    let toc = main.toc;
     let mut memory = Memory::default();
     let mut info = Vec::new();
     for section in sections {
@@ -286,7 +285,35 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
     }
     // Main TOC must refer to instantiated storage, never a host pointer.
     memory.read(GuestPtr(toc), 1)?;
-    finish(
+    // Byte-slice loading is a memory container, even when the host CLI read a file.
+    // System 7 CFragInitBlock: IDs at 0/4/8, locator at 12, name at 28.
+    const CONTAINER: u32 = 0x6000_0000;
+    const INIT_BLOCK: u32 = 0x6800_0000;
+    for routine in [init, term].into_iter().flatten() {
+        memory.fetch(GuestPtr(routine.entry), 4, 4)?;
+        memory.read(GuestPtr(routine.toc), 1)?;
+    }
+    if init.is_some() {
+        let ro = Permissions {
+            read: true,
+            write: false,
+            execute: false,
+        };
+        memory.map(GuestPtr(CONTAINER), input.to_vec(), ro)?;
+        let mut block = vec![0; 49];
+        for (offset, value) in [
+            (0, 1u32),
+            (4, 1),
+            (8, 1),
+            (16, CONTAINER),
+            (20, input.len() as u32),
+            (28, INIT_BLOCK + 48),
+        ] {
+            block[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        memory.map(GuestPtr(INIT_BLOCK), block, ro)?;
+    }
+    let mut app = finish(
         memory,
         Architecture::PowerPc,
         entry,
@@ -294,7 +321,27 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
         resources,
         info,
         abi,
-    )
+    )?;
+    app.runtime.lifecycle = Some(crate::lifecycle::Lifecycle::start(
+        &mut app.runtime.cpu,
+        init,
+        term,
+        INIT_BLOCK,
+    ));
+    Ok(app)
+}
+fn routine(sections: &[Section], index: usize, offset: usize) -> Result<crate::lifecycle::Routine> {
+    let section = sections
+        .get(index)
+        .ok_or_else(|| invalid("PEF routine section"))?;
+    if !offset.is_multiple_of(4) {
+        return Err(invalid("unaligned PEF transition vector"));
+    }
+    let vector = bytes(&section.data, offset, 8)?;
+    Ok(crate::lifecycle::Routine {
+        entry: u32_at(vector, 0)?,
+        toc: u32_at(vector, 4)?,
+    })
 }
 fn cstring(b: &[u8], offset: usize, max: usize) -> Result<&[u8]> {
     let tail = bytes(

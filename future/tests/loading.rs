@@ -326,3 +326,118 @@ fn guest_error_globals_and_clock_are_observable_without_host_state_copies() {
         42
     );
 }
+
+#[test]
+fn pef_lifecycle_runs_once_across_budgets_with_a_real_initialization_block() {
+    let f = lifecycle_pef(0);
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let data = app.info.sections[1].0;
+    assert_eq!(app.runtime.advance(0).unwrap(), Stop::Budget);
+    assert_eq!(app.runtime.instructions, 0);
+    assert_eq!(app.runtime.advance(6).unwrap(), Stop::Budget);
+    assert_eq!(app.runtime.memory.u32(GuestPtr(data + 24)).unwrap(), 1);
+    let block = app.runtime.memory.u32(GuestPtr(data + 28)).unwrap();
+    for offset in [0, 4, 8] {
+        assert_ne!(app.runtime.memory.u32(GuestPtr(block + offset)).unwrap(), 0);
+    }
+    assert_eq!(app.runtime.memory.u32(GuestPtr(block + 12)).unwrap(), 0); // kInMem
+    let container = app.runtime.memory.u32(GuestPtr(block + 16)).unwrap();
+    assert_eq!(
+        app.runtime.memory.u32(GuestPtr(block + 20)).unwrap(),
+        f.bytes.len() as u32
+    );
+    assert_eq!(
+        app.runtime
+            .memory
+            .read(GuestPtr(container), f.bytes.len())
+            .unwrap(),
+        f.bytes
+    );
+    assert_eq!(app.runtime.memory.u32(GuestPtr(block + 24)).unwrap(), 0); // not in place, reserved zero
+    let name = app.runtime.memory.u32(GuestPtr(block + 28)).unwrap();
+    assert_eq!(app.runtime.memory.read(GuestPtr(name), 1).unwrap(), &[0]);
+    assert_eq!(app.runtime.advance(6).unwrap(), Stop::Budget);
+    assert_eq!(app.runtime.memory.u32(GuestPtr(data + 24)).unwrap(), 2);
+    assert_eq!(app.runtime.advance(5).unwrap(), Stop::Returned(7));
+    assert_eq!(app.runtime.memory.u32(GuestPtr(data + 24)).unwrap(), 3);
+    let instructions = app.runtime.instructions;
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Returned(7));
+    assert_eq!(app.runtime.instructions, instructions);
+}
+
+#[test]
+fn pef_failed_initialization_never_runs_main_or_cleanup() {
+    let f = lifecycle_pef(-50);
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let data = app.info.sections[1].0;
+    let error = app.runtime.advance(100).unwrap_err().to_string();
+    assert!(error.contains("initializer returned -50"), "{error}");
+    assert_eq!(app.runtime.memory.u32(GuestPtr(data + 24)).unwrap(), 1);
+    assert!(app.runtime.advance(100).is_err());
+    assert_eq!(app.runtime.memory.u32(GuestPtr(data + 24)).unwrap(), 1);
+}
+
+#[test]
+fn pef_lifecycle_rejects_bad_vectors_and_bounds_nonreturning_initializers() {
+    for field in [8, 16] {
+        let mut f = lifecycle_pef(0);
+        w32(&mut f.bytes, f.loader + field, 100);
+        assert!(LoadedApplication::pef(&f.bytes, None).is_err());
+        let mut f = lifecycle_pef(0);
+        w32(&mut f.bytes, f.loader + field + 4, 3);
+        assert!(LoadedApplication::pef(&f.bytes, None).is_err());
+    }
+    let mut f = lifecycle_pef(0);
+    let code = u32::from_be_bytes(f.bytes[60..64].try_into().unwrap()) as usize;
+    w32(&mut f.bytes, code + 20, 0x48000000); // b .
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    assert_eq!(app.runtime.advance(25).unwrap(), Stop::Budget);
+    assert_eq!(app.runtime.advance(25).unwrap(), Stop::Budget);
+    assert_eq!(app.runtime.instructions, 50);
+    let data = app.info.sections[1].0;
+    assert_eq!(app.runtime.memory.u32(GuestPtr(data + 24)).unwrap(), 0);
+}
+
+#[test]
+fn pef_exit_to_shell_runs_cleanup_with_its_toc_once_with_or_without_init() {
+    for initialize in [true, false] {
+        let mut f = lifecycle_exit_pef();
+        if !initialize {
+            w32(&mut f.bytes, f.loader + 8, u32::MAX);
+        }
+        let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+        let data = app.info.sections[1].0;
+        assert_eq!(app.runtime.advance(100).unwrap(), Stop::Exit(0));
+        assert_eq!(
+            app.runtime.memory.u32(GuestPtr(data + 32)).unwrap(),
+            if initialize { 2 } else { 1 }
+        );
+        assert_eq!(
+            app.runtime.services.calls,
+            vec![systemless_future::cpu::Call::Exit(0)]
+        );
+        assert_eq!(app.runtime.advance(100).unwrap(), Stop::Exit(0));
+        assert_eq!(
+            app.runtime.memory.u32(GuestPtr(data + 32)).unwrap(),
+            if initialize { 2 } else { 1 }
+        );
+    }
+}
+
+#[test]
+fn pef_faults_do_not_run_cleanup_and_cleanup_itself_is_budgeted() {
+    let mut f = lifecycle_pef(0);
+    let code = u32::from_be_bytes(f.bytes[60..64].try_into().unwrap()) as usize;
+    w32(&mut f.bytes, code, 0x80608000); // unmapped load in main
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    assert!(app.runtime.advance(100).is_err());
+    let data = app.info.sections[1].0;
+    assert_eq!(app.runtime.memory.u32(GuestPtr(data + 24)).unwrap(), 1);
+    let mut f = lifecycle_pef(0);
+    w32(&mut f.bytes, code + 40, 0x48000000); // cleanup loop
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Budget);
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Budget);
+    assert_eq!(app.runtime.instructions, 200);
+    assert_eq!(app.runtime.memory.u32(GuestPtr(data + 24)).unwrap(), 2);
+}

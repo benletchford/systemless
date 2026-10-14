@@ -12,6 +12,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         directory.join("application.pef"),
         support::resource_pef().bytes,
     )?;
+    std::fs::write(
+        directory.join("lifecycle.pef"),
+        support::lifecycle_pef(0).bytes,
+    )?;
     println!(
         "wrote CODE/resource fork and PEF applications to {}",
         directory.display()

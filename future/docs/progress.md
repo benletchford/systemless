@@ -72,7 +72,8 @@ contracts before broad changes. Do not port either old runtime wholesale.
 
 1. Resource/CODE/PEF loading and a shared resource/handle slice are implemented
    below. Extend through executable application behavior, not isolated stubs.
-2. Add process lifecycle support for PEF initializers/terminators.
+2. PEF application lifecycle is implemented below; extend toward real compiler
+   startup and shared-library closure support through application-driven slices.
 3. Add shared VFS forks and a deterministic event queue, preserving host-policy
    separation from ABI handlers.
 4. Build one minimal reproducible ordinary Toolbox application in both ISAs
@@ -108,7 +109,7 @@ Verification on Apple M1/Metal:
 - Full explicit-GPU suite: 29 tests passed (6 unit, 11 contracts, 12 loading).
 - Strict local all-target clippy passed. The foundation CI used a newer compiler
   and found constant `chunks_exact` calls; these are replaced with `as_chunks`.
-  Remote verification of this correction remains pending until pushed.
+  Both replacement-runtime CI runs passed for commit `86b2ae02`.
 - Generated CODE application: Exit(0), 23 instructions, 5 service calls.
 - Generated PEF application with resource fork: Exit(0), 46 instructions,
   5 service calls. Reproduction commands are in the README.
@@ -120,3 +121,17 @@ No original application has been run. Window acceptance remains pending as
 recorded above. Far-model CODE, compressed resources, full CFM lifecycle, files,
 events, QuickDraw ABI, real Mixed Mode descriptors and complete application
 interactions remain unfinished. **The rebuild goal remains active and incomplete.**
+
+## 2026-10-14: bounded PEF application lifecycle
+
+Added initializer/main/terminator sequencing, relocated entry/TOC validation and
+a guest initialization block describing the memory container. Tests cover
+phase ordering across budgets, initialization failure, preserved main results,
+ExitToShell cleanup with/without initialization, one-time cleanup, fault paths
+and nonreturning routines. All 34 tests, including 2 explicit GPU tests, and
+strict all-target clippy pass locally on Apple M1/Metal.
+
+This extends the single application fragment loader. Dynamic shared libraries,
+closure dependency ordering and guest CFM connection APIs remain unfinished.
+Original application interactions, events/files/QuickDraw ABI and window
+acceptance are still the next major executable gaps; the full goal stays active.

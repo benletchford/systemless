@@ -2,6 +2,7 @@ pub mod abi;
 pub mod cpu;
 pub mod fixtures;
 pub mod graphics;
+mod lifecycle;
 pub mod load;
 pub mod memory;
 pub mod process;

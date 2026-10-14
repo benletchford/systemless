@@ -247,3 +247,47 @@ pub fn resource_code() -> Vec<u8> {
         0xa322, 0x2b48, 0xffec, 0xa9f4,
     ])
 }
+
+pub fn lifecycle_pef(init_result: i16) -> Pef {
+    let code = [
+        0x80620018,
+        0x38630001,
+        0x90620018,
+        0x38600007,
+        0x4e800020,
+        0x9062001c,
+        0x38600001,
+        0x90620018,
+        0x38600000 | init_result as u16 as u32,
+        0x4e800020,
+        0x80620018,
+        0x38630001,
+        0x90620018,
+        0x4e800020,
+    ];
+    let mut f = pef_program(&code, &[], 64);
+    w16(&mut f.bytes, f.reloc, 0x4602); // three transition vectors
+    w32(&mut f.bytes, f.data + 8, 20);
+    w32(&mut f.bytes, f.data + 16, 40);
+    w32(&mut f.bytes, f.loader + 8, 1);
+    w32(&mut f.bytes, f.loader + 12, 8);
+    w32(&mut f.bytes, f.loader + 16, 1);
+    w32(&mut f.bytes, f.loader + 20, 16);
+    f
+}
+
+pub fn lifecycle_exit_pef() -> Pef {
+    let code = [
+        0x81820018, 0x800c0000, 0x804c0004, 0x7c0903a6, 0x4e800421, 0x38600001, 0x90620020,
+        0x38600000, 0x4e800020, 0x80620020, 0x38630001, 0x90620020, 0x4e800020,
+    ];
+    let mut f = pef_program(&code, &[b"ExitToShell"], 64);
+    w16(&mut f.bytes, f.reloc, 0x4602);
+    w32(&mut f.bytes, f.data + 8, 20);
+    w32(&mut f.bytes, f.data + 16, 36);
+    w32(&mut f.bytes, f.loader + 8, 1);
+    w32(&mut f.bytes, f.loader + 12, 8);
+    w32(&mut f.bytes, f.loader + 16, 1);
+    w32(&mut f.bytes, f.loader + 20, 16);
+    f
+}

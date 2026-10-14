@@ -134,7 +134,7 @@ referenced segments and patches the A5 jump table. PEF materializes sections,
 pattern data and BSS, applies bounded relocation streams using existing addends,
 resolves registered InterfaceLib imports, and enters the relocated main transition
 vector. Unknown strong imports fail; unresolved weak imports remain zero.
-Initializer/terminator functions are rejected until lifecycle sequencing exists.
+Initializer/main/terminator functions are sequenced by runtime lifecycle state.
 This custom focused parser has no dependency on the legacy loader.
 
 `abi` decodes 68K Pascal stack and register conventions or PPC CFM registers into
@@ -159,3 +159,27 @@ Format evidence: Apple's *Mac OS Runtime Architectures* (1997), chapters 8 and 1
 [GetResource](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-50.html).
 Hand-assembled files exercise these contracts; compiler-generated and original
 applications remain separate acceptance work.
+
+### PEF lifecycle
+
+A prepared application runs its initializer before main and invokes its terminator
+once on main return or ExitToShell. The initializer receives a guest System 7
+CFragInitBlock with nonzero opaque IDs, a memory-container locator, the original
+PEF bytes, an empty Pascal fragment name and zero reserved fields. The byte-slice
+API represents a memory container; filesystem locators require the future VFS.
+The relocated vectors select each routine's entry and TOC. Main's prepared CPU
+state is retained across initialization; cleanup uses the process entry stack
+and returns the original exit/return result.
+
+All phases share the normal instruction budget and service dispatcher. Nonzero
+OSErr initialization results fault the preparation before main; CPU faults do not
+run cleanup. ExitToShell from an initializer or terminator reports an explicit
+error. A looping initializer or terminator exhausts budgets rather than blocking
+the host. This implements one application fragment; shared-library closure
+ordering, dynamic CloseConnection, and CFM APIs remain future work. The mapped
+container and initialization block remain valid for the Runtime lifetime.
+
+Primary references: [CFM special symbols](https://dev.os9.ca/techpubs/mac/runtimehtml/RTArch-26.html),
+[PEF loader header](https://dev.os9.ca/techpubs/mac/runtimehtml/RTArch-96.html),
+and Apple's [CFM reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Code_Fragment_Manager/index.html)
+for the System 7 initialization-block layout (680x0 alignment).
