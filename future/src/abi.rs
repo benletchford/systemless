@@ -15,6 +15,7 @@ pub enum Service {
     TESetText,
     TECalText,
     TESetSelect,
+    TEDelete,
     TEInit,
     TEGetText,
     TEGetStyleHandle,
@@ -158,6 +159,7 @@ impl Abi {
             b"TESetText" => Some(Service::TESetText),
             b"TECalText" => Some(Service::TECalText),
             b"TESetSelect" => Some(Service::TESetSelect),
+            b"TEDelete" => Some(Service::TEDelete),
             b"TEInit" => Some(Service::TEInit),
             b"TEGetText" => Some(Service::TEGetText),
             b"TEGetStyleHandle" => Some(Service::TEGetStyleHandle),
@@ -483,13 +485,17 @@ impl Abi {
                     Reply::None,
                 ))
             }
-            0xa9d0 => {
+            0xa9d0 | 0xa9d7 => {
                 let handle = memory.u32(GuestPtr(sp))?;
                 c.dar[15] = sp
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("TextEdit stack overflow".into()))?;
                 Ok((
-                    Call::TextEdit(crate::textedit::Op::Calculate(handle)),
+                    Call::TextEdit(if opcode == 0xa9d7 {
+                        crate::textedit::Op::Delete(handle)
+                    } else {
+                        crate::textedit::Op::Calculate(handle)
+                    }),
                     Reply::None,
                 ))
             }
@@ -951,6 +957,7 @@ impl Abi {
                 end: c.gpr[4],
                 handle: c.gpr[5],
             }),
+            Service::TEDelete => Call::TextEdit(crate::textedit::Op::Delete(c.gpr[3])),
             Service::TECalText => Call::TextEdit(crate::textedit::Op::Calculate(c.gpr[3])),
             Service::TEInit => Call::TextEdit(crate::textedit::Op::Init),
             Service::TEGetText => Call::TextEdit(crate::textedit::Op::GetText(c.gpr[3])),
@@ -1111,6 +1118,7 @@ impl Abi {
                         | Service::TESetText
                         | Service::TECalText
                         | Service::TESetSelect
+                        | Service::TEDelete
                         | Service::TEInit
                         | Service::TEDispose
                         | Service::MoveTo

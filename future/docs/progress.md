@@ -1437,3 +1437,34 @@ on failure. All 169 tests pass (149 default, 20 optional GPU/MPW), freshly rebui
 MPW TextEdit fixtures pass and strict all-target Clippy passes. Editing, active
 selection geometry/drawing and original-application acceptance remain unfinished;
 continue with those executable slices. The full rebuild goal remains active.
+
+### Inactive TextEdit deletion with GPU erasure
+
+TEDelete ($A9D7 / InterfaceLib) now deletes a nonempty selection through the
+shared manager. It clamps and normalizes live endpoints as the legacy
+TextEditBuffer does, keeps the text handle identity, and publishes text, collapsed
+selection, line starts and single-style tables in one grouped heap transaction.
+A collapsed selection is a no-op. TextEdit scrap bytes and length are preserved.
+
+Deletion clears the clipped view with the captured port's background pattern,
+then redraws remaining text using shared wgpu glyph services. The update/view,
+caller clip, drawable bounds and screen visibility rules are shared with
+TEUpdate. Temporary pen/text/clip fields and current port are restored. This
+full clipped view redraw deliberately removes stale glyphs after shortening
+text. The legacy buffer is the storage/selection reference; erasure is verified
+with explicit GPU pixel assertions rather than claiming native System 7 parity.
+
+Tests cover plain and styled deletion, reversed ranges, stable handles, wrapping,
+empty records, insertion-point collapse, preserved scrap, no-op selections,
+callback rejection before mutation, patterned clipped erasure, row padding and
+port restoration. A destination fault after layout publication leaves the edit
+committed and restores port state; runtime GPU faults remain terminal. The MPW
+drawing probe deletes its TextEdit glyph and checks cleared pixels, record/handle
+lengths and preserved port fields on both CPUs. All 170 tests pass (149 default,
+21 optional GPU/MPW), MPW fixtures rebuild and strict all-target Clippy passes.
+
+Active records, mixed style runs, key/click handling, insertion, clipboard and
+selection/caret geometry/drawing remain unfinished. Continue with activation and
+selection rendering, then interactive editing and menu/window integration.
+Original app blockers and real Mixed Mode remain outstanding. The rebuild goal
+is still active; this is an executable editing milestone, not rebuild completion.

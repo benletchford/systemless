@@ -738,3 +738,202 @@ fn inactive_selection_clamps_live_length_and_rejects_active_records() {
         assert_eq!(m.read(data, 128).unwrap(), before);
     }
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn deletion_commits_selection_layout_and_erases_stale_pixels_without_touching_scrap() {
+    use systemless_future::graphics::Graphics;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let gpu = pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x4000))).unwrap();
+    for styled in [false, true] {
+        let (mut m, mut p, mut manager) = setup();
+        m.write(
+            GuestPtr(0x1040),
+            &[0, 0, 0, 1, 0, 4, 0, 6, 0, 0, 0, 0, 0, 4, 0, 8],
+        )
+        .unwrap();
+        m.map(GuestPtr(0x3000), b"AAA".to_vec(), Permissions::RW)
+            .unwrap();
+        manager.call(&mut m, &mut p, Op::Init, 0).unwrap();
+        let scrap = m.u32(GuestPtr(0xab4)).unwrap();
+        p.set_handle_size(&mut m, scrap, 3).unwrap();
+        m.write(ptr(&m, scrap), b"xyz").unwrap();
+        m.write(GuestPtr(0xab0), &3u16.to_be_bytes()).unwrap();
+        let handle = manager.call(&mut m, &mut p, new(styled), 0).unwrap();
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0x3000),
+                    length: 3,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        let text = manager
+            .call(&mut m, &mut p, Op::GetText(handle), 0)
+            .unwrap();
+        m.write(
+            GuestPtr(0x2000),
+            &[0xff, 0x33, 0xff, 0x44, 0xff, 0x55, 0xff, 0x66],
+        )
+        .unwrap();
+        let port = GuestPtr(0x1080);
+        let ports = p.ports.unwrap();
+        ports.open(&mut m, &mut p, GuestPtr(0x1180)).unwrap();
+        let old = m.u32(ports.current_slot).unwrap();
+        let saved = m.read(port, 108).unwrap().to_vec();
+        // Reversed live endpoints are normalized by editing, as in the legacy buffer.
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::Select {
+                    start: 3,
+                    end: 1,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        manager.delete(&mut m, &mut p, &gpu, handle).unwrap();
+        assert_eq!(
+            manager
+                .call(&mut m, &mut p, Op::GetText(handle), 0)
+                .unwrap(),
+            text
+        );
+        assert_eq!(p.handle_size(&m, text).unwrap(), 1);
+        assert_eq!(m.read(ptr(&m, text), 1).unwrap(), b"A");
+        let data = ptr(&m, handle);
+        assert_eq!(m.read(GuestPtr(data.0 + 32), 4).unwrap(), [0, 1, 0, 1]);
+        assert_eq!(m.u16(GuestPtr(data.0 + 94)).unwrap(), 1);
+        assert_eq!(m.read(GuestPtr(data.0 + 96), 4).unwrap(), [0, 0, 0, 1]);
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0xe0, 0x33, 0xa0, 0x44, 0x40, 0x55, 0, 0x66]
+        );
+        assert_eq!(m.read(port, 108).unwrap(), saved);
+        assert_eq!(m.u32(ports.current_slot).unwrap(), old);
+        assert_eq!(m.read(ptr(&m, scrap), 3).unwrap(), b"xyz");
+        assert_eq!(m.u16(GuestPtr(0xab0)).unwrap(), 3);
+        // A collapsed selection does not erase even when guest pixels changed.
+        m.write(GuestPtr(0x2000), &[0x77]).unwrap();
+        manager.delete(&mut m, &mut p, &gpu, handle).unwrap();
+        assert_eq!(m.read(GuestPtr(0x2000), 1).unwrap(), [0x77]);
+        // Reject unsupported layout callbacks before committing text/selection.
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::Select {
+                    start: 0,
+                    end: 1,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        m.write(GuestPtr(data.0 + 38), &1u32.to_be_bytes()).unwrap();
+        let before = m.read(data, 128).unwrap().to_vec();
+        assert!(manager.delete(&mut m, &mut p, &gpu, handle).is_err());
+        assert_eq!(m.read(data, 128).unwrap(), before);
+        assert_eq!(m.read(ptr(&m, text), 1).unwrap(), b"A");
+        m.write(GuestPtr(data.0 + 38), &0u32.to_be_bytes()).unwrap();
+        manager.delete(&mut m, &mut p, &gpu, handle).unwrap();
+        assert_eq!(p.handle_size(&m, text).unwrap(), 0);
+        let data = ptr(&m, handle);
+        assert_eq!(m.read(GuestPtr(data.0 + 32), 4).unwrap(), [0; 4]);
+        assert_eq!(m.u16(GuestPtr(data.0 + 94)).unwrap(), 0);
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0, 0x33, 0, 0x44, 0, 0x55, 0, 0x66]
+        );
+        assert_eq!(m.read(port, 108).unwrap(), saved);
+        assert_eq!(m.u32(ports.current_slot).unwrap(), old);
+        // Erasure uses bkPat and the original clip, preserving padding and outside pixels.
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0x3000),
+                    length: 3,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::Select {
+                    start: 0,
+                    end: 3,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        let clip = m.u32(GuestPtr(port.0 + 28)).unwrap();
+        m.write(ptr(&m, clip), &[0, 10, 0, 1, 0, 2, 0, 3, 0, 6])
+            .unwrap();
+        m.write(
+            GuestPtr(port.0 + 32),
+            &[0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55],
+        )
+        .unwrap();
+        let saved = m.read(port, 108).unwrap().to_vec();
+        m.write(
+            GuestPtr(0x2000),
+            &[0xff, 0x33, 0xff, 0x44, 0xff, 0x55, 0xff, 0x66],
+        )
+        .unwrap();
+        manager.delete(&mut m, &mut p, &gpu, handle).unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0xff, 0x33, 0xd7, 0x44, 0xeb, 0x55, 0xff, 0x66]
+        );
+        assert_eq!(m.read(port, 108).unwrap(), saved);
+        assert_eq!(m.u32(ports.current_slot).unwrap(), old);
+        // A destination fault after publication preserves the committed edit and port state.
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0x3000),
+                    length: 1,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::Select {
+                    start: 0,
+                    end: 1,
+                    handle,
+                },
+                0,
+            )
+            .unwrap();
+        let pixels = m.read(GuestPtr(0x2000), 8).unwrap().to_vec();
+        m.map(GuestPtr(0x5000), pixels.clone(), Permissions::RX)
+            .unwrap();
+        m.write(GuestPtr(port.0 + 2), &0x5000u32.to_be_bytes())
+            .unwrap();
+        let saved = m.read(port, 108).unwrap().to_vec();
+        assert!(manager.delete(&mut m, &mut p, &gpu, handle).is_err());
+        assert_eq!(p.handle_size(&m, text).unwrap(), 0);
+        assert_eq!(m.read(GuestPtr(0x5000), 8).unwrap(), pixels);
+        assert_eq!(m.read(port, 108).unwrap(), saved);
+        assert_eq!(m.u32(ports.current_slot).unwrap(), old);
+    }
+}

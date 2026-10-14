@@ -24,6 +24,7 @@ pub enum Op {
         handle: u32,
     },
     Calculate(u32),
+    Delete(u32),
     Select {
         start: u32,
         end: u32,
@@ -180,7 +181,9 @@ impl Manager {
                 process.mem_error = 0;
                 Ok(handle)
             }
-            Op::Update { .. } => Err(bad("TextEdit redraw requires the graphics route")),
+            Op::Delete(_) | Op::Update { .. } => {
+                Err(bad("TextEdit redraw requires the graphics route"))
+            }
             Op::SetText {
                 source,
                 length,
@@ -194,7 +197,7 @@ impl Manager {
                 } else {
                     memory.read(source, length as usize)?.to_vec()
                 };
-                self.layout(memory, process, handle, bytes, true)
+                self.layout(memory, process, handle, bytes, true, None)
             }
             Op::Select { start, end, handle } => {
                 self.call(memory, process, Op::GetText(handle), ticks)?;
@@ -223,7 +226,7 @@ impl Manager {
                 let text = memory.u32(GuestPtr(data.0 + 62))?;
                 let data = pointer(memory, process, text, u32::from(length))?;
                 let bytes = memory.read(data, usize::from(length))?.to_vec();
-                self.layout(memory, process, handle, bytes, false)
+                self.layout(memory, process, handle, bytes, false, None)
             }
             Op::GetText(handle) | Op::GetStyle(handle) | Op::Dispose(handle) => {
                 let owned = self
@@ -274,6 +277,42 @@ impl Manager {
             }
         }
     }
+    /// Delete an inactive selection without touching either TextEdit scrap.
+    /// Layout publication is transactional; GPU failures after publication are terminal.
+    pub fn delete(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &crate::graphics::Graphics,
+        handle: u32,
+    ) -> Result<()> {
+        self.call(memory, process, Op::GetText(handle), 0)?;
+        let data = pointer(memory, process, handle, 128)?;
+        if memory.u16(GuestPtr(data.0 + 36))? != 0 {
+            return Err(bad("active TextEdit editing is unsupported"));
+        }
+        let length = memory.u16(GuestPtr(data.0 + 60))?;
+        if length > 32767 {
+            return Err(bad("invalid TextEdit text length"));
+        }
+        let a = memory.u16(GuestPtr(data.0 + 32))?.min(length);
+        let b = memory.u16(GuestPtr(data.0 + 34))?.min(length);
+        let start = a.min(b);
+        let end = a.max(b);
+        if start == end {
+            return Ok(());
+        }
+        let text = memory.u32(GuestPtr(data.0 + 62))?;
+        let source = pointer(memory, process, text, u32::from(length))?;
+        let mut bytes = memory.read(source, usize::from(length))?.to_vec();
+        bytes.drain(usize::from(start)..usize::from(end));
+        self.layout(memory, process, handle, bytes, true, Some(start))?;
+        if process.mem_error != 0 {
+            return Ok(());
+        }
+        let data = pointer(memory, process, handle, 128)?;
+        self.redraw(memory, process, gpu, GuestPtr(data.0 + 8), handle, true)
+    }
     pub fn update(
         &mut self,
         memory: &mut Memory,
@@ -281,6 +320,17 @@ impl Manager {
         gpu: &crate::graphics::Graphics,
         rect: GuestPtr,
         handle: u32,
+    ) -> Result<()> {
+        self.redraw(memory, process, gpu, rect, handle, false)
+    }
+    fn redraw(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &crate::graphics::Graphics,
+        rect: GuestPtr,
+        handle: u32,
+        erase: bool,
     ) -> Result<()> {
         use crate::{
             quickdraw::read_rect,
@@ -480,6 +530,11 @@ impl Manager {
         let result = (|| {
             ports.set(memory, port)?;
             memory.write(GuestPtr(port.0 + 28), &temporary.to_be_bytes())?;
+            if erase {
+                memory.write(GuestPtr(port.0 + 56), &8u16.to_be_bytes())?;
+                memory.write(GuestPtr(port.0 + 58), &saved[32..40])?;
+                ports.paint_rect(gpu, memory, read_rect(memory, GuestPtr(data.0 + 8))?)?;
+            }
             memory.write(GuestPtr(port.0 + 68), &font.to_be_bytes())?;
             memory.write(GuestPtr(port.0 + 70), &[face])?;
             memory.write(GuestPtr(port.0 + 72), &mode.to_be_bytes())?;
@@ -503,6 +558,7 @@ impl Manager {
         handle: u32,
         bytes: Vec<u8>,
         replace: bool,
+        caret: Option<u16>,
     ) -> Result<u32> {
         self.call(memory, process, Op::GetText(handle), 0)?;
         let owned = self.records[&handle].clone();
@@ -572,8 +628,9 @@ impl Manager {
         }
         record[60..62].copy_from_slice(&(bytes.len() as u16).to_be_bytes());
         if replace {
-            record[32..34].copy_from_slice(&(bytes.len() as u16).to_be_bytes());
-            record[34..36].copy_from_slice(&(bytes.len() as u16).to_be_bytes());
+            let caret = caret.unwrap_or(bytes.len() as u16);
+            record[32..34].copy_from_slice(&caret.to_be_bytes());
+            record[34..36].copy_from_slice(&caret.to_be_bytes());
         }
         let mut changes = Vec::new();
         if replace {

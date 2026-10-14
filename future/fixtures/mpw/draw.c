@@ -186,6 +186,11 @@ int main(void) {
     TEUpdate(&textUpdate,edit);
     if (pixels[0]!=1 || pixels[2]!=0xa1 || pixels[4]!=0x41 || pixels[6]!=1) return 60;
     GetPort(&current); if (current!=&port || port.pnLoc.h!=3 || port.pnLoc.v!=2 || port.pnMode!=patXor) return 61;
+    TESetSelect(0,32767,edit); TEDelete(edit);
+    if ((*edit)->teLength || (*edit)->nLines || (*edit)->selStart || (*edit)->selEnd || GetHandleSize(TEGetText(edit))) return 62;
+    if (pixels[0] || pixels[2] || pixels[4] || pixels[6]) return 63;
+    if (pixels[1]!=0x33 || pixels[3]!=0x44 || pixels[5]!=0x55 || pixels[7]!=0x66) return 64;
+    GetPort(&current); if (current!=&port || port.pnLoc.h!=3 || port.pnLoc.v!=2 || port.pnMode!=patXor) return 65;
     TEDispose(edit);
     ForeColor(whiteColor);
     BackColor(blackColor);

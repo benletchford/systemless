@@ -216,3 +216,7 @@ Both architectures then complete the same final pixel image and success marker.
 The TextEdit probe also calls TESetSelect for an inactive plain range and an
 empty styled record, checking endpoint clamping through both compiled ABIs.
 Active selection painting and editing commands remain unsupported.
+
+The GPU drawing probe now selects and deletes its TextEdit glyph, checks empty
+text and line/selection fields, exact cleared view pixels with preserved row
+padding, and preserved current port/pen fields on both compiled architectures.

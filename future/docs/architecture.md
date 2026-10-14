@@ -785,3 +785,12 @@ writes through aliased font/text sources. wgpu performs destination transfers;
 CPU work constructs geometry and snapshots source storage. Inactive plain and
 single-style records are the current scope; selection/caret and dispatch callbacks
 remain explicit outstanding integration.
+
+
+Inactive deletion uses the grouped layout transaction to include selection
+collapse with text and line/style changes. After publication it clears the view
+with the port background pattern and redraws through the existing clipped GPU
+route. Unsupported active editing/layout callbacks fail before publication;
+rendering faults after publication are terminal and retain the committed edit.
+Transient port state is restored on rendering failure. Scrap remains independent
+of TEDelete. Active selection/caret interaction is still a separate missing path.

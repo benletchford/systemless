@@ -264,6 +264,21 @@ impl Runtime {
                         Call::TextEdit(op) => {
                             let mut manager = std::mem::take(&mut self.process.textedit);
                             let result = match op {
+                                crate::textedit::Op::Delete(handle) => {
+                                    match self.graphics.as_ref() {
+                                        Some(gpu) => manager
+                                            .delete(
+                                                &mut self.memory,
+                                                &mut self.process,
+                                                gpu,
+                                                handle,
+                                            )
+                                            .map(|()| 0),
+                                        None => Err(Error::Graphics(
+                                            "TextEdit editing requires a GPU".into(),
+                                        )),
+                                    }
+                                }
                                 crate::textedit::Op::Update { rect, handle } => {
                                     match self.graphics.as_ref() {
                                         Some(gpu) => manager
