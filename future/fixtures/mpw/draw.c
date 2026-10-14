@@ -161,6 +161,14 @@ int main(void) {
     MoveTo(1,2);
     DrawString("\pA");
     if (pixels[0] || pixels[2] || pixels[4] || pixels[6] || port.pnLoc.h!=5) return 52;
+    if (TextWidth("xAB?z",1,3)!=10) return 56;
+    TextMode(srcCopy);
+    MoveTo(1,2);
+    DrawText("xAz",1,1);
+    if (pixels[0]!=0xe0 || pixels[2]!=0xa0 || pixels[4]!=0x40 || pixels[6] || port.pnLoc.h!=5) return 57;
+    TextMode(srcXor); MoveTo(1,2);
+    DrawText("xAz",1,1);
+    if (pixels[0] || pixels[2] || pixels[4] || pixels[6]) return 58;
     TextFont(0); TextSize(9); TextMode(srcCopy);
     pixels[0]=0xff; pixels[2]=0xff; pixels[4]=0xff; pixels[6]=0xff;
     MoveTo(0,2);

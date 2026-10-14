@@ -353,4 +353,39 @@ fn string_width_returns_signed_pascal_and_ppc_results_without_moving_pen() {
         app.runtime.memory.u16(GuestPtr(0x51000100 + 48)).unwrap() as i16,
         -45
     );
+    use systemless_future::text::Input;
+    for (pointer, first, count, expected) in [
+        (string + 1, 0, 2, 510i16),
+        (string + 2, -1, 2, 510),
+        (u32::MAX, 1, 0, 0),
+        (u32::MAX, 1, -1, 0),
+    ] {
+        assert_eq!(
+            systemless_future::text::width(
+                &mut app.runtime.memory,
+                &mut app.runtime.process,
+                ports,
+                Input::Buffer {
+                    pointer: GuestPtr(pointer),
+                    first,
+                    count
+                }
+            )
+            .unwrap(),
+            expected
+        );
+    }
+    for (pointer, first, count) in [(0, -1, 1), (u32::MAX, 1, 1), (string + 511, 0, 2)] {
+        assert!(systemless_future::text::width(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            ports,
+            Input::Buffer {
+                pointer: GuestPtr(pointer),
+                first,
+                count
+            }
+        )
+        .is_err());
+    }
 }

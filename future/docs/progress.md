@@ -1267,3 +1267,31 @@ and strict all-target Clippy passes. Original stopping points are unchanged:
 import validation. Next: TextEdit/window text integration and title WDEFs, then
 menu initialization and original application interactions. Full rebuild acceptance
 and real Mixed Mode remain outstanding; keep the goal active.
+
+
+### Shared text-buffer ranges
+
+DrawText ($A885) and TextWidth ($A886) now decode a pointer, signed first-byte
+offset and signed byte count into the existing shared text input. PPC r3–r5 and
+reverse Pascal count/offset/pointer slots reach the same measurement/glyph path.
+The 68K width result is a reserved word after eight argument bytes, validated
+before stack mutation; PPC returns the sign-extended INTEGER. Signed offsets use
+checked guest address arithmetic and may select bytes before an interior pointer.
+Nonpositive counts select empty text without source reads or font resolution.
+Positive ranges are fully validated and snapshotted before measurement/drawing,
+including input buffers that could otherwise be affected by drawing. Existing
+coordinate/glyph work limits, style/spacing gaps and GPU terminal-fault policy
+remain unchanged. StdText and TextEdit integration remain outstanding.
+
+Legacy quickdraw.rs confirms the argument ordering and char-buffer traversal;
+checked boundaries replace its unchecked wrapping pointer arithmetic. Tests
+cover signed offsets, empty counts with invalid pointers, overflow and unmapped
+ranges, reversed 68K arguments, stack canaries and read-only result rejection.
+The MPW drawing fixture measures a substring and draws/XOR-cancels its synthetic
+resource glyph from a byte range on both architectures. Original startup stops
+remain InitMenus on 68K and TEStyleNew at PPC strong-import validation. Next:
+shared TextEdit records, style storage and lifecycle using these buffer APIs;
+menu/window integration and full rebuild acceptance remain unfinished.
+
+Validation: all 161 tests pass (143 default and 18 optional GPU/MPW); the MPW
+rebuild and strict all-target Clippy pass.

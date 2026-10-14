@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 pub enum Service {
     Random,
     TextDraw(bool),
+    TextBuffer(bool),
     TextWidth(bool),
     MoveTo,
     InitFonts,
@@ -135,6 +136,8 @@ impl Abi {
             b"TextSize" => Some(Service::TextState(crate::text::Field::Size)),
             b"GetFontInfo" => Some(Service::FontInfo),
             b"InitFonts" => Some(Service::InitFonts),
+            b"DrawText" => Some(Service::TextBuffer(false)),
+            b"TextWidth" => Some(Service::TextBuffer(true)),
             b"DrawChar" => Some(Service::TextDraw(false)),
             b"DrawString" => Some(Service::TextDraw(true)),
             b"CharWidth" => Some(Service::TextWidth(false)),
@@ -345,6 +348,33 @@ impl Abi {
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("point stack overflow".into()))?;
                 Ok((Call::MoveTo { h, v }, Reply::None))
+            }
+            0xa885 | 0xa886 => {
+                let bytes = memory.read(GuestPtr(sp), 8)?;
+                let input = crate::text::Input::Buffer {
+                    pointer: GuestPtr(u32::from_be_bytes(bytes[4..8].try_into().unwrap())),
+                    first: i16::from_be_bytes(bytes[2..4].try_into().unwrap()),
+                    count: i16::from_be_bytes(bytes[..2].try_into().unwrap()),
+                };
+                let result = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("text buffer stack overflow".into()))?;
+                if opcode == 0xa886 {
+                    memory.validate_write(GuestPtr(result), 2)?;
+                }
+                c.dar[15] = result;
+                Ok((
+                    if opcode == 0xa886 {
+                        Call::TextWidth(input)
+                    } else {
+                        Call::TextDraw(input)
+                    },
+                    if opcode == 0xa886 {
+                        Reply::StackWord(GuestPtr(result))
+                    } else {
+                        Reply::None
+                    },
+                ))
             }
             0xa883 | 0xa884 | 0xa88c | 0xa88d => {
                 let string = matches!(opcode, 0xa884 | 0xa88c);
@@ -754,6 +784,18 @@ impl Abi {
                 h: c.gpr[3] as i16,
                 v: c.gpr[4] as i16,
             },
+            Service::TextBuffer(width) => {
+                let input = crate::text::Input::Buffer {
+                    pointer: GuestPtr(c.gpr[3]),
+                    first: c.gpr[4] as i16,
+                    count: c.gpr[5] as i16,
+                };
+                if width {
+                    Call::TextWidth(input)
+                } else {
+                    Call::TextDraw(input)
+                }
+            }
             Service::TextDraw(string) | Service::TextWidth(string) => {
                 let input = if string {
                     crate::text::Input::Pascal(GuestPtr(c.gpr[3]))
@@ -918,6 +960,7 @@ impl Abi {
                                 | crate::windows::Op::Dispose
                         )
                         | Service::MoveTo
+                        | Service::TextBuffer(false)
                         | Service::TextDraw(_)
                         | Service::InitFonts
                         | Service::FontInfo

@@ -156,3 +156,41 @@ fn glyph_drawing_uses_gpu_transfer_modes_clip_and_preserves_port_and_padding() {
     assert_eq!(m.read(port, 108).unwrap(), state);
     assert_eq!(m.read(GuestPtr(0x3000), 8).unwrap(), bytes);
 }
+
+#[test]
+fn text_buffer_adapter_marshals_reversed_pascal_words_and_validates_result() {
+    let mut m = Memory::default();
+    let mut frame = 3i16.to_be_bytes().to_vec();
+    frame.extend((-2i16).to_be_bytes());
+    frame.extend(0x12345678u32.to_be_bytes());
+    frame.extend([0x5a; 4]);
+    m.map(GuestPtr(0x1000), frame, Permissions::RW).unwrap();
+    let Cpu::M68k(mut c) = Cpu::new(Architecture::M68k, 0, 0x1000) else {
+        panic!()
+    };
+    let (call, reply) = Abi::trap(0xa886, &mut c, &m).unwrap();
+    assert_eq!(
+        call,
+        Call::TextWidth(text::Input::Buffer {
+            pointer: GuestPtr(0x12345678),
+            first: -2,
+            count: 3
+        })
+    );
+    assert_eq!(reply, Reply::StackWord(GuestPtr(0x1008)));
+    assert_eq!(c.dar[15], 0x1008);
+    assert_eq!(m.u16(GuestPtr(0x100a)).unwrap(), 0x5a5a);
+    let mut read_only = Memory::default();
+    read_only
+        .map(
+            GuestPtr(0x1000),
+            m.read(GuestPtr(0x1000), 12).unwrap().to_vec(),
+            Permissions::RX,
+        )
+        .unwrap();
+    let Cpu::M68k(mut c) = Cpu::new(Architecture::M68k, 0, 0x1000) else {
+        panic!()
+    };
+    assert!(Abi::trap(0xa886, &mut c, &read_only).is_err());
+    assert_eq!(c.dar[15], 0x1000);
+}

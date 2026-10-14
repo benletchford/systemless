@@ -110,11 +110,30 @@ pub fn font_info(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
     Character(u8),
+    Buffer {
+        pointer: GuestPtr,
+        first: i16,
+        count: i16,
+    },
     Pascal(GuestPtr),
 }
 fn input(memory: &Memory, input: Input) -> Result<Vec<u8>> {
     match input {
         Input::Character(c) => Ok(vec![c]),
+        Input::Buffer {
+            pointer,
+            first,
+            count,
+        } => {
+            if count <= 0 {
+                return Ok(vec![]);
+            }
+            let address = pointer
+                .0
+                .checked_add_signed(i32::from(first))
+                .ok_or_else(|| Error::Graphics("text buffer offset overflow".into()))?;
+            Ok(memory.read(GuestPtr(address), count as usize)?.to_vec())
+        }
         Input::Pascal(pointer) => {
             let n = usize::from(memory.read(pointer, 1)?[0]);
             let address = pointer
@@ -132,6 +151,10 @@ pub fn width(
     text: Input,
 ) -> Result<i16> {
     let bytes = input(memory, text)?;
+    if bytes.is_empty() {
+        return Ok(0);
+    }
+
     let port = ports.current(memory)?;
     if memory.u32(GuestPtr(port.0 + 76))? != 0 {
         return Err(Error::Graphics(
@@ -168,6 +191,10 @@ pub fn draw(
 ) -> Result<()> {
     use crate::graphics::Rect;
     let bytes = input(memory, text)?;
+    if bytes.is_empty() {
+        return Ok(());
+    }
+
     let port = ports.current(memory)?;
     memory.validate_write(port, 108)?;
     let saved = memory.read(port, 108)?.to_vec();

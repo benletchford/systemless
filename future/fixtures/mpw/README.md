@@ -187,3 +187,8 @@ The resource glyph has a negative bearing and exact three-row bits; copy produce
 E0 A0 40, XOR cancels it, and drawing preserves pen mode/padding while advancing
 pnLoc. A blank fallback space clears its advance cell under srcCopy. Both MPW
 architectures complete these checks before the final color/pattern image.
+
+
+DrawText/TextWidth now use a substring of an ordinary byte buffer in the drawing
+probe. Both compiled architectures measure xAB?z at offset 1/count 3 as 10 and
+draw/cancel xAz at offset 1/count 1 with the same exact resource-glyph pixels.
