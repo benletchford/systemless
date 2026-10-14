@@ -1,5 +1,7 @@
 //! Transactional application preparation: all parsing/relocation completes in
 //! owned staging state before a new Runtime can execute any guest instruction.
+mod exports;
+pub use exports::Export;
 mod pef;
 mod reloc;
 pub mod resource;
@@ -24,6 +26,8 @@ pub struct LoadInfo {
     pub entry: u32,
     pub toc_or_a5: u32,
     pub sections: Vec<(u32, u32)>,
+    /// PEF export table order, retained for CFM indexed symbol enumeration.
+    pub exports: Vec<Export>,
 }
 pub struct LoadedApplication {
     pub runtime: Runtime,
@@ -125,6 +129,7 @@ pub(super) fn finish(
             entry,
             toc_or_a5: context,
             sections,
+            exports: Vec::new(),
         },
     })
 }

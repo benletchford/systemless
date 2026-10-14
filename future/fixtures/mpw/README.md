@@ -91,3 +91,9 @@ right/bottom exclusion, through both native calling conventions.
 A complex region built with DiffRgn clips two XOR draws. The program
 checks intermediate packed bytes and the restored final image, so a skipped
 draw cannot count as success. The fixture also exercises SectRgn, UnionRgn and XorRgn with aliased destinations; native-system comparison remains outstanding.
+
+The PPC probe explicitly exports `main` with PPCLink's `-export` option. The
+acceptance test requires its compiler-generated export record, transition-vector
+class, and executable target before running the usual resource/handle checks.
+This validates a real linker-produced PEF export table; it does not exercise
+guest FindSymbol or dynamic CFM connections.

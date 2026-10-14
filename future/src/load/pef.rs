@@ -29,6 +29,7 @@ struct PreparedImage {
     init: Option<crate::lifecycle::Routine>,
     term: Option<crate::lifecycle::Routine>,
     sections: Vec<(u32, u32)>,
+    exports: Vec<super::Export>,
 }
 // Host-chosen reservations, never values taken from the PEF default addresses.
 // Gates occupy address space even though the CPU adapter intercepts them.
@@ -98,6 +99,7 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
         image.sections,
         image.abi,
     )?;
+    app.info.exports = image.exports;
     app.runtime.lifecycle = Some(crate::lifecycle::Lifecycle::start(
         &mut app.runtime.cpu,
         image.init,
@@ -214,27 +216,6 @@ fn prepare(input: &[u8], placement: Placement) -> Result<PreparedImage> {
         return Err(invalid("PEF loader string/export boundaries"));
     }
     let strings = bytes(l, strings_at, exports_at - strings_at)?;
-    // Application exports are retained in the file but need structural validation.
-    let power = u32_at(l, 48)?;
-    let exports = u32_at(l, 52)? as usize;
-    if power > 18 || exports > 1 << 18 {
-        return Err(invalid("PEF export limits"));
-    }
-    let hash_size = (1usize << power) * 4;
-    let keys_at = exports_at + hash_size;
-    let exports_table = keys_at + exports * 4;
-    bytes(l, exports_at, hash_size + exports * 14)?;
-    for slot in 0..1usize << power {
-        let entry = u32_at(l, exports_at + slot * 4)?;
-        if (entry & 0x3ffff) as usize + (entry >> 18) as usize > exports {
-            return Err(invalid("PEF export hash range"));
-        }
-    }
-    for e in 0..exports {
-        let key = u32_at(l, keys_at + e * 4)?;
-        let name = u32_at(l, exports_table + e * 10)? & 0xffffff;
-        bytes(strings, name as usize, (key >> 16) as usize)?;
-    }
     let mut abi = Abi::macintosh();
     let mut resolved = vec![None; symbols];
     let mut vectors = Vec::new();
@@ -296,6 +277,15 @@ fn prepare(input: &[u8], placement: Placement) -> Result<PreparedImage> {
         .into_iter()
         .map(|s| s.ok_or_else(|| invalid("unowned PEF import")))
         .collect::<Result<Vec<_>>>()?;
+    let exports = super::exports::resolve(
+        l,
+        strings,
+        &sections
+            .iter()
+            .map(|s| (s.base, s.data.len() as u32))
+            .collect::<Vec<_>>(),
+        &imports,
+    )?;
     let deltas: Vec<_> = sections
         .iter()
         .map(|s| s.base.wrapping_sub(s.default))
@@ -408,6 +398,7 @@ fn prepare(input: &[u8], placement: Placement) -> Result<PreparedImage> {
         init,
         term,
         sections: info,
+        exports,
         stdlib_data,
     })
 }

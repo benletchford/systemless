@@ -75,6 +75,18 @@ fn compiled_ppc_application_completes_resource_and_memory_checks() {
     let bytes = std::fs::read(root.join("probe.ppc")).expect("build the MPW probe first");
     let resources = std::fs::read(root.join("probe.ppc.rsrc")).unwrap();
     let mut app = LoadedApplication::pef(&bytes, Some(&resources)).unwrap();
+    let exported_main = app
+        .info
+        .exports
+        .iter()
+        .find(|e| e.name == b"main")
+        .expect("PPCLink must export main for export-table acceptance");
+    assert_eq!(exported_main.class, 2);
+    let entry = app.runtime.memory.u32(exported_main.address).unwrap();
+    app.runtime
+        .memory
+        .fetch(systemless_future::memory::GuestPtr(entry), 4, 4)
+        .unwrap();
     assert_eq!(app.runtime.advance(10_000).unwrap(), Stop::Exit(0));
     assert_resource_path(&app.runtime.services.calls);
     assert!(matches!(

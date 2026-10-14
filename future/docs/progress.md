@@ -827,3 +827,29 @@ IDs remain application defaults until connection tracking lands. Original
 application stopping points are unchanged; the full rebuild remains active.
 
 Specification: https://leopard-adc.pepas.com/documentation/mac/runtimehtml/RTArch-96.html
+
+
+### Resolve and retain PEF exports
+
+Prepared images and application load metadata now retain exports in PEF table
+order, with original byte names, annotation classes and guest addresses. Section
+offsets, absolute values and re-exported import indices resolve explicitly.
+Hash words and bucket ownership are checked, including overlapping/orphaned
+chains, duplicate names, reserved classes, invalid indices and out-of-section
+offsets. Total copied/hashed name bytes are bounded by the image limit.
+End-of-section symbols are retained as metadata; guest access remains checked.
+
+Three deterministic tests cover all classes/address forms, MacRoman and case
+distinctions, signed hash overflow, malformed table rejection and execution
+through an exported transition vector on the real PPC backend. The PPC MPW probe
+now exports main using PPCLink -export; its acceptance test requires that real
+linker-generated record and validates its executable transition-vector target.
+The rebuilt compiler probes all pass. All 120 tests pass including thirteen
+optional GPU/MPW checks; strict all-target Clippy passes.
+
+This does not yet implement FindSymbol or GetMemFragment. Next: connection
+identity/reservation tracking, guest symbol-query ABIs, and dynamic loads with
+initializer continuations and rollback in the existing runtime. Original
+application stopping points remain unchanged; rebuild goal remains active.
+
+Source: https://leopard-adc.pepas.com/documentation/mac/runtimehtml/RTArch-100.html
