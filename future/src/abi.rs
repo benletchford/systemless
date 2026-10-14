@@ -118,6 +118,8 @@ impl Abi {
                 crate::region_geometry::Boolean::Xor,
             )),
             b"InitGraf" => Some(Service::InitGraf),
+            b"LocalToGlobal" => Some(Service::Port(crate::quickdraw::PortOp::LocalToGlobal)),
+            b"GlobalToLocal" => Some(Service::Port(crate::quickdraw::PortOp::GlobalToLocal)),
             b"InitPort" => Some(Service::Port(crate::quickdraw::PortOp::Init)),
             b"ClosePort" => Some(Service::Port(crate::quickdraw::PortOp::Close)),
             b"OpenPort" => Some(Service::Port(crate::quickdraw::PortOp::Open)),
@@ -251,8 +253,8 @@ impl Abi {
                 Ok((Call::Region { op, a, b }, Reply::None))
             }
 
-            0xa86d | 0xa86e | 0xa86f | 0xa87d | 0xa873 | 0xa874 | 0xa875 | 0xa87b | 0xa8a2
-            | 0xa89d => {
+            0xa870 | 0xa871 | 0xa86d | 0xa86e | 0xa86f | 0xa87d | 0xa873 | 0xa874 | 0xa875
+            | 0xa87b | 0xa8a2 | 0xa89d => {
                 use crate::quickdraw::PortOp;
                 let pointer = GuestPtr(memory.u32(GuestPtr(sp))?);
                 c.dar[15] = sp
@@ -267,6 +269,8 @@ impl Abi {
                     Call::Port {
                         pointer,
                         op: match opcode {
+                            0xa870 => PortOp::LocalToGlobal,
+                            0xa871 => PortOp::GlobalToLocal,
                             0xa86d => PortOp::Init,
                             0xa86f => PortOp::Open,
                             0xa87d => PortOp::Close,

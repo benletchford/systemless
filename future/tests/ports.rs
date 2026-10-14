@@ -252,3 +252,53 @@ fn complex_clip_keeps_holes_and_xor_single_pass_with_guest_writes() {
         .is_err());
     assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), before);
 }
+
+#[test]
+fn point_conversion_uses_current_bitmap_origin_and_signed_word_coordinates() {
+    let (mut m, mut process, ports) = setup();
+    ports.open(&mut m, &mut process, GuestPtr(0x1080)).unwrap();
+    let point = GuestPtr(0x1040);
+    m.write(GuestPtr(0x1088), &[0xff, 0xba, 0xff, 0xc4])
+        .unwrap(); // top=-70,left=-60
+                   // portRect is deliberately unrelated; it does not define this transform.
+    m.write(GuestPtr(0x1090), &[0, 9, 0, 11]).unwrap();
+    m.write(point, &[0, 3, 0, 4]).unwrap();
+    ports.convert_point(&mut m, point, true).unwrap();
+    assert_eq!(m.read(point, 4).unwrap(), [0, 73, 0, 64]);
+    ports.convert_point(&mut m, point, false).unwrap();
+    assert_eq!(m.read(point, 4).unwrap(), [0, 3, 0, 4]);
+    // Read the current guest record on every call, including changed origins.
+    m.write(GuestPtr(0x1088), &[0, 1, 0xff, 0xff]).unwrap();
+    m.write(point, &[0x80, 0, 0x7f, 0xff]).unwrap();
+    ports.convert_point(&mut m, point, true).unwrap();
+    assert_eq!(m.read(point, 4).unwrap(), [0x7f, 0xff, 0x80, 0]);
+    ports.convert_point(&mut m, point, false).unwrap();
+    assert_eq!(m.read(point, 4).unwrap(), [0x80, 0, 0x7f, 0xff]);
+    ports.open(&mut m, &mut process, GuestPtr(0x1100)).unwrap();
+    m.write(point, &[0, 3, 0, 4]).unwrap();
+    ports.convert_point(&mut m, point, true).unwrap();
+    assert_eq!(m.read(point, 4).unwrap(), [0, 3, 0, 4]);
+}
+
+#[test]
+fn point_conversion_rejects_invalid_ports_and_outputs_without_partial_writes() {
+    let (mut m, mut process, ports) = setup();
+    ports.open(&mut m, &mut process, GuestPtr(0x1080)).unwrap();
+    m.map(GuestPtr(0x3000), vec![0, 3, 0, 4], Permissions::RX)
+        .unwrap();
+    assert!(ports.convert_point(&mut m, GuestPtr(0x3000), true).is_err());
+    assert_eq!(m.read(GuestPtr(0x3000), 4).unwrap(), [0, 3, 0, 4]);
+    m.write(GuestPtr(0x11fe), &[0x12, 0x34]).unwrap();
+    assert!(ports
+        .convert_point(&mut m, GuestPtr(0x11fe), false)
+        .is_err());
+    assert_eq!(m.read(GuestPtr(0x11fe), 2).unwrap(), [0x12, 0x34]);
+    let point = GuestPtr(0x1040);
+    m.write(point, &[0, 3, 0, 4]).unwrap();
+    m.write(GuestPtr(0x1086), &0xc000u16.to_be_bytes()).unwrap();
+    assert!(ports.convert_point(&mut m, point, true).is_err());
+    assert_eq!(m.read(point, 4).unwrap(), [0, 3, 0, 4]);
+    m.write(ports.current_slot, &0u32.to_be_bytes()).unwrap();
+    assert!(ports.convert_point(&mut m, point, true).is_err());
+    assert_eq!(m.read(point, 4).unwrap(), [0, 3, 0, 4]);
+}

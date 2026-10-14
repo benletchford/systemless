@@ -565,3 +565,21 @@ volume. No host device settings are modified. Contracts: Apple’s Inside Macint
 II, Sound Driver, pp. 232–236 (the GetSoundVol/SdVolume relationship), and the
 [Device Manager parameter layout](https://dev.os9.ca/techpubs/mac/Devices/Devices-52.html).
 The original Centaurian glue independently establishes the -4/2/inline-word call.
+
+
+### Basic port coordinate conversion
+
+LocalToGlobal/GlobalToLocal use the current guest GrafPort bitmap bounds, not
+portRect or cached host window coordinates. Local-to-global subtracts the bounds'
+top/left; the reverse adds them. Points are copied before mutation and written as
+one checked four-byte value. Coordinates use signed-word wrapping arithmetic;
+native overflow comparison remains pending. Color GrafPorts are explicitly
+unsupported. SetOrigin, MovePortTo and Window Manager placement are still pending.
+
+The 68K Pascal pointer argument and PPC InterfaceLib argument both invoke Ports
+conversion. MPW programs verify a nonzero origin, the inverse operation and a
+port switch before continuing their exact drawing checks. Geometry tests cover
+negative origins, signed-word edges, direct guest origin changes and invalid
+outputs without partial writes. Source: Apple's
+[Basic QuickDraw coordinate model](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-19.html)
+and [coordinate conversion usage](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-20.html).

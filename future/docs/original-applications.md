@@ -38,8 +38,9 @@ fork path and a maximum instruction count, and prints register/opcode context.
   request was Sound Driver Control(-4, 2), setting volume to 3. That state update
   now completes. No window interaction or audio playback is proven.
 - Centaurian's PPC load rejects the unresolved strong InterfaceLib import
-  `LocalToGlobal`. SetSoundVol now resolves, but no PPC application instruction
-  executes because remaining strong imports are still validated before launch.
+  `GetMemFragment`. SetSoundVol and LocalToGlobal now resolve, but no PPC
+  application instruction executes because remaining strong imports are still
+  validated before launch.
 
 The loader now also publishes CurrentA5 ($0904) and the word CurJTOffset ($0934).
 CurStackBase denotes the start of application globals; the current separate,
@@ -52,6 +53,6 @@ Semantics are documented in Apple's [Memory Manager summary](https://dev.os9.ca/
 (global variables, III-227). ReleaseResource now invalidates loaded resource identity and permits reloads;
 its error behavior and changed-resource retention follow Apple’s
 [ReleaseResource contract](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-85.html).
-Next: investigate the shared $A8FE startup requirement and add the QuickDraw
-coordinate transforms required by Centaurian’s PPC imports. Full acceptance
+Next: investigate the shared $A8FE startup requirement and implement the dynamic
+fragment loading required by Centaurian’s GetMemFragment import. Full acceptance
 still requires original application interactions on both architectures.

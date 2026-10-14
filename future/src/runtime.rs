@@ -183,6 +183,13 @@ impl Runtime {
                                 Error::Graphics("QuickDraw has not been initialized".into())
                             })?;
                             match op {
+                                PortOp::LocalToGlobal | PortOp::GlobalToLocal => {
+                                    ports.convert_point(
+                                        &mut self.memory,
+                                        pointer,
+                                        op == PortOp::LocalToGlobal,
+                                    )?;
+                                }
                                 PortOp::Open => {
                                     ports.open(&mut self.memory, &mut self.process, pointer)?
                                 }

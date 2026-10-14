@@ -16,6 +16,7 @@ int main(void) {
     Rect clip = {1,1,3,7};
     Rect patch = {1,2,2,4};
     Rect hole = {1,2,3,6};
+    Rect translated = {-70,-60,-66,-52};
     EventRecord event;
     Point inside, outside;
     Handle data;
@@ -32,6 +33,17 @@ int main(void) {
     if (current != &port) return 2;
     bitmap.baseAddr = (Ptr)pixels;
     bitmap.rowBytes = 2;
+    bitmap.bounds = translated;
+    SetPortBits(&bitmap);
+    inside.v=3; inside.h=4;
+    LocalToGlobal(&inside);
+    if (inside.v != 73 || inside.h != 64) return 25;
+    GlobalToLocal(&inside);
+    if (inside.v != 3 || inside.h != 4) return 26;
+    SetPort(&other);
+    LocalToGlobal(&inside);
+    if (inside.v != 3 || inside.h != 4) return 27;
+    SetPort(&port);
     bitmap.bounds = all;
     SetPortBits(&bitmap);
     ClipRect(&clip);

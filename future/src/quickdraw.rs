@@ -64,6 +64,34 @@ impl Ports {
         }
         memory.write(self.current_slot, &port.0.to_be_bytes())
     }
+    /// Basic QuickDraw Point coordinates are signed words. Bitmap bounds
+    /// express the global origin in the port's local coordinate system.
+    pub fn convert_point(
+        &self,
+        memory: &mut Memory,
+        point: GuestPtr,
+        to_global: bool,
+    ) -> Result<()> {
+        let port = self.current(memory)?;
+        if memory.u16(offset(port, 6)?)? & 0xc000 != 0 {
+            return Err(Error::Graphics(
+                "coordinate conversion for color ports is unsupported".into(),
+            ));
+        }
+        let origin: [u8; 4] = memory.read(offset(port, 8)?, 4)?.try_into().unwrap();
+        let mut result: [u8; 4] = memory.read(point, 4)?.try_into().unwrap();
+        for at in [0, 2] {
+            let value = i16::from_be_bytes(result[at..at + 2].try_into().unwrap());
+            let delta = i16::from_be_bytes(origin[at..at + 2].try_into().unwrap());
+            let value = if to_global {
+                value.wrapping_sub(delta)
+            } else {
+                value.wrapping_add(delta)
+            };
+            result[at..at + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        memory.write(point, &result)
+    }
     pub fn close(&self, memory: &mut Memory, process: &mut Process, port: GuestPtr) -> Result<()> {
         let bytes = memory.read(port, PORT_SIZE)?;
         if u16::from_be_bytes(bytes[6..8].try_into().unwrap()) & 0xc000 != 0 {
@@ -320,6 +348,8 @@ pub(crate) fn initialize(
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortOp {
+    LocalToGlobal,
+    GlobalToLocal,
     Open,
     Init,
     Close,

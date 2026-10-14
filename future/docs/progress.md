@@ -763,3 +763,21 @@ SetSoundVol during strong-import validation; no application instructions execute
 Next: the common $A8FE startup requirement and QuickDraw coordinate transforms.
 Original application interactions, presentation, audio playback and real Mixed
 Mode still prevent rebuild completion. The goal remains active.
+
+
+### Local/global QuickDraw coordinates through both ABIs
+
+Implemented LocalToGlobal and GlobalToLocal against the current guest GrafPort's
+bitmap origin. Whole-point writes preserve failure atomicity; color ports fail
+explicitly. Geometry tests check negative/nonzero origins, changing guest records,
+current-port changes, word edges and invalid/read-only outputs. MPW programs on
+both architectures verify conversion and its inverse and switch ports before
+continuing exact GPU pixel checks.
+
+All 112 tests pass, including thirteen optional GPU/MPW checks. Strict all-target
+Clippy passes. Centaurian's PPC loader now resolves LocalToGlobal and next rejects
+GetMemFragment. This exposes the outstanding dynamic CFM loading requirement;
+no original PPC application instruction has executed. The 68K programs remain
+at $A8FE. Next: dynamic fragment loading and the common 68K startup requirement.
+Color ports, native overflow comparison, real Mixed Mode, presentation and full
+original application interactions remain unfinished. Rebuild goal stays active.
