@@ -337,3 +337,23 @@ Next: implement QuickDraw guest port/bitmap/region state and real drawing ABI
 calls backed by the existing wgpu commands. Exercise a compiled app that combines
 resources, drawing, and event consumption on each architecture; keep pixel
 readback authoritative. Full rebuild completion remains unproven and active.
+
+### Packed bitmap storage through the GPU backend
+
+Implemented checked Basic QuickDraw BitMap decoding and synchronous packed-bit
+conversion around the existing wgpu operations. Guest memory remains canonical;
+row padding and bits outside logical width are preserved. Local coordinates and
+pattern phase are translated for nonzero/negative bitmap origins.
+
+A real GPU test verifies patterned XOR, a direct guest write between draws,
+packed-byte and RGBA readback, and overlapping copies with preserved padding.
+A CPU test rejects bad strides, PixMap flags, invalid bounds and insufficient
+mapped storage. All 68 tests passed (three GPU tests and five MPW acceptance
+tests included), with strict all-target Clippy passing.
+
+This is preparation for the real QuickDraw ABI, not a compiled drawing-app
+milestone. Next implement GrafPort/current-port state, rectangular regions and
+InitGraf/OpenPort/SetPort/SetPortBits/PaintRect-related adapters. The bitmap
+bridge requires matching GPU extents and supports nonempty monochrome bitmaps
+only, with the backend's 4096-pixel dimension limit. Keep these restrictions
+explicit while expanding; do not claim original-application drawing yet.

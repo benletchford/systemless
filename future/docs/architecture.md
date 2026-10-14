@@ -285,3 +285,26 @@ complete Toolbox Event Manager compatibility.
 
 Contract: Apple's [WaitNextEvent reference](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-51.html)
 and MPW Events.h; compiled MPW callers verify both ABI paths.
+
+## Packed Basic QuickDraw bitmap boundary
+
+`bitmap.rs` reads the 14-byte guest BitMap record and validates its base address,
+row stride, signed bounds and mapped image extent. The current GPU extent limit
+is 4096 in either dimension; empty/inverted bitmaps and PixMap flags fail
+explicitly. Commands use the bitmap's local coordinates. Translation to GPU
+coordinates includes pattern phase, so nonzero or negative origins do not shift
+an 8x8 pattern incorrectly.
+
+Basic QuickDraw's packed one-bit rows are decoded to temporary index bytes,
+processed by the existing wgpu compute commands, then packed back into the
+canonical guest bitmap before returning. CPU work is storage conversion only,
+not a drawing fallback. Padding bytes and unused bits of partial rows retain
+their prior values. Each draw reloads guest bytes; a direct guest write between
+operations is therefore visible. GPU and bitmap extents must currently match.
+A monochrome presentation uses palette index 0 for white and 1 for black.
+
+This establishes the bitmap/backend boundary only. GrafPort initialization,
+current-port authority, region clipping and real QuickDraw ABI dispatch remain
+next; loaded applications cannot invoke these drawing operations yet.
+Reference: Apple's [BitMap record](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-26.html)
+and MPW Quickdraw.h.

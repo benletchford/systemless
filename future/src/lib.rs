@@ -1,4 +1,5 @@
 pub mod abi;
+pub mod bitmap;
 pub mod cpu;
 pub mod events;
 pub mod files;
