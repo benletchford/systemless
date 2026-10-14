@@ -165,6 +165,7 @@ pub enum Call {
         current_only: bool,
     },
     FcbInfo(GuestPtr),
+    CatalogInfo(GuestPtr),
     Draw(GuestPtr),
     Callback(GuestPtr),
     Exit(u32),

@@ -133,3 +133,86 @@ fn fcb_output_validation_is_atomic_and_missing_forks_do_not_open() {
         Err(-37)
     );
 }
+
+#[test]
+fn catalog_metadata_matches_loaded_forks_and_native_cpu_results() {
+    let fork = code_program(&[0x207c, 0x5000, 0, 0x7009, 0xa260, 0xa9f4]);
+    let mut m = LoadedApplication::code(&fork).unwrap();
+    let f = pef_program(
+        &[
+            0x7fc802a6, 0x3c605000, 0x81820008, 0x800c0000, 0x804c0004, 0x7c0903a6, 0x4e800421,
+            0x7fc803a6, 0x4e800020,
+        ],
+        &[b"PBGetCatInfoSync"],
+        16,
+    );
+    let mut p = LoadedApplication::pef(&f.bytes, Some(&fork)).unwrap();
+    for app in [&mut m, &mut p] {
+        app.runtime.process.files.set_name(b"Probe").unwrap();
+        setup(app, 0, 1);
+        // Nonnegative lookup ignores ioDirID, which may hold an earlier file ID.
+        app.runtime
+            .memory
+            .write(GuestPtr(PB + 48), &16u32.to_be_bytes())
+            .unwrap();
+        let expected_data = app
+            .runtime
+            .process
+            .files
+            .fork_bytes(Fork::Data)
+            .unwrap()
+            .len() as u32;
+        assert!(matches!(
+            app.runtime.advance(100).unwrap(),
+            Stop::Exit(0) | Stop::Returned(0)
+        ));
+        let mem = &app.runtime.memory;
+        assert_eq!(mem.u16(GuestPtr(PB + 16)).unwrap(), 0);
+        assert_eq!(mem.u32(GuestPtr(PB + 48)).unwrap(), 16);
+        assert_eq!(mem.u32(GuestPtr(PB + 54)).unwrap(), expected_data);
+        assert_eq!(mem.u32(GuestPtr(PB + 64)).unwrap(), fork.len() as u32);
+        assert_eq!(mem.u32(GuestPtr(PB + 100)).unwrap(), 2);
+        assert_eq!(mem.read(GuestPtr(PB + 30), 1).unwrap(), [0x85]);
+        assert_eq!(mem.read(GuestPtr(PB + 128), 6).unwrap(), b"\x05Probe");
+    }
+}
+
+#[test]
+fn catalog_names_directories_errors_and_output_faults_are_checked() {
+    let mut app = LoadedApplication::code(&code()).unwrap();
+    setup(&mut app, 0, 0);
+    app.runtime.process.files.set_name(b"Probe").unwrap();
+    let (m, files) = (&mut app.runtime.memory, &app.runtime.process.files);
+    m.write(GuestPtr(PB + 128), b"\x06:pRoBe").unwrap();
+    assert_eq!(files.catalog_info(m, GuestPtr(PB)).unwrap(), 0);
+    m.write(GuestPtr(PB + 28), &(-1i16).to_be_bytes()).unwrap();
+    m.write(GuestPtr(PB + 48), &2u32.to_be_bytes()).unwrap();
+    m.write(GuestPtr(PB + 18), &0u32.to_be_bytes()).unwrap();
+    assert_eq!(files.catalog_info(m, GuestPtr(PB)).unwrap(), 0);
+    assert_eq!(m.read(GuestPtr(PB + 30), 1).unwrap(), [16]);
+    assert_eq!(m.u32(GuestPtr(PB + 48)).unwrap(), 2);
+    assert_eq!(m.u16(GuestPtr(PB + 52)).unwrap(), 1);
+    assert_eq!(m.u32(GuestPtr(PB + 100)).unwrap(), 1);
+    for (volume, index, dir, error) in [(99, 1, 2, -35i16), (0, -2, 123, -120), (0, 2, 2, -43)] {
+        m.write(GuestPtr(PB + 22), &(volume as i16).to_be_bytes())
+            .unwrap();
+        m.write(GuestPtr(PB + 28), &(index as i16).to_be_bytes())
+            .unwrap();
+        m.write(GuestPtr(PB + 48), &(dir as u32).to_be_bytes())
+            .unwrap();
+        let mut before = m.read(GuestPtr(PB), 108).unwrap().to_vec();
+        before[12..16].fill(0);
+        w16(&mut before, 16, error as u16);
+        assert_eq!(files.catalog_info(m, GuestPtr(PB)).unwrap(), error);
+        assert_eq!(m.read(GuestPtr(PB), 108).unwrap(), before);
+    }
+    m.map(GuestPtr(PB + 512), vec![0; 32], Permissions::RX)
+        .unwrap();
+    m.write(GuestPtr(PB + 22), &0u16.to_be_bytes()).unwrap();
+    m.write(GuestPtr(PB + 28), &1u16.to_be_bytes()).unwrap();
+    m.write(GuestPtr(PB + 18), &(PB + 512).to_be_bytes())
+        .unwrap();
+    let before = m.read(GuestPtr(PB), 108).unwrap().to_vec();
+    assert!(files.catalog_info(m, GuestPtr(PB)).is_err());
+    assert_eq!(m.read(GuestPtr(PB), 108).unwrap(), before);
+}

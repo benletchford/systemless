@@ -105,6 +105,7 @@ pub enum Service {
     GetNamedResource,
     Get1NamedResource,
     FcbInfo,
+    CatalogInfo,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reply {
@@ -293,6 +294,7 @@ impl Abi {
             b"GetResource" => Some(Service::GetResource),
             b"MemError" => Some(Service::MemError),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
+            b"PBGetCatInfoSync" => Some(Service::CatalogInfo),
             b"GetNamedResource" => Some(Service::GetNamedResource),
             b"Get1NamedResource" => Some(Service::Get1NamedResource),
             b"CurResFile" => Some(Service::CurResFile),
@@ -1060,6 +1062,9 @@ impl Abi {
                     Reply::StackLong(GuestPtr(result)),
                 ))
             }
+            0xa260 if c.dar[0] as u16 == 9 => {
+                Ok((Call::CatalogInfo(GuestPtr(c.dar[8])), Reply::M68kFileError))
+            }
             0xa260 if c.dar[0] as u16 == 8 => {
                 Ok((Call::FcbInfo(GuestPtr(c.dar[8])), Reply::M68kFileError))
             }
@@ -1382,6 +1387,7 @@ impl Abi {
                 current_only: service == Service::Get1NamedResource,
             },
             Service::FcbInfo => Call::FcbInfo(GuestPtr(c.gpr[3])),
+            Service::CatalogInfo => Call::CatalogInfo(GuestPtr(c.gpr[3])),
         };
         (
             call,

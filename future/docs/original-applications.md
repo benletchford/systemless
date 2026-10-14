@@ -29,7 +29,8 @@ fork path and a maximum instruction count, and prints register/opcode context.
   original startup now initializes through $00400000, then passes ReleaseResource,
   InitFonts, InitWindows, FlushEvents and InitMenus with graphics enabled. It stops
   after InitCursor, TEInit, InitDialogs, SysEnvirons and EventAvail at unsupported
-  HFSDispatch ($A260), selector 9, PC $010124BC (trace index 14265).
+  HFSDispatch ($A260), selector 6 (PBDirCreate), PC $0101247A
+  (trace index 14285), after PBGetCatInfo reports a missing entry.
 - Centaurian's 68K path originally faulted writing $010000FC at PC $01000270
   (trace index 92039). The target is a JSR operand containing $00000028; startup
   adds A5 to relocate it to $00400028. Classic CODE now permits writes and these
@@ -63,7 +64,7 @@ InitCursor ($A850) now initializes shared cursor state for the GPU presentation
 overlay. InitDialogs ($A97B) now initializes shared dialog globals and parameter
 StringHandles. SysEnvirons now reports the shared compatibility profile; common
 loading maps/publishes the full fixed heap and MaxApplZone preserves its extent.
-Fresh traces pass EventAvail/SetRect and reach HFSDispatch selector 9 in Super Mines and GetGDevice in Centaurian. Actual
+Fresh traces pass EventAvail/SetRect and reach HFSDispatch selector 6 (PBDirCreate) in Super Mines and GetGDevice in Centaurian. Actual
 onscreen cursor behavior, heap-zone resizing, menu/dialog construction, window
 activation events and original application interaction remain unfinished.
 Dynamic memory loading is verified with the MPW resource-plugin fixture;

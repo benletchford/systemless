@@ -902,3 +902,13 @@ Rectangle mutations are shared signed 16-bit guest-memory services. Offset and
 inset wrap arithmetic; inset inversion follows legacy Systemless evidence, not
 a verified native System 7 contract. EqualRgn compares geometry rather than raw
 region storage.
+
+The File Manager catalog projects the same loaded application and fork bytes as
+FCB queries. Virtual volume -1 (drive 1/default 0) contains root node 2 and
+application node 16. Synchronous PBGetCatInfo decodes named/indexed/directory-ID
+queries without host paths; metadata includes fork lengths, 4 KiB allocation
+blocks, open-fork flags and parent identities. Error results and ioCompletion
+are written through checked guest memory. Successful parameter/name outputs are
+validated together before either changes. Finder metadata/dates currently have
+deterministic zero defaults; imported metadata, MacRoman name folding, general
+hierarchical paths, writable catalogs and asynchronous completion are unfinished.

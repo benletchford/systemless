@@ -1788,3 +1788,38 @@ original PPC sound imports and real Mixed Mode remain unfinished. Native
 onscreen presentation also remains unverified. Next: application-driven file
 metadata/device contracts and subsequent menu/dialog slices. Full rebuild goal
 remains active.
+
+### Shared application catalog queries
+
+PBGetCatInfoSync and native HFSDispatch ($A260), selector 9 now query the
+existing shared read-only application file and virtual root. Root ID 2, parent
+ID 1, application ID 16 and volume -1 agree with the FCB projection. Named
+application queries, indexed root enumeration and negative directory-ID queries
+return names, parent identities, fork sizes/allocation blocks, file locking and
+open-fork flags. Nonnegative calls ignore input ioDirID as the documented
+contract requires. Synchronous completion is cleared and ioResult matches the
+ABI error return. Output faults leave parameter/name destinations unchanged;
+lookup errors update only completion/result. Unknown volume/directory and
+missing entries have distinct errors.
+
+The contract/layout follows MPW Files.h and Apple's [File Manager reference](https://leopard-adc.pepas.com/documentation/mac/pdf/Files/File_Manager.pdf),
+pp. 2-100–2-104 and 2-190–2-192. Dates and Finder metadata currently default to
+zero; general hierarchy/path parsing, MacRoman case folding, writable catalogs
+and asynchronous completion remain gaps. No installed System or host directory
+is exposed by this service. Legacy catalog code served as comparison material;
+native System 7 testing is optional under the user's permission and was not run.
+
+Validation: 192 tests (164 default, 28 optional GPU/MPW), rebuilt MPW fixtures
+and strict all-target Clippy. New tests check native CPU ABI metadata, loaded
+fork lengths/flags, ignored stale file ID, named queries, directory/error
+contracts and output atomicity. Compiled 68K/PPC guests query root/application
+and end-of-enumeration, including PPC without a resource fork.
+
+Super Mines now completes its PBGetCatInfo call, receives fnfErr for the absent
+entry and reaches PBDirCreate (HFSDispatch selector 6), PC $0101247A, trace
+index 14285. This advances startup without claiming original interaction
+acceptance. Centaurian 68K remains at GetGDevice; original PPC strong sound
+imports, native presentation and real Mixed Mode remain outstanding. Next:
+expand the coherent virtual file catalog with application-driven directory/file
+operations, and implement device contracts needed by the graphics slice.
+The full rebuild goal stays active.

@@ -265,3 +265,8 @@ Toolbox update events, repeatable EventAvail/GetNextEvent/WaitNextEvent delivery
 BeginUpdate clipping, EqualRgn restoration and invalidation surviving EndUpdate
 on both CPUs. These offscreen fixtures do not prove original app or onscreen
 window compatibility.
+
+The environment fixture also calls PBGetCatInfoSync for the virtual root, the
+indexed application and an out-of-range index. It checks returned catalog IDs,
+parent IDs, directory count, name, available fork lengths and ioResult on both
+CPUs, including the PPC data-only application.
