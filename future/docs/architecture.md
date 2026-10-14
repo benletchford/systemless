@@ -525,3 +525,24 @@ native system limits. Contracts follow Apple's [DiffRgn](https://dev.os9.ca/tech
 and [UnionRgn](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-143.html) references
 and MPW trap declarations. CPU work constructs geometry; pixel drawing remains
 in the GPU pipeline.
+
+
+### Handle locks and executable heap RAM
+
+HLock/HUnlock share owned-handle lock metadata across the register-based 68K and
+PPC CFM adapters. Locking is idempotent. SetHandleSize preserves a locked block's
+address, permits in-place resize and returns memFullErr when relocation would be
+needed. Explicit unlock permits relocation again. Disposal remains allowed and
+resource loading applies resLocked. Purging, compaction, empty handles and
+HGetState/HSetState remain pending. Contracts: Apple's
+[Memory Manager](https://dev.os9.ca/techpubs/mac/pdf/Memory/Memory_Manager.pdf),
+pages 2-40–2-46.
+
+The shared application heap is read/write/execute: classic applications execute
+resource-loaded routines and generated code from RAM. Both engines fetch the
+canonical bytes, including rewrites; heap mapping bounds still apply. PEF section
+permissions remain independent. StripAddress implements the documented 32-bit
+startup-mode behavior, preserving all address bits without dereferencing the
+pointer. 24-bit startup/address translation is unsupported. See
+[Memory Management Utilities](https://dev.os9.ca/techpubs/mac/Memory/Memory-181.html)
+for heap-code execution and StripAddress semantics.

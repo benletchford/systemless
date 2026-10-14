@@ -57,7 +57,15 @@ fn assert_resource_path(calls: &[Call]) {
             .count(),
         2
     );
-    // Final release is reached only after reloading original bytes succeeds.
+    let lock_states: Vec<_> = calls
+        .iter()
+        .filter_map(|c| match c {
+            Call::SetHandleLock { locked, .. } => Some(*locked),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lock_states, [true, true, false]);
+    // Final release is reached only after reload and lock/resize checks succeed.
 }
 
 #[test]

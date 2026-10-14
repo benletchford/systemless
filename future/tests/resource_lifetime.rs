@@ -6,15 +6,15 @@ use systemless_future::{
     process::{Process, HEAP_SIZE},
 };
 
-fn loaded(changed: bool) -> (Process, Memory) {
+fn loaded(attributes: u8) -> (Process, Memory) {
     let mut bytes = resource(vec![(*b"DATA", 128, None, vec![1, 2, 3])]);
-    if changed {
+    if attributes != 0 {
         let map = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
         let types =
             map + u16::from_be_bytes(bytes[map + 24..map + 26].try_into().unwrap()) as usize;
         let reference =
             types + u16::from_be_bytes(bytes[types + 8..types + 10].try_into().unwrap()) as usize;
-        bytes[reference + 4] = 2; // resChanged
+        bytes[reference + 4] = attributes;
     }
     let mut process = Process::default();
     process.install_application_resources(ResourceFork::parse(&bytes).unwrap());
@@ -23,7 +23,7 @@ fn loaded(changed: bool) -> (Process, Memory) {
 
 #[test]
 fn release_invalidates_identity_reclaims_memory_and_reload_restores_fork_bytes() {
-    let (mut process, mut memory) = loaded(false);
+    let (mut process, mut memory) = loaded(0);
     let handle = process.get_resource(&mut memory, *b"DATA", 128).unwrap();
     let data = memory.u32(GuestPtr(handle)).unwrap();
     memory.write(GuestPtr(data), &[99, 88, 77]).unwrap();
@@ -47,7 +47,7 @@ fn release_invalidates_identity_reclaims_memory_and_reload_restores_fork_bytes()
 
 #[test]
 fn release_keeps_changed_resources_and_rejects_nonresource_handles() {
-    let (mut process, mut memory) = loaded(true);
+    let (mut process, mut memory) = loaded(2);
     let handle = process.get_resource(&mut memory, *b"DATA", 128).unwrap();
     let data = memory.u32(GuestPtr(handle)).unwrap();
     memory.write(GuestPtr(data), &[42]).unwrap();
@@ -64,4 +64,18 @@ fn release_keeps_changed_resources_and_rejects_nonresource_handles() {
         assert_eq!(process.res_error, -192);
     }
     assert_eq!(process.handle_size(&memory, ordinary).unwrap(), 9);
+}
+
+#[test]
+fn resource_lock_attribute_prevents_relocation_until_explicit_unlock() {
+    let (mut process, mut memory) = loaded(0x10);
+    let handle = process.get_resource(&mut memory, *b"DATA", 128).unwrap();
+    let original = memory.u32(GuestPtr(handle)).unwrap();
+    process.set_handle_size(&mut memory, handle, 64).unwrap();
+    assert_eq!(process.mem_error, -108);
+    assert_eq!(memory.u32(GuestPtr(handle)).unwrap(), original);
+    process.set_handle_lock(&memory, handle, false).unwrap();
+    process.set_handle_size(&mut memory, handle, 64).unwrap();
+    assert_eq!(process.mem_error, 0);
+    assert_ne!(memory.u32(GuestPtr(handle)).unwrap(), original);
 }

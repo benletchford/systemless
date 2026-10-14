@@ -339,6 +339,15 @@ impl Runtime {
                                 self.process.mem_error,
                             )?;
                         }
+                        Call::SetHandleLock { handle, locked } => {
+                            self.process.set_handle_lock(&self.memory, handle, locked)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                0,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::DisposeHandle(h) => {
                             self.process.dispose_handle(&mut self.memory, h)?;
                             reply.apply(
@@ -388,6 +397,11 @@ impl Runtime {
                             let v = self.process.get_resource(&mut self.memory, kind, id)?;
                             reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
                         }
+                        Call::StripAddress(address) => {
+                            // This runtime starts in 32-bit mode. IM: Memory
+                            // Utilities specifies an unchanged address in that mode.
+                            reply.apply(&mut self.cpu, &mut self.memory, address, 0)?;
+                        }
                         Call::MemError => {
                             let value = self.memory.u16(GuestPtr(0x220))? as i16 as i32 as u32;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
@@ -422,6 +436,7 @@ impl Runtime {
                                     | crate::quickdraw::PortOp::Init,
                                 ..
                             }
+                            | Call::SetHandleLock { .. }
                             | Call::DisposeHandle(_)
                             | Call::CombineRegions { .. }
                             | Call::Region { .. }
@@ -462,12 +477,14 @@ impl Runtime {
                         | Call::SetToolboxTrap { .. }
                         | Call::TrapAddress { .. }
                         | Call::NewHandle { .. }
+                        | Call::SetHandleLock { .. }
                         | Call::DisposeHandle(_)
                         | Call::CombineRegions { .. }
                         | Call::Region { .. }
                         | Call::HandleSize(_)
                         | Call::SetHandleSize { .. }
                         | Call::GetResource { .. }
+                        | Call::StripAddress(_)
                         | Call::MemError
                         | Call::ResError
                         | Call::ReleaseResource(_)

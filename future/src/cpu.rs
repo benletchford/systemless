@@ -71,6 +71,10 @@ pub enum Call {
         clear: bool,
     },
     DisposeHandle(u32),
+    SetHandleLock {
+        handle: u32,
+        locked: bool,
+    },
     ReleaseResource(u32),
     Region {
         op: crate::regions::Op,
@@ -86,6 +90,7 @@ pub enum Call {
         kind: [u8; 4],
         id: i16,
     },
+    StripAddress(u32),
     MemError,
     ResError,
     CurResFile,

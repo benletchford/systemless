@@ -880,3 +880,34 @@ fn classic_code_relocates_operands_and_executes_patched_instructions() {
         })
     ));
 }
+
+#[test]
+fn strip_address_preserves_high_bits_through_both_real_abis() {
+    let code = code_program(&[0x203c, 0xfedc, 0xba98, 0xa055, 0xa9f4]);
+    let pef = pef_program(
+        &[
+            0x7fc802a6, 0x7c5f1378, 0x3c60fedc, 0x6063ba98, 0x819f0008, 0x800c0000, 0x804c0004,
+            0x7c0903a6, 0x4e800421, 0x7fc803a6, 0x4e800020,
+        ],
+        &[b"StripAddress"],
+        24,
+    );
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef.bytes, None).unwrap(),
+    ] {
+        assert!(matches!(
+            app.runtime.advance(100).unwrap(),
+            Stop::Exit(0) | Stop::Returned(0xfedcba98)
+        ));
+        assert!(app
+            .runtime
+            .services
+            .calls
+            .contains(&Call::StripAddress(0xfedcba98)));
+        match &app.runtime.cpu {
+            Cpu::M68k(c) => assert_eq!(c.dar[0], 0xfedcba98),
+            Cpu::PowerPc(c) => assert_eq!(c.gpr[3], 0xfedcba98),
+        }
+    }
+}

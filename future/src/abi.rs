@@ -35,10 +35,13 @@ pub enum Service {
     NewHandle,
     NewHandleClear,
     DisposeHandle,
+    HLock,
+    HUnlock,
     ReleaseResource,
     GetHandleSize,
     SetHandleSize,
     GetResource,
+    StripAddress,
     MemError,
     ResError,
     CurResFile,
@@ -145,6 +148,9 @@ impl Abi {
             b"SetHandleSize" => Some(Service::SetHandleSize),
             b"GetHandleSize" => Some(Service::GetHandleSize),
             b"ReleaseResource" => Some(Service::ReleaseResource),
+            b"StripAddress" => Some(Service::StripAddress),
+            b"HLock" => Some(Service::HLock),
+            b"HUnlock" => Some(Service::HUnlock),
             b"GetResource" => Some(Service::GetResource),
             b"MemError" => Some(Service::MemError),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
@@ -346,6 +352,14 @@ impl Abi {
                 },
                 Reply::M68kHandle,
             )),
+            0xa055 => Ok((Call::StripAddress(c.dar[0]), Reply::M68kD0)),
+            0xa029 | 0xa02a => Ok((
+                Call::SetHandleLock {
+                    handle: c.dar[8],
+                    locked: opcode == 0xa029,
+                },
+                Reply::M68kError,
+            )),
             0xa023 => Ok((Call::DisposeHandle(c.dar[8]), Reply::M68kError)),
             0xa024 => Ok((
                 Call::SetHandleSize {
@@ -477,6 +491,10 @@ impl Abi {
                 clear: service == Service::NewHandleClear,
             },
             Service::ReleaseResource => Call::ReleaseResource(c.gpr[3]),
+            Service::HLock | Service::HUnlock => Call::SetHandleLock {
+                handle: c.gpr[3],
+                locked: service == Service::HLock,
+            },
             Service::DisposeHandle => Call::DisposeHandle(c.gpr[3]),
             Service::SetHandleSize => Call::SetHandleSize {
                 handle: c.gpr[3],
@@ -487,6 +505,7 @@ impl Abi {
                 kind: c.gpr[3].to_be_bytes(),
                 id: c.gpr[4] as i16,
             },
+            Service::StripAddress => Call::StripAddress(c.gpr[3]),
             Service::MemError => Call::MemError,
             Service::ResError => Call::ResError,
             Service::CurResFile => Call::CurResFile,
@@ -509,6 +528,8 @@ impl Abi {
                         | Service::ExitToShell
                         | Service::SetHandleSize
                         | Service::ReleaseResource
+                        | Service::HLock
+                        | Service::HUnlock
                         | Service::DisposeHandle
                         | Service::FlushEvents
                         | Service::SetToolboxTrapAddress

@@ -22,8 +22,14 @@ pub struct Process {
     pub mem_error: i16,
     pub res_error: i16,
     heap: Option<Heap>,
-    handles: BTreeMap<u32, (u32, u32)>,
+    handles: BTreeMap<u32, HandleBlock>,
     resource_handles: BTreeMap<([u8; 4], i16), u32>,
+}
+#[derive(Clone, Copy)]
+struct HandleBlock {
+    data: u32,
+    size: u32,
+    locked: bool,
 }
 struct Heap {
     free: BTreeMap<u32, u32>,
@@ -115,7 +121,9 @@ impl Process {
             memory.map(
                 GuestPtr(HEAP_BASE),
                 vec![0; HEAP_SIZE as usize],
-                Permissions::RW,
+                // Classic applications execute resource-loaded code and
+                // generated thunks from heap RAM on both architectures.
+                Permissions::RWX,
             )?;
             self.heap = Some(Heap {
                 free: BTreeMap::from([(HEAP_BASE, HEAP_SIZE)]),
@@ -142,12 +150,19 @@ impl Process {
             memory.write(GuestPtr(data), &vec![0; size as usize])?;
         }
         memory.write(GuestPtr(master), &data.to_be_bytes())?;
-        self.handles.insert(master, (data, size));
+        self.handles.insert(
+            master,
+            HandleBlock {
+                data,
+                size,
+                locked: false,
+            },
+        );
         self.mem_error = 0;
         Ok(master)
     }
     pub fn handle_size(&mut self, memory: &Memory, handle: u32) -> Result<u32> {
-        let Some(&(data, size)) = self.handles.get(&handle) else {
+        let Some(&HandleBlock { data, size, .. }) = self.handles.get(&handle) else {
             self.mem_error = if handle == 0 { NIL_HANDLE } else { MEM_BAD };
             return Ok(0);
         };
@@ -159,6 +174,13 @@ impl Process {
         self.mem_error = 0;
         Ok(size)
     }
+    pub fn set_handle_lock(&mut self, memory: &Memory, handle: u32, locked: bool) -> Result<()> {
+        self.handle_size(memory, handle)?;
+        if self.mem_error == 0 {
+            self.handles.get_mut(&handle).unwrap().locked = locked;
+        }
+        Ok(())
+    }
     pub fn set_handle_size(&mut self, memory: &mut Memory, handle: u32, size: u32) -> Result<()> {
         let old_size = self.handle_size(memory, handle)?;
         if self.mem_error != 0 {
@@ -168,13 +190,17 @@ impl Process {
             self.mem_error = MEM_FULL;
             return Ok(());
         }
-        let data = self.handles[&handle].0;
+        let HandleBlock { data, locked, .. } = self.handles[&handle];
         // The heap is one checked writable mapping. Validate it before changing
         // allocator metadata or master pointers, including the relocation case.
         memory.validate_write(GuestPtr(HEAP_BASE), HEAP_SIZE as usize)?;
         let heap = self.heap.as_mut().unwrap();
         if heap.resize_in_place(data, size) {
-            self.handles.insert(handle, (data, size));
+            self.handles.get_mut(&handle).unwrap().size = size;
+            return Ok(());
+        }
+        if locked {
+            self.mem_error = MEM_FULL;
             return Ok(());
         }
         let preserved = memory
@@ -186,7 +212,14 @@ impl Process {
         };
         memory.write(GuestPtr(replacement), &preserved)?;
         memory.write(GuestPtr(handle), &replacement.to_be_bytes())?;
-        self.handles.insert(handle, (replacement, size));
+        self.handles.insert(
+            handle,
+            HandleBlock {
+                data: replacement,
+                size,
+                locked,
+            },
+        );
         heap.release(data);
         Ok(())
     }
@@ -196,7 +229,7 @@ impl Process {
             return Ok(());
         }
         self.handle_size(memory, handle)?;
-        let (data, _) = self.handles.remove(&handle).unwrap();
+        let HandleBlock { data, .. } = self.handles.remove(&handle).unwrap();
         let heap = self.heap.as_mut().unwrap();
         heap.release(data);
         heap.release(handle);
@@ -267,6 +300,7 @@ impl Process {
                 "compressed resource decoding not implemented".into(),
             ));
         }
+        let locked = resource.attributes & 0x10 != 0; // resLocked
         let contents = resource.data.clone();
         let handle = self.new_handle(memory, contents.len() as u32, false)?;
         if handle == 0 {
@@ -275,6 +309,7 @@ impl Process {
         }
         let data = memory.u32(GuestPtr(handle))?;
         memory.write(GuestPtr(data), &contents)?;
+        self.handles.get_mut(&handle).unwrap().locked = locked;
         self.resource_handles.insert((kind, id), handle);
         Ok(handle)
     }

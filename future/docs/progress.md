@@ -719,3 +719,25 @@ HLock ($A029), PC $01000384, after 96700 instruction boundaries. Next: handle lo
 and continued original-app execution. OS replacement, come-from patches, native
 PPC patch dispatch and real Mixed Mode remain unfinished. Rebuild remains active.
 The user approved pushing the accumulated commits to dev/future.
+
+
+### Locked handles, address stripping and resource-loaded execution
+
+Implemented HLock/HUnlock through one owned-handle model. Locked resize preserves
+the pointer, permits in-place shrink/growth, and reports memFullErr if moving is
+necessary; unlocking allows movement. resLocked resources load locked. Tests
+cover repeated locking, invalid handles, failure preservation, disposal and reload
+attributes. Rebuilt MPW programs verify lock/resize behavior on both CPUs.
+
+Centaurian then required StripAddress and execution of CODE copied into heap RAM.
+StripAddress preserves all bits in the runtime's 32-bit startup mode. The MPW PPC
+probe did not emit that service call, so an explicit PEF import fixture verifies
+its adapter alongside 68K. Heap mappings now permit code execution; both engines
+are tested against rewritten instructions and mapping boundaries.
+
+All 107 tests passed with optional GPU/MPW checks enabled, and strict Clippy passed.
+The heap coherence test was then strengthened to reuse each CPU across writes and
+rerun. Centaurian now reaches $A204 at PC $10002B32 after 103852 boundaries. Next:
+inspect that I/O request and proceed with original application-driven slices.
+Purging, compaction, 24-bit mode, real Mixed Mode, presentation and application
+interaction acceptance remain unfinished. The full rebuild remains active.
