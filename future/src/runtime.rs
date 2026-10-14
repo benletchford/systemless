@@ -225,6 +225,42 @@ impl Runtime {
                         Call::InitFonts => {
                             crate::font::initialize(&mut self.memory, &mut self.process)?
                         }
+                        Call::TextDraw(input) | Call::TextWidth(input) => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            if matches!(call, Call::TextWidth(_)) {
+                                let value = crate::text::width(
+                                    &mut self.memory,
+                                    &mut self.process,
+                                    ports,
+                                    input,
+                                )?;
+                                reply.apply(
+                                    &mut self.cpu,
+                                    &mut self.memory,
+                                    value as i32 as u32,
+                                    0,
+                                )?;
+                            } else {
+                                let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                    Error::Graphics("text drawing requires a GPU".into())
+                                })?;
+                                crate::text::draw(
+                                    &mut self.memory,
+                                    &mut self.process,
+                                    ports,
+                                    gpu,
+                                    input,
+                                )?;
+                            }
+                        }
+                        Call::MoveTo { h, v } => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            crate::text::move_to(&mut self.memory, ports, h, v)?;
+                        }
                         Call::Random => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -663,7 +699,9 @@ impl Runtime {
                     // fields carry operation outputs only, never readback authority.
                     if matches!(
                         call,
-                        Call::InitFonts
+                        Call::TextDraw(_)
+                            | Call::TextWidth(_)
+                            | Call::InitFonts
                             | Call::FontInfo(_)
                             | Call::NewWindow(_)
                             | Call::Window { .. }
@@ -713,6 +751,9 @@ impl Runtime {
                         | Call::NewWindow(_)
                         | Call::Window { .. }
                         | Call::TextState { .. }
+                        | Call::MoveTo { .. }
+                        | Call::TextDraw(_)
+                        | Call::TextWidth(_)
                         | Call::InitFonts
                         | Call::FontInfo(_)
                         | Call::Random

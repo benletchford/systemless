@@ -67,3 +67,92 @@ fn text_face_uses_word_parameter_and_preserves_stack_tail() {
     assert_eq!(cpu.dar[15], 0x1002);
     assert_eq!(m.u16(GuestPtr(0x1002)).unwrap(), 0x5a5a);
 }
+
+mod support;
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn glyph_drawing_uses_gpu_transfer_modes_clip_and_preserves_port_and_padding() {
+    use systemless_future::{
+        graphics::{Graphics, Rect},
+        load::resource::ResourceFork,
+        process::Process,
+        text::Input,
+    };
+    let words = [
+        0x9000u16, 65, 66, 4, 0xfffe, 0xffff, 4, 3, 12, 2, 1, 0xffff, 1, 0xe400, 0xba00, 0x4600, 0,
+        3, 5, 7, 0x0104, 0xffff, 0x0203, 0xffff,
+    ];
+    let font: Vec<_> = words.into_iter().flat_map(u16::to_be_bytes).collect();
+    let fork = support::resource(vec![(*b"FONT", 393, None, font)]);
+    let mut process = Process::default();
+    process.install_application_resources(ResourceFork::parse(&fork).unwrap());
+    let mut m = Memory::default();
+    m.map(GuestPtr(0x1000), vec![0; 512], Permissions::RW)
+        .unwrap();
+    m.map(GuestPtr(0x2000), vec![0; 8], Permissions::RW)
+        .unwrap();
+    let bitmap = [0, 0, 0x20, 0, 0, 2, 0, 0, 0, 0, 0, 4, 0, 8];
+    m.write(GuestPtr(0x1000), &bitmap).unwrap();
+    let ports = Ports {
+        current_slot: GuestPtr(0x1020),
+        screen_bitmap: GuestPtr(0x1000),
+    };
+    let port = GuestPtr(0x1080);
+    ports.open(&mut m, &mut process, port).unwrap();
+    ports.clip_rect(&mut m, Rect::new(1, 0, 3, 3)).unwrap();
+    m.write(GuestPtr(port.0 + 68), &[0, 3, 0, 0xa5, 0, 0, 0, 9])
+        .unwrap();
+    m.write(GuestPtr(port.0 + 56), &10u16.to_be_bytes())
+        .unwrap();
+    m.write(GuestPtr(port.0 + 58), &[0xa5; 8]).unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let gpu = pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x4000))).unwrap();
+    let before = [0x5a, 0x33, 0x5a, 0x44, 0x5a, 0x55, 0x5a, 0x66];
+    for mode in 0..8u16 {
+        m.write(GuestPtr(0x2000), &before).unwrap();
+        m.write(GuestPtr(port.0 + 72), &mode.to_be_bytes()).unwrap();
+        text::move_to(&mut m, ports, 1, 2).unwrap();
+        text::draw(&mut m, &mut process, ports, &gpu, Input::Character(b'A')).unwrap();
+        let mut expected = before;
+        for (row, src) in [0xe0u8, 0xa0, 0x40].into_iter().enumerate() {
+            let src = if mode & 4 != 0 { !src } else { src };
+            let d = before[row * 2];
+            let transformed = match mode & 3 {
+                0 => src,
+                1 => d | src,
+                2 => d ^ src,
+                _ => d & !src,
+            };
+            expected[row * 2] = (d & !0x60) | (transformed & 0x60);
+        }
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            expected,
+            "mode {mode}"
+        );
+        assert_eq!(m.u16(GuestPtr(port.0 + 50)).unwrap(), 5);
+        assert_eq!(m.u16(GuestPtr(port.0 + 48)).unwrap(), 2);
+        assert_eq!(m.u16(GuestPtr(port.0 + 56)).unwrap(), 10);
+        assert_eq!(m.read(GuestPtr(port.0 + 58), 8).unwrap(), [0xa5; 8]);
+        assert_eq!(m.read(GuestPtr(port.0 + 71), 1).unwrap(), [0xa5]);
+    }
+    let bytes = m.read(GuestPtr(0x2000), 8).unwrap().to_vec();
+    m.write(GuestPtr(port.0 + 72), &8u16.to_be_bytes()).unwrap();
+    let state = m.read(port, 108).unwrap().to_vec();
+    assert!(text::draw(&mut m, &mut process, ports, &gpu, Input::Character(b'A')).is_err());
+    assert_eq!(m.read(port, 108).unwrap(), state);
+    assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), bytes);
+    m.write(GuestPtr(port.0 + 72), &0u16.to_be_bytes()).unwrap();
+    text::move_to(&mut m, ports, 32767, 2).unwrap();
+    assert!(text::draw(&mut m, &mut process, ports, &gpu, Input::Character(b'A')).is_err());
+    assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), bytes);
+    text::move_to(&mut m, ports, 1, 2).unwrap();
+    m.map(GuestPtr(0x3000), bytes.clone(), Permissions::RX)
+        .unwrap();
+    m.write(GuestPtr(port.0 + 2), &0x3000u32.to_be_bytes())
+        .unwrap();
+    let state = m.read(port, 108).unwrap().to_vec();
+    assert!(text::draw(&mut m, &mut process, ports, &gpu, Input::Character(b'A')).is_err());
+    assert_eq!(m.read(port, 108).unwrap(), state);
+    assert_eq!(m.read(GuestPtr(0x3000), 8).unwrap(), bytes);
+}

@@ -36,16 +36,11 @@ pub fn set(memory: &mut Memory, ports: Ports, field: Field, value: u16) -> Resul
     }
 }
 
-/// Resolve a plain old-style FONT strike by family*128+pointSize. Guest handle
-/// bytes are reread on every call; resource mutation must not leave stale metrics.
-pub fn font_info(
+fn font_data(
     memory: &mut Memory,
     process: &mut crate::process::Process,
-    ports: Ports,
-    destination: GuestPtr,
-) -> Result<()> {
-    memory.validate_write(destination, 8)?;
-    let port = ports.current(memory)?;
+    port: GuestPtr,
+) -> Result<Vec<u8>> {
     if memory.u16(GuestPtr(port.0 + 6))? & 0xc000 != 0 {
         return Err(Error::Graphics(
             "font metrics in color ports are unsupported".into(),
@@ -88,7 +83,18 @@ pub fn font_info(
     };
     let length = process.handle_size(memory, handle)? as usize;
     let data = GuestPtr(memory.u32(GuestPtr(handle))?);
-    let metrics = crate::font::Strike::parse(memory.read(data, length)?)?.metrics;
+    Ok(memory.read(data, length)?.to_vec())
+}
+pub fn font_info(
+    memory: &mut Memory,
+    process: &mut crate::process::Process,
+    ports: Ports,
+    destination: GuestPtr,
+) -> Result<()> {
+    memory.validate_write(destination, 8)?;
+    let port = ports.current(memory)?;
+    let data = font_data(memory, process, port)?;
+    let metrics = crate::font::Strike::parse(&data)?.metrics;
     let bytes: Vec<_> = [
         metrics.ascent,
         metrics.descent,
@@ -99,4 +105,150 @@ pub fn font_info(
     .flat_map(i16::to_be_bytes)
     .collect();
     memory.write(destination, &bytes)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Input {
+    Character(u8),
+    Pascal(GuestPtr),
+}
+fn input(memory: &Memory, input: Input) -> Result<Vec<u8>> {
+    match input {
+        Input::Character(c) => Ok(vec![c]),
+        Input::Pascal(pointer) => {
+            let n = usize::from(memory.read(pointer, 1)?[0]);
+            let address = pointer
+                .0
+                .checked_add(1)
+                .ok_or_else(|| Error::Graphics("text pointer overflow".into()))?;
+            Ok(memory.read(GuestPtr(address), n)?.to_vec())
+        }
+    }
+}
+pub fn width(
+    memory: &mut Memory,
+    process: &mut crate::process::Process,
+    ports: Ports,
+    text: Input,
+) -> Result<i16> {
+    let bytes = input(memory, text)?;
+    let port = ports.current(memory)?;
+    if memory.u32(GuestPtr(port.0 + 76))? != 0 {
+        return Err(Error::Graphics(
+            "fractional space extra is unsupported".into(),
+        ));
+    }
+    let data = font_data(memory, process, port)?;
+    Ok(crate::font::Strike::parse(&data)?.width(&bytes)? as i16)
+}
+pub fn move_to(memory: &mut Memory, ports: Ports, h: i16, v: i16) -> Result<()> {
+    let port = ports.current(memory)?;
+    if memory.u16(GuestPtr(port.0 + 6))? & 0xc000 != 0 {
+        return Err(Error::Graphics(
+            "MoveTo in color ports is unsupported".into(),
+        ));
+    }
+    for offset in [92, 96, 100] {
+        if memory.u32(GuestPtr(port.0 + offset))? != 0 {
+            return Err(Error::Graphics(
+                "MoveTo while recording is unsupported".into(),
+            ));
+        }
+    }
+    let mut bytes = v.to_be_bytes().to_vec();
+    bytes.extend(h.to_be_bytes());
+    memory.write(GuestPtr(port.0 + 48), &bytes)
+}
+pub fn draw(
+    memory: &mut Memory,
+    process: &mut crate::process::Process,
+    ports: Ports,
+    gpu: &crate::graphics::Graphics,
+    text: Input,
+) -> Result<()> {
+    use crate::graphics::Rect;
+    let bytes = input(memory, text)?;
+    let port = ports.current(memory)?;
+    memory.validate_write(port, 108)?;
+    let saved = memory.read(port, 108)?.to_vec();
+    if [92usize, 96, 100, 104]
+        .iter()
+        .any(|offset| saved[*offset..*offset + 4] != [0; 4])
+    {
+        return Err(Error::Graphics(
+            "text recording or custom procedures are unsupported".into(),
+        ));
+    }
+    if memory.u32(GuestPtr(port.0 + 76))? != 0 {
+        return Err(Error::Graphics(
+            "fractional space extra is unsupported".into(),
+        ));
+    }
+    let mode = memory.u16(GuestPtr(port.0 + 72))?;
+    if mode > 7 {
+        return Err(Error::Graphics("unsupported text transfer mode".into()));
+    }
+    let font_bytes = font_data(memory, process, port)?;
+    let font = crate::font::Strike::parse(&font_bytes)?;
+    let v = memory.u16(GuestPtr(port.0 + 48))? as i16;
+    let mut h = memory.u16(GuestPtr(port.0 + 50))? as i16;
+    let mut plans = Vec::new();
+    let mut work = 0usize;
+    for c in bytes {
+        let g = font.glyph(c);
+        let mask = font.mask(c)?;
+        let gx = i32::from(h) + g.bearing;
+        let left = i32::from(h).min(gx);
+        let right = (i32::from(h) + i32::from(g.advance)).max(gx + i32::from(g.width));
+        let top = i32::from(v) + g.top;
+        let bottom = top + i32::from(g.height);
+        if [left, right, top, bottom]
+            .iter()
+            .any(|n| i16::try_from(*n).is_err())
+        {
+            return Err(Error::Graphics("text drawing coordinate overflow".into()));
+        }
+        work = work.saturating_add((right - left) as usize * usize::from(g.height));
+        if work > 1_000_000 {
+            return Err(Error::Graphics("text glyph work limit exceeded".into()));
+        }
+        let mut ink = Vec::new();
+        let mut paper = Vec::new();
+        for y in 0..usize::from(g.height) {
+            let mut x = left;
+            while x < right {
+                let bit = |x: i32| {
+                    x >= gx
+                        && x < gx + i32::from(g.width)
+                        && mask[y * usize::from(g.width) + (x - gx) as usize] != 0
+                };
+                let value = bit(x);
+                let start = x;
+                x += 1;
+                while x < right && bit(x) == value {
+                    x += 1;
+                }
+                let rows = if value { &mut ink } else { &mut paper };
+                rows.push(Rect::new(start, top + y as i32, x, top + y as i32 + 1));
+            }
+        }
+        plans.push((Rect::new(left, top, right, bottom), ink, paper));
+        h = h.wrapping_add(i16::from(g.advance));
+    }
+    let result = (|| {
+        memory.write(GuestPtr(port.0 + 56), &(8 + mode).to_be_bytes())?;
+        for (bounds, ink, paper) in plans {
+            for (pattern, coverage) in [(0u8, paper), (255u8, ink)] {
+                if coverage.is_empty() {
+                    continue;
+                }
+                memory.write(GuestPtr(port.0 + 58), &[pattern; 8])?;
+                ports.paint_coverage(gpu, memory, bounds, Some(&coverage))?;
+            }
+        }
+        Ok(())
+    })();
+    memory.write(port, &saved)?;
+    result?;
+    memory.write(GuestPtr(port.0 + 50), &h.to_be_bytes())
 }

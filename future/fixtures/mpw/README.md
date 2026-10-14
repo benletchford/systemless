@@ -180,3 +180,10 @@ The drawing fixture includes Fonts.h, runs InitFonts twice, and queries positive
 system metrics before selecting its explicit FONT resource. This tests the default
 strike and idempotent initialization through both real compilers. The fallback is
 an OFL-licensed Nimbus Sans substitute; glyph pixel equivalence is not asserted.
+
+
+Text acceptance now checks CharWidth/StringWidth, MoveTo, DrawChar and DrawString.
+The resource glyph has a negative bearing and exact three-row bits; copy produces
+E0 A0 40, XOR cancels it, and drawing preserves pen mode/padding while advancing
+pnLoc. A blank fallback space clears its advance cell under srcCopy. Both MPW
+architectures complete these checks before the final color/pattern image.

@@ -734,3 +734,16 @@ and the current strike is reparsed from live handle bytes. Cached generated stri
 are bounded by count and supported point sizes. Resource priority, fallback
 approximation, thresholding, licenses and rasterization costs are explicit.
 Application text composition through wgpu remains the next shared drawing service.
+
+
+## Shared text drawing
+
+Text measurement and drawing snapshot the selected guest strike and input bytes.
+CPU work decodes source masks and constructs disjoint ink/background coverage;
+wgpu applies all destination pixel operations. Coverage includes glyph bearings
+and the advance cell, enabling opaque blank-space erasure and source transfer
+modes. Temporary pen pattern/mode changes reuse the same GrafPort clipping/color
+pipeline and are restored even on failure. Measurement preserves pnLoc, while
+successful drawing publishes the advanced horizontal word. Geometry preflight is
+bounded; GPU errors remain terminal and can retain earlier completed glyph pixels.
+Synthetic styles, fractional spacing and DrawText/StdText remain explicit gaps.

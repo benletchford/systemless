@@ -1225,3 +1225,45 @@ tests (141 default, 17 optional GPU/MPW). MPW rebuild and strict all-target Clip
 pass. Next: shared text measurement and wgpu glyph drawing, then TextEdit, title
 WDEFs and substantive menu initialization. Real Mixed Mode and full rebuild
 acceptance remain outstanding; the goal stays active.
+
+
+### Shared text measurement and wgpu glyph drawing
+
+CharWidth/StringWidth, DrawChar/DrawString and MoveTo now share the selected guest
+FONT or fallback strike across 68K traps and PPC imports. Measurement returns a
+signed INTEGER through the correct ABI and leaves pnLoc unchanged. MoveTo writes
+both guest point words. Drawing reads live text mode/colors, snapshots source
+string/font data, prepares nonoverlapping ink/background coverage on the CPU,
+and applies source transfer operations through the existing wgpu path. Pen mode
+and pattern are restored, while the horizontal pen advances by glyph advances.
+Opaque copy covers the advance cell as well as glyph bearing/overhang, so spaces
+with blank images erase their background area. All eight source-mode variants
+are implemented, including inverted source, using the shared integer GPU transfer
+semantics. CPU source decoding and coverage geometry never modify destination
+pixels. Normal port/visible/clip regions and packed-bitmap row padding are retained.
+
+Text preflight validates input, mode, font, port and coordinates and caps coverage
+work at one million cells. Unsupported style, fractional SpaceExtra, color ports,
+recording/custom procedures and out-of-word drawing coordinates fail explicitly.
+GPU/bitmap failure restores port fields; a terminal failure after earlier glyphs
+may retain those completed pixels. DrawText/StdText, kerning/shaping, scalable or
+styled metrics, fractional spacing and broader language/script behavior remain
+unfinished. Default glyph pixels/layout are still the documented licensed
+substitute, not a native Macintosh oracle comparison.
+
+Legacy trap/quickdraw.rs confirms Pascal char/string argument sizes, signed word
+width returns and pen movement. A real-CPU test verifies long signed width results
+across PPC and 68K, stack canaries and unchanged pen location. The GPU test checks
+all eight source modes against independent bit expectations, clipping, row padding,
+port restoration, invalid mode/coordinates and read-only bitmap rejection. The MPW
+fixture draws a synthetic resource glyph with signed bearing, verifies pen advance
+and unchanged pen mode, XORs the same glyph away, checks CharWidth/StringWidth,
+and erases a blank fallback space opaquely on both architectures. Its final image
+continues to verify the earlier shared pattern/color operations.
+
+All 160 tests pass (142 default, 18 optional GPU/MPW), the MPW rebuild passes,
+and strict all-target Clippy passes. Original stopping points are unchanged:
+68K applications require InitMenus; PPC Centaurian requires TEStyleNew at strong
+import validation. Next: TextEdit/window text integration and title WDEFs, then
+menu initialization and original application interactions. Full rebuild acceptance
+and real Mixed Mode remain outstanding; keep the goal active.

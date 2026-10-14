@@ -13,6 +13,12 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    TextDraw(crate::text::Input),
+    TextWidth(crate::text::Input),
+    MoveTo {
+        h: i16,
+        v: i16,
+    },
     InitFonts,
     FontInfo(GuestPtr),
     TextState {

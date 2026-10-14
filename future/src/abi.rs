@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    TextDraw(bool),
+    TextWidth(bool),
+    MoveTo,
     InitFonts,
     FontInfo,
     TextState(crate::text::Field),
@@ -132,6 +135,11 @@ impl Abi {
             b"TextSize" => Some(Service::TextState(crate::text::Field::Size)),
             b"GetFontInfo" => Some(Service::FontInfo),
             b"InitFonts" => Some(Service::InitFonts),
+            b"DrawChar" => Some(Service::TextDraw(false)),
+            b"DrawString" => Some(Service::TextDraw(true)),
+            b"CharWidth" => Some(Service::TextWidth(false)),
+            b"StringWidth" => Some(Service::TextWidth(true)),
+            b"MoveTo" => Some(Service::MoveTo),
             b"Random" => Some(Service::Random),
             b"FindSymbol" => Some(Service::FindSymbol),
             b"CountSymbols" => Some(Service::CountSymbols),
@@ -327,6 +335,45 @@ impl Abi {
                 Ok((Call::FontInfo(destination), Reply::None))
             }
             0xa8fe => Ok((Call::InitFonts, Reply::None)),
+            0xa893 => {
+                let v = memory.u16(GuestPtr(sp))? as i16;
+                let h = memory.u16(GuestPtr(
+                    sp.checked_add(2)
+                        .ok_or_else(|| Error::Cpu("point stack overflow".into()))?,
+                ))? as i16;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("point stack overflow".into()))?;
+                Ok((Call::MoveTo { h, v }, Reply::None))
+            }
+            0xa883 | 0xa884 | 0xa88c | 0xa88d => {
+                let string = matches!(opcode, 0xa884 | 0xa88c);
+                let input = if string {
+                    crate::text::Input::Pascal(GuestPtr(memory.u32(GuestPtr(sp))?))
+                } else {
+                    crate::text::Input::Character(memory.u16(GuestPtr(sp))? as u8)
+                };
+                let result = sp
+                    .checked_add(if string { 4 } else { 2 })
+                    .ok_or_else(|| Error::Cpu("text stack overflow".into()))?;
+                let width = matches!(opcode, 0xa88c | 0xa88d);
+                if width {
+                    memory.validate_write(GuestPtr(result), 2)?;
+                }
+                c.dar[15] = result;
+                Ok((
+                    if width {
+                        Call::TextWidth(input)
+                    } else {
+                        Call::TextDraw(input)
+                    },
+                    if width {
+                        Reply::StackWord(GuestPtr(result))
+                    } else {
+                        Reply::None
+                    },
+                ))
+            }
             0xa861 => {
                 memory.validate_write(GuestPtr(sp), 2)?;
                 Ok((Call::Random, Reply::StackWord(GuestPtr(sp))))
@@ -703,6 +750,22 @@ impl Abi {
             },
             Service::FontInfo => Call::FontInfo(GuestPtr(c.gpr[3])),
             Service::InitFonts => Call::InitFonts,
+            Service::MoveTo => Call::MoveTo {
+                h: c.gpr[3] as i16,
+                v: c.gpr[4] as i16,
+            },
+            Service::TextDraw(string) | Service::TextWidth(string) => {
+                let input = if string {
+                    crate::text::Input::Pascal(GuestPtr(c.gpr[3]))
+                } else {
+                    crate::text::Input::Character(c.gpr[3] as u8)
+                };
+                if matches!(service, Service::TextWidth(_)) {
+                    Call::TextWidth(input)
+                } else {
+                    Call::TextDraw(input)
+                }
+            }
             Service::Random => Call::Random,
             Service::GetMemFragment => Call::LoadFragment(crate::cfm::LoadRequest {
                 source: GuestPtr(c.gpr[3]),
@@ -854,6 +917,8 @@ impl Abi {
                                 | crate::windows::Op::Close
                                 | crate::windows::Op::Dispose
                         )
+                        | Service::MoveTo
+                        | Service::TextDraw(_)
                         | Service::InitFonts
                         | Service::FontInfo
                         | Service::TextState(_)

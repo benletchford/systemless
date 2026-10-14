@@ -280,3 +280,77 @@ fn guest_system_font_resource_precedes_the_substitute_and_survives_reinitializat
         handle
     );
 }
+
+#[test]
+fn string_width_returns_signed_pascal_and_ppc_results_without_moving_pen() {
+    let mut font = strike();
+    font[6..8].copy_from_slice(&255u16.to_be_bytes());
+    font[40..42].copy_from_slice(&0x01ffu16.to_be_bytes());
+    let fork = resource(vec![(*b"FONT", 393, None, font)]);
+    let f = pef_program(&[0x4e800020], &[b"StringWidth"], 512);
+    let mut app = LoadedApplication::pef(&f.bytes, Some(&fork)).unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), vec![0; 512], Permissions::RW)
+        .unwrap();
+    let ports = systemless_future::quickdraw::Ports {
+        current_slot: GuestPtr(0x51000000),
+        screen_bitmap: GuestPtr(0),
+    };
+    app.runtime
+        .memory
+        .write(ports.current_slot, &0x51000100u32.to_be_bytes())
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0x51000100 + 68), &[0, 3, 0, 0, 0, 1, 0, 9])
+        .unwrap();
+    app.runtime.process.ports = Some(ports);
+    systemless_future::text::move_to(&mut app.runtime.memory, ports, 123, -45).unwrap();
+    let string = app.info.toc_or_a5 + 64;
+    let mut bytes = vec![b'A'; 256];
+    bytes[0] = 255;
+    app.runtime.memory.write(GuestPtr(string), &bytes).unwrap();
+    let vector = app
+        .runtime
+        .memory
+        .u32(GuestPtr(app.info.toc_or_a5 + 8))
+        .unwrap();
+    let gate = app.runtime.memory.u32(GuestPtr(vector)).unwrap();
+    let stack = STACK_BASE + 0x8000;
+    app.runtime.cpu = Cpu::new(Architecture::PowerPc, gate, stack);
+    if let Cpu::PowerPc(c) = &mut app.runtime.cpu {
+        c.gpr[3] = string;
+    }
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::PowerPc(c) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(c.gpr[3], (-511i32) as u32);
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa8, 0x8c], Permissions::RX)
+        .unwrap();
+    let mut frame = string.to_be_bytes().to_vec();
+    frame.extend([0x5a; 4]);
+    app.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000000, stack);
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::M68k(c) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(c.dar[15], stack + 4);
+    assert_eq!(
+        app.runtime.memory.u16(GuestPtr(stack + 4)).unwrap() as i16,
+        -511
+    );
+    assert_eq!(app.runtime.memory.u16(GuestPtr(stack + 6)).unwrap(), 0x5a5a);
+    assert_eq!(
+        app.runtime.memory.u16(GuestPtr(0x51000100 + 50)).unwrap(),
+        123
+    );
+    assert_eq!(
+        app.runtime.memory.u16(GuestPtr(0x51000100 + 48)).unwrap() as i16,
+        -45
+    );
+}
