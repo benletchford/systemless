@@ -135,3 +135,18 @@ This extends the single application fragment loader. Dynamic shared libraries,
 closure dependency ordering and guest CFM connection APIs remain unfinished.
 Original application interactions, events/files/QuickDraw ABI and window
 acceptance are still the next major executable gaps; the full goal stays active.
+
+## Compiler-generated continuation probe
+
+Both lifecycle CI runs passed for `9d293bac`. The existing local MPW Docker image
+also compiled `future/fixtures/mpw/probe.c` for both architectures, with standard
+startup libraries and generated DATA resources. Its reproducible build and exact
+run commands are documented beside the source. `trace_application` provides a
+bounded instruction/register/service trace without changing guest execution.
+
+The compiled probe does not run yet: 68K startup consumes the initial stack word
+as launch data and faults reading 0x8100 at PC 0x01000456; PPC preparation rejects
+required `StdCLib:_BreakPoint`. These are the next concrete startup requirements
+to investigate, before events and QuickDraw. Do not bypass startup or resolve
+imports with silent stubs to make the probe appear compatible. Generated binaries
+remain ignored; the original checkout is still clean and unchanged.

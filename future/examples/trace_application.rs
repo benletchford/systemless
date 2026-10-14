@@ -1,0 +1,41 @@
+//! Bounded instruction/service trace for diagnosing a file application's startup.
+use systemless_future::{cpu::Cpu, load::LoadedApplication, runtime::Stop};
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.len() != 3 {
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT".into());
+    }
+    let file = std::fs::File::open(&args[1])?;
+    use std::io::Read;
+    let mut data = Vec::new();
+    file.take(systemless_future::load::IMAGE_LIMIT as u64 + 1)
+        .read_to_end(&mut data)?;
+    let mut app = match args[0].as_str() {
+        "code" => LoadedApplication::code(&data)?,
+        "pef" => LoadedApplication::pef(&data, None)?,
+        _ => return Err("expected code or pef".into()),
+    };
+    let budget: u64 = args[2].parse()?;
+    for _ in 0..budget {
+        match &app.runtime.cpu {
+            Cpu::M68k(c) => println!(
+                "{} pc={:08x} sp={:08x} a5={:08x} a0={:08x} d0={:08x}",
+                app.runtime.instructions, c.pc, c.dar[15], c.dar[13], c.dar[8], c.dar[0]
+            ),
+            Cpu::PowerPc(c) => println!(
+                "{} pc={:08x} sp={:08x} toc={:08x} lr={:08x} r3={:08x}",
+                app.runtime.instructions, c.pc, c.gpr[1], c.gpr[2], c.lr, c.gpr[3]
+            ),
+        }
+        let calls = app.runtime.services.calls.len();
+        let stop = app.runtime.advance(1)?;
+        for call in &app.runtime.services.calls[calls..] {
+            println!("service {call:?}");
+        }
+        if stop != Stop::Budget {
+            println!("{stop:?}");
+            return Ok(());
+        }
+    }
+    Err("trace instruction budget exhausted".into())
+}
