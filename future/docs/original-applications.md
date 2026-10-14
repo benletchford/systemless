@@ -26,9 +26,11 @@ fork path and a maximum instruction count, and prints register/opcode context.
 - Super Mines initially wrote through zero after reading CurStackBase ($0908),
   eventually faulting at $1000. Its CODE 0 declares 6678 bytes below A5. Publishing
   the start of those globals ($003FE5EA) fixes this specific loader defect. The
-  original startup now initializes through $00400000, then stops at unsupported
-  trap $A9A3 at PC $01000068 (trace index 13469).
-- Centaurian's 68K path also stops at unsupported trap $A9A3.
+  original startup now initializes through $00400000, then passes ReleaseResource and stops at unsupported
+  trap $A8FE at PC $0100D004 (trace index 13511).
+- Centaurian's 68K path passes ReleaseResource, then faults writing $010000FC
+  inside a loaded CODE segment at PC $01000270 (trace index 92039). The next
+  investigation is startup relocation and segment write permissions.
 - Centaurian's PPC load rejects the unresolved strong InterfaceLib import
   `SetSoundVol`. No PPC application instruction executes.
 
@@ -40,6 +42,8 @@ CurStackBase. This proves the launch contract, not original-app compatibility.
 
 Semantics are documented in Apple's [Memory Manager summary](https://dev.os9.ca/techpubs/mac/pdf/Memory/Memory_Manager.pdf)
 (page 2-104) and [Inside Macintosh volumes I–III](https://puyoman.net/documentation/Inside_Macintosh.pdf)
-(global variables, III-227). Next: implement the resource lifetime behavior needed
-by the original 68K startup, then continue bounded execution. Full acceptance
+(global variables, III-227). ReleaseResource now invalidates loaded resource identity and permits reloads;
+its error behavior and changed-resource retention follow Apple’s
+[ReleaseResource contract](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-85.html).
+Next: investigate the Centaurian startup write and Super Mines’ next Toolbox trap. Full acceptance
 still requires original application interactions on both architectures.

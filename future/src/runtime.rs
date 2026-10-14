@@ -376,6 +376,10 @@ impl Runtime {
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
                         }
+                        Call::ReleaseResource(handle) => {
+                            self.process.release_resource(&mut self.memory, handle)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::GetResource { kind, id } => {
                             let v = self.process.get_resource(&mut self.memory, kind, id)?;
                             reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
@@ -427,7 +431,9 @@ impl Runtime {
                     }
                     if matches!(
                         call,
-                        Call::GetResource { .. } | Call::GetNamedResource { .. }
+                        Call::GetResource { .. }
+                            | Call::GetNamedResource { .. }
+                            | Call::ReleaseResource(_)
                     ) {
                         self.memory
                             .write(GuestPtr(0xa60), &self.process.res_error.to_be_bytes())?;
@@ -459,6 +465,7 @@ impl Runtime {
                         | Call::GetResource { .. }
                         | Call::MemError
                         | Call::ResError
+                        | Call::ReleaseResource(_)
                         | Call::CurResFile
                         | Call::GetNamedResource { .. }
                         | Call::FcbInfo(_) => {

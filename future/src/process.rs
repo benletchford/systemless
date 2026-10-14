@@ -205,6 +205,24 @@ impl Process {
         self.mem_error = 0;
         Ok(())
     }
+    /// IM: More Macintosh Toolbox, ReleaseResource. Released handles
+    /// lose resource identity; a later lookup loads the original fork bytes.
+    pub fn release_resource(&mut self, memory: &mut Memory, handle: u32) -> Result<()> {
+        self.res_error = 0;
+        let Some((&(kind, id), _)) = self.resource_handles.iter().find(|(_, h)| **h == handle)
+        else {
+            self.res_error = -192;
+            return Ok(());
+        };
+        if self
+            .resources
+            .get(kind, id)
+            .is_some_and(|r| r.attributes & 2 != 0)
+        {
+            return Ok(()); // resChanged resources must remain resident.
+        }
+        self.dispose_handle(memory, handle)
+    }
     pub fn get_named_resource(
         &mut self,
         memory: &mut Memory,

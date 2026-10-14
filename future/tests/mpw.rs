@@ -42,7 +42,22 @@ fn assert_resource_path(calls: &[Call]) {
         .unwrap();
     assert!(resource < size && size < allocate && allocate < dispose);
     assert_eq!(calls.last(), Some(&Call::Exit(0)));
-    // DisposeHandle is reached only after all C resource/memory checks pass.
+    let releases: Vec<_> = calls
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| matches!(c, Call::ReleaseResource(_)))
+        .collect();
+    assert_eq!(releases.len(), 3);
+    assert!(allocate < releases[0].0 && releases[0].0 < dispose);
+    assert!(dispose < releases[1].0 && releases[1].0 < releases[2].0);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|c| matches!(c, Call::GetResource {kind, id: 128} if kind == b"DATA"))
+            .count(),
+        2
+    );
+    // Final release is reached only after reloading original bytes succeeds.
 }
 
 #[test]

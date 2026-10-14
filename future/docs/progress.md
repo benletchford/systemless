@@ -658,3 +658,26 @@ Centaurian 68K reaches the same trap. Centaurian PPC rejects unresolved SetSound
 All 95 tests pass, including thirteen optional GPU/MPW checks; strict Clippy passes.
 Next: resource lifetime behavior needed by original startup, then bounded reruns.
 No original application acceptance is claimed. The full rebuild remains active.
+
+
+### Resource release through shared process state
+
+ReleaseResource now resolves through the 68K Pascal trap and PPC InterfaceLib
+adapter to the same process service. Successful release frees resource data and
+its master allocation, clears cached identity and permits reload of fork bytes.
+Ordinary/nil/unknown handles report resNotFound without freeing unrelated memory;
+resources carrying resChanged remain resident with noErr. Resource editing and
+attribute mutation APIs remain unimplemented.
+
+Independent tests verify reclamation, invalid identity, restored bytes and changed
+resource retention. Rebuilt MPW programs on both CPUs reject an ordinary handle,
+modify and release a resource, reload its original bytes, and release it again.
+All 97 tests pass (84 default and thirteen optional GPU/MPW checks enabled);
+strict all-target Clippy passes.
+
+Both original 68K programs now pass ReleaseResource. Super Mines next stops at
+$A8FE, PC $0100D004, after 13511 instruction boundaries. Centaurian reaches a
+write fault at $010000FC inside a CODE segment, PC $01000270, after 92039 boundaries.
+Next: investigate startup relocation and CODE permissions, then the Toolbox trap.
+No application interaction acceptance is claimed; full rebuild remains active.
+GitHub publication remains pending the user's response to the approval request.

@@ -34,6 +34,7 @@ pub enum Service {
     NewHandle,
     NewHandleClear,
     DisposeHandle,
+    ReleaseResource,
     GetHandleSize,
     SetHandleSize,
     GetResource,
@@ -139,6 +140,7 @@ impl Abi {
             b"DisposeHandle" => Some(Service::DisposeHandle),
             b"SetHandleSize" => Some(Service::SetHandleSize),
             b"GetHandleSize" => Some(Service::GetHandleSize),
+            b"ReleaseResource" => Some(Service::ReleaseResource),
             b"GetResource" => Some(Service::GetResource),
             b"MemError" => Some(Service::MemError),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
@@ -342,6 +344,13 @@ impl Abi {
                 Reply::M68kError,
             )),
             0xa025 => Ok((Call::HandleSize(c.dar[8]), Reply::M68kD0)),
+            0xa9a3 => {
+                let handle = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("resource ABI stack overflow".into()))?;
+                Ok((Call::ReleaseResource(handle), Reply::None))
+            }
             0xa9a0 => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let id = i16::from_be_bytes(args[..2].try_into().unwrap());
@@ -452,6 +461,7 @@ impl Abi {
                 size: c.gpr[3],
                 clear: service == Service::NewHandleClear,
             },
+            Service::ReleaseResource => Call::ReleaseResource(c.gpr[3]),
             Service::DisposeHandle => Call::DisposeHandle(c.gpr[3]),
             Service::SetHandleSize => Call::SetHandleSize {
                 handle: c.gpr[3],
@@ -483,6 +493,7 @@ impl Abi {
                         | Service::PenMode
                         | Service::ExitToShell
                         | Service::SetHandleSize
+                        | Service::ReleaseResource
                         | Service::DisposeHandle
                         | Service::FlushEvents
                         | Service::SetEventMask

@@ -67,6 +67,7 @@ pub enum Call {
         clear: bool,
     },
     DisposeHandle(u32),
+    ReleaseResource(u32),
     Region {
         op: crate::regions::Op,
         a: u32,
