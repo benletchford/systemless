@@ -1,0 +1,106 @@
+use systemless_future::{
+    graphics::{Graphics, Rect},
+    memory::{GuestPtr, Memory, Permissions},
+    process::Process,
+    quickdraw::Ports,
+};
+fn setup() -> (Memory, Process, Ports) {
+    let mut m = Memory::default();
+    m.map(GuestPtr(0x1000), vec![0; 512], Permissions::RW)
+        .unwrap();
+    m.map(GuestPtr(0x2000), vec![0; 8], Permissions::RW)
+        .unwrap();
+    let mut bm = [0; 14];
+    bm[..4].copy_from_slice(&0x2000u32.to_be_bytes());
+    bm[4..6].copy_from_slice(&2u16.to_be_bytes());
+    bm[10..12].copy_from_slice(&4u16.to_be_bytes());
+    bm[12..14].copy_from_slice(&8u16.to_be_bytes());
+    m.write(GuestPtr(0x1000), &bm).unwrap();
+    (
+        m,
+        Process::default(),
+        Ports {
+            current_slot: GuestPtr(0x1020),
+            screen_bitmap: GuestPtr(0x1000),
+        },
+    )
+}
+#[test]
+fn open_port_initializes_guest_fields_and_shared_heap_regions() {
+    let (mut m, mut process, ports) = setup();
+    ports.open(&mut m, &mut process, GuestPtr(0x1080)).unwrap();
+    assert_eq!(ports.current(&m).unwrap(), GuestPtr(0x1080));
+    assert_eq!(m.u16(GuestPtr(0x10b8)).unwrap(), 8);
+    assert_eq!(m.read(GuestPtr(0x10ba), 8).unwrap(), &[255; 8]);
+    let visible = m.u32(GuestPtr(0x1098)).unwrap();
+    let clip = m.u32(GuestPtr(0x109c)).unwrap();
+    assert_ne!(visible, clip);
+    assert_eq!(process.handle_size(&m, visible).unwrap(), 10);
+    ports.clip_rect(&mut m, Rect::new(1, 1, 7, 3)).unwrap();
+    let data = m.u32(GuestPtr(clip)).unwrap();
+    assert_eq!(
+        m.read(GuestPtr(data + 2), 8).unwrap(),
+        &[0, 1, 0, 1, 0, 3, 0, 7]
+    );
+    // The guest current-port slot is authoritative, not a cached host pointer.
+    m.write(ports.current_slot, &0u32.to_be_bytes()).unwrap();
+    assert!(ports.current(&m).is_err());
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn guest_port_clip_and_pen_changes_drive_gpu_pixels() {
+    let (mut m, mut process, ports) = setup();
+    ports.open(&mut m, &mut process, GuestPtr(0x1080)).unwrap();
+    ports.clip_rect(&mut m, Rect::new(1, 1, 7, 3)).unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let gpu = pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x4000))).unwrap();
+    ports
+        .paint_rect(&gpu, &mut m, Rect::new(0, 0, 8, 4))
+        .unwrap();
+    assert_eq!(
+        m.read(GuestPtr(0x2000), 8).unwrap(),
+        &[0, 0, 0x7e, 0, 0x7e, 0, 0, 0]
+    );
+    m.write(GuestPtr(0x10b8), &10u16.to_be_bytes()).unwrap(); // patXor
+    ports
+        .paint_rect(&gpu, &mut m, Rect::new(0, 0, 8, 4))
+        .unwrap();
+    assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), &[0; 8]);
+    m.write(GuestPtr(0x1090), &[0, 0, 0, 2, 0, 4, 0, 8])
+        .unwrap(); // portRect origin
+    m.write(GuestPtr(0x10b8), &8u16.to_be_bytes()).unwrap();
+    m.write(GuestPtr(0x10ba), &[0x80; 8]).unwrap();
+    ports
+        .paint_rect(&gpu, &mut m, Rect::new(0, 0, 8, 4))
+        .unwrap();
+    assert_eq!(
+        m.read(GuestPtr(0x2000), 8).unwrap(),
+        &[0, 0, 0x20, 0, 0x20, 0, 0, 0]
+    );
+    let mut offscreen = m.read(GuestPtr(0x1000), 14).unwrap().to_vec();
+    offscreen[..4].copy_from_slice(&0x2100u32.to_be_bytes());
+    m.map(GuestPtr(0x1200), offscreen, Permissions::RW).unwrap();
+    m.map(GuestPtr(0x2100), vec![0; 8], Permissions::RW)
+        .unwrap();
+    ports.set_bits(&mut m, GuestPtr(0x1200)).unwrap();
+    let visible = m.u32(GuestPtr(0x1098)).unwrap();
+    let visible_data = m.u32(GuestPtr(visible)).unwrap();
+    m.write(GuestPtr(visible_data), &12u16.to_be_bytes())
+        .unwrap();
+    // Screen visibility is irrelevant to an offscreen destination.
+    ports
+        .paint_rect(&gpu, &mut m, Rect::new(0, 0, 8, 4))
+        .unwrap();
+    assert_eq!(
+        m.read(GuestPtr(0x2100), 8).unwrap(),
+        &[0, 0, 0x20, 0, 0x20, 0, 0, 0]
+    );
+    m.write(GuestPtr(0x10e8), &0x1234u32.to_be_bytes()).unwrap(); // grafProcs
+    assert!(ports
+        .paint_rect(&gpu, &mut m, Rect::new(0, 0, 8, 4))
+        .is_err());
+    assert_eq!(
+        m.read(GuestPtr(0x2000), 8).unwrap(),
+        &[0, 0, 0x20, 0, 0x20, 0, 0, 0]
+    );
+}

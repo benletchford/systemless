@@ -308,3 +308,23 @@ current-port authority, region clipping and real QuickDraw ABI dispatch remain
 next; loaded applications cannot invoke these drawing operations yet.
 Reference: Apple's [BitMap record](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-26.html)
 and MPW Quickdraw.h.
+
+## Guest GrafPort services
+
+`quickdraw::Ports` binds guest addresses for the current-port slot and screen
+bitmap descriptor; it does not cache either record. OpenPort creates the
+108-byte basic port and two rectangular region handles using the shared process
+heap. SetPort, SetPortBits and ClipRect mutate those guest records. PaintRect
+reads live port bounds, region handles, pattern, colors and transfer mode, then
+uses the packed-bitmap wgpu boundary. Pattern phase follows the port rectangle.
+Screen visibility clips screen drawing but does not clip offscreen bitmaps.
+
+Currently only rectangular regions and monochrome colors are supported.
+Picture/region/polygon recording and custom QDProcs fail explicitly. This service
+layer is not wired to CPU traps/imports yet: InitGraf must bind real application
+globals and a host-owned screen description before the ABI can expose it.
+No compiled QuickDraw drawing acceptance is claimed at this stage.
+
+Defaults and layouts follow Apple's [OpenPort reference](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-32.html)
+and [GrafPort reference](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-27.html),
+with packed offsets checked against MPW Quickdraw.h.

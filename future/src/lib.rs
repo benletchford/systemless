@@ -10,6 +10,7 @@ mod lifecycle;
 pub mod load;
 pub mod memory;
 pub mod process;
+pub mod quickdraw;
 pub mod runtime;
 mod stdlib;
 pub mod traps;

@@ -357,3 +357,25 @@ InitGraf/OpenPort/SetPort/SetPortBits/PaintRect-related adapters. The bitmap
 bridge requires matching GPU extents and supports nonempty monochrome bitmaps
 only, with the backend's 4096-pixel dimension limit. Keep these restrictions
 explicit while expanding; do not claim original-application drawing yet.
+
+### Guest GrafPort service layer
+
+Added a guest-authoritative port binding, OpenPort initialization with two
+shared-heap region handles, current-port selection, bitmap replacement,
+rectangular clipping, and PaintRect command preparation. GPU tests read port
+changes directly and verify clipped pixels, patXor, port-origin pattern phase,
+and offscreen drawing without screen visibility clipping. Custom procedures
+and recording state fail explicitly.
+
+All 70 tests passed with four GPU checks and five MPW acceptance checks enabled;
+strict all-target Clippy passed. After refining offscreen visibility behavior,
+the affected port tests and strict Clippy passed again. These new port tests
+exercise service records directly, not CPU QuickDraw calls.
+
+Next: implement InitGraf global binding and screen policy, expose port/drawing
+services through real 68K/PPC ABIs, and add the compiled resource/drawing/event
+acceptance app. MPW QDGlobals has 76 private bytes, randSeed, screenBits, a 68-byte
+Cursor, five 8-byte patterns, and thePort at offset 202; InitGraf receives the
+address of thePort. GrafPort is 108 bytes. Verify initialization semantics before
+publishing the ABI; do not add a no-op InitGraf. Loaded apps still cannot draw
+through QuickDraw, and the full rebuild remains active.
