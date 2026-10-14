@@ -91,8 +91,17 @@ fn compiled_ppc_application_completes_resource_and_memory_checks() {
     assert_resource_path(&app.runtime.services.calls);
     assert!(matches!(
         app.runtime.services.calls.first(),
-        Some(Call::SetJump(_))
+        Some(Call::FragmentQuery(systemless_future::cfm::Query::Count {
+            connection: 1,
+            ..
+        }))
     ));
+    assert!(app
+        .runtime
+        .services
+        .calls
+        .iter()
+        .any(|call| matches!(call, Call::SetJump(_))));
 }
 
 #[test]

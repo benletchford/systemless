@@ -9,6 +9,9 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    FindSymbol,
+    CountSymbols,
+    GetIndSymbol,
     InitGraf,
     CombineRegions(crate::region_geometry::Boolean),
     Region(crate::regions::Op),
@@ -97,6 +100,9 @@ impl Abi {
             return None;
         }
         match symbol {
+            b"FindSymbol" => Some(Service::FindSymbol),
+            b"CountSymbols" => Some(Service::CountSymbols),
+            b"GetIndSymbol" => Some(Service::GetIndSymbol),
             b"PtInRgn" => Some(Service::Region(crate::regions::Op::Contains)),
             b"EmptyRgn" => Some(Service::Region(crate::regions::Op::Empty)),
             b"NewRgn" => Some(Service::Region(crate::regions::Op::New)),
@@ -172,6 +178,47 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xaa5a => {
+                use crate::cfm::Query;
+                let selector = memory.u16(GuestPtr(sp))?;
+                let size = match selector {
+                    5 => 18,
+                    6 => 10,
+                    7 => 22,
+                    _ => return Err(Error::Cpu(format!("unsupported CFM selector {selector}"))),
+                };
+                let args = memory.read(GuestPtr(sp), size)?;
+                let word = |i| u32::from_be_bytes(args[i..i + 4].try_into().unwrap());
+                let query = match selector {
+                    5 => Query::Find {
+                        connection: word(14),
+                        name: GuestPtr(word(10)),
+                        address: GuestPtr(word(6)),
+                        class: GuestPtr(word(2)),
+                    },
+                    6 => Query::Count {
+                        connection: word(6),
+                        count: GuestPtr(word(2)),
+                    },
+                    7 => Query::Indexed {
+                        connection: word(18),
+                        index: word(14),
+                        name: GuestPtr(word(10)),
+                        address: GuestPtr(word(6)),
+                        class: GuestPtr(word(2)),
+                    },
+                    _ => unreachable!(),
+                };
+                let result = sp
+                    .checked_add(size as u32)
+                    .ok_or_else(|| Error::Cpu("CFM stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::FragmentQuery(query),
+                    Reply::StackWord(GuestPtr(result)),
+                ))
+            }
             0xa8e4..=0xa8e7 => {
                 use crate::region_geometry::Boolean;
                 let args = memory.read(GuestPtr(sp), 12)?;
@@ -436,6 +483,23 @@ impl Abi {
     }
     pub fn import(service: Service, c: &ppc::PpcCpu) -> (Call, Reply) {
         let call = match service {
+            Service::CountSymbols => Call::FragmentQuery(crate::cfm::Query::Count {
+                connection: c.gpr[3],
+                count: GuestPtr(c.gpr[4]),
+            }),
+            Service::FindSymbol => Call::FragmentQuery(crate::cfm::Query::Find {
+                connection: c.gpr[3],
+                name: GuestPtr(c.gpr[4]),
+                address: GuestPtr(c.gpr[5]),
+                class: GuestPtr(c.gpr[6]),
+            }),
+            Service::GetIndSymbol => Call::FragmentQuery(crate::cfm::Query::Indexed {
+                connection: c.gpr[3],
+                index: c.gpr[4],
+                name: GuestPtr(c.gpr[5]),
+                address: GuestPtr(c.gpr[6]),
+                class: GuestPtr(c.gpr[7]),
+            }),
             Service::Region(op) => Call::Region {
                 op,
                 a: c.gpr[3],

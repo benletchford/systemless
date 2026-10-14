@@ -853,3 +853,27 @@ initializer continuations and rollback in the existing runtime. Original
 application stopping points remain unchanged; rebuild goal remains active.
 
 Source: https://leopard-adc.pepas.com/documentation/mac/runtimehtml/RTArch-100.html
+
+
+### CFM connection identity and symbol queries through both ABIs
+
+Application startup now registers its immutable exports in process-owned CFM
+state before running initialization. The initializer's connection ID identifies
+that table. FindSymbol, CountSymbols and GetIndSymbol use shared services through
+PPC imports or 68K $AA5A selectors 5–7, with Pascal stack cleanup, byte class
+outputs, optional pointers and -2801/-2802 errors. Output validation precedes
+mutation. Load metadata shares immutable exports instead of copying names.
+
+Four tests exercise both real CPU adapters against one process, exact names,
+errors, output atomicity, and queries during initialization/main across single
+instruction budgets. Rebuilt MPW probes validate compiler-generated CFM calls;
+the PPC initializer and main query their own connection successfully. All 124
+tests pass including thirteen optional GPU/MPW checks; strict all-target Clippy
+passes. Zero-based GetIndSymbol follows the later Apple reference despite the
+older manual's conflicting one-based example; native comparison is pending.
+
+GetMemFragment, connection allocation/reference counts, guest initializer
+continuations and CloseConnection remain unfinished. No new original-application
+acceptance or real Mixed Mode is claimed. Next: use these process-owned
+connections for dynamic fragment loads with rollback and termination. The full
+rebuild remains active.

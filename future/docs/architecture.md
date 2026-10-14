@@ -186,7 +186,7 @@ OSErr initialization results fault the preparation before main; CPU faults do no
 run cleanup. ExitToShell from an initializer or terminator reports an explicit
 error. A looping initializer or terminator exhausts budgets rather than blocking
 the host. This implements one application fragment; shared-library closure
-ordering, dynamic CloseConnection, and CFM APIs remain future work. The mapped
+ordering and dynamic GetMemFragment/CloseConnection remain future work. The mapped
 container and initialization block remain valid for the Runtime lifetime.
 
 Primary references: [CFM special symbols](https://dev.os9.ca/techpubs/mac/runtimehtml/RTArch-26.html),
@@ -583,3 +583,29 @@ negative origins, signed-word edges, direct guest origin changes and invalid
 outputs without partial writes. Source: Apple's
 [Basic QuickDraw coordinate model](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-19.html)
 and [coordinate conversion usage](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-20.html).
+
+
+### Process-owned CFM symbol queries
+
+`Process::fragments` owns connection identity and immutable export records. PEF
+startup installs the application connection before its initializer executes;
+the System 7 initialization block carries that actual ID. Load metadata and
+connection state share the same immutable export allocation through Arc.
+
+FindSymbol, CountSymbols and GetIndSymbol decode into typed requests in `abi`
+and execute in `cfm`, independently of the current CPU. PPC imports and classic
+68K $AA5A selectors 5–7 use the same table. Outputs retain 32-bit guest addresses,
+a one-byte symbol class, and Pascal byte names. All selected outputs are checked
+before writing; optional pointers follow Apple's MPW CodeFragments.h. Unknown
+connections/symbols return -2801/-2802 without changing outputs. Unsupported
+selectors and a requested Str255 conversion of a longer PEF name fault explicitly.
+
+GetIndSymbol uses zero-based indexing, following the later Apple Code Fragment
+Manager reference. The 1994 Inside Macintosh manual instead documents one-based
+indexing; native comparison remains outstanding. Compiler-generated MPW calls
+verify ABI behavior, not that historical semantic discrepancy. Dynamic allocation,
+connection references/unloading and real Mixed Mode are still unfinished.
+
+References: [CFM API reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Code_Fragment_Manager/DeprecationAppendix/AppendixADeprecatedAPI.html),
+[older CFM usage](https://leopard-adc.pepas.com/documentation/mac/PPCSoftware/PPCSoftware-42.html),
+and the pinned MPW toolchain's `Interfaces/CIncludes/CodeFragments.h`.

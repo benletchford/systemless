@@ -97,3 +97,11 @@ acceptance test requires its compiler-generated export record, transition-vector
 class, and executable target before running the usual resource/handle checks.
 This validates a real linker-produced PEF export table; it does not exercise
 guest FindSymbol or dynamic CFM connections.
+
+The PPC probe now uses FutureInit as its PEF initializer. It captures the real
+connection ID and calls CountSymbols before main. Main checks FindSymbol,
+zero-based GetIndSymbol, optional output pointers, case-sensitive lookup and the
+one-byte class result with a neighboring canary. Both compiled architectures
+verify the invalid-connection error without modifying the count output. This
+extends CFM ABI acceptance; it is not a native CFM semantic comparison or a
+dynamic fragment load.

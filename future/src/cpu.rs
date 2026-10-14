@@ -12,6 +12,7 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    FragmentQuery(crate::cfm::Query),
     InitGraf {
         slot: GuestPtr,
         anchor: Option<GuestPtr>,

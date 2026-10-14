@@ -29,7 +29,7 @@ struct PreparedImage {
     init: Option<crate::lifecycle::Routine>,
     term: Option<crate::lifecycle::Routine>,
     sections: Vec<(u32, u32)>,
-    exports: Vec<super::Export>,
+    exports: std::sync::Arc<[super::Export]>,
 }
 // Host-chosen reservations, never values taken from the PEF default addresses.
 // Gates occupy address space even though the CPU adapter intercepts them.
@@ -99,6 +99,10 @@ pub(super) fn load(input: &[u8], resources: ResourceFork) -> Result<LoadedApplic
         image.sections,
         image.abi,
     )?;
+    app.runtime
+        .process
+        .fragments
+        .install_application(image.exports.clone())?;
     app.info.exports = image.exports;
     app.runtime.lifecycle = Some(crate::lifecycle::Lifecycle::start(
         &mut app.runtime.cpu,
@@ -382,7 +386,7 @@ fn prepare(input: &[u8], placement: Placement) -> Result<PreparedImage> {
         for (offset, value) in [
             (0, 1u32),
             (4, 1),
-            (8, 1),
+            (8, crate::cfm::APPLICATION_CONNECTION),
             (16, placement.container),
             (20, input.len() as u32),
             (28, placement.init_block + 48),
@@ -398,7 +402,7 @@ fn prepare(input: &[u8], placement: Placement) -> Result<PreparedImage> {
         init,
         term,
         sections: info,
-        exports,
+        exports: exports.into(),
         stdlib_data,
     })
 }

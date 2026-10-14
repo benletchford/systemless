@@ -134,6 +134,15 @@ impl Runtime {
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::FragmentQuery(query) => {
+                            let error = self.process.fragments.query(&mut self.memory, query)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::CombineRegions {
                             op,
                             a,
@@ -485,7 +494,8 @@ impl Runtime {
                 Outcome::Service(call) => {
                     self.services.calls.push(call);
                     match call {
-                        Call::InitGraf { .. }
+                        Call::FragmentQuery(_)
+                        | Call::InitGraf { .. }
                         | Call::Port { .. }
                         | Call::PenMode(_)
                         | Call::WaitEvent { .. }

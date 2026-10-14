@@ -15,6 +15,7 @@ const MEM_BAD: i16 = -111;
 #[derive(Default)]
 pub struct Process {
     pub resources: ResourceFork,
+    pub(crate) fragments: crate::cfm::Connections,
     pub files: crate::files::Files,
     pub input: crate::events::Input,
     pub ports: Option<crate::quickdraw::Ports>,

@@ -27,7 +27,7 @@ pub struct LoadInfo {
     pub toc_or_a5: u32,
     pub sections: Vec<(u32, u32)>,
     /// PEF export table order, retained for CFM indexed symbol enumeration.
-    pub exports: Vec<Export>,
+    pub exports: std::sync::Arc<[Export]>,
 }
 pub struct LoadedApplication {
     pub runtime: Runtime,
@@ -129,7 +129,7 @@ pub(super) fn finish(
             entry,
             toc_or_a5: context,
             sections,
-            exports: Vec::new(),
+            exports: std::sync::Arc::from([]),
         },
     })
 }

@@ -3,7 +3,7 @@ Set Exit 1
 SC -sym off probe.c -o probe.68k.o
 Link -d -t 'APPL' -c 'FUTR' probe.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o probe.68k
 MrC -sym off -opt off probe.c -o probe.ppc.o
-PPCLink probe.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -export main -o probe.ppc
+PPCLink probe.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -export main -init FutureInit -o probe.ppc
 Rez -append -o probe.68k probe.r
 Rez -append -o probe.ppc probe.r
 MrC -sym off -opt off jump.c -o jump.ppc.o

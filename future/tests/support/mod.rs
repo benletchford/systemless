@@ -291,3 +291,24 @@ pub fn lifecycle_exit_pef() -> Pef {
     w32(&mut f.bytes, f.loader + 20, 16);
     f
 }
+
+pub fn export_main(f: &mut Pef) {
+    let old_exports =
+        u32::from_be_bytes(f.bytes[f.loader + 44..f.loader + 48].try_into().unwrap()) as usize;
+    f.bytes.truncate(f.loader + old_exports);
+    let name_offset = f.bytes.len() - f.strings;
+    f.bytes.extend(b"main");
+    let start = f.bytes.len();
+    f.bytes.resize(start + 18, 0);
+    w32(&mut f.bytes, f.loader + 44, (start - f.loader) as u32);
+    w32(&mut f.bytes, f.loader + 48, 0);
+    w32(&mut f.bytes, f.loader + 52, 1);
+    w32(&mut f.bytes, start, 1 << 18);
+    w32(&mut f.bytes, start + 4, 0x00040250); // fixed PEF hash of "main"
+    w32(&mut f.bytes, start + 8, 0x02000000 | name_offset as u32);
+    w16(&mut f.bytes, start + 16, 1);
+    let size = (f.bytes.len() - f.loader) as u32;
+    for field in [8, 12, 16] {
+        w32(&mut f.bytes, 40 + 2 * 28 + field, size);
+    }
+}
