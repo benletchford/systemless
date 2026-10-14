@@ -452,6 +452,9 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             stop => break stop,
         }
     };
+    if graphics {
+        app.runtime.refresh_screen()?;
+    }
     println!(
         "{:?}: {stop:?}, instructions={}, service_calls={}, entry={:#x}",
         app.info.architecture,

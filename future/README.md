@@ -71,3 +71,8 @@ fails explicitly. Basic QuickDraw describes a fixed 512x342 monochrome screen;
 other bitmap sizes use temporary targets on the same device. The compiled
 drawing acceptance test also runs both programs through this CLI path. Nonrectangular clipping, color ports,
 recording, custom QDProcs, windows and full graphics compatibility remain pending.
+
+For embedding hosts, `Runtime::refresh_screen` updates the display texture from
+canonical screen memory, including direct guest writes. The graphics CLI calls
+it after execution. This is offscreen verification; loaded-application window
+presentation and host input are still pending.

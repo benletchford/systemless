@@ -433,3 +433,24 @@ Scratch targets are recreated per differently sized draw. Equal-sized offscreen
 drawing can replace the backend texture, so future presentation must refresh
 screen memory explicitly. Next: screen presentation from canonical guest memory,
 port disposal and the region/window services required by application slices.
+
+
+### Canonical screen refresh
+
+Added a read-only packed-bitmap presentation path and `Runtime::refresh_screen`.
+The display comes from the fixed guest screen buffer, independently of the
+current GrafPort and the most recently drawn offscreen bitmap. File graphics
+runs refresh the screen after execution. Presentation decodes packed storage
+and uses the existing wgpu pipeline without writing back to guest memory.
+
+A GPU test first uploads a black, read-only offscreen bitmap with the same size
+as the screen, then refreshes a mostly white screen containing a direct guest
+write. Exact readback proves the offscreen image cannot select the screen,
+subsequent direct writes appear, and both buffers remain unchanged by refresh.
+All 74 tests and strict all-target Clippy pass, including both compiled CLI
+applications. Twelve optional GPU/MPW tests remain excluded by default.
+
+Window presentation is still unverified and loaded apps are not yet integrated
+with the window event loop. Next: connect this refresh boundary to loaded-app
+window presentation and implement port disposal/region services. The complete
+rebuild, real Mixed Mode and original-application acceptance remain unfinished.

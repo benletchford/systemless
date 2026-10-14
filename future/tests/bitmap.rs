@@ -123,3 +123,77 @@ fn offscreen_bitmap_can_differ_from_host_target_size() {
     assert!(gpu.target(0, 1).is_err());
     assert!(gpu.target(4097, 1).is_err());
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn screen_refresh_ignores_offscreen_target_and_observes_direct_writes() {
+    use systemless_future::{cpu::Architecture, fixtures, quickdraw};
+    let mut rt = fixtures::runtime(Architecture::M68k, false).unwrap();
+    rt.memory
+        .map(quickdraw::SCREEN, vec![0; 64 * 342], Permissions::RW)
+        .unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut gpu = pollster::block_on(Graphics::new(
+        &instance,
+        None,
+        512,
+        342,
+        GuestPtr(0x75000000),
+    ))
+    .unwrap();
+    gpu.palette[0] = [255; 4];
+    gpu.palette[1] = [0, 0, 0, 255];
+    rt.graphics = Some(gpu);
+    let offscreen = Bitmap {
+        base: GuestPtr(0x76000000),
+        ..quickdraw::screen_bitmap()
+    };
+    rt.memory
+        .map(
+            offscreen.base,
+            vec![255; 64 * 342],
+            Permissions {
+                read: true,
+                write: false,
+                execute: false,
+            },
+        )
+        .unwrap();
+    offscreen
+        .present(rt.graphics.as_ref().unwrap(), &rt.memory)
+        .unwrap();
+    assert_eq!(
+        &rt.graphics.as_ref().unwrap().read_rgba().unwrap()[..4],
+        &[0, 0, 0, 255]
+    );
+    rt.memory.write(quickdraw::SCREEN, &[0x40]).unwrap();
+    let before = rt
+        .memory
+        .read(quickdraw::SCREEN, 64 * 342)
+        .unwrap()
+        .to_vec();
+    rt.refresh_screen().unwrap();
+    let rgba = rt.graphics.as_ref().unwrap().read_rgba().unwrap();
+    assert_eq!(&rgba[..8], &[255, 255, 255, 255, 0, 0, 0, 255]);
+    assert!(rgba[8..].iter().all(|b| *b == 255));
+    assert_eq!(
+        rt.memory.read(quickdraw::SCREEN, before.len()).unwrap(),
+        before
+    );
+    assert!(rt
+        .memory
+        .read(offscreen.base, 64 * 342)
+        .unwrap()
+        .iter()
+        .all(|b| *b == 255));
+    rt.memory.write(quickdraw::SCREEN, &[0]).unwrap();
+    rt.refresh_screen().unwrap();
+    assert!(rt
+        .graphics
+        .as_ref()
+        .unwrap()
+        .read_rgba()
+        .unwrap()
+        .iter()
+        .all(|b| *b == 255));
+}

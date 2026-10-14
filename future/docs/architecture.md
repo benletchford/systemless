@@ -345,8 +345,11 @@ Different bitmap sizes share the device, queue, pipeline and error state but
 use a temporary texture. This correctness-first path recreates that texture
 on each differently sized draw. Missing GPU setup produces an explicit error.
 The graphics texture is a drawing result, not yet a composed display: drawing
-to an equal-sized offscreen bitmap can replace its contents. Future window
-presentation must explicitly refresh from screen memory before presenting.
+to an equal-sized offscreen bitmap can replace its contents. `Runtime::refresh_screen` explicitly refreshes from fixed screen memory and
+is independent of the current port and application-modifiable screenBits copy.
+It accepts an immutable guest address space and only updates the GPU texture.
+File-mode graphics runs call it after execution; window integration remains
+pending. Hosts must call it before presenting a loaded application.
 
 Real adapters currently expose InitGraf, OpenPort, SetPort, GetPort,
 SetPortBits, ClipRect, PaintRect, PenMode and PenPat. 68K Pascal parameters are

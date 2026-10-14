@@ -57,6 +57,15 @@ impl Runtime {
             faulted: false,
         }
     }
+    /// Refresh the host display from canonical screen bytes, even after exit.
+    /// Offscreen ports and their last drawing texture do not select the display.
+    pub fn refresh_screen(&self) -> Result<()> {
+        let gpu = self
+            .graphics
+            .as_ref()
+            .ok_or_else(|| Error::Graphics("screen refresh requires GPU".into()))?;
+        crate::quickdraw::screen_bitmap().present(gpu, &self.memory)
+    }
     pub fn advance(&mut self, budget: u64) -> Result<Stop> {
         if self.faulted {
             return Err(Error::Cpu("runtime stopped after earlier fault".into()));

@@ -189,6 +189,14 @@ impl Ports {
 #[cfg(test)]
 const GLOBALS: GuestPtr = GuestPtr(0x7400_0000);
 pub const SCREEN: GuestPtr = GuestPtr(0x7410_0000);
+/// Host display policy, independent of the current port or application globals.
+pub fn screen_bitmap() -> Bitmap {
+    Bitmap {
+        base: SCREEN,
+        row_bytes: 64,
+        bounds: Rect::new(0, 0, 512, 342),
+    }
+}
 /// Initial monochrome host policy; changing display modes is not implemented.
 pub(crate) fn install(memory: &mut Memory) -> Result<()> {
     memory.map(SCREEN, vec![0; 64 * 342], crate::memory::Permissions::RW)

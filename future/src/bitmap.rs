@@ -82,6 +82,17 @@ impl Bitmap {
         }
         memory.write(self.base, &bytes)
     }
+    /// Refresh a presentation texture without changing guest bytes. Unlike a
+    /// drawing operation this also accepts read-only guest pixel mappings.
+    pub fn present(&self, gpu: &Graphics, memory: &Memory) -> Result<()> {
+        let (width, height) = self.extent()?;
+        if (width, height) != (gpu.width as usize, gpu.height as usize) {
+            return Err(Error::Graphics("presentation extent mismatch".into()));
+        }
+        let mut staging = Memory::default();
+        staging.map(gpu.base, self.unpack(memory)?, Permissions::RW)?;
+        gpu.execute(&mut staging, Draw::Present)
+    }
     /// Commands use bitmap-local QuickDraw coordinates. Temporary indices only
     /// encode storage; all pixel operations still execute through wgpu.
     pub fn execute(&self, gpu: &Graphics, memory: &mut Memory, draw: Draw) -> Result<()> {
