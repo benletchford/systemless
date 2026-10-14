@@ -28,14 +28,14 @@ fork path and a maximum instruction count, and prints register/opcode context.
   the start of those globals ($003FE5EA) fixes this specific loader defect. The
   original startup now initializes through $00400000, then passes ReleaseResource,
   InitFonts, InitWindows, FlushEvents and InitMenus with graphics enabled. It stops
-  after InitCursor, TEInit, InitDialogs and SysEnvirons at unsupported EventAvail
-  ($A971), PC $0100C458 (trace index 13824).
+  after InitCursor, TEInit, InitDialogs, SysEnvirons and EventAvail at unsupported
+  HFSDispatch ($A260), selector 9, PC $010124BC (trace index 14265).
 - Centaurian's 68K path originally faulted writing $010000FC at PC $01000270
   (trace index 92039). The target is a JSR operand containing $00000028; startup
   adds A5 to relocate it to $00400028. Classic CODE now permits writes and these
   relocations complete. Startup now also installs Toolbox replacements for
   LoadSeg ($A9F0), UnloadSeg ($A9F1), and ExitToShell ($A9F4). The next stop is
-  unsupported SetRect ($A8A7) at PC $0100061C (trace index 104601), after
+  unsupported GetGDevice ($AA32) at PC $10007426 (trace index 104863), after
   InitFonts/InitWindows/InitMenus/TEInit/InitCursor/InitDialogs/MaxApplZone
   (graphics enabled), HLock,
   StripAddress and executing resource-loaded code from heap RAM. The prior $A204
@@ -63,9 +63,9 @@ InitCursor ($A850) now initializes shared cursor state for the GPU presentation
 overlay. InitDialogs ($A97B) now initializes shared dialog globals and parameter
 StringHandles. SysEnvirons now reports the shared compatibility profile; common
 loading maps/publishes the full fixed heap and MaxApplZone preserves its extent.
-Fresh traces reach EventAvail in Super Mines and SetRect in Centaurian. Actual
+Fresh traces pass EventAvail/SetRect and reach HFSDispatch selector 9 in Super Mines and GetGDevice in Centaurian. Actual
 onscreen cursor behavior, heap-zone resizing, menu/dialog construction, window
-activation/update events and original application interaction remain unfinished.
+activation events and original application interaction remain unfinished.
 Dynamic memory loading is verified with the MPW resource-plugin fixture;
 Centaurian has not yet executed its own GetMemFragment calls. Full acceptance
 still requires original application interactions on both architectures.

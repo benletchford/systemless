@@ -77,7 +77,7 @@ fn relink(memory: &mut Memory, items: &[u32]) -> Result<()> {
         &items.last().copied().unwrap_or(0).to_be_bytes(),
     )
 }
-fn record(what: u16, message: u32, ticks: u32, input: Input) -> [u8; 16] {
+pub(crate) fn record(what: u16, message: u32, ticks: u32, input: Input) -> [u8; 16] {
     let mut bytes = [0; 16];
     bytes[..2].copy_from_slice(&what.to_be_bytes());
     bytes[2..6].copy_from_slice(&message.to_be_bytes());

@@ -9,6 +9,7 @@ use crate::{
 pub enum Op {
     New,
     Contains,
+    Equal,
     Empty,
     Dispose,
     Copy,
@@ -38,6 +39,18 @@ fn write(memory: &mut Memory, process: &mut Process, handle: u32, bytes: &[u8]) 
 }
 pub fn call(memory: &mut Memory, process: &mut Process, op: Op, a: u32, b: u32) -> Result<u32> {
     match op {
+        Op::Equal => {
+            let left = read(memory, process, a)?;
+            let right = read(memory, process, b)?;
+            let difference = crate::region_geometry::combine(
+                &left,
+                &right,
+                crate::region_geometry::Boolean::Xor,
+            )?;
+            return Ok(u32::from(
+                crate::region_geometry::decode(&difference)?.is_empty(),
+            ));
+        }
         Op::Contains | Op::Empty => {
             let bytes = read(memory, process, if op == Op::Contains { b } else { a })?;
             let rectangles = crate::region_geometry::decode(&bytes)?;

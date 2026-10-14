@@ -34,12 +34,15 @@ pub enum Op {
     Front,
     Close,
     Dispose,
+    Begin,
+    End,
 }
 #[derive(Default)]
 pub struct Windows {
     manager: u32,
     gray: u32,
     records: BTreeMap<u32, bool>,
+    update: Option<(u32, u32, u32)>,
 }
 fn fail(message: &str) -> Error {
     Error::Graphics(message.into())
@@ -290,6 +293,87 @@ impl Windows {
         }
         Ok(())
     }
+    pub fn update_window(&self, memory: &Memory, process: &mut Process) -> Result<Option<u32>> {
+        for w in self.list(memory)? {
+            if self.update.is_some_and(|(active, _, _)| active == w)
+                || memory.read(GuestPtr(w + 110), 1)?[0] == 0
+            {
+                continue;
+            }
+            let origin = read_rect(memory, GuestPtr(w + 8))?;
+            let visible = shifted(
+                &region(memory, process, handle(memory, w, 24)?)?,
+                -origin.left,
+                -origin.top,
+            )?;
+            let dirty = region_geometry::combine(
+                &region(memory, process, handle(memory, w, 122)?)?,
+                &visible,
+                Boolean::Intersection,
+            )?;
+            if !region_geometry::decode(&dirty)?.is_empty() {
+                return Ok(Some(w));
+            }
+        }
+        Ok(None)
+    }
+    fn begin(&mut self, memory: &mut Memory, process: &mut Process, w: u32) -> Result<()> {
+        if self.update.is_some() {
+            return Err(fail("nested BeginUpdate is unsupported"));
+        }
+        if !self.records.contains_key(&w) {
+            return Err(fail("unknown update window"));
+        }
+        let vis = handle(memory, w, 24)?;
+        let old = region(memory, process, vis)?;
+        let update = handle(memory, w, 122)?;
+        let origin = read_rect(memory, GuestPtr(w + 8))?;
+        let local = shifted(&region(memory, process, update)?, origin.left, origin.top)?;
+        let clip = region_geometry::combine(&old, &local, Boolean::Intersection)?;
+        let ports = process
+            .ports
+            .ok_or_else(|| fail("BeginUpdate requires InitGraf"))?;
+        memory.validate_write(ports.current_slot, 4)?;
+        let saved = process.new_handle(memory, old.len() as u32, false)?;
+        if saved == 0 {
+            return Err(fail("BeginUpdate region allocation failed"));
+        }
+        let result = process.replace_handles(
+            memory,
+            vec![
+                (saved, old),
+                (vis, clip),
+                (update, rect_bytes(Rect::new(0, 0, 0, 0))?),
+            ],
+        );
+        if result.is_err() || process.mem_error != 0 {
+            let error = process.mem_error;
+            process.dispose_handle(memory, saved)?;
+            process.mem_error = error;
+            result?;
+            return Err(fail("BeginUpdate region resize failed"));
+        }
+        ports.set(memory, GuestPtr(w))?;
+        self.update = Some((w, vis, saved));
+        Ok(())
+    }
+    fn end(&mut self, memory: &mut Memory, process: &mut Process, w: u32) -> Result<()> {
+        let (active, vis, saved) = self
+            .update
+            .ok_or_else(|| fail("EndUpdate without BeginUpdate"))?;
+        if active != w || handle(memory, w, 24)? != vis {
+            return Err(fail("update window or visibility handle changed"));
+        }
+        let bytes = region(memory, process, saved)?;
+        memory.validate_write(GuestPtr(saved), 4)?;
+        process.replace_handles(memory, vec![(vis, bytes)])?;
+        if process.mem_error != 0 {
+            return Err(fail("EndUpdate region restore failed"));
+        }
+        process.dispose_handle(memory, saved)?;
+        self.update = None;
+        Ok(())
+    }
     pub fn create(
         &mut self,
         memory: &mut Memory,
@@ -304,6 +388,9 @@ impl Windows {
         }
         if self.manager == 0 {
             return Err(fail("NewWindow requires InitWindows"));
+        }
+        if self.update.is_some() {
+            return Err(fail("window creation during BeginUpdate is unsupported"));
         }
         let ports = process
             .ports
@@ -471,6 +558,17 @@ impl Windows {
         op: Op,
         w: u32,
     ) -> Result<u32> {
+        if op == Op::Begin {
+            self.begin(memory, process, w)?;
+            return Ok(0);
+        }
+        if op == Op::End {
+            self.end(memory, process, w)?;
+            return Ok(0);
+        }
+        if self.update.is_some() && matches!(op, Op::Close | Op::Dispose) {
+            return Err(fail("window teardown during BeginUpdate is unsupported"));
+        }
         if op == Op::Init {
             self.init(memory, process, gpu)?;
             return Ok(0);

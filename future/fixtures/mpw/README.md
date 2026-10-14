@@ -259,3 +259,9 @@ version behavior, actual low-memory application heap bounds, MaxApplZone and
 GetApplLimit, then preserves a pointer's bytes across another maximize. Both
 compiled CPUs post the success marker without a GPU. The profile's capability
 flags describe the current rebuild; no complete System 7 support is implied.
+
+The window fixture also exercises SetRect/OffsetRect/InsetRect, OS versus
+Toolbox update events, repeatable EventAvail/GetNextEvent/WaitNextEvent delivery,
+BeginUpdate clipping, EqualRgn restoration and invalidation surviving EndUpdate
+on both CPUs. These offscreen fixtures do not prove original app or onscreen
+window compatibility.

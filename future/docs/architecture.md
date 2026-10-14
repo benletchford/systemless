@@ -886,3 +886,19 @@ allocations while reasserting the full mapped extent. It does not create a
 second CPU-specific heap or accept a limit the allocator cannot honor. General
 zone resizing and SetApplLimit support are still missing. Standalone Process
 unit fixtures retain lazy mapping when they are not created by the loader.
+
+Window update notifications derive from guest WindowList, visible-region and
+update-region storage. The shared runtime prioritizes eligible OS queue events
+then synthesizes updates for Toolbox event receivers, including WaitNextEvent.
+Delivery does not dequeue dirty geometry. BeginUpdate saves the old visible
+region in an owned guest handle, narrows it to dirty local coordinates and clears
+updateRgn atomically through grouped handle replacement. EndUpdate restores it
+without clearing new invalidation. Host metadata retains allocation identities
+only. Nested brackets and window creation/close/dispose while updating are
+explicit faults. Activation events and menu-bar invalidation servicing remain
+unimplemented; this is a partial Toolbox event contract.
+
+Rectangle mutations are shared signed 16-bit guest-memory services. Offset and
+inset wrap arithmetic; inset inversion follows legacy Systemless evidence, not
+a verified native System 7 contract. EqualRgn compares geometry rather than raw
+region storage.

@@ -13,6 +13,12 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    Rectangle(crate::rectangles::Op),
+    ToolboxEvent {
+        mask: u16,
+        destination: GuestPtr,
+        remove: bool,
+    },
     SysEnvirons {
         version: i16,
         record: GuestPtr,

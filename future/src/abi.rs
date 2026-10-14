@@ -10,6 +10,11 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    SetRect,
+    OffsetRect,
+    InsetRect,
+    GetNextEvent,
+    EventAvail,
     SysEnvirons,
     MaxApplZone,
     GetApplLimit,
@@ -181,6 +186,13 @@ impl Abi {
             b"TEIdle" => Some(Service::TEIdle),
             b"TEActivate" => Some(Service::TEActivate(true)),
             b"TEDeactivate" => Some(Service::TEActivate(false)),
+            b"SetRect" => Some(Service::SetRect),
+            b"OffsetRect" => Some(Service::OffsetRect),
+            b"InsetRect" => Some(Service::InsetRect),
+            b"GetNextEvent" => Some(Service::GetNextEvent),
+            b"EventAvail" => Some(Service::EventAvail),
+            b"BeginUpdate" => Some(Service::Window(crate::windows::Op::Begin)),
+            b"EndUpdate" => Some(Service::Window(crate::windows::Op::End)),
             b"SysEnvirons" => Some(Service::SysEnvirons),
             b"MaxApplZone" => Some(Service::MaxApplZone),
             b"GetApplLimit" => Some(Service::GetApplLimit),
@@ -209,6 +221,7 @@ impl Abi {
             b"CountSymbols" => Some(Service::CountSymbols),
             b"GetIndSymbol" => Some(Service::GetIndSymbol),
             b"PtInRgn" => Some(Service::Region(crate::regions::Op::Contains)),
+            b"EqualRgn" => Some(Service::Region(crate::regions::Op::Equal)),
             b"EmptyRgn" => Some(Service::Region(crate::regions::Op::Empty)),
             b"NewRgn" => Some(Service::Region(crate::regions::Op::New)),
             b"DisposeRgn" => Some(Service::Region(crate::regions::Op::Dispose)),
@@ -360,14 +373,18 @@ impl Abi {
                     },
                 ))
             }
-            0xa92d | 0xa914 => {
+            0xa92d | 0xa914 | 0xa922 | 0xa923 => {
                 let pointer = memory.u32(GuestPtr(sp))?;
                 c.dar[15] = sp
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("window stack overflow".into()))?;
                 Ok((
                     Call::Window {
-                        op: if opcode == 0xa92d {
+                        op: if opcode == 0xa922 {
+                            crate::windows::Op::Begin
+                        } else if opcode == 0xa923 {
+                            crate::windows::Op::End
+                        } else if opcode == 0xa92d {
                             crate::windows::Op::Close
                         } else {
                             crate::windows::Op::Dispose
@@ -511,6 +528,69 @@ impl Abi {
                         handle,
                     }),
                     Reply::None,
+                ))
+            }
+            0xa8e3 => {
+                let args = memory.read(GuestPtr(sp), 10)?;
+                let b = u32::from_be_bytes(args[..4].try_into().unwrap());
+                let a = u32::from_be_bytes(args[4..8].try_into().unwrap());
+                let result = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("region stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 1)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::Region {
+                        op: crate::regions::Op::Equal,
+                        a,
+                        b,
+                    },
+                    Reply::StackByte(GuestPtr(result)),
+                ))
+            }
+            0xa8a7..=0xa8a9 => {
+                let size = if opcode == 0xa8a7 { 12 } else { 8 };
+                let args = memory.read(GuestPtr(sp), size)?;
+                let word = |i| i16::from_be_bytes(args[i..i + 2].try_into().unwrap());
+                let pointer = GuestPtr(u32::from_be_bytes(args[size - 4..].try_into().unwrap()));
+                memory.validate_write(pointer, 8)?;
+                let op = match opcode {
+                    0xa8a7 => crate::rectangles::Op::Set {
+                        pointer,
+                        edges: [word(4), word(6), word(0), word(2)],
+                    },
+                    0xa8a8 => crate::rectangles::Op::Offset {
+                        pointer,
+                        dh: word(2),
+                        dv: word(0),
+                    },
+                    _ => crate::rectangles::Op::Inset {
+                        pointer,
+                        dh: word(2),
+                        dv: word(0),
+                    },
+                };
+                c.dar[15] = sp
+                    .checked_add(size as u32)
+                    .ok_or_else(|| Error::Cpu("rectangle stack overflow".into()))?;
+                Ok((Call::Rectangle(op), Reply::None))
+            }
+            0xa970 | 0xa971 => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let destination = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let mask = u16::from_be_bytes(args[4..6].try_into().unwrap());
+                let result = sp
+                    .checked_add(6)
+                    .ok_or_else(|| Error::Cpu("event stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 1)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::ToolboxEvent {
+                        mask,
+                        destination,
+                        remove: opcode == 0xa970,
+                    },
+                    Reply::StackByte(GuestPtr(result)),
                 ))
             }
             0xa090 => Ok((
@@ -1095,6 +1175,35 @@ impl Abi {
                 active,
             }),
             Service::TEIdle => Call::TextEdit(crate::textedit::Op::Idle(c.gpr[3])),
+            Service::GetNextEvent | Service::EventAvail => Call::ToolboxEvent {
+                mask: c.gpr[3] as u16,
+                destination: GuestPtr(c.gpr[4]),
+                remove: service == Service::GetNextEvent,
+            },
+            Service::SetRect => Call::Rectangle(crate::rectangles::Op::Set {
+                pointer: GuestPtr(c.gpr[3]),
+                edges: [
+                    c.gpr[5] as i16,
+                    c.gpr[4] as i16,
+                    c.gpr[7] as i16,
+                    c.gpr[6] as i16,
+                ],
+            }),
+            Service::OffsetRect | Service::InsetRect => {
+                Call::Rectangle(if service == Service::OffsetRect {
+                    crate::rectangles::Op::Offset {
+                        pointer: GuestPtr(c.gpr[3]),
+                        dh: c.gpr[4] as i16,
+                        dv: c.gpr[5] as i16,
+                    }
+                } else {
+                    crate::rectangles::Op::Inset {
+                        pointer: GuestPtr(c.gpr[3]),
+                        dh: c.gpr[4] as i16,
+                        dv: c.gpr[5] as i16,
+                    }
+                })
+            }
             Service::SysEnvirons => Call::SysEnvirons {
                 version: c.gpr[3] as i16,
                 record: GuestPtr(c.gpr[4]),
@@ -1276,10 +1385,13 @@ impl Abi {
         };
         (
             call,
-            if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Empty))
+            if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::MaxApplZone
+                    Service::SetRect
+                        | Service::OffsetRect
+                        | Service::InsetRect
+                        | Service::MaxApplZone
                         | Service::BlockMove
                         | Service::InitDialogs
                         | Service::ParamText
@@ -1299,6 +1411,8 @@ impl Abi {
                             crate::windows::Op::Init
                                 | crate::windows::Op::Close
                                 | crate::windows::Op::Dispose
+                                | crate::windows::Op::Begin
+                                | crate::windows::Op::End
                         )
                         | Service::TEUpdate
                         | Service::TESetText

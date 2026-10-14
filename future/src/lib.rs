@@ -19,6 +19,7 @@ pub mod memory;
 pub mod menus;
 pub mod process;
 pub mod quickdraw;
+pub mod rectangles;
 pub mod region_geometry;
 pub mod regions;
 pub mod rounded;

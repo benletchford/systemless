@@ -266,6 +266,20 @@ impl Runtime {
                             })?;
                             crate::text::move_to(&mut self.memory, ports, h, v)?;
                         }
+                        Call::Rectangle(op) => {
+                            crate::rectangles::call(&mut self.memory, op)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::ToolboxEvent {
+                            mask,
+                            destination,
+                            remove,
+                        } => {
+                            let ticks = self.tick_count()?;
+                            let found =
+                                self.receive_toolbox_event(mask, destination, remove, ticks)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, u32::from(found), 0)?;
+                        }
                         Call::SysEnvirons { version, record } => {
                             let result =
                                 crate::environment::query(&mut self.memory, version, record)?;
@@ -927,6 +941,8 @@ impl Runtime {
                         | Call::NewWindow(_)
                         | Call::Window { .. }
                         | Call::TextState { .. }
+                        | Call::Rectangle(_)
+                        | Call::ToolboxEvent { .. }
                         | Call::SysEnvirons { .. }
                         | Call::MaxApplZone
                         | Call::GetApplLimit
@@ -1028,8 +1044,59 @@ impl Runtime {
         }
         Ok(Stop::Budget)
     }
+    fn toolbox_available(&mut self, mask: u16) -> Result<bool> {
+        if crate::events::available(&self.memory, mask)? {
+            return Ok(true);
+        }
+        if mask & (1 << 6) == 0 {
+            return Ok(false);
+        }
+        let windows = std::mem::take(&mut self.process.windows);
+        let result = windows.update_window(&self.memory, &mut self.process);
+        self.process.windows = windows;
+        result.map(|window| window.is_some())
+    }
+    fn receive_toolbox_event(
+        &mut self,
+        mask: u16,
+        destination: GuestPtr,
+        remove: bool,
+        ticks: u32,
+    ) -> Result<bool> {
+        self.memory.validate_write(destination, 16)?;
+        if crate::events::available(&self.memory, mask)? {
+            return crate::events::receive(
+                &mut self.memory,
+                mask,
+                destination,
+                remove,
+                ticks,
+                self.process.input,
+            );
+        }
+        if mask & (1 << 6) != 0 {
+            let windows = std::mem::take(&mut self.process.windows);
+            let result = windows.update_window(&self.memory, &mut self.process);
+            self.process.windows = windows;
+            if let Some(window) = result? {
+                self.memory.write(
+                    destination,
+                    &crate::events::record(6, window, ticks, self.process.input),
+                )?;
+                return Ok(true);
+            }
+        }
+        crate::events::receive(
+            &mut self.memory,
+            mask,
+            destination,
+            remove,
+            ticks,
+            self.process.input,
+        )
+    }
     fn poll_event_wait(&mut self, wait: EventWait) -> Result<Option<Stop>> {
-        let ready = crate::events::available(&self.memory, wait.mask)?;
+        let ready = self.toolbox_available(wait.mask)?;
         if !ready && wait.remaining != 0 {
             let ticks = wait.remaining;
             self.event_wait = Some(wait);
@@ -1040,14 +1107,7 @@ impl Runtime {
             self.memory.validate_write(p, 1)?;
         }
         let now = self.tick_count()?;
-        let found = crate::events::receive(
-            &mut self.memory,
-            wait.mask,
-            wait.destination,
-            true,
-            now,
-            self.process.input,
-        )?;
+        let found = self.receive_toolbox_event(wait.mask, wait.destination, true, now)?;
         wait.reply
             .apply(&mut self.cpu, &mut self.memory, u32::from(found), 0)?;
         Ok(None)

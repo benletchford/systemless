@@ -1753,3 +1753,38 @@ event availability with proper window/event integration, then further applicatio
 resource/menu/dialog slices. Native windows/cursor presentation, original PPC
 strong sound imports and real Mixed Mode remain unfinished. The full rebuild
 goal stays active.
+
+### Shared rectangles and window update delivery
+
+SetRect, OffsetRect and InsetRect now use one checked signed 16-bit rectangle
+implementation for native 68K traps and PPC imports. Set preserves edge order;
+offset/inset wrap coordinates, preserve neighboring bytes, and reject read-only
+output before mutation. Inset preserves inverted edges, following the legacy
+Systemless comparison; native System 7 behavior has not been verified.
+
+EventAvail and GetNextEvent now peek/consume eligible shared OS events and
+synthesize update events from visible windows' live guest update regions.
+WaitNextEvent uses the same availability/delivery path, so pending updates wake
+it immediately. OS-only calls still exclude window updates. Update delivery
+leaves the region pending until BeginUpdate; BeginUpdate intersects the local
+visible region with global dirty geometry, saves visibility in an owned guest
+handle, clears the dirty region and selects the window port. EndUpdate restores
+visibility and preserves newly accumulated invalidation. EqualRgn compares
+decoded geometry, including differently encoded equivalent regions.
+
+All 190 tests pass (162 default, 28 optional GPU/MPW); strict all-target Clippy
+passes and MPW fixtures rebuild. The compiled window fixture checks both CPU
+ABIs, repeatable update delivery, OS/Toolbox separation, immediate WaitNextEvent,
+clipped visibility, restored visibility and invalidation retained across the
+update bracket. Default tests cover rectangle boundary faults/wrapping and
+shared CPU event peek/consume with native Boolean stack padding.
+
+Fresh original traces advance to HFSDispatch ($A260), selector 9 in Super Mines
+(PC $010124BC, index 14265), and GetGDevice ($AA32) in Centaurian's 68K code
+(PC $10007426, index 104863). These are bounded startup traces, not accepted
+original application interactions. Activation events, menu invalidation, nested
+update brackets, window lifecycle changes during updates, public Color QuickDraw,
+original PPC sound imports and real Mixed Mode remain unfinished. Native
+onscreen presentation also remains unverified. Next: application-driven file
+metadata/device contracts and subsequent menu/dialog slices. Full rebuild goal
+remains active.
