@@ -559,3 +559,24 @@ This provides storage needed for complex QuickDraw regions. Region operations
 still need to adopt it; handle locking, purging, grow-zone callbacks and general
 heap compaction remain unimplemented. The complete rebuild goal remains active,
 with original-application acceptance and real Mixed Mode still outstanding.
+
+
+### Region storage and clip save/restore
+
+Added NewRgn, DisposeRgn, RectRgn, CopyRgn, GetClip and SetClip with shared 68K/PPC
+services. Region payloads use resizable guest handles. Copies preserve complete
+bounded payloads, support self-copy, and retain destination-handle identity.
+RectRgn normalizes empty rectangles. Clip get/set copy contents into existing
+handles rather than exchanging pointers.
+
+Rebuilt both MPW drawing programs with region allocation, saving the current
+clip, setting a temporary clip, copying/restoring the original and disposal.
+Exact expected drawing pixels and final success markers pass on both CPUs and
+through the CLI. Two new tests cover empty/rectangular records, disposal,
+variable-length payload relocation, self-copy and malformed source bounds.
+All 88 tests and strict Clippy pass (76 default, twelve optional GPU/MPW checks).
+
+Complex region contents can be stored/copied but are not yet interpreted for
+drawing; PaintRect still rejects them explicitly. Next: bounded region geometry
+and Boolean operations, then GPU clipping and Window Manager application slices.
+The full rebuild and original-application/mixed-mode acceptance remain unfinished.

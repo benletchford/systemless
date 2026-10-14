@@ -433,3 +433,21 @@ storage is reclaimed. Newly exposed bytes are unspecified. Failure preserves
 size, master pointer and data; nil/disposed handles report Memory Manager errors.
 Zero logical size retains a valid handle. No compaction or grow-zone callbacks
 are attempted. See Apple's [Memory Manager, pages 2-40–2-41](https://dev.os9.ca/techpubs/mac/pdf/Memory/Memory_Manager.pdf).
+
+
+## Shared region storage
+
+The regions module implements NewRgn, DisposeRgn, RectRgn, CopyRgn, GetClip and
+SetClip through shared process handles. Empty regions are ten-byte records with
+zero bounds. RectRgn normalizes empty/inverted rectangles to that form. Copying
+snapshots the complete declared payload before resizing its destination, which
+preserves handle identity and supports self-copy. Source sizes must be even,
+10–32766 bytes and fit the owned allocation. Payload geometry is opaque here;
+these copying services do not imply that complex-region rasterization works.
+
+GetClip and SetClip copy region bytes rather than exchange port handles. The
+68K Pascal stack and PPC register adapters use the same implementation. Existing
+drawing still rejects nonrectangular region records explicitly. These storage
+contracts follow Apple's [region routines](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-131.html)
+and MPW Quickdraw.h. Complex-region decoding, Boolean operations and GPU clipping
+remain the next geometry boundary.

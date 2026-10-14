@@ -18,7 +18,7 @@ int main(void) {
     EventRecord event;
     Handle data;
     Handle resized;
-    RgnHandle visible, clipping;
+    RgnHandle visible, clipping, saved, temporary;
     InitGraf(&qd.thePort);
     if (qd.thePort != 0 || qd.randSeed != 1) return 1;
     GetPort(&current);
@@ -33,6 +33,16 @@ int main(void) {
     bitmap.bounds = all;
     SetPortBits(&bitmap);
     ClipRect(&clip);
+    saved = NewRgn();
+    temporary = NewRgn();
+    if (!saved || !temporary) return 14;
+    GetClip(saved);
+    RectRgn(temporary,&patch);
+    SetClip(temporary);
+    CopyRgn(saved,temporary);
+    SetClip(temporary);
+    DisposeRgn(saved);
+    DisposeRgn(temporary);
     data = GetResource('DATA',128);
     if (!data || GetHandleSize(data) != 3 || **data != 1) return 3;
     PenPat(&qd.gray);

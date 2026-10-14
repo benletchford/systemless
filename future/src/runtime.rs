@@ -134,6 +134,21 @@ impl Runtime {
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
                     match call {
+                        Call::Region { op, a, b } => {
+                            let value = crate::regions::call(
+                                &mut self.memory,
+                                &mut self.process,
+                                op,
+                                a,
+                                b,
+                            )?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                value,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::InitGraf { slot, anchor } => {
                             self.process.ports = Some(crate::quickdraw::initialize(
                                 &mut self.memory,
@@ -379,6 +394,7 @@ impl Runtime {
                                 ..
                             }
                             | Call::DisposeHandle(_)
+                            | Call::Region { .. }
                             | Call::HandleSize(_)
                             | Call::SetHandleSize { .. }
                             | Call::GetResource { .. }
@@ -414,6 +430,7 @@ impl Runtime {
                         | Call::TrapAddress { .. }
                         | Call::NewHandle { .. }
                         | Call::DisposeHandle(_)
+                        | Call::Region { .. }
                         | Call::HandleSize(_)
                         | Call::SetHandleSize { .. }
                         | Call::GetResource { .. }

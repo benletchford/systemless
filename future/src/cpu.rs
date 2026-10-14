@@ -61,6 +61,11 @@ pub enum Call {
         clear: bool,
     },
     DisposeHandle(u32),
+    Region {
+        op: crate::regions::Op,
+        a: u32,
+        b: u32,
+    },
     HandleSize(u32),
     SetHandleSize {
         handle: u32,

@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     InitGraf,
+    Region(crate::regions::Op),
     Port(crate::quickdraw::PortOp),
     PenMode,
     WaitNextEvent,
@@ -87,6 +88,12 @@ impl Abi {
             return None;
         }
         match symbol {
+            b"NewRgn" => Some(Service::Region(crate::regions::Op::New)),
+            b"DisposeRgn" => Some(Service::Region(crate::regions::Op::Dispose)),
+            b"CopyRgn" => Some(Service::Region(crate::regions::Op::Copy)),
+            b"RectRgn" => Some(Service::Region(crate::regions::Op::Rect)),
+            b"GetClip" => Some(Service::Region(crate::regions::Op::GetClip)),
+            b"SetClip" => Some(Service::Region(crate::regions::Op::SetClip)),
             b"InitGraf" => Some(Service::InitGraf),
             b"InitPort" => Some(Service::Port(crate::quickdraw::PortOp::Init)),
             b"ClosePort" => Some(Service::Port(crate::quickdraw::PortOp::Close)),
@@ -130,6 +137,40 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa8d8 => {
+                memory.read(GuestPtr(sp), 4)?;
+                Ok((
+                    Call::Region {
+                        op: crate::regions::Op::New,
+                        a: 0,
+                        b: 0,
+                    },
+                    Reply::StackLong(GuestPtr(sp)),
+                ))
+            }
+            0xa8d9 | 0xa8dc | 0xa8df | 0xa879 | 0xa87a => {
+                use crate::regions::Op;
+                let pair = opcode == 0xa8dc || opcode == 0xa8df;
+                let bytes = memory.read(GuestPtr(sp), if pair { 8 } else { 4 })?;
+                let first = u32::from_be_bytes(bytes[..4].try_into().unwrap());
+                let (a, b) = if pair {
+                    (u32::from_be_bytes(bytes[4..8].try_into().unwrap()), first)
+                } else {
+                    (first, 0)
+                };
+                c.dar[15] = sp
+                    .checked_add(if pair { 8 } else { 4 })
+                    .ok_or_else(|| Error::Cpu("region stack overflow".into()))?;
+                let op = match opcode {
+                    0xa8d9 => Op::Dispose,
+                    0xa8dc => Op::Copy,
+                    0xa8df => Op::Rect,
+                    0xa879 => Op::SetClip,
+                    _ => Op::GetClip,
+                };
+                Ok((Call::Region { op, a, b }, Reply::None))
+            }
+
             0xa86d | 0xa86e | 0xa86f | 0xa87d | 0xa873 | 0xa874 | 0xa875 | 0xa87b | 0xa8a2
             | 0xa89d => {
                 use crate::quickdraw::PortOp;
@@ -285,6 +326,11 @@ impl Abi {
     }
     pub fn import(service: Service, c: &ppc::PpcCpu) -> (Call, Reply) {
         let call = match service {
+            Service::Region(op) => Call::Region {
+                op,
+                a: c.gpr[3],
+                b: c.gpr[4],
+            },
             Service::InitGraf => Call::InitGraf {
                 slot: GuestPtr(c.gpr[3]),
                 anchor: None,
@@ -360,17 +406,19 @@ impl Abi {
         };
         (
             call,
-            if matches!(
-                service,
-                Service::InitGraf
-                    | Service::Port(_)
-                    | Service::PenMode
-                    | Service::ExitToShell
-                    | Service::SetHandleSize
-                    | Service::DisposeHandle
-                    | Service::FlushEvents
-                    | Service::SetEventMask
-            ) {
+            if matches!(service, Service::Region(op) if op != crate::regions::Op::New)
+                || matches!(
+                    service,
+                    Service::InitGraf
+                        | Service::Port(_)
+                        | Service::PenMode
+                        | Service::ExitToShell
+                        | Service::SetHandleSize
+                        | Service::DisposeHandle
+                        | Service::FlushEvents
+                        | Service::SetEventMask
+                )
+            {
                 Reply::None
             } else {
                 Reply::PpcR3

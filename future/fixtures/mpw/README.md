@@ -81,3 +81,6 @@ are restored.
 
 The drawing program also grows and shrinks a guest handle, checking retained
 contents, GetHandleSize and MemError through each architecture's real ABI.
+
+The drawing fixture saves and restores its clip using NewRgn/GetClip/RectRgn/
+SetClip/CopyRgn/DisposeRgn before pixel verification on both architectures.

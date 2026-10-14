@@ -81,3 +81,7 @@ until the window closes. Left-button mouse input and Command/Shift/Option/Contro
 the shared event queue. Keyboard events, Caps Lock and live interaction
 verification remain pending. Window integration
 is implemented but presentation is still unverified on this host.
+
+Region storage supports NewRgn, DisposeRgn, RectRgn, CopyRgn, GetClip and SetClip.
+Variable-sized region payloads can be copied; drawing still requires rectangular
+regions and rejects complex ones explicitly.
