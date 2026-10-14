@@ -1,6 +1,7 @@
 #include <Types.h>
 #include <Quickdraw.h>
 #include <Fonts.h>
+#include <TextEdit.h>
 #include <Resources.h>
 #include <Memory.h>
 #include <Events.h>
@@ -10,6 +11,8 @@ QDGlobals qd;
 static unsigned char pixels[8] = {0x80,0x33,0,0x44,0,0x55,0,0x66};
 int main(void) {
     GrafPort port;
+    TEHandle edit;
+    Rect textDest={0,1,4,6}, textView={0,0,4,8}, textUpdate={1,0,3,8};
     FontInfo fontInfo;
     GrafPort other;
     GrafPtr current;
@@ -176,7 +179,14 @@ int main(void) {
     if (CharWidth(' ')!=3 || port.pnLoc.h!=3) return 53;
     if (pixels[0]!=0x1f || pixels[2]!=0x1f || pixels[4]!=0x1f || pixels[6]!=0x1f) return 54;
     if (pixels[1]!=0x33 || pixels[3]!=0x44 || pixels[5]!=0x55 || pixels[7]!=0x66) return 55;
-    TextFont(3); TextSize(9);
+    TextFont(3); TextSize(9); TextMode(srcOr);
+    TEInit(); edit=TENew(&textDest,&textView); if (!edit) return 59;
+    TESetText("A",1,edit);
+    pixels[0]=1; pixels[2]=1; pixels[4]=1; pixels[6]=1;
+    TEUpdate(&textUpdate,edit);
+    if (pixels[0]!=1 || pixels[2]!=0xa1 || pixels[4]!=0x41 || pixels[6]!=1) return 60;
+    GetPort(&current); if (current!=&port || port.pnLoc.h!=3 || port.pnLoc.v!=2 || port.pnMode!=patXor) return 61;
+    TEDispose(edit);
     ForeColor(whiteColor);
     BackColor(blackColor);
     if (port.fgColor!=whiteColor || port.bkColor!=blackColor) return 41;

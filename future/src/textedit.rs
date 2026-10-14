@@ -24,6 +24,10 @@ pub enum Op {
         handle: u32,
     },
     Calculate(u32),
+    Update {
+        rect: GuestPtr,
+        handle: u32,
+    },
 }
 #[derive(Default)]
 pub struct Manager {
@@ -171,6 +175,7 @@ impl Manager {
                 process.mem_error = 0;
                 Ok(handle)
             }
+            Op::Update { .. } => Err(bad("TextEdit redraw requires the graphics route")),
             Op::SetText {
                 source,
                 length,
@@ -246,6 +251,228 @@ impl Manager {
                 Ok(0)
             }
         }
+    }
+    pub fn update(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &crate::graphics::Graphics,
+        rect: GuestPtr,
+        handle: u32,
+    ) -> Result<()> {
+        use crate::{
+            quickdraw::read_rect,
+            region_geometry::{self, Boolean},
+        };
+        self.call(memory, process, Op::GetText(handle), 0)?;
+        let update = memory.read(rect, 8)?.to_vec();
+        let data = pointer(memory, process, handle, 128)?;
+        let record = memory.read(data, 128)?.to_vec();
+        if record[36..38] != [0, 0] || record[66..70] != [0; 4] {
+            return Err(bad(
+                "active selection or custom TextEdit redraw dispatch is unsupported",
+            ));
+        }
+        let length = usize::from(u16::from_be_bytes(record[60..62].try_into().unwrap()));
+        let count = usize::from(u16::from_be_bytes(record[94..96].try_into().unwrap()));
+        if length > 32767 || count > length {
+            return Err(bad("invalid TextEdit line count or length"));
+        }
+        let text_handle = memory.u32(GuestPtr(data.0 + 62))?;
+        let text = memory
+            .read(
+                pointer(memory, process, text_handle, length as u32)?,
+                length,
+            )?
+            .to_vec();
+        let line_data = pointer(memory, process, handle, (96 + (count + 2) * 2) as u32)?;
+        let starts = memory
+            .read(GuestPtr(line_data.0 + 96), (count + 1) * 2)?
+            .chunks_exact(2)
+            .map(|b| usize::from(u16::from_be_bytes([b[0], b[1]])))
+            .collect::<Vec<_>>();
+        if starts.first() != Some(&0)
+            || starts.last() != Some(&length)
+            || starts.windows(2).any(|pair| pair[0] > pair[1])
+        {
+            return Err(bad("invalid TextEdit line starts"));
+        }
+        let owned = self.records[&handle].clone();
+        let styled = owned.len() == 7;
+        let port = GuestPtr(u32::from_be_bytes(record[82..86].try_into().unwrap()));
+        let saved = memory.read(port, 108)?.to_vec();
+        memory.validate_write(port, 108)?;
+        let ports = process
+            .ports
+            .ok_or_else(|| bad("TextEdit redraw requires InitGraf"))?;
+        let old = memory.u32(ports.current_slot)?;
+        memory.validate_write(ports.current_slot, 4)?;
+        let (font, size, face, color, line_metrics) = if styled {
+            let table = pointer(memory, process, owned[6], 28)?;
+            if memory.u16(table)? != 1
+                || memory.u16(GuestPtr(table.0 + 2))? != 1
+                || memory.u16(GuestPtr(table.0 + 20))? != 0
+                || memory.u16(GuestPtr(table.0 + 22))? != 0
+            {
+                return Err(bad("mixed-style redraw is not implemented"));
+            }
+            let style = memory
+                .read(pointer(memory, process, owned[2], 18)?, 18)?
+                .to_vec();
+            let color = if style[12..18] == [0; 6] {
+                33
+            } else if style[12..18] == [255; 6] {
+                30
+            } else {
+                return Err(bad("colored TextEdit redraw is unsupported"));
+            };
+            let metrics = memory
+                .read(
+                    pointer(memory, process, owned[3], ((count + 1) * 4) as u32)?,
+                    (count + 1) * 4,
+                )?
+                .to_vec();
+            (
+                i16::from_be_bytes(style[6..8].try_into().unwrap()),
+                i16::from_be_bytes(style[10..12].try_into().unwrap()),
+                style[8],
+                color,
+                metrics,
+            )
+        } else {
+            let height = record[24..26].to_vec();
+            let ascent = record[26..28].to_vec();
+            let mut metrics = Vec::new();
+            for _ in 0..=count {
+                metrics.extend(&height);
+                metrics.extend(&ascent);
+            }
+            (
+                i16::from_be_bytes(record[74..76].try_into().unwrap()),
+                i16::from_be_bytes(record[80..82].try_into().unwrap()),
+                record[76],
+                memory.u32(GuestPtr(port.0 + 80))?,
+                metrics,
+            )
+        };
+        let font_bytes = crate::text::font_bytes(memory, process, font, size, face)?;
+        let strike = crate::font::Strike::parse(&font_bytes)?;
+        let mode = u16::from_be_bytes(record[78..80].try_into().unwrap());
+        if mode > 7 {
+            return Err(bad("unsupported TextEdit text mode"));
+        }
+        let mut view = 10u16.to_be_bytes().to_vec();
+        view.extend(&record[8..16]);
+        let mut update_region = 10u16.to_be_bytes().to_vec();
+        update_region.extend(&update);
+        let clip = crate::regions::read(memory, process, memory.u32(GuestPtr(port.0 + 28))?)?;
+        let clip = region_geometry::combine(&clip, &view, Boolean::Intersection)?;
+        let clip = region_geometry::combine(&clip, &update_region, Boolean::Intersection)?;
+        let bitmap = crate::bitmap::Bitmap::read(memory, GuestPtr(port.0 + 2))?;
+        let port_bounds = read_rect(memory, GuestPtr(port.0 + 16))?;
+        let clip = region_geometry::combine(
+            &clip,
+            &region_geometry::encode(&[port_bounds])?,
+            Boolean::Intersection,
+        )?;
+        let clip = region_geometry::combine(
+            &clip,
+            &region_geometry::encode(&[bitmap.bounds])?,
+            Boolean::Intersection,
+        )?;
+        let screen = crate::bitmap::Bitmap::read(memory, ports.screen_bitmap)?;
+        let clip = if bitmap.base == screen.base {
+            region_geometry::combine(
+                &clip,
+                &crate::regions::read(memory, process, memory.u32(GuestPtr(port.0 + 24))?)?,
+                Boolean::Intersection,
+            )?
+        } else {
+            clip
+        };
+        let clip_rects = region_geometry::decode(&clip)?;
+        let dest = read_rect(memory, data)?;
+        let just = i16::from_be_bytes(record[58..60].try_into().unwrap());
+        if !matches!(just, -2..=1) {
+            return Err(bad("unsupported TextEdit justification"));
+        }
+        let mut top = dest.top;
+        let mut lines = Vec::new();
+        let mut work = 0usize;
+        for line in 0..count {
+            let height = i32::from(i16::from_be_bytes(
+                line_metrics[line * 4..line * 4 + 2].try_into().unwrap(),
+            ));
+            let ascent = i32::from(i16::from_be_bytes(
+                line_metrics[line * 4 + 2..line * 4 + 4].try_into().unwrap(),
+            ));
+            if height <= 0 || ascent < 0 {
+                return Err(bad("invalid TextEdit line metrics"));
+            }
+            let start = starts[line];
+            let mut end = starts[line + 1];
+            while end > start && matches!(text[end - 1], b' ' | b'\r' | b'\n') {
+                end -= 1;
+            }
+            let width = strike.width(&text[start..end])?;
+            let left = dest.left
+                + match just {
+                    1 => (dest.right - dest.left - width) / 2,
+                    -1 => dest.right - dest.left - width,
+                    _ => 0,
+                };
+            let baseline = top + ascent;
+            if clip_rects.iter().any(|r| {
+                baseline - i32::from(strike.metrics.ascent) < r.bottom
+                    && baseline + i32::from(strike.metrics.descent) > r.top
+            }) {
+                for &c in &text[start..end] {
+                    let glyph = strike.glyph(c);
+                    let cells = (i32::from(glyph.advance)
+                        .max(glyph.bearing + i32::from(glyph.width))
+                        - 0.min(glyph.bearing)) as usize
+                        * usize::from(glyph.height);
+                    work = work.saturating_add(cells);
+                    if work > 1_000_000 {
+                        return Err(bad("TextEdit visible glyph work limit exceeded"));
+                    }
+                }
+                lines.push((
+                    i16::try_from(left)
+                        .map_err(|_| bad("TextEdit horizontal coordinate overflow"))?,
+                    i16::try_from(baseline).map_err(|_| bad("TextEdit baseline overflow"))?,
+                    start,
+                    end,
+                ));
+            }
+            top += height;
+        }
+        if clip_rects.is_empty() {
+            return Ok(());
+        }
+        let temporary = process.new_handle(memory, clip.len() as u32, false)?;
+        if temporary == 0 {
+            return Err(bad("TextEdit clip allocation failed"));
+        }
+        write_handle(memory, process, temporary, &clip)?;
+        let result = (|| {
+            ports.set(memory, port)?;
+            memory.write(GuestPtr(port.0 + 28), &temporary.to_be_bytes())?;
+            memory.write(GuestPtr(port.0 + 68), &font.to_be_bytes())?;
+            memory.write(GuestPtr(port.0 + 70), &[face])?;
+            memory.write(GuestPtr(port.0 + 72), &mode.to_be_bytes())?;
+            memory.write(GuestPtr(port.0 + 74), &size.to_be_bytes())?;
+            memory.write(GuestPtr(port.0 + 80), &color.to_be_bytes())?;
+            for (h, v, start, end) in lines {
+                crate::text::move_to(memory, ports, h, v)?;
+                crate::text::draw_strike(memory, ports, gpu, &text[start..end], &strike)?;
+            }
+            Ok(())
+        })();
+        memory.write(port, &saved)?;
+        memory.write(ports.current_slot, &old.to_be_bytes())?;
+        process.dispose_handle(memory, temporary)?;
+        result
     }
     fn layout(
         &mut self,

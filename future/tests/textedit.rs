@@ -535,3 +535,144 @@ fn failed_text_group_resize_preserves_record_text_and_style_payloads() {
         )
         .is_err());
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn redraw_honors_complex_clip_update_view_and_restores_ports_even_on_failure() {
+    use systemless_future::{
+        graphics::Graphics,
+        region_geometry::{self, Boolean},
+    };
+    let (mut m, mut p, mut manager) = setup();
+    m.write(
+        GuestPtr(0x1040),
+        &[0, 0, 0, 1, 0, 4, 0, 6, 0, 0, 0, 0, 0, 4, 0, 8],
+    )
+    .unwrap();
+    let handle = manager.call(&mut m, &mut p, new(false), 0).unwrap();
+    m.map(GuestPtr(0x3000), vec![0; 64], Permissions::RW)
+        .unwrap();
+    m.write(GuestPtr(0x3000), b"A").unwrap();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 1,
+                handle,
+            },
+            0,
+        )
+        .unwrap();
+    m.write(GuestPtr(0x3020), &[0, 1, 0, 0, 0, 3, 0, 8])
+        .unwrap();
+    let ports = p.ports.unwrap();
+    let port = GuestPtr(0x1080);
+    let clip = m.u32(GuestPtr(port.0 + 28)).unwrap();
+    let complex = region_geometry::combine(
+        &[0, 10, 0, 0, 0, 0, 0, 4, 0, 8],
+        &[0, 10, 0, 0, 0, 3, 0, 4, 0, 7],
+        Boolean::Difference,
+    )
+    .unwrap();
+    p.set_handle_size(&mut m, clip, complex.len() as u32)
+        .unwrap();
+    m.write(ptr(&m, clip), &complex).unwrap();
+    ports.open(&mut m, &mut p, GuestPtr(0x1180)).unwrap();
+    let old = m.u32(ports.current_slot).unwrap();
+    let saved = m.read(port, 108).unwrap().to_vec();
+    let other = m.read(GuestPtr(old), 108).unwrap().to_vec();
+    let before = [1, 0x33, 1, 0x44, 1, 0x55, 1, 0x66];
+    m.write(GuestPtr(0x2000), &before).unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let gpu = pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x4000))).unwrap();
+    manager
+        .update(&mut m, &mut p, &gpu, GuestPtr(0x3020), handle)
+        .unwrap();
+    assert_eq!(
+        m.read(GuestPtr(0x2000), 8).unwrap(),
+        [1, 0x33, 0xa1, 0x44, 0x41, 0x55, 1, 0x66]
+    );
+    assert_eq!(m.u32(ports.current_slot).unwrap(), old);
+    assert_eq!(m.read(port, 108).unwrap(), saved);
+    assert_eq!(m.read(GuestPtr(old), 108).unwrap(), other);
+    assert_eq!(m.read(ptr(&m, clip), complex.len()).unwrap(), complex);
+    m.write(GuestPtr(0x3000), b"AA").unwrap();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 2,
+                handle,
+            },
+            0,
+        )
+        .unwrap();
+    m.write(GuestPtr(0x3020), &[0, 0, 0, 0, 0, 4, 0, 8])
+        .unwrap();
+    m.write(GuestPtr(0x2000), &before).unwrap();
+    manager
+        .update(&mut m, &mut p, &gpu, GuestPtr(0x3020), handle)
+        .unwrap();
+    assert_eq!(
+        m.read(GuestPtr(0x2000), 8).unwrap(),
+        [0xe1, 0x33, 0xa1, 0x44, 0xe1, 0x55, 0xa1, 0x66]
+    );
+    assert_eq!(m.read(port, 108).unwrap(), saved);
+    assert_eq!(m.u32(ports.current_slot).unwrap(), old);
+    let pixels = m.read(GuestPtr(0x2000), 8).unwrap().to_vec();
+    m.map(GuestPtr(0x5000), pixels.clone(), Permissions::RX)
+        .unwrap();
+    m.write(GuestPtr(port.0 + 2), &0x5000u32.to_be_bytes())
+        .unwrap();
+    let saved = m.read(port, 108).unwrap().to_vec();
+    assert!(manager
+        .update(&mut m, &mut p, &gpu, GuestPtr(0x3020), handle)
+        .is_err());
+    assert_eq!(m.read(port, 108).unwrap(), saved);
+    assert_eq!(m.u32(ports.current_slot).unwrap(), old);
+    assert_eq!(m.read(GuestPtr(0x5000), 8).unwrap(), pixels);
+    assert_eq!(m.read(ptr(&m, clip), complex.len()).unwrap(), complex);
+    m.write(GuestPtr(port.0 + 2), &0x2000u32.to_be_bytes())
+        .unwrap();
+    ports.set(&mut m, port).unwrap();
+    let styled = manager.call(&mut m, &mut p, new(true), 0).unwrap();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 1,
+                handle: styled,
+            },
+            0,
+        )
+        .unwrap();
+    m.write(GuestPtr(ptr(&m, styled).0 + 58), &(-1i16).to_be_bytes())
+        .unwrap();
+    ports.set(&mut m, GuestPtr(old)).unwrap();
+    m.write(GuestPtr(0x2000), &before).unwrap();
+    manager
+        .update(&mut m, &mut p, &gpu, GuestPtr(0x3020), styled)
+        .unwrap();
+    assert_eq!(
+        m.read(GuestPtr(0x2000), 8).unwrap(),
+        [0x61, 0x33, 0x41, 0x44, 0x21, 0x55, 1, 0x66]
+    );
+    assert_eq!(m.u32(ports.current_slot).unwrap(), old);
+    let style = manager
+        .call(&mut m, &mut p, Op::GetStyle(styled), 0)
+        .unwrap();
+    let style_table = m.u32(GuestPtr(ptr(&m, style).0 + 4)).unwrap();
+    m.write(GuestPtr(ptr(&m, style_table).0 + 12), &[255; 6])
+        .unwrap();
+    m.write(GuestPtr(0x2000), &before).unwrap();
+    manager
+        .update(&mut m, &mut p, &gpu, GuestPtr(0x3020), styled)
+        .unwrap();
+    assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), before);
+}

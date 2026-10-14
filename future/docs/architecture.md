@@ -772,3 +772,16 @@ This prevents partial TextEdit updates on heap exhaustion or locked-record growt
 Word wrapping and line-table construction use decoded shared strike advances;
 redraw will consume the same guest tables rather than a cached host layout.
 Only one style run is currently supported, with explicit limits/callback failures.
+
+
+## TextEdit redraw boundary
+
+Redraw reads guest line/style tables and freezes text/font source bytes for the
+update. It intersects update/view/caller clips with drawable port/bitmap bounds
+before selecting visible lines, then bounds total visible glyph work. Temporary
+port fields and clip ownership are restored even on failure. The shared glyph
+renderer accepts a decoded source strike so drawing cannot observe its own pixel
+writes through aliased font/text sources. wgpu performs destination transfers;
+CPU work constructs geometry and snapshots source storage. Inactive plain and
+single-style records are the current scope; selection/caret and dispatch callbacks
+remain explicit outstanding integration.

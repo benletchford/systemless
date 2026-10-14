@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 pub enum Service {
     Random,
     TENew(bool),
+    TEUpdate,
     TESetText,
     TECalText,
     TEInit,
@@ -152,6 +153,7 @@ impl Abi {
             b"MoveTo" => Some(Service::MoveTo),
             b"TENew" => Some(Service::TENew(false)),
             b"TEStyleNew" => Some(Service::TENew(true)),
+            b"TEUpdate" => Some(Service::TEUpdate),
             b"TESetText" => Some(Service::TESetText),
             b"TECalText" => Some(Service::TECalText),
             b"TEInit" => Some(Service::TEInit),
@@ -435,6 +437,18 @@ impl Abi {
                         styled: opcode == 0xa83e,
                     }),
                     Reply::StackLong(GuestPtr(result)),
+                ))
+            }
+            0xa9d3 => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let handle = u32::from_be_bytes(args[..4].try_into().unwrap());
+                let rect = GuestPtr(u32::from_be_bytes(args[4..8].try_into().unwrap()));
+                c.dar[15] = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("TextEdit stack overflow".into()))?;
+                Ok((
+                    Call::TextEdit(crate::textedit::Op::Update { rect, handle }),
+                    Reply::None,
                 ))
             }
             0xa9cf => {
@@ -908,6 +922,10 @@ impl Abi {
                 view: GuestPtr(c.gpr[4]),
                 styled,
             }),
+            Service::TEUpdate => Call::TextEdit(crate::textedit::Op::Update {
+                rect: GuestPtr(c.gpr[3]),
+                handle: c.gpr[4],
+            }),
             Service::TESetText => Call::TextEdit(crate::textedit::Op::SetText {
                 source: GuestPtr(c.gpr[3]),
                 length: c.gpr[4],
@@ -1069,6 +1087,7 @@ impl Abi {
                                 | crate::windows::Op::Close
                                 | crate::windows::Op::Dispose
                         )
+                        | Service::TEUpdate
                         | Service::TESetText
                         | Service::TECalText
                         | Service::TEInit

@@ -206,3 +206,9 @@ word-wrapped line starts, recalculates after changing destination width, verifie
 styled line-table size/run sentinel, handles explicit CRLF bytes, and empties the
 record before disposal. These checks run through both real calling conventions.
 Rendering and interactive editing remain the next acceptance slice.
+
+
+The GPU drawing probe now creates a TextEdit record, installs its resource glyph,
+uses TEUpdate on a partial rectangle, checks A1/41 glyph rows with untouched rows
+outside the update, and verifies current port and pen restoration before disposal.
+Both architectures then complete the same final pixel image and success marker.

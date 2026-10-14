@@ -16,7 +16,7 @@ pub enum Op {
     GetClip,
     SetClip,
 }
-fn read(memory: &Memory, process: &mut Process, handle: u32) -> Result<Vec<u8>> {
+pub(crate) fn read(memory: &Memory, process: &mut Process, handle: u32) -> Result<Vec<u8>> {
     let allocated = process.handle_size(memory, handle)?;
     if allocated < 10 {
         return Err(Error::Graphics("region requires an owned handle".into()));

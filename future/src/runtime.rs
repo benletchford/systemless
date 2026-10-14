@@ -263,12 +263,30 @@ impl Runtime {
                         }
                         Call::TextEdit(op) => {
                             let mut manager = std::mem::take(&mut self.process.textedit);
-                            let result = manager.call(
-                                &mut self.memory,
-                                &mut self.process,
-                                op,
-                                (self.instructions / 1000) as u32,
-                            );
+                            let result = match op {
+                                crate::textedit::Op::Update { rect, handle } => {
+                                    match self.graphics.as_ref() {
+                                        Some(gpu) => manager
+                                            .update(
+                                                &mut self.memory,
+                                                &mut self.process,
+                                                gpu,
+                                                rect,
+                                                handle,
+                                            )
+                                            .map(|()| 0),
+                                        None => Err(Error::Graphics(
+                                            "TextEdit redraw requires a GPU".into(),
+                                        )),
+                                    }
+                                }
+                                _ => manager.call(
+                                    &mut self.memory,
+                                    &mut self.process,
+                                    op,
+                                    (self.instructions / 1000) as u32,
+                                ),
+                            };
                             self.process.textedit = manager;
                             let value = result?;
                             reply.apply(

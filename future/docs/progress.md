@@ -1383,3 +1383,39 @@ callbacks are still unfinished. Next: TEUpdate drawing the laid-out lines throug
 shared font/wgpu services, then selection/editing and window/menu integration.
 Original stops remain InitMenus on 68K and SndDisposeChannel at PPC strong-import
 validation. Full rebuild acceptance and real Mixed Mode remain outstanding.
+
+
+### TextEdit redraw through shared wgpu glyph services
+
+TEUpdate ($A9D3 / InterfaceLib) now consumes live line starts, captured attributes
+and plain or single-style line metrics to redraw inactive records. It snapshots
+text/font source data for the whole update and draws via the same shared glyph
+renderer used by DrawText. Left/forced-left, centered and right alignment are
+supported. Single-style black/white colors are read from the guest style table;
+color fonts/mixed style runs remain unsupported.
+
+Redraw intersects the caller update rectangle, view rectangle, existing complex
+clip, port rectangle, bitmap bounds and applicable screen visibility. It does
+not erase the whole view: source transfer modes control background writes, as in
+legacy TEUpdate. The legacy PPC and 68K paths provide the line/ABI reference but
+currently ignore the caller's update rectangle; this implementation honors it.
+A temporary owned clip is disposed afterward; current port, original clip handle
+and bytes, font/color state and pen fields are restored on success or failure.
+Visible glyph-cell work is bounded at one million cells, and bitmap/port bounds
+are applied before walking offscreen lines. Unused click/selection hooks do not
+block inactive redraw; active selection and custom dispatch fail explicitly until
+those drawing paths/callbacks are implemented.
+
+The GPU test verifies partial updates, complex clipping, multiple lines, saved
+ports/clip data, right alignment, styled white text and read-only destination
+failure restoration. The MPW drawing fixture creates/replaces a TextEdit record,
+redraws a partial rectangle, checks exact pixels and preserved current port/pen,
+then disposes it on both CPUs. All 168 tests pass (148 default, 20 optional
+GPU/MPW), the MPW rebuild passes and strict all-target Clippy passes.
+
+This establishes text redraw, not interactive editing acceptance. Caret and
+selection geometry/drawing, activation, editing commands, mixed styles, callbacks,
+clipboard and menu/window integration remain unfinished. Original application
+stops are unchanged. Next: selection/caret state and editing through the same
+layout/redraw machinery, then substantive menu initialization and original app
+interaction. Full rebuild acceptance and real Mixed Mode remain outstanding.

@@ -1,5 +1,6 @@
 //! Basic GrafPort text selection; font resolution and drawing are separate.
 use crate::{
+    graphics::Rect,
     memory::{GuestPtr, Memory},
     quickdraw::Ports,
     Error, Result,
@@ -200,13 +201,32 @@ pub fn draw(
     gpu: &crate::graphics::Graphics,
     text: Input,
 ) -> Result<()> {
-    use crate::graphics::Rect;
     let bytes = input(memory, text)?;
     if bytes.is_empty() {
         return Ok(());
     }
 
     let port = ports.current(memory)?;
+    let font_bytes = font_data(memory, process, port)?;
+    let font = crate::font::Strike::parse(&font_bytes)?;
+    draw_strike(memory, ports, gpu, &bytes, &font)
+}
+pub(crate) fn draw_strike(
+    memory: &mut Memory,
+    ports: Ports,
+    gpu: &crate::graphics::Graphics,
+    bytes: &[u8],
+    font: &crate::font::Strike<'_>,
+) -> Result<()> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    let port = ports.current(memory)?;
+    if memory.u16(GuestPtr(port.0 + 6))? & 0xc000 != 0 {
+        return Err(Error::Graphics(
+            "text drawing in color ports is unsupported".into(),
+        ));
+    }
     memory.validate_write(port, 108)?;
     let saved = memory.read(port, 108)?.to_vec();
     if [92usize, 96, 100, 104]
@@ -226,13 +246,11 @@ pub fn draw(
     if mode > 7 {
         return Err(Error::Graphics("unsupported text transfer mode".into()));
     }
-    let font_bytes = font_data(memory, process, port)?;
-    let font = crate::font::Strike::parse(&font_bytes)?;
     let v = memory.u16(GuestPtr(port.0 + 48))? as i16;
     let mut h = memory.u16(GuestPtr(port.0 + 50))? as i16;
     let mut plans = Vec::new();
     let mut work = 0usize;
-    for c in bytes {
+    for &c in bytes {
         let g = font.glyph(c);
         let mask = font.mask(c)?;
         let gx = i32::from(h) + g.bearing;
