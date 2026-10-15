@@ -40,7 +40,7 @@ fork path and a maximum instruction count, and prints register/opcode context.
   A bounded press/release at global (256,171) passes FindWindow, FindControl
   and StillDown, hides/disposes the demonstration splash, restores its saved
   nil port, creates/updates/reads its settings file and reaches unsupported
-  GetMHandle ($A949).
+  GetNewMBar ($A9C0).
   SystemTask preserves the empty periodic service state, PenSize updates live
   GrafPort dimensions and RectInRgn checks content intersections.
   GetPicture loads PICT 202, PortSize sizes its offscreen GrafPort and MovePortTo
@@ -112,9 +112,11 @@ acceptance. No original application/resource bytes are added to the repository.
 The current probe at (256,171) dismisses the splash, then opens
 `Super Mines Demo Settings` with read/write permission in its created preferences
 directory. The missing-file path creates both forks, sets Finder metadata, reopens
-the data fork and executes EOF/seek/write/read operations. It then reaches
-GetMHandle ($A949), with post-trap PC $01005148. This is one bounded 68K splash
+the data fork and executes EOF/seek/write/read operations. It then queries GetMHandle(4), closes the file and probes Gestalt selectors
+ppc-space and evnt, both correctly unavailable. It reaches GetNewMBar ($A9C0),
+with post-trap PC $0100C4DE. This is one bounded 68K splash
 interaction plus settings I/O; menus, gameplay and a full lifecycle remain
 unverified. Files persist only within the process, with no host filesystem writes.
-Next: shared menu-handle/resource identity and the menu-loading path reached here.
+Next: resource-backed menu-bar construction through MBAR/MENU resources,
+installation, dimensions and GPU title drawing; then continue this transition.
 The full rebuild goal remains active.

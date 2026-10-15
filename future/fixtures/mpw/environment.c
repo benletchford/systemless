@@ -6,14 +6,19 @@
 #include <Processes.h>
 #include <Files.h>
 #include <Devices.h>
+#include <Gestalt.h>
 int main(void) {
     SysEnvRec world;
+    long response;
     Ptr p;
     CInfoPBRec catalog;
     Str255 name;
     long folder;
     HParamBlockRec file;
     if (SysEnvirons(1,&world) || world.environsVersion!=2 || world.machineType!=envMachUnknown || world.processor!=env68020 || world.systemVersion!=0x0700 || world.hasFPU || world.hasColorQD || world.keyBoardType!=envUnknownKbd || world.atDrvrVersNum || world.sysVRefNum) return 1;
+    if (Gestalt(gestaltSystemVersion,&response) || response!=world.systemVersion) return 40;
+    if (Gestalt(gestaltProcessorType,&response) || response!=world.processor) return 41;
+    if (Gestalt('ppc ',&response)!=gestaltUndefSelectorErr) return 42;
     world.environsVersion=123;
     if (SysEnvirons(0,&world)!=envBadVers || world.environsVersion!=123) return 2;
     if (SysEnvirons(3,&world)!=envVersTooBig || world.environsVersion!=2) return 3;

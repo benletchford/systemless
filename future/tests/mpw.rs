@@ -545,6 +545,15 @@ fn compiled_menu_initialization_colors_and_snapshot_lifetime_match_on_both_cpus(
         app.runtime.graphics = Some(gpu);
         assert_eq!(app.runtime.advance(20000).unwrap(), Stop::Exit(0));
         assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|call| matches!(call, Call::Menu(systemless_future::menus::Op::Handle(_))))
+                .count(),
+            6
+        );
+        assert_eq!(
             &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],
             &[
                 Call::PostEvent {
@@ -607,6 +616,15 @@ fn compiled_environment_and_maximum_heap_contracts_complete_on_both_cpus() {
         LoadedApplication::pef(&pef, None).unwrap(),
     ] {
         assert_eq!(app.runtime.advance(20000).unwrap(), Stop::Exit(0));
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|call| matches!(call, Call::Gestalt(_)))
+                .count(),
+            3
+        );
         let io_calls: Vec<_> = app
             .runtime
             .services

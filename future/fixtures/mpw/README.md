@@ -351,3 +351,11 @@ host requires every operation before the final success marker on both real CPUs.
 Devices.h is required for the compiler's register-based PBReadSync/PBWriteSync/
 PBCloseSync declarations; Files.h alone permits erroneous implicit declarations.
 Root-relative catalog calls explicitly reset ioDirID after receiving a file ID.
+
+The menu fixture also builds regular/hierarchical list partitions with guest-owned
+menu handles, verifies duplicate-ID precedence, relocation/live ID changes, nil
+misses and clearing without disposing caller-owned menus. The environment guest
+checks Gestalt system/processor values against SysEnvirons and the undefined
+communications selector. Native Gestalt uses the SDK's A0 result plus A1 store;
+PPC uses a result pointer. Acceptance requires six menu lookups and three capability
+queries on each compiler target. The SDK spelling is GetMenuHandle.

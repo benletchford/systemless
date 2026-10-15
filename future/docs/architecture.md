@@ -1262,3 +1262,28 @@ does not attach a new Resource Manager map. Persistence, deletion/rename, import
 Finder data, raw allocation/range locks, working directories, read-verify flags and
 asynchronous callbacks remain unfinished. Virtual 4 KiB extents are metadata
 projections, not a physical HFS allocation implementation.
+
+## Live menu lookup and Gestalt bootstrap
+
+GetMHandle/GetMenuHandle reads the current DynamicMenuList, searches hierarchical
+entries before regular entries and reads signed IDs from live handle payloads.
+It preserves handle identity across relocation and direct guest ID/list edits;
+missing IDs return nil. List geometry, handle storage and ID-word bounds are
+checked, with MemErr preserved. Lookup needs no GPU, font or color-table state.
+It does not load menu resources or insert entries. The 68K Pascal word argument
+and long result slot differ from PPC's low-word r3 argument and full r3 handle.
+
+Gestalt shares the compatibility profile's system-version and 68K processor
+answers with SysEnvirons. Only implemented selectors sysv/proc are registered;
+other selectors return gestaltUndefSelectorErr (-5551). In particular, ppc-space
+asks about the PPC communications Toolbox, not the PowerPC CPU backend. That
+communications manager and evnt's enhanced Event Manager capabilities are not
+advertised. No dynamic selector registration or callback dispatch is implied.
+
+The native A0AD/A1AD query adapter returns a successful value in A0 and OSErr in
+D0; the SDK's following MOVE.L A0,(A1) performs the caller output store. PPC writes
+the supplied r4 result pointer and returns signed OSErr in r3. Failed queries
+preserve the native A0 and PPC output; native caller glue can still store its
+undefined old A0 on error. Output errors preserve PPC return registers. This
+architecture distinction is tested instead of replacing both ABIs with pointer
+writes. NewGestalt/ReplaceGestalt registration paths remain unsupported.

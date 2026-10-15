@@ -154,3 +154,141 @@ fn foreign_application_limits_fail_without_changing_heap_or_globals() {
         0
     );
 }
+
+#[test]
+fn gestalt_profile_and_register_pointer_results_are_shared_without_advertising_missing_managers() {
+    let fixture = support::pef_program(&[0x4e800020], &[b"Gestalt"], 16);
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    app.runtime
+        .memory
+        .map(
+            GuestPtr(0x50000000),
+            vec![0xa0, 0xad, 0xa1, 0xad, 0x22, 0x88],
+            Permissions::RX,
+        )
+        .unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), vec![0xa5; 16], Permissions::RW)
+        .unwrap();
+    let vector = app
+        .runtime
+        .memory
+        .u32(GuestPtr(app.info.toc_or_a5 + 8))
+        .unwrap();
+    let gate = app.runtime.memory.u32(GuestPtr(vector)).unwrap();
+    for selector in [*b"sysv", *b"proc", *b"ppc ", *b"evnt", *b"????"] {
+        let value = environment::gestalt(u32::from_be_bytes(selector));
+        let expected = if selector == *b"sysv" {
+            Ok(0x700u32)
+        } else if selector == *b"proc" {
+            Ok(3)
+        } else {
+            Err(-5551)
+        };
+        assert_eq!(value, expected);
+        for arch in [Architecture::M68k, Architecture::PowerPc] {
+            let stack = STACK_BASE + 0x8000;
+            app.runtime
+                .memory
+                .write(GuestPtr(0x51000000), &[0xa5; 16])
+                .unwrap();
+            app.runtime.cpu = Cpu::new(
+                arch,
+                if arch == Architecture::M68k {
+                    0x50000002
+                } else {
+                    gate
+                },
+                stack,
+            );
+            match &mut app.runtime.cpu {
+                Cpu::M68k(c) => {
+                    c.dar[0] = u32::from_be_bytes(selector);
+                    c.dar[1] = 0x12345678;
+                    c.dar[8] = 0xfeedbeef;
+                    c.dar[9] = 0x51000004;
+                }
+                Cpu::PowerPc(c) => {
+                    c.gpr[3] = u32::from_be_bytes(selector);
+                    c.gpr[4] = 0x51000004;
+                    c.gpr[5] = 0x12345678;
+                }
+            }
+            assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+            let error = value.as_ref().err().copied().unwrap_or(0i16);
+            match &app.runtime.cpu {
+                Cpu::M68k(c) => {
+                    assert_eq!(c.dar[0], error as i32 as u32);
+                    assert_eq!(c.dar[8], value.unwrap_or(0xfeedbeef));
+                    assert_eq!(c.dar[9], 0x51000004);
+                    assert_eq!(c.dar[1], 0x12345678);
+                    assert_eq!(c.dar[15], stack);
+                }
+                Cpu::PowerPc(c) => {
+                    assert_eq!(c.gpr[3], error as i32 as u32);
+                    assert_eq!(c.gpr[4], 0x51000004);
+                    assert_eq!(c.gpr[5], 0x12345678);
+                    assert_eq!(
+                        app.runtime.memory.u32(GuestPtr(0x51000004)).unwrap(),
+                        value.unwrap_or(0xa5a5a5a5)
+                    );
+                }
+            }
+            if arch == Architecture::M68k {
+                assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+                assert_eq!(
+                    app.runtime.memory.u32(GuestPtr(0x51000004)).unwrap(),
+                    value.unwrap_or(0xfeedbeef)
+                );
+            }
+            assert_eq!(
+                app.runtime.memory.u32(GuestPtr(0x51000000)).unwrap(),
+                0xa5a5a5a5
+            );
+            assert_eq!(
+                app.runtime.memory.u32(GuestPtr(0x51000008)).unwrap(),
+                0xa5a5a5a5
+            );
+        }
+    }
+}
+#[test]
+fn gestalt_success_output_faults_preserve_ppc_registers_and_do_not_accept_registration_traps() {
+    use systemless_future::abi::{Abi, Reply, Service};
+    let mut memory = Memory::default();
+    memory
+        .map(GuestPtr(0x1000), vec![0xa5; 4], Permissions::RX)
+        .unwrap();
+    let mut cpu = Cpu::new(Architecture::PowerPc, 0, 0);
+    let Cpu::PowerPc(c) = &mut cpu else { panic!() };
+    c.gpr[3] = u32::from_be_bytes(*b"sysv");
+    c.gpr[4] = 0x1000;
+    assert_eq!(
+        Abi::import(Service::Gestalt, c, &memory).unwrap(),
+        (
+            systemless_future::cpu::Call::Gestalt(u32::from_be_bytes(*b"sysv")),
+            Reply::PpcGestalt(GuestPtr(0x1000))
+        )
+    );
+    assert!(Reply::PpcGestalt(GuestPtr(0x1000))
+        .apply(&mut cpu, &mut memory, 0x700, 0)
+        .is_err());
+    let Cpu::PowerPc(c) = &cpu else { panic!() };
+    assert_eq!(c.gpr[3], u32::from_be_bytes(*b"sysv"));
+    assert_eq!(memory.read(GuestPtr(0x1000), 4).unwrap(), [0xa5; 4]);
+    assert!(Reply::PpcGestalt(GuestPtr(0))
+        .apply(&mut cpu, &mut memory, 0x700, 0)
+        .is_err());
+    let mut cpu = m68k::CpuCore::default();
+    cpu.dar[0] = u32::from_be_bytes(*b"proc");
+    for op in [0xa0ad, 0xa1ad] {
+        assert_eq!(
+            Abi::trap(op, &mut cpu, &memory).unwrap().1,
+            Reply::M68kGestalt
+        );
+    }
+    for op in [0xa3ad, 0xa5ad] {
+        assert!(Abi::trap(op, &mut cpu, &memory).is_err());
+    }
+}

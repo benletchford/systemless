@@ -9,6 +9,7 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    Gestalt,
     StillDown,
     FindWindow,
     PtInRect,
@@ -66,6 +67,7 @@ pub enum Service {
     ErrorSound,
     Cursor(crate::cursor::Op),
     SetCursor,
+    GetMenuHandle,
     Menu(crate::menus::Op),
     TENew(bool),
     TEUpdate,
@@ -165,6 +167,8 @@ pub enum Reply {
     PpcR3,
     M68kHandle,
     M68kA0,
+    M68kGestalt,
+    PpcGestalt(GuestPtr),
     M68kFileError,
     M68kOSEvent,
     M68kD0,
@@ -274,6 +278,7 @@ impl Abi {
             b"EventAvail" => Some(Service::EventAvail),
             b"BeginUpdate" => Some(Service::Window(crate::windows::Op::Begin)),
             b"EndUpdate" => Some(Service::Window(crate::windows::Op::End)),
+            b"Gestalt" => Some(Service::Gestalt),
             b"StillDown" => Some(Service::StillDown),
             b"FindWindow" => Some(Service::FindWindow),
             b"PtInRect" => Some(Service::PtInRect),
@@ -294,6 +299,7 @@ impl Abi {
             b"ShowCursor" => Some(Service::Cursor(crate::cursor::Op::Show)),
             b"ObscureCursor" => Some(Service::Cursor(crate::cursor::Op::Obscure)),
             b"SetCursor" => Some(Service::SetCursor),
+            b"GetMHandle" | b"GetMenuHandle" => Some(Service::GetMenuHandle),
             b"InitMenus" => Some(Service::Menu(crate::menus::Op::Init)),
             b"DrawMenuBar" => Some(Service::Menu(crate::menus::Op::Draw)),
             b"ClearMenuBar" => Some(Service::Menu(crate::menus::Op::Clear)),
@@ -946,6 +952,7 @@ impl Abi {
                     Reply::StackByte(GuestPtr(result)),
                 ))
             }
+            0xa0ad | 0xa1ad => Ok((Call::Gestalt(c.dar[0]), Reply::M68kGestalt)),
             0xa973 => {
                 memory.validate_write(GuestPtr(sp), 1)?;
                 Ok((Call::StillDown, Reply::StackByte(GuestPtr(sp))))
@@ -1058,6 +1065,18 @@ impl Abi {
                 }),
                 Reply::None,
             )),
+            0xa949 => {
+                let id = memory.u16(GuestPtr(sp))? as i16;
+                let result = sp
+                    .checked_add(2)
+                    .ok_or_else(|| Error::Cpu("menu handle stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 4)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::Menu(crate::menus::Op::Handle(id)),
+                    Reply::StackLong(GuestPtr(result)),
+                ))
+            }
             0xa93b => {
                 memory.validate_write(GuestPtr(sp), 4)?;
                 Ok((
@@ -1774,6 +1793,7 @@ impl Abi {
                     }
                 })
             }
+            Service::Gestalt => Call::Gestalt(c.gpr[3]),
             Service::StillDown => Call::StillDown,
             Service::FindWindow => Call::FindWindow {
                 point: [(c.gpr[3] >> 16) as i16, c.gpr[3] as i16],
@@ -1810,6 +1830,7 @@ impl Abi {
             }
             Service::Cursor(op) => Call::Cursor(op),
             Service::SetCursor => Call::Cursor(crate::cursor::Op::Set(GuestPtr(c.gpr[3]))),
+            Service::GetMenuHandle => Call::Menu(crate::menus::Op::Handle(c.gpr[3] as i16)),
             Service::Menu(op) => Call::Menu(op),
             Service::TEKey => Call::TextEdit(crate::textedit::Op::Key {
                 handle: c.gpr[4],
@@ -2125,6 +2146,9 @@ impl Abi {
             },
             Service::CreateDirectory => Call::CreateDirectory(GuestPtr(c.gpr[3])),
         };
+        if service == Service::Gestalt {
+            return Ok((call, Reply::PpcGestalt(GuestPtr(c.gpr[4]))));
+        }
         Ok((
             call,
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Intersects | crate::regions::Op::Empty | crate::regions::Op::Equal))
@@ -2239,6 +2263,27 @@ impl Reply {
             Self::StackByte(p) => memory.write(p, &[value as u8])?,
             Self::StackLong(p) => memory.write(p, &value.to_be_bytes())?,
             Self::StackWord(p) => memory.write(p, &(value as u16).to_be_bytes())?,
+            Self::M68kGestalt => {
+                let Cpu::M68k(c) = cpu else {
+                    return Err(Error::Cpu("68K Gestalt result on PPC".into()));
+                };
+                if error == 0 {
+                    c.dar[8] = value;
+                }
+                Self::M68kFileError.apply(cpu, memory, error as i32 as u32, error)?;
+            }
+            Self::PpcGestalt(output) => {
+                let Cpu::PowerPc(c) = cpu else {
+                    return Err(Error::Cpu("PPC Gestalt result on 68K".into()));
+                };
+                if error == 0 {
+                    if output.0 == 0 {
+                        return Err(Error::Cpu("nil Gestalt response".into()));
+                    }
+                    memory.write(output, &value.to_be_bytes())?;
+                }
+                c.gpr[3] = error as i32 as u32;
+            }
             Self::M68kFileError | Self::M68kOSEvent => match cpu {
                 Cpu::M68k(c) => {
                     let value = if self == Self::M68kOSEvent {

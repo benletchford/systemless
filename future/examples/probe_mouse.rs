@@ -65,8 +65,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Cpu::M68k(c) = &app.runtime.cpu {
         println!(
-            "pc={:08x} opcode={:04x?}",
+            "pc={:08x} d0={:08x} d1={:08x} opcode={:04x?}",
             c.pc,
+            c.dar[0],
+            c.dar[1],
             app.runtime.memory.u16(GuestPtr(c.pc))
         );
     }

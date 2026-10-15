@@ -2420,3 +2420,39 @@ after the HFS-name validation fix. Strict all-target Clippy, sequential formatti
 and whitespace checks pass. MPW guests were rebuilt with Devices.h and explicit
 catalog parents; acceptance confirms actual create/read/write/metadata operations.
 Native System 7 execution and cross-process settings persistence are not claimed.
+
+
+### Live menu lookup and honest capability queries
+
+GetMHandle/GetMenuHandle now searches the live DynamicMenuList: hierarchical
+entries precede regular entries, IDs are signed guest words, relocated handles
+retain identity, ID edits are immediately visible and misses return nil. It
+validates list/handle storage, preserves MemErr and needs no GPU or color table.
+It performs lookup only; it does not manufacture or load menus to satisfy a miss.
+
+The original transition next asks Gestalt for ppc-space (PPC communications, not
+PowerPC instruction execution) and evnt. Both unimplemented managers return the
+undefined-selector error rather than an advertised capability. Shared sysv/proc
+answers match SysEnvirons. Native A0 response/D0 error and SDK A1 store are kept
+distinct from PPC's result-pointer/r3 error ABI. Errors preserve A0/PPC output;
+registration/custom-selector callbacks remain unsupported.
+
+Generated checks cover signed IDs, duplicate precedence, live edits/relocation,
+missing IDs, malformed list/handle storage, color-independent lookup, exact return
+slots, MemErr and both real CPUs. Gestalt checks cover native caller glue, PPC
+pointer stores, undefined selectors, register/stack guards, readonly/nil outputs
+and rejected registration traps. Rebuilt MPW guests require six live-menu queries
+and three capability queries on each CPU before the success marker.
+
+Super Mines now passes GetMHandle(4), closes its settings file and completes the
+two unsupported-capability probes through normal guest error results. It reaches
+GetNewMBar ($A9C0), post-trap PC $0100C4DE. Next: MBAR/MENU resource-backed menu
+construction, installation, sizing and GPU title drawing, then continue the same
+application transition. This is bootstrap progress, not completed menus or gameplay.
+Original PPC interaction, devices/sound, native presentation, Color QuickDraw and
+production Mixed Mode remain unfinished. Full rebuild goal remains active.
+
+Validation: all 257 tests pass (211 default, 46 optional GPU/MPW), with no skips.
+Strict all-target Clippy, rebuilt menu/environment compiler guests, sequential
+changed-file formatting and whitespace checks pass. No native System 7 execution
+or native-presentation pass is claimed.

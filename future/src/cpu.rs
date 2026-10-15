@@ -12,6 +12,7 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    Gestalt(u32),
     StillDown,
     Random,
     DrawRectangle {

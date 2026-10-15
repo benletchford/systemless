@@ -329,3 +329,158 @@ fn menu_state_resources_pixels_and_allocation_failures_share_one_world() {
     let all = p.new_pointer(&mut m, HEAP_SIZE - 32, false).unwrap();
     assert_ne!(all, 0);
 }
+
+#[test]
+fn menu_handle_adapters_pop_signed_id_and_validate_long_result_before_mutation() {
+    let mut m = Memory::default();
+    m.map(
+        GuestPtr(0x1000),
+        vec![0xff, 0xf9, 0xa5, 0xa5, 0xa5, 0xa5],
+        Permissions::RW,
+    )
+    .unwrap();
+    let mut cpu = m68k::CpuCore::default();
+    cpu.dar[15] = 0x1000;
+    assert_eq!(
+        Abi::trap(0xa949, &mut cpu, &m).unwrap(),
+        (
+            Call::Menu(Op::Handle(-7)),
+            Reply::StackLong(GuestPtr(0x1002))
+        )
+    );
+    assert_eq!(cpu.dar[15], 0x1002);
+    cpu.dar[15] = 0x1001;
+    assert!(Abi::trap(0xa949, &mut cpu, &m).is_err());
+    assert_eq!(cpu.dar[15], 0x1001);
+    let mut cpu = ppc::PpcCpu::default();
+    cpu.gpr[3] = 0xa5a5fff9;
+    assert_eq!(
+        Abi::import(Service::GetMenuHandle, &cpu, &m).unwrap(),
+        (Call::Menu(Op::Handle(-7)), Reply::PpcR3)
+    );
+}
+#[test]
+#[ignore = "requires a real wgpu adapter for InitMenus"]
+fn menu_handle_lookup_follows_live_partitions_ids_and_relocated_handles_without_gpu() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let gpu =
+        pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap();
+    let f = support::pef_program(&[0x4e800020], &[b"GetMHandle"], 32);
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    ports(&mut app.runtime.memory, &mut app.runtime.process);
+    app.runtime.graphics = Some(gpu);
+    direct(&mut app, Op::Init).unwrap();
+    app.runtime.graphics = None;
+    assert_eq!(direct(&mut app, Op::Handle(-7)).unwrap(), 0);
+    let list = app.runtime.memory.u32(GuestPtr(0xa1c)).unwrap();
+    let mut handles = Vec::new();
+    for id in [-7i16, 128, -7] {
+        let h = app
+            .runtime
+            .process
+            .new_handle(&mut app.runtime.memory, 16, true)
+            .unwrap();
+        app.runtime
+            .memory
+            .write(ptr(&app.runtime.memory, h), &id.to_be_bytes())
+            .unwrap();
+        handles.push(h);
+    }
+    let mut bytes = vec![0; 30];
+    bytes[..2].copy_from_slice(&12u16.to_be_bytes());
+    bytes[6..10].copy_from_slice(&handles[0].to_be_bytes());
+    bytes[12..16].copy_from_slice(&handles[1].to_be_bytes());
+    bytes[18..20].copy_from_slice(&6u16.to_be_bytes());
+    bytes[24..28].copy_from_slice(&handles[2].to_be_bytes());
+    app.runtime
+        .process
+        .set_handle_size(&mut app.runtime.memory, list, 30)
+        .unwrap();
+    app.runtime
+        .memory
+        .write(ptr(&app.runtime.memory, list), &bytes)
+        .unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa9, 0x49], Permissions::RX)
+        .unwrap();
+    let vector = app
+        .runtime
+        .memory
+        .u32(GuestPtr(app.info.toc_or_a5 + 8))
+        .unwrap();
+    let gate = app.runtime.memory.u32(GuestPtr(vector)).unwrap();
+    for (id, expected) in [(-7i16, handles[2]), (128, handles[1]), (999, 0)] {
+        for arch in [Architecture::M68k, Architecture::PowerPc] {
+            app.runtime.process.mem_error = -108;
+            let stack = STACK_BASE + 0x8000;
+            let mut frame = id.to_be_bytes().to_vec();
+            frame.extend([0xa5; 8]);
+            app.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+            app.runtime.cpu = Cpu::new(
+                arch,
+                if arch == Architecture::M68k {
+                    0x50000000
+                } else {
+                    gate
+                },
+                stack,
+            );
+            if let Cpu::PowerPc(c) = &mut app.runtime.cpu {
+                c.gpr[3] = 0xa5a50000 | id as u16 as u32;
+            }
+            assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+            assert_eq!(app.runtime.process.mem_error, -108);
+            match &app.runtime.cpu {
+                Cpu::M68k(c) => {
+                    assert_eq!(c.dar[15], stack + 2);
+                    assert_eq!(
+                        app.runtime.memory.u32(GuestPtr(stack + 2)).unwrap(),
+                        expected
+                    );
+                    assert_eq!(
+                        app.runtime.memory.u32(GuestPtr(stack + 6)).unwrap(),
+                        0xa5a5a5a5
+                    );
+                }
+                Cpu::PowerPc(c) => assert_eq!(c.gpr[3], expected),
+            }
+        }
+    }
+    app.runtime
+        .process
+        .set_handle_size(&mut app.runtime.memory, handles[2], 32)
+        .unwrap();
+    app.runtime
+        .memory
+        .write(ptr(&app.runtime.memory, handles[2]), &9i16.to_be_bytes())
+        .unwrap();
+    assert_eq!(direct(&mut app, Op::Handle(-7)).unwrap(), handles[0]);
+    assert_eq!(direct(&mut app, Op::Handle(9)).unwrap(), handles[2]);
+    assert_eq!(
+        payload(&app.runtime.memory, &mut app.runtime.process, list),
+        bytes
+    );
+    let colors = app.runtime.memory.u32(GuestPtr(0xd50)).unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0xd50), &0u32.to_be_bytes())
+        .unwrap();
+    assert_eq!(direct(&mut app, Op::Handle(9)).unwrap(), handles[2]);
+    app.runtime
+        .memory
+        .write(GuestPtr(0xd50), &colors.to_be_bytes())
+        .unwrap();
+    app.runtime
+        .process
+        .set_handle_size(&mut app.runtime.memory, handles[2], 1)
+        .unwrap();
+    app.runtime.process.mem_error = -108;
+    assert!(direct(&mut app, Op::Handle(-7)).is_err());
+    assert_eq!(app.runtime.process.mem_error, -108);
+    app.runtime
+        .process
+        .set_handle_size(&mut app.runtime.memory, list, 13)
+        .unwrap();
+    assert!(direct(&mut app, Op::Handle(-7)).is_err());
+}

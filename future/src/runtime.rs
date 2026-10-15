@@ -349,6 +349,13 @@ impl Runtime {
                                 self.receive_toolbox_event(mask, destination, remove, ticks)?;
                             reply.apply(&mut self.cpu, &mut self.memory, u32::from(found), 0)?;
                         }
+                        Call::Gestalt(selector) => {
+                            let (value, error) = match crate::environment::gestalt(selector) {
+                                Ok(value) => (value, 0),
+                                Err(error) => (0, error),
+                            };
+                            reply.apply(&mut self.cpu, &mut self.memory, value, error)?;
+                        }
                         Call::StillDown => {
                             let down = !crate::events::available(&self.memory, 0x0006)?;
                             reply.apply(&mut self.cpu, &mut self.memory, u32::from(down), 0)?;
@@ -1203,6 +1210,7 @@ impl Runtime {
                         | Call::TextState { .. }
                         | Call::Rectangle(_)
                         | Call::ToolboxEvent { .. }
+                        | Call::Gestalt(_)
                         | Call::StillDown
                         | Call::FindWindow { .. }
                         | Call::PointInRect { .. }

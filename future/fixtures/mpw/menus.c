@@ -6,6 +6,9 @@
 #include <Events.h>
 #include <Processes.h>
 QDGlobals qd;
+static void putLong(unsigned char *p,unsigned long value) {
+    p[0]=value>>24; p[1]=value>>16; p[2]=value>>8; p[3]=value;
+}
 int main(void) {
     GrafPort port;
     Handle live,colors,copy;
@@ -29,6 +32,22 @@ int main(void) {
     if (((unsigned short *)*colors)[14]!=0xbeef) return 7;
     SetHandleSize(colors,0); DrawMenuBar();
     if (MemError() || pixels[0]!=0xf8 || port.pnMode!=patCopy || qd.thePort!=&port) return 8;
+    {
+        MenuHandle normal=(MenuHandle)NewHandleClear(16), sub=(MenuHandle)NewHandleClear(16);
+        unsigned char *table;
+        short i;
+        if (!normal || !sub || GetMenuHandle(99)!=0) return 11;
+        *(short *)*normal=-7; *(short *)*sub=-7;
+        SetHandleSize(live,24); if (MemError()) return 12;
+        table=(unsigned char *)*live; for (i=0;i<24;i++) table[i]=0;
+        *(short *)table=6; putLong(table+6,(unsigned long)normal);
+        *(short *)(table+12)=6; putLong(table+18,(unsigned long)sub);
+        if (GetMenuHandle(-7)!=sub || GetMenuHandle(99)!=0) return 13;
+        SetHandleSize((Handle)sub,32); *(short *)*sub=9;
+        if (GetMenuHandle(-7)!=normal || GetMenuHandle(9)!=sub) return 14;
+        ClearMenuBar(); if (GetMenuHandle(9)!=0 || GetHandleSize((Handle)normal)!=16 || GetHandleSize((Handle)sub)!=32) return 15;
+        DisposeHandle((Handle)normal); DisposeHandle((Handle)sub);
+    }
     InitCursor(); HideCursor(); HideCursor(); ShowCursor();
     cursor=GetCursor(-123); if (!cursor || GetHandleSize((Handle)cursor)!=68) return 9;
     SetCursor(*cursor); ShowCursor(); ShowCursor();

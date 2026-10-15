@@ -14,6 +14,7 @@ const HEIGHT: GuestPtr = GuestPtr(0xbaa);
 const EMPTY: [u8; 12] = [0; 12];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    Handle(i16),
     Init,
     Draw,
     Clear,
@@ -81,9 +82,9 @@ fn background(colors: &[u8]) -> Result<u8> {
     }
 }
 impl Menus {
-    fn check(&self, memory: &Memory, process: &mut Process) -> Result<(Vec<u8>, Vec<u8>)> {
-        if self.list == 0 || memory.u32(LIST)? != self.list || memory.u32(COLORS)? != self.colors {
-            return Err(bad("Menu Manager globals were replaced or not initialized"));
+    fn read_list(&self, memory: &Memory, process: &mut Process) -> Result<Vec<u8>> {
+        if self.list == 0 || memory.u32(LIST)? != self.list {
+            return Err(bad("Menu Manager list was replaced or not initialized"));
         }
         let list = data(memory, process, self.list)?;
         if list.len() < 12 {
@@ -102,6 +103,13 @@ impl Menus {
         {
             return Err(bad("invalid hierarchical menu list"));
         }
+        Ok(list)
+    }
+    fn check(&self, memory: &Memory, process: &mut Process) -> Result<(Vec<u8>, Vec<u8>)> {
+        let list = self.read_list(memory, process)?;
+        if memory.u32(COLORS)? != self.colors {
+            return Err(bad("Menu Manager colors were replaced"));
+        }
         let colors = merge(data(memory, process, self.colors)?, &[])?;
         Ok((list, colors))
     }
@@ -112,6 +120,30 @@ impl Menus {
         gpu: Option<&Graphics>,
         op: Op,
     ) -> Result<u32> {
+        if let Op::Handle(id) = op {
+            let error = process.mem_error;
+            let result = (|| {
+                let list = self.read_list(memory, process)?;
+                let regular = usize::from(u16::from_be_bytes(list[..2].try_into().unwrap()));
+                for entries in [&list[12 + regular..], &list[6..6 + regular]] {
+                    for entry in entries.chunks_exact(6) {
+                        let handle = u32::from_be_bytes(entry[..4].try_into().unwrap());
+                        let menu = data(memory, process, handle)?;
+                        let bytes: [u8; 2] = menu
+                            .get(..2)
+                            .ok_or_else(|| bad("truncated menu ID"))?
+                            .try_into()
+                            .unwrap();
+                        if i16::from_be_bytes(bytes) == id {
+                            return Ok(handle);
+                        }
+                    }
+                }
+                Ok(0)
+            })();
+            process.mem_error = error;
+            return result;
+        }
         if op == Op::Init {
             let gpu = gpu.ok_or_else(|| bad("InitMenus requires a GPU"))?;
             let ports = process
@@ -236,7 +268,7 @@ impl Menus {
                 )?;
                 Ok(0)
             }
-            Op::Init => unreachable!(),
+            Op::Init | Op::Handle(_) => unreachable!(),
         }
     }
     fn draw(&self, memory: &mut Memory, process: &mut Process, gpu: &Graphics) -> Result<()> {
