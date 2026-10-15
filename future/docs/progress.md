@@ -4603,3 +4603,50 @@ retain the actual main/list device, and make palette/default-table queries use
 that selected record. Do not infer a nil selection from the already-popped fault
 stack. Full color destinations, original-game gameplay and the rebuild remain
 unfinished; no capability flag was raised to bypass Marathon's startup check.
+
+
+## 2026-10-16: selected offscreen devices and empty paint requests
+
+SetGDevice now selects any live owned 62-byte GDevice record without registering
+it as a screen or initializing the main display. GetGDevice and Index2Color read
+that selected record. Main/list device identity remains separate; initializing
+the initial display later preserves an existing offscreen selection. GetNextDevice
+reads owned links and rejects direct self-links. Record ownership, nested palette
+bounds and output storage remain checked. Nil/freed selection fails without
+changing current state. Both CPU adapters use these same services.
+
+The original EV trace next revealed PaintRect on an all-zero rectangle while
+preparing a zero-height offscreen bitmap. Empty geometry now returns before
+requiring pixel storage, after validating the port/custom-procedure boundary.
+Nonempty geometry still validates the bitmap. A GPU regression executes actual
+68K/PPC empty PaintRect calls, verifies unchanged port/bitmap/guest pixels/GPU
+readback, and separately rejects nonempty drawing on the empty bitmap.
+
+Tests also switch CPUs through one selected offscreen record, observe live color
+table changes, retain main/list identity, and build default inverse tables using
+the selected offscreen palette/resolution without changing the main table. The
+public-header compiler fixture switches between a duplicated GDevice and the
+main display and performs palette queries. All 461 tests pass with zero failures
+or skips, including 30 compiler/CLI fixtures and real GPU checks. Strict all-target
+lint, sequential changed-file formatting and whitespace checks pass. Logs:
+/tmp/systemless-offscreen-selection-all.txt and
+/tmp/systemless-offscreen-final-lint.txt.
+
+Original EV now selects its offscreen devices, completes both empty paints and
+restores the main display. It next stops at missing Get1Resource ($A81F), PC
+$00016168; the untouched native frame requests resource 'RBlt', ID 1. Evidence:
+/tmp/systemless-ev-empty-paint-next.txt. The earlier empty-rectangle evidence is
+/tmp/systemless-ev-offscreen-paint-detail.txt. Next add actual current-map resource
+lookup, distinct from the existing full-chain lookup/fallback provider. Verify
+$A81F versus $A820 (Get1NamedResource) using public headers, and preserve real
+resource identity/errors. Do not alias Get1Resource to a full-chain cursor lookup.
+No title/menu/gameplay or full Color QuickDraw acceptance is established; the
+original Marathon and full rebuild requirements remain open.
+
+
+The sound-enabled original Super Mines Save/Open regression completes one sound
+callback, reopens the 1,972-byte game and returns to Waiting{ticks:10}, PC
+$0100C798. The restored board was visually inspected; its pixels match the prior
+sound/status checkpoint exactly. Evidence: /tmp/systemless-mines-offscreen.txt
+and after.ppm/png; comparison against /tmp/systemless-mines-status-stereo-after.ppm.
+This does not establish native window/audio or win/loss acceptance.

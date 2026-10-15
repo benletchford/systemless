@@ -40,7 +40,13 @@ impl Manager {
             record(memory, process, device, 62)?;
             return Ok(device);
         }
-        for pointer in [MAIN, FIRST, CURRENT] {
+        let selected = memory.u32(CURRENT)?;
+        if selected != 0 {
+            record(memory, process, selected, 62)?;
+        } else {
+            memory.validate_write(CURRENT, 4)?;
+        }
+        for pointer in [MAIN, FIRST] {
             memory.validate_write(pointer, 4)?;
         }
         let screen = crate::quickdraw::screen_bitmap();
@@ -102,8 +108,11 @@ impl Manager {
         })();
         match result {
             Ok(device) => {
-                for pointer in [MAIN, FIRST, CURRENT] {
+                for pointer in [MAIN, FIRST] {
                     memory.write(pointer, &device.to_be_bytes())?;
+                }
+                if selected == 0 {
+                    memory.write(CURRENT, &device.to_be_bytes())?;
                 }
                 self.device = Some(device);
                 Ok(device)
@@ -115,6 +124,17 @@ impl Manager {
                 Err(error)
             }
         }
+    }
+    fn selected(&mut self, memory: &mut Memory, process: &mut Process) -> Result<u32> {
+        let selected = memory.u32(CURRENT)?;
+        if selected != 0 {
+            record(memory, process, selected, 62)?;
+            return Ok(selected);
+        }
+        if self.device.is_some() {
+            return Err(invalid("nil current graphics device"));
+        }
+        self.initialize(memory, process)
     }
     pub fn call(&mut self, memory: &mut Memory, process: &mut Process, op: Op) -> Result<u32> {
         let saved = process.mem_error;
@@ -142,17 +162,29 @@ impl Manager {
             }
             if let Op::Select(requested) = op {
                 memory.validate_write(CURRENT, 4)?;
-                if self.device != Some(requested) {
-                    return Err(invalid("SetGDevice requires a registered graphics device"));
-                }
+                record(memory, process, requested, 62)?;
+                memory.write(CURRENT, &requested.to_be_bytes())?;
+                return Ok(0);
             }
-            let device = self.initialize(memory, process)?;
+            if let Op::Next(requested) = op {
+                let data = record(memory, process, requested, 62)?;
+                let next = memory.u32(GuestPtr(data.0 + 30))?;
+                if next == requested {
+                    return Err(invalid("cyclic graphics device link"));
+                }
+                if next != 0 {
+                    record(memory, process, next, 62)?;
+                }
+                return Ok(next);
+            }
+            let device = if matches!(op, Op::Current | Op::Index { .. }) {
+                self.selected(memory, process)?
+            } else {
+                self.initialize(memory, process)?
+            };
             let data = record(memory, process, device, 62)?;
             match op {
-                Op::Select(_) => {
-                    memory.write(CURRENT, &device.to_be_bytes())?;
-                    Ok(0)
-                }
+                Op::Select(_) | Op::Next(_) => unreachable!(),
                 Op::Current | Op::Main | Op::First => {
                     let pointer = match op {
                         Op::Current => CURRENT,
@@ -164,16 +196,6 @@ impl Manager {
                         return Err(invalid("unregistered graphics device selection"));
                     }
                     Ok(selected)
-                }
-                Op::Next(requested) => {
-                    if requested != device {
-                        return Err(invalid("unknown graphics device"));
-                    }
-                    let next = memory.u32(GuestPtr(data.0 + 30))?;
-                    if next != 0 {
-                        return Err(invalid("unregistered graphics device link"));
-                    }
-                    Ok(0)
                 }
                 Op::Attribute { .. } | Op::SetAttribute { .. } => unreachable!(),
                 Op::Index { index, destination } => {

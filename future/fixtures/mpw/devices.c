@@ -43,5 +43,11 @@ int main(void) {
     DisposeHandle((Handle)inverse);
     (**colors).ctTable[0].rgb.red=0x1234;
     Index2Color(0,&rgb); if (rgb.red!=0x1234 || rgb.green!=65535 || rgb.blue!=65535) return 10;
+    offscreen=device;if (HandToHand((Handle *)&offscreen)) return 19;
+    SetGDevice(offscreen);
+    if (GetGDevice()!=offscreen || GetMainDevice()!=device || GetDeviceList()!=device || GetNextDevice(offscreen)) return 20;
+    Index2Color(0,&rgb);if (rgb.red!=0x1234 || rgb.green!=65535 || rgb.blue!=65535) return 21;
+    SetGDevice(device);if (GetGDevice()!=device) return 22;
+    DisposeHandle((Handle)offscreen);
     PostEvent(diskEvt,0xd311); ExitToShell(); return 0;
 }

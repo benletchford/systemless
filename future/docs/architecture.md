@@ -2316,3 +2316,22 @@ remain explicit Color Manager requirements. The supplied C fixture tests public
 bytes while allowing private extra allocation. Sources:
 [Apple inverse tables](https://dev.os9.ca/techpubs/mac/ACI/ACI-103.html) and
 [QuickDraw Reference, MakeITable/QDError](https://leopard-adc.pepas.com/documentation/Carbon/Reference/QuickDraw_Ref/QuickDraw_Ref.pdf).
+
+
+### Selected offscreen device and empty-geometry contracts
+
+The current GDevice is guest-visible state separate from the initial main/list
+device. SetGDevice validates an owned record and publishes only CURRENT;
+GetGDevice reads that same field across CPUs. Lazy main-display initialization
+preserves an existing selection. Index2Color follows selected device -> owned
+PixMap -> owned device ColorTable, so live edits and default MakeITable calls
+observe one coherent palette. GetNextDevice validates the requested record/link;
+it does not implicitly initialize the display. Automatic physical display lists,
+arbitrary device creation/disposal and full indexed drawing remain unfinished.
+
+An empty paint rectangle has no pixel coverage. The shared geometry path validates
+the current port/custom-procedure boundary, then returns before decoding an empty
+bitmap. Nonempty paints retain all existing bitmap/format checks. GPU regressions
+verify unchanged guest and GPU state through actual callers, plus continued
+failure for a nonempty request targeting the same empty bitmap. This corrects
+initialization behavior; it does not implement 8-bit destination rendering.

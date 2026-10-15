@@ -1617,3 +1617,20 @@ GDevice (handle 79676); selection is still limited to the initial display, so it
 stops at PC $00017694. /tmp/systemless-ev-inverse-detail.txt prints the failed
 service argument explicitly. No title/menu/gameplay is established. Original
 Marathon's color capability and PPC routine-descriptor requirements remain open.
+
+
+### Selected offscreen devices and empty PaintRect refresh
+
+EV now selects its owned offscreen devices, completes two empty PaintRect calls
+and restores the main display. The verified empty request is Rect{0,0,0,0}, not
+nonempty drawing that may be discarded. The next stop is Get1Resource, A81F,
+PC $00016168, native arguments resource type 'RBlt', ID 1. Evidence:
+/tmp/systemless-ev-empty-paint-next.txt and the preceding
+/tmp/systemless-ev-offscreen-paint-detail.txt. Neither title/menu nor gameplay is
+established. Full color rendering and Marathon's outstanding requirements remain.
+
+The original Super Mines sound-enabled Save/Open refresh still completes one
+callback, reopens the 1,972-byte game and returns to its normal event wait.
+/tmp/systemless-mines-offscreen.txt and after.ppm/png; the inspected board pixels
+match /tmp/systemless-mines-status-stereo-after.ppm byte for byte. Native and
+win/loss acceptance remain separate.

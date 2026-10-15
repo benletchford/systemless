@@ -392,6 +392,44 @@ fn color_port_drawing_uses_pixmap_and_attached_patterns_without_corrupting_graph
             .write(GuestPtr(0x300), &[0, 0, 0, 0, 0, 1, 0, 8])
             .unwrap();
         a.runtime.graphics = Some(gpu);
+        let original_map = a.runtime.memory.read(GuestPtr(map), 50).unwrap().to_vec();
+        a.runtime.memory.write(GuestPtr(map + 6), &[0; 8]).unwrap();
+        a.runtime.memory.write(GuestPtr(0x300), &[0; 8]).unwrap();
+        let empty_map = a.runtime.memory.read(GuestPtr(map), 50).unwrap().to_vec();
+        let port_before = a.runtime.memory.read(GuestPtr(PORT), 108).unwrap().to_vec();
+        let pixels_before = a.runtime.memory.read(SCREEN, 64).unwrap().to_vec();
+        let gpu_before = a.runtime.graphics.as_ref().unwrap().read_rgba().unwrap();
+        if use_native {
+            native(&mut a, 3, 0x300);
+        } else {
+            ppc(&mut a, 6, 0x300);
+        }
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(PORT), 108).unwrap(),
+            port_before
+        );
+        assert_eq!(a.runtime.memory.read(GuestPtr(map), 50).unwrap(), empty_map);
+        assert_eq!(a.runtime.memory.read(SCREEN, 64).unwrap(), pixels_before);
+        assert_eq!(
+            a.runtime.graphics.as_ref().unwrap().read_rgba().unwrap(),
+            gpu_before
+        );
+        // A nonempty request still validates and rejects an empty bitmap.
+        assert!(ports
+            .paint_rect(
+                a.runtime.graphics.as_ref().unwrap(),
+                &mut a.runtime.memory,
+                Rect::new(0, 0, 8, 1)
+            )
+            .is_err());
+        a.runtime
+            .memory
+            .write(GuestPtr(map), &original_map)
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(0x300), &[0, 0, 0, 0, 0, 1, 0, 8])
+            .unwrap();
         if use_native {
             native(&mut a, 3, 0x300);
         } else {

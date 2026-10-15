@@ -879,6 +879,11 @@ impl Ports {
                 "QuickDraw recording or custom procedures are unsupported".into(),
             ));
         }
+        // Empty rectangles cover no pixels, including while an application is
+        // preparing an empty offscreen port whose bitmap has no storage yet.
+        if r.left >= r.right || r.top >= r.bottom {
+            return Ok(());
+        }
         let mode = paint.map_or_else(
             || u16::from_be_bytes(bytes[56..58].try_into().unwrap()),
             |p| p.mode,

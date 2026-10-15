@@ -459,3 +459,73 @@ fn invalid_attribute_records_and_bits_leave_flags_and_heap_unchanged() {
     )
     .is_err());
 }
+
+#[test]
+fn offscreen_selection_palette_queries_and_main_initialization_share_one_live_device_state() {
+    let mut a = app();
+    let off = a
+        .runtime
+        .process
+        .new_handle(&mut a.runtime.memory, 62, true)
+        .unwrap();
+    let gd = a.runtime.memory.u32(GuestPtr(off)).unwrap();
+    let pm = a
+        .runtime
+        .process
+        .new_handle(&mut a.runtime.memory, 50, true)
+        .unwrap();
+    let map = a.runtime.memory.u32(GuestPtr(pm)).unwrap();
+    let ct = a
+        .runtime
+        .process
+        .new_handle(&mut a.runtime.memory, 24, true)
+        .unwrap();
+    let table = a.runtime.memory.u32(GuestPtr(ct)).unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(gd + 22), &pm.to_be_bytes())
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(map + 42), &ct.to_be_bytes())
+        .unwrap();
+    let mut colors = [0u8; 24];
+    colors[4..6].copy_from_slice(&0x8000u16.to_be_bytes());
+    colors[6..8].copy_from_slice(&1u16.to_be_bytes());
+    colors[10..16].copy_from_slice(&[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
+    a.runtime.memory.write(GuestPtr(table), &colors).unwrap();
+    let free = a.runtime.process.free_memory();
+    assert!(native(&mut a, 7, &off.to_be_bytes(), 0).is_empty());
+    assert_eq!(ppc(&mut a, 0, &[]), off);
+    assert_eq!(a.runtime.process.free_memory(), free);
+    // Creating the actual display later must not replace the chosen offscreen record.
+    let main = ppc(&mut a, 1, &[]);
+    assert_ne!(main, off);
+    assert_eq!(ppc(&mut a, 2, &[]), main);
+    assert_eq!(ppc(&mut a, 0, &[]), off);
+    assert_eq!(native(&mut a, 0, &[], 4), off.to_be_bytes());
+    let output = STACK_BASE + 0x7000;
+    ppc(&mut a, 5, &[0, output]);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(output), 6).unwrap(),
+        [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]
+    );
+    // A real CPU switch sees live palette edits through the same selected handle.
+    a.runtime
+        .memory
+        .write(GuestPtr(table + 10), &[0xff, 0xff])
+        .unwrap();
+    let mut args = output.to_be_bytes().to_vec();
+    args.extend(0u32.to_be_bytes());
+    native(&mut a, 5, &args, 0);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(output)).unwrap(), 65535);
+    assert_eq!(ppc(&mut a, 3, &[off]), 0);
+    assert_eq!(ppc(&mut a, 10, &[main]), main);
+    assert_eq!(ppc(&mut a, 0, &[]), main);
+    a.runtime
+        .process
+        .dispose_handle(&mut a.runtime.memory, off)
+        .unwrap();
+    assert!(call(&mut a, Op::Select(off)).is_err());
+    assert_eq!(a.runtime.memory.u32(devices::CURRENT).unwrap(), main);
+}

@@ -1272,7 +1272,7 @@ fn compiled_devices_share_screen_records_flags_and_palette_on_both_cpus() {
                     Call::Device(systemless_future::devices::Op::Index { .. })
                 ))
                 .count(),
-            3
+            4
         );
     }
 }

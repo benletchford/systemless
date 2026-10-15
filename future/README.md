@@ -230,8 +230,8 @@ capabilities report stereo, multichannel mixing and software 16-bit samples;
 recording, codecs, disk/double-buffer playback remain unfinished. The PowerPC
 NumVersion structure uses the actual caller-provided return buffer. Both original
 68K games pass the earlier sound-version call; EV passes offscreen graphics-device
-attribute updates and inverse-table construction, and next needs selection of
-its offscreen device. Marathon reports
+attribute updates and inverse-table construction, and selects its offscreen
+devices. It next needs current-map resource lookup (Get1Resource). Marathon reports
 that Color QuickDraw is required. Super Mines' recorded interaction
 is automated/offscreen; live desktop and win/loss acceptance remain incomplete.
 
@@ -272,3 +272,8 @@ MakeITable now generates the public inverse lookup portion in real owned handles
 for resolutions 3/4/5, with default-device parameters and shared QDError state.
 ROM tie/hidden-color matching, reserved clients and full color drawing remain
 unfinished. No ROM-derived lookup tables are included.
+
+Selected offscreen GDevice state now drives GetGDevice, Index2Color and default
+inverse-table construction, while main/list display identity remains separate.
+Empty paint geometry returns without pixel access; nonempty requests retain
+bitmap checks. General indexed destinations and full color acceptance remain open.

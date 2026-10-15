@@ -595,3 +595,6 @@ checking the unchanged initial screen, palette and low-memory device globals.
 The device fixture additionally checks MakeITable's seed, resolution and public
 lookup bytes, nil/default parameters, and persistent QDError for invalid
 resolution. It permits private allocation beyond the documented table portion.
+
+The device fixture selects a GDevice duplicated through HandToHand, verifies
+GetGDevice versus main/list identity, reads its palette and restores the display.

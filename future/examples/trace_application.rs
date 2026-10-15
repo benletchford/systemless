@@ -82,6 +82,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "latest service before fault: {:?}",
                     app.runtime.services.calls.last()
                 );
+                if let Some(systemless_future::cpu::Call::Port {
+                    op: systemless_future::quickdraw::PortOp::PaintRect,
+                    pointer,
+                }) = app.runtime.services.calls.last()
+                {
+                    println!(
+                        "paint rectangle at fault: {:?}",
+                        systemless_future::quickdraw::read_rect(&app.runtime.memory, *pointer)
+                    );
+                }
                 if let Cpu::M68k(c) = &app.runtime.cpu {
                     println!(
                         "fault pc={:08x} d0={:08x} sp={:08x} regs={:08x?}",

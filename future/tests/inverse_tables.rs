@@ -202,6 +202,56 @@ fn sparse_color_values_and_default_device_resolution_produce_real_tables_without
                 .unwrap(),
             gd
         );
+        let main_table = bytes(&mut a, inverse);
+        let off = a
+            .runtime
+            .process
+            .copy_handle(&mut a.runtime.memory, gd)
+            .unwrap();
+        let off_data = a.runtime.memory.u32(GuestPtr(off)).unwrap();
+        let main_pm = a.runtime.memory.u32(GuestPtr(record + 22)).unwrap();
+        let off_pm = a
+            .runtime
+            .process
+            .copy_handle(&mut a.runtime.memory, main_pm)
+            .unwrap();
+        let off_pixels = a.runtime.memory.u32(GuestPtr(off_pm)).unwrap();
+        let off_colors = palette(&mut a, true, &[(0, [65535, 0, 0]), (1, [0, 65535, 0])]);
+        a.runtime
+            .memory
+            .write(GuestPtr(off_pixels + 42), &off_colors.to_be_bytes())
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(off_data + 22), &off_pm.to_be_bytes())
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(off_data + 6), &0u32.to_be_bytes())
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(off_data + 10), &3u16.to_be_bytes())
+            .unwrap();
+        let mut manager = std::mem::take(&mut a.runtime.process.devices);
+        manager
+            .call(
+                &mut a.runtime.memory,
+                &mut a.runtime.process,
+                systemless_future::devices::Op::Select(off),
+            )
+            .unwrap();
+        a.runtime.process.devices = manager;
+        assert_eq!(call(&mut a, arch, 2, &[]), off);
+        call(&mut a, arch, 0, &[0, 0, 0]);
+        assert_eq!(call(&mut a, arch, 1, &[]), 0);
+        let off_inverse = a.runtime.memory.u32(GuestPtr(off_data + 6)).unwrap();
+        assert_ne!(off_inverse, inverse);
+        let off_table = bytes(&mut a, off_inverse);
+        assert_eq!(&off_table[..6], &[0x12, 0x34, 0x56, 0x78, 0, 3]);
+        assert_eq!(off_table[6 + (7 << 6)], 0);
+        assert_eq!(off_table[6 + (7 << 3)], 1);
+        assert_eq!(bytes(&mut a, inverse), main_table);
     }
 }
 #[test]
