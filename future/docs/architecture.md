@@ -1752,9 +1752,9 @@ Classic create/open/fork and file-info calls now follow a WD's folder. HFS calls
 use that folder when directory ID is zero, and an explicit nonzero directory
 ID overrides it. Directory creation, catalog lookup/enumeration and FCB volume
 queries resolve the same references. Existing relative/absolute path behavior,
-fork permissions and catalog ownership remain shared. The default volume still
-means the existing application-volume root; GetVol/SetVol/default-directory
-selection and multiple volumes remain separate work.
+fork permissions and catalog ownership remain shared. The default-volume selection
+extension below adds real selected-directory state; multiple mounted volumes
+remain unfinished.
 
 
 ### Cooperative classic save dialog and original game-file writes
@@ -2408,3 +2408,28 @@ arbitrary indices as legacy black/white constants. NewCWindow initializes its
 screen PixMap from the main device and restores an application's selected
 offscreen device even when color-port construction fails. Basic Window Manager
 state, clipping, patterns and caller-port restoration remain shared.
+
+
+## Shared default volume and directory selection
+
+PBSetVolSync/PBHSetVolSync and native $A015/$A215 update one process-local Files
+selection after validating caller storage and resolving a real directory. The
+selection retains physical directory identity, a hierarchical reference/owner,
+and the distinct classic-query reference. Full hierarchical paths override an
+invalid volume input; a WD input overrides a stale directory ID. Classic volume
+names select the volume root. Failed selection preserves the previous default.
+
+Default relative file operations and Standard File initial browsing follow the
+selected folder. Classic explicit physical-volume references retain root semantics;
+WD references retain their own folders. Hierarchical zero-directory lookup follows
+the selected directory on the virtual volume, while explicit-volume catalog
+queries with directory ID zero address the root. Nonzero directory IDs remain
+explicit. GetVol and HGetVol share selection but retain their documented different
+reference/name results after hierarchical selection. Closing a selected WD drops
+that reference while retaining physical directory identity; deletion protects the
+selected directory. Selection does not change catalog revision or serialized
+volume state, and a fresh process starts at the root. No host path enters a service.
+
+This remains one virtual Application Volume. Asynchronous selection, high-level
+wrappers, multiple volumes and broader search-path fallback remain unfinished.
+Primary contract: [Apple File Manager, default-volume routines, pp. 2-150–2-154](https://leopard-adc.pepas.com/documentation/mac/pdf/Files/File_Manager.pdf).

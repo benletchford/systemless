@@ -1048,6 +1048,20 @@ fn compiled_working_directories_create_files_in_the_selected_folder_on_both_cpus
             (WorkingOp::Open, 2),
             (WorkingOp::Info, 2),
             (WorkingOp::Close, 1),
+            (
+                WorkingOp::Set {
+                    hierarchical: false,
+                },
+                1,
+            ),
+            (WorkingOp::Set { hierarchical: true }, 2),
+            (
+                WorkingOp::Current {
+                    hierarchical: false,
+                },
+                2,
+            ),
+            (WorkingOp::Current { hierarchical: true }, 2),
         ] {
             assert_eq!(
                 app.runtime

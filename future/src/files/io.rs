@@ -36,7 +36,12 @@ impl Files {
         let volume = word(pb, 22);
         let parent = if hierarchical { long(pb, 48) } else { 0 };
         let name = Self::name_input(memory, GuestPtr(long(pb, 18)))?;
-        Ok(self.parent(volume, parent).and_then(|parent| {
+        let parent = if hierarchical {
+            self.parent(volume, parent)
+        } else {
+            self.classic_parent(volume)
+        };
+        Ok(parent.and_then(|parent| {
             if self.name.is_empty() {
                 Err(-43)
             } else {
@@ -141,6 +146,7 @@ impl Files {
                 return Ok(-45);
             }
             if node == 2
+                || node == self.default_directory()
                 || self.open.values().any(|f| f.node == node)
                 || self.directories.contains_key(&node)
                     && (!self.children(node, false).is_empty()

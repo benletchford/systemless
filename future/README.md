@@ -347,3 +347,12 @@ palette-manager lifecycle, direct color and full Color QuickDraw remain gaps.
 Marathon now passes its initial Color QuickDraw rejection, then requests
 PBHSetVol ($A215) during directory setup. EV still reports Monitor Tool ID -4 on
 the real color screen. Neither original game has reached gameplay.
+
+
+Default-volume/directory selection now uses real shared catalog state through
+PBSetVol/PBHSetVol on both CPUs. Relative file access and Standard File browsing
+follow the selected folder; classic and hierarchical queries preserve their
+reference distinctions, failed selections leave state intact, and process
+selection stays outside persistent volume images. Marathon now passes PBHSetVol
+and next requests OpenRFPerm ($A9C4) to open a resource file. Neither original
+game nor the full rebuild is complete.

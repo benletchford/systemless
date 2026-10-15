@@ -12,6 +12,7 @@ pub enum WorkingOp {
     Close,
     Info,
     Current { hierarchical: bool },
+    Set { hierarchical: bool },
 }
 const FIRST: i16 = -32767;
 const LAST: i16 = -32640;
@@ -22,12 +23,109 @@ fn missing(reference: i16) -> i16 {
         -35
     }
 }
+#[derive(Clone, Copy)]
+pub(super) struct DefaultDirectory {
+    directory: u32,
+    reference: i16,
+    classic: i16,
+    owner: u32,
+}
+impl Default for DefaultDirectory {
+    fn default() -> Self {
+        Self {
+            directory: 2,
+            reference: -1,
+            classic: -1,
+            owner: 0,
+        }
+    }
+}
 impl Files {
+    pub fn default_directory(&self) -> u32 {
+        self.default_directory.directory
+    }
+    fn select_directory(
+        &mut self,
+        name: &[u8],
+        reference: i16,
+        directory: u32,
+        hierarchical: bool,
+    ) -> std::result::Result<(), i16> {
+        if self.name.is_empty() {
+            return Err(-35);
+        }
+        if name.contains(&0) {
+            return Err(-37);
+        }
+        if !hierarchical {
+            if !name.is_empty() {
+                let volume = name.strip_suffix(b":").unwrap_or(name);
+                if !volume.eq_ignore_ascii_case(b"Application Volume") {
+                    return Err(-35);
+                }
+                self.default_directory = DefaultDirectory::default();
+                return Ok(());
+            }
+            let (directory, owner) = if matches!(reference, -1..=1) {
+                (2, 0)
+            } else {
+                *self.working.get(&reference).ok_or(-35i16)?
+            };
+            self.default_directory = DefaultDirectory {
+                directory,
+                reference: if matches!(reference, -1..=1) {
+                    -1
+                } else {
+                    reference
+                },
+                classic: if matches!(reference, -1..=1) {
+                    -1
+                } else {
+                    reference
+                },
+                owner,
+            };
+            return Ok(());
+        }
+        let full = !name.starts_with(b":") && name.contains(&b':');
+        let wd = if full || matches!(reference, -1..=1) {
+            None
+        } else {
+            Some(*self.working.get(&reference).ok_or(-35i16)?)
+        };
+        let base = if full {
+            2
+        } else if let Some((d, _)) = wd {
+            d
+        } else if directory != 0 {
+            directory
+        } else {
+            self.default_directory.directory
+        };
+        let selected = self
+            .path(name, base)
+            .map_err(|e| if e == -120 { -43 } else { e })?;
+        if !self.directory_exists(selected) {
+            return Err(-43);
+        }
+        let keep = wd.is_some() && name.is_empty();
+        self.default_directory = DefaultDirectory {
+            directory: selected,
+            reference: if keep { reference } else { -1 },
+            classic: -1,
+            owner: if keep { wd.unwrap().1 } else { 0 },
+        };
+        Ok(())
+    }
+
+    pub(super) fn classic_parent(&self, volume: i16) -> std::result::Result<u32, i16> {
+        self.parent(volume, if matches!(volume, -1 | 1) { 2 } else { 0 })
+    }
     // A nonzero HFS directory ID overrides the directory carried by a WD.
     // A plain File Manager operation supplies zero and follows the WD itself.
     pub(super) fn parent(&self, volume: i16, directory: u32) -> std::result::Result<u32, i16> {
         let default = if matches!(volume, -1..=1) {
-            2
+            self.default_directory.directory
         } else {
             self.working.get(&volume).ok_or_else(|| missing(volume))?.0
         };
@@ -65,8 +163,13 @@ impl Files {
         }
         self.working
             .remove(&reference)
-            .map(|_| ())
-            .ok_or_else(|| missing(reference))
+            .ok_or_else(|| missing(reference))?;
+        if self.default_directory.reference == reference {
+            self.default_directory.reference = -1;
+            self.default_directory.classic = -1;
+            self.default_directory.owner = 0;
+        }
+        Ok(())
     }
     pub fn working_directory(
         &mut self,
@@ -76,6 +179,9 @@ impl Files {
     ) -> Result<i16> {
         let size = match op {
             WorkingOp::Close
+            | WorkingOp::Set {
+                hierarchical: false,
+            }
             | WorkingOp::Current {
                 hierarchical: false,
             } => 24,
@@ -90,23 +196,48 @@ impl Files {
                 if self.name.is_empty() {
                     -35
                 } else {
-                    // There are no SetVol routes yet: the application's root
-                    // remains the catalog's actual default directory.
-                    let name = b"\x12Application Volume";
+                    let raw = if !hierarchical && self.default_directory.classic < -32000 {
+                        self.directories
+                            .get(&self.default_directory.directory)
+                            .map(|d| d.name.as_slice())
+                            .unwrap_or(b"Application Volume")
+                    } else {
+                        b"Application Volume"
+                    };
+                    let mut name = vec![raw.len() as u8];
+                    name.extend(raw);
                     if name_pointer.0 != 0 {
                         memory.validate_write(name_pointer, name.len())?;
                     }
-                    pb[22..24].copy_from_slice(&(-1i16).to_be_bytes());
+                    pb[22..24].copy_from_slice(
+                        &(if hierarchical {
+                            self.default_directory.reference
+                        } else {
+                            self.default_directory.classic
+                        })
+                        .to_be_bytes(),
+                    );
                     if hierarchical {
-                        pb[28..32].copy_from_slice(&0u32.to_be_bytes());
+                        pb[28..32].copy_from_slice(&self.default_directory.owner.to_be_bytes());
                         pb[32..34].copy_from_slice(&(-1i16).to_be_bytes());
-                        pb[48..52].copy_from_slice(&2u32.to_be_bytes());
+                        pb[48..52].copy_from_slice(&self.default_directory.directory.to_be_bytes());
                     }
                     if name_pointer.0 != 0 {
-                        memory.write(name_pointer, name)?;
+                        memory.write(name_pointer, &name)?;
                     }
                     0
                 }
+            }
+            WorkingOp::Set { hierarchical } => {
+                let name = Self::name_input(memory, name_pointer)?;
+                let directory = if hierarchical {
+                    u32::from_be_bytes(pb[48..52].try_into().unwrap())
+                } else {
+                    0
+                };
+                self.select_directory(&name, reference, directory, hierarchical)
+                    .err()
+                    .unwrap_or(0)
             }
             WorkingOp::Open => {
                 let directory = u32::from_be_bytes(pb[48..52].try_into().unwrap());

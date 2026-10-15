@@ -1737,3 +1737,24 @@ Final-source original refresh uses /tmp/systemless-marathon-color-display-comple
 callback, normal wait). The final Super Mines -after.ppm was inspected and is
 byte-identical to the preceding indexed-foundation checkpoint. These refreshes
 use the completed visible-color-window composition code.
+
+
+### Default-directory selection
+
+Original Marathon v1.2 68K now passes real PBHSetVol ($A215) after its directory
+queries. It proceeds to OpenRFPerm ($A9C4), PC $010023C6, on the actual color
+profile with the existing asset-volume snapshot. Initial evidence:
+/tmp/systemless-marathon-setvol-first.txt; final-source refresh:
+/tmp/systemless-marathon-setvol-final.txt. Resource-file opening must install a
+real parsed resource map and preserve file/handle ownership; a returned file
+reference alone will not satisfy the next milestone. No title/menu or gameplay
+acceptance is claimed. EV's known Monitor Tool error and PPC gaps remain separate.
+
+Final-source refresh: /tmp/systemless-marathon-setvol-complete.txt confirms
+OpenRFPerm ($A9C4), PC $010023C6; /tmp/systemless-ev-setvol-complete.txt retains
+Monitor Tool ID -4/ModalDialog ($A991), PC $000260B4. Super Mines again reopens its
+1,972-byte game, completes one actual sound callback and returns to normal wait
+at $0100C798. Its final screenshot was inspected and its -after.ppm is byte-for-byte
+identical to the preceding color-display checkpoint. Evidence:
+/tmp/systemless-mines-setvol-complete.txt. Native-window presentation remains
+unverified; no new native smoke pass is claimed.

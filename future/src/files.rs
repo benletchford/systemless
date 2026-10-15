@@ -63,6 +63,7 @@ pub struct Files {
     next_node: u32,
     revision: u64,
     working: BTreeMap<i16, (u32, u32)>,
+    default_directory: working::DefaultDirectory,
 }
 impl Files {
     pub(crate) fn revision(&self) -> u64 {
@@ -84,6 +85,7 @@ impl Files {
             next_node: 17,
             revision: 0,
             working: BTreeMap::new(),
+            default_directory: working::DefaultDirectory::default(),
         }
     }
     /// A classic HFS Str31, passed as raw Macintosh bytes by the host boundary.
@@ -407,7 +409,11 @@ impl Files {
         } else {
             0
         };
-        let parent = self.parent(volume, parent);
+        let parent = if hierarchical {
+            self.parent(volume, parent)
+        } else {
+            self.classic_parent(volume)
+        };
         let name_ptr = GuestPtr(u32::from_be_bytes(header[18..22].try_into().unwrap()));
         let input_name = if parent.is_ok() && !self.name.is_empty() && index <= 0 {
             Self::name_input(memory, name_ptr)?
@@ -469,7 +475,14 @@ impl Files {
         let index = i16::from_be_bytes(header[28..30].try_into().unwrap());
         let directory = u32::from_be_bytes(header[48..52].try_into().unwrap());
         let name_ptr = GuestPtr(u32::from_be_bytes(header[18..22].try_into().unwrap()));
-        let parent = self.parent(volume, directory);
+        let parent = self.parent(
+            volume,
+            if directory == 0 && matches!(volume, -1 | 1) {
+                2
+            } else {
+                directory
+            },
+        );
         let input_name = if parent.is_ok() && !self.name.is_empty() && index == 0 {
             Self::name_input(memory, name_ptr)?
         } else {

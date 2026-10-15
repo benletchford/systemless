@@ -225,7 +225,7 @@ impl Dialog {
             let top = i32::from(request.point[0]).clamp(menu + 8, g.height as i32 - HEIGHT - 8);
             let mut directory = p
                 .files
-                .directory_view(2)
+                .directory_view(p.files.default_directory())
                 .map_err(|_| bad("Standard File application volume is unavailable"))?;
             if open.is_some() {
                 directory.entries.retain(|e| e.directory);

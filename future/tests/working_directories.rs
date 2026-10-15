@@ -11,7 +11,15 @@ const NAME: GuestPtr = GuestPtr(0x50000100);
 fn app() -> LoadedApplication {
     let f = support::pef_program(
         &[0x4e800020],
-        &[b"PBOpenWDSync", b"PBCloseWDSync", b"PBGetWDInfoSync"],
+        &[
+            b"PBOpenWDSync",
+            b"PBCloseWDSync",
+            b"PBGetWDInfoSync",
+            b"PBSetVolSync",
+            b"PBHSetVolSync",
+            b"PBGetVolSync",
+            b"PBHGetVolSync",
+        ],
         0,
     );
     let mut a = LoadedApplication::pef(&f.bytes, None).unwrap();
@@ -21,7 +29,11 @@ fn app() -> LoadedApplication {
         .unwrap();
     a.runtime
         .memory
-        .map(GuestPtr(0x51000000), vec![0xa2, 0x60], Permissions::RX)
+        .map(
+            GuestPtr(0x51000000),
+            vec![0xa2, 0x60, 0xa0, 0x15, 0xa2, 0x15, 0xa0, 0x14, 0xa2, 0x14],
+            Permissions::RX,
+        )
         .unwrap();
     a
 }
@@ -58,7 +70,18 @@ fn call(a: &mut LoadedApplication, cpu: Architecture, op: WorkingOp) -> i16 {
     let stack = STACK_BASE + 0x8000;
     a.runtime.memory.write(GuestPtr(stack), &[0x5a; 8]).unwrap();
     if cpu == Architecture::M68k {
-        a.runtime.cpu = Cpu::new(cpu, 0x51000000, stack);
+        let offset = match op {
+            WorkingOp::Set {
+                hierarchical: false,
+            } => 2,
+            WorkingOp::Set { hierarchical: true } => 4,
+            WorkingOp::Current {
+                hierarchical: false,
+            } => 6,
+            WorkingOp::Current { hierarchical: true } => 8,
+            _ => 0,
+        };
+        a.runtime.cpu = Cpu::new(cpu, 0x51000000 + offset, stack);
         let Cpu::M68k(c) = &mut a.runtime.cpu else {
             panic!()
         };
@@ -67,7 +90,7 @@ fn call(a: &mut LoadedApplication, cpu: Architecture, op: WorkingOp) -> i16 {
                 WorkingOp::Open => 1,
                 WorkingOp::Close => 2,
                 WorkingOp::Info => 7,
-                WorkingOp::Current { .. } => panic!("current-volume routes have dedicated tests"),
+                WorkingOp::Current { .. } | WorkingOp::Set { .. } => 0,
             };
         c.dar[8] = PB.0;
         c.dar[1] = 0x34567890;
@@ -76,7 +99,14 @@ fn call(a: &mut LoadedApplication, cpu: Architecture, op: WorkingOp) -> i16 {
             WorkingOp::Open => 0,
             WorkingOp::Close => 1,
             WorkingOp::Info => 2,
-            WorkingOp::Current { .. } => panic!("current-volume routes have dedicated tests"),
+            WorkingOp::Set {
+                hierarchical: false,
+            } => 3,
+            WorkingOp::Set { hierarchical: true } => 4,
+            WorkingOp::Current {
+                hierarchical: false,
+            } => 5,
+            WorkingOp::Current { hierarchical: true } => 6,
         };
         let v = a
             .runtime
@@ -402,4 +432,302 @@ fn parameter_faults_publish_no_working_directory_or_partial_info_and_errors_pres
     fresh(&mut a, 0, 0, b"");
     word(&mut a, 26, 2);
     assert_eq!(call(&mut a, Architecture::M68k, WorkingOp::Info), -51);
+}
+
+#[test]
+fn default_selection_changes_real_relative_files_and_distinguishes_classic_and_hierarchical_queries(
+) {
+    let mut a = app();
+    let saves = directory(&mut a, b"Saves");
+    let other = directory(&mut a, b"Other");
+    fresh(&mut a, -1, saves, b"");
+    long(&mut a, 28, 0x46555452);
+    assert_eq!(call(&mut a, Architecture::M68k, WorkingOp::Open), 0);
+    let wd = reference(&a);
+    fresh(&mut a, wd, other, b"");
+    assert_eq!(
+        call(
+            &mut a,
+            Architecture::PowerPc,
+            WorkingOp::Set { hierarchical: true }
+        ),
+        0
+    );
+    assert_eq!(a.runtime.process.files.default_directory(), saves);
+    fresh(&mut a, 0, 0, b"");
+    assert_eq!(
+        call(
+            &mut a,
+            Architecture::M68k,
+            WorkingOp::Current { hierarchical: true }
+        ),
+        0
+    );
+    assert_eq!(get(&a, 48), saves);
+    assert_eq!(reference(&a), wd);
+    assert_eq!(get(&a, 28), 0x46555452);
+    fresh(&mut a, 0, 0, b"");
+    assert_eq!(
+        call(
+            &mut a,
+            Architecture::PowerPc,
+            WorkingOp::Current {
+                hierarchical: false
+            }
+        ),
+        0
+    );
+    assert_eq!(reference(&a), -1);
+    fresh(&mut a, 0, 0, b"Game");
+    assert_eq!(
+        a.runtime
+            .process
+            .files
+            .io(
+                &mut a.runtime.memory,
+                PB,
+                Op::Create {
+                    hierarchical: false
+                }
+            )
+            .unwrap(),
+        0
+    );
+    fresh(&mut a, -1, saves, b"Game");
+    assert_eq!(
+        a.runtime
+            .process
+            .files
+            .file_info(&mut a.runtime.memory, PB, true)
+            .unwrap(),
+        0
+    );
+    fresh(&mut a, -1, 0, b"Game");
+    assert_eq!(
+        a.runtime
+            .process
+            .files
+            .file_info(&mut a.runtime.memory, PB, false)
+            .unwrap(),
+        -43
+    );
+    fresh(&mut a, -1, 0, b"Game");
+    assert_eq!(
+        a.runtime
+            .process
+            .files
+            .file_info(&mut a.runtime.memory, PB, true)
+            .unwrap(),
+        0
+    );
+    fresh(&mut a, -1, 0, b"");
+    word(&mut a, 28, -1);
+    assert_eq!(
+        a.runtime
+            .process
+            .files
+            .catalog_info(&mut a.runtime.memory, PB)
+            .unwrap(),
+        0
+    );
+    assert_eq!(get(&a, 48), 2);
+    fresh(&mut a, 0, 0, b"");
+    word(&mut a, 28, -1);
+    assert_eq!(
+        a.runtime
+            .process
+            .files
+            .catalog_info(&mut a.runtime.memory, PB)
+            .unwrap(),
+        0
+    );
+    assert_eq!(get(&a, 48), saves);
+    fresh(&mut a, -1, 0, b"");
+    word(&mut a, 28, 1);
+    assert_eq!(
+        a.runtime
+            .process
+            .files
+            .catalog_info(&mut a.runtime.memory, PB)
+            .unwrap(),
+        0
+    );
+    assert_eq!(get(&a, 100), 2);
+    fresh(&mut a, 0, 0, b"");
+    word(&mut a, 28, 1);
+    assert_eq!(
+        a.runtime
+            .process
+            .files
+            .catalog_info(&mut a.runtime.memory, PB)
+            .unwrap(),
+        0
+    );
+    assert_eq!(get(&a, 100), saves);
+    fresh(&mut a, -1, other, b"");
+    assert_eq!(
+        call(
+            &mut a,
+            Architecture::M68k,
+            WorkingOp::Set { hierarchical: true }
+        ),
+        0
+    );
+    fresh(&mut a, 0, 0, b"Game");
+    assert_eq!(
+        a.runtime
+            .process
+            .files
+            .file_info(&mut a.runtime.memory, PB, true)
+            .unwrap(),
+        -43
+    );
+    fresh(&mut a, wd, 0, b"");
+    assert_eq!(
+        call(
+            &mut a,
+            Architecture::M68k,
+            WorkingOp::Set {
+                hierarchical: false
+            }
+        ),
+        0
+    );
+    fresh(&mut a, 0, 0, b"");
+    long(&mut a, 18, NAME.0);
+    assert_eq!(
+        call(
+            &mut a,
+            Architecture::PowerPc,
+            WorkingOp::Current {
+                hierarchical: false
+            }
+        ),
+        0
+    );
+    assert_eq!(reference(&a), wd);
+    assert_eq!(a.runtime.memory.read(NAME, 6).unwrap(), b"\x05Saves");
+}
+#[test]
+fn full_paths_override_bad_references_and_failed_selection_preserves_default_and_parameter_fields()
+{
+    let mut a = app();
+    let folder = directory(&mut a, b"Folder");
+    fresh(&mut a, -32001, 0xdeadbeef, b"Application Volume:Folder:");
+    assert_eq!(
+        call(
+            &mut a,
+            Architecture::M68k,
+            WorkingOp::Set { hierarchical: true }
+        ),
+        0
+    );
+    assert_eq!(a.runtime.process.files.default_directory(), folder);
+    for (volume, dir, name, error) in [
+        (-32001, 0, &b""[..], -35),
+        (-1, 0, &b":Missing:"[..], -43),
+        (-1, 16, &b""[..], -43),
+        (-1, 0, &b"Other Volume:"[..], -35),
+    ] {
+        fresh(&mut a, volume, dir, name);
+        let before = a.runtime.memory.read(PB, 52).unwrap().to_vec();
+        assert_eq!(
+            call(
+                &mut a,
+                Architecture::PowerPc,
+                WorkingOp::Set { hierarchical: true }
+            ),
+            error
+        );
+        let after = a.runtime.memory.read(PB, 52).unwrap();
+        assert_eq!(&after[..16], &before[..16]);
+        assert_eq!(&after[18..], &before[18..]);
+        assert_eq!(a.runtime.process.files.default_directory(), folder);
+    }
+    fresh(&mut a, 0, 2, b"");
+    long(&mut a, 18, 0x60000000);
+    assert!(a
+        .runtime
+        .process
+        .files
+        .working_directory(
+            &mut a.runtime.memory,
+            PB,
+            WorkingOp::Set { hierarchical: true }
+        )
+        .is_err());
+    assert_eq!(a.runtime.process.files.default_directory(), folder);
+    let mut readonly = vec![0; 52];
+    support::w16(&mut readonly, 22, 0xffff);
+    support::w32(&mut readonly, 48, 2);
+    a.runtime
+        .memory
+        .map(GuestPtr(0x60000000), readonly.clone(), Permissions::RX)
+        .unwrap();
+    assert!(a
+        .runtime
+        .process
+        .files
+        .working_directory(
+            &mut a.runtime.memory,
+            GuestPtr(0x60000000),
+            WorkingOp::Set { hierarchical: true }
+        )
+        .is_err());
+    assert_eq!(a.runtime.process.files.default_directory(), folder);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(0x60000000), 52).unwrap(),
+        readonly
+    );
+    fresh(&mut a, -32001, 0, b"application volume:");
+    assert_eq!(
+        call(
+            &mut a,
+            Architecture::PowerPc,
+            WorkingOp::Set {
+                hierarchical: false
+            }
+        ),
+        0
+    );
+    assert_eq!(a.runtime.process.files.default_directory(), 2);
+}
+#[test]
+fn selected_directory_survives_closed_wd_is_protected_and_is_not_serialized_as_volume_state() {
+    let mut a = app();
+    let folder = directory(&mut a, b"Folder");
+    fresh(&mut a, -1, folder, b"");
+    assert_eq!(call(&mut a, Architecture::PowerPc, WorkingOp::Open), 0);
+    let wd = reference(&a);
+    fresh(&mut a, wd, 0, b"");
+    assert_eq!(
+        call(
+            &mut a,
+            Architecture::M68k,
+            WorkingOp::Set {
+                hierarchical: false
+            }
+        ),
+        0
+    );
+    fresh(&mut a, wd, 0, b"");
+    assert_eq!(call(&mut a, Architecture::PowerPc, WorkingOp::Close), 0);
+    assert_eq!(a.runtime.process.files.default_directory(), folder);
+    fresh(&mut a, -1, 2, b"Folder");
+    assert_eq!(
+        a.runtime
+            .process
+            .files
+            .io(&mut a.runtime.memory, PB, Op::Delete { hierarchical: true })
+            .unwrap(),
+        -47
+    );
+    let image = a.runtime.process.files.export_volume().unwrap();
+    let mut b = app();
+    b.runtime.process.files.restore_volume(&image).unwrap();
+    assert_eq!(b.runtime.process.files.default_directory(), 2);
+    assert_eq!(
+        b.runtime.process.files.directory_view(folder).unwrap().name,
+        b"Folder"
+    );
 }

@@ -634,6 +634,12 @@ impl Abi {
             b"PBGetFPosSync" => Some(Service::FileIo(crate::files::Op::GetPosition)),
             b"PBSetFPosSync" => Some(Service::FileIo(crate::files::Op::SetPosition)),
             b"PBFlushFileSync" => Some(Service::FileIo(crate::files::Op::Flush)),
+            b"PBSetVolSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Set {
+                hierarchical: false,
+            })),
+            b"PBHSetVolSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Set {
+                hierarchical: true,
+            })),
             b"PBGetVolSync" => Some(Service::WorkingDirectory(
                 crate::files::WorkingOp::Current {
                     hierarchical: false,
@@ -2607,6 +2613,15 @@ impl Abi {
                     Reply::StackLong(GuestPtr(result)),
                 ))
             }
+            0xa015 | 0xa215 => Ok((
+                Call::WorkingDirectory {
+                    pointer: GuestPtr(c.dar[8]),
+                    op: crate::files::WorkingOp::Set {
+                        hierarchical: opcode == 0xa215,
+                    },
+                },
+                Reply::M68kFileError,
+            )),
             0xa014 | 0xa214 => Ok((
                 Call::WorkingDirectory {
                     pointer: GuestPtr(c.dar[8]),

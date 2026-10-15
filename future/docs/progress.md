@@ -5056,3 +5056,60 @@ Final acceptance of the completed display and visible-color-window implementatio
 /tmp/systemless-color-display-complete-examples.txt. Sequential changed-source
 formatting and staged whitespace checks pass. Native-window smoke timeouts remain
 explicitly unpassed; full game acceptance and the rebuild are not complete.
+
+
+## Real default-volume and directory selection
+
+Files owns process-local selected directory/reference/owner state. PBSetVolSync,
+PBHSetVolSync and native $A015/$A215 use the same implementation and real catalog
+paths. Selection is published only after mapped writable PB validation, frozen
+name input and successful resolution. Hierarchical full paths override an invalid
+reference, WD references ignore stale directory IDs, and missing volumes/folders
+produce actual errors. Classic volume selection returns to the root. Current
+queries preserve classic/hierarchical reference and optional-name distinctions.
+
+Default relative operations and Standard File initial browsing use the selected
+folder. Classic explicit physical-volume references retain root behavior; WD
+references retain their folders. Explicit-volume catalog queries with zero
+directory ID address the root, whereas default queries use the current folder.
+A selected directory cannot be deleted; closing its WD clears the reference and
+retains physical directory identity. Default selection is process state, not a
+catalog modification or persisted volume setting. Multi-volume selection,
+asynchronous completion, high-level wrappers and broader search fallback remain
+unfinished. No success stub or host path was introduced.
+
+Three new actual-CPU tests verify cross-CPU selection, real relative file effects,
+classic/HFS/catalog distinctions, full/partial names, invalid selections, guarded
+and readonly PBs, WD lifetime, selected-directory protection and fresh-process
+volume restoration. Existing WD tests remain. The public-header working.c fixture
+now checks selection/query and default file lookup through SC68K and MrC/PPC,
+including stale ioWDDirID with a WD reference and resetting to root. All compiler
+artifacts rebuilt successfully: /tmp/systemless-setvol-sdk-build.txt.
+
+Original Marathon 68K passes PBHSetVol and next requests OpenRFPerm ($A9C4),
+PC $010023C6. Its resource-map opening/selection/lifetime slice is next; preserve
+real file access, parsed maps, resource identity and error behavior across both
+CPUs. The initial trace is /tmp/systemless-marathon-setvol-first.txt; refresh is
+/tmp/systemless-marathon-setvol-final.txt. Neither original game is playable.
+The full rebuild goal stays active. Final validation is recorded below after
+selected file/resource/compiler/UI acceptance completes; the preceding full
+all-target checkpoint remains 488 passes, not a new full-suite claim.
+
+Final-source refresh: /tmp/systemless-marathon-setvol-complete.txt confirms
+OpenRFPerm ($A9C4), PC $010023C6; /tmp/systemless-ev-setvol-complete.txt retains
+Monitor Tool ID -4/ModalDialog ($A991), PC $000260B4. Super Mines again reopens its
+1,972-byte game, completes one actual sound callback and returns to normal wait
+at $0100C798. Its final screenshot was inspected and its -after.ppm is byte-for-byte
+identical to the preceding color-display checkpoint. Evidence:
+/tmp/systemless-mines-setvol-complete.txt. Native-window presentation remains
+unverified; no new native smoke pass is claimed.
+
+Final selected acceptance passes 103 tests, zero failures and zero skips, exit 0:
+/tmp/systemless-setvol-complete-acceptance.txt. This covers library, volume/file
+I/O and metadata, working directories, persistence, resource files, Standard File,
+trap patches and all 30 freshly rebuilt compiler/CLI cases. The final explicit-
+volume catalog test passes on the corrected code; intermediate failures are not
+final evidence. Strict all-target lint exits 0:
+/tmp/systemless-setvol-verified-lint.txt. Sequential staged Rust formatting and
+whitespace checks pass. No new full all-target suite is claimed; its preceding
+checkpoint remains 488 passes. Neither game nor the rebuild is complete.
