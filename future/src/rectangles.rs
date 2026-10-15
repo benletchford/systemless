@@ -46,3 +46,10 @@ pub fn contains(memory: &Memory, point: [i16; 2], rectangle: GuestPtr) -> Result
         && i32::from(point[1]) >= rect.left
         && i32::from(point[1]) < rect.right)
 }
+
+/// A rectangle is empty when either signed dimension is nonpositive. Compare
+/// endpoints directly: subtraction in a guest word can overflow for wide rects.
+pub fn empty(memory: &Memory, rectangle: GuestPtr) -> Result<bool> {
+    let rect = crate::quickdraw::read_rect(memory, rectangle)?;
+    Ok(rect.bottom <= rect.top || rect.right <= rect.left)
+}

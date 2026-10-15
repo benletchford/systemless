@@ -470,6 +470,11 @@ impl Runtime {
                                 0,
                             )?;
                         }
+                        Call::EmptyRect(rectangle) => {
+                            let value =
+                                u32::from(crate::rectangles::empty(&self.memory, rectangle)?);
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
                         Call::PointInRect { point, rectangle } => {
                             let inside =
                                 crate::rectangles::contains(&self.memory, point, rectangle)?;
@@ -1359,6 +1364,7 @@ impl Runtime {
                         | Call::Decimal(_)
                         | Call::StillDown
                         | Call::FindWindow { .. }
+                        | Call::EmptyRect(_)
                         | Call::PointInRect { .. }
                         | Call::GetMouse(_)
                         | Call::SystemTask

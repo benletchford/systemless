@@ -420,3 +420,9 @@ dialogKind returns true for null and foreign update events, and restoring
 userKind returns false. The acceptance host requires all four calls before the
 success marker. This verifies classification and ABI behavior, not dialog
 construction or DialogSelect.
+
+
+The window guests require four EmptyRect results: all-zero, full signed-coordinate
+range, zero height and a one-pixel rectangle. The host acceptance requires all
+four public calls on both compiler targets, then the existing final success
+marker. Native Boolean guards are also checked by the focused Rust fixtures.

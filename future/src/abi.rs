@@ -17,6 +17,7 @@ pub enum Service {
     StillDown,
     FindWindow,
     PtInRect,
+    EmptyRect,
     GetMouse,
     Random,
     TETextBox,
@@ -316,6 +317,7 @@ impl Abi {
             b"Gestalt" => Some(Service::Gestalt),
             b"StillDown" => Some(Service::StillDown),
             b"FindWindow" => Some(Service::FindWindow),
+            b"EmptyRect" => Some(Service::EmptyRect),
             b"PtInRect" => Some(Service::PtInRect),
             b"GetMouse" => Some(Service::GetMouse),
             b"SystemTask" => Some(Service::SystemTask),
@@ -1088,6 +1090,18 @@ impl Abi {
                     Reply::StackWord(GuestPtr(result)),
                 ))
             }
+            0xa8ae => {
+                let rectangle = GuestPtr(memory.u32(GuestPtr(sp))?);
+                let result = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("EmptyRect stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 1)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::EmptyRect(rectangle),
+                    Reply::StackByte(GuestPtr(result)),
+                ))
+            }
             0xa8ad => {
                 let args = memory.read(GuestPtr(sp), 8)?;
                 let rectangle = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
@@ -1134,6 +1148,7 @@ impl Abi {
                 let result = sp
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("IsDialogEvent stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 1)?;
                 c.dar[15] = result;
                 Ok((
                     Call::Dialog(crate::dialogs::Op::IsEvent(event)),
@@ -2160,6 +2175,7 @@ impl Abi {
                 point: [(c.gpr[3] >> 16) as i16, c.gpr[3] as i16],
                 destination: GuestPtr(c.gpr[4]),
             },
+            Service::EmptyRect => Call::EmptyRect(GuestPtr(c.gpr[3])),
             Service::PtInRect => Call::PointInRect {
                 point: [(c.gpr[3] >> 16) as i16, c.gpr[3] as i16],
                 rectangle: GuestPtr(c.gpr[4]),

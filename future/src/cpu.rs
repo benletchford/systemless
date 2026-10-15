@@ -33,6 +33,7 @@ pub enum Call {
         handle: u32,
         destination: GuestPtr,
     },
+    EmptyRect(GuestPtr),
     PointInRect {
         point: [i16; 2],
         rectangle: GuestPtr,

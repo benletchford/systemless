@@ -1559,3 +1559,13 @@ EventRecord storage must still be readable. The shared query has no graphics,
 allocation or event-consumption dependency. DialogSelect and dialog construction
 remain separate unsupported services. See Apple's [IsDialogEvent contract](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-427.html);
 legacy Systemless filters foreign updates/outside mouse clicks differently.
+
+
+EmptyRect is an allocation-free shared rectangle query over the live eight-byte
+Rect. Signed endpoint comparisons avoid guest-word subtraction overflow, so a
+rectangle spanning -32768..32767 remains nonempty. It preserves guest error
+globals and source bytes, accepts readable immutable storage, and faults on
+truncated/unmapped input. Native $A8AE pops a four-byte pointer and writes only
+the canonical Boolean result byte; PPC returns 0/1 in r3. EmptyRect and
+IsDialogEvent preflight the native result byte before changing the stack pointer.
+The predicate follows Apple's [rectangle definition](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-19.html).

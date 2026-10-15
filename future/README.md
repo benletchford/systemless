@@ -161,10 +161,12 @@ fallbacks now supply CURS 1..4 with normal shared handle lifetimes and applicati
 precedence. Shared GetResInfo now reports live resource ID/type/name on both CPUs.
 The original passes TILE 1101 metadata and decoding. A shared initialized calendar
 clock now supplies its date-based seed and advances with execution/host ticks;
-Random itself is unchanged. The original draws a populated board, then stops at
-EmptyRect ($A8AE) after routing a window update through shared IsDialogEvent.
-Region emptying, origin/region shifts and mouse-aware waits pass the earlier
-update/cursor path. Dialog event classification reads live front-window visibility
-and windowKind through both CPU adapters. Gameplay and control callbacks remain
-unfinished. Next: rectangle emptiness and original board interaction. The full
-rebuild stays active.
+Random itself is unchanged. The original draws a populated board, then returns to
+a normal event wait after routing the update through shared IsDialogEvent and
+EmptyRect. A real press/release at (30,65) changes upper-left board cells and
+returns to the event wait without a service fault. This verifies one basic board
+interaction; broader gameplay, menu-driven lifecycle and callbacks remain
+unfinished. Region/coordinate changes, mouse-region waits and dialog event
+classification share live guest state across both CPUs. A follow-up File-menu
+click stops at EnableItem ($A939); menu interaction is the next milestone. The
+full rebuild stays active.

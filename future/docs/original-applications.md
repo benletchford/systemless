@@ -519,3 +519,37 @@ The later requested click (30,65) is correctly skipped, so no board interaction
 or gameplay acceptance is claimed. Next: shared rectangle emptiness through both
 ABIs, rerun the main-loop update and verify an actual board interaction. The
 full rebuild goal remains active.
+
+
+### EmptyRect continuation and first board interaction (2026-10-15)
+
+With shared EmptyRect, the original now finishes the two-million-boundary settle
+after chooser confirmation and returns Waiting(10). Delivering a real
+press/release at global (30,65), then another bounded two-million tail, returns
+Waiting(10) again without a service fault. The app routes FindWindow, converts
+the input to local (24,22), checks controls and redraws the board. Visually
+inspected 512x342 readbacks show previously covered upper-left cells become
+visible cells/numbers. The complete image changes 4680 pixels including cursor
+movement, with half-open bounds [22,55,411,236). This is one basic board
+interaction, not full gameplay or lifecycle acceptance.
+
+Reproduction uses the recorded private raw fork and:
+
+```sh
+SYSTEMLESS_PROBE_TAIL_BUDGET=2000000 SYSTEMLESS_PROBE_SETTLE_AFTER_CLICK=3 \
+cargo run --manifest-path future/Cargo.toml --example probe_mouse -- \
+  /path/to/Super-Mines.raw-rsrc /tmp/systemless-mines-emptyrect \
+  256 171 145 150 402 231 30 65
+```
+
+No native System 7 comparison is required under the user's authorization. The
+private executable and screenshots remain outside the repository. Full gameplay,
+menu-driven lifecycle, original PPC compatibility and real Mixed Mode remain
+unfinished; the rebuild goal stays active.
+
+A follow-up run appends a File-menu press/release at global (35,10) after that
+board click. The game routes it through FindWindow and looks up menu ID 2, then
+faults at EnableItem ($A939), post-trap PC $01005200, SP $0080FE6E. The native
+frame requests item 4 on handle $100020BC. This is the next executable milestone:
+shared live menu enable/disable flags, then normal menu tracking/selection and
+application shutdown. The File menu has not yet opened or selected a command.

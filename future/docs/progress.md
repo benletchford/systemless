@@ -3153,3 +3153,53 @@ Validation: all 325 tests pass (268 default and 57 optional GPU/MPW), with zero
 failures or skips. Strict all-target Clippy, sequential changed-file formatting
 and whitespace checks pass. The rebuilt MPW window guests pass on both real CPUs.
 The original's bounded run reaches EmptyRect before the planned board click.
+
+
+### Rectangle emptiness and first original board interaction (2026-10-15)
+
+EmptyRect ($A8AE / PPC import) now uses a shared allocation-free signed endpoint
+predicate over the live Rect. It treats zero/inverted dimensions as empty without
+overflowing subtraction for the full signed coordinate range. Both real CPU
+routes return canonical 0/1, preserve error globals and source bytes, and need
+no port or graphics initialization. Native Boolean result publication is one
+byte only. The adapter preflights that destination before popping its pointer;
+the same preflight was added to IsDialogEvent after checking adjacent adapters.
+
+Three new default tests cover signed extremes, inverted/zero/unit dimensions,
+read-only inputs, bad memory, live changes, both ABIs, register/error guards,
+protected results and stack overflow. Rebuilt MPW window guests require four
+public calls with exact Boolean values before their existing success marker.
+The shared behavior matches Apple's [rectangle definition](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-19.html)
+and legacy Systemless's endpoint predicate; its legacy word-sized Boolean write
+is deliberately not reproduced.
+
+The original Super Mines sequence (256,171), (145,150), (402,231), then a
+2,000,000-boundary settle slice now reaches Waiting(10) without a service fault.
+A press/release at (30,65), followed by a second bounded tail, also reaches
+Waiting(10). The guest calls FindWindow, converts that real global point to local
+(24,22), checks controls, then draws changed board cells. Visual inspection of
+512x342 readbacks before/after that click confirms the upper-left board area
+changes from covered cells to visible cells/numbers. Whole-image comparison
+finds 4680 changed pixels (including cursor movement), bounds [22,55,411,236).
+This proves one basic board interaction, not complete gameplay, flagging,
+win/loss or application shutdown. No private binary or screenshot is committed.
+The full rebuild goal remains active.
+
+A follow-up run appends a File-menu press/release at global (35,10) after that
+board click. The game routes it through FindWindow and looks up menu ID 2, then
+faults at EnableItem ($A939), post-trap PC $01005200, SP $0080FE6E. The native
+frame requests item 4 on handle $100020BC. This is the next executable milestone:
+shared live menu enable/disable flags, then normal menu tracking/selection and
+application shutdown. The File menu has not yet opened or selected a command.
+
+The next menu slice should preserve the per-item enable mask when toggling item
+zero (the whole menu); items 1..31 have individual bits and items beyond 31
+cannot be individually disabled. Primary contracts: Apple's
+[EnableItem](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-150.html) and
+[DisableItem](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-151.html).
+
+Validation: all 328 tests pass (271 default and 57 optional GPU/MPW), with zero
+failures or skips. Strict all-target Clippy, sequential changed-file formatting
+and whitespace checks pass. Rebuilt MPW window guests validate EmptyRect on
+both CPUs. Original readbacks verify one changed board area after a real click,
+and the follow-up File-menu run identifies EnableItem as the next lifecycle gap.

@@ -197,3 +197,132 @@ fn point_in_rectangle_rejects_invalid_result_storage_before_stack_pop() {
     assert_eq!(cpu.dar[15], 0x1000);
     assert!(rectangles::contains(&m, [0, 0], GuestPtr(0x2000)).is_err());
 }
+
+#[test]
+fn empty_rect_uses_signed_endpoints_without_overflow_and_only_reads_storage() {
+    for (edges, expected) in [
+        ([0i16, 0, 0, 0], true),
+        ([1, 1, 2, 2], false),
+        ([-32768, -32768, 32767, 32767], false),
+        ([32767, -32768, -32768, 32767], true),
+        ([-32768, 32767, 32767, -32768], true),
+        ([-1, -1, -1, 1], true),
+        ([-1, 0, 1, 0], true),
+        ([-2, -2, -1, -1], false),
+    ] {
+        let mut m = Memory::default();
+        let bytes: Vec<u8> = edges.into_iter().flat_map(i16::to_be_bytes).collect();
+        m.map(GuestPtr(0x1000), bytes.clone(), Permissions::RX)
+            .unwrap();
+        assert_eq!(rectangles::empty(&m, GuestPtr(0x1000)).unwrap(), expected);
+        assert_eq!(m.read(GuestPtr(0x1000), 8).unwrap(), bytes);
+        assert!(rectangles::empty(&m, GuestPtr(0x1001)).is_err());
+        assert!(rectangles::empty(&m, GuestPtr(0xfffffff8)).is_err());
+    }
+}
+#[test]
+fn empty_rect_is_live_and_returns_one_boolean_byte_through_both_cpu_routes() {
+    let fixture = support::pef_program(&[0x4e800020], &[b"EmptyRect"], 16);
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    let tv = app
+        .runtime
+        .memory
+        .u32(GuestPtr(app.info.toc_or_a5 + 8))
+        .unwrap();
+    let gate = app.runtime.memory.u32(GuestPtr(tv)).unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa8, 0xae], Permissions::RX)
+        .unwrap();
+    let sp = STACK_BASE + 0x8000;
+    for (edges, expected) in [
+        ([0i16, 0, 0, 0], 1),
+        ([-32768, -32768, 32767, 32767], 0),
+        ([4, 2, 3, 8], 1),
+    ] {
+        let bytes: Vec<_> = edges.into_iter().flat_map(i16::to_be_bytes).collect();
+        app.runtime.memory.write(GuestPtr(0x300), &bytes).unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(0x220), &(-108i16).to_be_bytes())
+            .unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(0xa60), &(-192i16).to_be_bytes())
+            .unwrap();
+        app.runtime.process.mem_error = -111;
+        app.runtime.cpu = Cpu::new(Architecture::PowerPc, gate, sp);
+        if let Cpu::PowerPc(c) = &mut app.runtime.cpu {
+            c.gpr[3] = 0x300;
+            c.gpr[4] = 0xaabbccdd;
+        }
+        assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+        let Cpu::PowerPc(c) = &app.runtime.cpu else {
+            panic!()
+        };
+        assert_eq!(c.gpr[3], expected);
+        assert_eq!(c.gpr[4], 0xaabbccdd);
+        let mut frame = 0x300u32.to_be_bytes().to_vec();
+        frame.extend([0xa5; 4]);
+        app.runtime.memory.write(GuestPtr(sp), &frame).unwrap();
+        app.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000000, sp);
+        if let Cpu::M68k(c) = &mut app.runtime.cpu {
+            c.dar[0] = 0x12345678;
+        }
+        assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+        let Cpu::M68k(c) = &app.runtime.cpu else {
+            panic!()
+        };
+        assert_eq!(c.dar[15], sp + 4);
+        assert_eq!(c.dar[0], 0x12345678);
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(sp + 4), 4).unwrap(),
+            [expected as u8, 0xa5, 0xa5, 0xa5]
+        );
+        assert_eq!(app.runtime.memory.read(GuestPtr(0x300), 8).unwrap(), bytes);
+        assert_eq!(app.runtime.process.mem_error, -111);
+        assert_eq!(
+            app.runtime.memory.u16(GuestPtr(0x220)).unwrap(),
+            (-108i16) as u16
+        );
+        assert_eq!(
+            app.runtime.memory.u16(GuestPtr(0xa60)).unwrap(),
+            (-192i16) as u16
+        );
+    }
+    assert_ne!(
+        systemless_future::traps::address(0xae, true),
+        systemless_future::traps::UNIMPLEMENTED
+    );
+    app.runtime
+        .memory
+        .write(GuestPtr(sp), &0xfffffff8u32.to_be_bytes())
+        .unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000000, sp);
+    assert!(app.runtime.advance(1).is_err());
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(sp + 4), 4).unwrap(),
+        [1, 0xa5, 0xa5, 0xa5]
+    );
+}
+
+#[test]
+fn boolean_rectangle_and_dialog_queries_reject_bad_results_before_popping_stack() {
+    let mut memory = Memory::default();
+    memory
+        .map(GuestPtr(0x1000), vec![0; 8], Permissions::RX)
+        .unwrap();
+    memory
+        .map(GuestPtr(0xfffffffc), vec![0; 4], Permissions::RW)
+        .unwrap();
+    for trap in [0xa8ae, 0xa97f] {
+        for sp in [0x1000, 0xfffffffc] {
+            let mut cpu = Cpu::new(Architecture::M68k, 0, sp);
+            let Cpu::M68k(c) = &mut cpu else { panic!() };
+            c.dar[0] = 0x12345678;
+            assert!(Abi::trap(trap, c, &memory).is_err());
+            assert_eq!(c.dar[15], sp);
+            assert_eq!(c.dar[0], 0x12345678);
+        }
+    }
+}

@@ -46,6 +46,16 @@ int main(void) {
     if (IsDialogEvent(&event)!=true) return 102;
     ((WindowPeek)first)->windowKind=userKind;
     if (IsDialogEvent(&event)!=false) return 103;
+    {
+        Rect probe={0,0,0,0};
+        if (EmptyRect(&probe)!=true) return 104;
+        probe.top=-32768;probe.left=-32768;probe.bottom=32767;probe.right=32767;
+        if (EmptyRect(&probe)!=false) return 105;
+        probe.bottom=-32768;
+        if (EmptyRect(&probe)!=true) return 106;
+        probe.top=1;probe.left=1;probe.bottom=2;probe.right=2;
+        if (EmptyRect(&probe)!=false) return 107;
+    }
     GetPort(&old);
     if (old!=(GrafPtr)first || first->portRect.bottom!=20 || first->portRect.right!=20) return 3;
     savedMenuHeight=*(short*)0xbaa; *(short*)0xbaa=20;

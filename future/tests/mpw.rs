@@ -458,6 +458,15 @@ fn compiled_plain_window_lifecycle_has_record_and_screen_parity() {
                 .services
                 .calls
                 .iter()
+                .filter(|c| matches!(c, Call::EmptyRect(_)))
+                .count(),
+            4
+        );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
                 .filter(|c| matches!(c, Call::NewWindow(_)))
                 .count(),
             4
