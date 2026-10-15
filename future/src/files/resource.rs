@@ -16,9 +16,7 @@ impl Files {
     ) -> std::result::Result<u32, i16> {
         let split = name.iter().rposition(|&c| c == b':');
         let leaf = split.map_or(name, |i| &name[i + 1..]);
-        if !matches!(volume, -1..=1) {
-            return Err(-35);
-        }
+        let parent = self.parent(volume, parent)?;
         if self.name.is_empty() {
             return Err(-43);
         }

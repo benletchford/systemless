@@ -249,6 +249,10 @@ pub enum Call {
         op: crate::files::Op,
     },
     FcbInfo(GuestPtr),
+    WorkingDirectory {
+        pointer: GuestPtr,
+        op: crate::files::WorkingOp,
+    },
     CatalogInfo(GuestPtr),
     FileInfo {
         pointer: GuestPtr,

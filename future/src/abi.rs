@@ -194,6 +194,7 @@ pub enum Service {
     FileIo(crate::files::Op),
     FileIoWithAsync(crate::files::Op),
     FcbInfo,
+    WorkingDirectory(crate::files::WorkingOp),
     CatalogInfo,
     FileInfo(bool),
     CreateDirectory,
@@ -526,6 +527,9 @@ impl Abi {
             b"PBGetFPosSync" => Some(Service::FileIo(crate::files::Op::GetPosition)),
             b"PBSetFPosSync" => Some(Service::FileIo(crate::files::Op::SetPosition)),
             b"PBFlushFileSync" => Some(Service::FileIo(crate::files::Op::Flush)),
+            b"PBOpenWDSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Open)),
+            b"PBCloseWDSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Close)),
+            b"PBGetWDInfoSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Info)),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
             b"PBGetCatInfoSync" => Some(Service::CatalogInfo),
             b"PBGetFInfoSync" => Some(Service::FileInfo(false)),
@@ -2130,6 +2134,17 @@ impl Abi {
                 },
                 Reply::M68kFileError,
             )),
+            0xa260 if matches!(c.dar[0] as u16, 1 | 2 | 7) => Ok((
+                Call::WorkingDirectory {
+                    pointer: GuestPtr(c.dar[8]),
+                    op: match c.dar[0] as u16 {
+                        1 => crate::files::WorkingOp::Open,
+                        2 => crate::files::WorkingOp::Close,
+                        _ => crate::files::WorkingOp::Info,
+                    },
+                },
+                Reply::M68kFileError,
+            )),
             0xa260 if c.dar[0] as u16 == 0x1a => Ok((
                 Call::FileIo {
                     pointer: GuestPtr(c.dar[8]),
@@ -2775,6 +2790,10 @@ impl Abi {
                 }
             }
             Service::FileIo(op) => Call::FileIo {
+                pointer: GuestPtr(c.gpr[3]),
+                op,
+            },
+            Service::WorkingDirectory(op) => Call::WorkingDirectory {
                 pointer: GuestPtr(c.gpr[3]),
                 op,
             },

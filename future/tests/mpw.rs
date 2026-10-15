@@ -997,3 +997,43 @@ fn compiled_menu_tracking_waits_for_host_motion_and_returns_selection_on_both_cp
         );
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture; see fixtures/mpw/README.md"]
+fn compiled_working_directories_create_files_in_the_selected_folder_on_both_cpus() {
+    use systemless_future::files::WorkingOp;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("working.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("working.ppc")).unwrap();
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, Some(&code)).unwrap(),
+    ] {
+        assert_eq!(app.runtime.advance(20_000).unwrap(), Stop::Exit(0));
+        for (op, count) in [
+            (WorkingOp::Open, 2),
+            (WorkingOp::Info, 2),
+            (WorkingOp::Close, 1),
+        ] {
+            assert_eq!(
+                app.runtime
+                    .services
+                    .calls
+                    .iter()
+                    .filter(|c| matches!(c,Call::WorkingDirectory{op:got,..} if *got==op))
+                    .count(),
+                count
+            );
+        }
+        assert_eq!(
+            &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],
+            &[
+                Call::PostEvent {
+                    what: 7,
+                    message: 0x600d
+                },
+                Call::Exit(0)
+            ]
+        );
+    }
+}

@@ -124,7 +124,10 @@ SetPort(nil) supports saved-port restoration while drawing without a port fails.
 
 Shared process-local file I/O now creates mutable data/resource forks, enforces
 access permissions and supports reading/writing, positions, EOF, metadata and
-close/reopen on both CPUs. Loaded application forks stay read-only; persistence
+close/reopen on both CPUs. Working-directory references now carry real folder
+identity through classic file calls and explicit HFS directory overrides. Both
+CPU routes open/query/close those references against the same catalog. Loaded
+application forks stay read-only; persistence
 and full filesystem compatibility remain pending.
 
 GetMHandle/GetMenuHandle now searches live regular/hierarchical lists without

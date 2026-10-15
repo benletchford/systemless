@@ -7,7 +7,9 @@ use crate::{
 use std::collections::BTreeMap;
 mod io;
 mod resource;
+mod working;
 pub use io::Op;
+pub use working::WorkingOp;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fork {
     Data,
@@ -55,6 +57,7 @@ pub struct Files {
     files: BTreeMap<u32, File>,
     directories: BTreeMap<u32, Directory>,
     next_node: u32,
+    working: BTreeMap<i16, (u32, u32)>,
 }
 impl Files {
     pub(crate) fn application(data: &[u8], resource: Option<&[u8]>) -> Self {
@@ -67,6 +70,7 @@ impl Files {
             files: BTreeMap::new(),
             directories: BTreeMap::new(),
             next_node: 17,
+            working: BTreeMap::new(),
         }
     }
     /// A classic HFS Str31, passed as raw Macintosh bytes by the host boundary.
@@ -270,7 +274,7 @@ impl Files {
         memory.validate_write(pointer, 52)?;
         let volume = i16::from_be_bytes(pb[22..24].try_into().unwrap());
         let parent = u32::from_be_bytes(pb[48..52].try_into().unwrap());
-        let parent = if parent == 0 { 2 } else { parent };
+        let parent = self.parent(volume, parent);
         let mut name = Self::name_input(
             memory,
             GuestPtr(u32::from_be_bytes(pb[18..22].try_into().unwrap())),
@@ -282,11 +286,12 @@ impl Files {
         let leaf = split.map_or(name.as_slice(), |at| &name[at + 1..]);
         let target = if self.name.is_empty() {
             Err(-43)
-        } else if !matches!(volume, -1..=1) {
-            Err(-35)
+        } else if let Err(error) = parent {
+            Err(error)
         } else if leaf.is_empty() || leaf.len() > 31 || leaf.contains(&0) {
             Err(-37)
         } else {
+            let parent = parent.unwrap();
             let resolved = match split {
                 Some(0) => Ok(parent),
                 Some(at) => self.path(&name[..=at], parent),
@@ -383,33 +388,37 @@ impl Files {
         let parent = if hierarchical {
             u32::from_be_bytes(header[48..52].try_into().unwrap())
         } else {
-            2
+            0
         };
-        let parent = if parent == 0 { 2 } else { parent };
+        let parent = self.parent(volume, parent);
         let name_ptr = GuestPtr(u32::from_be_bytes(header[18..22].try_into().unwrap()));
-        let selected = if !matches!(volume, -1..=1) {
-            Err(-35)
-        } else if self.name.is_empty() {
-            Err(-43)
-        } else if index > 0 {
-            if !self.directory_exists(parent) {
-                Err(-120)
-            } else {
-                self.children(parent, true)
-                    .get(index as usize - 1)
-                    .copied()
-                    .ok_or(-43)
-            }
+        let input_name = if parent.is_ok() && !self.name.is_empty() && index <= 0 {
+            Self::name_input(memory, name_ptr)?
         } else {
-            self.path(&Self::name_input(memory, name_ptr)?, parent)
-                .and_then(|id| {
+            Vec::new()
+        };
+        let selected = parent.and_then(|parent| {
+            if self.name.is_empty() {
+                Err(-43)
+            } else if index > 0 {
+                if !self.directory_exists(parent) {
+                    Err(-120)
+                } else {
+                    self.children(parent, true)
+                        .get(index as usize - 1)
+                        .copied()
+                        .ok_or(-43)
+                }
+            } else {
+                self.path(&input_name, parent).and_then(|id| {
                     if self.file(id).is_some() {
                         Ok(id)
                     } else {
                         Err(-43)
                     }
                 })
-        };
+            }
+        });
         let error: i16 = selected.as_ref().err().copied().unwrap_or(0);
         memory.validate_write(GuestPtr(pointer.0 + 12), 6)?;
         if error != 0 {
@@ -443,27 +452,32 @@ impl Files {
         let index = i16::from_be_bytes(header[28..30].try_into().unwrap());
         let directory = u32::from_be_bytes(header[48..52].try_into().unwrap());
         let name_ptr = GuestPtr(u32::from_be_bytes(header[18..22].try_into().unwrap()));
-        let parent = if directory == 0 { 2 } else { directory };
-        let selected = if !matches!(volume, -1..=1) {
-            Err(-35)
-        } else if self.name.is_empty() {
-            Err(-43)
-        } else if index < 0 {
-            if self.directory_exists(parent) {
-                Ok(parent)
-            } else {
-                Err(-120)
-            }
-        } else if index == 0 {
-            self.path(&Self::name_input(memory, name_ptr)?, parent)
-        } else if !self.directory_exists(parent) {
-            Err(-120)
+        let parent = self.parent(volume, directory);
+        let input_name = if parent.is_ok() && !self.name.is_empty() && index == 0 {
+            Self::name_input(memory, name_ptr)?
         } else {
-            self.children(parent, false)
-                .get(index as usize - 1)
-                .copied()
-                .ok_or(-43)
+            Vec::new()
         };
+        let selected = parent.and_then(|parent| {
+            if self.name.is_empty() {
+                Err(-43)
+            } else if index < 0 {
+                if self.directory_exists(parent) {
+                    Ok(parent)
+                } else {
+                    Err(-120)
+                }
+            } else if index == 0 {
+                self.path(&input_name, parent)
+            } else if !self.directory_exists(parent) {
+                Err(-120)
+            } else {
+                self.children(parent, false)
+                    .get(index as usize - 1)
+                    .copied()
+                    .ok_or(-43)
+            }
+        });
         let error: i16 = selected.as_ref().err().copied().unwrap_or(0);
         let node = selected.unwrap_or(2);
         let root = self.file(node).is_none();
@@ -558,14 +572,14 @@ impl Files {
         let reference = word(24);
         let selected = if index == 0 {
             self.open.get_key_value(&reference)
-        } else if index > 0 && matches!(volume, -1..=1) {
+        } else if index > 0 && self.parent(volume, 0).is_ok() {
             self.open.iter().nth(index as usize - 1)
         } else {
             None
         };
         let error = if index < 0 {
             -50
-        } else if index > 0 && !matches!(volume, -1..=1) {
+        } else if index > 0 && self.parent(volume, 0).is_err() {
             -35
         } else if selected.is_none() {
             -51

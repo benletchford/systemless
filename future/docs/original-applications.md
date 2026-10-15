@@ -911,3 +911,59 @@ classic reply/file identity and the actual save/reload path, while continuing
 focused board-redraw investigation. Neither a silent cancellation stub nor an
 unverified framebuffer workaround satisfies those requirements. The complete
 rebuild, original PPC compatibility and production Mixed Mode remain active.
+
+
+### Working-directory identity for the Standard File save path
+
+The original SFPutFile reply must carry a working-directory reference, not just
+volume -1. The shared File Manager now owns a bounded process-local WD table.
+References identify an existing catalog folder and user ID; repeated opens for
+the same pair reuse identity, while distinct owners get distinct references.
+Closing invalidates the directory reference without closing access paths already
+opened through it. Volume references close harmlessly. The model allocates up
+to 128 references in the classic negative WD range, returning tmwdoErr (-121)
+on exhaustion. This is an explicit runtime bound, not a native capacity claim.
+
+PBOpenWDSync/PBCloseWDSync/PBGetWDInfoSync and native HFSDispatch selectors
+1/2/7 reach the same Files implementation. Parameter blocks are big-endian,
+outputs are checked before table mutation, and replies publish both ioResult
+and the correct signed CPU error result. The info query reports volume -1,
+actual directory and owner, optional Pascal volume name and indexed entries
+from the one virtual volume. Invalid indexes/references, unknown volumes and
+missing folders report errors. Process and guest Memory/Resource errors are
+preserved; asynchronous completion and the high-level PPC WD wrappers are not
+implemented by aliases or stubs.
+
+Classic create/open/fork and file-info calls now follow a WD's folder. HFS calls
+use that folder when directory ID is zero, and an explicit nonzero directory
+ID overrides it. Directory creation, catalog lookup/enumeration and FCB volume
+queries resolve the same references. Existing relative/absolute path behavior,
+fork permissions and catalog ownership remain shared. The default volume still
+means the existing application-volume root; GetVol/SetVol/default-directory
+selection and multiple volumes remain separate work.
+
+Three default tests exercise both real CPUs, shared identity, path-based opens,
+owner separation, actual file creation in a selected folder, classic/HFS lookup,
+explicit root override, catalog enumeration, names/errors, table exhaustion and
+reuse, access-path survival after CloseWD, and output faults without publication.
+The public-header working.c fixture creates Saves, opens its WD twice, creates
+and opens Game there, verifies the root does not contain Game, queries the WD,
+closes it and verifies its stale reference fails. Both compiled architectures
+reach the explicit success marker and Exit(0).
+
+This is the required file-identity foundation for the next cooperative Standard
+File save dialog. SFPutFile UI/selection/cancellation and successful original
+save/reload are still unfinished; the original currently still stops at Pack3
+selector 1. Preserve the full save-dialog milestone, including visible controls,
+filename editing, folder/catalog navigation, replacement confirmation, checked
+SFReply publication and real file operations. A silent cancellation or root-only
+volume substitute does not meet that milestone. The full rebuild remains active.
+
+Contracts: Apple's [original Standard File reply](https://leopard-adc.pepas.com/documentation/mac/Files/Files-316.html),
+[File Manager reference](https://leopard-adc.pepas.com/documentation/mac/pdf/Files/File_Manager.pdf),
+pp. 2-201–2-204, and [Standard File Q&A](https://leopard-adc.pepas.com/technotes/fl/fl_525.html).
+
+The original no-save Quit sequence was rerun after WD-aware file resolution
+changed. It still completes all final file/resource cleanup and Exit(0) on the
+No button's release. Evidence: /tmp/systemless-mines-wd-quit-probe.txt. This is
+a regression check, not successful Standard File save-dialog acceptance.

@@ -33,16 +33,15 @@ impl Files {
         hierarchical: bool,
     ) -> Result<std::result::Result<u32, i16>> {
         let volume = word(pb, 22);
-        let parent = if hierarchical { long(pb, 48) } else { 2 };
-        let parent = if parent == 0 { 2 } else { parent };
+        let parent = if hierarchical { long(pb, 48) } else { 0 };
         let name = Self::name_input(memory, GuestPtr(long(pb, 18)))?;
-        Ok(if !matches!(volume, -1..=1) {
-            Err(-35)
-        } else if self.name.is_empty() {
-            Err(-43)
-        } else {
-            self.path(&name, parent)
-        })
+        Ok(self.parent(volume, parent).and_then(|parent| {
+            if self.name.is_empty() {
+                Err(-43)
+            } else {
+                self.path(&name, parent)
+            }
+        }))
     }
     fn resize_fork(
         &mut self,
@@ -185,8 +184,7 @@ impl Files {
         }
         if let Op::Create { hierarchical } = op {
             let volume = word(pb, 22);
-            let parent = if hierarchical { long(pb, 48) } else { 2 };
-            let parent = if parent == 0 { 2 } else { parent };
+            let parent = if hierarchical { long(pb, 48) } else { 0 };
             let name = Self::name_input(memory, GuestPtr(long(pb, 18)))?;
             let created = memory.u32(GuestPtr(0x20c))?;
             return Ok(

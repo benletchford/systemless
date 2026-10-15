@@ -461,3 +461,10 @@ verify the public long result and reach their existing success/exit checks.
 The window guests also call GetWMgrPort twice through the public headers, check
 stable nonnil identity and full-screen bounds, and verify the caller port stays
 nil before continuing their existing lifecycle/pixel acceptance on both CPUs.
+
+
+working.c uses the public File Manager/Devices headers to exercise WD creation,
+repeat identity, queries and close/stale errors. It creates and opens a file using
+only the working-directory reference, verifies that file is absent at the volume
+root, and requires the success marker and Exit(0) on both compiled architectures.
+Run the ignored compiled_working_directories test after generating the forks.
