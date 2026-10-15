@@ -1634,3 +1634,11 @@ callback, reopens the 1,972-byte game and returns to its normal event wait.
 /tmp/systemless-mines-offscreen.txt and after.ppm/png; the inspected board pixels
 match /tmp/systemless-mines-status-stereo-after.ppm byte for byte. Native and
 win/loss acceptance remain separate.
+
+
+### Current-map lookup refresh
+
+EV 1.0.5 68K executes twelve Get1Resource calls for RBlt/MBlt IDs and reaches
+GetNewDialog (A97C), PC $0002577C. The unconsumed frame specifies dialog 3000,
+nil storage and front-window placement. /tmp/systemless-ev-get1-next.txt. The
+resource lookup barrier is removed; no dialog/title/gameplay has been verified.

@@ -1438,6 +1438,12 @@ impl Runtime {
                             self.process.resource_info(&mut self.memory, request)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::GetCurrentResource { kind, id } => {
+                            let v =
+                                self.process
+                                    .get_current_resource(&mut self.memory, kind, id)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
+                        }
                         Call::GetResource { kind, id } => {
                             let v = self.process.get_resource(&mut self.memory, kind, id)?;
                             reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
@@ -1717,6 +1723,7 @@ impl Runtime {
                             | Call::Region { .. }
                             | Call::HandleSize(_)
                             | Call::SetHandleSize { .. }
+                            | Call::GetCurrentResource { .. }
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
                     ) {
@@ -1733,6 +1740,7 @@ impl Runtime {
                         ) | Call::CreateResourceFile(_)
                             | Call::FontInfo(_)
                             | Call::ResourceInfo(_)
+                            | Call::GetCurrentResource { .. }
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
                             | Call::DetachResource(_)
@@ -1842,6 +1850,7 @@ impl Runtime {
                         | Call::HandleSize(_)
                         | Call::SetHandleSize { .. }
                         | Call::ResourceInfo(_)
+                        | Call::GetCurrentResource { .. }
                         | Call::GetResource { .. }
                         | Call::SoundChannel(_)
                         | Call::SoundImmediate { .. }

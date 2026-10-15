@@ -783,6 +783,24 @@ impl Process {
             Ok(0)
         }
     }
+    /// Current application map only. Check its entry before consulting cached
+    /// identity, since the full search may already have loaded a fallback cursor.
+    pub fn get_current_resource(
+        &mut self,
+        memory: &mut Memory,
+        kind: [u8; 4],
+        id: i16,
+    ) -> Result<u32> {
+        if self.resources.get(kind, id).is_none() {
+            self.res_error = if self.resources.entries().any(|r| r.kind == kind) {
+                -192
+            } else {
+                0
+            };
+            return Ok(0);
+        }
+        self.get_resource(memory, kind, id)
+    }
     pub fn get_resource(&mut self, memory: &mut Memory, kind: [u8; 4], id: i16) -> Result<u32> {
         self.res_error = 0;
         if let Some(handle) = self.resource_handles.get(&(kind, id)) {

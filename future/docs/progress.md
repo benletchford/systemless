@@ -4650,3 +4650,38 @@ $0100C798. The restored board was visually inspected; its pixels match the prior
 sound/status checkpoint exactly. Evidence: /tmp/systemless-mines-offscreen.txt
 and after.ppm/png; comparison against /tmp/systemless-mines-status-stereo-after.ppm.
 This does not establish native window/audio or win/loss acceptance.
+
+
+## 2026-10-16: current-map resource lookup
+
+Get1Resource ($A81F / InterfaceLib) now searches the installed application map
+before consulting shared cached identity. Found resources use the existing loader,
+flags, release/reload behavior and handle cache. It cannot see the built-in cursor
+fallback provider, even when GetResource has already cached that cursor. Missing
+IDs in an existing current-map type report resNotFound (-192); absent types return
+nil with noErr, as specified by Apple. The existing $A820 Get1NamedResource remains
+separate. All four native ID/name lookup frames now validate writable result slots
+before popping arguments or invoking shared loading.
+
+Both actual CPUs test shared application identity, signed IDs, live bytes,
+release/reload, cached fallback exclusion and missing-type versus missing-ID
+errors. Public-header guests verify native trap/import mappings and handle identity.
+The new fallback-allocation fixture case runs after the existing pointer-layout
+checks: inserting it earlier legitimately changed heap fragmentation and invalidated
+that fixture's expected adjacent-block arrangement. No allocator assertion was
+removed or weakened. All 47 focused resource/compiler/CLI tests pass with zero
+failures or skips; strict all-target lint, sequential changed-file formatting
+and whitespace checks pass. Logs: /tmp/systemless-get1-final-acceptance.txt and
+/tmp/systemless-get1-final-lint.txt. The preceding full suite passed 461 tests;
+no full-suite rerun is claimed for this resource extension.
+
+Original EV now executes twelve Get1Resource requests for RBlt/MBlt resources
+and proceeds to GetNewDialog ($A97C), PC $0002577C. Its native frame requests dialog
+3000, nil storage and the front-window position (-1). Evidence:
+/tmp/systemless-ev-get1-next.txt. Next inspect the original DLOG/DITL and implement
+real dialog-record/item loading, ownership and drawing; do not synthesize a
+successful dialog pointer. No title/menu/gameplay acceptance is established.
+Multiple open resource maps, UseResFile and resource-load policy changes remain
+unfinished; this extension uses the current installed application map. Full
+Marathon and rebuild requirements remain active.
+Source: [Apple Get1Resource](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-51.html).

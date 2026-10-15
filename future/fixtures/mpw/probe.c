@@ -41,6 +41,9 @@ int main(void) {
 #endif
     resource = GetResource('DATA', 128);
     if (resource == 0 || GetHandleSize(resource) != 3) return 1;
+    if (Get1Resource('DATA',128)!=resource || ResError()) return 47;
+    if (Get1Resource('DATA',-1) || ResError()!=resNotFound) return 48;
+    if (Get1Resource('zzzz',1) || ResError()) return 49;
     allocated = NewHandleClear(12);
     if (allocated == 0 || **allocated != 0) return 2;
     ReleaseResource(allocated);
@@ -92,6 +95,8 @@ int main(void) {
     if (MemError() || GetPtrSize(fixed)!=1 || fixed[0]!=42) return 36;
     DisposePtr(fixed);
     if (MemError()) return 37;
+    /* Keep the fallback allocation after the pointer-layout checks. */
+    if (!GetResource('CURS',1) || Get1Resource('CURS',1) || ResError()) return 50;
     ExitToShell();
     return 0;
 }

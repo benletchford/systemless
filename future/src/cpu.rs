@@ -255,6 +255,10 @@ pub enum Call {
         handle: u32,
         size: u32,
     },
+    GetCurrentResource {
+        kind: [u8; 4],
+        id: i16,
+    },
     GetResource {
         kind: [u8; 4],
         id: i16,

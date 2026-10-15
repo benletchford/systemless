@@ -231,7 +231,7 @@ recording, codecs, disk/double-buffer playback remain unfinished. The PowerPC
 NumVersion structure uses the actual caller-provided return buffer. Both original
 68K games pass the earlier sound-version call; EV passes offscreen graphics-device
 attribute updates and inverse-table construction, and selects its offscreen
-devices. It next needs current-map resource lookup (Get1Resource). Marathon reports
+devices. It now passes current-map resource lookup and next requests GetNewDialog. Marathon reports
 that Color QuickDraw is required. Super Mines' recorded interaction
 is automated/offscreen; live desktop and win/loss acceptance remain incomplete.
 
@@ -277,3 +277,7 @@ Selected offscreen GDevice state now drives GetGDevice, Index2Color and default
 inverse-table construction, while main/list display identity remains separate.
 Empty paint geometry returns without pixel access; nonempty requests retain
 bitmap checks. General indexed destinations and full color acceptance remain open.
+
+Get1Resource now uses the installed application map and shares real resource
+identity/loading with GetResource while excluding cached fallback cursors. Dynamic
+resource-map chains and UseResFile remain unfinished.

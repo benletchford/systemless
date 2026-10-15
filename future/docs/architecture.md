@@ -2335,3 +2335,15 @@ bitmap. Nonempty paints retain all existing bitmap/format checks. GPU regression
 verify unchanged guest and GPU state through actual callers, plus continued
 failure for a nonempty request targeting the same empty bitmap. This corrects
 initialization behavior; it does not implement 8-bit destination rendering.
+
+
+### Current-map ID lookup
+
+Get1Resource checks the installed application-map entry before sharing the normal
+resource loader/cache. A cached fallback CURS handle is not a member of that map.
+A missing ID in an existing type reports -192; an absent type reports noErr with
+a nil handle. Native $A81F and PPC Get1Resource decode to one current-map request;
+$A820 remains the named variant. Both full/current ID/name native adapters check
+result-slot write permission before stack mutation or allocation. Dynamic resource
+map chains and UseResFile remain a later extension of the same process model.
+[Apple Get1Resource contract](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-51.html).

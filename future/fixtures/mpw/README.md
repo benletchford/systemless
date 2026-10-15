@@ -598,3 +598,7 @@ resolution. It permits private allocation beyond the documented table portion.
 
 The device fixture selects a GDevice duplicated through HandToHand, verifies
 GetGDevice versus main/list identity, reads its palette and restores the display.
+
+`probe.c` verifies Get1Resource identity and missing-ID/type errors, plus exclusion
+of a cursor already loaded through the fallback search. The cursor allocation is
+last so it does not disturb the earlier pointer-layout assertions.
