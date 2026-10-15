@@ -67,7 +67,9 @@ fn read(memory: &Memory, process: &mut Process, h: u32) -> Result<Record> {
         return Err(bad("invalid polygon size"));
     }
     let points = b[10..size]
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|p| {
             (
                 i16::from_be_bytes(p[2..4].try_into().unwrap()),

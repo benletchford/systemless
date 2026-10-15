@@ -251,7 +251,7 @@ mod tests {
             expanded(b"^0 ^1 ^2 ^3 ^4 ^^0", &parameters).unwrap(),
             b"^1 X  Z ^4 ^^1"
         );
-        let huge = [b'^', b'0'].repeat(129);
+        let huge = b"^0".repeat(129);
         let parameters = std::array::from_fn(|_| {
             let mut s = vec![255];
             s.extend([b'A'; 255]);

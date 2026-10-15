@@ -25,12 +25,7 @@ impl Dialog {
             } else {
                 m.read(request.types, request.count as usize * 4)?
             };
-            Some(
-                bytes
-                    .chunks_exact(4)
-                    .map(|b| b.try_into().unwrap())
-                    .collect(),
-            )
+            Some(bytes.as_chunks::<4>().0.to_vec())
         };
         // SFGetFile's prompt argument is ignored. Stable private Pascal strings
         // are snapshotted by start before it allocates anything.

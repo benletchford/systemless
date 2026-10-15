@@ -125,8 +125,10 @@ impl Manager {
             let bytes = memory.read(text, length)?;
             let starts_bytes = memory.read(GuestPtr(record.0 + 96), (count + 1) * 2)?;
             let starts: Vec<usize> = starts_bytes
-                .chunks_exact(2)
-                .map(|b| usize::from(u16::from_be_bytes(b.try_into().unwrap())))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| usize::from(u16::from_be_bytes(*b)))
                 .collect();
             if starts[0] != 0
                 || starts[count] != length
@@ -138,7 +140,9 @@ impl Manager {
                 let p = pointer(memory, process, owned[3], ((count + 1) * 4) as u32)?;
                 memory
                     .read(p, (count + 1) * 4)?
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .take(count)
                     .map(|b| i16::from_be_bytes(b[..2].try_into().unwrap()))
                     .collect::<Vec<_>>()
@@ -707,7 +711,9 @@ impl Manager {
         let line_data = pointer(memory, process, handle, (96 + (count + 2) * 2) as u32)?;
         let starts = memory
             .read(GuestPtr(line_data.0 + 96), (count + 1) * 2)?
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|b| usize::from(u16::from_be_bytes([b[0], b[1]])))
             .collect::<Vec<_>>();
         if starts.first() != Some(&0)

@@ -510,7 +510,7 @@ fn draw_dialog_uses_live_text_parameters_icons_pictures_and_both_cpu_void_routes
     let drawn = screen(&a);
     assert_ne!(drawn, baseline);
     let rgba = a.runtime.graphics.as_ref().unwrap().read_rgba().unwrap();
-    for (i, pixel) in rgba.chunks_exact(4).enumerate() {
+    for (i, pixel) in rgba.as_chunks::<4>().0.iter().enumerate() {
         let x = i % 512;
         let y = i / 512;
         let black = drawn[y * 64 + x / 8] & (0x80 >> (x % 8)) != 0;

@@ -126,7 +126,7 @@ impl Menus {
             return Err(bad("foreign menu tracking state is unsupported"));
         }
         let mut titles = Vec::new();
-        for (i, e) in list[6..6 + regular].chunks_exact(6).enumerate() {
+        for (i, e) in list[6..6 + regular].as_chunks::<6>().0.iter().enumerate() {
             let handle = u32::from_be_bytes(e[..4].try_into().unwrap());
             let bytes = data(m, p, handle)?;
             let menu = Record::parse(&bytes)?;
@@ -295,7 +295,9 @@ impl Menus {
             return Err(bad("menu icons and hierarchical tracking are unsupported"));
         }
         if colors
-            .chunks_exact(30)
+            .as_chunks::<30>()
+            .0
+            .iter()
             .any(|e| e[2..4] != [0; 2] && (e[..2] == title.id.to_be_bytes() || e[..2] == [0; 2]))
         {
             return Err(bad("per-item menu colors are unsupported"));

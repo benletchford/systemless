@@ -70,7 +70,7 @@ fn parse(m: &Memory, base: u32, size: usize) -> Result<std::result::Result<Resou
             if end + 2 > size {
                 return Ok(Err(-206));
             }
-            for entry in data[4..end].chunks_exact(6) {
+            for entry in data[4..end].as_chunks::<6>().0 {
                 configuration.push((
                     i16::from_be_bytes(entry[..2].try_into().unwrap()),
                     u32::from_be_bytes(entry[2..].try_into().unwrap()),
@@ -89,8 +89,8 @@ fn parse(m: &Memory, base: u32, size: usize) -> Result<std::result::Result<Resou
         return Ok(Err(-206));
     }
     let mut commands = VecDeque::new();
-    for raw in data[at + 2..command_end].chunks_exact(8) {
-        let mut bytes: [u8; 8] = raw.try_into().unwrap();
+    for raw in data[at + 2..command_end].as_chunks::<8>().0 {
+        let mut bytes: [u8; 8] = *raw;
         let code = u16::from_be_bytes(bytes[..2].try_into().unwrap());
         let value = u32::from_be_bytes(bytes[4..].try_into().unwrap());
         if code & 0x8000 != 0 {

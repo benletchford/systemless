@@ -93,7 +93,9 @@ fn incoming(bytes: &[u8]) -> Result<Vec<u8>> {
         return Err(bad("invalid mctb entry count or storage"));
     }
     Ok(bytes[2..]
-        .chunks_exact(30)
+        .as_chunks::<30>()
+        .0
+        .iter()
         .filter(|e| e[..2] != (-99i16).to_be_bytes())
         .flatten()
         .copied()
@@ -103,9 +105,11 @@ fn merge(mut current: Vec<u8>, incoming: &[u8]) -> Result<Vec<u8>> {
     if !current.len().is_multiple_of(30) || current.len() > 30720 {
         return Err(bad("invalid live menu color table"));
     }
-    for entry in incoming.chunks_exact(30) {
+    for entry in incoming.as_chunks::<30>().0 {
         if let Some(old) = current
-            .chunks_exact_mut(30)
+            .as_chunks_mut::<30>()
+            .0
+            .iter_mut()
             .find(|old| old[..4] == entry[..4])
         {
             old.copy_from_slice(entry);
@@ -119,7 +123,12 @@ fn merge(mut current: Vec<u8>, incoming: &[u8]) -> Result<Vec<u8>> {
     Ok(current)
 }
 fn background(colors: &[u8]) -> Result<u8> {
-    let Some(entry) = colors.chunks_exact(30).find(|entry| entry[..4] == [0; 4]) else {
+    let Some(entry) = colors
+        .as_chunks::<30>()
+        .0
+        .iter()
+        .find(|entry| entry[..4] == [0; 4])
+    else {
         return Ok(0);
     };
     match &entry[22..28] {
@@ -131,7 +140,9 @@ fn background(colors: &[u8]) -> Result<u8> {
 fn title_foreground(colors: &[u8], id: i16, bar_background: u8) -> Result<u8> {
     let entry = |id: i16| {
         colors
-            .chunks_exact(30)
+            .as_chunks::<30>()
+            .0
+            .iter()
             .find(|e| e[..2] == id.to_be_bytes() && e[2..4] == [0; 2])
     };
     let mono = |rgb: &[u8]| match rgb {
@@ -289,7 +300,7 @@ impl Menus {
                 let list = self.read_list(memory, process)?;
                 let regular = usize::from(u16::from_be_bytes(list[..2].try_into().unwrap()));
                 for entries in [&list[12 + regular..], &list[6..6 + regular]] {
-                    for entry in entries.chunks_exact(6) {
+                    for entry in entries.as_chunks::<6>().0 {
                         let handle = u32::from_be_bytes(entry[..4].try_into().unwrap());
                         let menu = data(memory, process, handle)?;
                         let bytes: [u8; 2] = menu
@@ -483,7 +494,7 @@ impl Menus {
             let baseline = bar.top
                 + (height - i32::from(font.metrics.ascent) - i32::from(font.metrics.descent)) / 2
                 + i32::from(font.metrics.ascent);
-            for entry in list[6..6 + regular].chunks_exact(6) {
+            for entry in list[6..6 + regular].as_chunks::<6>().0 {
                 let bytes = data(
                     memory,
                     process,

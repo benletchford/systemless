@@ -16,7 +16,7 @@ impl Menus {
         validate_list(list)?;
         let regular = usize::from(u16::from_be_bytes(list[..2].try_into().unwrap()));
         for partition in [&list[6..6 + regular], &list[12 + regular..]] {
-            for entry in partition.chunks_exact(6) {
+            for entry in partition.as_chunks::<6>().0 {
                 let h = u32::from_be_bytes(entry[..4].try_into().unwrap());
                 let bytes = data(memory, process, h)?;
                 Record::parse(&bytes)?;

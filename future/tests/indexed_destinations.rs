@@ -117,7 +117,7 @@ fn unpack(a: &LoadedApplication, depth: u16, stride: usize) -> Vec<u8> {
 }
 fn check_gpu(a: &LoadedApplication, indices: &[u8], colors: &[[u16; 3]]) {
     let pixels = a.runtime.graphics.as_ref().unwrap().read_rgba().unwrap();
-    for (i, rgba) in pixels.chunks_exact(4).enumerate() {
+    for (i, &rgba) in pixels.as_chunks::<4>().0.iter().enumerate() {
         let c = colors[usize::from(indices[i])];
         assert_eq!(
             rgba,

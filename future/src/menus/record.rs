@@ -63,7 +63,9 @@ pub fn bar_ids(bytes: &[u8]) -> Result<Vec<i16>> {
         return Err(Error::Load("invalid MBAR menu count/storage".into()));
     }
     Ok(bytes[2..]
-        .chunks_exact(2)
-        .map(|b| i16::from_be_bytes(b.try_into().unwrap()))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_be_bytes(*b))
         .collect())
 }

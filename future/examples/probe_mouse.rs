@@ -13,7 +13,7 @@ fn screenshot(app: &mut LoadedApplication, path: &Path) -> Result<(), Box<dyn st
     let gpu = app.runtime.graphics.as_ref().unwrap();
     let rgba = gpu.read_rgba()?;
     let mut ppm = format!("P6\n{} {}\n255\n", gpu.width, gpu.height).into_bytes();
-    for pixel in rgba.chunks_exact(4) {
+    for pixel in rgba.as_chunks::<4>().0 {
         ppm.extend(&pixel[..3]);
     }
     std::fs::write(path, ppm)?;
@@ -260,7 +260,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pointer = Pointer::default();
     let first = app.runtime.services.calls.len();
     let mut result = Ok(systemless_future::runtime::Stop::Budget);
-    for (index, coordinates) in args[2..].chunks_exact(2).enumerate() {
+    for (index, coordinates) in args[2..].as_chunks::<2>().0.iter().enumerate() {
         if ticks != 0 {
             elapse(&mut app, ticks)?;
         }
