@@ -14506,7 +14506,7 @@ impl super::TrapDispatcher {
                             );
                             return Some(Err(Error::Halted));
                         }
-                        self.align_window_to_eight_bit_grid(bus, window, front, alignment_rect);
+                        self.align_window_to_eight_bit_grid(bus, cpu, window, front, alignment_rect);
                         cpu.write_reg(Register::A7, sp + 14);
                         cpu.write_reg(Register::D0, 0);
                     }

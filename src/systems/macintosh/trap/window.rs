@@ -2089,9 +2089,10 @@ impl super::TrapDispatcher {
         }
     }
 
-    pub(crate) fn move_window_to_global(
+    pub(crate) fn move_window_to_global<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
+        cpu: &mut C,
         the_window: u32,
         h_global: i16,
         v_global: i16,
@@ -2102,6 +2103,8 @@ impl super::TrapDispatcher {
         }
 
         let old_port_rect = self.window_global_port_rect(bus, the_window);
+        let old_visible = self.window_visible(bus, the_window)
+            .then(|| self.snapshot_window_visibility(bus, the_window));
         let old_structure = if self.window_visible(bus, the_window) {
             self.window_structure_rect(bus, the_window)
         } else {
@@ -2265,9 +2268,14 @@ impl super::TrapDispatcher {
             );
         }
 
-        if self.window_visible(bus, the_window) {
-            let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
-            self.draw_single_window_chrome_inline(bus, the_window, hilited);
+        // Pixels entering from offscreen or previously obscured have no valid
+        // source in the screen copy. Paint their port background before the
+        // update event unless the caller suppressed PaintOne's content erase.
+        // The full-window update above is still queued when PaintWhite is clear.
+        // Inside Macintosh Volume I, I-289, I-296--I-297.
+        if let Some(old_visible) = old_visible {
+            let erase_content = bus.read_word(0x09DC) != 0;
+            self.paint_newly_exposed_window(bus, cpu, the_window, old_visible, true, erase_content);
         }
         if moved_dialog_background.is_some() && old_structure.is_some() {
             let pixels = self.save_dialog_pixels(bus, global_content);
@@ -2288,9 +2296,10 @@ impl super::TrapDispatcher {
     ///
     /// `alignment_rect` is in window coordinates; NIL selects the port bounds.
     /// QuickTime (1993), pp. 3-142--3-143.
-    pub(crate) fn align_window_to_eight_bit_grid(
+    pub(crate) fn align_window_to_eight_bit_grid<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
+        cpu: &mut C,
         the_window: u32,
         front: bool,
         alignment_rect: u32,
@@ -2310,6 +2319,7 @@ impl super::TrapDispatcher {
         let delta = aligned_left - alignment_left;
         self.move_window_to_global(
             bus,
+            cpu,
             the_window,
             (global_port.1 as i32 + delta) as i16,
             global_port.0,
@@ -3873,6 +3883,20 @@ impl super::TrapDispatcher {
         bus.write_long(window + 24, region);
         self.calc_window_vis_region(bus, window);
         bus.write_long(window + 24, saved_vis);
+        // Only visible screen pixels can survive a move or resize. Keep the
+        // snapshot local, including a nonzero SetOrigin (IM:I, I-297).
+        let (_, _, width, height, _) = self.get_screen_params();
+        let (top, left) = self.port_bounds_top_left(bus, window);
+        let screen = Self::alloc_rect_region_handle(
+            bus,
+            Some((top, left, top.saturating_add(height), left.saturating_add(width))),
+        );
+        Self::write_region_boolean_op(
+            bus, region, region, screen, RegionBooleanOp::Intersection,
+        );
+        let screen_ptr = bus.read_long(screen);
+        bus.free(screen_ptr);
+        bus.free(screen);
         region
     }
 
@@ -3887,6 +3911,8 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         window: u32,
         old_visible: u32,
+        accumulate_update: bool,
+        erase_content: bool,
     ) {
         let new_visible = self.snapshot_window_visibility(bus, window);
         Self::write_region_boolean_op(
@@ -3897,28 +3923,32 @@ impl super::TrapDispatcher {
             RegionBooleanOp::Difference,
         );
         if let Some(exposed) = Self::region_handle_rect(bus, old_visible) {
-            let old_port = *self.current_port;
-            let old_gdevice = *self.current_gdevice;
-            let old_clip = bus.read_long(window + 28);
-            let old_vis = bus.read_long(window + 24);
-            bus.write_long(window + 28, old_visible);
-            bus.write_long(window + 24, new_visible);
-            self.set_current_port_state(bus, cpu, window, None);
-            self.draw_rect(
-                cpu,
-                bus,
-                &Rect {
-                    top: exposed.0,
-                    left: exposed.1,
-                    bottom: exposed.2,
-                    right: exposed.3,
-                },
-                ShapeOp::Erase,
-            );
-            bus.write_long(window + 28, old_clip);
-            bus.write_long(window + 24, old_vis);
-            self.set_current_port_state(bus, cpu, old_port, Some(old_gdevice));
-            self.invalidate_window_rect(bus, window, exposed);
+            if erase_content {
+                let old_port = *self.current_port;
+                let old_gdevice = *self.current_gdevice;
+                let old_clip = bus.read_long(window + 28);
+                let old_vis = bus.read_long(window + 24);
+                bus.write_long(window + 28, old_visible);
+                bus.write_long(window + 24, new_visible);
+                self.set_current_port_state(bus, cpu, window, None);
+                self.draw_rect(
+                    cpu,
+                    bus,
+                    &Rect {
+                        top: exposed.0,
+                        left: exposed.1,
+                        bottom: exposed.2,
+                        right: exposed.3,
+                    },
+                    ShapeOp::Erase,
+                );
+                bus.write_long(window + 28, old_clip);
+                bus.write_long(window + 24, old_vis);
+                self.set_current_port_state(bus, cpu, old_port, Some(old_gdevice));
+            }
+            if accumulate_update {
+                self.invalidate_window_rect(bus, window, exposed);
+            }
         }
         if self.window_visible(bus, window) {
             let hilited = bus.read_byte(window + Self::WINDOW_HILITED_OFFSET) != 0;
@@ -4886,7 +4916,7 @@ impl super::TrapDispatcher {
                 let h_global = bus.read_word(sp + 4) as i16;
                 let the_window = bus.read_long(sp + 6);
 
-                self.move_window_to_global(bus, the_window, h_global, v_global, front_flag);
+                self.move_window_to_global(bus, cpu, the_window, h_global, v_global, front_flag);
 
                 cpu.write_reg(Register::A7, sp + 10);
                 Ok(())
@@ -4916,6 +4946,8 @@ impl super::TrapDispatcher {
                     // Capture the old content rect before we resize so
                     // the fUpdate branch can invalidate the diff.
                     let old_content_rect = self.window_content_rect(bus, the_window);
+                    let old_visible = self.window_visible(bus, the_window)
+                        .then(|| self.snapshot_window_visibility(bus, the_window));
                     let old_structure = self.window_visible(bus, the_window)
                         .then(|| self.window_structure_rect(bus, the_window))
                         .flatten();
@@ -4996,6 +5028,14 @@ impl super::TrapDispatcher {
 
                     if let Some(previous) = old_structure {
                         self.repaint_resize_exposure(bus, the_window, previous, global_structure);
+                    }
+
+                    // Paint newly exposed content through QuickDraw so the
+                    // port's background pattern and palette are respected.
+                    // fUpdate controls update-region accumulation, not erasing.
+                    // Inside Macintosh Volume I, I-290, I-296.
+                    if let Some(old_visible) = old_visible {
+                        self.paint_newly_exposed_window(bus, cpu, the_window, old_visible, f_update, true);
                     }
 
                     // fUpdate=TRUE invalidates the newly-exposed area.
@@ -5121,6 +5161,7 @@ impl super::TrapDispatcher {
                             .wrapping_add(mouse.1.wrapping_sub(tracking.start_mouse.1));
                         self.move_window_to_global(
                             bus,
+                            cpu,
                             tracking.window_ptr,
                             new_h,
                             new_v,
@@ -5208,6 +5249,7 @@ impl super::TrapDispatcher {
                             .wrapping_add(mouse.1.wrapping_sub(start_mouse.1));
                         self.move_window_to_global(
                             bus,
+                            cpu,
                             window_ptr,
                             new_h,
                             new_v,
@@ -5845,7 +5887,7 @@ impl super::TrapDispatcher {
                 if the_window != 0 {
                     let old_visible = self.snapshot_window_visibility(bus, the_window);
                     self.track_window_front(bus, the_window);
-                    self.paint_newly_exposed_window(bus, cpu, the_window, old_visible);
+                    self.paint_newly_exposed_window(bus, cpu, the_window, old_visible, true, true);
                     if let Some(content) = self.window_content_rect(bus, the_window) {
                         self.invalidate_window_rect(bus, the_window, content);
                     }
@@ -5902,7 +5944,7 @@ impl super::TrapDispatcher {
                         }
                     }
                     for (window, old_visible) in old_visibility {
-                        self.paint_newly_exposed_window(bus, cpu, window, old_visible);
+                        self.paint_newly_exposed_window(bus, cpu, window, old_visible, true, true);
                     }
                     if let Some(rect) = bounds {
                         // Any window that was behind and is now exposed
