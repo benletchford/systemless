@@ -965,3 +965,450 @@ fn moves_copy_overlapping_pixels_and_selection_visibility_project_activation_slo
     assert_eq!(app.runtime.memory.u32(GuestPtr(0xa64)).unwrap(), 0);
     assert_eq!(app.runtime.memory.u32(GuestPtr(0xa68)).unwrap(), 0);
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter for window creation"]
+fn find_window_matches_live_regions_front_order_and_chrome_on_both_cpus_without_drawing() {
+    let f = pef_program(
+        &[0x4e800020],
+        &[
+            b"InitGraf",
+            b"InitWindows",
+            b"NewWindow",
+            b"FindWindow",
+            b"InitFonts",
+            b"NewControl",
+            b"FindControl",
+        ],
+        512,
+    );
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let data = app.info.toc_or_a5;
+    app.runtime
+        .memory
+        .map(
+            GuestPtr(0x50000000),
+            vec![0xa9, 0x2c, 0xa9, 0x6c],
+            Permissions::RX,
+        )
+        .unwrap();
+    invoke(&mut app, 0, &[data + 330]);
+    invoke(&mut app, 4, &[]);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    app.runtime.graphics = Some(
+        pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
+    );
+    invoke(&mut app, 1, &[]);
+    rect(&mut app, data + 64, 40, 40, 200, 200);
+    app.runtime
+        .memory
+        .write(GuestPtr(data + 80), b"\x04test")
+        .unwrap();
+    let back = invoke(
+        &mut app,
+        2,
+        &[0, data + 64, data + 80, 1, 2, u32::MAX, 0, 0],
+    );
+    rect(&mut app, data + 64, 80, 80, 160, 160);
+    let front = invoke(
+        &mut app,
+        2,
+        &[0, data + 64, data + 80, 1, 4, u32::MAX, 1, 0],
+    );
+    rect(&mut app, data + 64, 10, 10, 30, 40);
+    let button = invoke(
+        &mut app,
+        5,
+        &[front, data + 64, data + 80, 1, 0, 0, 1, 0, 0],
+    );
+    let checkbox = invoke(
+        &mut app,
+        5,
+        &[front, data + 64, data + 80, 1, 0, 0, 1, 1, 0],
+    );
+    // Querying requires no graphics device and never changes current port or order.
+    app.runtime.graphics = None;
+    app.runtime
+        .memory
+        .write(GuestPtr(0xbaa), &20u16.to_be_bytes())
+        .unwrap();
+    let slot = app.runtime.process.ports.unwrap().current_slot;
+    let selected = app.runtime.memory.u32(slot).unwrap();
+    let screen = app.runtime.memory.read(SCREEN, 64 * 342).unwrap().to_vec();
+    let output = data + 100;
+    fn query(app: &mut LoadedApplication, data: u32, point: [i16; 2], part: u16, window: u32) {
+        for arch in [Architecture::M68k, Architecture::PowerPc] {
+            app.runtime.process.mem_error = -108;
+            app.runtime
+                .memory
+                .write(GuestPtr(data + 98), &[0xa5; 8])
+                .unwrap();
+            let packed = ((point[0] as u16 as u32) << 16) | point[1] as u16 as u32;
+            let result = if arch == Architecture::PowerPc {
+                invoke(app, 3, &[packed, data + 100])
+            } else {
+                let mut frame = (data + 100).to_be_bytes().to_vec();
+                frame.extend(packed.to_be_bytes());
+                let stack = STACK_BASE + 0x8000;
+                frame.extend([0xa5; 4]);
+                app.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+                app.runtime.cpu = Cpu::new(arch, 0x50000000, stack);
+                assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+                let Cpu::M68k(c) = &app.runtime.cpu else {
+                    panic!()
+                };
+                assert_eq!(c.dar[15], stack + 8);
+                assert_eq!(
+                    app.runtime.memory.u16(GuestPtr(stack + 10)).unwrap(),
+                    0xa5a5
+                );
+                u32::from(app.runtime.memory.u16(GuestPtr(stack + 8)).unwrap())
+            };
+            assert_eq!(app.runtime.process.mem_error, -108);
+            assert_eq!(result, u32::from(part), "point {point:?} {arch:?}");
+            assert_eq!(
+                app.runtime.memory.u32(GuestPtr(data + 100)).unwrap(),
+                window
+            );
+            assert_eq!(app.runtime.memory.u16(GuestPtr(data + 98)).unwrap(), 0xa5a5);
+            assert_eq!(
+                app.runtime.memory.u16(GuestPtr(data + 104)).unwrap(),
+                0xa5a5
+            );
+        }
+    }
+    for (point, part, w) in [
+        ([90, 100], 3, front),
+        ([70, 120], 4, front),
+        ([65, 88], 6, front),
+        ([75, 98], 6, front),
+        ([76, 88], 4, front),
+        ([81, 79], 0, 0),
+        ([160, 90], 0, 0),
+        ([90, 160], 0, 0),
+        ([50, 50], 3, back),
+        ([10, 10], 1, 0),
+        ([20, 20], 0, 0),
+        ([-1, 50], 0, 0),
+        ([342, 10], 0, 0),
+        ([100, 512], 0, 0),
+    ] {
+        query(&mut app, data, point, part, w);
+    }
+    app.runtime
+        .memory
+        .write(GuestPtr(front + 111), &[0])
+        .unwrap();
+    query(&mut app, data, [66, 90], 4, front);
+    app.runtime
+        .memory
+        .write(GuestPtr(front + 111), &[1])
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(front + 112), &[0])
+        .unwrap();
+    query(&mut app, data, [66, 90], 4, front);
+    app.runtime
+        .memory
+        .write(GuestPtr(front + 110), &[0])
+        .unwrap();
+    query(&mut app, data, [90, 100], 3, back);
+    app.runtime
+        .memory
+        .write(GuestPtr(back + 108), &(-1i16).to_be_bytes())
+        .unwrap();
+    query(&mut app, data, [90, 100], 2, back);
+    app.runtime
+        .memory
+        .write(GuestPtr(back + 108), &8u16.to_be_bytes())
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(front + 110), &[1])
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0xbaa), &0u16.to_be_bytes())
+        .unwrap();
+    query(&mut app, data, [10, 10], 0, 0);
+    // A hole in the front structure exposes the next window; a content hole doesn't.
+    fn shape(a: Rect, b: Rect) -> Vec<u8> {
+        let encoded = |r: Rect| {
+            [
+                10u16,
+                r.top as u16,
+                r.left as u16,
+                r.bottom as u16,
+                r.right as u16,
+            ]
+            .into_iter()
+            .flat_map(u16::to_be_bytes)
+            .collect::<Vec<_>>()
+        };
+        systemless_future::region_geometry::combine(
+            &encoded(a),
+            &encoded(b),
+            systemless_future::region_geometry::Boolean::Union,
+        )
+        .unwrap()
+    }
+    let structure = shape(Rect::new(80, 80, 100, 160), Rect::new(120, 80, 160, 160));
+    let h = app.runtime.memory.u32(GuestPtr(front + 114)).unwrap();
+    app.runtime
+        .process
+        .set_handle_size(&mut app.runtime.memory, h, structure.len() as u32)
+        .unwrap();
+    let pointer = GuestPtr(app.runtime.memory.u32(GuestPtr(h)).unwrap());
+    app.runtime.memory.write(pointer, &structure).unwrap();
+    query(&mut app, data, [90, 110], 3, back);
+    query(&mut app, data, [90, 90], 3, front);
+    let shape = shape(Rect::new(80, 80, 85, 160), Rect::new(95, 80, 160, 160));
+    let content = app.runtime.memory.u32(GuestPtr(front + 118)).unwrap();
+    app.runtime
+        .process
+        .set_handle_size(&mut app.runtime.memory, content, shape.len() as u32)
+        .unwrap();
+    let pointer = GuestPtr(app.runtime.memory.u32(GuestPtr(content)).unwrap());
+    app.runtime.memory.write(pointer, &shape).unwrap();
+    // A content hole over a solid structure does not expose the back window.
+    query(&mut app, data, [90, 90], 0, 0);
+    fn find_control(
+        app: &mut LoadedApplication,
+        data: u32,
+        owner: u32,
+        point: [i16; 2],
+        part: u16,
+        handle: u32,
+    ) {
+        let packed = ((point[0] as u16 as u32) << 16) | point[1] as u16 as u32;
+        for arch in [Architecture::M68k, Architecture::PowerPc] {
+            app.runtime
+                .memory
+                .write(GuestPtr(data + 98), &[0xa5; 8])
+                .unwrap();
+            let result = if arch == Architecture::PowerPc {
+                invoke(app, 6, &[packed, owner, data + 100])
+            } else {
+                let mut frame = (data + 100).to_be_bytes().to_vec();
+                frame.extend(owner.to_be_bytes());
+                frame.extend(packed.to_be_bytes());
+                frame.extend([0xa5; 4]);
+                let stack = STACK_BASE + 0x8000;
+                app.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+                app.runtime.cpu = Cpu::new(arch, 0x50000002, stack);
+                assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+                let Cpu::M68k(c) = &app.runtime.cpu else {
+                    panic!()
+                };
+                assert_eq!(c.dar[15], stack + 12);
+                assert_eq!(
+                    app.runtime.memory.u16(GuestPtr(stack + 14)).unwrap(),
+                    0xa5a5
+                );
+                u32::from(app.runtime.memory.u16(GuestPtr(stack + 12)).unwrap())
+            };
+            assert_eq!(result, u32::from(part));
+            assert_eq!(
+                app.runtime.memory.u32(GuestPtr(data + 100)).unwrap(),
+                handle
+            );
+            assert_eq!(app.runtime.memory.u16(GuestPtr(data + 98)).unwrap(), 0xa5a5);
+            assert_eq!(
+                app.runtime.memory.u16(GuestPtr(data + 104)).unwrap(),
+                0xa5a5
+            );
+        }
+    }
+    let button_data = app.runtime.memory.u32(GuestPtr(button)).unwrap();
+    let check_data = app.runtime.memory.u32(GuestPtr(checkbox)).unwrap();
+    find_control(&mut app, data, front, [10, 10], 11, checkbox);
+    app.runtime
+        .memory
+        .write(GuestPtr(check_data + 16), &[0])
+        .unwrap();
+    find_control(&mut app, data, front, [10, 10], 10, button);
+    app.runtime
+        .memory
+        .write(GuestPtr(button_data + 17), &[255])
+        .unwrap();
+    find_control(&mut app, data, front, [10, 10], 0, 0);
+    app.runtime
+        .memory
+        .write(GuestPtr(button_data + 17), &[0])
+        .unwrap();
+    for point in [[30, 10], [10, 40], [-1, 10]] {
+        find_control(&mut app, data, front, point, 0, 0);
+    }
+    app.runtime
+        .memory
+        .write(GuestPtr(button_data + 8), &[0, 40, 0, 50, 0, 60, 0, 80])
+        .unwrap();
+    find_control(&mut app, data, front, [40, 50], 10, button);
+    // Validate the complete control list before writing any result.
+    app.runtime
+        .memory
+        .write(GuestPtr(check_data), &checkbox.to_be_bytes())
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(output), &[0xa5; 4])
+        .unwrap();
+    let mut controls = std::mem::take(&mut app.runtime.process.controls);
+    assert!(controls
+        .call(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            None,
+            systemless_future::controls::Op::Find {
+                owner: front,
+                point: [40, 50],
+                destination: GuestPtr(output)
+            }
+        )
+        .is_err());
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(output), 4).unwrap(),
+        [0xa5; 4]
+    );
+    app.runtime
+        .memory
+        .write(GuestPtr(check_data), &button.to_be_bytes())
+        .unwrap();
+    app.runtime.process.controls = controls;
+    app.runtime
+        .memory
+        .map(GuestPtr(0x53000000), vec![0xa5; 4], Permissions::RX)
+        .unwrap();
+    let mut controls = std::mem::take(&mut app.runtime.process.controls);
+    assert!(controls
+        .call(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            None,
+            systemless_future::controls::Op::Find {
+                owner: front,
+                point: [40, 50],
+                destination: GuestPtr(0x53000000)
+            }
+        )
+        .is_err());
+    app.runtime.process.controls = controls;
+    let windows = std::mem::take(&mut app.runtime.process.windows);
+    assert!(windows
+        .find(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            [90, 90],
+            GuestPtr(0x53000000)
+        )
+        .is_err());
+    app.runtime.process.windows = windows;
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(0x53000000), 4).unwrap(),
+        [0xa5; 4]
+    );
+    let before = app
+        .runtime
+        .memory
+        .read(GuestPtr(front), 156)
+        .unwrap()
+        .to_vec();
+    assert_eq!(app.runtime.memory.u32(slot).unwrap(), selected);
+    assert_eq!(app.runtime.memory.read(SCREEN, 64 * 342).unwrap(), screen);
+    assert_eq!(
+        app.runtime
+            .memory
+            .u32(systemless_future::windows::LIST)
+            .unwrap(),
+        front
+    );
+    assert_eq!(app.runtime.memory.u32(GuestPtr(front + 144)).unwrap(), back);
+    app.runtime
+        .memory
+        .write(GuestPtr(front + 126), &1u32.to_be_bytes())
+        .unwrap();
+    let windows = std::mem::take(&mut app.runtime.process.windows);
+    app.runtime
+        .memory
+        .write(GuestPtr(output), &[0xa5; 4])
+        .unwrap();
+    assert!(windows
+        .find(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            [90, 90],
+            GuestPtr(output)
+        )
+        .is_err());
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(output), 4).unwrap(),
+        [0xa5; 4]
+    );
+    app.runtime
+        .memory
+        .write(GuestPtr(front + 126), &[0; 4])
+        .unwrap();
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(front), 156).unwrap(),
+        before
+    );
+    app.runtime
+        .memory
+        .write(GuestPtr(front + 144), &front.to_be_bytes())
+        .unwrap();
+    assert!(windows
+        .find(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            [90, 90],
+            GuestPtr(output)
+        )
+        .is_err());
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(output), 4).unwrap(),
+        [0xa5; 4]
+    );
+    app.runtime.process.windows = windows;
+}
+
+#[test]
+fn find_window_adapter_validates_word_result_before_popping_and_unpacks_ppc_point() {
+    use systemless_future::{
+        abi::{Abi, Reply, Service},
+        cpu::Call,
+        memory::Memory,
+    };
+    let mut memory = Memory::default();
+    memory
+        .map(
+            GuestPtr(0x1000),
+            vec![0x12, 0x34, 0x56, 0x78, 0xff, 0xf9, 0, 13, 0xa5, 0x5a],
+            Permissions::RW,
+        )
+        .unwrap();
+    let expected = Call::FindWindow {
+        point: [-7, 13],
+        destination: GuestPtr(0x12345678),
+    };
+    let mut cpu = m68k::CpuCore::default();
+    cpu.dar[15] = 0x1000;
+    assert_eq!(
+        Abi::trap(0xa92c, &mut cpu, &memory).unwrap(),
+        (expected, Reply::StackWord(GuestPtr(0x1008)))
+    );
+    assert_eq!(cpu.dar[15], 0x1008);
+    cpu.dar[15] = 0x1001;
+    assert!(Abi::trap(0xa92c, &mut cpu, &memory).is_err());
+    assert_eq!(cpu.dar[15], 0x1001);
+    cpu.dar[15] = 0x1003;
+    assert!(Abi::trap(0xa92c, &mut cpu, &memory).is_err());
+    assert_eq!(cpu.dar[15], 0x1003);
+    let mut cpu = ppc::PpcCpu::default();
+    cpu.gpr[3] = 0xfff9000d;
+    cpu.gpr[4] = 0x12345678;
+    assert_eq!(
+        Abi::import(Service::FindWindow, &cpu, &memory).unwrap(),
+        (expected, Reply::PpcR3)
+    );
+}

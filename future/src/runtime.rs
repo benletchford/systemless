@@ -349,6 +349,26 @@ impl Runtime {
                                 self.receive_toolbox_event(mask, destination, remove, ticks)?;
                             reply.apply(&mut self.cpu, &mut self.memory, u32::from(found), 0)?;
                         }
+                        Call::StillDown => {
+                            let down = !crate::events::available(&self.memory, 0x0006)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, u32::from(down), 0)?;
+                        }
+                        Call::FindWindow { point, destination } => {
+                            let windows = std::mem::take(&mut self.process.windows);
+                            let result = windows.find(
+                                &mut self.memory,
+                                &mut self.process,
+                                point,
+                                destination,
+                            );
+                            self.process.windows = windows;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                result? as i32 as u32,
+                                0,
+                            )?;
+                        }
                         Call::PointInRect { point, rectangle } => {
                             let inside =
                                 crate::rectangles::contains(&self.memory, point, rectangle)?;
@@ -1174,6 +1194,8 @@ impl Runtime {
                         | Call::TextState { .. }
                         | Call::Rectangle(_)
                         | Call::ToolboxEvent { .. }
+                        | Call::StillDown
+                        | Call::FindWindow { .. }
                         | Call::PointInRect { .. }
                         | Call::GetMouse(_)
                         | Call::SystemTask

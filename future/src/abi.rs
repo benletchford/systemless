@@ -9,6 +9,8 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    StillDown,
+    FindWindow,
     PtInRect,
     GetMouse,
     Random,
@@ -44,6 +46,7 @@ pub enum Service {
     ControlSetReference,
     ControlTitle,
     ControlSetTitle,
+    ControlFind,
     ControlTest,
     SetRect,
     OffsetRect,
@@ -218,6 +221,7 @@ impl Abi {
             b"SetCRefCon" | b"SetControlReference" => Some(Service::ControlSetReference),
             b"GetCTitle" | b"GetControlTitle" => Some(Service::ControlTitle),
             b"SetCTitle" | b"SetControlTitle" => Some(Service::ControlSetTitle),
+            b"FindControl" => Some(Service::ControlFind),
             b"TestControl" => Some(Service::ControlTest),
             b"GetWRefCon" => Some(Service::GetWindowReference),
             b"SetWRefCon" => Some(Service::SetWindowReference),
@@ -268,6 +272,8 @@ impl Abi {
             b"EventAvail" => Some(Service::EventAvail),
             b"BeginUpdate" => Some(Service::Window(crate::windows::Op::Begin)),
             b"EndUpdate" => Some(Service::Window(crate::windows::Op::End)),
+            b"StillDown" => Some(Service::StillDown),
+            b"FindWindow" => Some(Service::FindWindow),
             b"PtInRect" => Some(Service::PtInRect),
             b"GetMouse" => Some(Service::GetMouse),
             b"SystemTask" => Some(Service::SystemTask),
@@ -522,6 +528,28 @@ impl Abi {
                 Ok((
                     Call::NewControl(request),
                     Reply::StackLong(GuestPtr(result)),
+                ))
+            }
+            0xa96c => {
+                let args = memory.read(GuestPtr(sp), 12)?;
+                let destination = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let owner = u32::from_be_bytes(args[4..8].try_into().unwrap());
+                let point = [
+                    i16::from_be_bytes(args[8..10].try_into().unwrap()),
+                    i16::from_be_bytes(args[10..12].try_into().unwrap()),
+                ];
+                let result = sp
+                    .checked_add(12)
+                    .ok_or_else(|| Error::Cpu("FindControl stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::Control(crate::controls::Op::Find {
+                        owner,
+                        point,
+                        destination,
+                    }),
+                    Reply::StackWord(GuestPtr(result)),
                 ))
             }
             0xa955..=0xa958 | 0xa95a | 0xa960..=0xa962 | 0xa969 | 0xa96d => {
@@ -875,6 +903,27 @@ impl Abi {
                         remove: opcode == 0xa970,
                     },
                     Reply::StackByte(GuestPtr(result)),
+                ))
+            }
+            0xa973 => {
+                memory.validate_write(GuestPtr(sp), 1)?;
+                Ok((Call::StillDown, Reply::StackByte(GuestPtr(sp))))
+            }
+            0xa92c => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let destination = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let point = [
+                    i16::from_be_bytes(args[4..6].try_into().unwrap()),
+                    i16::from_be_bytes(args[6..8].try_into().unwrap()),
+                ];
+                let result = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("FindWindow stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::FindWindow { point, destination },
+                    Reply::StackWord(GuestPtr(result)),
                 ))
             }
             0xa8ad => {
@@ -1638,6 +1687,11 @@ impl Abi {
                     }
                 })
             }
+            Service::StillDown => Call::StillDown,
+            Service::FindWindow => Call::FindWindow {
+                point: [(c.gpr[3] >> 16) as i16, c.gpr[3] as i16],
+                destination: GuestPtr(c.gpr[4]),
+            },
             Service::PtInRect => Call::PointInRect {
                 point: [(c.gpr[3] >> 16) as i16, c.gpr[3] as i16],
                 rectangle: GuestPtr(c.gpr[4]),
@@ -1729,6 +1783,11 @@ impl Abi {
             Service::ControlSetTitle => {
                 Call::Control(crate::controls::Op::SetTitle(c.gpr[3], GuestPtr(c.gpr[4])))
             }
+            Service::ControlFind => Call::Control(crate::controls::Op::Find {
+                owner: c.gpr[4],
+                point: [(c.gpr[3] >> 16) as i16, c.gpr[3] as i16],
+                destination: GuestPtr(c.gpr[5]),
+            }),
             Service::ControlTest => Call::Control(crate::controls::Op::Test(
                 c.gpr[3],
                 c.gpr[4] as i16,

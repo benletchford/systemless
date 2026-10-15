@@ -322,3 +322,44 @@ fn controls_share_records_pixels_live_values_and_window_ownership_across_cpus() 
         0
     );
 }
+
+#[test]
+fn find_control_adapters_preserve_word_results_and_unpack_local_point_order() {
+    let mut memory = Memory::default();
+    memory
+        .map(
+            GuestPtr(0x1000),
+            [0x11223344u32, 0x55667788, 0xfff9000d, 0xa5a55a5a]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+            Permissions::RW,
+        )
+        .unwrap();
+    let expected = Call::Control(systemless_future::controls::Op::Find {
+        owner: 0x55667788,
+        point: [-7, 13],
+        destination: GuestPtr(0x11223344),
+    });
+    let mut cpu = m68k::CpuCore::default();
+    cpu.dar[15] = 0x1000;
+    assert_eq!(
+        Abi::trap(0xa96c, &mut cpu, &memory).unwrap(),
+        (expected, Reply::StackWord(GuestPtr(0x100c)))
+    );
+    assert_eq!(cpu.dar[15], 0x100c);
+    cpu.dar[15] = 0x1003;
+    assert!(Abi::trap(0xa96c, &mut cpu, &memory).is_err());
+    assert_eq!(cpu.dar[15], 0x1003);
+    cpu.dar[15] = 0x1005;
+    assert!(Abi::trap(0xa96c, &mut cpu, &memory).is_err());
+    assert_eq!(cpu.dar[15], 0x1005);
+    let mut cpu = ppc::PpcCpu::default();
+    cpu.gpr[3] = 0xfff9000d;
+    cpu.gpr[4] = 0x55667788;
+    cpu.gpr[5] = 0x11223344;
+    assert_eq!(
+        Abi::import(Service::ControlFind, &cpu, &memory).unwrap(),
+        (expected, Reply::PpcR3)
+    );
+}

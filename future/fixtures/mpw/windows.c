@@ -15,7 +15,8 @@ int main(void) {
     Rect firstBounds={40,40,60,60};
     Rect nextBounds={50,50,70,70};
     Rect local={0,0,20,20};
-    WindowPtr first, next, hidden;
+    WindowPtr first, next, hidden, found;
+    short savedMenuHeight;
     GrafPtr old;
     GrafPort offscreen;
     PicHandle picture;
@@ -23,7 +24,7 @@ int main(void) {
     EventRecord event;
     Rect dirty={43,42,49,48};
     RgnHandle saved;
-    ControlHandle button, check, radio;
+    ControlHandle button, check, radio, foundControl;
     Rect buttonBounds={8,8,28,68},checkBounds={32,8,48,78},radioBounds={32,80,48,150};
     Str255 controlTitle;
     SetRect(&firstBounds,40,40,60,60); OffsetRect(&firstBounds,2,-3); InsetRect(&firstBounds,1,2);
@@ -37,6 +38,14 @@ int main(void) {
     if (!first || ((WindowPeek)first)->windowKind!=8 || ((WindowPeek)first)->refCon!=0x12345678 || FrontWindow()!=first) return 2;
     GetPort(&old);
     if (old!=(GrafPtr)first || first->portRect.bottom!=20 || first->portRect.right!=20) return 3;
+    savedMenuHeight=*(short*)0xbaa; *(short*)0xbaa=20;
+    point.v=40;point.h=40;
+    if (FindWindow(point,&found)!=inContent || found!=first || FrontWindow()!=first) return 60;
+    point.v=10;point.h=10;
+    if (FindWindow(point,&found)!=inMenuBar || found!=0) return 61;
+    point.v=39;point.h=40;
+    if (FindWindow(point,&found)!=inDesk || found!=0) return 62;
+    *(short*)0xbaa=savedMenuHeight;
     PenSize(2,3); if (first->pnSize.h!=2 || first->pnSize.v!=3) return 46; PenSize(1,1);
     if (!RectInRgn(&local,first->visRgn)) return 47;
     picture=GetPicture(322);
@@ -130,6 +139,11 @@ int main(void) {
     button=NewControl(first,&buttonBounds,"\pOK",true,0,0,1,pushButProc,0x11223344);
     check=NewControl(first,&checkBounds,"\pCheck",true,0,0,1,checkBoxProc,7);
     radio=NewControl(first,&radioBounds,"\pRadio",true,1,0,1,radioButProc,8);
+    point.v=8;point.h=8;
+    if (FindControl(point,first,&foundControl)!=10 || foundControl!=button) return 63;
+    point.v=28;if (FindControl(point,first,&foundControl)!=0 || foundControl!=0) return 64;
+    point.v=32;point.h=80;
+    if (FindControl(point,first,&foundControl)!=11 || foundControl!=radio) return 65;
     if (!button || !check || !radio || ((WindowPeek)first)->controlList!=(Handle)radio || (*radio)->nextControl!=check || (*check)->nextControl!=button || GetControlReference(button)!=0x11223344) return 27;
     if (GetHandleSize((Handle)button)!=296 || (*button)->contrlOwner!=first || (*button)->contrlVis!=255) return 28;
     SetControlReference(button,9); if (GetControlReference(button)!=9) return 29;
@@ -153,6 +167,11 @@ int main(void) {
     while (GetNextEvent(activMask,&event)) {if (event.what!=activateEvt || event.message!=(long)first) return 45;}
     DrawControls(first); DisposeControl(check); if ((*radio)->nextControl!=button || *check) return 38;
     DisposeWindow(first); if (FrontWindow() || *button || *radio) return 26;
+    SetPort(0); GetPort(&old); if (old!=0) return 68;
+    FlushEvents(mDownMask|mUpMask,0);
+    if (!StillDown()) return 66;
+    PostEvent(mouseUp,0); if (StillDown()) return 67;
+    FlushEvents(mUpMask,0);
     PostEvent(diskEvt,0x600D);
     ExitToShell();
     return 0;

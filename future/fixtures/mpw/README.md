@@ -337,3 +337,9 @@ The same TextEdit compiler guest now changes the live Mouse point, calls GetMous
 and checks its local coordinates against portBits.bounds. It also verifies
 PtInRect's inclusive upper-left and exclusive bottom/right edges. Rust acceptance
 requires one GetMouse and three PtInRect calls on each architecture.
+
+The window fixture now checks FindWindow content/menu/frame results and exact
+output pointers, FindControl button/radio/miss parts, non-consuming StillDown
+behavior before/after a queued mouse-up and SetPort(nil)/GetPort restoration.
+Both compiler guests must execute all new queries before their success marker;
+no visual/native compatibility is inferred from those fixture checks alone.

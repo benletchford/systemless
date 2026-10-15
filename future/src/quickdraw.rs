@@ -124,16 +124,15 @@ impl Ports {
     }
     pub fn current(&self, memory: &Memory) -> Result<GuestPtr> {
         let port = GuestPtr(memory.u32(self.current_slot)?);
-        memory.read(port, PORT_SIZE)?;
         if port.0 == 0 {
             return Err(Error::Graphics("no current QuickDraw port".into()));
         }
+        memory.read(port, PORT_SIZE)?;
         Ok(port)
     }
     pub fn set(&self, memory: &mut Memory, port: GuestPtr) -> Result<()> {
-        memory.read(port, PORT_SIZE)?;
-        if port.0 == 0 {
-            return Err(Error::Graphics("nil QuickDraw port".into()));
+        if port.0 != 0 {
+            memory.read(port, PORT_SIZE)?;
         }
         memory.write(self.current_slot, &port.0.to_be_bytes())
     }

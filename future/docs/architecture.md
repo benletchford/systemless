@@ -1203,3 +1203,30 @@ checks the Boolean result byte before popping eight argument bytes; PPC unpacks
 the by-value Point from r3 and reads its Rect pointer from r4. No current port or
 GPU is needed for this geometric query. Low-memory raw mouse mirrors, mouse
 acceleration and custom window tracking remain outside this slice.
+
+## Window/control hit queries and splash tracking
+
+FindWindow decodes one global Point and output pointer on both CPU adapters.
+The manager validates output storage, preserves MemErr, clips to screen/menu height and walks
+the live WindowList front to back, skipping hidden windows. Checked structure
+and content regions determine occlusion, including complex holes. Content,
+negative windowKind system windows, document title bands and active close boxes
+produce their documented part codes; inert frames return desktop/nil and do not
+expose a lower window. Plain/modal definitions have no synthetic drag target.
+The close rectangle is shared with document-chrome geometry. No selection,
+activation, drawing or GPU is required for the query. Current definitions remain
+1/2/4; custom WDEF handles and unsupported definitions fail explicitly.
+
+FindControl validates the live owner and entire registered control list, then
+reuses TestControl for each candidate in guest list order. It returns the first
+nonzero button-family part and handle, or zero/nil, without drawing or clipping
+local control bounds through a window's current visRgn. Invalid lists and output
+permissions are checked before result publication; custom CDEFs remain errors.
+
+StillDown performs a non-consuming check for either pending mouse-down or
+mouse-up in the shared OS queue, returning true only when neither is pending.
+This follows Apple Toolbox Essentials, Event Manager p. 2-109; legacy Systemless
+also consulted physical state and only queued mouse-up, so that comparison is
+not treated as authority for this case. Button/WaitMouseUp are separate contracts
+and remain unimplemented. Nil SetPort restores a saved empty current-port slot;
+operations requiring a drawable port still fail until a real port is selected.

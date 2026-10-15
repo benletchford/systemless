@@ -383,6 +383,36 @@ fn compiled_plain_window_lifecycle_has_record_and_screen_parity() {
         assert_eq!(app.runtime.advance(20_000).unwrap(), Stop::Exit(0));
         assert_eq!(
             app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|call| matches!(call, Call::StillDown))
+                .count(),
+            2
+        );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|call| matches!(
+                    call,
+                    Call::Control(systemless_future::controls::Op::Find { .. })
+                ))
+                .count(),
+            3
+        );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|call| matches!(call, Call::FindWindow { .. }))
+                .count(),
+            3
+        );
+        assert_eq!(
+            app.runtime
                 .memory
                 .u32(systemless_future::windows::LIST)
                 .unwrap(),

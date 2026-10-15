@@ -356,3 +356,20 @@ fn gpu_port_mapping_and_size_control_draw_destination_without_changing_regions()
     );
     assert_eq!(memory.read(GuestPtr(data), 10).unwrap(), saved);
 }
+
+#[test]
+fn nil_port_can_be_saved_and_restored_without_becoming_drawable() {
+    let (mut memory, mut process, ports) = setup();
+    let port = GuestPtr(0x1080);
+    ports.open(&mut memory, &mut process, port).unwrap();
+    ports.set(&mut memory, GuestPtr(0)).unwrap();
+    assert_eq!(memory.u32(ports.current_slot).unwrap(), 0);
+    assert!(ports.current(&memory).is_err());
+    assert!(ports
+        .convert_point(&mut memory, GuestPtr(0x1040), false)
+        .is_err());
+    assert!(ports.set(&mut memory, GuestPtr(0x3000)).is_err());
+    assert_eq!(memory.u32(ports.current_slot).unwrap(), 0);
+    ports.set(&mut memory, port).unwrap();
+    assert_eq!(ports.current(&memory).unwrap(), port);
+}

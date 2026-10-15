@@ -23,6 +23,11 @@ pub struct NewControl {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    Find {
+        owner: u32,
+        point: [i16; 2],
+        destination: GuestPtr,
+    },
     Draw(u32),
     DrawAll(u32),
     Dispose(u32),
@@ -425,6 +430,28 @@ impl Controls {
         gpu: Option<&Graphics>,
         op: Op,
     ) -> Result<u32> {
+        if let Op::Find {
+            owner,
+            point,
+            destination,
+        } = op
+        {
+            memory.validate_write(destination, 4)?;
+            if !process.windows.contains(memory, owner)? {
+                return Err(fail("control owner is not a live window"));
+            }
+            let list = self.list(memory, process, owner)?;
+            let mut found = (0u32, 0u32);
+            for h in list {
+                let part = self.call(memory, process, None, Op::Test(h, point[1], point[0]))?;
+                if part != 0 {
+                    found = (part, h);
+                    break;
+                }
+            }
+            memory.write(destination, &found.1.to_be_bytes())?;
+            return Ok(found.0);
+        }
         if let Op::DrawAll(owner) | Op::Kill(owner) = op {
             if !process.windows.contains(memory, owner)? {
                 return Err(fail("control owner is not a live window"));

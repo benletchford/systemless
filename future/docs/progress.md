@@ -2330,3 +2330,44 @@ Strict all-target Clippy, final MPW rebuilding, sequential changed-file formatti
 and whitespace checks pass. The original idle trace ends only at its explicit
 instruction budget; the click probe explicitly fails at FindWindow. No native
 System 7 execution or native presentation pass is claimed.
+
+
+### Original splash dismissal through shared hit queries
+
+FindWindow now shares global-point/output marshalling across 68K/PPC. It uses
+screen bounds, live menu height, WindowList order and checked content/structure
+regions; hidden windows are skipped and frame occlusion does not leak hits to
+lower windows. The supported plain/modal/no-grow-document definitions report
+content, title/active-close, menu/desktop and negative-kind system window parts.
+The query preserves port, activation/list state and pixels, and works without a
+GPU after window creation. Custom WDEFs remain explicit errors.
+
+FindControl validates a live owner and complete control list before searching,
+reuses TestControl for the same local coordinates/visibility/hilite semantics and
+returns the first matching part/handle. StillDown is a non-consuming OS-queue
+predicate for pending mouse events, following Apple Toolbox Essentials p. 2-109.
+It intentionally differs from legacy's physical-state/queued-mouse-up check;
+no native System 7 run is required. SetPort(nil) restores the saved empty port
+state without making it drawable.
+
+Generated tests cover both real CPUs, exact part/output/result guards, active/
+inactive close boxes, hidden/overlapping windows, frame occlusion, complex region
+holes, live control bounds, disabled/hidden/overlapping controls, malformed lists,
+custom definitions, read-only outputs and nil-port restoration. MPW window guests
+check FindWindow/FindControl parts, queued mouse-up tracking and nil restoration;
+acceptance requires their actual service calls before the success marker.
+
+The bounded original Super Mines probe presses/releases at global (256,171).
+Mouse-down completes its 30,000-boundary budget; mouse-up passes hit testing and
+tracking, hides the splash, disposes its control/resource/window graph and restores
+its nil port. Before/after offscreen images show splash then desktop. Execution
+continues to unsupported PBHOpen ($A200), with post-trap PC $010124D2. This proves
+one original splash-dismissal interaction; gameplay and complete lifecycle still
+remain unverified. Next: hierarchical data-fork open/access/error semantics and
+continue the same transition. Devices/sound, native presentation, Color QuickDraw
+and production Mixed Mode remain unfinished. Full rebuild goal stays active.
+
+Validation: all 248 tests pass (203 default, 45 optional GPU/MPW); none skipped.
+The final focused query rerun also verifies preserved MemErr. Strict all-target
+Clippy, rebuilt MPW fixtures, sequential changed-file formatting and whitespace
+checks pass. Native System 7 comparison and native presentation are not claimed.

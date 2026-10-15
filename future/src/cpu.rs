@@ -12,6 +12,7 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    StillDown,
     Random,
     DrawRectangle {
         rectangle: GuestPtr,
@@ -30,6 +31,10 @@ pub enum Call {
     PointInRect {
         point: [i16; 2],
         rectangle: GuestPtr,
+    },
+    FindWindow {
+        point: [i16; 2],
+        destination: GuestPtr,
     },
     GetMouse(GuestPtr),
     SystemTask,

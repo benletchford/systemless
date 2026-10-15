@@ -126,7 +126,111 @@ fn shifted(bytes: &[u8], dx: i32, dy: i32) -> Result<Vec<u8>> {
     }
     region_geometry::encode(&rects)
 }
+fn close_box(r: Rect) -> Rect {
+    Rect::new(r.left + 8, r.top - 15, r.left + 19, r.top - 4)
+}
+fn region_bounds(bytes: &[u8]) -> Rect {
+    let edges: [i32; 4] = std::array::from_fn(|i| {
+        i32::from(i16::from_be_bytes([bytes[2 + i * 2], bytes[3 + i * 2]]))
+    });
+    Rect::new(edges[1], edges[0], edges[3], edges[2])
+}
 impl Windows {
+    /// Find a global point without selecting, drawing or changing window state.
+    pub fn find(
+        &self,
+        memory: &mut Memory,
+        process: &mut Process,
+        point: [i16; 2],
+        destination: GuestPtr,
+    ) -> Result<i16> {
+        memory.validate_write(destination, 4)?;
+        let previous_error = process.mem_error;
+        let result = self.find_point(memory, process, point);
+        process.mem_error = previous_error;
+        let (part, window) = result?;
+        memory.write(destination, &window.to_be_bytes())?;
+        Ok(part)
+    }
+    fn find_point(
+        &self,
+        memory: &Memory,
+        process: &mut Process,
+        point: [i16; 2],
+    ) -> Result<(i16, u32)> {
+        if self.manager == 0 {
+            return Err(fail("FindWindow requires InitWindows"));
+        }
+        let ports = process
+            .ports
+            .ok_or_else(|| fail("FindWindow requires InitGraf"))?;
+        let screen = Bitmap::read(memory, ports.screen_bitmap)?.bounds;
+        let height = i32::from(memory.u16(GuestPtr(0xbaa))? as i16);
+        if height < 0 {
+            return Err(fail("negative menu-bar height"));
+        }
+        let inside = |r: Rect| {
+            i32::from(point[0]) >= r.top
+                && i32::from(point[0]) < r.bottom
+                && i32::from(point[1]) >= r.left
+                && i32::from(point[1]) < r.right
+        };
+        let mut hit = (0i16, 0u32);
+        if inside(screen) {
+            if height > 0 && i32::from(point[0]) < screen.top + height {
+                hit = (1, 0);
+            } else {
+                for w in self.list(memory)? {
+                    if memory.read(GuestPtr(w + 110), 1)?[0] == 0 {
+                        continue;
+                    }
+                    let structure = region(memory, process, handle(memory, w, 114)?)?;
+                    if !region_geometry::decode(&structure)?.into_iter().any(inside) {
+                        continue;
+                    }
+                    if memory.u32(GuestPtr(w + 126))? != 0 {
+                        return Err(fail("custom FindWindow WDEF callbacks are unsupported"));
+                    }
+                    let definition = *self
+                        .definitions
+                        .get(&w)
+                        .ok_or_else(|| fail("unknown window definition"))?;
+                    if !matches!(definition, 1 | 2 | 4) {
+                        return Err(fail("unsupported FindWindow definition"));
+                    }
+                    if (memory.u16(GuestPtr(w + 108))? as i16) < 0 {
+                        hit = (2, w);
+                        break;
+                    }
+                    let content = region(memory, process, handle(memory, w, 118)?)?;
+                    if region_geometry::decode(&content)?.into_iter().any(inside) {
+                        hit = (3, w);
+                        break;
+                    }
+                    if definition == 4 {
+                        let r = region_bounds(&content);
+                        let title = Rect::new(
+                            r.left - 1,
+                            (r.top - 19).max(screen.top + height),
+                            r.right + 1,
+                            r.top,
+                        );
+                        if inside(title) {
+                            let close = memory.read(GuestPtr(w + 111), 2)?;
+                            hit = if close[0] != 0 && close[1] != 0 && inside(close_box(r)) {
+                                (6, w)
+                            } else {
+                                (4, w)
+                            };
+                        }
+                    }
+                    // Even a noninteractive frame occludes windows behind it.
+                    break;
+                }
+            }
+        }
+        Ok(hit)
+    }
     pub fn contains(&self, memory: &Memory, w: u32) -> Result<bool> {
         Ok(self.list(memory)?.contains(&w))
     }
@@ -414,8 +518,9 @@ impl Windows {
             Rect::new(r.right, top, r.right + 1, bottom + 1),
         ];
         if close {
-            let cx = r.left + 8;
-            let cy = r.top - 15;
+            let hit = close_box(r);
+            let cx = hit.left;
+            let cy = hit.top;
             ink.extend([
                 Rect::new(cx, cy, cx + 11, cy + 1),
                 Rect::new(cx, cy, cx + 1, cy + 11),

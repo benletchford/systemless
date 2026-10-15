@@ -148,3 +148,73 @@ fn masked_button_changes_state_and_focus_loss_releases_it() {
         .unwrap();
     assert_eq!(rt.process.input.modifiers, 0x80);
 }
+
+#[test]
+fn still_down_reports_pending_mouse_events_without_consuming_them_on_both_cpus() {
+    use systemless_future::{
+        cpu::{Architecture, Cpu},
+        load::STACK_BASE,
+    };
+    let file = support::pef_program(&[0x4e800020], &[b"StillDown"], 16);
+    for pending in [None, Some(1u16), Some(2), Some(3)] {
+        let mut app = LoadedApplication::pef(&file.bytes, None).unwrap();
+        app.runtime
+            .memory
+            .map(GuestPtr(0x50000000), vec![0xa9, 0x73], Permissions::RX)
+            .unwrap();
+        if let Some(what) = pending {
+            events::post(
+                &mut app.runtime.memory,
+                what,
+                123,
+                0,
+                app.runtime.process.input,
+            )
+            .unwrap();
+        }
+        let queue = app
+            .runtime
+            .memory
+            .read(events::QUEUE_HEADER, 10)
+            .unwrap()
+            .to_vec();
+        let vector = app
+            .runtime
+            .memory
+            .u32(GuestPtr(app.info.toc_or_a5 + 8))
+            .unwrap();
+        let gate = app.runtime.memory.u32(GuestPtr(vector)).unwrap();
+        for arch in [Architecture::M68k, Architecture::PowerPc] {
+            let stack = STACK_BASE + 0x8000;
+            app.runtime
+                .memory
+                .write(GuestPtr(stack), &[0xa5; 4])
+                .unwrap();
+            app.runtime.cpu = Cpu::new(
+                arch,
+                if arch == Architecture::M68k {
+                    0x50000000
+                } else {
+                    gate
+                },
+                stack,
+            );
+            assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+            let expected = !matches!(pending, Some(1 | 2));
+            match &app.runtime.cpu {
+                Cpu::M68k(c) => {
+                    assert_eq!(c.dar[15], stack);
+                    assert_eq!(
+                        app.runtime.memory.read(GuestPtr(stack), 4).unwrap(),
+                        [u8::from(expected), 0xa5, 0xa5, 0xa5]
+                    );
+                }
+                Cpu::PowerPc(c) => assert_eq!(c.gpr[3], u32::from(expected)),
+            }
+            assert_eq!(
+                app.runtime.memory.read(events::QUEUE_HEADER, 10).unwrap(),
+                queue
+            );
+        }
+    }
+}
