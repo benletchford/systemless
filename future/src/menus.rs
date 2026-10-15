@@ -8,6 +8,7 @@ use crate::{
     region_geometry::{self, Boolean},
     Error, Result,
 };
+mod items;
 pub mod record;
 mod resources;
 const LIST: GuestPtr = GuestPtr(0xa1c);
@@ -16,6 +17,26 @@ const HEIGHT: GuestPtr = GuestPtr(0xbaa);
 const EMPTY: [u8; 12] = [0; 12];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    Count(u32),
+    Command {
+        handle: u32,
+        item: i16,
+        command: u8,
+    },
+    Text {
+        handle: u32,
+        item: i16,
+        source: GuestPtr,
+    },
+    Mark {
+        handle: u32,
+        item: i16,
+        mark: u8,
+    },
+    AppendResources {
+        handle: u32,
+        kind: [u8; 4],
+    },
     Load(i16),
     Bar(i16),
     Set(u32),
@@ -149,6 +170,37 @@ impl Menus {
         gpu: Option<&Graphics>,
         op: Op,
     ) -> Result<u32> {
+        if let Op::Text {
+            handle,
+            item,
+            source,
+        } = op
+        {
+            return items::set_text(memory, process, handle, item, source);
+        }
+        if let Op::Command {
+            handle,
+            item,
+            command,
+        } = op
+        {
+            return items::set_byte(memory, process, handle, item, command, 1);
+        }
+        if let Op::Mark { handle, item, mark } = op {
+            return items::set_byte(memory, process, handle, item, mark, 2);
+        }
+        if let Op::AppendResources { handle, kind } = op {
+            return items::append_resources(memory, process, handle, kind);
+        }
+        if let Op::Count(handle) = op {
+            let error = process.mem_error;
+            let result = (|| {
+                let bytes = data(memory, process, handle)?;
+                Ok(record::Record::parse(&bytes)?.items.len() as u32)
+            })();
+            process.mem_error = error;
+            return result;
+        }
         if let Op::Load(id) | Op::Bar(id) = op {
             return self.load_resources(memory, process, id, matches!(op, Op::Bar(_)));
         }
@@ -314,7 +366,16 @@ impl Menus {
                 )?;
                 Ok(0)
             }
-            Op::Init | Op::Handle(_) | Op::Load(_) | Op::Bar(_) | Op::Set(_) => unreachable!(),
+            Op::Command { .. }
+            | Op::Init
+            | Op::Text { .. }
+            | Op::Mark { .. }
+            | Op::AppendResources { .. }
+            | Op::Count(_)
+            | Op::Handle(_)
+            | Op::Load(_)
+            | Op::Bar(_)
+            | Op::Set(_) => unreachable!(),
         }
     }
     fn draw(&self, memory: &mut Memory, process: &mut Process, gpu: &Graphics) -> Result<()> {

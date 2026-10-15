@@ -2509,3 +2509,62 @@ pass. The rebuilt MPW menu fixture succeeds on both CPUs. Earlier runs exposed t
 fixture's stale six-query expectation; the final suite includes the corrected
 eight-query acceptance and all final source changes. Native presentation and
 native System 7 execution are not claimed.
+
+
+### Live menu items and original menu setup
+
+CountMItems/CountMenuItems now counts checked live records even outside the menu
+bar, without graphics or font initialization, preserving MemErr. Native return
+storage is validated before its four-byte handle argument is popped; PPC returns
+the same shared count through r3.
+
+AddResMenu/AppendResMenu loads named resources from the process's current single
+application map, filters hidden/empty names, suppresses exact duplicate names and
+appends sorted literal item text without reordering existing items. Appended items
+are enabled, plain, unmarked, iconless and have no keyboard equivalent. ResLoad's
+byte is set true without changing its neighboring byte. Resource handles remain
+Resource Manager-owned. Cached loads may survive a failed append, but staged menu
+replacement cannot partially publish item storage. FONT requests include FOND
+names; non-Roman font IDs fail explicitly. Alphabetical ordering currently follows
+legacy Systemless's MacRoman decoding plus Unicode lowercase comparison, not full
+Script Manager collation. Additional open resource maps and Apple Menu Items
+folder handling remain gaps in the resource/filesystem model.
+
+SetItemMark, CheckItem/CheckMenuItem and SetItemCmd share checked in-place item-byte
+mutation, preserving adjacent attributes, record flags, handle identity and MemErr.
+Native short character arguments use the low byte; CheckItem instead reads the
+Boolean's first stack byte and ignores stale padding. PPC narrows each parameter
+according to its declared width and preserves void results. SetItem/SetMenuItemText
+rebuilds text through atomic heap replacement while retaining attributes and other
+items. Failed locked growth preserves storage; invalid item indexes are no-ops.
+Empty text remains an explicit unsupported boundary. These setters do not claim
+completed popup sizing/tracking or guest definition callbacks.
+
+Generated checks cover mutable/relocated uninstalled records, malformed/nil
+handles, exact stack results, signed items, Boolean padding, preserved flags and
+attributes, literal resource names, sorting/filtering/duplicates, default enable
+bits, resource ownership, failed growth and source-pointer faults. MPW menu guests
+now execute counts, named-resource append, repeated append, mark/check/uncheck,
+command-byte changes and growing/shrinking item text on both real CPUs. SDK C names
+AppendResMenu/SetMenuItemText are used; the older names were undeclared and caused
+link errors in the initial fixture build, which was corrected before acceptance.
+
+The bounded Super Mines transition passes CountMItems, AddResMenu('DRVR') and its
+first populated DrawMenuBar. Offscreen inspection shows File, Edit and Super Mines
+titles on the desktop after the splash is dismissed. It sets menu 4/item 4's mark,
+changes item 5's text and command byte, continues settings reads and constructs
+WIND 1000 plus two controls. It stops at CreateResFile ($A9B1), post-trap
+PC $0100DB86. This is menu setup and further resource-window construction, not
+completed gameplay or menu interaction. The next milestone is writable resource
+file creation/opening, integrating real resource maps with the existing shared
+fork store and preserving resource-map/handle identity across both CPUs. Native
+presentation, original PPC interaction and production Mixed Mode remain unfinished.
+The full rebuild goal stays active.
+
+Validation: all 268 tests pass (221 default, 47 optional GPU/MPW), with no skips.
+Strict all-target Clippy, sequential changed-file formatting and whitespace checks
+pass. Rebuilt MPW guests execute the new menu operations on both CPUs. The original
+probe reaches CreateResFile and its offscreen image shows the menu titles; it
+propagates that unsupported call rather than treating the run as application
+completion. Legacy comparison is permitted; native System 7 and native host
+presentation are not claimed.

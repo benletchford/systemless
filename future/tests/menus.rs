@@ -655,3 +655,496 @@ fn resource_bars_keep_live_menu_identity_draw_titles_and_copy_installed_lists() 
         &42i16.to_be_bytes()
     );
 }
+
+#[test]
+fn menu_counts_read_uninstalled_live_records_without_graphics_and_preserve_memerr() {
+    let fixture = support::pef_program(&[0x4e800020], &[], 32);
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    let bytes = standard_menu(-7, 65);
+    let handle = app
+        .runtime
+        .process
+        .new_handle(&mut app.runtime.memory, bytes.len() as u32, false)
+        .unwrap();
+    app.runtime
+        .memory
+        .write(ptr(&app.runtime.memory, handle), &bytes)
+        .unwrap();
+    app.runtime.process.mem_error = -108;
+    assert_eq!(direct(&mut app, Op::Count(handle)).unwrap(), 1);
+    assert_eq!(app.runtime.process.mem_error, -108);
+    app.runtime
+        .process
+        .set_handle_size(&mut app.runtime.memory, handle, 64)
+        .unwrap();
+    let p = ptr(&app.runtime.memory, handle);
+    app.runtime
+        .memory
+        .write(GuestPtr(p.0 + 22), &[1, 66, 0, 0, 0, 0, 0])
+        .unwrap();
+    let before = app.runtime.memory.read(p, 64).unwrap().to_vec();
+    app.runtime.process.mem_error = -117;
+    assert_eq!(direct(&mut app, Op::Count(handle)).unwrap(), 2);
+    assert_eq!(app.runtime.memory.read(p, 64).unwrap(), before);
+    assert_eq!(app.runtime.process.mem_error, -117);
+    app.runtime
+        .memory
+        .write(GuestPtr(p.0 + 22), &[255])
+        .unwrap();
+    assert!(direct(&mut app, Op::Count(handle)).is_err());
+    assert_eq!(app.runtime.process.mem_error, -117);
+    assert!(direct(&mut app, Op::Count(0)).is_err());
+    assert_eq!(app.runtime.process.mem_error, -117);
+}
+#[test]
+fn menu_count_adapters_validate_word_result_before_popping_handle() {
+    let mut m = Memory::default();
+    m.map(
+        GuestPtr(0x1000),
+        vec![0x10, 0x00, 0x20, 0x00, 0xa5, 0xa5],
+        Permissions::RW,
+    )
+    .unwrap();
+    let mut c = m68k::CpuCore::default();
+    c.dar[15] = 0x1000;
+    let (call, reply) = Abi::trap(0xa950, &mut c, &m).unwrap();
+    assert_eq!(call, Call::Menu(Op::Count(0x10002000)));
+    assert_eq!(reply, Reply::StackWord(GuestPtr(0x1004)));
+    assert_eq!(c.dar[15], 0x1004);
+    c.dar[15] = 0x1002;
+    assert!(Abi::trap(0xa950, &mut c, &m).is_err());
+    assert_eq!(c.dar[15], 0x1002);
+    let mut c = ppc::PpcCpu::default();
+    c.gpr[3] = 0x10002000;
+    assert_eq!(
+        Abi::import(Service::CountMenuItems, &c, &m).unwrap(),
+        (call, Reply::PpcR3)
+    );
+    for name in [b"CountMItems".as_slice(), b"CountMenuItems"] {
+        assert_eq!(
+            Abi::resolve(b"InterfaceLib", name),
+            Some(Service::CountMenuItems)
+        );
+    }
+}
+
+#[test]
+fn resource_names_append_as_literal_sorted_items_with_live_resource_ownership() {
+    let mut original = standard_menu(70, 65);
+    original[10..14].copy_from_slice(&1u32.to_be_bytes());
+    let resource = support::resource(vec![
+        (*b"MENU", 7, None, original),
+        (*b"TEST", 1, Some(b"zeta".to_vec()), vec![1]),
+        (*b"TEST", 2, Some(b"alpha".to_vec()), vec![2]),
+        (*b"TEST", 3, Some(b".hidden".to_vec()), vec![3]),
+        (*b"TEST", 4, Some(b"%private".to_vec()), vec![4]),
+        (*b"TEST", 5, Some(b"alpha".to_vec()), vec![5]),
+        (*b"TEST", 6, Some(b"A".to_vec()), vec![6]),
+        (*b"TEST", 7, Some(b"Beta;^/".to_vec()), vec![7]),
+    ]);
+    let fixture = support::pef_program(&[0x4e800020], &[], 32);
+    let mut app = LoadedApplication::pef(&fixture.bytes, Some(&resource)).unwrap();
+    let handle = app
+        .runtime
+        .process
+        .get_resource(&mut app.runtime.memory, *b"MENU", 7)
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0xa5e), &[0, 0x5a])
+        .unwrap();
+    direct(
+        &mut app,
+        Op::AppendResources {
+            handle,
+            kind: *b"TEST",
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(0xa5e), 2).unwrap(),
+        [1, 0x5a]
+    );
+    let bytes = payload(&app.runtime.memory, &mut app.runtime.process, handle);
+    let menu = systemless_future::menus::record::Record::parse(&bytes).unwrap();
+    assert_eq!(
+        menu.items.iter().map(|i| i.text).collect::<Vec<_>>(),
+        [&b"A"[..], b"alpha", b"Beta;^/", b"zeta"]
+    );
+    assert_eq!(menu.enabled, 29);
+    for item in &menu.items[1..] {
+        assert_eq!(
+            (item.icon, item.command, item.mark, item.style),
+            (0, 0, 0, 0)
+        );
+    }
+    assert_eq!(direct(&mut app, Op::Count(handle)).unwrap(), 4);
+    assert_eq!(
+        app.runtime
+            .process
+            .get_resource(&mut app.runtime.memory, *b"MENU", 7)
+            .unwrap(),
+        handle
+    );
+    let h = app
+        .runtime
+        .process
+        .get_resource(&mut app.runtime.memory, *b"TEST", 2)
+        .unwrap();
+    assert_eq!(
+        payload(&app.runtime.memory, &mut app.runtime.process, h),
+        [2]
+    );
+    direct(
+        &mut app,
+        Op::AppendResources {
+            handle,
+            kind: *b"TEST",
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        payload(&app.runtime.memory, &mut app.runtime.process, handle),
+        bytes
+    );
+    direct(
+        &mut app,
+        Op::AppendResources {
+            handle,
+            kind: *b"NONE",
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        payload(&app.runtime.memory, &mut app.runtime.process, handle),
+        bytes
+    );
+}
+#[test]
+fn resource_menu_adapters_unpack_type_before_handle_and_keep_void_ppc_results() {
+    let mut m = Memory::default();
+    m.map(
+        GuestPtr(0x1000),
+        vec![b'T', b'E', b'S', b'T', 0x10, 0, 0x20, 0],
+        Permissions::RW,
+    )
+    .unwrap();
+    let expected = Call::Menu(Op::AppendResources {
+        handle: 0x10002000,
+        kind: *b"TEST",
+    });
+    let mut c = m68k::CpuCore::default();
+    c.dar[15] = 0x1000;
+    assert_eq!(
+        Abi::trap(0xa94d, &mut c, &m).unwrap(),
+        (expected, Reply::None)
+    );
+    assert_eq!(c.dar[15], 0x1008);
+    c.dar[15] = 0x1002;
+    assert!(Abi::trap(0xa94d, &mut c, &m).is_err());
+    assert_eq!(c.dar[15], 0x1002);
+    let mut c = ppc::PpcCpu::default();
+    c.gpr[3] = 0x10002000;
+    c.gpr[4] = u32::from_be_bytes(*b"TEST");
+    let (call, reply) = Abi::import(Service::AppendResMenu, &c, &m).unwrap();
+    assert_eq!(call, expected);
+    let mut cpu = Cpu::PowerPc(Box::new(c));
+    reply.apply(&mut cpu, &mut m, 99, 0).unwrap();
+    let Cpu::PowerPc(c) = cpu else { panic!() };
+    assert_eq!(c.gpr[3], 0x10002000);
+    for name in [b"AddResMenu".as_slice(), b"AppendResMenu"] {
+        assert_eq!(
+            Abi::resolve(b"InterfaceLib", name),
+            Some(Service::AppendResMenu)
+        );
+    }
+}
+
+#[test]
+fn item_marks_change_one_live_byte_without_allocating_or_touching_flags() {
+    let fixture = support::pef_program(&[0x4e800020], &[], 32);
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    let bytes = standard_menu(7, 65);
+    let handle = app
+        .runtime
+        .process
+        .new_handle(&mut app.runtime.memory, bytes.len() as u32, false)
+        .unwrap();
+    let p = ptr(&app.runtime.memory, handle);
+    app.runtime.memory.write(p, &bytes).unwrap();
+    app.runtime.process.mem_error = -108;
+    for item in [-1, 0, 2, 32767] {
+        direct(
+            &mut app,
+            Op::Mark {
+                handle,
+                item,
+                mark: 0x12,
+            },
+        )
+        .unwrap();
+        assert_eq!(app.runtime.memory.read(p, bytes.len()).unwrap(), bytes);
+    }
+    direct(
+        &mut app,
+        Op::Mark {
+            handle,
+            item: 1,
+            mark: 0x34,
+        },
+    )
+    .unwrap();
+    let mut expected = bytes;
+    expected[20] = 0x34;
+    assert_eq!(
+        app.runtime.memory.read(p, expected.len()).unwrap(),
+        expected
+    );
+    assert_eq!(ptr(&app.runtime.memory, handle), p);
+    assert_eq!(app.runtime.process.mem_error, -108);
+    direct(
+        &mut app,
+        Op::Mark {
+            handle,
+            item: 1,
+            mark: 0,
+        },
+    )
+    .unwrap();
+    assert_eq!(app.runtime.memory.read(GuestPtr(p.0 + 20), 1).unwrap(), [0]);
+    direct(
+        &mut app,
+        Op::Command {
+            handle,
+            item: 1,
+            command: 0x50,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(p.0 + 19), 2).unwrap(),
+        [0x50, 0]
+    );
+    assert_eq!(app.runtime.process.mem_error, -108);
+}
+#[test]
+fn item_mark_adapters_distinguish_short_characters_and_boolean_stack_bytes() {
+    let mut m = Memory::default();
+    m.map(
+        GuestPtr(0x1000),
+        vec![0, 0xff, 0, 1, 0x10, 0, 0x20, 0],
+        Permissions::RW,
+    )
+    .unwrap();
+    for (trap, mark) in [(0xa944, 0xff), (0xa945, 0)] {
+        let mut c = m68k::CpuCore::default();
+        c.dar[15] = 0x1000;
+        assert_eq!(
+            Abi::trap(trap, &mut c, &m).unwrap(),
+            (
+                Call::Menu(Op::Mark {
+                    handle: 0x10002000,
+                    item: 1,
+                    mark
+                }),
+                Reply::None
+            )
+        );
+        assert_eq!(c.dar[15], 0x1008);
+    }
+    m.write(GuestPtr(0x1000), &[1, 0]).unwrap();
+    let mut c = m68k::CpuCore::default();
+    c.dar[15] = 0x1000;
+    assert_eq!(
+        Abi::trap(0xa945, &mut c, &m).unwrap().0,
+        Call::Menu(Op::Mark {
+            handle: 0x10002000,
+            item: 1,
+            mark: 0x12
+        })
+    );
+    let mut c = ppc::PpcCpu::default();
+    c.gpr[3] = 0x10002000;
+    c.gpr[4] = 0xabcd0001;
+    c.gpr[5] = 0xdead0012;
+    for service in [Service::SetItemMark, Service::CheckItem] {
+        let (call, reply) = Abi::import(service, &c, &m).unwrap();
+        assert_eq!(
+            call,
+            Call::Menu(Op::Mark {
+                handle: 0x10002000,
+                item: 1,
+                mark: 0x12
+            })
+        );
+        let mut cpu = Cpu::PowerPc(Box::new(c.clone()));
+        reply.apply(&mut cpu, &mut m, 99, 0).unwrap();
+        let Cpu::PowerPc(c) = cpu else { panic!() };
+        assert_eq!(c.gpr[3], 0x10002000);
+    }
+    m.write(GuestPtr(0x1000), &[0xab, 0x50]).unwrap();
+    let mut native = m68k::CpuCore::default();
+    native.dar[15] = 0x1000;
+    assert_eq!(
+        Abi::trap(0xa84f, &mut native, &m).unwrap(),
+        (
+            Call::Menu(Op::Command {
+                handle: 0x10002000,
+                item: 1,
+                command: 0x50
+            }),
+            Reply::None
+        )
+    );
+    c.gpr[5] = 0xdead0050;
+    assert_eq!(
+        Abi::import(Service::SetItemCommand, &c, &m).unwrap().0,
+        Call::Menu(Op::Command {
+            handle: 0x10002000,
+            item: 1,
+            command: 0x50
+        })
+    );
+}
+
+#[test]
+fn menu_text_replacement_preserves_attributes_and_failed_growth_preserves_record() {
+    let fixture = support::pef_program(&[0x4e800020], &[], 32);
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    let mut bytes = standard_menu(7, 65);
+    bytes[18..22].copy_from_slice(&[3, 65, 0x12, 1]);
+    let h = app
+        .runtime
+        .process
+        .new_handle(&mut app.runtime.memory, bytes.len() as u32, false)
+        .unwrap();
+    let before = ptr(&app.runtime.memory, h);
+    app.runtime.memory.write(before, &bytes).unwrap();
+    let source = GuestPtr(
+        app.runtime
+            .process
+            .new_pointer(&mut app.runtime.memory, 256, false)
+            .unwrap(),
+    );
+    app.runtime
+        .memory
+        .write(source, b"\x0cLonger title")
+        .unwrap();
+    app.runtime
+        .process
+        .set_handle_lock(&app.runtime.memory, h, true)
+        .unwrap();
+    direct(
+        &mut app,
+        Op::Text {
+            handle: h,
+            item: 1,
+            source,
+        },
+    )
+    .unwrap();
+    assert_eq!(app.runtime.process.mem_error, -108);
+    assert_eq!(
+        payload(&app.runtime.memory, &mut app.runtime.process, h),
+        bytes
+    );
+    assert_eq!(ptr(&app.runtime.memory, h), before);
+    app.runtime
+        .process
+        .set_handle_lock(&app.runtime.memory, h, false)
+        .unwrap();
+    direct(
+        &mut app,
+        Op::Text {
+            handle: h,
+            item: 1,
+            source,
+        },
+    )
+    .unwrap();
+    assert_eq!(app.runtime.process.mem_error, 0);
+    let current = payload(&app.runtime.memory, &mut app.runtime.process, h);
+    let r = systemless_future::menus::record::Record::parse(&current).unwrap();
+    assert_eq!(r.items[0].text, b"Longer title");
+    assert_eq!(
+        (
+            r.items[0].icon,
+            r.items[0].command,
+            r.items[0].mark,
+            r.items[0].style
+        ),
+        (3, 65, 0x12, 1)
+    );
+    assert_eq!(&current[..16], &bytes[..16]);
+    assert!(direct(
+        &mut app,
+        Op::Text {
+            handle: h,
+            item: 1,
+            source: GuestPtr(0xdead0000)
+        }
+    )
+    .is_err());
+    assert_eq!(
+        payload(&app.runtime.memory, &mut app.runtime.process, h),
+        current
+    );
+    assert!(direct(
+        &mut app,
+        Op::Text {
+            handle: h,
+            item: 0,
+            source: GuestPtr(0xdead0000)
+        }
+    )
+    .is_ok());
+    app.runtime.memory.write(source, b"\x01B").unwrap();
+    direct(
+        &mut app,
+        Op::Text {
+            handle: h,
+            item: 1,
+            source,
+        },
+    )
+    .unwrap();
+    assert_eq!(direct(&mut app, Op::Count(h)).unwrap(), 1);
+}
+#[test]
+fn menu_text_adapters_unpack_pascal_pointer_and_signed_item_without_return_value() {
+    let mut m = Memory::default();
+    m.map(
+        GuestPtr(0x1000),
+        vec![0, 0, 0x30, 0, 255, 249, 0x10, 0, 0x20, 0],
+        Permissions::RW,
+    )
+    .unwrap();
+    let expected = Call::Menu(Op::Text {
+        handle: 0x10002000,
+        item: -7,
+        source: GuestPtr(0x3000),
+    });
+    let mut c = m68k::CpuCore::default();
+    c.dar[15] = 0x1000;
+    assert_eq!(
+        Abi::trap(0xa947, &mut c, &m).unwrap(),
+        (expected, Reply::None)
+    );
+    assert_eq!(c.dar[15], 0x100a);
+    let mut c = ppc::PpcCpu::default();
+    c.gpr[3] = 0x10002000;
+    c.gpr[4] = 0xabcdfff9;
+    c.gpr[5] = 0x3000;
+    let (call, reply) = Abi::import(Service::SetMenuItemText, &c, &m).unwrap();
+    assert_eq!(call, expected);
+    let mut cpu = Cpu::PowerPc(Box::new(c));
+    reply.apply(&mut cpu, &mut m, 99, 0).unwrap();
+    let Cpu::PowerPc(c) = cpu else { panic!() };
+    assert_eq!(c.gpr[3], 0x10002000);
+    for name in [b"SetItem".as_slice(), b"SetMenuItemText"] {
+        assert_eq!(
+            Abi::resolve(b"InterfaceLib", name),
+            Some(Service::SetMenuItemText)
+        );
+    }
+}

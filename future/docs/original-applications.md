@@ -40,7 +40,8 @@ fork path and a maximum instruction count, and prints register/opcode context.
   A bounded press/release at global (256,171) passes FindWindow, FindControl
   and StillDown, hides/disposes the demonstration splash, restores its saved
   nil port, creates/updates/reads its settings file, loads/installs its menu bar
-  and reaches unsupported CountMItems ($A950).
+  draws its menu titles, updates live items, constructs WIND 1000/two controls
+  and reaches unsupported CreateResFile ($A9B1).
   SystemTask preserves the empty periodic service state, PenSize updates live
   GrafPort dimensions and RectInRgn checks content intersections.
   GetPicture loads PICT 202, PortSize sizes its offscreen GrafPort and MovePortTo
@@ -113,12 +114,14 @@ The current probe at (256,171) dismisses the splash, then opens
 `Super Mines Demo Settings` with read/write permission in its created preferences
 directory. The missing-file path creates both forks, sets Finder metadata, reopens
 the data fork and executes EOF/seek/write/read operations. It then queries GetMHandle(4), closes the file and probes Gestalt selectors
-ppc-space and evnt, both correctly unavailable. It passes GetNewMBar(1000),
-SetMenuBar and GetMHandle(1), then reaches CountMItems ($A950),
-with post-trap PC $0100C4FC. This is one bounded 68K splash
-interaction plus settings I/O; menus, gameplay and a full lifecycle remain
-unverified. Files persist only within the process, with no host filesystem writes.
-Next: shared menu-item queries and application-driven mutation; then continue
-this transition through original menu drawing and interaction. Resource-backed
-title pixels are verified by focused and MPW fixtures, not yet by this original.
+ppc-space and evnt, both correctly unavailable. It loads and installs MBAR 1000,
+counts menu 1's items, calls AddResMenu('DRVR') and draws the original menu bar.
+Offscreen inspection shows File, Edit and Super Mines titles. It sets menu 4's
+item mark, text and command key, reads settings and constructs WIND 1000 plus two
+controls. The next unsupported call is CreateResFile ($A9B1), post-trap
+PC $0100DB86. The bounded transition proves splash dismissal, process-local
+settings I/O and menu setup; gameplay, popup interaction and a complete lifecycle
+remain unverified. Files persist only within the process, with no host filesystem
+writes. Next: resource-file creation/opening and coherent writable resource maps
+in the shared fork store, then continue this same transition.
 The full rebuild goal remains active.

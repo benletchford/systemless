@@ -110,8 +110,8 @@ TETextBox/TextBox now share transient TextEdit wrapping, alignment and clipped
 GPU erasure/drawing on both CPU adapters. Bold source strikes are synthesized
 without changing guest font resources. Super Mines startup passes its text boxes
 and enters event/mouse polling. A bounded press/release dismisses its splash,
-creates/reads settings, loads and installs its resource menu bar, then reaches
-CountMItems;
+creates/reads settings, loads, installs and draws its resource menu bar, updates menu items and reaches
+CreateResFile;
 gameplay and complete application lifecycle acceptance remain pending.
 
 GetMouse shares checked current-port coordinates and live guest Mouse globals;
@@ -133,3 +133,8 @@ capabilities explicitly. GetMenu/GetNewMBar load live resource-backed menus,
 SetMenuBar copies their list, and DrawMenuBar renders standard bitmap titles
 through wgpu. Insertion, popup tracking and guest definition callbacks remain
 unfinished.
+
+CountMItems, resource-name append, item marks/checks, command keys and item text
+now operate on the same live menu records through both CPU adapters. Super Mines
+passes menu setup and starts another resource window; writable Resource Manager
+files, menu interaction and full application acceptance remain unfinished.

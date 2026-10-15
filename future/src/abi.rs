@@ -67,6 +67,12 @@ pub enum Service {
     ErrorSound,
     Cursor(crate::cursor::Op),
     SetCursor,
+    SetMenuItemText,
+    SetItemCommand,
+    SetItemMark,
+    CheckItem,
+    AppendResMenu,
+    CountMenuItems,
     GetMenuHandle,
     GetMenu,
     GetNewMBar,
@@ -303,6 +309,12 @@ impl Abi {
             b"ObscureCursor" => Some(Service::Cursor(crate::cursor::Op::Obscure)),
             b"SetCursor" => Some(Service::SetCursor),
             b"GetMHandle" | b"GetMenuHandle" => Some(Service::GetMenuHandle),
+            b"SetItem" | b"SetMenuItemText" => Some(Service::SetMenuItemText),
+            b"SetItemCmd" => Some(Service::SetItemCommand),
+            b"SetItemMark" => Some(Service::SetItemMark),
+            b"CheckItem" | b"CheckMenuItem" => Some(Service::CheckItem),
+            b"AddResMenu" | b"AppendResMenu" => Some(Service::AppendResMenu),
+            b"CountMItems" | b"CountMenuItems" => Some(Service::CountMenuItems),
             b"GetMenu" => Some(Service::GetMenu),
             b"GetNewMBar" => Some(Service::GetNewMBar),
             b"SetMenuBar" => Some(Service::SetMenuBar),
@@ -1071,6 +1083,76 @@ impl Abi {
                 }),
                 Reply::None,
             )),
+            0xa947 => {
+                let args = memory.read(GuestPtr(sp), 10)?;
+                let source = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let item = i16::from_be_bytes(args[4..6].try_into().unwrap());
+                let handle = u32::from_be_bytes(args[6..10].try_into().unwrap());
+                c.dar[15] = sp
+                    .checked_add(10)
+                    .ok_or_else(|| Error::Cpu("menu text stack overflow".into()))?;
+                Ok((
+                    Call::Menu(crate::menus::Op::Text {
+                        handle,
+                        item,
+                        source,
+                    }),
+                    Reply::None,
+                ))
+            }
+            0xa84f | 0xa944 | 0xa945 => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let mark = if opcode == 0xa945 {
+                    if args[0] != 0 {
+                        0x12
+                    } else {
+                        0
+                    }
+                } else {
+                    args[1]
+                };
+                let item = i16::from_be_bytes(args[2..4].try_into().unwrap());
+                let handle = u32::from_be_bytes(args[4..8].try_into().unwrap());
+                c.dar[15] = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("menu mark stack overflow".into()))?;
+                Ok((
+                    Call::Menu(if opcode == 0xa84f {
+                        crate::menus::Op::Command {
+                            handle,
+                            item,
+                            command: mark,
+                        }
+                    } else {
+                        crate::menus::Op::Mark { handle, item, mark }
+                    }),
+                    Reply::None,
+                ))
+            }
+            0xa94d => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let kind = args[..4].try_into().unwrap();
+                let handle = u32::from_be_bytes(args[4..8].try_into().unwrap());
+                c.dar[15] = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("resource menu stack overflow".into()))?;
+                Ok((
+                    Call::Menu(crate::menus::Op::AppendResources { handle, kind }),
+                    Reply::None,
+                ))
+            }
+            0xa950 => {
+                let handle = memory.u32(GuestPtr(sp))?;
+                let result = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("menu count stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::Menu(crate::menus::Op::Count(handle)),
+                    Reply::StackWord(GuestPtr(result)),
+                ))
+            }
             0xa93c => {
                 let handle = memory.u32(GuestPtr(sp))?;
                 c.dar[15] = sp
@@ -1850,6 +1932,34 @@ impl Abi {
             Service::GetMenu => Call::Menu(crate::menus::Op::Load(c.gpr[3] as i16)),
             Service::GetNewMBar => Call::Menu(crate::menus::Op::Bar(c.gpr[3] as i16)),
             Service::SetMenuBar => Call::Menu(crate::menus::Op::Set(c.gpr[3])),
+            Service::SetMenuItemText => Call::Menu(crate::menus::Op::Text {
+                handle: c.gpr[3],
+                item: c.gpr[4] as i16,
+                source: GuestPtr(c.gpr[5]),
+            }),
+            Service::SetItemCommand => Call::Menu(crate::menus::Op::Command {
+                handle: c.gpr[3],
+                item: c.gpr[4] as i16,
+                command: c.gpr[5] as u8,
+            }),
+            Service::SetItemMark | Service::CheckItem => Call::Menu(crate::menus::Op::Mark {
+                handle: c.gpr[3],
+                item: c.gpr[4] as i16,
+                mark: if service == Service::CheckItem {
+                    if c.gpr[5] as u8 != 0 {
+                        0x12
+                    } else {
+                        0
+                    }
+                } else {
+                    c.gpr[5] as u8
+                },
+            }),
+            Service::AppendResMenu => Call::Menu(crate::menus::Op::AppendResources {
+                handle: c.gpr[3],
+                kind: c.gpr[4].to_be_bytes(),
+            }),
+            Service::CountMenuItems => Call::Menu(crate::menus::Op::Count(c.gpr[3])),
             Service::GetMenuHandle => Call::Menu(crate::menus::Op::Handle(c.gpr[3] as i16)),
             Service::Menu(op) => Call::Menu(op),
             Service::TEKey => Call::TextEdit(crate::textedit::Op::Key {
@@ -2206,6 +2316,11 @@ impl Abi {
                         | Service::Cursor(_)
                         | Service::SetCursor
                         | Service::SetMenuBar
+                        | Service::AppendResMenu
+                        | Service::SetItemMark
+                        | Service::SetItemCommand
+                        | Service::SetMenuItemText
+                        | Service::CheckItem
                         | Service::Menu(
                             crate::menus::Op::Init
                                 | crate::menus::Op::Draw

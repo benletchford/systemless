@@ -57,6 +57,17 @@ int main(void) {
         bar=GetNewMBar(42); if (!bar || GetHandleSize(bar)!=24) return 16;
         menu=GetMenu(7); if (!menu || menu!=(MenuHandle)GetResource('MENU',7) || (*menu)->menuID!=70) return 17;
         if ((*menu)->menuWidth!=36 || (*menu)->menuHeight!=16) return 18;
+        if (CountMItems(menu)!=1) return 22;
+        AppendResMenu(menu,'TEST');
+        if (CountMItems(menu)!=3 || !(*(unsigned char *)0xa5e)) return 23;
+        AppendResMenu(menu,'TEST'); if (CountMItems(menu)!=3) return 24;
+        SetItemMark(menu,1,0x1234); if (((unsigned char *)*menu)[20]!=0x34) return 25;
+        CheckItem(menu,1,true); if (((unsigned char *)*menu)[20]!=0x12) return 26;
+        CheckItem(menu,1,false); if (((unsigned char *)*menu)[20]!=0) return 27;
+        SetItemCmd(menu,1,0x1250); if (((unsigned char *)*menu)[19]!=0x50) return 29;
+        SetMenuItemText(menu,1,"\pLonger title");
+        if (((unsigned char *)*menu)[16]!=12 || ((unsigned char *)*menu)[31]!=0 || CountMItems(menu)!=3) return 28;
+        SetMenuItemText(menu,1,"\pA");
         SetMenuBar(bar); DisposeHandle(bar);
         if (*(Handle *)0xa1c!=live || GetMenuHandle(70)!=menu) return 19;
         DrawMenuBar();

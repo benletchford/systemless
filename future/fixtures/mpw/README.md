@@ -364,3 +364,8 @@ The menu fixture now compiles MENU, MBAR and a tiny FONT strike. Both CPUs load
 and measure menus, preserve GetResource identity, copy/install/dispose a bar,
 check title pixels and handle a missing child resource without replacing the live
 bar. The original application comparison baseline remains legacy Systemless.
+
+The menu guest also counts live items, appends named TEST resources with default
+attributes and checks repeated-append deduplication. It sets/checks/unchecks a mark,
+sets a command byte and grows/shrinks item text, verifying the raw record after
+each change. It uses SDK-declared AppendResMenu and SetMenuItemText C names.

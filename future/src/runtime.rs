@@ -1183,6 +1183,7 @@ impl Runtime {
                             crate::menus::Op::Init
                                 | crate::menus::Op::Load(_)
                                 | crate::menus::Op::Bar(_)
+                                | crate::menus::Op::AppendResources { .. }
                         ) | Call::FontInfo(_)
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }

@@ -6,3 +6,6 @@ data 'MENU' (7) { $"00460000000000000000FFFFFFFF014101410000000000" };
 data 'MENU' (8) { $"FFF80000000000000000FFFFFFFF014201410000000000" };
 data 'MBAR' (42) { $"000200070008" };
 data 'MBAR' (43) { $"000200070063" };
+data 'TEST' (1,"zeta") { $"01" };
+data 'TEST' (2,"alpha") { $"02" };
+data 'TEST' (3,".hidden") { $"03" };
