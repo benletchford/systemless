@@ -53,6 +53,7 @@ pub struct BitmapCommand {
     pub width: u32,
     pub height: u32,
     pub indices: Vec<u8>,
+    pub palette: Option<Box<[[u16; 3]; 256]>>,
     pub source: Rect,
     pub destination: Rect,
     pub clips: Option<Vec<Rect>>,
@@ -60,8 +61,15 @@ pub struct BitmapCommand {
     foreground: Option<u8>,
     background: Option<u8>,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Highlight {
+    #[default]
+    Default,
+    Rgb([u16; 3]),
+}
 #[derive(Debug)]
 pub struct Picture {
+    pub highlight: Highlight,
     pub frame: Rect,
     pub commands: Vec<BitmapCommand>,
 }
@@ -132,6 +140,7 @@ pub fn decode(bytes: &[u8]) -> Result<Picture> {
         }
         _ => return Err(bad("missing version")),
     };
+    let mut highlight = Highlight::Default;
     let mut commands = Vec::new();
     let mut clips = None;
     let mut foreground = None;
@@ -144,10 +153,23 @@ pub fn decode(bytes: &[u8]) -> Result<Picture> {
         let opcode = if v2 { r.word()? } else { u16::from(r.byte()?) };
         match opcode {
             0 => {}
-            0xff => return Ok(Picture { frame, commands }),
+            0xff => {
+                return Ok(Picture {
+                    frame,
+                    commands,
+                    highlight,
+                })
+            }
             1 => clips = Some(r.region()?),
             0x0e => foreground = Some(color(r.take(4)?)?),
             0x0f => background = Some(color(r.take(4)?)?),
+            0x1e if v2 => highlight = Highlight::Default,
+            0x1d if v2 => {
+                let b = r.take(6)?;
+                highlight = Highlight::Rgb(std::array::from_fn(|i| {
+                    u16::from_be_bytes([b[i * 2], b[i * 2 + 1]])
+                }));
+            }
             0xa0 => {
                 r.take(2)?;
             }
@@ -160,23 +182,71 @@ pub fn decode(bytes: &[u8]) -> Result<Picture> {
                 r.take(24)?;
             }
             0x90 | 0x91 | 0x98 | 0x99 => {
-                let stride = usize::from(r.word()?);
-                if stride == 0 || stride >= 0x4000 {
-                    return Err(bad("PixMap/color bitmap is unsupported"));
+                let row_word = r.word()?;
+                let indexed = row_word & 0x8000 != 0;
+                let stride = usize::from(row_word & 0x3fff);
+                if stride == 0 || row_word & 0x4000 != 0 {
+                    return Err(bad("invalid bitmap stride/flags"));
+                }
+                if indexed && !v2 {
+                    return Err(bad("indexed PixMap requires version 2"));
                 }
                 let bounds = r.rect()?;
+                let mut palette = None;
+                let mut defined = [false; 256];
+                let mut pack_type = 0;
+                if indexed {
+                    let version = r.word()?;
+                    pack_type = r.word()?;
+                    r.take(12)?; // packSize, horizontal and vertical resolution
+                    let pixel_type = r.word()?;
+                    let depth = r.word()?;
+                    let components = r.word()?;
+                    let component_size = r.word()?;
+                    let plane = u32::from_be_bytes(r.take(4)?.try_into().unwrap());
+                    r.take(8)?; // serialized table pointer/reserved
+                    if version != 0
+                        || pack_type > 1
+                        || pixel_type != 0
+                        || depth != 8
+                        || components != 1
+                        || component_size != 8
+                        || plane != 0
+                    {
+                        return Err(bad("unsupported indexed PixMap layout"));
+                    }
+                    r.take(4)?;
+                    let flags = r.word()?;
+                    let count = usize::from(r.word()?) + 1;
+                    if count > 256 {
+                        return Err(bad("color table entry limit"));
+                    }
+                    let mut table = Box::new([[65535u16; 3]; 256]);
+                    for ordinal in 0..count {
+                        let value = usize::from(r.word()?);
+                        let index = if flags & 0x8000 != 0 { ordinal } else { value };
+                        if index >= 256 || defined[index] {
+                            return Err(bad("invalid or duplicate color table index"));
+                        }
+                        defined[index] = true;
+                        let b = r.take(6)?;
+                        table[index] =
+                            std::array::from_fn(|i| u16::from_be_bytes([b[i * 2], b[i * 2 + 1]]));
+                    }
+                    palette = Some(table);
+                }
                 let width = bounds.right - bounds.left;
                 let height = bounds.bottom - bounds.top;
                 if width <= 0
                     || height <= 0
                     || width > 4096
                     || height > 4096
-                    || width as usize > stride * 8
+                    || width as usize > stride * if indexed { 1 } else { 8 }
                 {
                     return Err(bad("bitmap extent"));
                 }
                 expanded = expanded
-                    .checked_add(width as usize * height as usize)
+                    .checked_add(width as usize * height as usize + if indexed { 1536 } else { 0 })
                     .ok_or_else(|| bad("decoded size overflow"))?;
                 if expanded > LIMIT || stride * height as usize > LIMIT {
                     return Err(bad("decoded bitmap limit"));
@@ -231,7 +301,7 @@ pub fn decode(bytes: &[u8]) -> Result<Picture> {
                 }
                 let mut indices = Vec::with_capacity(width as usize * height as usize);
                 for _ in 0..height {
-                    let row = if opcode >= 0x98 && stride >= 8 {
+                    let row = if opcode >= 0x98 && stride >= 8 && pack_type != 1 {
                         let n = if stride > 250 {
                             usize::from(r.word()?)
                         } else {
@@ -241,14 +311,24 @@ pub fn decode(bytes: &[u8]) -> Result<Picture> {
                     } else {
                         r.take(stride)?.to_vec()
                     };
-                    for x in 0..width as usize {
-                        indices.push((row[x / 8] >> (7 - x % 8)) & 1);
+                    if indexed {
+                        for &value in &row[..width as usize] {
+                            if !defined[usize::from(value)] {
+                                return Err(bad("pixel references undefined color table index"));
+                            }
+                            indices.push(value);
+                        }
+                    } else {
+                        for x in 0..width as usize {
+                            indices.push((row[x / 8] >> (7 - x % 8)) & 1);
+                        }
                     }
                 }
                 commands.push(BitmapCommand {
                     width: width as u32,
                     height: height as u32,
                     indices,
+                    palette,
                     source,
                     destination,
                     clips: command_clip,
@@ -359,7 +439,7 @@ pub fn draw(
         prepared.push((rect, clips));
     }
     for (command, (rect, clips)) in picture.commands.iter().zip(prepared) {
-        bitmap.execute_source(
+        bitmap.execute_source_palette(
             gpu,
             memory,
             Draw::Blit {
@@ -380,6 +460,7 @@ pub fn draw(
             },
             Some(&clips),
             Some(&command.indices),
+            command.palette.as_deref(),
         )?;
     }
     Ok(())

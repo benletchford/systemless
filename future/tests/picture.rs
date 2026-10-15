@@ -300,3 +300,211 @@ fn picture_clip_and_bitmap_mask_intersect_and_v2_metadata_alignment_is_checked()
     let b = vec![0; 16 * 1024 * 1024 + 1];
     assert!(decode(&b).is_err());
 }
+
+fn indexed_fixture(
+    ordered: bool,
+    stride: usize,
+    packed: bool,
+    shaped_mask: bool,
+) -> (Vec<u8>, usize, usize) {
+    let mut b = vec![0, 0];
+    rect(&mut b, [10, 20, 12, 22]);
+    b.extend([0, 0x11, 2, 0xff]);
+    opcode(&mut b, true, 0x1d);
+    b.extend([0, 1, 0, 2, 0, 3]);
+    opcode(&mut b, true, 0x1e);
+    opcode(&mut b, true, 0x99);
+    b.extend((0x8000 | stride as u16).to_be_bytes());
+    rect(&mut b, [0, 0, 2, 2]);
+    let layout = b.len();
+    b.extend([0, 0, 0, 0]);
+    b.extend([0; 12]);
+    b.extend([0, 0, 0, 8, 0, 1, 0, 8]);
+    b.extend([0; 12]);
+    b.extend([0; 4]);
+    b.extend((if ordered { 0x8000u16 } else { 0 }).to_be_bytes());
+    let count = b.len();
+    b.extend(3u16.to_be_bytes());
+    let entries = if ordered {
+        [0u16, 0, 0, 0]
+    } else {
+        [255, 7, 42, 99]
+    };
+    for (i, rgb) in [[65535u16; 3], [0; 3], [0, 40000, 0], [0, 65535, 65535]]
+        .into_iter()
+        .enumerate()
+    {
+        b.extend(entries[i].to_be_bytes());
+        b.extend(rgb.into_iter().flat_map(|v| v.to_be_bytes()));
+    }
+    rect(&mut b, [0, 0, 2, 2]);
+    rect(&mut b, [10, 20, 12, 22]);
+    b.extend(0u16.to_be_bytes());
+    if shaped_mask {
+        let words = [
+            36i16, 10, 20, 12, 22, 10, 20, 22, 32767, 11, 21, 22, 32767, 12, 20, 21, 32767, 32767,
+        ];
+        b.extend(words.iter().flat_map(|w| w.to_be_bytes()));
+    } else {
+        b.extend(10u16.to_be_bytes());
+        rect(&mut b, [10, 20, 12, 22]);
+    }
+    for pair in if ordered {
+        [[1, 0], [3, 2]]
+    } else {
+        [[7, 255], [99, 42]]
+    } {
+        let mut row = vec![0xcc; stride];
+        row[..2].copy_from_slice(&pair);
+        if packed {
+            let mut encoded = Vec::new();
+            for chunk in row.chunks(128) {
+                encoded.push((chunk.len() - 1) as u8);
+                encoded.extend(chunk);
+            }
+            if stride > 250 {
+                b.extend((encoded.len() as u16).to_be_bytes());
+            } else {
+                b.push(encoded.len() as u8);
+            }
+            b.extend(encoded);
+        } else {
+            b[layout + 2..layout + 4].copy_from_slice(&1u16.to_be_bytes());
+            b.extend(row);
+        }
+    }
+    opcode(&mut b, true, 0xff);
+    let len = b.len() as u16;
+    b[..2].copy_from_slice(&len.to_be_bytes());
+    (b, layout, count)
+}
+#[test]
+fn indexed_tables_packbits_padding_and_highlight_metadata_decode_explicitly() {
+    for (ordered, stride, packed) in [(false, 8, true), (true, 252, true), (false, 8, false)] {
+        let (b, _, _) = indexed_fixture(ordered, stride, packed, true);
+        let p = decode(&b).unwrap();
+        assert_eq!(p.highlight, systemless_future::picture::Highlight::Default);
+        let c = &p.commands[0];
+        assert_eq!(
+            c.indices,
+            if ordered {
+                vec![1, 0, 3, 2]
+            } else {
+                vec![7, 255, 99, 42]
+            }
+        );
+        let table = c.palette.as_ref().unwrap();
+        assert_eq!(table[if ordered { 1 } else { 7 }], [0; 3]);
+        assert_eq!(table[if ordered { 0 } else { 255 }], [65535; 3]);
+        assert_eq!(
+            c.clips,
+            Some(vec![Rect::new(20, 10, 22, 11), Rect::new(20, 11, 21, 12)])
+        );
+    }
+    let (mut b, _, _) = indexed_fixture(false, 8, true, false);
+    b.drain(22..24);
+    assert_eq!(
+        decode(&b).unwrap().highlight,
+        systemless_future::picture::Highlight::Rgb([1, 2, 3])
+    );
+}
+#[test]
+fn indexed_truncation_tables_components_and_rendering_modes_are_checked() {
+    let (good, layout, count) = indexed_fixture(false, 8, true, false);
+    for n in 0..good.len() {
+        assert!(decode(&good[..n]).is_err(), "indexed prefix {n}");
+    }
+    for (offset, value) in [
+        (layout + 19, 16),
+        (layout + 21, 3),
+        (count, 0xff),
+        (count + 2, 1),
+        (count + 10, 1),
+        (count + 11, 0xff),
+    ] {
+        let mut b = good.clone();
+        b[offset] = value;
+        assert!(decode(&b).is_err(), "indexed offset {offset}");
+    }
+    let mut b = good.clone();
+    b[22] = 0;
+    b[23] = 0x1c;
+    assert!(decode(&b).is_err());
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn indexed_gpu_palette_conversion_masks_and_mutable_resources_match_both_cpus() {
+    for (ordered, stride, packed, mask) in [
+        (false, 8, true, false),
+        (true, 252, true, true),
+        (false, 8, false, false),
+    ] {
+        let (b, _, count) = indexed_fixture(ordered, stride, packed, mask);
+        let mut app = app(b);
+        let h = app
+            .runtime
+            .process
+            .get_resource(&mut app.runtime.memory, *b"PICT", 128)
+            .unwrap();
+        let original = app
+            .runtime
+            .memory
+            .read(GuestPtr(0x1000), 108)
+            .unwrap()
+            .to_vec();
+        let initial = [0, 0x5a, 0, 0x5a, 0, 0x5a, 0, 0x5a];
+        let expected = if mask {
+            [0x30, 0x5a, 0x30, 0x5a, 0, 0x5a, 0, 0x5a]
+        } else {
+            [0x30, 0x5a, 0x30, 0x5a, 0x0c, 0x5a, 0x0c, 0x5a]
+        };
+        for architecture in [Architecture::PowerPc, Architecture::M68k] {
+            app.runtime
+                .memory
+                .write(GuestPtr(0x1200), &initial)
+                .unwrap();
+            if architecture == Architecture::PowerPc {
+                assert_eq!(invoke(&mut app, 4, &[h, 0x300]), h);
+            } else {
+                app.runtime
+                    .memory
+                    .map(GuestPtr(0x50000000), vec![0xa8, 0xf6], Permissions::RX)
+                    .unwrap();
+                let stack = STACK_BASE + 0x8000;
+                let mut args = 0x300u32.to_be_bytes().to_vec();
+                args.extend(h.to_be_bytes());
+                app.runtime.memory.write(GuestPtr(stack), &args).unwrap();
+                app.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000000, stack);
+                assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+                let Cpu::M68k(c) = &app.runtime.cpu else {
+                    panic!()
+                };
+                assert_eq!(c.dar[15], stack + 8);
+            }
+            assert_eq!(
+                app.runtime.memory.read(GuestPtr(0x1200), 8).unwrap(),
+                expected,
+                "{architecture:?} ordered {ordered} stride {stride}"
+            );
+            assert_eq!(
+                app.runtime.memory.read(GuestPtr(0x1000), 108).unwrap(),
+                original
+            );
+        }
+        let data = app.runtime.memory.u32(GuestPtr(h)).unwrap();
+        let black_rgb = count as u32 + 2 + 8 + 2;
+        app.runtime
+            .memory
+            .write(GuestPtr(data + black_rgb), &[0xff; 6])
+            .unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(0x1200), &initial)
+            .unwrap();
+        invoke(&mut app, 4, &[h, 0x300]);
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(0x1200), 2).unwrap(),
+            [0, 0x5a]
+        );
+    }
+}

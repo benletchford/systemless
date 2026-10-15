@@ -2232,3 +2232,34 @@ production Mixed Mode remain unfinished. Full rebuild goal stays active.
 Validation: all 232 tests pass (190 default, 42 optional GPU/MPW), strict
 all-target Clippy passes, MPW fixtures rebuild and sequential changed-file
 formatting checks pass. No GPU tests were skipped.
+
+### Indexed PICT 184 rendering
+
+The complete PICT 184 slice now executes: version-2 default-highlight metadata,
+8-bit indexed PixMap records, inline ColorTables, PackBitsRgn data and region
+masks. CPU parsing preserves source indices/palette bytes; GPU color matching
+converts RGB to the current monochrome destination before clipping/scaling/
+transfer. Source layout/packing, table bounds/index identity, row lengths and
+undefined logical indices are explicit checked boundaries. PackType 1 raw rows
+and both byte/word packed-row lengths are supported. Highlight metadata is
+picture-local; actual highlight rendering modes remain explicit errors.
+
+Generated checks cover ordered/explicit tables, sparse high source indices,
+masked pictures, raw/packed/long rows, metadata reset, all truncated prefixes and
+malformed table/layout cases. Both CPU adapters produce identical pixels and
+preserve guest port/row padding. Mutating the loaded resource's color table
+changes the next GPU draw. MPW windows load/draw an indexed resource and inspect
+black/white screen bits, including a source index whose numeric value opposes
+its actual palette color.
+
+Fresh Super Mines startup completes PICT 184 and stops at TETextBox ($A9CE),
+PC $0100E766, trace index 21385. Next: bounded text-box layout and drawing through
+the existing shared font/text system, including wrapping/alignment and preserved
+port state, then continue the application's update cycle and interactions.
+Other PixMap depths/direct packing, Color Manager/dithering and color destinations,
+original interaction acceptance, native presentation and production Mixed Mode
+remain unfinished. Full rebuild goal remains active.
+
+Validation: all 235 tests pass (192 default, 43 optional GPU/MPW). Strict
+all-target Clippy, MPW rebuilding and sequential changed-file formatting checks
+pass. No GPU tests were skipped.

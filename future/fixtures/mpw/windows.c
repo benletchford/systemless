@@ -76,6 +76,11 @@ int main(void) {
         EraseRect(&box);
     }
     ReleaseResource((Handle)picture);
+    picture=GetPicture(323);
+    if (!picture || GetHandleSize((Handle)picture)!=154) return 60;
+    DrawPicture(picture,&local);
+    if (!(((unsigned char*)first->portBits.baseAddr)[40*first->portBits.rowBytes+5]&0x80) || !(((unsigned char*)first->portBits.baseAddr)[55*first->portBits.rowBytes+6]&1) || (((unsigned char*)first->portBits.baseAddr)[40*first->portBits.rowBytes+6]&1)) return 61;
+    ReleaseResource((Handle)picture);
     OpenPort(&offscreen); PortSize(8,4); MovePortTo(2,1);
     if (offscreen.portRect.right!=8 || offscreen.portRect.bottom!=4 || offscreen.portBits.bounds.left!=-2 || offscreen.portBits.bounds.top!=-1 || offscreen.portBits.bounds.right!=510 || offscreen.portBits.bounds.bottom!=341) return 49;
     ClosePort(&offscreen); SetPort((GrafPtr)first);

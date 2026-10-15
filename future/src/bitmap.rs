@@ -123,14 +123,25 @@ impl Bitmap {
         clips: Option<&[Rect]>,
         source: Option<&[u8]>,
     ) -> Result<()> {
-        if source.is_some_and(|s| s.iter().any(|v| *v > 1)) {
+        self.execute_source_palette(gpu, memory, draw, clips, source, None)
+    }
+    pub(crate) fn execute_source_palette(
+        &self,
+        gpu: &Graphics,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+        source: Option<&[u8]>,
+        palette: Option<&[[u16; 3]; 256]>,
+    ) -> Result<()> {
+        if palette.is_none() && source.is_some_and(|s| s.iter().any(|v| *v > 1)) {
             return Err(Error::Graphics("non-monochrome copy source".into()));
         }
         let (width, height) = self.extent()?;
         memory.validate_write(self.base, self.byte_len()?)?;
         if (width, height) != (gpu.width as usize, gpu.height as usize) {
             let target = gpu.target(width as u32, height as u32)?;
-            return self.execute_source(&target, memory, draw, clips, source);
+            return self.execute_source_palette(&target, memory, draw, clips, source, palette);
         }
         let coordinate = |value: i32, origin: i32| {
             value
@@ -239,7 +250,7 @@ impl Bitmap {
         let translated = clips
             .map(|clips| clips.iter().copied().map(rect).collect::<Result<Vec<_>>>())
             .transpose()?;
-        gpu.execute_source(&mut staging, draw, translated.as_deref(), source)?;
+        gpu.execute_source_palette(&mut staging, draw, translated.as_deref(), source, palette)?;
         self.pack(memory, staging.read(gpu.base, width * height)?)
     }
 }

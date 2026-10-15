@@ -321,3 +321,9 @@ size/mode/location are reset before continuing the other window checks.
 The same window guests also erase/invert/frame/fill rectangles, inspect changed
 and restored screen bits, and verify that FillRect stores its pattern in the
 live fillPat field.
+
+PICT 323 is an indexed version-2 generated resource with an explicit sparse
+ColorTable, default-highlight metadata and PackBitsRgn mask. The window probes
+inspect black and white screen bits after drawing it; source index 255 is white
+and index 7 is black, requiring palette interpretation rather than index-value
+thresholding.

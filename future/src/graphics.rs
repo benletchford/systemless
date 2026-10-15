@@ -233,6 +233,21 @@ impl Graphics {
         clips: Option<&[Rect]>,
         copy_source: Option<&[u8]>,
     ) -> Result<()> {
+        self.execute_source_palette(memory, draw, clips, copy_source, None)
+    }
+    pub(crate) fn execute_source_palette(
+        &self,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+        copy_source: Option<&[u8]>,
+        source_palette: Option<&[[u16; 3]; 256]>,
+    ) -> Result<()> {
+        if source_palette.is_some() && !matches!(draw, Draw::Blit { .. }) {
+            return Err(Error::Graphics(
+                "indexed source requires a bitmap blit".into(),
+            ));
+        }
         if copy_source.is_some() && !matches!(draw, Draw::Copy { .. } | Draw::Blit { .. }) {
             return Err(Error::Graphics(
                 "external source requires a copy command".into(),
@@ -404,6 +419,10 @@ impl Graphics {
                 }
                 p.extend(coordinates);
             }
+        }
+        if let Some(palette) = source_palette {
+            p[21] = 1;
+            p.extend(palette.iter().flatten().map(|&v| i32::from(v)));
         }
         if let Draw::Line { line, .. } = draw {
             p.extend([

@@ -15,8 +15,9 @@ allocation, virtual directories/file metadata, OS/update events, Basic QuickDraw
 fonts, plain TextEdit, cursor state, window records and controls use common
 services. GetPicture shares PICT loading with the Resource Manager; PortSize
 and MovePortTo support offscreen port setup. DrawPicture supports bounded
-monochrome bitmap commands in PICT v1/v2 through wgpu; vector/text commands,
-color PixMaps and picture recording remain pending. CopyBits shares GPU scaling,
+monochrome bitmap commands in PICT v1/v2 and 8-bit indexed PICT v2 source
+PixMaps with GPU palette conversion to the monochrome destination. Vector/text
+commands, other PixMap depths, color destinations and picture recording remain pending. CopyBits shares GPU scaling,
 source transfer modes and complex masks for monochrome BitMaps, including
 overlapping storage. LineTo/Line share GPU rectangular-pen coverage, patterns,
 transfer modes and live pen advancement. Rectangle frame/erase/invert/fill use

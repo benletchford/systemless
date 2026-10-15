@@ -1061,10 +1061,10 @@ for one-bit BitMaps, clip regions/masks, monochrome foreground/background colors
 comments and v2 header metadata. The declared picSize is advisory; owned handle
 size bounds all reads. Input and expanded command storage are capped at 16 MiB,
 bitmap axes/source spans at 4096, and stream traversal at 4096 opcodes. Missing
-EndPic, malformed PackBits, color PixMaps and unknown drawing/state opcodes fail
+EndPic, malformed PackBits, unsupported PixMap layouts and unknown drawing/state opcodes fail
 explicitly. Text/vector picture commands and picture recording remain gaps.
 
-CPU decoding converts compressed/packed storage to immutable one-bit indices.
+CPU decoding converts compressed/packed storage to immutable source indices.
 Graphics::Draw::Blit supplies independent source dimensions/rectangle, source
 colors and a transfer operation to wgpu. The compute shader enlarges using integer nearest sampling and reduces
 monochrome footprints with OR. It excludes source coordinates outside the bitmap and performs
@@ -1147,3 +1147,26 @@ remain unchanged. [Apple's drawing contracts](https://dev.os9.ca/techpubs/mac/Qu
 define the distinct fill/erase/invert semantics. Recording/custom procedures and
 color ports remain unsupported; ordinary clipping and packed-row preservation
 continue through shared wgpu/BitMap synchronization.
+
+PICT v2 now accepts byte-indexed 8-bit PixMaps with one 8-bit component and
+packType 0/1. Inline ColorTables follow explicit ColorSpec indices or sequential
+indices when ctFlags bit 15 is set. Entries are bounded to 256, duplicates/out-
+of-range values fail, and logical pixels must reference defined entries. Row
+padding is storage, not additional pixels; byte/word PackBits lengths and raw
+rows are checked before drawing. Serialized pointers are never dereferenced.
+
+BitmapCommand retains original indices and an immutable 16-bit RGB palette.
+The GPU receives that palette with the command and matches each source color
+to the current monochrome white/black destination by RGB distance, before
+transfer/reduction. No CPU color renderer or source-index threshold substitutes
+for palette lookup. Packed destination padding and port state remain unchanged,
+and edits to guest resource table bytes affect the next draw. This is a bounded
+monochrome destination policy, not Color Manager ITable/dithering or color-port
+compatibility. Other indexed depths and direct/component packing remain gaps.
+
+Version-2 HiliteColor/DefHilite metadata is retained as picture-local state.
+Default is an explicit marker, not a fabricated guest procedure or changed
+HiliteRGB global. HiliteMode and unsupported highlight transfer modes still
+fault before drawing; supported source modes do not consume highlight state.
+Original Super Mines PICT 184 now completes its metadata, 256-entry table,
+PackBitsRgn and mask through this path.

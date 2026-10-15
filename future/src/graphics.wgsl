@@ -4,6 +4,13 @@
 @group(0) @binding(2) var<storage, read> palette: array<u32>;
 @group(0) @binding(3) var<storage, read> p: array<i32>;
 @group(0) @binding(4) var output: texture_storage_2d<rgba8unorm, write>;
+// Match indexed source RGB against the current white/black destination policy.
+fn blit_bit(index:u32)->u32 {
+    if p[21]==0 {return index;}
+    let at=25+4*max(p[24],0)+3*i32(index);
+    let sum=p[at]+p[at+1]+p[at+2];
+    return select(0u,1u,sum<98303);
+}
 // Unsigned products fit in u32 for signed-word endpoints, including extremes.
 fn line_minor(origin:i32,delta:i32,steps:i32,t:i32)->i32 {
     if steps==0 {return origin;}
@@ -47,11 +54,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                 valid=lx<hx && ly<hy;
                 for (var yy=ly; yy<hy && bit==0u; yy=yy+1) {
                     for (var xx=lx; xx<hx && bit==0u; xx=xx+1) {
-                        bit=bit | source[u32(yy*p[16]+xx)];
+                        bit=bit | blit_bit(source[u32(yy*p[16]+xx)]);
                     }
                 }
             } else if sx>=0 && sy>=0 && sx<p[16] && sy<p[17] {
-                bit=source[u32(sy*p[16]+sx)];
+                bit=blit_bit(source[u32(sy*p[16]+sx)]);
             } else { valid=false; }
             bit=bit ^ u32(p[20]);
             src=select(u32(p[12]),u32(p[11]),bit!=0u);
