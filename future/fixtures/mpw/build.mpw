@@ -100,3 +100,9 @@ SC -sym off sampled_sound.c -o sampled_sound.68k.o
 Link -d -t 'APPL' -c 'FUTR' sampled_sound.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o sampled_sound.68k
 MrC -sym off -opt off sampled_sound.c -o sampled_sound.ppc.o
 PPCLink sampled_sound.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o sampled_sound.ppc
+SC -sym off handle_state.c -o handle_state.68k.o
+Link -d -t 'APPL' -c 'FUTR' handle_state.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o handle_state.68k
+Rez -append -o handle_state.68k handle_state.r
+MrC -sym off -opt off handle_state.c -o handle_state.ppc.o
+PPCLink handle_state.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o handle_state.ppc
+Rez -append -o handle_state.ppc handle_state.r

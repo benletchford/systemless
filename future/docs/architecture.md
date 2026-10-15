@@ -2041,3 +2041,41 @@ Primary references: [Apple SoundHeader](https://dev.os9.ca/techpubs/mac/Sound/So
 [Apple SndDoImmediate](https://dev.os9.ca/techpubs/mac/Sound/Sound-101.html),
 [Apple command definitions](https://leopard-adc.pepas.com/documentation/mac/Sound/Sound-47.html)
 and [CPAL API](https://docs.rs/cpal/0.18.2/cpal/), plus pinned public SDK Sound.h.
+
+
+## Real handle flags and bounded high relocation
+
+HGetState/HSetState, HPurge/HNoPurge, HSetRBit/HClrRBit and HLock/HUnlock share
+one allocator-owned flags model. The lock bit directly controls whether payloads
+can relocate. Purgeable/resource bits and opaque reserved bits survive normal
+and grouped resizes. The flags are out of line, so a 32-bit master pointer always
+contains the complete guest data address. Resource-map resLocked/resPurgeable
+attributes initialize lock/purge state; resource-backed handles also receive the
+resource bit. DetachResource clears that bit while retaining the other live
+properties. The Resource Manager's identity map remains distinct from raw flag
+changes: HClrRBit does not itself detach a map entry, and HSetRBit does not forge
+resource metadata.
+
+HGetState returns a signed byte, including the low error byte on invalid/nil
+handles. Native adaptation writes only D0's low byte, preserving A0/stack and
+upper D0 bytes; PPC sign-extends the result into r3. Setter procedures preserve
+PPC r3 and report errors in MemErr; native register procedures return the result
+code in D0. Resource errors remain unchanged. Nil master pointers now report
+nilHandleErr for flag/lock operations; nonnil foreign master edits still fault
+before properties change. Full empty/purged-handle allocation semantics remain
+unfinished; marking purgeability does not claim actual compaction or eviction.
+
+MoveHHi preserves flags, handle identity, payload and total free memory. An
+unlocked block can slide upward into its adjacent free interval, including an
+overlapping move. Snapshot bytes and a cloned allocator stage the operation;
+master/destination output checks precede publication. Other allocations are
+barriers, including nonrelocatable masters/Ptrs and other handle payloads. This
+does not compact other unlocked handles or jump across an immovable block. An
+already blocked/high block stays in place successfully; a locked block reports
+memLockedErr (-117). Changed resource blocks fail explicitly until WriteResource
+can perform the required update, rather than silently discarding persistence.
+
+Sources: [Apple flags](https://leopard-adc.pepas.com/documentation/mac/Memory/Memory-86.html),
+[HSetState](https://dev.os9.ca/techpubs/mac/Memory/Memory-87.html),
+[HPurge](https://dev.os9.ca/techpubs/mac/Memory/Memory-90.html),
+[MoveHHi](https://dev.os9.ca/techpubs/mac/Memory/Memory-100.html) and pinned SDK MacMemory.h.

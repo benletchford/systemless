@@ -1290,6 +1290,47 @@ impl Runtime {
                                 self.process.mem_error,
                             )?;
                         }
+                        Call::MoveHandleHigh(handle) => {
+                            self.process.move_handle_high(&mut self.memory, handle)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                0,
+                                self.process.mem_error,
+                            )?;
+                        }
+                        Call::HandleState { handle, value } => {
+                            let flags = if let Some(flags) = value {
+                                self.process.set_handle_state(&self.memory, handle, flags)?;
+                                0
+                            } else {
+                                self.process.handle_state(&self.memory, handle)? as i8 as i32 as u32
+                            };
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                flags,
+                                self.process.mem_error,
+                            )?;
+                        }
+                        Call::HandleAttribute {
+                            handle,
+                            resource,
+                            enabled,
+                        } => {
+                            self.process.set_handle_attribute(
+                                &self.memory,
+                                handle,
+                                resource,
+                                enabled,
+                            )?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                0,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::SetHandleLock { handle, locked } => {
                             self.process.set_handle_lock(&self.memory, handle, locked)?;
                             reply.apply(
@@ -1554,6 +1595,9 @@ impl Runtime {
                                 ..
                             }
                             | Call::SetHandleLock { .. }
+                            | Call::HandleState { .. }
+                            | Call::MoveHandleHigh(_)
+                            | Call::HandleAttribute { .. }
                             | Call::DisposeHandle(_)
                             | Call::CombineRegions { .. }
                             | Call::Region { .. }
@@ -1673,6 +1717,9 @@ impl Runtime {
                         | Call::TrapAddress { .. }
                         | Call::NewHandle { .. }
                         | Call::SetHandleLock { .. }
+                        | Call::HandleState { .. }
+                        | Call::MoveHandleHigh(_)
+                        | Call::HandleAttribute { .. }
                         | Call::DisposeHandle(_)
                         | Call::CombineRegions { .. }
                         | Call::Region { .. }

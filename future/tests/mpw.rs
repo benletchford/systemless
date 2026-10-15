@@ -1429,3 +1429,30 @@ fn headless_cli_advances_compiled_sampled_sound_during_guest_wait_without_a_host
         );
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn compiled_handle_flags_control_real_blocks_and_resource_lifetimes_on_both_cpus() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("handle_state.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("handle_state.ppc")).unwrap();
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, Some(&code)).unwrap(),
+    ] {
+        assert_eq!(app.runtime.advance(50000).unwrap(), Stop::Exit(0));
+        assert!(app.runtime.services.calls.iter().any(|call| matches!(
+            call,
+            Call::PostEvent {
+                what: 7,
+                message: 0xa069
+            }
+        )));
+        assert!(app
+            .runtime
+            .services
+            .calls
+            .iter()
+            .any(|call| matches!(call, Call::HandleState { value: Some(_), .. })));
+    }
+}

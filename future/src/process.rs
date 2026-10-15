@@ -53,6 +53,7 @@ struct HandleBlock {
     data: u32,
     size: u32,
     locked: bool,
+    attributes: u8,
 }
 #[derive(Clone)]
 struct Heap {
@@ -69,6 +70,28 @@ impl Heap {
         }
         self.allocated.insert(base, extent);
         Some(base)
+    }
+    fn allocate_at(&mut self, base: u32, size: u32) -> bool {
+        let Some(extent) = size.max(1).checked_add(3).map(|v| v & !3) else {
+            return false;
+        };
+        let Some((&start, &length)) = self.free.range(..=base).next_back() else {
+            return false;
+        };
+        if u64::from(base) + u64::from(extent) > u64::from(start) + u64::from(length) {
+            return false;
+        }
+        self.free.remove(&start);
+        if base > start {
+            self.free.insert(start, base - start);
+        }
+        let end = base + extent;
+        let limit = start + length;
+        if end < limit {
+            self.free.insert(end, limit - end);
+        }
+        self.allocated.insert(base, extent);
+        true
     }
     fn resize_in_place(&mut self, base: u32, size: u32) -> bool {
         let extent = (size.max(1) + 3) & !3;
@@ -333,6 +356,7 @@ impl Process {
                 data,
                 size,
                 locked: false,
+                attributes: 0,
             },
         );
         self.mem_error = 0;
@@ -351,11 +375,103 @@ impl Process {
         self.mem_error = 0;
         Ok(size)
     }
-    pub fn set_handle_lock(&mut self, memory: &Memory, handle: u32, locked: bool) -> Result<()> {
+    fn check_handle_flags(&mut self, memory: &Memory, handle: u32) -> Result<bool> {
+        if !self.handles.contains_key(&handle) {
+            self.mem_error = if handle == 0 { NIL_HANDLE } else { MEM_BAD };
+            return Ok(false);
+        }
+        if memory.u32(GuestPtr(handle))? == 0 {
+            self.mem_error = NIL_HANDLE;
+            return Ok(false);
+        }
         self.handle_size(memory, handle)?;
-        if self.mem_error == 0 {
+        Ok(true)
+    }
+    pub fn handle_state(&mut self, memory: &Memory, handle: u32) -> Result<u8> {
+        if !self.check_handle_flags(memory, handle)? {
+            return Ok(self.mem_error as i8 as u8);
+        }
+        let block = self.handles[&handle];
+        Ok(block.attributes | if block.locked { 0x80 } else { 0 })
+    }
+    pub fn set_handle_state(&mut self, memory: &Memory, handle: u32, flags: u8) -> Result<()> {
+        if self.check_handle_flags(memory, handle)? {
+            let block = self.handles.get_mut(&handle).unwrap();
+            block.locked = flags & 0x80 != 0;
+            block.attributes = flags & 0x7f;
+        }
+        Ok(())
+    }
+    pub fn set_handle_attribute(
+        &mut self,
+        memory: &Memory,
+        handle: u32,
+        resource: bool,
+        enabled: bool,
+    ) -> Result<()> {
+        if self.check_handle_flags(memory, handle)? {
+            let mask = if resource { 0x20 } else { 0x40 };
+            let block = self.handles.get_mut(&handle).unwrap();
+            block.attributes = if enabled {
+                block.attributes | mask
+            } else {
+                block.attributes & !mask
+            };
+        }
+        Ok(())
+    }
+    pub fn set_handle_lock(&mut self, memory: &Memory, handle: u32, locked: bool) -> Result<()> {
+        if self.check_handle_flags(memory, handle)? {
             self.handles.get_mut(&handle).unwrap().locked = locked;
         }
+        Ok(())
+    }
+    /// Move within the adjacent free interval. Other allocations are barriers;
+    /// compaction of other unlocked handles is a separate unfinished operation.
+    pub fn move_handle_high(&mut self, memory: &mut Memory, handle: u32) -> Result<()> {
+        if !self.check_handle_flags(memory, handle)? {
+            return Ok(());
+        }
+        let block = self.handles[&handle];
+        if block.locked {
+            self.mem_error = -117;
+            return Ok(());
+        }
+        if self.resource_handles.iter().any(|(&(kind, id), &h)| {
+            h == handle
+                && self
+                    .resources
+                    .get(kind, id)
+                    .is_some_and(|r| r.attributes & 2 != 0)
+        }) {
+            return Err(Error::Load(
+                "MoveHHi of changed resource requires unimplemented WriteResource".into(),
+            ));
+        }
+        let heap = self.heap.as_ref().unwrap();
+        let extent = heap.allocated[&block.data];
+        let end = block.data + extent;
+        let Some(&available) = heap.free.get(&end) else {
+            return Ok(());
+        };
+        let destination = ((end + available) & !3) - extent;
+        if destination <= block.data {
+            return Ok(());
+        }
+        memory.validate_write(GuestPtr(handle), 4)?;
+        memory.validate_write(GuestPtr(destination), block.size as usize)?;
+        let bytes = memory
+            .read(GuestPtr(block.data), block.size as usize)?
+            .to_vec();
+        let mut staged = heap.clone();
+        staged.release(block.data);
+        if !staged.allocate_at(destination, block.size) {
+            return Err(Error::Cpu("invalid staged high-handle relocation".into()));
+        }
+        memory.write(GuestPtr(destination), &bytes)?;
+        memory.write(GuestPtr(handle), &destination.to_be_bytes())?;
+        self.handles.get_mut(&handle).unwrap().data = destination;
+        self.heap = Some(staged);
         Ok(())
     }
     pub fn set_handle_size(&mut self, memory: &mut Memory, handle: u32, size: u32) -> Result<()> {
@@ -367,7 +483,12 @@ impl Process {
             self.mem_error = MEM_FULL;
             return Ok(());
         }
-        let HandleBlock { data, locked, .. } = self.handles[&handle];
+        let HandleBlock {
+            data,
+            locked,
+            attributes,
+            ..
+        } = self.handles[&handle];
         // The heap is one checked writable mapping. Validate it before changing
         // allocator metadata or master pointers, including the relocation case.
         memory.validate_write(GuestPtr(self.heap_base()), self.heap_capacity() as usize)?;
@@ -395,6 +516,7 @@ impl Process {
                 data: replacement,
                 size,
                 locked,
+                attributes,
             },
         );
         heap.release(data);
@@ -564,6 +686,7 @@ impl Process {
         self.mem_error = old_error;
         checked?;
         self.resource_handles.remove(&key);
+        self.handles.get_mut(&handle).unwrap().attributes &= !0x20;
         Ok(())
     }
     /// Read metadata from resource identity, never from mutable payload bytes.
@@ -645,18 +768,22 @@ impl Process {
         if let Some(handle) = self.resource_handles.get(&(kind, id)) {
             return Ok(*handle);
         }
-        let (contents, locked) = if let Some(resource) = self.resources.get(kind, id) {
+        let (contents, locked, purgeable) = if let Some(resource) = self.resources.get(kind, id) {
             if resource.attributes & 1 != 0 {
                 return Err(Error::Load(
                     "compressed resource decoding not implemented".into(),
                 ));
             }
-            (resource.data.clone(), resource.attributes & 0x10 != 0)
+            (
+                resource.data.clone(),
+                resource.attributes & 0x10 != 0,
+                resource.attributes & 0x20 != 0,
+            )
         } else if let Some(cursor) = (kind == *b"CURS")
             .then(|| crate::cursor::standard(id))
             .flatten()
         {
-            (cursor.to_vec(), false)
+            (cursor.to_vec(), false, false)
         } else {
             // Standard CURS records form a fallback provider after the application
             // map. Their type exists even if this particular ID does not.
@@ -672,7 +799,9 @@ impl Process {
         }
         let data = memory.u32(GuestPtr(handle))?;
         memory.write(GuestPtr(data), &contents)?;
-        self.handles.get_mut(&handle).unwrap().locked = locked;
+        let block = self.handles.get_mut(&handle).unwrap();
+        block.locked = locked;
+        block.attributes = 0x20 | if purgeable { 0x40 } else { 0 };
         self.resource_handles.insert((kind, id), handle);
         Ok(handle)
     }

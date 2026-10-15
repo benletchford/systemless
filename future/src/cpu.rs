@@ -226,6 +226,16 @@ pub enum Call {
         clear: bool,
     },
     DisposeHandle(u32),
+    MoveHandleHigh(u32),
+    HandleState {
+        handle: u32,
+        value: Option<u8>,
+    },
+    HandleAttribute {
+        handle: u32,
+        resource: bool,
+        enabled: bool,
+    },
     SetHandleLock {
         handle: u32,
         locked: bool,

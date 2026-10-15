@@ -234,6 +234,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .take(IMAGE_LIMIT as u64 + 1)
         .read_to_end(&mut fork)?;
     let mut app = LoadedApplication::code(&fork)?;
+    if let Ok(level) = std::env::var("SYSTEMLESS_PROBE_SOUND_VOLUME") {
+        systemless_future::sound::set_volume(&mut app.runtime.memory, level.parse()?)?;
+    }
     let mut volume = std::env::var_os("SYSTEMLESS_PROBE_VOLUME")
         .map(|path| systemless_future::volume::Volume::open(path, &mut app.runtime.process.files))
         .transpose()?;

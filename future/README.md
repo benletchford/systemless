@@ -225,3 +225,12 @@ completion. Queued commands, resource playback, callbacks, other header formats
 and Sound Manager version/capability queries remain unfinished. Both original
 EV and Marathon still stop at sound startup. Super Mines' recorded interaction
 is automated/offscreen; live desktop and win/loss acceptance remain incomplete.
+
+
+Handle properties now share real allocator metadata across both CPUs:
+HGetState/HSetState, HPurge/HNoPurge and resource-bit operations preserve lock,
+purgeable and resource flags without changing 32-bit master addresses. Resource
+loads initialize those flags; detaching clears the resource bit. MoveHHi can
+relocate into the immediately adjacent free interval without crossing other
+allocations. General compaction/purging remains unfinished. The sound-enabled
+Super Mines diagnostic now reaches SndPlay; queued/resource sound is still pending.

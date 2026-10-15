@@ -177,6 +177,10 @@ pub enum Service {
     NewHandle,
     NewHandleClear,
     DisposeHandle,
+    MoveHHi,
+    HGetState,
+    HSetState,
+    HandleAttribute { resource: bool, enabled: bool },
     HLock,
     HUnlock,
     ReleaseResource,
@@ -229,6 +233,7 @@ pub enum Reply {
     M68kFileError,
     M68kOSEvent,
     M68kD0,
+    M68kByte,
     M68kError,
 }
 pub struct Abi {
@@ -513,6 +518,25 @@ impl Abi {
             b"GetSoundVol" => Some(Service::GetSoundVol),
             b"PBControlSync" => Some(Service::PBControlSync),
             b"StripAddress" => Some(Service::StripAddress),
+            b"MoveHHi" => Some(Service::MoveHHi),
+            b"HGetState" => Some(Service::HGetState),
+            b"HSetState" => Some(Service::HSetState),
+            b"HPurge" => Some(Service::HandleAttribute {
+                resource: false,
+                enabled: true,
+            }),
+            b"HNoPurge" => Some(Service::HandleAttribute {
+                resource: false,
+                enabled: false,
+            }),
+            b"HSetRBit" => Some(Service::HandleAttribute {
+                resource: true,
+                enabled: true,
+            }),
+            b"HClrRBit" => Some(Service::HandleAttribute {
+                resource: true,
+                enabled: false,
+            }),
             b"HLock" => Some(Service::HLock),
             b"HUnlock" => Some(Service::HUnlock),
             b"CopyMask" => Some(Service::CopyMask),
@@ -2237,6 +2261,29 @@ impl Abi {
                 Reply::M68kFileError,
             )),
             0xa055 => Ok((Call::StripAddress(c.dar[0]), Reply::M68kD0)),
+            0xa064 => Ok((Call::MoveHandleHigh(c.dar[8]), Reply::M68kError)),
+            0xa069 => Ok((
+                Call::HandleState {
+                    handle: c.dar[8],
+                    value: None,
+                },
+                Reply::M68kByte,
+            )),
+            0xa06a => Ok((
+                Call::HandleState {
+                    handle: c.dar[8],
+                    value: Some(c.dar[0] as u8),
+                },
+                Reply::M68kError,
+            )),
+            0xa049 | 0xa04a | 0xa067 | 0xa068 => Ok((
+                Call::HandleAttribute {
+                    handle: c.dar[8],
+                    resource: matches!(opcode, 0xa067 | 0xa068),
+                    enabled: matches!(opcode, 0xa049 | 0xa067),
+                },
+                Reply::M68kError,
+            )),
             0xa029 | 0xa02a => Ok((
                 Call::SetHandleLock {
                     handle: c.dar[8],
@@ -3019,6 +3066,20 @@ impl Abi {
             },
             Service::ReleaseResource => Call::ReleaseResource(c.gpr[3]),
             Service::DetachResource => Call::DetachResource(c.gpr[3]),
+            Service::MoveHHi => Call::MoveHandleHigh(c.gpr[3]),
+            Service::HGetState => Call::HandleState {
+                handle: c.gpr[3],
+                value: None,
+            },
+            Service::HSetState => Call::HandleState {
+                handle: c.gpr[3],
+                value: Some(c.gpr[4] as u8),
+            },
+            Service::HandleAttribute { resource, enabled } => Call::HandleAttribute {
+                handle: c.gpr[3],
+                resource,
+                enabled,
+            },
             Service::HLock | Service::HUnlock => Call::SetHandleLock {
                 handle: c.gpr[3],
                 locked: service == Service::HLock,
@@ -3286,6 +3347,9 @@ impl Abi {
                         | Service::ReleaseResource
                         | Service::SetSoundVol
                         | Service::GetSoundVol
+                        | Service::MoveHHi
+                        | Service::HSetState
+                        | Service::HandleAttribute { .. }
                         | Service::HLock
                         | Service::HUnlock
                         | Service::DisposeHandle
@@ -3357,6 +3421,10 @@ impl Reply {
             Self::M68kA0 => match cpu {
                 Cpu::M68k(c) => c.dar[8] = value,
                 _ => return Err(Error::Cpu("68K result on PPC".into())),
+            },
+            Self::M68kByte => match cpu {
+                Cpu::M68k(c) => c.dar[0] = (c.dar[0] & 0xffff_ff00) | (value & 0xff),
+                _ => return Err(Error::Cpu("68K byte result on PPC".into())),
             },
             Self::M68kHandle | Self::M68kD0 | Self::M68kError => match cpu {
                 Cpu::M68k(c) => {

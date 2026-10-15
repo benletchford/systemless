@@ -1485,3 +1485,21 @@ The retained-profile Super Mines Save/Open rerun completes, reopens its
 byte-identical to the preceding inspected milestone. Evidence:
 /tmp/systemless-mines-sampled-final-reload.txt and associated after.ppm. This
 preserves the earlier muted-profile result, not sound-enabled acceptance.
+
+
+### Sound-enabled Mines reaches resource playback
+
+With explicit diagnostic volume seven, the original now passes its prior
+HGetState ($A069) and MoveHHi ($A064) boundaries, with real shared metadata and
+checked heap movement. It loads snd 12244, creates a callback-bearing sound
+channel, preserves residency flags and next calls SndPlay ($A805). The resource
+is format 1, sampledSynth with init $A0, and one offset bufferCmd pointing to a
+standard 8-bit mono header at rate $56EE8BA3. Evidence:
+/tmp/systemless-mines-movehi-sound-full.txt. Sound-enabled gameplay remains
+unaccepted until resource/queued playback and completion callbacks execute.
+
+After the handle changes, the retained-profile Save/Open regression still
+reopens the 1,972-byte game and returns to its event wait at $0100C798. Final
+pixels match the preceding milestone byte for byte:
+/tmp/systemless-mines-handle-profile-reload.txt and associated after.ppm.
+This does not change the separate sound-enabled SndPlay limitation above.

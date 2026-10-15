@@ -4256,3 +4256,55 @@ Strict all-target lint passes with -D warnings:
 /tmp/systemless-sampled-lint-final.txt. Native transport uses verified CPAL
 0.18.2 APIs (crate MSRV 1.85, below this package's 1.93 requirement). Full
 continuous/native-window sound and original-game acceptance remain unproven.
+
+
+## Resource-sound handle state and high-movement boundary
+
+Both CPU adapters now expose real lock/purge/resource flags and signed-byte
+HGetState results. Relocation preserves flags; restoring the lock bit changes
+actual resize behavior. Resource attributes initialize live state and detach
+clears only the resource bit. A public-SDK fixture checks both compiler ABIs,
+resource flag restoration, detach/reload, nil/freed errors and lock-sensitive
+movement. Nil-master lock calls now report -109; nonnil foreign master edits
+still fault. Existing tests were updated for this corrected documented distinction.
+
+MoveHHi stages actual upward movement through an adjacent free interval, retains
+payload/flags/free-space totals and does not cross another allocation. Locked
+handles report -117. General compaction, actual purging and changed-resource
+writeback remain unfinished, explicitly separate from supported operations.
+
+Sound-enabled original Super Mines passes HGetState/HNoPurge, SndNewChannel,
+MoveHHi and HLock, then stops at SndPlay ($A805). Evidence:
+/tmp/systemless-mines-movehi-sound-full.txt. The diagnostic now has an explicit
+SYSTEMLESS_PROBE_SOUND_VOLUME selection; the initial runtime volume is unchanged.
+Resource metadata inspection identifies snd 12244 as format 1 with sampledSynth,
+init $A0, one offset bufferCmd, standard unsigned 8-bit mono header and rate
+$56EE8BA3. Its callback-bearing channel will require real resource/queued sound
+and callback completion. Private resource bytes remain outside Git.
+
+Both original EV/Marathon sound-version boundaries and PPC/Mixed Mode work
+remain; no full rebuild or original-game gameplay completion is claimed.
+
+Continuation for resource sound: SndPlay must accept ordinary loaded handles as
+well as Resource Manager identities, resolve offset command pointers within the
+checked handle span, and enqueue commands in channel order. Asynchronous source
+handles remain the caller's residency responsibility; do not copy private game
+samples into fixtures. A nil channel forces synchronous behavior even when the
+async argument is true. Waiting/full-queue behavior must suspend the guest rather
+than claim completion. Completion callbacks belong on the Runtime/CPU boundary,
+never the native audio thread. Primary contract:
+https://dev.os9.ca/techpubs/mac/Sound/Sound-35.html.
+
+Final acceptance: all 422 tests pass with zero failures or skips, including the
+compiled SDK fixture and real GPU checks. Full run:
+/tmp/systemless-handle-acceptance-final.txt. Strict all-target lint with warnings
+denied passes: /tmp/systemless-handle-final-preflight-lint.txt. Focused heap,
+resource-lifetime and handle-state regressions, changed-source formatting,
+fixture shell syntax and whitespace checks also pass.
+
+Retained-profile original Super Mines Save/Open still reopens its 1,972-byte
+game and returns to Waiting{ticks:10} at $0100C798. The final screenshot is
+byte-identical to the preceding milestone. Evidence:
+/tmp/systemless-mines-handle-profile-reload.txt and associated after.ppm.
+Sound-enabled SndPlay, original EV/Marathon gameplay and the full rebuild remain
+unfinished; this checkpoint does not complete the goal.

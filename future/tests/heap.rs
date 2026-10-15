@@ -112,8 +112,18 @@ fn lock_operations_report_invalid_handles_and_reject_corrupt_masters() {
         assert_eq!(process.mem_error, -111);
     }
     let handle = process.new_handle(&mut memory, 8, false).unwrap();
+    let original = memory.u32(GuestPtr(handle)).unwrap();
     memory.write(GuestPtr(handle), &0u32.to_be_bytes()).unwrap();
+    process.set_handle_lock(&memory, handle, true).unwrap();
+    assert_eq!(process.mem_error, -109);
+    memory
+        .write(GuestPtr(handle), &(original + 4).to_be_bytes())
+        .unwrap();
     assert!(process.set_handle_lock(&memory, handle, true).is_err());
+    memory
+        .write(GuestPtr(handle), &original.to_be_bytes())
+        .unwrap();
+    assert_eq!(process.handle_state(&memory, handle).unwrap(), 0);
 }
 
 #[test]

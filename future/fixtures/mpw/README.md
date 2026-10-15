@@ -542,3 +542,11 @@ compiled apps through the headless CLI's silent virtual-time policy. The
 `audio_probe` example captures mixed WAV output and optionally submits it to an
 actual native device with bounded callback-consumption checks. It does not
 require a window, ROM, microphone permission or a host audio device for capture.
+
+
+`handle_state.c` and its locked/purgeable DATA resource exercise the public
+Memory/Resource Manager ABIs on both CPUs. Tests require signed HGetState,
+individual flag operations, restoration, actual locked-resize failure, unlocked
+relocation/high movement, resource detach/reload and invalid-handle MemErrs.
+Success requires marker $A069 and Exit(0). No GPU, audio device or private game
+asset is required; this does not establish general compaction or purge support.
