@@ -488,20 +488,14 @@ impl Menus {
 impl Tracking {
     fn restore(&mut self, m: &mut Memory, gpu: &Graphics) -> Result<()> {
         if let Some(clip) = self.damage {
-            let (w, h) = self.bitmap.extent()?;
             self.bitmap.execute_source(
                 gpu,
                 m,
-                Draw::Blit {
-                    mask: None,
+                Draw::Copy {
                     rect: self.bitmap.bounds,
                     clip,
-                    source: Rect::new(0, 0, w as i32, h as i32),
-                    width: w as u32,
-                    height: h as u32,
-                    foreground: 1,
-                    background: 0,
-                    invert: false,
+                    source_x: self.bitmap.bounds.left,
+                    source_y: self.bitmap.bounds.top,
                     mode: Transfer::Copy,
                 },
                 None,

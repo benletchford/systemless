@@ -56,17 +56,21 @@ impl Bitmap {
         Ok(self.row_bytes * self.extent()?.1)
     }
 
+    pub(crate) fn surface(&self, memory: &Memory) -> Result<crate::surface::Surface> {
+        crate::display::basic_surface(memory, *self)
+    }
     pub(crate) fn unpack(&self, memory: &Memory) -> Result<Vec<u8>> {
-        crate::surface::Surface::mono(*self).unpack(memory)
+        self.surface(memory)?.unpack(memory)
     }
     pub fn present(&self, gpu: &Graphics, memory: &Memory) -> Result<()> {
-        crate::surface::Surface::mono(*self).present_draw(gpu, memory, Draw::Present)
+        self.surface(memory)?
+            .present_draw(gpu, memory, Draw::Present)
     }
     pub fn present_draw(&self, gpu: &Graphics, memory: &Memory, draw: Draw) -> Result<()> {
-        crate::surface::Surface::mono(*self).present_draw(gpu, memory, draw)
+        self.surface(memory)?.present_draw(gpu, memory, draw)
     }
     pub fn execute(&self, gpu: &Graphics, memory: &mut Memory, draw: Draw) -> Result<()> {
-        crate::surface::Surface::mono(*self).execute(gpu, memory, draw)
+        self.execute_clipped(gpu, memory, draw, None)
     }
     pub fn execute_clipped(
         &self,
@@ -75,7 +79,9 @@ impl Bitmap {
         draw: Draw,
         clips: Option<&[Rect]>,
     ) -> Result<()> {
-        crate::surface::Surface::mono(*self).execute_clipped(gpu, memory, draw, clips)
+        let surface = self.surface(memory)?;
+        let draw = basic_draw(&surface, draw)?;
+        surface.execute_clipped(gpu, memory, draw, clips)
     }
     pub(crate) fn execute_source(
         &self,
@@ -85,6 +91,45 @@ impl Bitmap {
         clips: Option<&[Rect]>,
         source: Option<&[u8]>,
     ) -> Result<()> {
-        crate::surface::Surface::mono(*self).execute_source(gpu, memory, draw, clips, source)
+        let surface = self.surface(memory)?;
+        let draw = basic_draw(&surface, draw)?;
+        surface.execute_source(gpu, memory, draw, clips, source)
     }
+}
+
+fn basic_draw<'a>(surface: &crate::surface::Surface, mut draw: Draw<'a>) -> Result<Draw<'a>> {
+    let color = |v: u8| match v {
+        0 => Ok(surface.nearest([65535; 3])),
+        1 => Ok(surface.nearest([0; 3])),
+        _ => Err(Error::Graphics(
+            "basic bitmap colors must be bit values".into(),
+        )),
+    };
+    match &mut draw {
+        Draw::Fill {
+            foreground,
+            background,
+            ..
+        }
+        | Draw::Line {
+            foreground,
+            background,
+            ..
+        }
+        | Draw::Polygon {
+            foreground,
+            background,
+            ..
+        }
+        | Draw::Blit {
+            foreground,
+            background,
+            ..
+        } => {
+            *foreground = color(*foreground)?;
+            *background = color(*background)?;
+        }
+        _ => {}
+    }
+    Ok(draw)
 }

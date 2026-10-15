@@ -21,6 +21,7 @@ pub struct ResourceInfo {
 }
 #[derive(Default)]
 pub struct Process {
+    pub(crate) display: crate::display::Display,
     pub resources: ResourceFork,
     pub(crate) fragments: crate::cfm::Connections,
     pub files: crate::files::Files,

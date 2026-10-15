@@ -92,13 +92,16 @@ impl State {
         loaded: Option<(Runtime, u64)>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let is_loaded = loaded.is_some();
+        let dimensions = loaded.as_ref().map_or((8, 8), |(rt, _)| {
+            (rt.display().width(), rt.display().height())
+        });
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window.clone())?;
         let mut gpu = pollster::block_on(Graphics::new(
             &instance,
             Some(&surface),
-            if is_loaded { 512 } else { 8 },
-            if is_loaded { 342 } else { 8 },
+            dimensions.0,
+            dimensions.1,
             if is_loaded {
                 GuestPtr(0x75000000)
             } else {
@@ -471,7 +474,7 @@ impl ApplicationHandler for App {
                         assert!(!state.draw(window.clone()).unwrap());
                         state.resize(640, 360);
                         let expected = if state.execution.is_some() {
-                            (512, 342)
+                            (state.rt.display().width(), state.rt.display().height())
                         } else {
                             (8, 8)
                         };
@@ -564,6 +567,7 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut executable = None;
     let mut resources = None;
     let mut volume_path = None;
+    let mut display = None;
     let mut budget = 1_000_000u64;
     let mut graphics = false;
     let mut window = false;
@@ -599,6 +603,14 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     return Err("duplicate resource fork".into());
                 }
             }
+            "--display" => {
+                if display
+                    .replace(value.parse::<systemless_future::display::Display>()?)
+                    .is_some()
+                {
+                    return Err("duplicate display option".into());
+                }
+            }
             "--volume" => {
                 if volume_path.replace(value.as_str()).is_some() {
                     return Err("duplicate volume option".into());
@@ -629,6 +641,9 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => LoadedApplication::pef(&data, fork.as_deref())?,
     };
+    if let Some(display) = display {
+        app = app.with_display(display)?;
+    }
     let mut volume = volume_path
         .map(|path| systemless_future::volume::Volume::open(path, &mut app.runtime.process.files))
         .transpose()?;
@@ -664,8 +679,8 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let mut gpu = pollster::block_on(Graphics::new(
             &instance,
             None,
-            512,
-            342,
+            app.runtime.display().width(),
+            app.runtime.display().height(),
             GuestPtr(0x7500_0000),
         ))?;
         gpu.palette[0] = [255, 255, 255, 255];

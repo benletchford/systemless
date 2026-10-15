@@ -341,8 +341,8 @@ attachments remain owned and the color table borrowed. Custom device search or
 comparison procedures, palette-relative tables, direct color, arithmetic/dither
 modes, expanded pixel patterns and indexed cursor presentation remain explicit
 unsupported boundaries. One-bit drawing retains white/black palette semantics.
-The production main display remains one-bit 512×342: this milestone supplies real
-indexed offscreen targets, not a color-screen capability claim.
+The default display remains one-bit 512×342. The optional indexed main-display
+policy below uses real screen storage and a live main-device palette.
 
 This bitmap/backend boundary also serves loaded applications through the
 GrafPort services and real QuickDraw ABI adapters described below.
@@ -377,8 +377,14 @@ writes the globals pointer through it after validating both destinations. PPC
 uses the same guest storage contract without the A5 anchor. Both MPW fixture
 builds own their QDGlobals; no invented InterfaceLib data symbol is exported.
 
-The current screen policy reserves packed pixels for a 512x342 monochrome
-screen. No GPU is acquired during loading or initialization. An embedding host
+The default screen policy reserves packed pixels for a 512x342 monochrome
+screen. Before execution, `LoadedApplication::with_display` can select a bounded
+8-bit main display instead, installing its real storage, 256-entry host RGB332
+table and matching owned GDevice/PixMap. It consumes application preparation,
+so failed selection cannot publish a half-configured runtime. This is an
+explicit host palette policy, not a ROM/default Macintosh CLUT claim. Display
+selection after instructions, ports, a device or GPU exists is rejected.
+No GPU is acquired during loading or initialization. An embedding host
 must supply a Graphics target before PaintRect. The file CLI does so when
 `--graphics` is selected, preserving GPU-free execution for CPU-only programs.
 Different bitmap sizes share the device, queue, pipeline and error state but
@@ -406,8 +412,11 @@ record/service subset and explicit test pixels.
 
 ## Loaded applications in the window host
 
-`--code` and `--pef` accept `--window`, selecting a 512x342 monochrome GPU
-and the existing nearest/aspect-preserving surface pipeline. Each redraw runs
+`--code` and `--pef` accept `--window`, using the configured guest display and
+the existing nearest/aspect-preserving surface pipeline. `--display WIDTHxHEIGHTx8`
+selects actual indexed storage before execution; without it the display remains
+512x342 monochrome. GPU extent and input mapping follow guest display dimensions,
+independently of host window size. Each redraw runs
 at most 10,000 CPU instruction boundaries under one total application budget.
 WaitNextEvent returns to the host without spinning; elapsed host time adds
 60 Hz ticks before the next slice, alongside the runtime's existing deterministic
@@ -899,7 +908,11 @@ SysEnvirons describes one virtual Macintosh compatibility world rather than
 branching on the calling CPU. Its legacy processor field denotes the 68020
 compatibility backend; the native PPC engine retains its own execution state
 and semantics. Public capability flags describe implemented Macintosh services,
-so internal GPU palette support does not advertise Color QuickDraw. Unknown
+so the default monochrome profile does not advertise Color QuickDraw. The real
+indexed main-display profile sets SysEnvirons.hasColorQD after shared screen,
+window, palette, menu-restoration and cursor acceptance; unsupported operations
+still fail explicitly. This is a bounded implementation, not full Color QuickDraw
+compatibility or a 32-Bit QuickDraw Gestalt version claim. Unknown
 machine/keyboard values avoid pretending to emulate a particular hardware model.
 Version errors/layout follow Apple's Gestalt Manager reference and OV16.
 
@@ -2364,3 +2377,34 @@ $A820 remains the named variant. Both full/current ID/name native adapters check
 result-slot write permission before stack mutation or allocation. Dynamic resource
 map chains and UseResFile remain a later extension of the same process model.
 [Apple Get1Resource contract](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-51.html).
+
+
+## Configured main color display
+
+Process owns the host display policy; the main GDevice's live PixMap/table describe
+its canonical guest pixels. InitGraf screenBits and basic screen port descriptors
+carry the actual stride. Shared surface resolution recognizes full main-screen
+basic views (including translated bounds) using the main device rather than the
+currently selected offscreen device. Color ports borrow the same table and
+screen storage. Offscreen bitmaps retain their own packing. Basic operation ink
+maps white/black into actual device indices. CopyBits resolves basic screen
+sources/destinations to their real depth and table; window moves snapshot/copy
+actual indices. Menu restoration uses index copies so duplicate colors survive.
+No monochrome shadow framebuffer is created.
+
+Refresh uses the configured main display independently of the current port or
+selected offscreen device. Palette edits affect the next refresh. The GPU cursor
+is a presentation overlay: white/black masked pixels and RGB inversion with
+palette matching leave canonical screen bytes unchanged. Main-screen depth
+switches during execution, palette-manager lifecycle, sub-base basic screen
+views, direct color, grayscale attributes and general device operations remain
+unfinished. Color matching retains the documented deterministic policy and
+limits of the indexed destination milestone.
+
+Color-window background composition resolves live window foreground/background
+indices through the window's own palette, then maps their RGB colors into the
+main screen through the same clipped wgpu paint service. It does not reinterpret
+arbitrary indices as legacy black/white constants. NewCWindow initializes its
+screen PixMap from the main device and restores an application's selected
+offscreen device even when color-port construction fails. Basic Window Manager
+state, clipping, patterns and caller-port restoration remain shared.

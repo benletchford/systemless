@@ -13,6 +13,7 @@ pub mod cursor;
 pub mod decimal;
 pub mod devices;
 pub mod dialogs;
+pub mod display;
 pub mod environment;
 pub mod events;
 pub mod files;

@@ -49,11 +49,13 @@ impl Manager {
         for pointer in [MAIN, FIRST] {
             memory.validate_write(pointer, 4)?;
         }
-        let screen = crate::quickdraw::screen_bitmap();
+        let screen = process.display.bitmap();
+        let palette = process.display.colors();
+        let depth = process.display.depth();
         memory.read(screen.base, screen.byte_len()?)?;
         let mut owned = Vec::new();
         let result = (|| {
-            for size in [24, 50, 62] {
+            for size in [8 + palette.len() as u32 * 8, 50, 62] {
                 let handle = process.new_handle(memory, size, true)?;
                 if handle == 0 {
                     return Err(invalid("not enough memory for graphics device"));
@@ -63,13 +65,19 @@ impl Manager {
             let [table, pixels, device] = owned[..] else {
                 unreachable!()
             };
-            let table_data = record(memory, process, table, 24)?;
-            let mut colors = [0u8; 24];
+            let table_size = 8 + palette.len() * 8;
+            let table_data = record(memory, process, table, table_size as u32)?;
+            let mut colors = vec![0u8; table_size];
             colors[..4].copy_from_slice(&1u32.to_be_bytes());
             colors[4..6].copy_from_slice(&0x8000u16.to_be_bytes());
-            colors[6..8].copy_from_slice(&1u16.to_be_bytes());
-            colors[10..16].fill(255); // pixel 0 is white
-            colors[16..18].copy_from_slice(&1u16.to_be_bytes()); // pixel 1 black
+            colors[6..8].copy_from_slice(&((palette.len() - 1) as u16).to_be_bytes());
+            for (i, rgb) in palette.iter().enumerate() {
+                colors[8 + i * 8..10 + i * 8].copy_from_slice(&(i as u16).to_be_bytes());
+                for (k, v) in rgb.iter().enumerate() {
+                    colors[10 + i * 8 + k * 2..12 + i * 8 + k * 2]
+                        .copy_from_slice(&v.to_be_bytes());
+                }
+            }
             memory.write(table_data, &colors)?;
             let pixel_data = record(memory, process, pixels, 50)?;
             let mut map = [0u8; 50];
@@ -93,14 +101,15 @@ impl Manager {
             map[22..26].copy_from_slice(&(72u32 << 16).to_be_bytes());
             map[26..30].copy_from_slice(&(72u32 << 16).to_be_bytes());
             for at in [32, 34, 36] {
-                map[at..at + 2].copy_from_slice(&1u16.to_be_bytes());
+                map[at..at + 2]
+                    .copy_from_slice(&(if at == 34 { 1u16 } else { depth }).to_be_bytes());
             }
             map[42..46].copy_from_slice(&table.to_be_bytes());
             memory.write(pixel_data, &map)?;
             let data = record(memory, process, device, 62)?;
             let mut gd = [0u8; 62];
             gd[10..12].copy_from_slice(&4u16.to_be_bytes());
-            gd[20..22].copy_from_slice(&0xe800u16.to_be_bytes());
+            gd[20..22].copy_from_slice(&(0xe800u16 | u16::from(depth > 1)).to_be_bytes());
             gd[22..26].copy_from_slice(&pixels.to_be_bytes());
             gd[34..42].copy_from_slice(&bounds);
             memory.write(data, &gd)?;

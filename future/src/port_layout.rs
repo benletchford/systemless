@@ -46,10 +46,7 @@ pub(crate) fn bitmap(memory: &Memory, port: GuestPtr) -> Result<crate::surface::
     if color(memory, port)? {
         crate::pixmap::destination(memory, pixmap(memory, port)?)
     } else {
-        Ok(crate::surface::Surface::mono(Bitmap::read(
-            memory,
-            GuestPtr(port.0 + 2),
-        )?))
+        Bitmap::read(memory, GuestPtr(port.0 + 2))?.surface(memory)
     }
 }
 pub(crate) fn pattern_pointer(

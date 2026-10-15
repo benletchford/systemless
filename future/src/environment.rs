@@ -17,6 +17,14 @@ pub fn gestalt(selector: u32) -> std::result::Result<u32, i16> {
     }
 }
 pub fn query(memory: &mut Memory, version: i16, record: GuestPtr) -> Result<i16> {
+    query_display(memory, version, record, crate::display::Display::default())
+}
+pub(crate) fn query_display(
+    memory: &mut Memory,
+    version: i16,
+    record: GuestPtr,
+    display: crate::display::Display,
+) -> Result<i16> {
     if version <= 0 {
         return Ok(-5501);
     }
@@ -24,11 +32,13 @@ pub fn query(memory: &mut Memory, version: i16, record: GuestPtr) -> Result<i16>
         return Ok(-50);
     }
     // Unknown virtual model/keyboard, System 7 compatibility target, 68020.
-    // No installed System file, AppleTalk driver, FPU or Color QuickDraw.
+    // No installed System file, AppleTalk driver or FPU. Color follows the
+    // real configured indexed display; unsupported Color QuickDraw calls fault.
     let mut bytes = vec![0; 16];
     for (offset, value) in [(0, 2u16), (4, SYSTEM_VERSION), (6, PROCESSOR)] {
         bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
     }
+    bytes[9] = u8::from(display.depth() > 1);
     memory.write(record, &bytes)?;
     Ok(if version > 2 { -5502 } else { 0 })
 }

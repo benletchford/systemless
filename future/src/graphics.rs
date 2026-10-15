@@ -594,10 +594,11 @@ impl Graphics {
             p.extend([x, y]);
             p.extend(data.map(i32::from));
             p.extend(mask.map(i32::from));
-            if memory
-                .read(self.base, (self.width * self.height) as usize)?
-                .iter()
-                .any(|v| *v > 1)
+            if target.is_none()
+                && memory
+                    .read(self.base, (self.width * self.height) as usize)?
+                    .iter()
+                    .any(|v| *v > 1)
             {
                 return Err(Error::Graphics(
                     "cursor presentation requires monochrome indices".into(),

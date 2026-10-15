@@ -4943,3 +4943,116 @@ Final full acceptance: 482 tests passed, zero failures and zero skips, with
 /tmp/systemless-indexed-all.txt. This includes all 30 freshly built compiler
 fixtures and the seven new indexed destination tests. Strict all-target lint,
 sequential changed-file formatting and whitespace checks also passed.
+
+
+## Real indexed main display
+
+Process now owns a bounded display policy. Consuming application preparation can
+select an actual 8-bit main framebuffer before execution; default behavior stays
+512×342 monochrome. `--display WIDTHxHEIGHTx8` works in file/headless/window hosts
+and the trace example. Main-device PixMap, table, bounds, stride, InitGraf globals
+and GPU dimensions agree. The initial color table is an explicit host RGB332
+policy, not a claimed Macintosh ROM CLUT. There is no monochrome shadow storage.
+
+Basic screen views with the full main base/extent (including translated bounds)
+resolve the main device independently of selected offscreen devices. Color-port
+and basic operations share canonical indexed pixels. CopyBits carries the actual
+palette for basic screen descriptors; window moves copy immutable index snapshots;
+menu overlays restore exact indices rather than recoloring snapshots. Cursor
+white/black/inverted pixels are GPU presentation only and preserve guest bytes.
+Live palette changes affect refresh. Unsupported interior basic-screen bases
+fail explicitly rather than being reinterpreted as monochrome. Runtime depth
+switching, palette-manager lifecycle, direct color, grayscale flags and broader
+Color QuickDraw remain unfinished. SysEnvirons.hasColorQD now follows the actual
+configured color profile; default mono and unknown Gestalt selectors stay as
+before. No 32-Bit QuickDraw version or full API compatibility is advertised.
+
+Five new display tests cover bounds/configuration lifetime, actual owned graph
+and allocation extent, odd-width row padding, native/PPC drawing into one screen,
+basic-descriptor color copies, live palette changes, cursor pixels/canonical
+storage, explicit interior-base rejection, colored native/PPC window moves,
+menu-bar damage limits and shared environment reporting. A new menu-tracking
+test restores a nontrivial full-color indexed background on both CPUs. Earlier
+focused runs pass; final full acceptance is recorded below when complete.
+
+The public-header compiled 68K probe completes with Exit(0), 1,731 instructions
+on a 65×40×8 headless display: /tmp/systemless-color-display-cli.txt. Native window
+smoke attempts exit the guest successfully but time out before successful
+presentation/resize on both the color and unchanged default mono profiles:
+/tmp/systemless-color-display-window.txt and
+/tmp/systemless-display-default-window.txt. This is an unresolved current-host
+native presentation limitation; neither attempt is counted as a pass. The
+exact cause is unverified. Offscreen acceptance is separate evidence.
+
+Original Marathon 68K passes the Color QuickDraw rejection on the real 640×480×8
+profile and next requests PBHSetVol ($A215), PC $01001ECE, after real asset and
+working-directory queries. EV still reports Monitor Tool ID -4 despite genuine
+8-bit screen storage and reaches ModalDialog ($A991), PC $000260B4. This rules out
+depth alone as a sufficient explanation. Logs:
+/tmp/systemless-marathon-color-display.txt and
+/tmp/systemless-ev-color-display.txt. Neither game is playable.
+Original Super Mines on the default mono profile again completes sound-enabled
+Save/Open, reopens 1,972 bytes, completes one callback and returns to its normal
+wait; final screenshot inspected and byte-identical to the indexed-foundation
+checkpoint. /tmp/systemless-mines-color-display.txt and matching -after.ppm.
+
+Next original-game slice: implement actual default-volume/directory selection
+for PBSetVol/PBHSetVol, not a success stub. Current `files/working.rs` assumes root
+2 in `parent` and Current queries. Selection must affect relative file, catalog
+and Standard File operations consistently while preserving valid working-
+directory identities, and honor the distinction between classic and hierarchical
+queries. Check persistence boundaries deliberately. Primary contracts:
+[Apple GetVol](https://dev.os9.ca/techpubs/mac/Files/Files-162.html) and
+[File Manager signatures/trap macros](https://dev.os9.ca/techpubs/mac/Files/Files-301A.html).
+Continue EV Monitor Tool diagnosis and PPC PBHGetVolParmsSync/NewRoutineDescriptor
+requirements. The complete rebuild goal remains active.
+
+Review additionally found a one-bit assumption in visible color-window background
+painting. Window composition now carries the source window's actual palette RGB
+through the shared clipped paint service into the main screen. NewCWindow binds
+to the main device while preserving any application-selected offscreen device.
+The new visible-window test verifies main base/stride, selection preservation,
+green hide/show/repaint/movement pixels and untouched offscreen storage. The
+focused test and all 12 existing window tests pass:
+/tmp/systemless-visible-color-window-final.txt and
+/tmp/systemless-color-window-composition.txt. Final all-target acceptance follows
+this correction; superseded partial runs are not used as final evidence.
+
+Additional read-only EV diagnosis while final validation runs: the earlier
+instruction trace's first D0=-4 follows PBGetFCBInfo returning -51, then application
+CODE assigns D3=-4 and returns it. The relevant original CODE 12 bytes at offset
+$72E0 are `31 78 0A 58 00 18 70 08 A2 60 66 24`: the guest copies low-memory
+$0A58 into ioRefNum (+24), then calls PBGetFCBInfo (selector 8). $0A58 is SysMap,
+the system resource-file reference, **not** CurApRefNum ($0900); do not alias it to
+the application's file merely to pass the check. The rebuild does not own an
+installed System file, and currently leaves this word zero. This is a concrete
+FCB/system-resource identity lead, not yet proof that this precise error instance
+propagates into the later Monitor Tool dialog. Trace context: approximately
+instruction 798545–798560 in /tmp/systemless-ev-monitor-instructions.txt. Current
+color traces still reach the same reported ID -4. Investigate genuine virtual
+system-resource ownership/metadata and error propagation; no fabricated FCB or
+success result has been added.
+
+Final-source original refresh uses /tmp/systemless-marathon-color-display-complete.txt
+(PBHSetVol $A215, PC $01001ECE), /tmp/systemless-ev-color-display-complete.txt
+(Monitor Tool ID -4, ModalDialog $A991, PC $000260B4), and
+/tmp/systemless-mines-color-display-complete.txt (restored game, one sound
+callback, normal wait). The final Super Mines -after.ppm was inspected and is
+byte-identical to the preceding indexed-foundation checkpoint. These refreshes
+use the completed visible-color-window composition code.
+
+The final file frontend also runs both public-header compiled resource/heap
+probes successfully on a real 65×40×8 headless display: 68K Exit(0), 1,731
+instructions/67 service calls, and PPC Exit(0), 1,086 instructions/72 calls.
+Evidence: /tmp/systemless-color-display-complete-cli-{68k,ppc}.txt. These use
+actual CODE/resource-fork and PEF plus resource-fork loading respectively.
+
+Final acceptance of the completed display and visible-color-window implementation:
+488 tests passed, zero failures and zero skips; all-target run exited 0 with
+`--locked --all-targets --no-fail-fast -- --include-ignored`. This includes all
+30 compiler cases and the six new display/menu tests. Evidence:
+/tmp/systemless-color-display-complete-all.txt. Strict all-target lint exited 0:
+/tmp/systemless-color-display-complete-lint.txt. Final diagnostic build exited 0:
+/tmp/systemless-color-display-complete-examples.txt. Sequential changed-source
+formatting and staged whitespace checks pass. Native-window smoke timeouts remain
+explicitly unpassed; full game acceptance and the rebuild are not complete.

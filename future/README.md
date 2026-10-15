@@ -22,7 +22,7 @@ Vector/text commands, other PICT source depths and picture recording remain
 pending. CopyBits shares GPU scaling, transfer modes and complex masks
 for monochrome BitMaps and checked live 1/2/4/8-bit indexed PixMap sources,
 including overlapping storage. Device queries expose owned GDevice/PixMap/table
-records for the actual initial monochrome screen; Index2Color reads its live
+records for the actual configured main screen; Index2Color reads its live
 palette. Color-port lifetime and packed 1/2/4/8-bit drawing use attached PixMap/PixPat
 records, including text and temporary pattern restoration. Selected offscreen
 devices can initialize color ports; main-screen depth changes, palette lifecycle
@@ -329,3 +329,21 @@ guest bytes. Selected indexed devices can initialize color ports. The main
 512×342 display remains one-bit; configurable color display, window composition,
 palette/device lifecycle and broader Color QuickDraw remain unfinished. Original
 EV and Marathon still stop at their existing error paths and are not playable.
+
+
+A real color main display can now be selected before execution:
+
+```sh
+cargo run --manifest-path future/Cargo.toml --locked -- --code APPLICATION.rsrc --display 640x480x8 --graphics --budget 1000000
+cargo run --manifest-path future/Cargo.toml --locked -- --pef APPLICATION --resources APPLICATION.rsrc --display 640x480x8 --window
+```
+
+The default remains 512×342 monochrome. The explicit color profile owns actual
+8-bit pixels, a live 256-entry host RGB332 palette and matching device/port
+records. Basic/color drawing, window moves, menu restoration and cursor overlay
+share the screen storage; direct guest writes and palette edits are visible on
+refresh. Host resizing preserves guest resolution. Runtime depth switching,
+palette-manager lifecycle, direct color and full Color QuickDraw remain gaps.
+Marathon now passes its initial Color QuickDraw rejection, then requests
+PBHSetVol ($A215) during directory setup. EV still reports Monitor Tool ID -4 on
+the real color screen. Neither original game has reached gameplay.

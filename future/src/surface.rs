@@ -44,6 +44,9 @@ pub(crate) fn unpack_pixels(memory: &Memory, bitmap: Bitmap, depth: u16) -> Resu
     Ok(out)
 }
 impl Surface {
+    pub(crate) fn set_bounds(&mut self, bounds: Rect) {
+        self.bitmap.bounds = bounds;
+    }
     pub fn mono(bitmap: Bitmap) -> Self {
         Self {
             bitmap,
@@ -158,9 +161,6 @@ impl Surface {
     /// Refresh a presentation texture without changing guest bytes. Unlike a
     /// drawing operation this also accepts read-only guest pixel mappings.
     pub fn present_draw(&self, gpu: &Graphics, memory: &Memory, draw: Draw) -> Result<()> {
-        if self.colors.is_some() && matches!(draw, Draw::Cursor { .. }) {
-            return Err(bad("indexed cursor presentation is not implemented"));
-        }
         if !matches!(draw, Draw::Present | Draw::Cursor { .. }) {
             return Err(Error::Graphics(
                 "presentation requires a presentation command".into(),
@@ -176,9 +176,6 @@ impl Surface {
     }
     /// Commands use bitmap-local QuickDraw coordinates. Temporary indices only
     /// encode storage; all pixel operations still execute through wgpu.
-    pub fn execute(&self, gpu: &Graphics, memory: &mut Memory, draw: Draw) -> Result<()> {
-        self.execute_clipped(gpu, memory, draw, None)
-    }
     pub fn execute_clipped(
         &self,
         gpu: &Graphics,

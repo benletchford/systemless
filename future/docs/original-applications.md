@@ -1711,3 +1711,29 @@ WaitNextEvent at PC $0100C798. Its final screenshot was inspected and is byte-fo
 identical to /tmp/systemless-mines-offscreen-after.ppm. Evidence:
 /tmp/systemless-mines-indexed-foundation.txt and matching -after.ppm. Native
 window/audio and win/loss acceptance are still separate unfinished work.
+
+
+### Real color main display
+
+The optional `--display 640x480x8` profile now has actual indexed storage, a live
+host RGB332 table, matching main device and coherent screen ports. SysEnvirons
+reports color only for this configured profile. Original Marathon v1.2 68K
+passes its initial Color QuickDraw rejection and continues through file/working-
+directory queries. It next requests PBHSetVol ($A215), PC $01001ECE. Trace:
+/tmp/systemless-marathon-color-display.txt, with the existing asset-volume
+snapshot. This is startup progress, not title/menu or movement/combat acceptance.
+
+Original EV 1.0.5 still reports Monitor Tool ID -4 with genuine depth-8 main
+pixels, then reaches ModalDialog ($A991), PC $000260B4. Trace:
+/tmp/systemless-ev-color-display.txt. Depth alone therefore does not explain that
+error. No success result or trap availability was fabricated. The first color
+trace before changing environment reporting is separately preserved at
+/tmp/systemless-ev-color-screen-first.txt. PPC loader blockers remain unchanged.
+
+Final-source original refresh uses /tmp/systemless-marathon-color-display-complete.txt
+(PBHSetVol $A215, PC $01001ECE), /tmp/systemless-ev-color-display-complete.txt
+(Monitor Tool ID -4, ModalDialog $A991, PC $000260B4), and
+/tmp/systemless-mines-color-display-complete.txt (restored game, one sound
+callback, normal wait). The final Super Mines -after.ppm was inspected and is
+byte-identical to the preceding indexed-foundation checkpoint. These refreshes
+use the completed visible-color-window composition code.

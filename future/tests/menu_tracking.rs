@@ -48,6 +48,12 @@ fn invoke(a: &mut LoadedApplication, index: u32, args: &[u32]) -> u32 {
     c.gpr[3]
 }
 fn setup(instance: &wgpu::Instance) -> (LoadedApplication, Pointer) {
+    setup_display(instance, None)
+}
+fn setup_display(
+    instance: &wgpu::Instance,
+    display: Option<systemless_future::display::Display>,
+) -> (LoadedApplication, Pointer) {
     let r = support::resource(vec![
         (*b"MENU", 7, None, menu(70, b"File", !4)),
         (*b"MENU", 8, None, menu(80, b"Edit", u32::MAX)),
@@ -70,6 +76,9 @@ fn setup(instance: &wgpu::Instance) -> (LoadedApplication, Pointer) {
         512,
     );
     let mut a = LoadedApplication::pef(&f.bytes, Some(&r)).unwrap();
+    if let Some(display) = display {
+        a = a.with_display(display).unwrap();
+    }
     let slot = a.info.toc_or_a5 + 64 + 202;
     a.runtime.graphics = Some(
         pollster::block_on(Graphics::new(instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
@@ -508,4 +517,43 @@ fn live_menu_edits_and_faults_do_not_consume_release_or_publish_partial_results(
     button(&mut a, &mut pointer, true);
     assert!(start(&mut a, Architecture::PowerPc, [10, 15]).is_err());
     assert_eq!(screen(&a), before);
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn indexed_menu_overlays_restore_exact_color_indices_on_both_cpus() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let (mut a, mut pointer) = setup_display(
+            &instance,
+            Some(systemless_future::display::Display::indexed8(512, 342).unwrap()),
+        );
+        let colors: Vec<_> = (0..512 * 322)
+            .map(|i| ((i * 37 + 19) % 256) as u8)
+            .collect();
+        a.runtime
+            .memory
+            .write(GuestPtr(SCREEN.0 + 512 * 20), &colors)
+            .unwrap();
+        motion(&mut a, &mut pointer, 15., 10.);
+        button(&mut a, &mut pointer, true);
+        events::flush(&mut a.runtime.memory, 1 << 1, 0).unwrap();
+        assert_eq!(
+            start(&mut a, arch, [10, 15]).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert_ne!(
+            &a.runtime.memory.read(SCREEN, 512 * 342).unwrap()[512 * 20..],
+            colors
+        );
+        motion(&mut a, &mut pointer, 30., 25.);
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Waiting { ticks: 1 });
+        button(&mut a, &mut pointer, false);
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+        assert_eq!(result(&a, arch), 70 << 16 | 1);
+        assert_eq!(
+            &a.runtime.memory.read(SCREEN, 512 * 342).unwrap()[512 * 20..],
+            colors
+        );
+    }
 }

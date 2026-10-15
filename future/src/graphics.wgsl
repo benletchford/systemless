@@ -175,7 +175,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             let bit=15u-u32(cx);
             let data=(u32(p[27+cy])>>bit)&1u;
             let mask=(u32(p[43+cy])>>bit)&1u;
-            value=(value & (~mask)) ^ data;
+            if color_target()==0 {value=(value & (~mask)) ^ data;}
+            else if mask!=0u {value=select(closest(vec3<u32>(65535u)),closest(vec3<u32>(0u)),data!=0u);}
+            else if data!=0u {value=closest(vec3<u32>(65535u)-destination_rgb(value));}
         }
     }
     let rgba=palette[value];

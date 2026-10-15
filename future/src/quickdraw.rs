@@ -40,6 +40,7 @@ pub enum RectangleOp {
 }
 #[derive(Clone, Copy)]
 struct PatternPaint {
+    colors: Option<([u16; 3], [u16; 3])>,
     pattern: [u8; 8],
     mode: u16,
     monochrome: bool,
@@ -373,11 +374,13 @@ impl Ports {
         let paint = match verb {
             Verb::Frame | Verb::Paint => None,
             Verb::Erase => Some(PatternPaint {
+                colors: None,
                 pattern: port_layout::pattern(memory, port, PortPattern::Background)?,
                 mode: 8,
                 monochrome: false,
             }),
             Verb::Invert => Some(PatternPaint {
+                colors: None,
                 pattern: [255; 8],
                 mode: 10,
                 monochrome: true,
@@ -388,6 +391,7 @@ impl Ports {
                     8,
                 )?;
                 Some(PatternPaint {
+                    colors: None,
                     pattern: memory.read(p, 8)?.try_into().unwrap(),
                     mode: 8,
                     monochrome: false,
@@ -766,6 +770,7 @@ impl Ports {
         let (paint, fill) = match op {
             RectangleOp::Erase => (
                 PatternPaint {
+                    colors: None,
                     pattern: port_layout::pattern(memory, port, PortPattern::Background)?,
                     mode: 8,
                     monochrome: false,
@@ -774,6 +779,7 @@ impl Ports {
             ),
             RectangleOp::Invert => (
                 PatternPaint {
+                    colors: None,
                     pattern: [255; 8],
                     mode: 10,
                     monochrome: true,
@@ -788,6 +794,7 @@ impl Ports {
                 )?;
                 (
                     PatternPaint {
+                        colors: None,
                         pattern,
                         mode: 8,
                         monochrome: false,
@@ -897,6 +904,28 @@ impl Ports {
     ) -> Result<()> {
         self.paint_geometry(gpu, memory, r, Coverage::Shape(shape), None)
     }
+    pub(crate) fn paint_rgb_coverage(
+        &self,
+        gpu: &Graphics,
+        memory: &mut Memory,
+        r: Rect,
+        shape: &[Rect],
+        colors: ([u16; 3], [u16; 3]),
+    ) -> Result<()> {
+        let pattern = port_layout::pattern(memory, self.current(memory)?, PortPattern::Pen)?;
+        self.paint_geometry(
+            gpu,
+            memory,
+            r,
+            Coverage::Shape(Some(shape)),
+            Some(PatternPaint {
+                pattern,
+                mode: 8,
+                monochrome: false,
+                colors: Some(colors),
+            }),
+        )
+    }
     fn paint_geometry(
         &self,
         gpu: &Graphics,
@@ -928,7 +957,9 @@ impl Ports {
             return Err(Error::Graphics("unsupported QuickDraw pen mode".into()));
         }
         let target = port_layout::bitmap(memory, p)?;
-        let (foreground, background) = if paint.is_some_and(|v| v.monochrome) {
+        let (foreground, background) = if let Some((fg, bg)) = paint.and_then(|v| v.colors) {
+            (target.nearest(fg), target.nearest(bg))
+        } else if paint.is_some_and(|v| v.monochrome) {
             (target.nearest([0; 3]), target.nearest([65535; 3]))
         } else {
             port_layout::colors(memory, p, &target)?
@@ -1043,10 +1074,19 @@ pub fn screen_bitmap() -> Bitmap {
 pub(crate) fn install(memory: &mut Memory) -> Result<()> {
     memory.map(SCREEN, vec![0; 64 * 342], crate::memory::Permissions::RW)
 }
+#[cfg(test)]
 pub(crate) fn initialize(
     memory: &mut Memory,
     slot: GuestPtr,
     anchor: Option<GuestPtr>,
+) -> Result<Ports> {
+    initialize_display(memory, slot, anchor, crate::display::Display::default())
+}
+pub(crate) fn initialize_display(
+    memory: &mut Memory,
+    slot: GuestPtr,
+    anchor: Option<GuestPtr>,
+    display: crate::display::Display,
 ) -> Result<Ports> {
     let base = GuestPtr(
         slot.0
@@ -1059,9 +1099,10 @@ pub(crate) fn initialize(
     }
     let mut bytes = [0; 206];
     bytes[76..80].copy_from_slice(&1u32.to_be_bytes());
-    bytes[80..84].copy_from_slice(&SCREEN.0.to_be_bytes());
-    bytes[84..86].copy_from_slice(&64u16.to_be_bytes());
-    bytes[86..94].copy_from_slice(&rect_bytes(Rect::new(0, 0, 512, 342))?);
+    let screen = display.bitmap();
+    bytes[80..84].copy_from_slice(&screen.base.0.to_be_bytes());
+    bytes[84..86].copy_from_slice(&(screen.row_bytes as u16).to_be_bytes());
+    bytes[86..94].copy_from_slice(&rect_bytes(screen.bounds)?);
     let arrow: [u16; 32] = [
         0x8000, 0xc000, 0xe000, 0xf000, 0xf800, 0xfc00, 0xfe00, 0xff00, 0xff80, 0xfc00, 0xdc00,
         0x8e00, 0x0600, 0x0700, 0x0300, 0, 0xc000, 0xe000, 0xf000, 0xf800, 0xfc00, 0xfe00, 0xff00,

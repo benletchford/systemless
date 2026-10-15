@@ -34,6 +34,37 @@ pub struct LoadedApplication {
     pub info: LoadInfo,
 }
 impl LoadedApplication {
+    /// Select a physical main display before any guest instruction or graphics
+    /// state exists. Consuming preparation keeps failed configuration private.
+    pub fn with_display(mut self, display: crate::display::Display) -> Result<Self> {
+        if self.runtime.instructions != 0
+            || self.runtime.process.ports.is_some()
+            || self.runtime.graphics.is_some()
+            || self.runtime.memory.u32(crate::devices::MAIN)? != 0
+        {
+            return Err(invalid(
+                "display must be selected before application execution",
+            ));
+        }
+        let screen = display.bitmap();
+        let mut prepared = Memory::default();
+        prepared.map(screen.base, vec![0; screen.byte_len()?], Permissions::RW)?;
+        self.runtime.memory.remove_mappings(&[screen.base.0]);
+        self.runtime.memory.adopt(prepared)?;
+        self.runtime.process.display = display;
+        if display.depth() != 1 {
+            let mut devices = std::mem::take(&mut self.runtime.process.devices);
+            let result = devices.call(
+                &mut self.runtime.memory,
+                &mut self.runtime.process,
+                crate::devices::Op::Main,
+            );
+            self.runtime.process.devices = devices;
+            result?;
+        }
+        Ok(self)
+    }
+
     pub fn code(resource_fork: &[u8]) -> Result<Self> {
         let mut app = code(ResourceFork::parse(resource_fork)?)?;
         app.runtime.process.install_files(&[], Some(resource_fork));

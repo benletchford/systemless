@@ -107,6 +107,9 @@ pub struct Runtime {
     calendar: crate::calendar::Clock,
 }
 impl Runtime {
+    pub fn display(&self) -> crate::display::Display {
+        self.process.display
+    }
     pub fn new(memory: Memory, cpu: Cpu, graphics: Option<Graphics>) -> Self {
         Self {
             memory,
@@ -137,7 +140,7 @@ impl Runtime {
             .as_ref()
             .ok_or_else(|| Error::Graphics("screen refresh requires GPU".into()))?;
         self.process.cursor.observe(self.process.input);
-        crate::quickdraw::screen_bitmap().present_draw(
+        self.process.display.surface(&self.memory)?.present_draw(
             gpu,
             &self.memory,
             self.process.cursor.draw(self.process.input),
@@ -655,8 +658,12 @@ impl Runtime {
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
                         Call::SysEnvirons { version, record } => {
-                            let result =
-                                crate::environment::query(&mut self.memory, version, record)?;
+                            let result = crate::environment::query_display(
+                                &mut self.memory,
+                                version,
+                                record,
+                                self.process.display,
+                            )?;
                             reply.apply(
                                 &mut self.cpu,
                                 &mut self.memory,
@@ -1138,10 +1145,11 @@ impl Runtime {
                             )?;
                         }
                         Call::InitGraf { slot, anchor } => {
-                            self.process.ports = Some(crate::quickdraw::initialize(
+                            self.process.ports = Some(crate::quickdraw::initialize_display(
                                 &mut self.memory,
                                 slot,
                                 anchor,
+                                self.process.display,
                             )?)
                         }
                         Call::Port { op, pointer } => {

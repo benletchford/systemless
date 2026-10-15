@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 pub const LIST: GuestPtr = GuestPtr(0x9d6);
 const SIZE: usize = 156;
 struct Paint {
+    rgb: Option<([u16; 3], [u16; 3])>,
     pattern: [u8; 8],
     foreground: u32,
     background: u32,
@@ -390,12 +391,12 @@ impl Windows {
             memory.write(GuestPtr(self.manager + 56), &8u16.to_be_bytes())?;
             memory.write(GuestPtr(self.manager + 58), &style.pattern)?;
             let bounds = Bitmap::read(memory, ports.screen_bitmap)?.bounds;
-            ports.paint_coverage(
-                gpu,
-                memory,
-                bounds,
-                Some(&region_geometry::decode(coverage)?),
-            )
+            let coverage = region_geometry::decode(coverage)?;
+            if let Some(rgb) = style.rgb {
+                ports.paint_rgb_coverage(gpu, memory, bounds, &coverage, rgb)
+            } else {
+                ports.paint_coverage(gpu, memory, bounds, Some(&coverage))
+            }
         })();
         memory.write(GuestPtr(self.manager), &saved)?;
         memory.write(ports.current_slot, &old.to_be_bytes())?;
@@ -414,6 +415,7 @@ impl Windows {
             gpu,
             coverage,
             Paint {
+                rgb: None,
                 pattern: [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55],
                 foreground: 33,
                 background: 30,
@@ -483,6 +485,7 @@ impl Windows {
             gpu,
             &ink,
             Paint {
+                rgb: None,
                 pattern: [255; 8],
                 foreground: 33,
                 background: 30,
@@ -512,6 +515,7 @@ impl Windows {
             gpu,
             &coverage,
             Paint {
+                rgb: None,
                 pattern: [0; 8],
                 foreground: 33,
                 background: 30,
@@ -587,6 +591,7 @@ impl Windows {
             gpu,
             &ink,
             Paint {
+                rgb: None,
                 pattern: [255; 8],
                 foreground: 33,
                 background: 30,
@@ -689,10 +694,12 @@ impl Windows {
             crate::port_layout::Pattern::Background,
         )?;
         let is_color = crate::port_layout::color(memory, GuestPtr(w))?;
-        let legacy_color = |value| match value {
-            0 if is_color => 30,
-            1 if is_color => 33,
-            value => value,
+        let rgb = if is_color {
+            let target = crate::port_layout::bitmap(memory, GuestPtr(w))?;
+            let (fg, bg) = crate::port_layout::colors(memory, GuestPtr(w), &target)?;
+            Some((target.rgb(fg)?, target.rgb(bg)?))
+        } else {
+            None
         };
         let origin = read_rect(
             memory,
@@ -707,9 +714,18 @@ impl Windows {
             gpu,
             &content,
             Paint {
+                rgb,
                 pattern,
-                foreground: legacy_color(memory.u32(GuestPtr(w + 80))?),
-                background: legacy_color(memory.u32(GuestPtr(w + 84))?),
+                foreground: if is_color {
+                    33
+                } else {
+                    memory.u32(GuestPtr(w + 80))?
+                },
+                background: if is_color {
+                    30
+                } else {
+                    memory.u32(GuestPtr(w + 84))?
+                },
             },
         )?;
         self.paint(
@@ -718,6 +734,7 @@ impl Windows {
             gpu,
             &border,
             Paint {
+                rgb: None,
                 pattern: if matches!(self.definitions.get(&w), Some(1 | 4)) {
                     [0; 8]
                 } else {
@@ -1009,15 +1026,27 @@ impl Windows {
             handles.push(h);
         }
         let opened = if color {
-            let mut manager = std::mem::take(&mut process.color_ports);
-            let result = manager.call(
-                memory,
-                process,
-                crate::color_ports::Action::Open,
-                GuestPtr(w),
-            );
-            process.color_ports = manager;
-            result
+            (|| {
+                // A screen window is bound to the main screen, independently
+                // of an application-selected offscreen graphics device.
+                let mut devices = std::mem::take(&mut process.devices);
+                let main = devices.call(memory, process, crate::devices::Op::Main);
+                process.devices = devices;
+                let main = main?;
+                let saved = memory.u32(crate::devices::CURRENT)?;
+                memory.validate_write(crate::devices::CURRENT, 4)?;
+                memory.write(crate::devices::CURRENT, &main.to_be_bytes())?;
+                let mut manager = std::mem::take(&mut process.color_ports);
+                let result = manager.call(
+                    memory,
+                    process,
+                    crate::color_ports::Action::Open,
+                    GuestPtr(w),
+                );
+                process.color_ports = manager;
+                memory.write(crate::devices::CURRENT, &saved.to_be_bytes())?;
+                result
+            })()
         } else {
             ports.open(memory, process, GuestPtr(w))
         };

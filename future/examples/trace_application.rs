@@ -3,16 +3,25 @@ use systemless_future::{cpu::Cpu, load::LoadedApplication, runtime::Stop};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--volume IMAGE] [--services-only]".into());
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only]".into());
     }
     let mut graphics = false;
     let mut services_only = false;
     let mut volume = None;
+    let mut display = None;
     let mut index = 3;
     while index < args.len() {
         match args[index].as_str() {
             "--graphics" if !graphics => graphics = true,
             "--services-only" if !services_only => services_only = true,
+            "--display" if display.is_none() => {
+                index += 1;
+                display = Some(
+                    args.get(index)
+                        .ok_or("missing display")?
+                        .parse::<systemless_future::display::Display>()?,
+                );
+            }
             "--volume" if volume.is_none() => {
                 index += 1;
                 volume = Some(args.get(index).ok_or("missing volume image")?);
@@ -31,6 +40,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "pef" => LoadedApplication::pef(&data, None)?,
         _ => return Err("expected code or pef".into()),
     };
+    if let Some(display) = display {
+        app = app.with_display(display)?;
+    }
     if let Some(path) = volume {
         let mut bytes = Vec::new();
         std::fs::File::open(path)?
@@ -45,8 +57,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             systemless_future::graphics::Graphics::new(
                 &instance,
                 None,
-                512,
-                342,
+                app.runtime.display().width(),
+                app.runtime.display().height(),
                 systemless_future::memory::GuestPtr(0x4000),
             ),
         )?);

@@ -19,11 +19,12 @@ pub(crate) fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
     let row = u16::from_be_bytes(header[4..6].try_into().unwrap());
     if row & 0x8000 == 0 {
         let bitmap = Bitmap::read(memory, address)?;
-        let indices = bitmap.unpack(memory)?;
+        let surface = bitmap.surface(memory)?;
+        let indices = surface.unpack(memory)?;
         return Ok(Source {
             bitmap,
             indices,
-            palette: None,
+            palette: surface.colors.map(|c| c.rgb),
         });
     }
     let Indexed {
@@ -153,9 +154,7 @@ pub(crate) fn default_colors(memory: &Memory, address: GuestPtr) -> Result<(u32,
 /// Destination metadata and live packed pixel bytes share the same checked view.
 pub(crate) fn destination(memory: &Memory, address: GuestPtr) -> Result<crate::surface::Surface> {
     if memory.u16(GuestPtr(address.0.checked_add(4).ok_or_else(bad)?))? & 0x8000 == 0 {
-        return Ok(crate::surface::Surface::mono(Bitmap::read(
-            memory, address,
-        )?));
+        return Bitmap::read(memory, address)?.surface(memory);
     }
     let Indexed {
         bitmap,
