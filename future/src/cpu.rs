@@ -249,6 +249,10 @@ pub enum Call {
     },
     SoundVolume(i16),
     SoundChannel(crate::sound::Op),
+    SoundImmediate {
+        channel: u32,
+        command: GuestPtr,
+    },
     GetSoundVolume(GuestPtr),
     DeviceControl(GuestPtr),
     StripAddress(u32),

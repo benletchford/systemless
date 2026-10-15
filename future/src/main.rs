@@ -82,6 +82,8 @@ struct State {
     execution: Option<Execution>,
     clock: std::time::Instant,
     pointer: systemless_future::host_input::Pointer,
+    #[cfg(not(target_arch = "wasm32"))]
+    audio: Option<systemless_future::audio::Output>,
 }
 impl State {
     fn new(
@@ -189,7 +191,36 @@ impl State {
             execution,
             clock: std::time::Instant::now(),
             pointer: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            audio: None,
         })
+    }
+    fn pump_audio(&mut self) -> systemless_future::Result<bool> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.execution.as_ref().is_some_and(|e| e.finished) {
+                self.audio = None;
+                return Ok(false);
+            }
+            if self.audio.is_none() && self.rt.process.sound.playing() {
+                self.audio = Some(systemless_future::audio::Output::open()?);
+            }
+            if let Some(audio) = &self.audio {
+                if !self.rt.process.sound.playing() && audio.queued()? == 0 {
+                    self.audio = None;
+                    return Ok(false);
+                }
+                if self.rt.process.sound.playing() {
+                    let frames = audio.needed()?;
+                    if frames != 0 {
+                        let pcm = self.rt.render_sound(frames, audio.rate())?;
+                        audio.push(&pcm)?;
+                    }
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     fn resize(&mut self, width: u32, height: u32) {
         self.config.width = width;
@@ -219,6 +250,7 @@ impl State {
             );
             self.rt.refresh_screen()?;
         }
+        self.pump_audio()?;
         let gpu = self.rt.graphics.as_ref().unwrap();
         gpu.check_error()?;
         let acquired = self.surface.get_current_texture();
@@ -315,6 +347,19 @@ impl ApplicationHandler for App {
             .is_some_and(|at| std::time::Instant::now() >= at)
         {
             self.redraw_at = None;
+            if let Some(state) = &mut self.state {
+                match state.pump_audio() {
+                    Ok(true) => {
+                        self.redraw_at =
+                            Some(std::time::Instant::now() + std::time::Duration::from_millis(16))
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.fail(_event_loop, error);
+                        return;
+                    }
+                }
+            }
             if let Some(w) = &self.window {
                 w.request_redraw();
             }
@@ -637,7 +682,10 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             volume.checkpoint(&app.runtime.process.files)?;
         }
         match advanced? {
-            Stop::Waiting { ticks } => app.runtime.elapse_ticks(ticks)?,
+            Stop::Waiting { ticks } => {
+                app.runtime.elapse_sound_silently(ticks)?;
+                app.runtime.elapse_ticks(ticks)?;
+            }
             stop => break stop,
         }
     };

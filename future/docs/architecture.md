@@ -1847,9 +1847,10 @@ with known uncompressed initialization flags. Other synth/configuration requests
 return explicit errors. There is a documented 64-channel runtime bound; it does
 not describe native hardware capacity. Both quietNow values complete immediately
 for an idle channel. Busy/private-field corruption is rejected, never discarded
-as if played. Actual command execution, channel status, synthesis, sound callbacks,
-wait-for-playback disposal and host audio output remain unfinished. Creation and
-disposal do not establish audible playback compatibility.
+as if played. The sampled-immediate extension below adds actual rendering and
+native transport. Channel-status APIs, queued commands, other synthesizers,
+sound callbacks and wait-for-playback disposal remain unfinished. Channel
+creation/disposal alone does not establish original-game playback compatibility.
 
 
 ## Shared display-device records and live indexed sources
@@ -1982,3 +1983,61 @@ master-pointer storage, heap-specific CODE reservations and reclaimed blocks.
 These utilities preserve guest error globals. FreeMem neither compacts/purges
 nor reports an invented compatibility floor; system zones and memory compaction
 remain unfinished. Both native register/stack and PPC import ABIs are tested.
+
+
+## Shared sampled sound and thin native output
+
+SndDoImmediate ($A804 / InterfaceLib) reaches one process-owned command
+implementation. Supported commands are null, quiet, amplitude/getAmplitude,
+stereo volume/getVolume and bufferCmd. The API reads a const eight-byte command;
+getters write only their requested guest outputs. Format/unsupported init errors
+return OSErrs, while unimplemented command families fail explicitly. A busy
+buffer submission is rejected rather than replacing an active sound. Quiet
+cancels the voice. Quiet channel disposal releases active owned playback;
+nonquiet disposal of an active channel currently returns -209 instead of
+waiting. FIFO command execution and completion callbacks are not implemented.
+
+Standard SoundHeader fields are checked before publication: inline/external
+sample pointers, bounded nonzero length, unsigned 16.16 rates (1 Hz through
+64 kHz), encoding, base frequency and loop-point bounds. Only unsigned eight-bit
+mono standard headers are accepted. Buffer playback does not use loop points
+for note-duration synthesis. Extended/compressed headers, installed voices and
+frequency/duration commands remain unfinished. Mono pan and no-interpolation
+initialization flags are applied; unsupported rate-conversion override flags
+are rejected for playback rather than silently ignored.
+
+The shared renderer pulls at most 65,536 stereo frames at an output rate of
+8–192 kHz. It validates every channel, sample span and completion write before
+advancing any voice. Live guest bytes are read on each pull. Unsigned 8-bit input
+is centered at 128, converted to signed 16-bit PCM, mixed with channel gains and
+saturated. Linear interpolation is the default; initNoInterp uses held samples.
+Fixed-point phase keeps a rational remainder to prevent an extra sample at
+nonintegral rate ratios. Changing output-clock denominators can lose less than
+one 32-bit fractional phase unit; full native resampler/filter parity is not
+claimed. Master SdVolume is read live; the existing initial value is retained. The
+compiler fixture explicitly sets volume seven before producing its samples. Error globals are preserved by command/render operations.
+
+Native and headless hosts share these semantics but select their clock policy.
+Native Output owns only bounded mixed PCM frames, never guest memory or CPU
+state. CPAL 0.18.2 opens the actual default output, converts stereo PCM into a
+supported device format and consumes it on the audio callback. The callback
+never waits on the producer mutex; missing frames become silence. The native
+host lazily opens output on first playback, pumps up to 50 ms ahead, keeps
+pumping while presentation is minimized and drops the stream on guest exit.
+This queued transport adds latency; end-to-end timing/continuous playback under
+load is not yet accepted. Device/configuration errors remain visible; CPAL Xrun
+and realtime-promotion advisories are counted separately from fatal errors.
+The Linux build requires libasound2-dev/pkg-config; the future CI installs them.
+Web audio transport remains unfinished; the common command/PCM model is portable.
+
+Headless CLI waits advance sound in bounded work per registered channel, using
+wide rational arithmetic rather than rendering enormous discarded buffers.
+Explicit render_sound provides sample capture. Both policies clear active
+command bytes on completion. Exit and CPU faults cancel owned voices at the
+Runtime boundary and prohibit later sound rendering; final guest bytes remain
+available as an inspection snapshot. No version/capability bypass was added.
+
+Primary references: [Apple SoundHeader](https://dev.os9.ca/techpubs/mac/Sound/Sound-74.html),
+[Apple SndDoImmediate](https://dev.os9.ca/techpubs/mac/Sound/Sound-101.html),
+[Apple command definitions](https://leopard-adc.pepas.com/documentation/mac/Sound/Sound-47.html)
+and [CPAL API](https://docs.rs/cpal/0.18.2/cpal/), plus pinned public SDK Sound.h.

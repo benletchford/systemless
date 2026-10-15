@@ -5,7 +5,7 @@ fixture_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 output_dir="${fixture_dir}/../../target/mpw-probe"
 mkdir -p "${output_dir}"
 output_dir=$(CDPATH= cd -- "${output_dir}" && pwd)
-cp "${fixture_dir}/color_windows.c" "${fixture_dir}/color_ports.c" "${fixture_dir}/devices.c" "${fixture_dir}/sound_channels.c" "${fixture_dir}/persistence.c" "${fixture_dir}/open_file.c" "${fixture_dir}/standard_file.c" "${fixture_dir}/working.c" "${fixture_dir}/menu_tracking.c" "${fixture_dir}/tracking.c" "${fixture_dir}/environment.c" "${fixture_dir}/dialogs.c" "${fixture_dir}/menus.c" "${fixture_dir}/menus.r" "${fixture_dir}/textedit.c" "${fixture_dir}/windows.c" "${fixture_dir}/windows.r" "${fixture_dir}/plugin.c" "${fixture_dir}/dynamic.c" "${fixture_dir}/dynamic.r" "${fixture_dir}/probe.c" "${fixture_dir}/jump.c" "${fixture_dir}/events.c" "${fixture_dir}/wait.c" "${fixture_dir}/draw.c" "${fixture_dir}/probe.r" "${fixture_dir}/build.mpw" "${output_dir}/"
+cp "${fixture_dir}/sampled_sound.c" "${fixture_dir}/color_windows.c" "${fixture_dir}/color_ports.c" "${fixture_dir}/devices.c" "${fixture_dir}/sound_channels.c" "${fixture_dir}/persistence.c" "${fixture_dir}/open_file.c" "${fixture_dir}/standard_file.c" "${fixture_dir}/working.c" "${fixture_dir}/menu_tracking.c" "${fixture_dir}/tracking.c" "${fixture_dir}/environment.c" "${fixture_dir}/dialogs.c" "${fixture_dir}/menus.c" "${fixture_dir}/menus.r" "${fixture_dir}/textedit.c" "${fixture_dir}/windows.c" "${fixture_dir}/windows.r" "${fixture_dir}/plugin.c" "${fixture_dir}/dynamic.c" "${fixture_dir}/dynamic.r" "${fixture_dir}/probe.c" "${fixture_dir}/jump.c" "${fixture_dir}/events.c" "${fixture_dir}/wait.c" "${fixture_dir}/draw.c" "${fixture_dir}/probe.r" "${fixture_dir}/build.mpw" "${output_dir}/"
 if ! docker run --rm --volume "${output_dir}:/workspace" systemless-toolbox-showcase-mpw %%% /workspace/build.mpw > "${output_dir}/build.log" 2>&1; then
     cat "${output_dir}/build.log"
     exit 1
@@ -41,4 +41,5 @@ docker run --rm --volume "${output_dir}:/workspace" --entrypoint SimpleRez syste
 docker run --rm --volume "${output_dir}:/workspace" --entrypoint SimpleRez systemless-toolbox-showcase-mpw devices.68k.rdump -o devices.68k.rsrc
 docker run --rm --volume "${output_dir}:/workspace" --entrypoint SimpleRez systemless-toolbox-showcase-mpw color_ports.68k.rdump -o color_ports.68k.rsrc
 docker run --rm --volume "${output_dir}:/workspace" --entrypoint SimpleRez systemless-toolbox-showcase-mpw color_windows.68k.rdump -o color_windows.68k.rsrc
+docker run --rm --volume "${output_dir}:/workspace" --entrypoint SimpleRez systemless-toolbox-showcase-mpw sampled_sound.68k.rdump -o sampled_sound.68k.rsrc
 printf 'Generated application forks in %s\n' "${output_dir}"

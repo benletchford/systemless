@@ -196,6 +196,7 @@ pub enum Service {
     DrawPicture,
     SetSoundVol,
     SndNewChannel,
+    SndDoImmediate,
     SndDisposeChannel,
     GetSoundVol,
     PBControlSync,
@@ -505,6 +506,7 @@ impl Abi {
             b"GetHandleSize" => Some(Service::GetHandleSize),
             b"ReleaseResource" => Some(Service::ReleaseResource),
             b"DetachResource" => Some(Service::DetachResource),
+            b"SndDoImmediate" => Some(Service::SndDoImmediate),
             b"SndNewChannel" => Some(Service::SndNewChannel),
             b"SndDisposeChannel" => Some(Service::SndDisposeChannel),
             b"SetSoundVol" => Some(Service::SetSoundVol),
@@ -926,6 +928,20 @@ impl Abi {
                 Ok((
                     Call::Device(crate::devices::Op::Select(device)),
                     Reply::None,
+                ))
+            }
+            0xa804 => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let command = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let channel = u32::from_be_bytes(args[4..8].try_into().unwrap());
+                let result = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("sound command stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::SoundImmediate { channel, command },
+                    Reply::StackWord(GuestPtr(result)),
                 ))
             }
             0xa913 | 0xaa45 => {
@@ -3082,6 +3098,10 @@ impl Abi {
             Service::GetResource => Call::GetResource {
                 kind: c.gpr[3].to_be_bytes(),
                 id: c.gpr[4] as i16,
+            },
+            Service::SndDoImmediate => Call::SoundImmediate {
+                channel: c.gpr[3],
+                command: GuestPtr(c.gpr[4]),
             },
             Service::SndNewChannel => {
                 let destination = GuestPtr(c.gpr[3]);

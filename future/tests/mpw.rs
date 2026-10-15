@@ -1363,3 +1363,69 @@ fn compiled_color_windows_share_hidden_geometry_drawing_and_attached_disposal_on
         );
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn compiled_sampled_sound_is_rendered_from_real_commands_and_completes_on_both_cpus() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code =
+        std::fs::read(root.join("sampled_sound.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("sampled_sound.ppc")).unwrap();
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, Some(&code)).unwrap(),
+    ] {
+        assert_eq!(
+            app.runtime.advance(50000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert!(app.runtime.services.calls.iter().any(|c| matches!(
+            c,
+            Call::PostEvent {
+                what: 7,
+                message: 0xa804
+            }
+        )));
+        assert_eq!(
+            app.runtime.render_sound(4, 8000).unwrap(),
+            [[-32768; 2], [0; 2], [32512; 2], [-16384; 2]]
+        );
+        app.runtime.elapse_ticks(1).unwrap();
+        assert_eq!(app.runtime.advance(50000).unwrap(), Stop::Exit(0));
+        assert!(!app.runtime.process.sound.playing());
+        assert!(app.runtime.services.calls.iter().any(|c| matches!(
+            c,
+            Call::PostEvent {
+                what: 7,
+                message: 0xa805
+            }
+        )));
+    }
+}
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn headless_cli_advances_compiled_sampled_sound_during_guest_wait_without_a_host_device() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    for (flag, path) in [
+        ("--code", root.join("sampled_sound.68k.rsrc")),
+        ("--pef", root.join("sampled_sound.ppc")),
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_systemless-future"))
+            .arg(flag)
+            .arg(path)
+            .args(["--budget", "50000"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("Exit(0)"),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}

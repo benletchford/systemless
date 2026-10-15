@@ -1,4 +1,6 @@
 pub mod abi;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod audio;
 pub mod bitmap;
 pub mod calendar;
 mod callback;
@@ -71,6 +73,8 @@ pub enum Error {
     Service(u32),
     #[error("graphics: {0}")]
     Graphics(String),
+    #[error("sound: {0}")]
+    Sound(String),
     #[error("volume: {0}")]
     Volume(String),
     #[error("invalid fixture: {0}")]

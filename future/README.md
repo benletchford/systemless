@@ -216,10 +216,12 @@ returns to the restored board/event wait. This is a bounded cross-launch check;
 full application and rebuild acceptance remain active.
 
 
-Sound Manager channel creation/disposal now shares real queue/record ownership
-between 68K and PPC, including caller-owned storage and signed errors. Both
-public-header compiler targets pass lifetime tests. Playback/command/callback
-execution remains unfinished. Centaurian's refreshed PPC load next requires
-Index2Color; its 68K startup still requires GetGDevice. Super Mines' recorded
-playability evidence remains automated/offscreen; live desktop and win/loss
-acceptance have not yet passed.
+Sound Manager channel creation/disposal and SndDoImmediate share ownership and
+standard sampled playback between 68K and PPC. The shared renderer reads live
+8-bit mono buffers, resamples/mixes stereo PCM and applies gain/pan/volume. Native
+output uses a bounded CPAL transport; headless virtual waits advance completion
+without an audio device. Compiler-generated guests verify exact samples and
+completion. Queued commands, resource playback, callbacks, other header formats
+and Sound Manager version/capability queries remain unfinished. Both original
+EV and Marathon still stop at sound startup. Super Mines' recorded interaction
+is automated/offscreen; live desktop and win/loss acceptance remain incomplete.

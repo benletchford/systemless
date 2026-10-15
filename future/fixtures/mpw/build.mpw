@@ -96,3 +96,7 @@ SC -sym off color_windows.c -o color_windows.68k.o
 Link -d -t 'APPL' -c 'FUTR' color_windows.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o color_windows.68k
 MrC -sym off -opt off color_windows.c -o color_windows.ppc.o
 PPCLink color_windows.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o color_windows.ppc
+SC -sym off sampled_sound.c -o sampled_sound.68k.o
+Link -d -t 'APPL' -c 'FUTR' sampled_sound.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o sampled_sound.68k
+MrC -sym off -opt off sampled_sound.c -o sampled_sound.ppc.o
+PPCLink sampled_sound.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o sampled_sound.ppc

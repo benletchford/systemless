@@ -125,6 +125,9 @@ impl Runtime {
         if result.is_err() {
             self.faulted = true;
         }
+        if self.faulted || self.terminal.is_some() {
+            self.process.sound.cancel();
+        }
         result
     }
     /// Choose the guest calendar epoch without changing TickCount. Hosts may set
@@ -134,6 +137,29 @@ impl Runtime {
             return Err(Error::Cpu("cannot set a stopped process clock".into()));
         }
         self.calendar.set(&mut self.memory, seconds)
+    }
+    /// Advance the shared sound sample clock without executing guest CPU code.
+    pub fn render_sound(&mut self, frames: usize, rate: u32) -> Result<Vec<[i16; 2]>> {
+        if self.faulted || self.terminal.is_some() {
+            return Err(Error::Sound("cannot render a stopped process".into()));
+        }
+        let mut sound = std::mem::take(&mut self.process.sound);
+        let result = sound.render(&mut self.memory, &mut self.process, frames, rate);
+        self.process.sound = sound;
+        result
+    }
+    /// Headless time policy: finish sampled sound during virtual waits without
+    /// opening a host device or allocating output for the discarded interval.
+    pub fn elapse_sound_silently(&mut self, ticks: u32) -> Result<()> {
+        if self.faulted || self.terminal.is_some() {
+            return Err(Error::Sound(
+                "cannot advance sound in a stopped process".into(),
+            ));
+        }
+        let mut sound = std::mem::take(&mut self.process.sound);
+        let result = sound.elapse_silently(&mut self.memory, &mut self.process, ticks);
+        self.process.sound = sound;
+        result
     }
     /// Host-controlled deterministic time, including periods with no guest CPU
     /// execution. A host can inject events before advancing this clock.
@@ -1339,6 +1365,23 @@ impl Runtime {
                             let v = self.process.get_resource(&mut self.memory, kind, id)?;
                             reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
                         }
+                        Call::SoundImmediate { channel, command } => {
+                            let mut sound = std::mem::take(&mut self.process.sound);
+                            let result = sound.immediate(
+                                &mut self.memory,
+                                &mut self.process,
+                                channel,
+                                command,
+                            );
+                            self.process.sound = sound;
+                            let error = result?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::SoundChannel(op) => {
                             let mut sound = std::mem::take(&mut self.process.sound);
                             let result = sound.call(&mut self.memory, &mut self.process, op);
@@ -1638,6 +1681,7 @@ impl Runtime {
                         | Call::ResourceInfo(_)
                         | Call::GetResource { .. }
                         | Call::SoundChannel(_)
+                        | Call::SoundImmediate { .. }
                         | Call::SoundVolume(_)
                         | Call::GetSoundVolume(_)
                         | Call::DeviceControl(_)

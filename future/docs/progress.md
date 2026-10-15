@@ -4193,3 +4193,66 @@ Strict all-target lint also passes with -D warnings:
 claim is made; the next executable milestone is real sound processing/output
 at the shared SndSoundManagerVersion boundary, followed by further display and
 PPC routine-descriptor/Mixed Mode work.
+
+
+## Real sampled-immediate sound and native audio transport
+
+Both actual CPU adapters now call shared SndDoImmediate command processing.
+Standard eight-bit mono buffers produce real PCM from live guest samples, with
+bounded mixing, interpolation/no-interpolation, pan, channel/master volume,
+quiet/disposal and completion updates. Rational phase carry fixes the exact
+8-to-48 kHz sample-boundary error found by inspecting native WAV captures.
+Headless virtual waits advance sound completion without a device or unbounded
+sample generation. Guest exit/fault cancels playback in the common Runtime.
+
+A thin native CPAL output owns only mixed frames. Actual native callback probes
+for SDK-compiled 68K and PPC guests each consumed 2,400 frames at 48 kHz; their
+WAV captures are byte-identical and match all expected samples and silent tails.
+The final 68K probe recorded one recoverable Xrun; the PPC probe recorded zero.
+No continuous-playback quality or live-window timing acceptance is claimed.
+Evidence: /tmp/systemless-audio-native-profile-final.txt,
+/tmp/systemless-audio-ppc-native-profile-final.txt,
+/tmp/systemless-sampled-native-profile-final.wav and
+/tmp/systemless-sampled-ppc-native-profile-final.wav. The SDK fixture also verifies both
+real CPUs resume after rendering and dispose the channel. A separate CLI test
+runs both compiled applications to Exit(0) with no host audio device.
+
+This is a required sound foundation, not a version-only startup bypass.
+SndDoCommand FIFO/resource playback, sound callbacks, other header formats,
+channel-status/version queries and original-game playback remain unfinished.
+The full rebuild and both original-game targets remain active.
+
+An initial-volume-seven diagnostic exposed Super Mines' unimplemented HGetState
+($A069) sound-enabled path: /tmp/systemless-mines-sampled-reload.txt. That
+unsolicited profile change was removed; the existing initial volume is retained
+and the sound fixture explicitly sets volume seven. Sound-enabled Super Mines
+is not accepted and needs real handle-state/resource sound work.
+
+Final original refreshes still stop at $A800: /tmp/systemless-ev-sampled-next.txt
+and /tmp/systemless-marathon-sampled-next.txt. Next work must include real queued
+commands/resource playback and callbacks before providing the requested version
+contract; HGetState and related real handle attributes are also required by the
+sound-enabled Super Mines path. Keep initial-volume preference work distinct
+from proving that sound-enabled game paths work.
+
+Final complete acceptance passes all 417 tests with zero failures or skips:
+/tmp/systemless-sampled-acceptance-final.txt. The original-SDK build and focused
+sound/CLI tests also pass: /tmp/systemless-sampled-sound-mpw-build-final.txt,
+/tmp/systemless-sampled-final-mpw-tests.txt and
+/tmp/systemless-sampled-resampling-final.txt. Native callback probes remain
+separate from the test count and from continuous/native-window acceptance.
+Changed Rust sources pass sequential stdin formatting, fixture script syntax
+and whitespace checks. The new audio diagnostic obeys the loader input bound.
+
+Super Mines' retained-profile Save/Open rerun reopens its 1,972-byte game,
+returns to Waiting{ticks:10} at $0100C798 and produces a PPM byte-identical to
+the preceding inspected milestone. Evidence:
+/tmp/systemless-mines-sampled-final-reload.txt and associated after.ppm. This
+retains the prior muted-profile interaction evidence; the volume-seven path
+remains blocked at HGetState and must not be presented as working sound.
+Full rebuild and original-game gameplay acceptance remain incomplete.
+
+Strict all-target lint passes with -D warnings:
+/tmp/systemless-sampled-lint-final.txt. Native transport uses verified CPAL
+0.18.2 APIs (crate MSRV 1.85, below this package's 1.93 requirement). Full
+continuous/native-window sound and original-game acceptance remain unproven.

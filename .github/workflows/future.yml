@@ -13,6 +13,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
       - run: cargo test --manifest-path future/Cargo.toml --locked
       - run: cargo clippy --manifest-path future/Cargo.toml --locked --all-targets -- -D warnings
       # Real-GPU acceptance is explicit and documented in future/docs/progress.md.

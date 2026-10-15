@@ -532,3 +532,13 @@ All eleven attachments are checked after close. It also checks exact logical
 utilities, allocation-driven FreeMem changes and SetGDevice(GetGDevice()).
 Success requires marker $C945 and Exit(0), with a real wgpu adapter. This fixture
 uses the current one-bit display and does not establish original-game gameplay.
+
+
+`sampled_sound.c` submits a real standard SoundHeader via SndDoImmediate after
+checking amplitude/volume commands. Both CPUs must post $A804, yield in a real
+event wait, render the expected four samples, observe command completion,
+dispose the channel, post $A805 and exit successfully. A second test runs the
+compiled apps through the headless CLI's silent virtual-time policy. The
+`audio_probe` example captures mixed WAV output and optionally submits it to an
+actual native device with bounded callback-consumption checks. It does not
+require a window, ROM, microphone permission or a host audio device for capture.

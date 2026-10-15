@@ -1,10 +1,12 @@
-//! Shared Sound Manager channel/queue lifetime; no synthesized playback yet.
+//! Shared Sound Manager channel lifetime and standard sampled playback.
 use crate::{
     memory::{GuestPtr, Memory},
     process::Process,
     Result,
 };
 use std::collections::BTreeMap;
+mod playback;
+use playback::Playback;
 pub const CHANNEL_SIZE: u32 = 1060;
 const HEADER: u32 = 36;
 const BAD_CHANNEL: i16 = -205;
@@ -26,6 +28,7 @@ struct Channel {
     owned: bool,
     queue: u32,
     length: u16,
+    playback: Playback,
 }
 #[derive(Default)]
 pub struct Manager {
@@ -136,6 +139,7 @@ impl Manager {
                 owned: existing == 0,
                 queue,
                 length,
+                playback: Playback::new(r.init),
             },
         );
         self.order.insert(0, channel);
@@ -157,7 +161,9 @@ impl Manager {
         let next = self.order.get(index + 1).copied().unwrap_or(0);
         Ok(header[..4] == next.to_be_bytes()
             && header[4..8] == c.queue.to_be_bytes()
-            && header[16..30].iter().all(|b| *b == 0)
+            && header[16..20].iter().all(|b| *b == 0)
+            && header[20..28] == c.playback.command
+            && header[28..30].iter().all(|b| *b == 0)
             && header[30..32] == c.length.to_be_bytes()
             && header[32..36].iter().all(|b| *b == 0))
     }
@@ -166,10 +172,13 @@ impl Manager {
         m: &mut Memory,
         p: &mut Process,
         channel: u32,
-        _quiet_now: bool,
+        quiet_now: bool,
     ) -> Result<i16> {
         if !self.valid(m, p, channel)? {
             return Ok(BAD_CHANNEL);
+        }
+        if self.channels[&channel].playback.command != [0; 8] && !quiet_now {
+            return Ok(-209);
         }
         let index = self.order.iter().position(|v| *v == channel).unwrap();
         let previous = index.checked_sub(1).map(|i| self.order[i]);
@@ -196,8 +205,8 @@ impl Manager {
         }
         self.channels.remove(&channel);
         self.order.remove(index);
-        // Both quiet modes finish immediately on an idle channel. Queue execution
-        // and active playback are unsupported; corrupt/busy records were rejected.
+        // Idle channels finish immediately. Active quiet disposal cancels the
+        // owned voice; nonquiet waiting/queued execution remains unsupported.
         Ok(0)
     }
 }

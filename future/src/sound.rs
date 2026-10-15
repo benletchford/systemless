@@ -1,4 +1,4 @@
-//! Shared Sound Driver volume and Sound Manager channel lifetime. Playback is not implemented.
+//! Shared Sound Driver volume, channel ownership and sampled immediate playback.
 //! Inside Macintosh II, pp. 232–236; MPW LowMem.h identifies SdVolume at $0260.
 use crate::{
     memory::{GuestPtr, Memory},

@@ -1460,3 +1460,28 @@ milestone. Evidence: /tmp/systemless-mines-cwindow-reload.txt and associated
 after.ppm. Marathon with its companion volume still stops at $A800:
 /tmp/systemless-marathon-cwindow-next.txt. These remain bounded offscreen checks;
 original-game live desktop and gameplay acceptance are incomplete.
+
+
+### Shared sound foundation before the version boundary
+
+SndDoImmediate can now render actual standard sampled buffers through both CPU
+adapters and a shared mixer. Public-header compiler fixtures verify exact PCM,
+completion/disposal and headless CLI progress. Both compiled guests also produced
+matching samples consumed by the real native output callback. This does not yet
+implement the SndSoundManagerVersion request reached by the original games;
+queued/resource playback, sound callbacks and additional formats remain required.
+No version value or capability was fabricated to get past startup. Neither
+original EV nor Marathon has verified gameplay.
+
+Final source refreshes preserve the original games' actual $A800 startup fault:
+/tmp/systemless-ev-sampled-next.txt and /tmp/systemless-marathon-sampled-next.txt.
+A separate Super Mines volume-seven diagnostic reaches missing HGetState $A069;
+sound-enabled Mines is not accepted. The existing initial-volume profile remains
+unchanged, and the compiled sampled-sound fixture explicitly sets volume seven
+for actual PCM/native-output acceptance.
+
+The retained-profile Super Mines Save/Open rerun completes, reopens its
+1,972-byte game and returns to Waiting{ticks:10} at $0100C798. Its final PPM is
+byte-identical to the preceding inspected milestone. Evidence:
+/tmp/systemless-mines-sampled-final-reload.txt and associated after.ppm. This
+preserves the earlier muted-profile result, not sound-enabled acceptance.
