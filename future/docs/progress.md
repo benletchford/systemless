@@ -4023,3 +4023,31 @@ pass. Logs: /tmp/systemless-getvol-regression.txt and
 /tmp/systemless-getvol-final-lint.txt. The previous milestone's complete 380-test
 GPU/MPW run remains historical evidence; unrelated GPU tests were not repeated
 for these non-rendering query routes.
+
+
+## CODE application partitions and absolute heap limits
+
+EV's real SetApplLimit argument ($003DDAD8) exposed the old high-address heap's
+mismatch with its A5 world. CODE preparation now selects the shared Process
+allocator reservation $00010000..A5-world-base before any guest allocation;
+PEF keeps the default reservation. Bounds/preflight/resize paths use that
+reservation. SetApplLimit is implemented through both ABIs with real guest
+ApplLimit state, bounds errors and MemErr publication. Already-grown zones and
+live blocks are preserved when the limit is lowered. Lazy heap growth, guest
+zone headers, multiple zones/partition sizing and general stack placement remain
+unfinished. The original EV now advances to GetGDevice ($AA32). Marathon's
+companion-file startup still reaches its sound-version query. Neither original
+is playable. Reproduction and exact limitations are in original-applications.md.
+
+
+Final partition/limit validation: all 386 tests pass with zero failures or
+ignored tests under the complete locked acceptance command, including GPU and
+MPW coverage. The corrected public-header environment guest executes both real
+SetApplLimit calls on both CPUs; its focused acceptance test also passes.
+Strict all-target Clippy, sequential changed-source stdin formatting, MPW fixture
+shell syntax and whitespace checks pass. Logs:
+/tmp/systemless-appllimit-acceptance.txt,
+/tmp/systemless-appllimit-mpw-final.txt and
+/tmp/systemless-appllimit-lint-final.txt. Original EV passes SetApplLimit and
+stops at GetGDevice; original Marathon retains its sound-version boundary;
+Super Mines Save/Open and the final board were reverified. Full rebuild active.

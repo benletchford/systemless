@@ -231,6 +231,7 @@ fn both_loaded_architectures_read_resources_and_allocate_through_one_process_mod
         assert_eq!(values[1], 1);
         assert_eq!(values[2], 3);
         assert_eq!(values[0], values[3]);
+        assert_eq!(app.runtime.services.calls[1], Call::HandleSize(values[0]));
         let master = app.runtime.memory.u32(GuestPtr(values[0])).unwrap();
         assert_eq!(
             app.runtime.memory.read(GuestPtr(master), 3).unwrap(),
@@ -249,10 +250,21 @@ fn both_loaded_architectures_read_resources_and_allocate_through_one_process_mod
             12
         );
     }
-    assert_eq!(
-        applications[0].runtime.services.calls,
-        applications[1].runtime.services.calls
-    );
+    // CODE and PEF use different application partition layouts. Compare the
+    // service contract after checking each actual handle against its caller.
+    let canonical = |application: &LoadedApplication| {
+        application
+            .runtime
+            .services
+            .calls
+            .iter()
+            .map(|call| match call {
+                Call::HandleSize(_) => Call::HandleSize(0),
+                other => *other,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(canonical(&applications[0]), canonical(&applications[1]));
 }
 #[test]
 fn heap_reuses_disposed_storage_reports_exhaustion_and_retains_resource_identity() {

@@ -595,6 +595,17 @@ impl Runtime {
                             self.process.maximize_heap(&mut self.memory)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::SetApplLimit(limit) => {
+                            self.process
+                                .set_application_limit(&mut self.memory, limit)?;
+                            let error = self.process.mem_error;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::GetApplLimit => {
                             let value = self.process.application_limit(&self.memory)?;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
@@ -1423,7 +1434,8 @@ impl Runtime {
                             | Call::TextEdit(crate::textedit::Op::Height { .. })
                     ) && matches!(
                         call,
-                        Call::MoreMasters
+                        Call::SetApplLimit(_)
+                            | Call::MoreMasters
                             | Call::MaxApplZone
                             | Call::Dialog(
                                 crate::dialogs::Op::Init(_) | crate::dialogs::Op::Param(_)
@@ -1519,6 +1531,7 @@ impl Runtime {
                         | Call::GetMouse(_)
                         | Call::SystemTask
                         | Call::SysEnvirons { .. }
+                        | Call::SetApplLimit(_)
                         | Call::MoreMasters
                         | Call::MaxApplZone
                         | Call::GetApplLimit

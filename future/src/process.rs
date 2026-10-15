@@ -39,6 +39,7 @@ pub struct Process {
     pub mem_error: i16,
     pub res_error: i16,
     heap: Option<Heap>,
+    reservation: Option<(u32, u32)>,
     handles: BTreeMap<u32, HandleBlock>,
     free_masters: Vec<u32>,
     pooled_masters: BTreeSet<u32>,
@@ -137,17 +138,51 @@ impl Process {
         self.resource_ref
     }
 
+    fn heap_base(&self) -> u32 {
+        self.reservation.map_or(HEAP_BASE, |r| r.0)
+    }
+    fn heap_capacity(&self) -> u32 {
+        self.reservation.map_or(HEAP_SIZE, |r| r.1)
+    }
+    /// CODE applications place their heap below the A5 world. Preparation has
+    /// not run guest code or allocated any handles, so no live pointer moves.
+    pub(crate) fn initialize_code_heap(&mut self, memory: &mut Memory, end: u32) -> Result<()> {
+        const BASE: u32 = 0x0001_0000;
+        let size = end
+            .checked_sub(BASE)
+            .filter(|n| *n >= 256)
+            .ok_or_else(|| Error::Load("CODE heap reservation is too small".into()))?;
+        if self.heap.as_ref().is_some_and(|h| !h.allocated.is_empty()) {
+            return Err(Error::Load(
+                "cannot relocate a live application heap".into(),
+            ));
+        }
+        memory.validate_write(GuestPtr(0x114), 4)?;
+        memory.validate_write(GuestPtr(0x130), 4)?;
+        memory.map(GuestPtr(BASE), vec![0; size as usize], Permissions::RWX)?;
+        if self.heap.is_some() {
+            memory.remove_mappings(&[self.heap_base()]);
+        }
+        self.reservation = Some((BASE, size));
+        self.heap = Some(Heap {
+            free: BTreeMap::from([(BASE, size)]),
+            allocated: BTreeMap::new(),
+        });
+        memory.write(GuestPtr(0x114), &end.to_be_bytes())?;
+        memory.write(GuestPtr(0x130), &end.to_be_bytes())?;
+        Ok(())
+    }
     fn ensure_heap(&mut self, memory: &mut Memory) -> Result<()> {
         if self.heap.is_none() {
             memory.map(
-                GuestPtr(HEAP_BASE),
-                vec![0; HEAP_SIZE as usize],
+                GuestPtr(self.heap_base()),
+                vec![0; self.heap_capacity() as usize],
                 // Classic applications execute resource-loaded code and
                 // generated thunks from heap RAM on both architectures.
                 Permissions::RWX,
             )?;
             self.heap = Some(Heap {
-                free: BTreeMap::from([(HEAP_BASE, HEAP_SIZE)]),
+                free: BTreeMap::from([(self.heap_base(), self.heap_capacity())]),
                 allocated: BTreeMap::new(),
             });
         }
@@ -158,32 +193,43 @@ impl Process {
         memory.validate_write(GuestPtr(0x114), 4)?;
         memory.validate_write(GuestPtr(0x130), 4)?;
         self.ensure_heap(memory)?;
-        let end = HEAP_BASE + HEAP_SIZE;
+        let end = self.heap_base() + self.heap_capacity();
         memory.write(GuestPtr(0x114), &end.to_be_bytes())?;
         memory.write(GuestPtr(0x130), &end.to_be_bytes())?;
         Ok(())
     }
     pub fn maximize_heap(&mut self, memory: &mut Memory) -> Result<()> {
-        let end = HEAP_BASE + HEAP_SIZE;
-        if memory.u32(GuestPtr(0x130))? != end {
-            return Err(Error::Cpu(
-                "application limit differs from the fixed heap reservation".into(),
-            ));
-        }
+        self.application_limit(memory)?;
         memory.validate_write(GuestPtr(0x114), 4)?;
         self.ensure_heap(memory)?;
+        // The current allocator eagerly grows to its reservation. Lowering
+        // ApplLimit cannot cut an already-grown zone back (IM: Memory 2-85).
+        let end = self.heap_base() + self.heap_capacity();
         memory.write(GuestPtr(0x114), &end.to_be_bytes())?;
         self.mem_error = 0;
         Ok(())
     }
     pub fn application_limit(&self, memory: &Memory) -> Result<u32> {
         let limit = memory.u32(GuestPtr(0x130))?;
-        if limit != HEAP_BASE + HEAP_SIZE {
+        if limit < self.heap_base() || limit > self.heap_base() + self.heap_capacity() {
             return Err(Error::Cpu(
-                "application limit differs from the fixed heap reservation".into(),
+                "application limit is outside its heap reservation".into(),
             ));
         }
         Ok(limit)
+    }
+    pub fn set_application_limit(&mut self, memory: &mut Memory, limit: u32) -> Result<()> {
+        memory.validate_write(GuestPtr(0x130), 4)?;
+        self.ensure_heap(memory)?;
+        self.mem_error = MEM_FULL;
+        if limit < self.heap_base() || limit > self.heap_base() + self.heap_capacity() {
+            return Ok(());
+        }
+        // A lower growth limit does not invalidate live blocks or shrink an
+        // already-expanded zone. The reservation remains mapped and owned.
+        memory.write(GuestPtr(0x130), &limit.to_be_bytes())?;
+        self.mem_error = 0;
+        Ok(())
     }
     /// Reserve a nonrelocatable block of 64 master pointers (IM: Memory,
     /// MoreMasters). Slots remain reserved when their handles are disposed.
@@ -207,7 +253,7 @@ impl Process {
     pub fn new_pointer(&mut self, memory: &mut Memory, size: u32, clear: bool) -> Result<u32> {
         self.ensure_heap(memory)?;
         self.mem_error = MEM_FULL;
-        if size > HEAP_SIZE {
+        if size > self.heap_capacity() {
             return Ok(0);
         }
         let Some(pointer) = self.heap.as_mut().unwrap().allocate(size) else {
@@ -237,7 +283,9 @@ impl Process {
         if self.mem_error != 0 {
             return;
         }
-        if size > HEAP_SIZE || !self.heap.as_mut().unwrap().resize_in_place(pointer, size) {
+        if size > self.heap_capacity()
+            || !self.heap.as_mut().unwrap().resize_in_place(pointer, size)
+        {
             self.mem_error = MEM_FULL;
             return;
         }
@@ -253,11 +301,11 @@ impl Process {
     }
     pub fn new_handle(&mut self, memory: &mut Memory, size: u32, clear: bool) -> Result<u32> {
         self.ensure_heap(memory)?;
-        let heap = self.heap.as_mut().unwrap();
         self.mem_error = MEM_FULL;
-        if size > HEAP_SIZE {
+        if size > self.heap_capacity() {
             return Ok(0);
         }
+        let heap = self.heap.as_mut().unwrap();
         let Some(data) = heap.allocate(size) else {
             return Ok(0);
         };
@@ -305,14 +353,14 @@ impl Process {
         if self.mem_error != 0 {
             return Ok(());
         }
-        if size > HEAP_SIZE {
+        if size > self.heap_capacity() {
             self.mem_error = MEM_FULL;
             return Ok(());
         }
         let HandleBlock { data, locked, .. } = self.handles[&handle];
         // The heap is one checked writable mapping. Validate it before changing
         // allocator metadata or master pointers, including the relocation case.
-        memory.validate_write(GuestPtr(HEAP_BASE), HEAP_SIZE as usize)?;
+        memory.validate_write(GuestPtr(self.heap_base()), self.heap_capacity() as usize)?;
         let heap = self.heap.as_mut().unwrap();
         if heap.resize_in_place(data, size) {
             self.handles.get_mut(&handle).unwrap().size = size;
@@ -362,13 +410,13 @@ impl Process {
                 };
                 memory.validate_write(GuestPtr(h), 4)?;
             }
-            memory.validate_write(GuestPtr(HEAP_BASE), HEAP_SIZE as usize)?;
+            memory.validate_write(GuestPtr(self.heap_base()), self.heap_capacity() as usize)?;
             let Some(mut heap) = self.heap.clone() else {
                 return Ok(sizes.is_empty());
             };
             let mut handles = self.handles.clone();
             for &(h, size) in sizes {
-                if size > HEAP_SIZE {
+                if size > self.heap_capacity() {
                     return Ok(false);
                 }
                 let block = handles.get_mut(&h).unwrap();
@@ -409,13 +457,13 @@ impl Process {
             if self.mem_error != 0 {
                 return Ok(());
             }
-            if bytes.len() > HEAP_SIZE as usize {
+            if bytes.len() > self.heap_capacity() as usize {
                 self.mem_error = MEM_FULL;
                 return Ok(());
             }
             memory.validate_write(GuestPtr(*handle), 4)?;
         }
-        memory.validate_write(GuestPtr(HEAP_BASE), HEAP_SIZE as usize)?;
+        memory.validate_write(GuestPtr(self.heap_base()), self.heap_capacity() as usize)?;
         let mut staged = self.heap.as_ref().unwrap().clone();
         let mut placements = Vec::new();
         for (handle, bytes) in changes {

@@ -12,7 +12,7 @@
 int main(void) {
     SysEnvRec world;
     long response;
-    Ptr p;
+    Ptr p, limit;
     CInfoPBRec catalog;
     Str255 name;
     long folder;
@@ -24,9 +24,14 @@ int main(void) {
     world.environsVersion=123;
     if (SysEnvirons(0,&world)!=envBadVers || world.environsVersion!=123) return 2;
     if (SysEnvirons(3,&world)!=envVersTooBig || world.environsVersion!=2) return 3;
-    if (*(long *)0x130!=0x10400000 || *(long *)0x114!=0x10400000) return 4;
-    *(long *)0x114=0x103ff000;
-    MaxApplZone(); if (*(long *)0x114!=0x10400000 || GetApplLimit()!=(Ptr)0x10400000 || MemError()) return 5;
+    limit=GetApplLimit();
+    if (!limit || *(long *)0x130!=(long)limit || *(long *)0x114!=(long)limit) return 4;
+    *(long *)0x114=(long)limit-4096;
+    MaxApplZone(); if (*(long *)0x114!=(long)limit || GetApplLimit()!=limit || MemError()) return 5;
+    SetApplLimit(limit-8192);
+    if (MemError() || GetApplLimit()!=limit-8192 || *(long *)0x130!=(long)(limit-8192)) return 53;
+    MaxApplZone(); if (MemError() || *(long *)0x114!=(long)limit || GetApplLimit()!=limit-8192) return 54;
+    SetApplLimit(limit); if (MemError() || GetApplLimit()!=limit) return 55;
     p=NewPtr(16); if (!p || GetPtrSize(p)!=16) return 6;
     p[0]=42; MaxApplZone(); if (p[0]!=42) return 7; DisposePtr(p);
     catalog.dirInfo.ioNamePtr=name; catalog.dirInfo.ioVRefNum=0;

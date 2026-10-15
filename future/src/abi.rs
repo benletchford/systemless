@@ -67,6 +67,7 @@ pub enum Service {
     MaxApplZone,
     MoreMasters,
     GetApplLimit,
+    SetApplLimit,
     BlockMove,
     InitDialogs,
     IsDialogEvent,
@@ -344,6 +345,7 @@ impl Abi {
             b"SysEnvirons" => Some(Service::SysEnvirons),
             b"MoreMasters" => Some(Service::MoreMasters),
             b"MaxApplZone" => Some(Service::MaxApplZone),
+            b"SetApplLimit" => Some(Service::SetApplLimit),
             b"GetApplLimit" => Some(Service::GetApplLimit),
             b"BlockMove" | b"BlockMoveData" => Some(Service::BlockMove),
             b"IsDialogEvent" => Some(Service::IsDialogEvent),
@@ -1265,6 +1267,7 @@ impl Abi {
                 },
                 Reply::M68kD0,
             )),
+            0xa02d => Ok((Call::SetApplLimit(c.dar[8]), Reply::M68kD0)),
             0xa036 => Ok((Call::MoreMasters, Reply::M68kD0)),
             0xa063 => Ok((Call::MaxApplZone, Reply::M68kD0)),
             0xa02e | 0xa22e => Ok((
@@ -2445,6 +2448,7 @@ impl Abi {
             },
             Service::MoreMasters => Call::MoreMasters,
             Service::MaxApplZone => Call::MaxApplZone,
+            Service::SetApplLimit => Call::SetApplLimit(c.gpr[3]),
             Service::GetApplLimit => Call::GetApplLimit,
             Service::BlockMove => Call::MoveBytes {
                 source: GuestPtr(c.gpr[3]),
@@ -2991,6 +2995,7 @@ impl Abi {
                         | Service::OffsetRect
                         | Service::InsetRect
                         | Service::MoreMasters
+                        | Service::SetApplLimit
                         | Service::MaxApplZone
                         | Service::BlockMove
                         | Service::InitDialogs

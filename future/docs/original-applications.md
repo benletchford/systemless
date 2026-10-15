@@ -1287,3 +1287,53 @@ This mode does not mount host folders or import HFS disk images. New real-CPU
 query tests verify both forms with and without name buffers, exact output fields,
 unchanged caller state, no implicit default-directory selection, missing-volume
 errors and memory-boundary failures.
+
+
+### Escape Velocity application-partition heap and SetApplLimit
+
+The actual EV 1.0.5 failure has A0=$003DDAD8 at $A02D, requesting a limit below
+its A5 world. Returning success against the old unrelated $10000000 heap would
+not model that address. CODE preparation now configures the shared allocator
+from $00010000 to the A5-world base before guest execution/allocations, removes
+the unused high mapping, and publishes the corresponding bounds. PEF retains
+the default 4 MiB reservation; both use the same Process allocation/resize logic.
+
+SetApplLimit now sets a checked absolute ApplLimit ($130), shared with
+GetApplLimit and both real CPU adapters. Invalid out-of-reservation addresses
+return memFullErr without changing the limit. The allocator is still eagerly
+grown: lowering its growth limit does not shrink the existing zone or destroy
+live blocks, following [Inside Macintosh: Memory](https://dev.os9.ca/techpubs/mac/pdf/Memory/Memory_Manager.pdf),
+pp. 2-84–2-85. This does not establish general lazy heap growth, guest heap-zone
+headers, alternate stack placement or arbitrary application partition sizes.
+
+Original EV 1.0.5 now passes its actual SetApplLimit call and stops at GetGDevice
+($AA32) with a 2,000,000-boundary graphics-enabled budget:
+/tmp/systemless-ev-appllimit-next.txt. Marathon v1.2 with its companion volume
+still passes its recorded startup path and stops at SoundDispatch $000C0008:
+/tmp/systemless-marathon-partition-next.txt. Neither reaches gameplay.
+
+New tests verify CODE pointers/handles reside below globals, relocation preserves
+bytes, full reservation exhaustion/disposal, native absolute limits and errors,
+retention of already-grown high-address blocks, and native/PPC sharing of limit
+state with correct void-register behavior. The cross-application loader test now
+checks each real handle identity before comparing normalized service contracts;
+different application partitions no longer require identical numeric pointers.
+
+
+Super Mines' previously recorded automated Save/Open sequence was rerun with
+the CODE partition layout and unchanged original resource fork. It created and
+opened Super Mines Game (node 19, 1,972 data bytes; no resource bytes), retained
+its settings file and returned to Waiting{ticks:10} at PC $0100C798. The final
+board image was visually inspected. Evidence:
+/tmp/systemless-mines-partition-reload.txt and
+/tmp/systemless-mines-partition-reload-after.png. This preserves the prior
+bounded offscreen interaction result, not live desktop or win/loss acceptance.
+
+
+The public-header MPW environment fixture was also rebuilt for both CPUs. It now
+uses GetApplLimit rather than a fixed $10400000 address and exercises lowering,
+MaxApplZone preservation and restoration through actual SetApplLimit calls.
+Both rebuilt applications reach Exit(0) and the existing success marker. Build
+and focused execution evidence: /tmp/systemless-appllimit-mpw-build.txt and
+/tmp/systemless-appllimit-mpw-tests.txt. The initial broad run exposed this old
+fixture's fixed-address expectation; it was corrected before the final gate.

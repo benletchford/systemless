@@ -720,6 +720,15 @@ fn compiled_environment_and_maximum_heap_contracts_complete_on_both_cpus() {
                 .count(),
             5
         );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|call| matches!(call, Call::SetApplLimit(_)))
+                .count(),
+            2
+        );
         let io_calls: Vec<_> = app
             .runtime
             .services

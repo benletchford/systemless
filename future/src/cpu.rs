@@ -60,6 +60,7 @@ pub enum Call {
     MaxApplZone,
     MoreMasters,
     GetApplLimit,
+    SetApplLimit(u32),
     MoveBytes {
         source: GuestPtr,
         destination: GuestPtr,

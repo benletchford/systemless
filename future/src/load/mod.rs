@@ -249,6 +249,9 @@ fn code(resources: ResourceFork) -> Result<LoadedApplication> {
         section_info,
         Abi::macintosh(),
     )?;
+    app.runtime
+        .process
+        .initialize_code_heap(&mut app.runtime.memory, world_base)?;
     // Inside Macintosh: Memory, Memory Manager summary: CurStackBase is
     // the start of application globals. It is not our separate stack mapping.
     let memory = &mut app.runtime.memory;

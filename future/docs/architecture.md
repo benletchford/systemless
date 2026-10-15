@@ -876,7 +876,7 @@ is no private instruction-byte cache to invalidate. Bitmap memory writes use
 the existing GPU synchronization boundary on subsequent drawing/presentation.
 
 
-## Environment profile and fixed heap reservation
+## Environment profile and application heap reservations
 
 SysEnvirons describes one virtual Macintosh compatibility world rather than
 branching on the calling CPU. Its legacy processor field denotes the 68020
@@ -886,12 +886,23 @@ so internal GPU palette support does not advertise Color QuickDraw. Unknown
 machine/keyboard values avoid pretending to emulate a particular hardware model.
 Version errors/layout follow Apple's Gestalt Manager reference and OV16.
 
-Loaded CODE and PEF processes map the complete fixed 4 MiB heap during common
-preparation and publish bounds that match its allocator. MaxApplZone preserves
-allocations while reasserting the full mapped extent. It does not create a
-second CPU-specific heap or accept a limit the allocator cannot honor. General
-zone resizing and SetApplLimit support are still missing. Standalone Process
-unit fixtures retain lazy mapping when they are not created by the loader.
+Loaded PEF processes reserve the default 4 MiB heap at $10000000. CODE
+preparation configures the same Process allocator from $00010000 to the start
+of its A5 world, before any guest instruction or owned allocation exists. The
+unused high mapping is removed; live pointers are never relocated. Allocation,
+resize preflight and staged handle replacement validate the configured mapping
+and capacity. This is a loader-selected application layout, not separate CPU
+memory-manager implementations; either CPU can operate on a Process's heap.
+
+SetApplLimit stores a checked absolute address in ApplLimit ($130), with native
+D0/MemErr errors and a void PPC setter. GetApplLimit reads the guest global and
+rejects addresses outside the reservation. The current allocator eagerly grows
+the zone to the reservation. Per IM: Memory pp. 2-84–2-85, lowering a growth limit
+does not shrink an already-grown zone, invalidate blocks, or reclaim stack
+space. MaxApplZone preserves the existing extent and the requested limit. Lazy
+zone growth, guest zone headers, multiple zones, alternate stack placement and
+partition sizing remain unfinished. Standalone Process fixtures retain lazy
+mapping of the default reservation.
 
 Window update notifications derive from guest WindowList, visible-region and
 update-region storage. The shared runtime prioritizes eligible OS queue events

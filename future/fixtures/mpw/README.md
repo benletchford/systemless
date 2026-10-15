@@ -256,8 +256,11 @@ exercised. The optional test requires the MPW build but no GPU.
 
 `environment.c` checks the shared virtual SysEnvRec, supported/nonpositive/newer
 version behavior, actual low-memory application heap bounds, MaxApplZone and
-GetApplLimit, then preserves a pointer's bytes across another maximize. Both
-compiled CPUs post the success marker without a GPU. The profile's capability
+GetApplLimit, then preserves a pointer's bytes across another maximize. It uses
+the reported application limit rather than hard-coding one partition's address,
+and calls SetApplLimit to lower/restore it while checking MemError, the live
+ApplLimit global, and preservation of the already-grown zone. Both compiled
+CPUs post the success marker without a GPU. The profile's capability
 flags describe the current rebuild; no complete System 7 support is implied.
 
 The window fixture also exercises SetRect/OffsetRect/InsetRect, OS versus
