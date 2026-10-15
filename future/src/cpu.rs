@@ -58,6 +58,7 @@ pub enum Call {
         record: GuestPtr,
     },
     MaxApplZone,
+    MoreMasters,
     GetApplLimit,
     MoveBytes {
         source: GuestPtr,

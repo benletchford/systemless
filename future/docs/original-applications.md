@@ -1150,3 +1150,103 @@ was locked and UI inspection/input was unavailable. The disposable test process
 was closed without attaching a persistent volume. This is not a native gameplay
 acceptance result. A full live desktop session and win/loss gameplay remain
 unverified; no broader playable-game claim follows from channel-lifetime tests.
+
+
+## Original Escape Velocity and Marathon priorities
+
+The next original-game targets are Escape Velocity 1.0.5 and Marathon 1 v1.2.
+These are the original Macintosh applications, not EV Override/Nova, Marathon 2,
+Infinity, or modern engine replacements. Neither has reached gameplay in the
+rebuild. Existing legacy Systemless results remain separate comparison evidence;
+a native System 7 comparison is optional under the user's revised scope.
+
+Private source archives are `Escape_Velocity_1.0.5.sit` and `marathon.sit` in the
+local original-game corpus. Extraction used unar's visible AppleDouble forks;
+entry 2 was copied verbatim into a raw resource fork. No original input is
+checked into Git. The observed raw resource SHA-256 values are:
+
+- Escape Velocity: `d739c1d5bd0d5c7efddc55f34bfadd8f66a25c819a00bbed9523c7c56e3f716b`
+  (500,871 bytes; application data fork 514,331 bytes).
+- Marathon v1.2: `afa4e77d8b53c42062fe4b730472cfbb396aacf715c2181aeb5dd12ea60491a1`
+  (625,479 bytes; application data fork 322,352 bytes).
+
+Initial bounded diagnostics against rebuild commit 66bb4612:
+
+| Original | 68K CODE path | PowerPC PEF path |
+| --- | --- | --- |
+| Escape Velocity 1.0.5 | 200,000 instructions is insufficient for startup initialization; a 5,000,000 budget reaches unsupported trap $A02D (SetApplLimit) | Strong InterfaceLib SndSoundManagerVersion import unresolved before execution |
+| Marathon 1 v1.2 | Unsupported trap $A036 (MoreMasters) within a 200,000 budget | Strong InterfaceLib NewRoutineDescriptor import unresolved before execution |
+
+68K commands use `--code RAW --graphics --budget LIMIT`; PPC uses
+`--pef DATA --resources RAW --budget 200000`. A real Metal adapter was available
+outside the restricted process. The restricted adapter lookup failed and is not
+counted as a guest failure. Logs are `/tmp/systemless-ev-startup-long.txt`,
+`/tmp/systemless-marathon-startup.txt`, `/tmp/systemless-ev-ppc-startup.txt`, and
+`/tmp/systemless-marathon-ppc-startup.txt`. Short traces confirm the originals
+execute startup initialization; budget exhaustion alone is not evidence of a hang.
+
+Implement the shared application heap limit/master-pointer semantics first,
+with real allocation and failure behavior and ABI coverage for both CPUs.
+Then rerun originals to choose the next required service. Do not bypass startup
+checks with success aliases. The companion-file model also needs actual mounted
+assets: EV Data/Graphics/Titles/Sounds/Music and its plug-in/pilot folders;
+Marathon Map/Shapes/Sounds/Music. Merely loading application forks does not mount
+those files. Preserve data and resource forks and their Finder metadata.
+
+Acceptance must advance from startup to title/menu, then real gameplay and
+save/reload across a fresh process. EV should create a pilot, enter flight,
+respond to steering/thrust, and travel or land; Marathon should start a level,
+respond to movement/turning/firing, and save/reload. Verify color graphics and
+required sound behavior explicitly. Maintain separate 68K/PPC results and native
+window/offscreen evidence. These targets guide compatibility work; they do not
+replace the full rebuild objective or authorize marking that objective complete.
+
+
+### Master-pointer reservation implementation
+
+The reservation contract follows Apple's [Inside Macintosh: Memory,
+MoreMasters](https://dev.os9.ca/techpubs/mac/Memory/Memory-65.html), pp. 1-51–1-52.
+MoreMasters now has one shared implementation reached by the 68K $A036 trap and
+PowerPC InterfaceLib import. Each explicit call reserves a real nonrelocatable
+256-byte heap block containing 64 master slots. NewHandle consumes available
+reserved slots before its existing individual-master fallback; DisposeHandle
+zeros and returns pooled slots while preserving the reservation. Allocation
+failure reports memFullErr without adding a partial pool. This does not yet
+implement guest heap-zone records, configurable moreMast, system-heap selection,
+or automatic 64-slot pool replenishment for every NewHandle call.
+
+The focused tests consume all other heap space, allocate and dispose a real
+handle through the reservation, verify reuse and pointer-ownership rejection,
+and check failed further reservations preserve the live handle. Actual 68K/PPC
+execution reserves two blocks in one Process; tests check stack/void-register
+behavior and guest MemErr publication on exhaustion.
+
+The original Marathon 68K rerun, using a 500,000-boundary graphics-enabled budget,
+now passes MoreMasters and stops at unsupported Alert ($A985):
+/tmp/systemless-marathon-moremasters.txt. This is a new observed startup boundary,
+not a title/menu or gameplay result. The development tracer now prints bounded
+Pascal-string bytes passed to ParamText. A follow-up trace decoded parameter 0
+as the original request to put Map, Shapes and Sounds beside the application,
+and parameter 1 as -35 (file not found):
+/tmp/systemless-marathon-alert-parameters.txt. This identifies companion-file
+mounting as the next concrete Marathon requirement; the archive contains those
+files, but the current application loader does not mount them.
+Escape Velocity's SetApplLimit and both recorded PPC import blockers remain.
+
+
+A second original Marathon run populated a disposable existing-format SLVOLUME
+image with Map/Shapes/Sounds/Music at root directory 2 (nodes 17–20). Data forks
+were copied verbatim, AppleDouble entry 2 supplied resource forks, and the first
+16 bytes of entry 9 supplied Finder metadata. The application forks remained
+loader-owned. Observed fork lengths were Map 3,863,478/319, Shapes 0/6,481,428,
+Sounds 0/1,021,569 and Music 228,430/361 (data/resource bytes). Thus resource-only
+companion files must be retained even when no host data file exists.
+
+With `--volume /tmp/systemless-marathon-assets.slv --graphics --budget 1000000`,
+Marathon passes the previous missing-companion-file alert and stops at $A214,
+the hierarchical GetVol parameter-block trap. Evidence:
+/tmp/systemless-marathon-with-assets.txt. This uses the existing writable volume
+codec as a diagnostic import route, not a new general host-folder importer or
+HFS disk image. No title/menu, rendering, sound or gameplay acceptance follows.
+The next observed Marathon service requirement is real current volume/directory
+query behavior; a reusable original-folder import boundary is still needed.

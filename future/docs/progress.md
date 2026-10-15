@@ -3964,3 +3964,37 @@ pass after retaining configuration and expanding signed/full-width ABI cases.
 Strict all-target Clippy, sequential changed-file stdin formatting, fixture shell
 syntax and whitespace checks pass. MPW outputs were rebuilt with the pinned image.
 The full rebuild remains active; the native GUI attempt is not counted as passed.
+
+
+## Original-game priorities and MoreMasters
+
+The user selected original Escape Velocity and original Marathon as the next
+compatibility targets. Initial diagnostics and acceptance criteria are recorded
+in original-applications.md, with original private resource-fork fingerprints.
+MoreMasters now reserves real process-owned 64-slot master-pointer blocks shared
+by both CPU adapters. Reused pooled handles keep master storage reserved after
+disposal. The existing on-demand individual-master fallback remains; full guest
+heap-zone records/configurable moreMast/system-zone selection are unfinished.
+Marathon 1 v1.2's 68K startup advances from MoreMasters to Alert ($A985). The ParamText diagnostic bytes confirm the alert requests its missing
+Map/Shapes/Sounds companion files and reports -35. Gameplay has not been reached. EV 1.0.5 stops at
+SetApplLimit ($A02D). PPC loads stop at SndSoundManagerVersion (EV) and
+NewRoutineDescriptor (Marathon). Next work should mount Marathon companion assets and
+implement real application-limit semantics for EV;
+none of these observations establish either game as playable.
+
+
+Follow-up Marathon evidence: a disposable SLVOLUME imported the original
+Map/Shapes/Sounds/Music forks and Finder metadata into root directory 2. Shapes
+and Sounds are resource-only files. The unchanged original passes its prior
+missing-file alert and stops at the hierarchical GetVol PB trap ($A214), recorded
+in /tmp/systemless-marathon-with-assets.txt. Implement the shared current
+volume/directory query next; general host-folder import remains unfinished.
+
+
+Validation for the MoreMasters milestone: 380 tests passed with no failures or
+ignored tests under `cargo test --manifest-path future/Cargo.toml --locked --
+--include-ignored` (including GPU/compiled guest fixtures). All three new focused
+reservation tests also pass independently. Strict all-target Clippy, sequential
+changed-source stdin formatting and whitespace checks pass. Detailed logs:
+/tmp/systemless-moremasters-full.txt, /tmp/systemless-moremasters-final-focused.txt
+and /tmp/systemless-moremasters-final-lint.txt. The full rebuild remains active.

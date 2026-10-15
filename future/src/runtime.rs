@@ -581,6 +581,16 @@ impl Runtime {
                                 0,
                             )?;
                         }
+                        Call::MoreMasters => {
+                            self.process.more_masters(&mut self.memory)?;
+                            let error = self.process.mem_error;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::MaxApplZone => {
                             self.process.maximize_heap(&mut self.memory)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
@@ -1413,7 +1423,8 @@ impl Runtime {
                             | Call::TextEdit(crate::textedit::Op::Height { .. })
                     ) && matches!(
                         call,
-                        Call::MaxApplZone
+                        Call::MoreMasters
+                            | Call::MaxApplZone
                             | Call::Dialog(
                                 crate::dialogs::Op::Init(_) | crate::dialogs::Op::Param(_)
                             )
@@ -1508,6 +1519,7 @@ impl Runtime {
                         | Call::GetMouse(_)
                         | Call::SystemTask
                         | Call::SysEnvirons { .. }
+                        | Call::MoreMasters
                         | Call::MaxApplZone
                         | Call::GetApplLimit
                         | Call::MoveBytes { .. }

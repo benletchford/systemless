@@ -6,7 +6,7 @@ use crate::{
     memory::{GuestPtr, Memory, Permissions},
     Error, Result,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 pub const HEAP_BASE: u32 = 0x1000_0000;
 pub const HEAP_SIZE: u32 = 4 * 1024 * 1024;
 const MEM_FULL: i16 = -108;
@@ -40,6 +40,8 @@ pub struct Process {
     pub res_error: i16,
     heap: Option<Heap>,
     handles: BTreeMap<u32, HandleBlock>,
+    free_masters: Vec<u32>,
+    pooled_masters: BTreeSet<u32>,
     pointers: BTreeMap<u32, u32>,
     resource_handles: BTreeMap<([u8; 4], i16), u32>,
 }
@@ -183,6 +185,23 @@ impl Process {
         }
         Ok(limit)
     }
+    /// Reserve a nonrelocatable block of 64 master pointers (IM: Memory,
+    /// MoreMasters). Slots remain reserved when their handles are disposed.
+    pub fn more_masters(&mut self, memory: &mut Memory) -> Result<()> {
+        self.ensure_heap(memory)?;
+        self.mem_error = MEM_FULL;
+        let Some(base) = self.heap.as_mut().unwrap().allocate(64 * 4) else {
+            return Ok(());
+        };
+        memory.write(GuestPtr(base), &[0; 64 * 4])?;
+        for index in (0..64).rev() {
+            let slot = base + index * 4;
+            self.free_masters.push(slot);
+            self.pooled_masters.insert(slot);
+        }
+        self.mem_error = 0;
+        Ok(())
+    }
     /// Nonrelocatable allocations share extents with handles, but have distinct
     /// ownership: a handle master or data address is never a disposable Ptr.
     pub fn new_pointer(&mut self, memory: &mut Memory, size: u32, clear: bool) -> Result<u32> {
@@ -242,7 +261,7 @@ impl Process {
         let Some(data) = heap.allocate(size) else {
             return Ok(0);
         };
-        let Some(master) = heap.allocate(4) else {
+        let Some(master) = self.free_masters.pop().or_else(|| heap.allocate(4)) else {
             heap.release(data);
             return Ok(0);
         };
@@ -438,7 +457,11 @@ impl Process {
         let HandleBlock { data, .. } = self.handles.remove(&handle).unwrap();
         let heap = self.heap.as_mut().unwrap();
         heap.release(data);
-        heap.release(handle);
+        if self.pooled_masters.contains(&handle) {
+            self.free_masters.push(handle);
+        } else {
+            heap.release(handle);
+        }
         memory.write(GuestPtr(handle), &0u32.to_be_bytes())?;
         self.resource_handles.retain(|_, h| *h != handle);
         self.mem_error = 0;

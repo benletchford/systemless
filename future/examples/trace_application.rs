@@ -65,6 +65,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         for call in &app.runtime.services.calls[calls..] {
             println!("service {call:?}");
+            if let systemless_future::cpu::Call::Dialog(systemless_future::dialogs::Op::Param(
+                strings,
+            )) = call
+            {
+                for (index, &pointer) in strings.iter().enumerate() {
+                    if let Ok(length) = app.runtime.memory.read(pointer, 1) {
+                        if let Some(start) = pointer.0.checked_add(1) {
+                            if let Ok(bytes) = app.runtime.memory.read(
+                                systemless_future::memory::GuestPtr(start),
+                                usize::from(length[0]),
+                            ) {
+                                println!("dialog parameter {index}: {bytes:02x?}");
+                            }
+                        }
+                    }
+                }
+            }
         }
         if stop != Stop::Budget {
             println!("{stop:?}");

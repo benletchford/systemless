@@ -65,6 +65,7 @@ pub enum Service {
     SysEnvirons,
     SystemTask,
     MaxApplZone,
+    MoreMasters,
     GetApplLimit,
     BlockMove,
     InitDialogs,
@@ -341,6 +342,7 @@ impl Abi {
             b"GetMouse" => Some(Service::GetMouse),
             b"SystemTask" => Some(Service::SystemTask),
             b"SysEnvirons" => Some(Service::SysEnvirons),
+            b"MoreMasters" => Some(Service::MoreMasters),
             b"MaxApplZone" => Some(Service::MaxApplZone),
             b"GetApplLimit" => Some(Service::GetApplLimit),
             b"BlockMove" | b"BlockMoveData" => Some(Service::BlockMove),
@@ -1255,6 +1257,7 @@ impl Abi {
                 },
                 Reply::M68kD0,
             )),
+            0xa036 => Ok((Call::MoreMasters, Reply::M68kD0)),
             0xa063 => Ok((Call::MaxApplZone, Reply::M68kD0)),
             0xa02e | 0xa22e => Ok((
                 Call::MoveBytes {
@@ -2423,6 +2426,7 @@ impl Abi {
                 version: c.gpr[3] as i16,
                 record: GuestPtr(c.gpr[4]),
             },
+            Service::MoreMasters => Call::MoreMasters,
             Service::MaxApplZone => Call::MaxApplZone,
             Service::GetApplLimit => Call::GetApplLimit,
             Service::BlockMove => Call::MoveBytes {
@@ -2969,6 +2973,7 @@ impl Abi {
                         | Service::SetRect
                         | Service::OffsetRect
                         | Service::InsetRect
+                        | Service::MoreMasters
                         | Service::MaxApplZone
                         | Service::BlockMove
                         | Service::InitDialogs
