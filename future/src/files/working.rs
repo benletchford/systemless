@@ -11,6 +11,7 @@ pub enum WorkingOp {
     Open,
     Close,
     Info,
+    Current { hierarchical: bool },
 }
 const FIRST: i16 = -32767;
 const LAST: i16 = -32640;
@@ -73,12 +74,40 @@ impl Files {
         pointer: GuestPtr,
         op: WorkingOp,
     ) -> Result<i16> {
-        let size = if op == WorkingOp::Close { 24 } else { 52 };
+        let size = match op {
+            WorkingOp::Close
+            | WorkingOp::Current {
+                hierarchical: false,
+            } => 24,
+            _ => 52,
+        };
         let mut pb = memory.read(pointer, size)?.to_vec();
         memory.validate_write(pointer, size)?;
         let reference = i16::from_be_bytes(pb[22..24].try_into().unwrap());
         let name_pointer = GuestPtr(u32::from_be_bytes(pb[18..22].try_into().unwrap()));
         let error = match op {
+            WorkingOp::Current { hierarchical } => {
+                if self.name.is_empty() {
+                    -35
+                } else {
+                    // There are no SetVol routes yet: the application's root
+                    // remains the catalog's actual default directory.
+                    let name = b"\x12Application Volume";
+                    if name_pointer.0 != 0 {
+                        memory.validate_write(name_pointer, name.len())?;
+                    }
+                    pb[22..24].copy_from_slice(&(-1i16).to_be_bytes());
+                    if hierarchical {
+                        pb[28..32].copy_from_slice(&0u32.to_be_bytes());
+                        pb[32..34].copy_from_slice(&(-1i16).to_be_bytes());
+                        pb[48..52].copy_from_slice(&2u32.to_be_bytes());
+                    }
+                    if name_pointer.0 != 0 {
+                        memory.write(name_pointer, name)?;
+                    }
+                    0
+                }
+            }
             WorkingOp::Open => {
                 let directory = u32::from_be_bytes(pb[48..52].try_into().unwrap());
                 let owner = u32::from_be_bytes(pb[28..32].try_into().unwrap());

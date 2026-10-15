@@ -67,6 +67,7 @@ fn call(a: &mut LoadedApplication, cpu: Architecture, op: WorkingOp) -> i16 {
                 WorkingOp::Open => 1,
                 WorkingOp::Close => 2,
                 WorkingOp::Info => 7,
+                WorkingOp::Current { .. } => panic!("current-volume routes have dedicated tests"),
             };
         c.dar[8] = PB.0;
         c.dar[1] = 0x34567890;
@@ -75,6 +76,7 @@ fn call(a: &mut LoadedApplication, cpu: Architecture, op: WorkingOp) -> i16 {
             WorkingOp::Open => 0,
             WorkingOp::Close => 1,
             WorkingOp::Info => 2,
+            WorkingOp::Current { .. } => panic!("current-volume routes have dedicated tests"),
         };
         let v = a
             .runtime

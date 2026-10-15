@@ -1250,3 +1250,40 @@ codec as a diagnostic import route, not a new general host-folder importer or
 HFS disk image. No title/menu, rendering, sound or gameplay acceptance follows.
 The next observed Marathon service requirement is real current volume/directory
 query behavior; a reusable original-folder import boundary is still needed.
+
+
+### Current-volume queries and Marathon sound-version boundary
+
+PBGetVolSync/PBHGetVolSync and the 68K $A014/$A214 traps now use the shared File
+Manager working-directory service. They report the catalog's actual single
+Application Volume (-1), initial root directory 2 and owner 0; optional volume
+names are written to the supplied Pascal-string buffer. Classic calls touch only
+the 24-byte prefix; hierarchical calls additionally publish owner, real volume
+and directory fields in the 52-byte WD record. Nil name pointers are accepted.
+Missing catalogs return -35. Invalid PB/name buffers fault before partial output.
+SetVol/HSetVol and selectable default directories remain unsupported; opening a
+working-directory reference does not itself change the default directory.
+Contracts: [Inside Macintosh: Files](https://vintageapple.org/inside_r/pdf/Files_1992.pdf),
+pp. 2-150–2-153. No native parity claim follows from this initial single-volume
+query slice.
+
+The unchanged original Marathon v1.2, with its recorded companion volume, now
+passes $A214 and reaches SoundDispatch $A800 with D0=$000C0008, the [sound-manager version query](https://dev.os9.ca/techpubs/mac/pdf/Sound/Sound_Manager.pdf),
+Sound Manager Reference p. 2-133. This is the same service family as EV's unresolved PPC
+SndSoundManagerVersion import. Evidence: /tmp/systemless-marathon-getvol.txt and
+/tmp/systemless-marathon-sounddispatch.txt. This is not a gameplay result; do not
+invent sound support or a success alias simply to pass a version check.
+
+The development tracer now accepts `--volume IMAGE` to restore a bounded,
+read-only snapshot of an existing SLVOLUME image before execution. It never
+checkpoints guest changes back to the supplied image. Reproduction:
+
+```sh
+cargo run --manifest-path future/Cargo.toml --locked --example trace_application -- \
+  code RAW_RESOURCE_FORK 1000000 --graphics --volume COMPANION_VOLUME_IMAGE
+```
+
+This mode does not mount host folders or import HFS disk images. New real-CPU
+query tests verify both forms with and without name buffers, exact output fields,
+unchanged caller state, no implicit default-directory selection, missing-volume
+errors and memory-boundary failures.

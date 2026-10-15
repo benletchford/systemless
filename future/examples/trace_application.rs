@@ -2,8 +2,22 @@
 use systemless_future::{cpu::Cpu, load::LoadedApplication, runtime::Stop};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if !(args.len() == 3 || (args.len() == 4 && args[3] == "--graphics")) {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics]".into());
+    if args.len() < 3 {
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--volume IMAGE]".into());
+    }
+    let mut graphics = false;
+    let mut volume = None;
+    let mut index = 3;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--graphics" if !graphics => graphics = true,
+            "--volume" if volume.is_none() => {
+                index += 1;
+                volume = Some(args.get(index).ok_or("missing volume image")?);
+            }
+            _ => return Err("invalid trace option".into()),
+        }
+        index += 1;
     }
     let file = std::fs::File::open(&args[1])?;
     use std::io::Read;
@@ -15,7 +29,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "pef" => LoadedApplication::pef(&data, None)?,
         _ => return Err("expected code or pef".into()),
     };
-    if args.len() == 4 {
+    if let Some(path) = volume {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(systemless_future::files::VOLUME_IMAGE_LIMIT as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        // Diagnostic snapshot only: never checkpoint changes to the input image.
+        app.runtime.process.files.restore_volume(&bytes)?;
+    }
+    if graphics {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         app.runtime.graphics = Some(pollster::block_on(
             systemless_future::graphics::Graphics::new(

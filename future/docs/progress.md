@@ -3998,3 +3998,28 @@ reservation tests also pass independently. Strict all-target Clippy, sequential
 changed-source stdin formatting and whitespace checks pass. Detailed logs:
 /tmp/systemless-moremasters-full.txt, /tmp/systemless-moremasters-final-focused.txt
 and /tmp/systemless-moremasters-final-lint.txt. The full rebuild remains active.
+
+
+## Current-volume queries advance original Marathon
+
+Shared PBGetVolSync/PBHGetVolSync ($A014/$A214) now return the existing virtual
+catalog's default Application Volume/root directory, with exact classic/HFS PB
+fields and optional Pascal names. SetVol/HSetVol and selectable defaults remain
+unfinished. Three new query tests execute both CPUs and cover nil names, absent
+catalogs, short/read-only outputs, and preservation of unrelated fields/state.
+The tracer accepts a bounded read-only --volume snapshot for original-game
+startup diagnosis. Marathon v1.2 with original companion forks now passes GetVol
+and stops at SoundDispatch selector $000C0008 (SndSoundManagerVersion). This
+matches EV's unresolved PPC sound-version import. Actual sound execution and
+audio output remain unfinished; neither original game is playable yet. See
+original-applications.md for reproduction and limitations. The full rebuild
+remains active.
+
+
+Current-volume validation: 54 relevant shared-library/file-I/O/resource-file/
+working-directory/query tests pass with no failures or ignored tests. Strict
+all-target Clippy, sequential changed-source formatting and whitespace checks
+pass. Logs: /tmp/systemless-getvol-regression.txt and
+/tmp/systemless-getvol-final-lint.txt. The previous milestone's complete 380-test
+GPU/MPW run remains historical evidence; unrelated GPU tests were not repeated
+for these non-rendering query routes.
