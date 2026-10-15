@@ -1662,3 +1662,22 @@ artwork remain separate unfinished work.
 The shared real-CPU resource test now runs for both PICT and ICON, including
 negative IDs, 128-byte icon contents, GetResource identity, guest mutation,
 release/reload, missing ID zero, result guards and readonly native outputs.
+
+
+### Shared Window Manager port and original no-save shutdown
+
+GetWMgrPort ($A910 and InterfaceLib) now returns the monochrome port already
+owned by InitWindows, through one Windows::manager_port query. It never creates
+a replacement port, changes the current port, draws or allocates guest storage.
+A query before InitWindows is an explicit error. The native adapter validates
+the four-byte output before popping its four-byte pointer argument; PPC takes
+the pointer in r3 and preserves its void result. Both use the same port identity,
+including after ordinary window teardown. Color Window Manager ports remain
+unfinished; this does not implement GetCWMgrPort.
+
+Tests check both real CPU routes, repeated identity, an unchanged live 108-byte
+port, nil caller port, differing process/guest error values, output guards,
+readonly native output before stack movement and failure before initialization.
+The initialized query is tested with the GPU detached. Public-header MPW window
+guests issue two GetWMgrPort calls, verify stable identity and full-screen port
+bounds, then complete the existing window/control lifecycle and pixel checks.

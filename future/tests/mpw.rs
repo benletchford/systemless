@@ -412,6 +412,15 @@ fn compiled_plain_window_lifecycle_has_record_and_screen_parity() {
                 .services
                 .calls
                 .iter()
+                .filter(|c| matches!(c, Call::GetWMgrPort(_)))
+                .count(),
+            2
+        );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
                 .filter(|call| matches!(call, Call::StillDown))
                 .count(),
             2

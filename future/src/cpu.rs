@@ -43,6 +43,7 @@ pub enum Call {
         destination: GuestPtr,
     },
     GetMouse(GuestPtr),
+    GetWMgrPort(GuestPtr),
     SystemTask,
     Rectangle(crate::rectangles::Op),
     ToolboxEvent {

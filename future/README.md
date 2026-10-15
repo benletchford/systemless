@@ -175,6 +175,10 @@ owner-background erasure and dirty regions. The original Quit route passes
 control movement and shared TEGetHeight while laying out its confirmation
 prompt. Shared GetIcon returns the real missing-resource result for ICON 0;
 the Quit confirmation displays and pressing No disposes its controls/TextEdit
-and windows. Shutdown then stops at GetWMgrPort ($A910). Window Manager port
-access and the remaining lifecycle are next; guest exit is not yet verified. The full
+and windows. Shared GetWMgrPort now returns the existing monochrome manager
+port; the original No-save Quit path completes file/resource cleanup and reaches
+ExitToShell with code 0. No-save New Game also returns through its chooser to a fresh board and the
+normal event wait. Cancel also resumes the existing game, with a remaining dialog-edge restoration
+artifact. Exact exposure, save paths and broader gameplay remain separate
+acceptance work. The full
 rebuild stays active.

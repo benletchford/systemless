@@ -319,6 +319,15 @@ impl Windows {
         }
         Ok(None)
     }
+    /// Return the existing monochrome manager port without allocating or changing
+    /// the current port. InitWindows owns its lifetime.
+    pub fn manager_port(&self, memory: &Memory) -> Result<u32> {
+        if self.manager == 0 {
+            return Err(fail("GetWMgrPort requires InitWindows"));
+        }
+        memory.read(GuestPtr(self.manager), 108)?;
+        Ok(self.manager)
+    }
     pub fn init(
         &mut self,
         memory: &mut Memory,

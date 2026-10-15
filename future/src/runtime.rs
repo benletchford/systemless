@@ -491,6 +491,12 @@ impl Runtime {
                                 crate::rectangles::contains(&self.memory, point, rectangle)?;
                             reply.apply(&mut self.cpu, &mut self.memory, u32::from(inside), 0)?;
                         }
+                        Call::GetWMgrPort(destination) => {
+                            self.memory.validate_write(destination, 4)?;
+                            let port = self.process.windows.manager_port(&self.memory)?;
+                            self.memory.write(destination, &port.to_be_bytes())?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::GetMouse(destination) => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("GetMouse requires InitGraf".into())
@@ -1420,6 +1426,7 @@ impl Runtime {
                         | Call::FindWindow { .. }
                         | Call::EmptyRect(_)
                         | Call::PointInRect { .. }
+                        | Call::GetWMgrPort(_)
                         | Call::GetMouse(_)
                         | Call::SystemTask
                         | Call::SysEnvirons { .. }

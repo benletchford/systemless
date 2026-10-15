@@ -18,7 +18,7 @@ int main(void) {
     Rect local={0,0,20,20};
     WindowPtr first, next, hidden, found;
     short savedMenuHeight;
-    GrafPtr old;
+    GrafPtr old, manager, managerAgain;
     GrafPort offscreen;
     PicHandle picture;
     Point point;
@@ -33,6 +33,8 @@ int main(void) {
     SetRect(&firstBounds,40,40,60,60);
     InitGraf(&qd.thePort); InitFonts();
     InitWindows(); SystemTask();
+    GetWMgrPort(&manager); GetWMgrPort(&managerAgain);
+    if (!manager || manager!=managerAgain || manager->portRect.top!=0 || manager->portRect.left!=0 || manager->portRect.bottom!=342 || manager->portRect.right!=512) return 80;
     GetPort(&old);
     if (old!=0 || FrontWindow()!=0) return 1;
     first=NewWindow(0,&firstBounds,"\ptest",true,plainDBox,(WindowPtr)-1,false,0x12345678);

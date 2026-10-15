@@ -456,3 +456,8 @@ the existing window/control lifetime and pixel-parity checks on both targets.
 The TextEdit guests require four TEGetHeight calls: empty plain text, three
 plain lines, two styled lines and emptied styled text. Both compiled targets
 verify the public long result and reach their existing success/exit checks.
+
+
+The window guests also call GetWMgrPort twice through the public headers, check
+stable nonnil identity and full-screen bounds, and verify the caller port stays
+nil before continuing their existing lifecycle/pixel acceptance on both CPUs.

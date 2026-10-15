@@ -807,3 +807,61 @@ Cancel branches and New Game confirmation were not exercised in this slice.
 Evidence: /tmp/systemless-mines-quit-no-probe.txt. Next: shared Window Manager
 port identity/access and continuation of original shutdown. Full rebuild remains
 active, with PPC originals and real Mixed Mode still outstanding.
+
+
+### Shared Window Manager port and original no-save shutdown
+
+GetWMgrPort ($A910 and InterfaceLib) now returns the monochrome port already
+owned by InitWindows, through one Windows::manager_port query. It never creates
+a replacement port, changes the current port, draws or allocates guest storage.
+A query before InitWindows is an explicit error. The native adapter validates
+the four-byte output before popping its four-byte pointer argument; PPC takes
+the pointer in r3 and preserves its void result. Both use the same port identity,
+including after ordinary window teardown. Color Window Manager ports remain
+unfinished; this does not implement GetCWMgrPort.
+
+Tests check both real CPU routes, repeated identity, an unchanged live 108-byte
+port, nil caller port, differing process/guest error values, output guards,
+readonly native output before stack movement and failure before initialization.
+The initialized query is tested with the GPU detached. Public-header MPW window
+guests issue two GetWMgrPort calls, verify stable identity and full-screen port
+bounds, then complete the existing window/control lifecycle and pixel checks.
+
+The original Super Mines sequence dismisses the splash, confirms its chooser,
+changes board cells, selects File > Quit with a real press/drag/release, then
+presses No at global (270,86). It now passes GetWMgrPort, sets the returned port,
+continues final menu/cursor/pointer/region and file cleanup, and reaches
+ExitToShell with code 0 on click 6 release. This is bounded original 68K execution
+with no guest patching. Evidence: /tmp/systemless-mines-wmgr-quit-probe.txt;
+post-exit PC $01000030. Original files and screenshots remain outside Git.
+Save/Cancel, New Game, wider gameplay, original PPC acceptance and production
+Mixed Mode remain independent incomplete requirements. The full rebuild goal
+remains active.
+
+Contract: Apple's [GetWMgrPort](https://leopard-adc.pepas.com/documentation/mac/Toolbox/Toolbox-276.html),
+Macintosh Toolbox Essentials, p. 4-114. Legacy Systemless is comparison evidence;
+native System 7 comparison is optional under the user's authorization.
+
+A separate original New Game run uses drag target (60,35), declines saving at
+(270,86), and visibly returns to the game/difficulty chooser without a service
+fault. Evidence: /tmp/systemless-mines-newgame-no-probe.txt and its private
+after.png readback. This establishes chooser return, not yet a fresh board or
+save support. The Quit run's No branch reaches Exit(0); keep those distinct.
+
+The follow-up New Game run confirms the chooser at (402,231). It draws a new
+board with a visibly different layout, returns Waiting { ticks: 10 }, and stays
+at that normal wait through the final bounded advance. Evidence:
+/tmp/systemless-mines-newgame-restart-probe.txt and its private after.png. This
+verifies no-save New Game restart; it does not establish complete gameplay or
+saving. Both original lifecycle runs use actual host input, not guest patches.
+
+The separate Quit/Cancel run presses Cancel at (367,86) and returns to the
+existing game's Waiting { ticks: 10 } state without Exit or a service fault.
+Private evidence: /tmp/systemless-mines-quit-cancel-probe.txt, step-4 and after
+PPM/PNG readbacks. Comparison of x=20..496, y=58..319 finds 123 changed pixels;
+53 are pointer movement and 70 form a former confirmation edge (x=409..422 at
+y=58 and x=422 through y=114). Board/counter pixels outside those areas remain
+identical. Thus Cancel lifecycle works, but exact damage restoration is not
+accepted. Next: reproduce/fix that dialog-edge exposure in a focused window
+fixture, then verify save-path dialogs/files and broader original gameplay.
+Do not mistake no-save Quit/New Game success for full application compatibility.

@@ -180,6 +180,7 @@ pub enum Service {
     GetCursor,
     GetPicture,
     GetIcon,
+    GetWMgrPort,
     DrawPicture,
     SetSoundVol,
     GetSoundVol,
@@ -288,6 +289,7 @@ impl Abi {
             b"ShowWindow" => Some(Service::Window(crate::windows::Op::Show)),
             b"HideWindow" => Some(Service::Window(crate::windows::Op::Hide)),
             b"InitWindows" => Some(Service::Window(crate::windows::Op::Init)),
+            b"GetWMgrPort" => Some(Service::GetWMgrPort),
             b"FrontWindow" => Some(Service::Window(crate::windows::Op::Front)),
             b"CloseWindow" => Some(Service::Window(crate::windows::Op::Close)),
             b"DisposeWindow" => Some(Service::Window(crate::windows::Op::Dispose)),
@@ -854,6 +856,15 @@ impl Abi {
                 };
                 c.dar[15] = result;
                 Ok((Call::NewWindow(request), Reply::StackLong(GuestPtr(result))))
+            }
+            0xa910 => {
+                let destination = GuestPtr(memory.u32(GuestPtr(sp))?);
+                memory.validate_write(destination, 4)?;
+                let next = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("GetWMgrPort stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((Call::GetWMgrPort(destination), Reply::None))
             }
             0xa912 | 0xa924 => {
                 let op = if opcode == 0xa912 {
@@ -2712,6 +2723,7 @@ impl Abi {
                 handle: c.gpr[3],
                 destination: GuestPtr(c.gpr[4]),
             },
+            Service::GetWMgrPort => Call::GetWMgrPort(GuestPtr(c.gpr[3])),
             Service::GetIcon => Call::GetResource {
                 kind: *b"ICON",
                 id: c.gpr[3] as i16,
@@ -2836,6 +2848,7 @@ impl Abi {
                                 | crate::menus::Op::Draw
                                 | crate::menus::Op::Clear
                         )
+                        | Service::GetWMgrPort
                         | Service::InitGraf
                         | Service::PortColor(_)
                         | Service::Window(

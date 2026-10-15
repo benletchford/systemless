@@ -89,6 +89,7 @@ fn windows_share_records_visibility_pixels_and_ownership_across_cpu_adapters() {
             b"CloseWindow",
             b"DisposeWindow",
             b"IsDialogEvent",
+            b"GetWMgrPort",
         ],
         512,
     );
@@ -116,6 +117,84 @@ fn windows_share_records_visibility_pixels_and_ownership_across_cpu_adapters() {
     assert_ne!(app.runtime.memory.u32(GuestPtr(0x9de)).unwrap(), 0);
     assert_ne!(app.runtime.memory.u32(GuestPtr(0x9ee)).unwrap(), 0);
     assert_eq!(app.runtime.memory.u32(slot).unwrap(), 0);
+    // Query remains available without a GPU and does not mutate the manager,
+    // caller port, heap allocation or either guest/process error authority.
+    let manager = app.runtime.memory.u32(GuestPtr(0x9de)).unwrap();
+    let record = app
+        .runtime
+        .memory
+        .read(GuestPtr(manager), 108)
+        .unwrap()
+        .to_vec();
+    let gpu = app.runtime.graphics.take();
+    app.runtime.process.mem_error = -108;
+    app.runtime.process.res_error = -192;
+    app.runtime
+        .memory
+        .write(GuestPtr(0x220), &(-51i16).to_be_bytes())
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0xa60), &(-50i16).to_be_bytes())
+        .unwrap();
+    assert_eq!(invoke(&mut app, 7, &[data + 48]), data + 48);
+    assert_eq!(
+        app.runtime.memory.u32(GuestPtr(data + 48)).unwrap(),
+        manager
+    );
+    app.runtime
+        .memory
+        .map(GuestPtr(0x53000000), vec![0xa9, 0x10], Permissions::RX)
+        .unwrap();
+    let sp = STACK_BASE + 0x8000;
+    let mut frame = (data + 52).to_be_bytes().to_vec();
+    frame.extend([0x5a; 6]);
+    app.runtime.memory.write(GuestPtr(sp), &frame).unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x53000000, sp);
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::M68k(cpu) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(cpu.dar[15], sp + 4);
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(sp + 4), 6).unwrap(),
+        [0x5a; 6]
+    );
+    assert_eq!(
+        app.runtime.memory.u32(GuestPtr(data + 52)).unwrap(),
+        manager
+    );
+    assert_eq!(app.runtime.memory.u32(slot).unwrap(), 0);
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(manager), 108).unwrap(),
+        record
+    );
+    assert_eq!(
+        (app.runtime.process.mem_error, app.runtime.process.res_error),
+        (-108, -192)
+    );
+    assert_eq!(app.runtime.memory.u16(GuestPtr(0x220)).unwrap() as i16, -51);
+    assert_eq!(app.runtime.memory.u16(GuestPtr(0xa60)).unwrap() as i16, -50);
+    app.runtime
+        .memory
+        .write(GuestPtr(sp), &0x53000000u32.to_be_bytes())
+        .unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x53000000, sp);
+    let Cpu::M68k(cpu) = &mut app.runtime.cpu else {
+        panic!()
+    };
+    assert!(systemless_future::abi::Abi::trap(0xa910, cpu, &app.runtime.memory).is_err());
+    let Cpu::M68k(cpu) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(cpu.dar[15], sp);
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(manager), 108).unwrap(),
+        record
+    );
+    app.runtime.graphics = gpu;
+    app.runtime.process.mem_error = 0;
+    app.runtime.process.res_error = 0;
     rect(&mut app, data + 64, 40, 40, 60, 60);
     app.runtime
         .memory
@@ -1439,4 +1518,36 @@ fn find_window_adapter_validates_word_result_before_popping_and_unpacks_ppc_poin
         Abi::import(Service::FindWindow, &cpu, &memory).unwrap(),
         (expected, Reply::PpcR3)
     );
+}
+
+#[test]
+fn window_manager_port_before_initialization_faults_without_publishing_output() {
+    let f = pef_program(&[0x4e800020], &[b"GetWMgrPort"], 0);
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let vector = app
+        .runtime
+        .memory
+        .u32(GuestPtr(app.info.toc_or_a5 + 8))
+        .unwrap();
+    let pc = app.runtime.memory.u32(GuestPtr(vector)).unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0x800), &[0x5a; 8])
+        .unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::PowerPc, pc, STACK_BASE + 0x8000);
+    let Cpu::PowerPc(cpu) = &mut app.runtime.cpu else {
+        panic!()
+    };
+    cpu.gpr[3] = 0x800;
+    cpu.gpr[4] = 0x12345678;
+    assert!(app.runtime.advance(1).is_err());
+    let Cpu::PowerPc(cpu) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!((cpu.gpr[3], cpu.gpr[4]), (0x800, 0x12345678));
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(0x800), 8).unwrap(),
+        [0x5a; 8]
+    );
+    assert_eq!(app.runtime.memory.u32(GuestPtr(0x9de)).unwrap(), 0);
 }
