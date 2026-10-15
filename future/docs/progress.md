@@ -4732,3 +4732,50 @@ GPU tests and all 30 public compiler/CLI fixtures. Full all-target run:
 /tmp/systemless-dialog-final-lint.txt. Sequential changed-file formatting and
 whitespace checks pass. The original EV trace is separate application evidence;
 no native gameplay or complete dialog rendering is claimed.
+
+
+## 2026-10-16: dialog default-button state and outline
+
+SetDialogDefaultItem now routes the exact $AA68 D0=$0304 native selector and
+InterfaceLib import to one shared dialog operation. Native result storage is
+validated before popping six argument bytes; OSErr uses the two-byte Pascal
+result or signed PPC r3. The selected item is stored at DialogRecord+168.
+Registered push buttons use their live ControlRecord bounds, not stale DITL
+geometry; invalid dialogs/items return paramErr. Item zero removes the automatic
+outline. No modal result or keyboard event is synthesized.
+
+The default outline uses a three-pixel frame outside the button, matching the
+existing Systemless geometry (four-pixel outset, height-derived corner diameter)
+and shared rounded-rectangle coverage. Replacing/removing a default erases the old
+outline with the dialog background pattern. Pen mode/pattern, colors, current
+port and error authorities are preserved. Hidden dialogs retain their selection
+without requiring a GPU; ShowWindow redraws their real controls and pending
+outline. General dialog update/exposure drawing and modal keyboard activation
+remain unfinished. No ROM geometry or pixels are embedded.
+
+Real CPU/GPU tests verify straight-edge thickness and gap, independent button
+selection, old-outline removal, unchanged button pixels, exact bitmap restoration,
+GPU readback, caller port/pen/errors and hidden/show/disposed lifetime. The test
+explicitly configures the classic black/white GPU palette; its initial readback
+failure used the generic index-to-gray palette, while guest bitmap geometry was
+already correct. The final focused dialog/control/window run passes 25 tests,
+zero failures/skips: /tmp/systemless-default-final-tests.txt. The preceding full
+suite passed 467 tests; no new full-suite run is claimed for this extension.
+
+Original EV now passes SetDialogDefaultItem, ShowWindow and SelectWindow, then
+stops at DrawDialog ($A981), PC $000257D2, for the same dialog:
+/tmp/systemless-ev-default-next.txt. Next implement real dialog item drawing
+(static text/parameters, icon and picture resources, controls/default outlines)
+before modal event handling. No complete dialog rendering, title/menu or gameplay
+acceptance is established. Marathon's actual Color QuickDraw and PPC routine
+requirements remain open; the full rebuild goal remains active.
+Sources: [Apple dialog helper calls](https://leopard-adc.pepas.com/technotes/tn/tn1148.html),
+[Apple default-button drawing example](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-383.html).
+
+The public dialogs.c fixture now calls the real header declaration with signed
+item arguments and verifies paramErr for a nil dialog. Actual 68K/PPC service
+traces prove both calls execute. All 30 freshly rebuilt compiler/CLI tests pass,
+zero failures/skips: /tmp/systemless-default-sdk-tests.txt. Combined with the
+25 focused checks, this extension has 55 passing checks. Strict all-target lint
+passes: /tmp/systemless-default-lint.txt; sequential formatting, shell syntax and
+whitespace checks pass. Build log: /tmp/systemless-default-sdk-build.txt.

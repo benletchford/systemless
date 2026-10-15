@@ -1656,3 +1656,13 @@ and raw static-text handles, and loads actual picture/icon resource handles.
 Controls are drawn; non-control item update drawing remains unfinished. Neither
 original game is playable. Marathon's Color QuickDraw and PPC routine-descriptor
 requirements remain unchanged.
+
+
+### Default-button refresh
+
+EV 1.0.5 68K passes the exact $AA68/$0304 default-item call, ShowWindow and
+SelectWindow. It next requests DrawDialog ($A981), PC $000257D2, for the real
+dialog 3000. /tmp/systemless-ev-default-next.txt. Shared default-button selection
+and outline drawing are tested separately through both CPUs, including GPU
+readback, hidden/show and outline replacement. Full item drawing, modal events,
+title/menu and gameplay remain unverified. Marathon's requirements are unchanged.

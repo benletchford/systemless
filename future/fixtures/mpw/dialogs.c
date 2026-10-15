@@ -40,5 +40,6 @@ int main(void) {
     InitDialogs(0);
     if (*(long *)0xa8c || *(long *)0xa9c || *(short *)0xafa || *(Handle *)0xaa0 || *(Handle *)0xaa4) return 7;
     readParams(a,b,c,d); if (a[0] || b[0] || c[0] || d[0] || MemError()) return 8;
+    if (SetDialogDefaultItem(0,1)!=-50 || SetDialogDefaultItem(0,-1)!=-50) return 9;
     PostEvent(diskEvt,0x600d); ExitToShell(); return 0;
 }

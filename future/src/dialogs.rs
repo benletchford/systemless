@@ -26,6 +26,10 @@ pub enum Op {
         dialog: u32,
         close: bool,
     },
+    DefaultItem {
+        dialog: u32,
+        number: i16,
+    },
     Init(u32),
     IsEvent(GuestPtr),
     Slot(i16),
@@ -76,7 +80,7 @@ impl Dialogs {
     }
     pub fn call(&mut self, memory: &mut Memory, process: &mut Process, op: Op) -> Result<()> {
         match op {
-            Op::Resource { .. } | Op::Item { .. } | Op::Dispose { .. } => {
+            Op::Resource { .. } | Op::Item { .. } | Op::Dispose { .. } | Op::DefaultItem { .. } => {
                 Err(bad("dialog operation requires its record/value route"))
             }
             Op::IsEvent(_) => Err(bad("dialog event query requires a value route")),

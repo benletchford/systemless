@@ -80,6 +80,7 @@ pub enum Service {
     SetApplLimit,
     BlockMove,
     InitDialogs,
+    SetDialogDefaultItem,
     GetNewDialog,
     GetDialogItem,
     DisposeDialog(bool),
@@ -393,6 +394,7 @@ impl Abi {
             b"BlockMove" | b"BlockMoveData" => Some(Service::BlockMove),
             b"IsDialogEvent" => Some(Service::IsDialogEvent),
             b"InitDialogs" => Some(Service::InitDialogs),
+            b"SetDialogDefaultItem" => Some(Service::SetDialogDefaultItem),
             b"GetNewDialog" => Some(Service::GetNewDialog),
             b"GetDialogItem" | b"GetDItem" => Some(Service::GetDialogItem),
             b"DisposeDialog" | b"DisposDialog" => Some(Service::DisposeDialog(false)),
@@ -2644,6 +2646,19 @@ impl Abi {
             0xa260 if c.dar[0] as u16 == 8 => {
                 Ok((Call::FcbInfo(GuestPtr(c.dar[8])), Reply::M68kFileError))
             }
+            0xaa68 if c.dar[0] as u16 == 0x0304 => {
+                let b = memory.read(GuestPtr(sp), 8)?;
+                let result = sp
+                    .checked_add(6)
+                    .ok_or_else(|| Error::Cpu("SetDialogDefaultItem stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                let call = Call::Dialog(crate::dialogs::Op::DefaultItem {
+                    dialog: u32::from_be_bytes(b[2..6].try_into().unwrap()),
+                    number: i16::from_be_bytes(b[..2].try_into().unwrap()),
+                });
+                c.dar[15] = result;
+                Ok((call, Reply::StackWord(GuestPtr(result))))
+            }
             0xa97c => {
                 let b = memory.read(GuestPtr(sp), 14)?;
                 let result = sp
@@ -2914,6 +2929,10 @@ impl Abi {
             }),
             Service::GetDAString => Call::Dialog(crate::dialogs::Op::Slot(c.gpr[3] as i16)),
             Service::IsDialogEvent => Call::Dialog(crate::dialogs::Op::IsEvent(GuestPtr(c.gpr[3]))),
+            Service::SetDialogDefaultItem => Call::Dialog(crate::dialogs::Op::DefaultItem {
+                dialog: c.gpr[3],
+                number: c.gpr[4] as i16,
+            }),
             Service::GetNewDialog => Call::Dialog(crate::dialogs::Op::Resource {
                 id: c.gpr[3] as i16,
                 storage: GuestPtr(c.gpr[4]),

@@ -678,6 +678,20 @@ fn compiled_dialog_startup_and_parameter_strings_complete_on_both_cpus() {
         LoadedApplication::pef(&pef, None).unwrap(),
     ] {
         assert_eq!(app.runtime.advance(20000).unwrap(), Stop::Exit(0));
+        let defaults: Vec<_> = app
+            .runtime
+            .services
+            .calls
+            .iter()
+            .filter_map(|call| match call {
+                Call::Dialog(systemless_future::dialogs::Op::DefaultItem { dialog, number }) => {
+                    Some((*dialog, *number))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(defaults, [(0, 1), (0, -1)]);
+
         assert_eq!(
             &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],
             &[

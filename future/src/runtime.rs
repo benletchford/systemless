@@ -420,6 +420,28 @@ impl Runtime {
                             };
                             self.process.windows = windows;
                             let value = result?;
+                            let shown = match call {
+                                Call::Window {
+                                    op: crate::windows::Op::Show,
+                                    pointer,
+                                } => Some(pointer),
+                                Call::WindowChange {
+                                    pointer,
+                                    change: crate::windows::Change::Visibility(true),
+                                } => Some(pointer),
+                                _ => None,
+                            };
+                            if let Some(dialog) = shown {
+                                let mut dialogs = std::mem::take(&mut self.process.dialogs);
+                                let result = dialogs.show_default(
+                                    &mut self.memory,
+                                    &mut self.process,
+                                    gpu,
+                                    dialog,
+                                );
+                                self.process.dialogs = dialogs;
+                                result?;
+                            }
                             reply.apply(
                                 &mut self.cpu,
                                 &mut self.memory,
@@ -694,11 +716,15 @@ impl Runtime {
                             let value = if matches!(
                                 op,
                                 crate::dialogs::Op::Resource { .. }
+                                    | crate::dialogs::Op::DefaultItem { .. }
                                     | crate::dialogs::Op::Item { .. }
                                     | crate::dialogs::Op::Dispose { .. }
                             ) {
-                                if !matches!(op, crate::dialogs::Op::Item { .. })
-                                    && self.graphics.is_none()
+                                if !matches!(
+                                    op,
+                                    crate::dialogs::Op::Item { .. }
+                                        | crate::dialogs::Op::DefaultItem { .. }
+                                ) && self.graphics.is_none()
                                 {
                                     return Err(Error::Graphics(
                                         "dialog operation requires a GPU".into(),
@@ -706,6 +732,15 @@ impl Runtime {
                                 }
                                 let mut manager = std::mem::take(&mut self.process.dialogs);
                                 let result = match op {
+                                    crate::dialogs::Op::DefaultItem { dialog, number } => manager
+                                        .default_item(
+                                            &mut self.memory,
+                                            &mut self.process,
+                                            self.graphics.as_ref(),
+                                            dialog,
+                                            number,
+                                        )
+                                        .map(|v| v as i32 as u32),
                                     crate::dialogs::Op::Resource {
                                         id,
                                         storage,

@@ -10,6 +10,8 @@ pub(super) struct Record {
     items: u32,
     text: Vec<u32>,
     closed: bool,
+    outline: Option<Rect>,
+    automatic_default: bool,
 }
 struct Template {
     bounds: Rect,
@@ -342,6 +344,8 @@ impl Dialogs {
                     items: copied,
                     text,
                     closed: false,
+                    outline: None,
+                    automatic_default: false,
                 },
             );
             if scratch != 0 {
@@ -476,5 +480,147 @@ impl Dialogs {
         }
         p.mem_error = 0;
         Ok(())
+    }
+}
+
+impl Dialogs {
+    /// Repaint only registered dialogs after a Window Manager show. Their default
+    /// item remains in the canonical guest record, including while hidden.
+    pub(crate) fn show_default(
+        &mut self,
+        m: &mut Memory,
+        p: &mut Process,
+        g: &Graphics,
+        dialog: u32,
+    ) -> Result<()> {
+        if self.records.get(&dialog).is_some_and(|r| !r.closed) {
+            let mut controls = std::mem::take(&mut p.controls);
+            let result = controls.call(m, p, Some(g), ControlOp::DrawAll(dialog));
+            p.controls = controls;
+            result?;
+            let number = m.u16(GuestPtr(dialog + 168))? as i16;
+            // An untouched NewDialog default field does not install an automatic
+            // outline. Only SetDialogDefaultItem opts into the helper behavior.
+            if self.records[&dialog].automatic_default {
+                self.default_item(m, p, Some(g), dialog, number)?;
+            }
+        }
+        Ok(())
+    }
+    pub fn default_item(
+        &mut self,
+        m: &mut Memory,
+        p: &mut Process,
+        g: Option<&Graphics>,
+        dialog: u32,
+        number: i16,
+    ) -> Result<i16> {
+        let errors = (p.mem_error, p.res_error);
+        let result = (|| {
+            let Some(record) = self.records.get(&dialog).filter(|r| !r.closed) else {
+                return Ok(-50);
+            };
+            if !p.windows.contains(m, dialog)?
+                || m.u16(GuestPtr(dialog + 108))? != 2
+                || m.u32(GuestPtr(dialog + 156))? != record.items
+            {
+                return Err(bad("dialog record ownership changed"));
+            }
+            let data = payload(m, p, record.items)?;
+            let list = items(&data)?;
+            let target = if number == 0 {
+                None
+            } else {
+                let Some(item) = number
+                    .checked_sub(1)
+                    .and_then(|n| usize::try_from(n).ok())
+                    .and_then(|n| list.get(n))
+                else {
+                    return Ok(-50);
+                };
+                if item.kind & 0x7f != 4 {
+                    return Ok(-50);
+                }
+                let h = u32::from_be_bytes(data[item.offset..item.offset + 4].try_into().unwrap());
+                {
+                    let controls = std::mem::take(&mut p.controls);
+                    let result = controls.dialog_button(m, p, h, dialog);
+                    p.controls = controls;
+                    result?
+                }
+            };
+            let target =
+                target.map(|r| Rect::new(r.left - 4, r.top - 4, r.right + 4, r.bottom + 4));
+            let coverage = |r: Rect| {
+                let oval = ((r.bottom - r.top) / 2 - 4).max(4) as i16;
+                crate::rounded::coverage(r, oval, oval, Some((3, 3)))
+            };
+            let new = target.map(|r| coverage(r).map(|c| (r, c))).transpose()?;
+            let old = record
+                .outline
+                .map(|r| coverage(r).map(|c| (r, c)))
+                .transpose()?;
+            m.validate_write(GuestPtr(dialog + 168), 2)?;
+            let visible = m.read(GuestPtr(dialog + 110), 1)?[0] != 0
+                && !crate::region_geometry::decode(&crate::regions::read(
+                    m,
+                    p,
+                    m.u32(GuestPtr(dialog + 24))?,
+                )?)?
+                .is_empty();
+            if visible && (old.is_some() || new.is_some()) {
+                let g = g.ok_or_else(|| bad("visible default button requires a GPU"))?;
+                if crate::port_layout::color(m, GuestPtr(dialog))? {
+                    return Err(bad("color dialog default outlines are unsupported"));
+                }
+                let ports = p
+                    .ports
+                    .ok_or_else(|| bad("default button requires InitGraf"))?;
+                let previous = m.u32(ports.current_slot)?;
+                let saved = m.read(GuestPtr(dialog), 108)?.to_vec();
+                m.validate_write(ports.current_slot, 4)?;
+                m.validate_write(GuestPtr(dialog), 108)?;
+                let background = crate::port_layout::pattern(
+                    m,
+                    GuestPtr(dialog),
+                    crate::port_layout::Pattern::Background,
+                )?;
+                let paint = (|| {
+                    ports.set(m, GuestPtr(dialog))?;
+                    m.write(GuestPtr(dialog + 56), &8u16.to_be_bytes())?;
+                    if let Some((r, c)) = &old {
+                        crate::port_layout::write_pattern(
+                            m,
+                            GuestPtr(dialog),
+                            crate::port_layout::Pattern::Pen,
+                            &background,
+                        )?;
+                        ports.paint_coverage(g, m, *r, Some(c))?;
+                    }
+                    if let Some((r, c)) = &new {
+                        m.write(GuestPtr(dialog + 80), &33u32.to_be_bytes())?;
+                        m.write(GuestPtr(dialog + 84), &30u32.to_be_bytes())?;
+                        crate::port_layout::write_pattern(
+                            m,
+                            GuestPtr(dialog),
+                            crate::port_layout::Pattern::Pen,
+                            &[255; 8],
+                        )?;
+                        ports.paint_coverage(g, m, *r, Some(c))?;
+                    }
+                    Ok(())
+                })();
+                m.write(GuestPtr(dialog), &saved)?;
+                m.write(ports.current_slot, &previous.to_be_bytes())?;
+                paint?;
+            }
+            m.write(GuestPtr(dialog + 168), &number.to_be_bytes())?;
+            let record = self.records.get_mut(&dialog).unwrap();
+            record.outline = if visible { target } else { None };
+            record.automatic_default = true;
+            Ok(0)
+        })();
+        (p.mem_error, p.res_error) = errors;
+        result
     }
 }

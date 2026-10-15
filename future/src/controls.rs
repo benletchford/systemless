@@ -65,6 +65,24 @@ fn title(memory: &Memory, p: GuestPtr) -> Result<Vec<u8>> {
     Ok(memory.read(p, n + 1)?.to_vec())
 }
 impl Controls {
+    pub(crate) fn dialog_button(
+        &self,
+        m: &Memory,
+        p: &mut Process,
+        h: u32,
+        owner: u32,
+    ) -> Result<Option<Rect>> {
+        let ptr = self.record(m, p, h)?;
+        if self.records[&h] != (owner, 0) {
+            return Err(fail("default item is not an owned push button"));
+        }
+        let r = read_rect(m, GuestPtr(ptr.0 + 8))?;
+        if r.left >= r.right || r.top >= r.bottom {
+            return Err(fail("invalid default button bounds"));
+        }
+        Ok((m.read(GuestPtr(ptr.0 + 16), 1)?[0] != 0).then_some(r))
+    }
+
     fn record(&self, memory: &Memory, process: &mut Process, h: u32) -> Result<GuestPtr> {
         let &(owner, _) = self
             .records

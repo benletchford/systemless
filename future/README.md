@@ -292,3 +292,11 @@ non-control update drawing, modal event handling, edit-text items, color dialogs
 custom definitions and additional positioning modes remain unfinished. Original
 EV passes dialog creation and next requests SetDialogDefaultItem; no dialog or
 original-game gameplay acceptance is claimed.
+
+
+SetDialogDefaultItem now stores shared default-button state and draws a real
+outline from live control geometry. Changing/removing the default restores its
+old border; hidden dialogs preserve the selection and ShowWindow redraws their
+controls and outline. Native selector/result and PPC import/error behavior are
+covered by real CPU tests. General dialog update drawing and modal keyboard
+activation remain unfinished. Original EV next reaches DrawDialog ($A981).

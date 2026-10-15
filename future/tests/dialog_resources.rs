@@ -94,6 +94,9 @@ fn setup(kind: u8) -> LoadedApplication {
             b"CloseDialog",
             b"DisposeDialog",
             b"InitFonts",
+            b"SetDialogDefaultItem",
+            b"ShowWindow",
+            b"HideWindow",
         ],
         512,
     );
@@ -105,7 +108,7 @@ fn setup(kind: u8) -> LoadedApplication {
         .memory
         .map(
             GuestPtr(0x50000000),
-            vec![0xa9, 0x7c, 0xa9, 0x8d, 0xa9, 0x82, 0xa9, 0x83],
+            vec![0xa9, 0x7c, 0xa9, 0x8d, 0xa9, 0x82, 0xa9, 0x83, 0xaa, 0x68],
             Permissions::RX,
         )
         .unwrap();
@@ -116,9 +119,11 @@ fn setup(kind: u8) -> LoadedApplication {
     let data = a.info.toc_or_a5;
     invoke(&mut a, 0, &[data + 330]);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    a.runtime.graphics = Some(
-        pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
-    );
+    let mut gpu =
+        pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap();
+    gpu.palette[0] = [255; 4];
+    gpu.palette[1] = [0, 0, 0, 255];
+    a.runtime.graphics = Some(gpu);
     invoke(&mut a, 6, &[]);
     invoke(&mut a, 1, &[]);
     a
@@ -291,4 +296,143 @@ fn native_dialog_results_and_outputs_are_preflighted_before_stack_changes() {
     assert!(Abi::trap(0xa98d, c, &m).is_err());
     assert_eq!(c.dar[15], 0x1000);
     assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), [0x5a; 8]);
+}
+
+fn native_default(a: &mut LoadedApplication, w: u32, item: i16) -> i16 {
+    let sp = STACK_BASE + 0x8000;
+    let mut frame = item.to_be_bytes().to_vec();
+    frame.extend(w.to_be_bytes());
+    frame.extend([0xa5; 6]);
+    a.runtime.memory.write(GuestPtr(sp), &frame).unwrap();
+    a.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000008, sp);
+    if let Cpu::M68k(c) = &mut a.runtime.cpu {
+        c.dar[0] = 0xbeef0304;
+    }
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::M68k(c) = &a.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(c.dar[15], sp + 6);
+    assert_eq!(a.runtime.memory.u32(GuestPtr(sp + 8)).unwrap(), 0xa5a5a5a5);
+    a.runtime.memory.u16(GuestPtr(sp + 6)).unwrap() as i16
+}
+fn screen(a: &LoadedApplication) -> Vec<u8> {
+    a.runtime
+        .memory
+        .read(systemless_future::quickdraw::SCREEN, 64 * 342)
+        .unwrap()
+        .to_vec()
+}
+fn at(a: &LoadedApplication, w: u32, x: i32, y: i32) -> bool {
+    let x = x - i32::from(a.runtime.memory.u16(GuestPtr(w + 10)).unwrap() as i16);
+    let y = y - i32::from(a.runtime.memory.u16(GuestPtr(w + 8)).unwrap() as i16);
+    let bytes = screen(a);
+    bytes[y as usize * 64 + x as usize / 8] & (0x80 >> (x as usize % 8)) != 0
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn default_button_has_real_outline_shared_state_and_preserved_ports_errors_and_hidden_lifetime() {
+    let mut a = setup(0x88);
+    let w = invoke(&mut a, 2, &[128, 0, u32::MAX]);
+    let slot = a.runtime.process.ports.unwrap().current_slot;
+    // Nondefault pen state must not influence the standard outline or leak changes.
+    a.runtime
+        .memory
+        .write(GuestPtr(w + 52), &[0, 5, 0, 7, 0, 10])
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(w + 58), &[0x55; 8])
+        .unwrap();
+    let port = a.runtime.memory.read(GuestPtr(w), 108).unwrap().to_vec();
+    let previous = a.runtime.memory.u32(slot).unwrap();
+    let baseline = screen(&a);
+    a.runtime.process.mem_error = -108;
+    a.runtime.process.res_error = -192;
+    a.runtime
+        .memory
+        .write(GuestPtr(0x220), &(-44i16).to_be_bytes())
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(0xa60), &(-43i16).to_be_bytes())
+        .unwrap();
+    assert_eq!(native_default(&mut a, w, 1), 0);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(w + 168)).unwrap(), 1);
+    let outlined = screen(&a);
+    assert_ne!(outlined, baseline);
+    for y in 76..79 {
+        assert!(at(&a, w, 180, y));
+    }
+    assert!(!at(&a, w, 180, 79));
+    assert!(at(&a, w, 180, 80));
+    for x in 146..149 {
+        assert!(at(&a, w, x, 90));
+    }
+    assert!(!at(&a, w, 149, 90));
+    assert_eq!(a.runtime.memory.read(GuestPtr(w), 108).unwrap(), port);
+    assert_eq!(a.runtime.memory.u32(slot).unwrap(), previous);
+    assert_eq!(
+        (a.runtime.process.mem_error, a.runtime.process.res_error),
+        (-108, -192)
+    );
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0x220)).unwrap() as i16, -44);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0xa60)).unwrap() as i16, -43);
+    assert_eq!(invoke(&mut a, 7, &[w, 2]) as i32, -50);
+    assert_eq!(screen(&a), outlined);
+    assert_eq!(invoke(&mut a, 7, &[0, 1]) as i32, -50);
+    assert_eq!(invoke(&mut a, 7, &[w, 0]), 0);
+    assert_eq!(screen(&a), baseline);
+    assert_eq!(native_default(&mut a, w, 1), 0);
+    assert_eq!(screen(&a), outlined);
+    invoke(&mut a, 9, &[w]);
+    let hidden = screen(&a);
+    let gpu = a.runtime.graphics.take();
+    assert_eq!(invoke(&mut a, 7, &[w, 0]), 0);
+    assert_eq!(invoke(&mut a, 7, &[w, 1]), 0);
+    assert_eq!(screen(&a), hidden);
+    a.runtime.graphics = gpu;
+    invoke(&mut a, 8, &[w]);
+    assert_eq!(screen(&a), outlined);
+    // GPU readback must agree with guest bitmap at a straight outline edge.
+    let rgba = a.runtime.graphics.as_ref().unwrap().read_rgba().unwrap();
+    let x = 180 - i32::from(a.runtime.memory.u16(GuestPtr(w + 10)).unwrap() as i16);
+    let y = 76 - i32::from(a.runtime.memory.u16(GuestPtr(w + 8)).unwrap() as i16);
+    let offset = (y as usize * 512 + x as usize) * 4;
+    assert_eq!(&rgba[offset..offset + 4], &[0, 0, 0, 255]);
+    invoke(&mut a, 5, &[w]);
+    assert_eq!(invoke(&mut a, 7, &[w, 1]) as i32, -50);
+}
+#[test]
+fn native_default_dispatch_rejects_bad_selector_or_result_before_popping() {
+    use systemless_future::{abi::Abi, memory::Memory};
+    for selector in [0x0304, 0x0204, 0x0305] {
+        let mut m = Memory::default();
+        m.map(GuestPtr(0x1000), vec![0; 8], Permissions::RX)
+            .unwrap();
+        let mut cpu = Cpu::new(Architecture::M68k, 0, 0x1000);
+        let Cpu::M68k(c) = &mut cpu else { panic!() };
+        c.dar[0] = selector;
+        assert!(Abi::trap(0xaa68, c, &m).is_err());
+        assert_eq!(c.dar[15], 0x1000);
+    }
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn changing_the_default_button_erases_the_previous_outline_without_erasing_the_button() {
+    let mut a = setup(4);
+    let w = invoke(&mut a, 2, &[128, 0, u32::MAX]);
+    let baseline = screen(&a);
+    assert_eq!(native_default(&mut a, w, 1), 0);
+    assert!(at(&a, w, 180, 76));
+    assert!(!at(&a, w, 100, 6));
+    assert_eq!(invoke(&mut a, 7, &[w, 2]), 0);
+    assert!(!at(&a, w, 180, 76));
+    assert!(at(&a, w, 180, 80));
+    assert!(at(&a, w, 100, 6));
+    assert_eq!(a.runtime.memory.u16(GuestPtr(w + 168)).unwrap(), 2);
+    assert_eq!(native_default(&mut a, w, 0), 0);
+    assert_eq!(screen(&a), baseline);
+    invoke(&mut a, 5, &[w]);
 }
