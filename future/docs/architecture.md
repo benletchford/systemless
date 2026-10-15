@@ -1066,8 +1066,8 @@ explicitly. Text/vector picture commands and picture recording remain gaps.
 
 CPU decoding converts compressed/packed storage to immutable one-bit indices.
 Graphics::Draw::Blit supplies independent source dimensions/rectangle, source
-colors and a transfer operation to wgpu. The compute shader scales using integer
-nearest sampling, excludes source coordinates outside the bitmap and performs
+colors and a transfer operation to wgpu. The compute shader enlarges using integer nearest sampling and reduces
+monochrome footprints with OR. It excludes source coordinates outside the bitmap and performs
 copy/or/xor/bic plus inverted-source variants. No CPU picture renderer or CPU
 scaling path exists. The destination BitMap wrapper retains packed row padding
 and synchronizes canonical guest bytes before/after each command.
@@ -1079,3 +1079,30 @@ port state and region handles remain unchanged. Decode failures occur before
 pixel writes; GPU/runtime failures are still per-command errors, not whole-
 picture transactions. Generated pixels and legacy source contracts are evidence,
 not a claim of native System 7 scaling parity.
+
+CopyBits ($A8EC / InterfaceLib) decodes into one shared Macintosh request
+with source/destination BitMaps/rectangles, mode and optional mask handle. 68K
+pops 22 Pascal argument bytes; PPC reads six registers. Both procedures preserve
+return registers. NIL source/destination parameters are inert, following the
+legacy comparison contract. Other malformed descriptors/unsupported modes fault.
+
+For ordinary one-bit BitMaps, source storage is decoded to an immutable snapshot
+before destination mutation. Draw::Blit then performs scaled copies and all eight
+source transfer modes on the GPU, using live current-port monochrome colors. Monochrome reductions OR their
+source footprint on the GPU, following the legacy Basic QuickDraw contract.
+Packed destination padding remains intact. When destination storage matches the
+current port, port clips and visibility are translated into the destination's
+local coordinates; this CopyBits path honors visRgn even for offscreen ports,
+unlike the painting offscreen rule. Unrelated destination storage uses its own
+bounds and the explicit mask. Complex masks use decoded spans with holes.
+
+Alias layouts with a different row stride from the current port are rejected.
+Color PixMaps, tagged/handle descriptors, transparent/extended modes, recording
+and custom bitsProc callbacks remain unsupported. Existing bitmap axes/source
+span and GPU clip-work limits apply. Legacy source comparison and deterministic
+GPU/compiled pixel checks do not establish native System 7 parity.
+
+The shared source-mode/color and destination clipping contract is also described
+in Apple's [CopyBits reference](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-166.html).
+The legacy one-bit reduction path references Inside Macintosh V, V-65 for OR
+compression; reduction checks distinguish it from nearest sampling.

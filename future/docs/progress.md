@@ -2147,3 +2147,31 @@ stays active; no native System 7 comparison was required or claimed.
 
 Validation: all 218 tests pass (183 default, 35 optional GPU/MPW); strict
 all-target Clippy passes and MPW fixtures rebuild. No GPU tests were skipped.
+
+### Shared CopyBits transfer
+
+Both CPU adapters now dispatch CopyBits into the shared QuickDraw/GPU path.
+Monochrome BitMaps support source crops/scaling, all eight source modes, live
+foreground/background colors, complex optional masks and immutable snapshots for
+overlap. GPU reductions OR source footprints, correcting the earlier nearest-
+sampling behavior for compressed monochrome pictures too. Destination padding survives transfer. Current-port clipping/visibility
+translate between descriptor origins; unrelated destination storage does not
+inherit current-port clipping. Full legacy path inspection established that
+CopyBits must honor offscreen current-port visibility, distinct from painting.
+
+Generated checks cover exact 22-byte Pascal/six-register PPC arguments, void
+results, truncated stacks and inert NIL parameters without graphics. GPU checks
+compare both CPUs with read-only sources, hole masks, downscaling, all modes and
+swapped colors. They cover overlap, empty visibility, independent destinations,
+translated alias clips and read-only destination faults. MPW window guests now
+CopyBits a PICT-rendered area and inspect canonical screen bytes.
+
+Fresh Super Mines startup completes its CopyBits calls and stops at LineTo
+($A891), PC $01000D00, trace index 20686. Next: pen-line drawing through the shared QuickDraw/GPU implementation, then
+the application update cycle and actual interactions. Color PixMaps/extended CopyBits modes,
+custom procedures, native presentation and real Mixed Mode remain unfinished.
+Full rebuild goal remains active.
+
+Validation: all 223 tests pass (185 default, 38 optional GPU/MPW), including
+rebuilt paired compiler fixtures. Strict all-target Clippy and sequential changed-
+file formatting checks pass. No GPU tests were skipped.

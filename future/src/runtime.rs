@@ -678,6 +678,18 @@ impl Runtime {
                                 }
                             }
                         }
+                        Call::CopyBits(request) => {
+                            // Legacy comparison contract treats NIL bitmap parameters as inert.
+                            if request.source.0 != 0 && request.destination.0 != 0 {
+                                let ports = self.process.ports.ok_or_else(|| {
+                                    Error::Graphics("QuickDraw has not been initialized".into())
+                                })?;
+                                let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                    Error::Graphics("CopyBits requires a GPU".into())
+                                })?;
+                                ports.copy_bits(&mut self.memory, gpu, request)?;
+                            }
+                        }
                         Call::DrawPicture {
                             handle,
                             destination,
@@ -1129,6 +1141,7 @@ impl Runtime {
                         | Call::FragmentQuery(_)
                         | Call::InitGraf { .. }
                         | Call::Port { .. }
+                        | Call::CopyBits(_)
                         | Call::DrawPicture { .. }
                         | Call::MovePortTo { .. }
                         | Call::PortSize { .. }

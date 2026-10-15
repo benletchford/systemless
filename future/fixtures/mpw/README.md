@@ -309,3 +309,7 @@ handle identity/size, release it, and verify PortSize/MovePortTo fields in a
 temporary GrafPort before restoring the window. This verifies setup and loading;
 the current probes additionally draw a generated bitmap PICT and inspect
 canonical guest screen bytes. Both CPU builds must pass those pixel assertions.
+
+The window guests copy part of the generated PICT drawing within the window's
+BitMap using CopyBits and inspect the destination screen bit. This adds real
+compiler ABI/guest-pixel coverage on both CPUs.

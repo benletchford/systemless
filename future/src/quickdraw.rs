@@ -12,6 +12,15 @@ pub struct Ports {
     pub current_slot: GuestPtr,
     pub screen_bitmap: GuestPtr,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopyBits {
+    pub source: GuestPtr,
+    pub destination: GuestPtr,
+    pub source_rect: GuestPtr,
+    pub destination_rect: GuestPtr,
+    pub mode: i16,
+    pub mask: GuestPtr,
+}
 fn offset(p: GuestPtr, n: u32) -> Result<GuestPtr> {
     p.0.checked_add(n)
         .map(GuestPtr)
@@ -258,6 +267,106 @@ impl Ports {
         let handle = GuestPtr(memory.u32(offset(p, 28)?)?);
         write_region(memory, handle, r)
     }
+    pub fn copy_bits(&self, memory: &mut Memory, gpu: &Graphics, request: CopyBits) -> Result<()> {
+        if request.source.0 == 0 || request.destination.0 == 0 {
+            return Ok(());
+        }
+        let source = Bitmap::read(memory, request.source)?;
+        let destination = Bitmap::read(memory, request.destination)?;
+        let mut source_rect = read_rect(memory, request.source_rect)?;
+        let rect = read_rect(memory, request.destination_rect)?;
+        if !(0..=7).contains(&request.mode) {
+            return Err(Error::Graphics("unsupported CopyBits transfer mode".into()));
+        }
+        if source_rect.left >= source_rect.right
+            || source_rect.top >= source_rect.bottom
+            || rect.left >= rect.right
+            || rect.top >= rect.bottom
+        {
+            return Ok(());
+        }
+        let port = self.current(memory)?;
+        let bytes = memory.read(port, PORT_SIZE)?;
+        let word = |i| u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap());
+        if [92, 96, 100, 104].iter().any(|i| word(*i) != 0) {
+            return Err(Error::Graphics(
+                "CopyBits recording or custom procedures are unsupported".into(),
+            ));
+        }
+        let color = |value| match value {
+            30 => Ok(0),
+            33 => Ok(1),
+            _ => Err(Error::Graphics("unsupported monochrome port color".into())),
+        };
+        let foreground = color(word(80))?;
+        let background = color(word(84))?;
+        let current = Bitmap::read(memory, offset(port, 2)?)?;
+        let mut clips = if current.base == destination.base {
+            if current.row_bytes != destination.row_bytes {
+                return Err(Error::Graphics(
+                    "CopyBits destination aliases a different port stride".into(),
+                ));
+            }
+            let (_, clips) = self.drawing_target_with_visibility(memory, true)?;
+            let dx = destination.bounds.left - current.bounds.left;
+            let dy = destination.bounds.top - current.bounds.top;
+            clips
+                .into_iter()
+                .map(|r| Rect::new(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy))
+                .collect()
+        } else {
+            vec![destination.bounds]
+        };
+        if request.mask.0 != 0 {
+            let mask = region(memory, request.mask)?;
+            if clips.len().saturating_mul(mask.len()) > 65536 {
+                return Err(Error::Graphics("CopyBits mask work limit".into()));
+            }
+            clips = clips
+                .iter()
+                .flat_map(|a| {
+                    mask.iter().map(|b| {
+                        Rect::new(
+                            a.left.max(b.left),
+                            a.top.max(b.top),
+                            a.right.min(b.right),
+                            a.bottom.min(b.bottom),
+                        )
+                    })
+                })
+                .filter(|r| r.left < r.right && r.top < r.bottom)
+                .collect();
+        }
+        source_rect.left -= source.bounds.left;
+        source_rect.right -= source.bounds.left;
+        source_rect.top -= source.bounds.top;
+        source_rect.bottom -= source.bounds.top;
+        let (width, height) = source.extent()?;
+        // Decode before any destination write, including overlapping backing storage.
+        let indices = source.unpack(memory)?;
+        destination.execute_source(
+            gpu,
+            memory,
+            Draw::Blit {
+                rect,
+                clip: destination.bounds,
+                source: source_rect,
+                width: width as u32,
+                height: height as u32,
+                foreground,
+                background,
+                invert: request.mode & 4 != 0,
+                mode: match request.mode & 3 {
+                    0 => Transfer::Copy,
+                    1 => Transfer::Or,
+                    2 => Transfer::Xor,
+                    _ => Transfer::Bic,
+                },
+            },
+            Some(&clips),
+            Some(&indices),
+        )
+    }
     pub fn paint_rect(&self, gpu: &Graphics, memory: &mut Memory, r: Rect) -> Result<()> {
         self.paint_coverage(gpu, memory, r, None)
     }
@@ -287,6 +396,13 @@ impl Ports {
         self.paint_coverage(gpu, memory, r, Some(&coverage))
     }
     pub(crate) fn drawing_target(&self, memory: &Memory) -> Result<(Bitmap, Vec<Rect>)> {
+        self.drawing_target_with_visibility(memory, false)
+    }
+    fn drawing_target_with_visibility(
+        &self,
+        memory: &Memory,
+        force_visibility: bool,
+    ) -> Result<(Bitmap, Vec<Rect>)> {
         let p = self.current(memory)?;
         let bytes = memory.read(p, PORT_SIZE)?;
         let word = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
@@ -308,7 +424,7 @@ impl Ports {
         };
         let bitmap = Bitmap::read(memory, offset(p, 2)?)?;
         let screen = Bitmap::read(memory, self.screen_bitmap)?;
-        let visible = if bitmap.base == screen.base {
+        let visible = if force_visibility || bitmap.base == screen.base {
             region(memory, visible_handle)?
         } else {
             vec![bitmap.bounds]

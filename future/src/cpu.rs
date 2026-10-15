@@ -13,6 +13,7 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    CopyBits(crate::quickdraw::CopyBits),
     DrawPicture {
         handle: u32,
         destination: GuestPtr,

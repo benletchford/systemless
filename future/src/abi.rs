@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    CopyBits,
     GetNewWindow,
     SizeWindow,
     MoveWindow,
@@ -357,6 +358,7 @@ impl Abi {
             b"StripAddress" => Some(Service::StripAddress),
             b"HLock" => Some(Service::HLock),
             b"HUnlock" => Some(Service::HUnlock),
+            b"CopyBits" => Some(Service::CopyBits),
             b"DrawPicture" => Some(Service::DrawPicture),
             b"GetPicture" => Some(Service::GetPicture),
             b"GetCursor" => Some(Service::GetCursor),
@@ -1319,6 +1321,22 @@ impl Abi {
                     Reply::None,
                 ))
             }
+            0xa8ec => {
+                let args = memory.read(GuestPtr(sp), 22)?;
+                let pointer = |i| GuestPtr(u32::from_be_bytes(args[i..i + 4].try_into().unwrap()));
+                let request = crate::quickdraw::CopyBits {
+                    mask: pointer(0),
+                    mode: i16::from_be_bytes(args[4..6].try_into().unwrap()),
+                    destination_rect: pointer(6),
+                    source_rect: pointer(10),
+                    destination: pointer(14),
+                    source: pointer(18),
+                };
+                c.dar[15] = sp
+                    .checked_add(22)
+                    .ok_or_else(|| Error::Cpu("CopyBits stack overflow".into()))?;
+                Ok((Call::CopyBits(request), Reply::None))
+            }
             0xa8f6 => {
                 let args = memory.read(GuestPtr(sp), 8)?;
                 let destination = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
@@ -1778,6 +1796,14 @@ impl Abi {
                 size: c.gpr[4],
             },
             Service::GetHandleSize => Call::HandleSize(c.gpr[3]),
+            Service::CopyBits => Call::CopyBits(crate::quickdraw::CopyBits {
+                source: GuestPtr(c.gpr[3]),
+                destination: GuestPtr(c.gpr[4]),
+                source_rect: GuestPtr(c.gpr[5]),
+                destination_rect: GuestPtr(c.gpr[6]),
+                mode: c.gpr[7] as i16,
+                mask: GuestPtr(c.gpr[8]),
+            }),
             Service::DrawPicture => Call::DrawPicture {
                 handle: c.gpr[3],
                 destination: GuestPtr(c.gpr[4]),
@@ -1888,6 +1914,7 @@ impl Abi {
                         | Service::RoundRect(_)
                         | Service::CombineRegions(_)
                         | Service::Port(_)
+                        | Service::CopyBits
                         | Service::DrawPicture
                         | Service::MovePortTo
                         | Service::PortSize

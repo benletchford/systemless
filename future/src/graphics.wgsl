@@ -30,10 +30,25 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         if p[2]==4 {
             let sx=p[14]+((x-p[3])*(p[18]-p[14]))/(p[5]-p[3]);
             let sy=p[15]+((y-p[4])*(p[19]-p[15]))/(p[6]-p[4]);
-            if sx>=0 && sy>=0 && sx<p[16] && sy<p[17] {
-                let bit=source[u32(sy*p[16]+sx)] ^ u32(p[20]);
-                src=select(u32(p[12]),u32(p[11]),bit!=0u);
+            var bit=0u;
+            if (p[18]-p[14])>(p[5]-p[3]) || (p[19]-p[15])>(p[6]-p[4]) {
+                // Basic QuickDraw reductions OR the source footprint. Enlargement
+                // still samples a single source pixel along the enlarged axis.
+                let ex=max(sx+1,p[14]+((x-p[3]+1)*(p[18]-p[14]))/(p[5]-p[3]));
+                let ey=max(sy+1,p[15]+((y-p[4]+1)*(p[19]-p[15]))/(p[6]-p[4]));
+                let lx=max(0,sx); let ly=max(0,sy);
+                let hx=min(p[16],ex); let hy=min(p[17],ey);
+                valid=lx<hx && ly<hy;
+                for (var yy=ly; yy<hy && bit==0u; yy=yy+1) {
+                    for (var xx=lx; xx<hx && bit==0u; xx=xx+1) {
+                        bit=bit | source[u32(yy*p[16]+xx)];
+                    }
+                }
+            } else if sx>=0 && sy>=0 && sx<p[16] && sy<p[17] {
+                bit=source[u32(sy*p[16]+sx)];
             } else { valid=false; }
+            bit=bit ^ u32(p[20]);
+            src=select(u32(p[12]),u32(p[11]),bit!=0u);
         }
         if valid { switch p[13] {
             case 0: { value=src; }
