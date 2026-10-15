@@ -4308,3 +4308,102 @@ byte-identical to the preceding milestone. Evidence:
 /tmp/systemless-mines-handle-profile-reload.txt and associated after.ppm.
 Sound-enabled SndPlay, original EV/Marathon gameplay and the full rebuild remain
 unfinished; this checkpoint does not complete the goal.
+
+
+## Shared sound FIFO and guest callbacks
+
+SndDoCommand now reaches one shared guest-visible ring from native $A803 and
+PPC imports. Full no-wait requests preserve pending state and report -203; waiting
+requests suspend the caller without CPU spinning and retain copied command bytes.
+Buffers/control commands run in order across a single PCM quantum. Flush and quiet
+have distinct effects; caller-sized rings validate actual storage extents. The
+analytic silent queue clock matches a 48 kHz sink across fractional rates and is
+bounded by command count for enormous virtual waits.
+
+Queued callbacks execute as budgeted guest code through the shared Runtime, with
+same-ISA Pascal $3C0 descriptors/frames, full caller retention and suspended wait
+restoration. They may invoke Toolbox services and quietly dispose/reallocate their
+own channel. Channel generations prevent a stale callback return from clearing
+new playback at the same address. Internal bookkeeping preserves MemErr/ResErr.
+No callback executes on a native transport thread.
+
+Public SDK fixture queued_sound builds with SC/MrC/Link/PPCLink and verifies exact
+PCM, nested service calls, restored WaitNextEvent and channel address reuse for
+both real CPUs. The corresponding headless CLI runs also exit successfully with
+no host audio device. Evidence: /tmp/systemless-queue-sdk-build-accepted.txt and
+/tmp/systemless-queue-sdk-accepted.txt. Focused queue, immediate playback and
+channel lifetime checks are supplemented by the complete acceptance run below.
+
+SndPlay/resource offset resolution, init-rate overrides, channel-status/version
+APIs, pause/wait/sync commands, additional sample formats and nonquiet disposal
+waiting remain unfinished. The original EV/Marathon startup boundaries and
+sound-enabled Mines SndPlay boundary are not bypassed. Next implement loaded
+resource command parsing and true synchronous/asynchronous SndPlay, then continue
+capability/version and production routine-descriptor/Mixed Mode work. Native
+queued audio timing and the full rebuild/gameplay acceptance remain unproven.
+
+Original retained-profile Mines Save/Open regression passes after the Runtime
+wait/callback changes. It reopens the 1,972-byte game and returns to
+Waiting{ticks:10} at $0100C798; final PPM bytes match the preceding handle-state
+milestone. Evidence: /tmp/systemless-mines-queue-profile-reload.txt and after.ppm.
+Changed Rust files pass sequential stdin formatting checks; the fixture shell
+script passes syntax validation and the diff has no whitespace errors.
+
+Review added a generation guard for full-queue submissions as well as callback
+returns. If the target is disposed/recreated while the caller is suspended, the
+old submission now returns badChannel and leaves the replacement's controls
+untouched. A focused regression exercises this through both CPU adapters. The
+outdated broad run was intentionally stopped for this code change; final evidence is the final callback-borrow acceptance run below, not either
+superseded broad log.
+
+Resource parsing continuation: Apple's sound-storage contract places format-1
+commands after the four-byte prefix, six bytes per data-type entry and the
+command count word. Format 2 has an application-owned reference-count word;
+it must not be treated as a variable reference list. A command's $8000 bit makes
+param2 relative to the beginning of the loaded block; otherwise it remains an
+absolute pointer. Preserve both forms and validate all relative header/sample
+spans against actual handle size. Source:
+https://leopard-adc.pepas.com/documentation/mac/Sound/Sound-60.html.
+The legacy implementation is reference evidence only: its explicitly deferred
+nil-channel playback is not proof of true synchronous SndPlay. The rebuild must
+suspend/resume that guest call and release the internal channel after completion.
+
+The callback's command pointer is a mutable borrow while that guest callback is
+running. Native and PPC synthetic callbacks now modify those bytes, and the
+public SDK callback reuses the passed command for SndDoImmediate(getAmpCmd).
+This avoids diagnosing a valid mutable parameter as private-channel corruption.
+The compiled recycling callback is a continuation-ownership stress fixture:
+allocation/disposal at native interrupt time is not a supported Macintosh usage.
+The rebuild currently has cooperative callback scheduling, not hardware interrupt
+priority emulation. Reference:
+https://leopard-adc.pepas.com/documentation/mac/Sound/Sound-131.html.
+
+Additional original-game evidence: static companion-fork inspection identifies
+63 EV sound/music resources (nine format 1, fifty-four format 2) and 104 Marathon
+format-1 sounds. All have one offset bufferCmd and bounded inline standard samples.
+EV has fifteen stale/degenerate loop metadata cases and one zero base-frequency
+case that the current strict header validator rejects. Resolve the command-specific
+use of these fields during resource playback; do not alter private assets or
+infer full game audio coverage from this asset inventory. Hashes and details are
+recorded in original-applications.md; metadata log:
+/tmp/systemless-original-game-sound-metadata.txt.
+
+Clock continuation: host elapse_ticks ages event waits saved under sound callbacks,
+but the instruction-derived TickCount path currently calls calendar.advance
+directly. It therefore does not age those suspended counters. Unify the clock
+paths and test a long, budgeted callback crossing a pending event deadline as
+part of synchronous playback/timer fidelity; current checks cover explicit host
+time and do not establish complete callback/timer parity.
+
+Final callback-borrow acceptance passes all 432 tests with zero failures or skips,
+including real GPU checks and all 26 public-header compiler/CLI tests. Evidence:
+/tmp/systemless-queue-borrow-acceptance.txt (terminal success),
+/tmp/systemless-queue-borrow-focused.txt,
+/tmp/systemless-queue-borrow-sdk-build.txt and
+/tmp/systemless-queue-borrow-sdk-test.txt. Strict all-target lint with -D warnings
+passes: /tmp/systemless-queue-borrow-lint.txt. Changed Rust files pass sequential
+stdin formatting checks; fixture script syntax and whitespace checks pass.
+Superseded broad runs were intentionally stopped for the lifetime/borrow fixes
+and are not final acceptance evidence. Native queued timing, virtual-clock
+integration, resource playback and full original-game/rebuild acceptance remain
+unfinished. Do not mark the goal complete at this checkpoint.

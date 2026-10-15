@@ -221,8 +221,10 @@ standard sampled playback between 68K and PPC. The shared renderer reads live
 8-bit mono buffers, resamples/mixes stereo PCM and applies gain/pan/volume. Native
 output uses a bounded CPAL transport; headless virtual waits advance completion
 without an audio device. Compiler-generated guests verify exact samples and
-completion. Queued commands, resource playback, callbacks, other header formats
-and Sound Manager version/capability queries remain unfinished. Both original
+completion. SndDoCommand now executes an inline guest-visible FIFO, waits on full
+queues without spinning, and runs same-ISA callbacks through the guest CPU.
+Resource playback, other header formats and Sound Manager version/capability
+queries remain unfinished. Both original
 EV and Marathon still stop at sound startup. Super Mines' recorded interaction
 is automated/offscreen; live desktop and win/loss acceptance remain incomplete.
 
@@ -233,4 +235,12 @@ purgeable and resource flags without changing 32-bit master addresses. Resource
 loads initialize those flags; detaching clears the resource bit. MoveHHi can
 relocate into the immediately adjacent free interval without crossing other
 allocations. General compaction/purging remains unfinished. The sound-enabled
-Super Mines diagnostic now reaches SndPlay; queued/resource sound is still pending.
+Super Mines diagnostic now reaches SndPlay; resource sound is still pending.
+
+Sound callbacks preserve interrupted CPU and cooperative wait state. A callback
+can call shared Toolbox services and quietly dispose/recreate its own channel;
+generation checks protect the replacement voice. Queued buffers render across
+command boundaries in one PCM pull. A silent 48 kHz clock advances queued work
+in time bounded by command count, including very large guest waits. Production
+Mixed Mode, resource SndPlay, pause/wait/sync commands and nonquiet active-disposal
+waiting remain unfinished. Native audio quality/timing acceptance remains separate.

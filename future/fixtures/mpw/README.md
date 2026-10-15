@@ -550,3 +550,17 @@ individual flag operations, restoration, actual locked-resize failure, unlocked
 relocation/high movement, resource detach/reload and invalid-handle MemErrs.
 Success requires marker $A069 and Exit(0). No GPU, audio device or private game
 asset is required; this does not establish general compaction or purge support.
+
+
+`queued_sound.c` queues standard sampled buffers, amplitude changes and a callback
+using the public Sound.h declarations. Prepared PPC callback descriptors use
+BUILD_ROUTINE_DESCRIPTOR, avoiding an unimplemented allocation API. The controller
+checks exact PCM, runs the callback while an event wait is suspended, verifies its
+nested Toolbox call, then exercises callback disposal/reallocation at the same
+channel address. A fresh voice survives the old callback return. Both compiled
+guests also finish through the headless CLI without an audio device.
+
+The callback reuses its mutable command argument for getAmpCmd. The recycling
+portion deliberately tests a cooperative-runtime extension: native interrupt-time
+callbacks must not allocate/dispose memory. It proves stale-continuation safety,
+not that such memory calls are safe on a Macintosh at interrupt time.

@@ -1503,3 +1503,46 @@ reopens the 1,972-byte game and returns to its event wait at $0100C798. Final
 pixels match the preceding milestone byte for byte:
 /tmp/systemless-mines-handle-profile-reload.txt and associated after.ppm.
 This does not change the separate sound-enabled SndPlay limitation above.
+
+
+### FIFO/callback runtime regression
+
+The command queue and same-ISA sound callback milestone does not yet implement
+SndPlay or provide a sound version result. Original EV/Marathon startup and
+sound-enabled Mines acceptance therefore remain at their recorded boundaries.
+The retained-profile Mines Save/Open rerun still reopens the 1,972-byte game and
+returns to Waiting{ticks:10} at $0100C798. The final PPM is byte-identical to the
+handle-state milestone. Evidence: /tmp/systemless-mines-queue-profile-reload.txt
+and associated after.ppm. Native desktop gameplay and sound-enabled resource
+playback remain separate, unfinished checks.
+
+
+### Original sound companion metadata for resource playback
+
+Bounded static inspection of the actual companion resource forks gives concrete
+next fixtures; it does not execute their commands or prove playback. Private
+bytes remain outside Git. Raw resource-fork identities:
+
+| Companion | Bytes | SHA-256 |
+| --- | ---: | --- |
+| EV Sounds | 902115 | `9adf841b8bcbed925bd856f04f651a7941f7efb1baeb4a6eb0b0ee781cc7bf69` |
+| EV Music | 976932 | `23e9e0992133dc5388354f034a7a7e4766beb510a6b51cf600facb72e1e426ac` |
+| Marathon Sounds | 1021569 | `d8c7a8139c56a367d8b3081ea2fefc9558fa34d0feec4c826c16ff195e17abd3` |
+
+EV Sounds has nine format-1 and fifty format-2 snd resources; EV Music adds four
+format-2 resources. Marathon Sounds has 104 format-1 resources. Every scanned
+sound uses one offset bufferCmd ($8051), a standard encoding-zero header and
+inline samples within its resource bounds. Format-1 initializers are sampledSynth
+with $A0. Rates are approximately 11.127 or 22.255 kHz. No snd resources occur in
+the scanned application forks or Marathon Music resource fork; this does not
+exclude streamed/generated sound or other formats in actual game execution.
+
+Fifteen EV Sounds headers have loop metadata that fails the current strict
+loop bounds check (some equal endpoints, others beyond the sample length), and
+one has baseFrequency zero. The current header validator would reject these;
+do not silently normalize assets. The next playback slice must resolve which
+fields bufferCmd actually uses and add command-specific compatibility evidence.
+Apple's header contract specifies baseFrequency 1..127 for pitch calculations;
+its role in buffer playback needs to stay distinct from note synthesis. Evidence:
+/tmp/systemless-original-game-sound-metadata.txt and
+https://dev.os9.ca/techpubs/mac/Sound/Sound-74.html.

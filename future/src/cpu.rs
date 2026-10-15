@@ -259,6 +259,11 @@ pub enum Call {
     },
     SoundVolume(i16),
     SoundChannel(crate::sound::Op),
+    SoundQueue {
+        channel: u32,
+        command: GuestPtr,
+        no_wait: bool,
+    },
     SoundImmediate {
         channel: u32,
         command: GuestPtr,

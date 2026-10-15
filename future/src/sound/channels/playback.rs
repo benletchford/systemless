@@ -5,11 +5,11 @@ use crate::Error;
 #[derive(Default)]
 pub(super) struct Playback {
     pub command: [u8; 8],
-    voice: Option<Voice>,
-    amplitude: u16,
-    volume: [u16; 2],
+    pub(super) voice: Option<Voice>,
+    pub(super) amplitude: u16,
+    pub(super) volume: [u16; 2],
 }
-struct Voice {
+pub(super) struct Voice {
     base: GuestPtr,
     length: usize,
     rate: u32,
@@ -42,7 +42,7 @@ impl Playback {
 fn bad(message: &str) -> Error {
     Error::Sound(message.into())
 }
-fn voice(m: &Memory, header: u32) -> Result<std::result::Result<Voice, i16>> {
+pub(super) fn voice(m: &Memory, header: u32) -> Result<std::result::Result<Voice, i16>> {
     if header == 0 {
         return Ok(Err(-206));
     }
@@ -86,15 +86,19 @@ impl Manager {
     pub fn cancel(&mut self) {
         for c in self.channels.values_mut() {
             c.playback.voice = None;
+            c.commands.clear();
+            c.callback = None;
         }
     }
     pub fn playing(&self) -> bool {
-        self.channels.values().any(|c| c.playback.voice.is_some())
+        self.channels
+            .values()
+            .any(|c| c.playback.voice.is_some() || !c.commands.is_empty() || c.callback.is_some())
     }
     pub fn busy(&self, channel: u32) -> Option<bool> {
         self.channels
             .get(&channel)
-            .map(|c| c.playback.voice.is_some())
+            .map(|c| c.playback.voice.is_some() || !c.commands.is_empty() || c.callback.is_some())
     }
     /// SndDoImmediate bypasses the queue. Unsupported command families return
     /// an OSErr; they never claim queued playback or callback completion.
@@ -114,62 +118,17 @@ impl Manager {
                 return Err(bad("nil immediate sound command"));
             }
             let bytes: [u8; 8] = m.read(command, 8)?.try_into().unwrap();
-            let code = u16::from_be_bytes(bytes[..2].try_into().unwrap());
-            let parameter = u16::from_be_bytes(bytes[2..4].try_into().unwrap());
-            let value = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
-            let c = self.channels.get_mut(&channel).unwrap();
-            match code {
-                0 => {}
-                3 => {
-                    m.validate_write(GuestPtr(channel + 20), 8)?;
-                    m.write(GuestPtr(channel + 20), &[0; 8])?;
-                    c.playback.voice = None;
-                    c.playback.command = [0; 8];
-                }
-                43 => {
-                    if parameter > 255 {
-                        return Ok(-206);
-                    }
-                    c.playback.amplitude = parameter;
-                }
-                45 => {
-                    if value == 0 {
-                        return Ok(-206);
-                    }
-                    m.write(GuestPtr(value), &c.playback.amplitude.to_be_bytes())?;
-                }
-                46 => {
-                    c.playback.volume = [value as u16, (value >> 16) as u16];
-                }
-                47 => {
-                    if value == 0 {
-                        return Ok(-206);
-                    }
-                    let volume =
-                        u32::from(c.playback.volume[0]) | (u32::from(c.playback.volume[1]) << 16);
-                    m.write(GuestPtr(value), &volume.to_be_bytes())?;
-                }
-                81 => {
-                    if c.playback.voice.is_some() {
-                        return Ok(-209);
-                    }
-                    // Rate-conversion override flags and stereo source headers
-                    // need separate semantics; mono pan and no-interp are live.
-                    if c.init & !0x87 != 0 {
-                        return Ok(-201);
-                    }
-                    let next = match voice(m, value)? {
-                        Ok(v) => v,
-                        Err(error) => return Ok(error),
-                    };
-                    m.validate_write(GuestPtr(channel + 20), 8)?;
-                    m.write(GuestPtr(channel + 20), &bytes)?;
-                    c.playback.command = bytes;
-                    c.playback.voice = Some(next);
-                }
-                _ => return Err(bad(&format!("unsupported immediate sound command {code}"))),
+            let error = super::queue::execute(
+                m,
+                channel,
+                self.channels.get_mut(&channel).unwrap(),
+                bytes,
+                false,
+            )?;
+            if error == 0 {
+                super::queue::pump(m, channel, self.channels.get_mut(&channel).unwrap())?;
             }
-            Ok(0)
+            Ok(error)
         })();
         (p.mem_error, p.res_error) = errors;
         result
@@ -177,6 +136,9 @@ impl Manager {
     /// Headless hosts can discard output while advancing virtual time. Work
     /// is bounded by channel count even for a very large requested wait.
     pub fn elapse_silently(&mut self, m: &mut Memory, p: &mut Process, ticks: u32) -> Result<()> {
+        if self.channels.values().any(|c| !c.commands.is_empty()) {
+            return self.elapse_queued(m, p, ticks);
+        }
         let errors = (p.mem_error, p.res_error);
         let result = (|| {
             for &channel in &self.order {
@@ -208,6 +170,50 @@ impl Manager {
         (p.mem_error, p.res_error) = errors;
         result
     }
+    // Match a 48 kHz silent sink without allocating frames or looping over the
+    // requested duration. Each queued command/voice is visited at most once.
+    fn elapse_queued(&mut self, m: &mut Memory, p: &mut Process, ticks: u32) -> Result<()> {
+        let errors = (p.mem_error, p.res_error);
+        let result = (|| {
+            for &channel in &self.order {
+                if !self.valid(m, p, channel)? {
+                    return Err(bad("corrupt queued sound channel"));
+                }
+                super::queue::preflight(m, channel, &self.channels[&channel])?;
+                if let Some(v) = &self.channels[&channel].playback.voice {
+                    m.read(v.base, v.length)?;
+                }
+            }
+            for (&channel, c) in &mut self.channels {
+                let mut frames = u64::from(ticks) * 800;
+                loop {
+                    super::queue::pump(m, channel, c)?;
+                    let Some(v) = &mut c.playback.voice else {
+                        break;
+                    };
+                    v.denominator(48000);
+                    let end = (v.length as u128) << 32;
+                    let numerator = u128::from(v.rate) << 16;
+                    let remaining = ((end - u128::from(v.phase)) * 48000)
+                        .saturating_sub(u128::from(v.remainder));
+                    let consume = u128::from(frames).min(remaining.div_ceil(numerator)) as u64;
+                    let elapsed = numerator * u128::from(consume) + u128::from(v.remainder);
+                    v.phase = (u128::from(v.phase) + elapsed / 48000).min(end) as u64;
+                    v.remainder = (elapsed % 48000) as u64;
+                    frames -= consume;
+                    if u128::from(v.phase) < end {
+                        break;
+                    }
+                    m.write(GuestPtr(channel + 20), &[0; 8])?;
+                    c.playback.voice = None;
+                    c.playback.command = [0; 8];
+                }
+            }
+            Ok(())
+        })();
+        (p.mem_error, p.res_error) = errors;
+        result
+    }
     /// Pull bounded deterministic output at the host-selected sample rate.
     /// All channel/guest accesses are validated before any phase is advanced.
     pub fn render(
@@ -231,41 +237,53 @@ impl Manager {
                     m.validate_write(GuestPtr(channel + 20), 8)?;
                 }
             }
+            for &channel in &self.order {
+                super::queue::preflight(m, channel, &self.channels[&channel])?;
+            }
             let mut mixed = vec![[0i64; 2]; frames];
             let master = i64::from(super::super::volume(m)?);
             for (&channel, c) in &mut self.channels {
-                let Some(v) = &mut c.playback.voice else {
-                    continue;
-                };
-                let source = m.read(v.base, v.length)?;
-                v.denominator(rate);
-                let numerator = u64::from(v.rate) << 16;
-                for frame in &mut mixed {
-                    let index = (v.phase >> 32) as usize;
-                    if index >= source.len() {
+                let mut offset = 0;
+                loop {
+                    super::queue::pump(m, channel, c)?;
+                    let Some(v) = &mut c.playback.voice else {
+                        break;
+                    };
+                    let source = m.read(v.base, v.length)?;
+                    v.denominator(rate);
+                    let numerator = u64::from(v.rate) << 16;
+                    while offset < frames && v.phase >> 32 < v.length as u64 {
+                        let index = (v.phase >> 32) as usize;
+                        let first = (i64::from(source[index]) - 128) * 256;
+                        let sample = if c.init & 4 != 0 {
+                            first
+                        } else {
+                            let second =
+                                (i64::from(source[(index + 1).min(source.len() - 1)]) - 128) * 256;
+                            let frac = (v.phase & 0xffff_ffff) as i64;
+                            first + (((second - first) * frac) >> 32)
+                        };
+                        for (out, gain) in mixed[offset].iter_mut().zip(c.playback.volume) {
+                            *out += sample * i64::from(c.playback.amplitude) * i64::from(gain)
+                                / (255 * 256);
+                        }
+                        let elapsed = numerator + v.remainder;
+                        v.phase += elapsed / u64::from(rate);
+                        v.remainder = elapsed % u64::from(rate);
+                        offset += 1;
+                    }
+                    if v.phase >> 32 >= v.length as u64 {
+                        m.write(GuestPtr(channel + 20), &[0; 8])?;
+                        c.playback.voice = None;
+                        c.playback.command = [0; 8];
+                    } else {
                         break;
                     }
-                    let first = (i64::from(source[index]) - 128) * 256;
-                    let sample = if c.init & 4 != 0 {
-                        first
-                    } else {
-                        let second =
-                            (i64::from(source[(index + 1).min(source.len() - 1)]) - 128) * 256;
-                        let frac = (v.phase & 0xffff_ffff) as i64;
-                        first + (((second - first) * frac) >> 32)
-                    };
-                    for (out, gain) in frame.iter_mut().zip(c.playback.volume) {
-                        *out += sample * i64::from(c.playback.amplitude) * i64::from(gain)
-                            / (255 * 256);
+                    // Pump zero-time commands even at the quantum boundary.
+                    if offset == frames {
+                        super::queue::pump(m, channel, c)?;
+                        break;
                     }
-                    let elapsed = numerator + v.remainder;
-                    v.phase += elapsed / u64::from(rate);
-                    v.remainder = elapsed % u64::from(rate);
-                }
-                if v.phase >> 32 >= v.length as u64 {
-                    m.write(GuestPtr(channel + 20), &[0; 8])?;
-                    c.playback.voice = None;
-                    c.playback.command = [0; 8];
                 }
             }
             Ok(mixed

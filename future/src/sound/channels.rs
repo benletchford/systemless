@@ -6,6 +6,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 mod playback;
+mod queue;
 use playback::Playback;
 pub const CHANNEL_SIZE: u32 = 1060;
 const HEADER: u32 = 36;
@@ -25,15 +26,22 @@ pub enum Op {
 struct Channel {
     synth: i16,
     init: u32,
+    serial: u64,
     owned: bool,
+    record_size: u32,
     queue: u32,
     length: u16,
     playback: Playback,
+    commands: std::collections::VecDeque<[u8; 8]>,
+    head: u16,
+    tail: u16,
+    callback: Option<bool>,
 }
 #[derive(Default)]
 pub struct Manager {
     channels: BTreeMap<u32, Channel>,
     order: Vec<u32>,
+    next_serial: u64,
 }
 fn overlaps(a: u32, an: u32, b: u32, bn: u32) -> bool {
     u64::from(a) < u64::from(b) + u64::from(bn) && u64::from(b) < u64::from(a) + u64::from(an)
@@ -73,30 +81,40 @@ impl Manager {
         let (length, user_info) = if existing == 0 {
             (128, 0)
         } else {
-            m.validate_write(GuestPtr(existing), CHANNEL_SIZE as usize)?;
             let header = m.read(GuestPtr(existing), HEADER as usize)?;
             let length = i16::from_be_bytes(header[30..32].try_into().unwrap());
             if length <= 0
-                || overlaps(existing, CHANNEL_SIZE, r.destination.0, 4)
+                || overlaps(existing, HEADER + length as u32 * 8, r.destination.0, 4)
                 || self.channels.iter().any(|(&base, c)| {
-                    overlaps(existing, CHANNEL_SIZE, base, CHANNEL_SIZE)
-                        || overlaps(existing, CHANNEL_SIZE, c.queue, u32::from(c.length) * 8)
+                    overlaps(existing, HEADER + length as u32 * 8, base, c.record_size)
+                        || overlaps(
+                            existing,
+                            HEADER + length as u32 * 8,
+                            c.queue,
+                            u32::from(c.length) * 8,
+                        )
                 })
             {
                 return Ok(BAD_CHANNEL);
             }
+            m.validate_write(GuestPtr(existing), (HEADER + length as u32 * 8) as usize)?;
             (
                 length as u16,
                 u32::from_be_bytes(header[12..16].try_into().unwrap()),
             )
         };
+        let serial = self
+            .next_serial
+            .checked_add(1)
+            .ok_or_else(|| crate::Error::Sound("sound channel generation exhausted".into()))?;
         let queue_size = u32::from(length) * 8;
+        let record_size = HEADER + queue_size;
         let queue = p.new_pointer(m, queue_size, true)?;
         if queue == 0 {
             return Ok(-108);
         }
         if overlaps(queue, queue_size, r.destination.0, 4)
-            || existing != 0 && overlaps(queue, queue_size, existing, CHANNEL_SIZE)
+            || existing != 0 && overlaps(queue, queue_size, existing, record_size)
         {
             p.dispose_pointer(queue);
             return Ok(BAD_CHANNEL);
@@ -116,7 +134,7 @@ impl Manager {
         } else {
             existing
         };
-        if overlaps(channel, CHANNEL_SIZE, r.destination.0, 4) {
+        if overlaps(channel, record_size, r.destination.0, 4) {
             if existing == 0 {
                 p.dispose_pointer(channel);
             }
@@ -134,14 +152,21 @@ impl Manager {
         self.channels.insert(
             channel,
             Channel {
+                serial,
                 synth: r.synth,
                 init: r.init,
                 owned: existing == 0,
+                record_size,
                 queue,
                 length,
                 playback: Playback::new(r.init),
+                commands: Default::default(),
+                head: 0,
+                tail: 0,
+                callback: None,
             },
         );
+        self.next_serial = serial;
         self.order.insert(0, channel);
         Ok(0)
     }
@@ -162,10 +187,15 @@ impl Manager {
         Ok(header[..4] == next.to_be_bytes()
             && header[4..8] == c.queue.to_be_bytes()
             && header[16..20].iter().all(|b| *b == 0)
-            && header[20..28] == c.playback.command
+            // During the guest call, the callback owns a mutable borrow of the
+            // command pointer passed by Sound.h. It may reuse those bytes when
+            // issuing commands; the channel remains blocked until CPU return.
+            && (c.callback == Some(true) || header[20..28] == c.playback.command)
             && header[28..30].iter().all(|b| *b == 0)
             && header[30..32] == c.length.to_be_bytes()
-            && header[32..36].iter().all(|b| *b == 0))
+            && header[32..34] == c.head.to_be_bytes()
+            && header[34..36] == c.tail.to_be_bytes()
+            && queue::matches(m, channel, c)?)
     }
     fn dispose(
         &mut self,
@@ -177,7 +207,10 @@ impl Manager {
         if !self.valid(m, p, channel)? {
             return Ok(BAD_CHANNEL);
         }
-        if self.channels[&channel].playback.command != [0; 8] && !quiet_now {
+        if (self.channels[&channel].playback.command != [0; 8]
+            || !self.channels[&channel].commands.is_empty())
+            && !quiet_now
+        {
             return Ok(-209);
         }
         let index = self.order.iter().position(|v| *v == channel).unwrap();

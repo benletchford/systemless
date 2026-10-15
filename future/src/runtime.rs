@@ -23,6 +23,11 @@ struct Continuation {
 }
 enum Resume {
     Fixture,
+    Sound {
+        channel: u32,
+        serial: u64,
+        waits: Box<SoundSuspendedWaits>,
+    },
     StandardFile {
         wait: Box<StandardFileWait>,
         result: crate::callback::BooleanResult,
@@ -41,6 +46,19 @@ enum Resume {
         connection: u32,
         stop: Stop,
     },
+}
+struct SoundWait {
+    channel: u32,
+    serial: u64,
+    command: [u8; 8],
+    reply: crate::abi::Reply,
+}
+struct SoundSuspendedWaits {
+    event: Option<EventWait>,
+    control: Option<ControlWait>,
+    menu: Option<MenuWait>,
+    file: Option<StandardFileWait>,
+    sound: Option<SoundWait>,
 }
 struct StandardFileWait {
     dialog: crate::standard_file::Dialog,
@@ -71,6 +89,7 @@ pub struct Runtime {
     pub process: crate::process::Process,
     continuations: Vec<Continuation>,
     event_wait: Option<EventWait>,
+    sound_wait: Option<SoundWait>,
     control_wait: Option<ControlWait>,
     menu_wait: Option<MenuWait>,
     standard_file_wait: Option<StandardFileWait>,
@@ -91,6 +110,7 @@ impl Runtime {
             process: crate::process::Process::default(),
             continuations: Vec::new(),
             event_wait: None,
+            sound_wait: None,
             control_wait: None,
             menu_wait: None,
             standard_file_wait: None,
@@ -168,6 +188,13 @@ impl Runtime {
             return Err(Error::Cpu("cannot advance a stopped process clock".into()));
         }
         self.calendar.advance(&mut self.memory, ticks)?;
+        for continuation in &mut self.continuations {
+            if let Resume::Sound { waits, .. } = &mut continuation.resume {
+                if let Some(wait) = &mut waits.event {
+                    wait.remaining = wait.remaining.saturating_sub(ticks);
+                }
+            }
+        }
         if let Some(wait) = &mut self.event_wait {
             wait.remaining = wait.remaining.saturating_sub(ticks);
         }
@@ -177,28 +204,11 @@ impl Runtime {
         if budget == 0 {
             return Ok(Stop::Budget);
         }
-        if let Some(wait) = self.standard_file_wait.take() {
-            if let Some(stop) = self.poll_standard_file(wait)? {
-                return Ok(stop);
-            }
-        }
-        if let Some(wait) = self.menu_wait.take() {
-            if let Some(stop) = self.poll_menu_wait(wait)? {
-                return Ok(stop);
-            }
-        }
-        if let Some(wait) = self.control_wait.take() {
-            if let Some(stop) = self.poll_control_wait(wait)? {
-                return Ok(stop);
-            }
-        }
-        if let Some(wait) = self.event_wait.take() {
-            if let Some(stop) = self.poll_event_wait(wait)? {
-                return Ok(stop);
-            }
-        }
-
         for _ in 0..budget {
+            self.enter_pending_sound_callback()?;
+            if let Some(stop) = self.poll_waits()? {
+                return Ok(stop);
+            }
             self.instructions = self
                 .instructions
                 .checked_add(1)
@@ -1228,7 +1238,9 @@ impl Runtime {
                                 .iter()
                                 .any(|c| !matches!(c.resume, Resume::Fixture))
                             {
-                                return Err(Error::Cpu("process exit during CFM init/term".into()));
+                                return Err(Error::Cpu(
+                                    "process exit during guest callback or CFM init/term".into(),
+                                ));
                             }
                             if matches!(call, Call::CExit(_)) {
                                 crate::stdlib::exit(&mut self.memory, v)?;
@@ -1405,6 +1417,35 @@ impl Runtime {
                         Call::GetResource { kind, id } => {
                             let v = self.process.get_resource(&mut self.memory, kind, id)?;
                             reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
+                        }
+                        Call::SoundQueue {
+                            channel,
+                            command,
+                            no_wait,
+                        } => {
+                            if command.0 == 0 {
+                                return Err(Error::Sound("nil queued sound command".into()));
+                            }
+                            let bytes = self.memory.read(command, 8)?.try_into().unwrap();
+                            let wait = SoundWait {
+                                channel,
+                                serial: self.process.sound.generation(channel),
+                                command: bytes,
+                                reply,
+                            };
+                            if let Some(stop) = self.poll_sound_wait(wait)? {
+                                if no_wait {
+                                    let wait = self.sound_wait.take().unwrap();
+                                    wait.reply.apply(
+                                        &mut self.cpu,
+                                        &mut self.memory,
+                                        (-203i32) as u32,
+                                        -203,
+                                    )?;
+                                } else {
+                                    return Ok(stop);
+                                }
+                            }
                         }
                         Call::SoundImmediate { channel, command } => {
                             let mut sound = std::mem::take(&mut self.process.sound);
@@ -1729,6 +1770,7 @@ impl Runtime {
                         | Call::GetResource { .. }
                         | Call::SoundChannel(_)
                         | Call::SoundImmediate { .. }
+                        | Call::SoundQueue { .. }
                         | Call::SoundVolume(_)
                         | Call::GetSoundVolume(_)
                         | Call::DeviceControl(_)
@@ -1797,6 +1839,85 @@ impl Runtime {
             }
         }
         Ok(Stop::Budget)
+    }
+    fn poll_waits(&mut self) -> Result<Option<Stop>> {
+        if let Some(wait) = self.standard_file_wait.take() {
+            if let Some(stop) = self.poll_standard_file(wait)? {
+                return Ok(Some(stop));
+            }
+        }
+        if let Some(wait) = self.menu_wait.take() {
+            if let Some(stop) = self.poll_menu_wait(wait)? {
+                return Ok(Some(stop));
+            }
+        }
+        if let Some(wait) = self.control_wait.take() {
+            if let Some(stop) = self.poll_control_wait(wait)? {
+                return Ok(Some(stop));
+            }
+        }
+        if let Some(wait) = self.event_wait.take() {
+            if let Some(stop) = self.poll_event_wait(wait)? {
+                return Ok(Some(stop));
+            }
+        }
+
+        if let Some(wait) = self.sound_wait.take() {
+            return self.poll_sound_wait(wait);
+        }
+        Ok(None)
+    }
+    fn poll_sound_wait(&mut self, wait: SoundWait) -> Result<Option<Stop>> {
+        let mut sound = std::mem::take(&mut self.process.sound);
+        let result = if wait.serial == 0 || sound.generation(wait.channel) != wait.serial {
+            Ok(Some(-205))
+        } else {
+            sound.enqueue(
+                &mut self.memory,
+                &mut self.process,
+                wait.channel,
+                wait.command,
+            )
+        };
+        self.process.sound = sound;
+        if let Some(error) = result? {
+            wait.reply
+                .apply(&mut self.cpu, &mut self.memory, error as i32 as u32, error)?;
+            Ok(None)
+        } else {
+            self.sound_wait = Some(wait);
+            Ok(Some(Stop::Waiting { ticks: 1 }))
+        }
+    }
+    fn enter_pending_sound_callback(&mut self) -> Result<()> {
+        let sound = std::mem::take(&mut self.process.sound);
+        let pending = sound.pending_callback(&self.memory, &mut self.process);
+        self.process.sound = sound;
+        let Some((channel, routine)) = pending? else {
+            return Ok(());
+        };
+        if self.continuations.len() >= 32 {
+            return Err(Error::Cpu("sound callback depth exceeded".into()));
+        }
+        let callee = crate::callback::sound(&self.cpu, &mut self.memory, routine, channel)?;
+        let serial = self.process.sound.begin_callback(channel);
+        let waits = Box::new(SoundSuspendedWaits {
+            event: self.event_wait.take(),
+            control: self.control_wait.take(),
+            menu: self.menu_wait.take(),
+            file: self.standard_file_wait.take(),
+            sound: self.sound_wait.take(),
+        });
+        let caller = std::mem::replace(&mut self.cpu, callee);
+        self.continuations.push(Continuation {
+            caller,
+            resume: Resume::Sound {
+                channel,
+                serial,
+                waits,
+            },
+        });
+        Ok(())
     }
     fn toolbox_available(&mut self, mask: u16) -> Result<bool> {
         if crate::events::available(&self.memory, mask)? {
@@ -2079,6 +2200,22 @@ impl Runtime {
         self.cpu = frame.caller;
         match frame.resume {
             Resume::Fixture => self.cpu.set_result(value),
+            Resume::Sound {
+                channel,
+                serial,
+                waits,
+            } => {
+                let mut sound = std::mem::take(&mut self.process.sound);
+                let result =
+                    sound.finish_callback(&mut self.memory, &mut self.process, channel, serial);
+                self.process.sound = sound;
+                result?;
+                self.event_wait = waits.event;
+                self.control_wait = waits.control;
+                self.menu_wait = waits.menu;
+                self.standard_file_wait = waits.file;
+                self.sound_wait = waits.sound;
+            }
             Resume::StandardFile { mut wait, result } => {
                 wait.dialog.filtered(result.read(&self.memory, value)?)?;
                 return self.poll_standard_file(*wait);

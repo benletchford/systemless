@@ -17,14 +17,8 @@ impl BooleanResult {
         })
     }
 }
-pub(crate) fn file_filter(
-    caller: &Cpu,
-    memory: &mut Memory,
-    routine: u32,
-    argument: GuestPtr,
-) -> Result<(Cpu, BooleanResult)> {
-    let bad = || Error::Cpu("invalid Standard File callback frame".into());
-    let routine = if memory.u16(GuestPtr(routine))? == 0xaafe {
+fn resolve(caller: &Cpu, memory: &Memory, routine: u32, info: u32) -> Result<u32> {
+    Ok(if memory.u16(GuestPtr(routine))? == 0xaafe {
         let rd = memory.read(GuestPtr(routine), 32)?;
         let isa = if caller.architecture() == Architecture::M68k {
             0
@@ -33,23 +27,32 @@ pub(crate) fn file_filter(
         };
         if rd[2] != 7
             || rd[3..12].iter().any(|b| *b != 0)
-            || rd[12..16] != 0xd0u32.to_be_bytes()
+            || rd[12..16] != info.to_be_bytes()
             || rd[16] != 0
             || rd[17] != isa
             || !matches!(u16::from_be_bytes(rd[18..20].try_into().unwrap()), 0 | 4)
             || rd[24..32].iter().any(|b| *b != 0)
         {
-            return Err(Error::Cpu("unsupported Standard File RoutineDescriptor (requires one prepared absolute same-ISA Pascal Boolean(pointer) routine)".into()));
+            return Err(Error::Cpu("unsupported callback RoutineDescriptor (requires one prepared absolute same-ISA routine)".into()));
         }
         u32::from_be_bytes(rd[20..24].try_into().unwrap())
     } else {
         if caller.architecture() == Architecture::PowerPc {
             return Err(Error::Cpu(
-                "PowerPC file filter requires a RoutineDescriptor".into(),
+                "PowerPC callback requires a RoutineDescriptor".into(),
             ));
         }
         routine
-    };
+    })
+}
+pub(crate) fn file_filter(
+    caller: &Cpu,
+    memory: &mut Memory,
+    routine: u32,
+    argument: GuestPtr,
+) -> Result<(Cpu, BooleanResult)> {
+    let bad = || Error::Cpu("invalid Standard File callback frame".into());
+    let routine = resolve(caller, memory, routine, 0xd0)?;
     match caller {
         Cpu::M68k(c) => {
             memory.fetch(GuestPtr(routine), 2, 2)?;
@@ -87,6 +90,56 @@ pub(crate) fn file_filter(
             }
             memory.write(GuestPtr(sp), &frame)?;
             Ok((callee, BooleanResult::Register))
+        }
+    }
+}
+
+/// Pascal void(SndChannelPtr, SndCommandPtr). The caller's whole CPU is retained
+/// by Runtime; this adapter never runs from a native audio callback.
+pub(crate) fn sound(caller: &Cpu, memory: &mut Memory, routine: u32, channel: u32) -> Result<Cpu> {
+    let routine = resolve(caller, memory, routine, 0x3c0)?;
+    let command = channel
+        .checked_add(20)
+        .ok_or_else(|| Error::Cpu("sound callback argument overflow".into()))?;
+    match caller {
+        Cpu::M68k(c) => {
+            memory.fetch(GuestPtr(routine), 2, 2)?;
+            let sp = c.dar[15]
+                .checked_sub(12)
+                .filter(|s| s.is_multiple_of(2))
+                .ok_or_else(|| Error::Cpu("invalid sound callback stack".into()))?;
+            memory.validate_write(GuestPtr(sp), 12)?;
+            let mut frame = Vec::new();
+            frame.extend(RETURN_GATE.to_be_bytes());
+            frame.extend(command.to_be_bytes());
+            frame.extend(channel.to_be_bytes());
+            let mut callee = Cpu::new(Architecture::M68k, routine, sp);
+            if let Cpu::M68k(next) = &mut callee {
+                next.dar = c.dar;
+                next.set_sr(c.get_sr());
+                next.dar[15] = sp;
+            }
+            memory.write(GuestPtr(sp), &frame)?;
+            Ok(callee)
+        }
+        Cpu::PowerPc(c) => {
+            let descriptor = memory.read(GuestPtr(routine), 8)?;
+            let entry = u32::from_be_bytes(descriptor[..4].try_into().unwrap());
+            let toc = u32::from_be_bytes(descriptor[4..].try_into().unwrap());
+            memory.fetch(GuestPtr(entry), 4, 4)?;
+            let sp = crate::lifecycle::Lifecycle::validate_nested(caller, memory)?;
+            let mut frame = [0; 64];
+            frame[..4].copy_from_slice(&c.gpr[1].to_be_bytes());
+            let mut callee = Cpu::new(Architecture::PowerPc, entry, sp);
+            if let Cpu::PowerPc(next) = &mut callee {
+                next.gpr = c.gpr;
+                next.gpr[1] = sp;
+                next.gpr[2] = toc;
+                next.gpr[3] = channel;
+                next.gpr[4] = command;
+            }
+            memory.write(GuestPtr(sp), &frame)?;
+            Ok(callee)
         }
     }
 }

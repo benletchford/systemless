@@ -1828,10 +1828,12 @@ Process owns one Sound Manager channel registry for both CPU adapters. SndNewCha
 configuration and creates an owned guest queue. A nil channel receives an owned
 1,060-byte SndChannel record and the default 128-command queue. A caller-supplied
 record keeps its userInfo, allocation and queue-size choice; positive signed
-16-bit qLength values determine the separately allocated queue. Guest fields are
+16-bit qLength values determine the separately allocated internal storage and
+checked inline record extent. Commands use the actual inline queue at offset 36. Guest fields are
 big-endian, nextChan links reflect the same process registry, and the reserved
 firstMod field holds the runtime's queue allocation identity. Callback addresses
-are retained as opaque guest values. Host diagnostics can query configuration.
+are retained as guest values and resolved by the callback adapter when called.
+Host diagnostics can query configuration.
 
 SndDisposeChannel ($A801 / InterfaceLib) validates registration, allocation
 ownership and idle queue fields before unlinking. It repairs a predecessor link,
@@ -1848,8 +1850,9 @@ return explicit errors. There is a documented 64-channel runtime bound; it does
 not describe native hardware capacity. Both quietNow values complete immediately
 for an idle channel. Busy/private-field corruption is rejected, never discarded
 as if played. The sampled-immediate extension below adds actual rendering and
-native transport. Channel-status APIs, queued commands, other synthesizers,
-sound callbacks and wait-for-playback disposal remain unfinished. Channel
+native transport. The FIFO/callback extension below adds real command ordering.
+Channel-status APIs, other synthesizers and wait-for-playback disposal remain
+unfinished. Channel
 creation/disposal alone does not establish original-game playback compatibility.
 
 
@@ -1995,7 +1998,8 @@ return OSErrs, while unimplemented command families fail explicitly. A busy
 buffer submission is rejected rather than replacing an active sound. Quiet
 cancels the voice. Quiet channel disposal releases active owned playback;
 nonquiet disposal of an active channel currently returns -209 instead of
-waiting. FIFO command execution and completion callbacks are not implemented.
+waiting. The FIFO/callback extension below adds command execution and
+completion callbacks; quiet cancels the current voice while queued work continues.
 
 Standard SoundHeader fields are checked before publication: inline/external
 sample pointers, bounded nonzero length, unsigned 16.16 rates (1 Hz through
@@ -2079,3 +2083,74 @@ Sources: [Apple flags](https://leopard-adc.pepas.com/documentation/mac/Memory/Me
 [HSetState](https://dev.os9.ca/techpubs/mac/Memory/Memory-87.html),
 [HPurge](https://dev.os9.ca/techpubs/mac/Memory/Memory-90.html),
 [MoveHHi](https://dev.os9.ca/techpubs/mac/Memory/Memory-100.html) and pinned SDK MacMemory.h.
+
+
+## Sound command FIFO and CPU-bound completion callbacks
+
+SndDoCommand ($A803 / InterfaceLib) copies eight command bytes into the channel's
+inline ring at offset 36 and advances checked qHead/qTail indices. Positive signed
+qLength controls capacity for caller storage, including records larger than the
+standard 128 slots. Pending ring bytes and registry state must agree; arbitrary
+guest edits to internal queue storage are diagnosed rather than silently ignored.
+The firstMod allocation remains an opaque owned internal block, not the ring.
+The shared executor supports null, quiet, flush, amplitude/getter, stereo
+volume/getter, standard bufferCmd and queued callBackCmd. Unknown command families
+still fault explicitly; rejected headers/configurations return actual errors.
+Queued buffer pointers and samples remain live, while the submitted command record
+itself may be reused immediately. Normal quiet stops the current voice and then
+processes queued work; flush clears pending work without stopping the voice.
+Quiet inside an active callback leaves that callback's command frame intact.
+
+Full queues return queueFull (-203) when noWait is true. Otherwise Runtime owns
+a copied pending command and reply, returns a cooperative one-tick wait, and retries
+without executing guest instructions until space is available. Queue state and
+result remain unchanged while full. This wait can itself be interrupted by sound
+callbacks. A saved generation also prevents a blocked submission from targeting
+a replacement channel at the same address; it returns badChannel instead. Nonquiet active channel disposal remains -209 until its separate
+waiting semantics are implemented.
+
+The renderer crosses buffer/control-command boundaries within one output quantum,
+applying controls only after preceding buffers finish. It checks channel/ring
+ownership, queued header spans and output locations before phase advancement.
+The same native renderer's PCM contract applies; command-induced guest memory
+self-corruption is not a transaction with full memory rollback. Silent queued
+advancement matches a 48 kHz sink using analytic frame consumption, visits each
+pending command/voice at most once and allocates no discarded PCM even for a
+u32::MAX-tick wait. It stops at a callback boundary until guest execution resumes;
+callback latency is therefore host-quantum/cooperative scheduling, not hardware
+interrupt emulation.
+
+callBackCmd blocks further commands in that channel and schedules a guest call.
+Runtime dispatches it at a budget boundary, never on the native audio thread.
+The adapter marshals Pascal void(SndChannelPtr, SndCommandPtr) with procInfo $3C0:
+raw 68K routines or prepared absolute version-7 same-ISA RoutineDescriptors;
+PPC uses the routine's transition vector/TOC. Runtime retains the whole caller
+CPU and suspended event/control/menu/file/sound waits. Event deadlines continue
+through host time advancement while suspended. Instruction-derived TickCount
+increments do not yet age suspended wait counters; those two clock paths need
+unification before claiming complete callback/timer parity. The running callback holds a mutable borrow of its command pointer; it can
+reuse those bytes for another sound command without failing the channel's private
+state checks. Pending callbacks still validate the original command, and return
+clears the borrowed frame before pumping more work. Callback services use the same
+Process; returning restores the interrupted CPU/wait and continues the FIFO.
+Nested callbacks remain bounded to depth 32. This cooperative implementation
+permits allocation/disposal in a callback as a runtime extension; Apple's actual
+interrupt-time contract forbids Memory Manager calls. The disposal/reallocation
+fixture stress-tests continuation ownership and is not a native-conformance
+example. Synthetic register clobbers likewise stress restoration; conforming
+native callbacks must preserve the registers required by the callback ABI. A monotonically assigned channel
+generation prevents an old callback return from clearing a replacement allocated
+at the same guest address. Exit during a callback fails explicitly. General
+routine-descriptor allocation, cross-ISA Mixed Mode and nonlocal callback exits
+remain unfinished.
+
+Both actual CPUs and public-header compiler fixtures verify copied commands/live
+samples, PCM boundaries and gains, full-queue failure/wait, callback budget/state
+restoration, nested Toolbox calls, event-wait resumption and disposal/address
+reuse inside a callback. CLI fixtures finish without host audio. This does not
+establish resource SndPlay, pause/wait/sync commands, Sound Manager version APIs,
+other formats or original EV/Marathon gameplay. Sources: Apple's
+[Sound Manager summary](https://leopard-adc.pepas.com/documentation/mac/Sound/Sound-136.html),
+[SndDoImmediate](https://dev.os9.ca/techpubs/mac/Sound/Sound-101.html),
+[callback contract](https://leopard-adc.pepas.com/documentation/mac/Sound/Sound-131.html)
+and pinned SDK Sound.h.

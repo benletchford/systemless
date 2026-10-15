@@ -201,6 +201,7 @@ pub enum Service {
     SetSoundVol,
     SndNewChannel,
     SndDoImmediate,
+    SndDoCommand,
     SndDisposeChannel,
     GetSoundVol,
     PBControlSync,
@@ -512,6 +513,7 @@ impl Abi {
             b"ReleaseResource" => Some(Service::ReleaseResource),
             b"DetachResource" => Some(Service::DetachResource),
             b"SndDoImmediate" => Some(Service::SndDoImmediate),
+            b"SndDoCommand" => Some(Service::SndDoCommand),
             b"SndNewChannel" => Some(Service::SndNewChannel),
             b"SndDisposeChannel" => Some(Service::SndDisposeChannel),
             b"SetSoundVol" => Some(Service::SetSoundVol),
@@ -952,6 +954,24 @@ impl Abi {
                 Ok((
                     Call::Device(crate::devices::Op::Select(device)),
                     Reply::None,
+                ))
+            }
+            0xa803 => {
+                let args = memory.read(GuestPtr(sp), 10)?;
+                let command = GuestPtr(u32::from_be_bytes(args[2..6].try_into().unwrap()));
+                let channel = u32::from_be_bytes(args[6..10].try_into().unwrap());
+                let result = sp
+                    .checked_add(10)
+                    .ok_or_else(|| Error::Cpu("queued sound stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::SoundQueue {
+                        channel,
+                        command,
+                        no_wait: args[0] != 0,
+                    },
+                    Reply::StackWord(GuestPtr(result)),
                 ))
             }
             0xa804 => {
@@ -3159,6 +3179,11 @@ impl Abi {
             Service::GetResource => Call::GetResource {
                 kind: c.gpr[3].to_be_bytes(),
                 id: c.gpr[4] as i16,
+            },
+            Service::SndDoCommand => Call::SoundQueue {
+                channel: c.gpr[3],
+                command: GuestPtr(c.gpr[4]),
+                no_wait: c.gpr[5] as u8 != 0,
             },
             Service::SndDoImmediate => Call::SoundImmediate {
                 channel: c.gpr[3],

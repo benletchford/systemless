@@ -1456,3 +1456,122 @@ fn compiled_handle_flags_control_real_blocks_and_resource_lifetimes_on_both_cpus
             .any(|call| matches!(call, Call::HandleState { value: Some(_), .. })));
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn compiled_queued_sound_runs_callbacks_on_both_cpus_and_restores_the_event_wait() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("queued_sound.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("queued_sound.ppc")).unwrap();
+    for mut a in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, None).unwrap(),
+    ] {
+        assert_eq!(
+            a.runtime.advance(50000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        let out = a.runtime.render_sound(9, 8000).unwrap();
+        assert_eq!(
+            out,
+            [
+                [-32768; 2],
+                [0; 2],
+                [32512; 2],
+                [-16384; 2],
+                [-16448; 2],
+                [0; 2],
+                [16319; 2],
+                [-8224; 2],
+                [0; 2]
+            ]
+        );
+        let callback = |a: &LoadedApplication| {
+            a.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|call| {
+                    matches!(
+                        call,
+                        Call::PostEvent {
+                            what: 7,
+                            message: 0xa803
+                        }
+                    )
+                })
+                .count()
+        };
+        assert_eq!(callback(&a), 0);
+        assert_eq!(
+            a.runtime.advance(50000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert_eq!(callback(&a), 1);
+        a.runtime.elapse_ticks(1).unwrap();
+        assert_eq!(
+            a.runtime.advance(50000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        let source = [[-32768; 2], [0; 2], [32512; 2], [-16384; 2]];
+        assert_eq!(a.runtime.render_sound(4, 8000).unwrap(), source);
+        assert_eq!(
+            a.runtime.advance(50000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        // recycle disposed the callback's channel, allocated another at the same
+        // address, and started its voice. Returning the old callback must not
+        // clear the replacement's cmdInProgress or playback phase.
+        let created: Vec<_> = a
+            .runtime
+            .services
+            .calls
+            .iter()
+            .filter_map(|call| match call {
+                Call::SoundChannel(systemless_future::sound::Op::New(r)) => Some(r.destination),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(created.len(), 3);
+        let replacement = a.runtime.memory.u32(created[2]).unwrap();
+        assert_eq!(a.runtime.memory.u32(created[1]).unwrap(), replacement);
+        assert_eq!(a.runtime.process.sound.busy(replacement), Some(true));
+        assert_eq!(a.runtime.render_sound(4, 8000).unwrap(), source);
+        a.runtime.elapse_ticks(1).unwrap();
+        assert_eq!(a.runtime.advance(50000).unwrap(), Stop::Exit(0));
+        assert!(a.runtime.services.calls.iter().any(|call| matches!(
+            call,
+            Call::PostEvent {
+                what: 7,
+                message: 0xa806
+            }
+        )));
+    }
+}
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn headless_cli_runs_queued_sound_callbacks_without_a_host_audio_device() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    for (flag, path) in [
+        ("--code", root.join("queued_sound.68k.rsrc")),
+        ("--pef", root.join("queued_sound.ppc")),
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_systemless-future"))
+            .arg(flag)
+            .arg(path)
+            .args(["--budget", "50000"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("Exit(0)"),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
