@@ -29,7 +29,7 @@ fork path and a maximum instruction count, and prints register/opcode context.
   original startup now initializes through $00400000, then passes ReleaseResource,
   InitFonts, InitWindows, FlushEvents and InitMenus with graphics enabled. It stops
   after InitCursor, TEInit, InitDialogs, SysEnvirons and EventAvail at unsupported
-  TETextBox ($A9CE), PC $0100E766 (trace index 21385), after
+  GetMouse ($A972), PC $0100E4A8 (trace index 22664), after
   PBGetCatInfo reports a missing directory, PBDirCreate creates it and
   PBHGetFInfo completes a file lookup and GetNewWindow creates its first
   hidden dBoxProc resource window and DetachResource transfers loaded
@@ -79,9 +79,15 @@ InitCursor ($A850) now initializes shared cursor state for the GPU presentation
 overlay. InitDialogs ($A97B) now initializes shared dialog globals and parameter
 StringHandles. SysEnvirons now reports the shared compatibility profile; common
 loading maps/publishes the full fixed heap and MaxApplZone preserves its extent.
-Fresh traces pass EventAvail/SetRect and reach TETextBox in Super Mines and GetGDevice in Centaurian. Actual
+Fresh traces pass EventAvail/SetRect and bold TETextBox in Super Mines, reaching GetMouse; Centaurian reaches GetGDevice. Actual
 onscreen cursor behavior, heap-zone resizing, menu/dialog construction, window
 custom definitions and original application interaction remain unfinished.
 Dynamic memory loading is verified with the MPW resource-plugin fixture;
 Centaurian has not yet executed its own GetMemFragment calls. Full acceptance
 still requires original application interactions on both architectures.
+
+Super Mines TextBox calls now complete with the selected family-3, size-9 bold
+strike. Layout and clipping use the shared TextEdit/GPU route, with a synthesized
+one-pixel bold source. This is bounded startup evidence; no original mouse-driven
+interaction or native styled-text pixel comparison has passed. Legacy Systemless
+comparison alone is permitted by the user; native System 7 execution is optional.

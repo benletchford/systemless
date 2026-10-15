@@ -327,3 +327,8 @@ ColorTable, default-highlight metadata and PackBitsRgn mask. The window probes
 inspect black and white screen bits after drawing it; source index 255 is white
 and index 7 is black, requiring palette interpretation rather than index-value
 thresholding.
+
+The TextEdit fixture also calls TETextBox with bold centered text and an empty
+right-aligned erase on both compiler targets, checking preserved pen location,
+text face and MemError. Its acceptance now requires a real wgpu adapter and both
+TextBox service calls before the final success marker.

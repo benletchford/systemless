@@ -389,3 +389,31 @@ fn string_width_returns_signed_pascal_and_ppc_results_without_moving_pen() {
         .is_err());
     }
 }
+
+#[test]
+fn synthetic_bold_dilates_glyphs_and_preserves_source_and_missing_mapping() {
+    let source = strike();
+    let bold = systemless_future::font::embolden(&source).unwrap();
+    let font = Strike::parse(&bold).unwrap();
+    assert_eq!(
+        font.mask(b'A').unwrap(),
+        [1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0]
+    );
+    assert_eq!(font.mask(b'?').unwrap(), [1, 1, 0, 0, 1, 1, 1, 1, 1]);
+    assert_eq!(font.glyph(b'A').bearing, -1);
+    assert_eq!(font.glyph(b'A').advance, 5);
+    assert_eq!(font.glyph(b'B'), font.glyph(b'?'));
+    assert_eq!(font.width(b"AB?").unwrap(), 13);
+    assert_eq!(font.metrics.maximum_width, 5);
+    assert_eq!(font.metrics.ascent, 2);
+    assert_eq!(font.metrics.descent, 1);
+    assert_eq!(font.metrics.leading, -1);
+    assert_eq!(&bold[10..12], &source[10..12]);
+    assert_eq!(source, strike());
+    let mut overflow = source.clone();
+    overflow[41] = 255;
+    assert!(systemless_future::font::embolden(&overflow).is_err());
+    for end in 0..source.len() {
+        assert!(systemless_future::font::embolden(&source[..end]).is_err());
+    }
+}

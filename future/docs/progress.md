@@ -2263,3 +2263,35 @@ remain unfinished. Full rebuild goal remains active.
 Validation: all 235 tests pass (192 default, 43 optional GPU/MPW). Strict
 all-target Clippy, MPW rebuilding and sequential changed-file formatting checks
 pass. No GPU tests were skipped.
+
+
+### Transient TextBox layout and bold source strikes
+
+TETextBox ($A9CE) and PPC TETextBox/TextBox imports decode into the same signed
+length/alignment request. Temporary plain TextEdit records reuse word wrapping,
+font advances, view clipping and GPU redraw with erasure; the record/text graph is
+always disposed. Caller port, pen and source text remain intact. Empty text erases
+its view. Invalid input and allocation failures are checked before drawing.
+
+Super Mines requests bold family 3 at size 9. Shared font selection now synthesizes
+one-pixel bold source masks and advances, retaining vertical metrics, bearings,
+missing-character mapping and original guest FONT bytes. Other styles remain
+explicit errors; this is not a native styled-font parity claim.
+
+Regression checks cover both ABI layouts and short-stack preservation, exact bold
+masks/metrics and malformed fonts, exact GPU alignment/word-wrap/clipping pixels,
+empty erasure, repeated-call heap capacity, invalid input and heap-exhaustion pixel
+preservation. Rebuilt 68K/PPC MPW TextEdit programs draw bold centered text and
+empty right-aligned text while checking pen/face/MemError state.
+
+Fresh Super Mines startup passes its TextBox calls and stops at GetMouse ($A972),
+PC $0100E4A8, trace index 22664. Next: implement GetMouse through shared queued
+input/current-port coordinate conversion, then continue bounded original update
+and input interactions. Centaurian GetGDevice and strong PPC sound imports remain
+open, as do native presentation, Color QuickDraw and production Mixed Mode.
+The full rebuild goal remains active. Native System 7 comparison is optional;
+legacy Systemless comparison alone is authorized.
+
+Validation: all 238 tests pass (194 default, 44 optional GPU/MPW); no GPU tests
+were skipped. Strict all-target Clippy, rebuilt MPW fixtures, sequential changed-
+file formatting and diff whitespace checks pass. No native System 7 run was used.

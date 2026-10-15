@@ -31,6 +31,92 @@ pub struct Strike<'a> {
     kern: i16,
     pub metrics: Metrics,
 }
+/// Synthesize a one-pixel bold source strike, preserving the original guest font.
+pub fn embolden(bytes: &[u8]) -> Result<Vec<u8>> {
+    let font = Strike::parse(bytes)?;
+    let count = usize::from(font.last - font.first) + 2;
+    let mut locations = vec![0u16];
+    let mut widths = Vec::new();
+    let mut total = 0usize;
+    for i in 0..count {
+        let width = usize::from(
+            font.word(font.locations + (i + 1) * 2) - font.word(font.locations + i * 2),
+        );
+        total = total
+            .checked_add(width + usize::from(width != 0))
+            .ok_or_else(|| bad("bold strike width overflow"))?;
+        locations.push(u16::try_from(total).map_err(|_| bad("bold strike bitmap width limit"))?);
+        let old = font.word(font.widths + i * 2);
+        widths.push(if old == 0xffff {
+            old
+        } else {
+            let advance = (old as u8)
+                .checked_add(1)
+                .ok_or_else(|| bad("bold glyph advance overflow"))?;
+            (old & 0xff00) | u16::from(advance)
+        });
+    }
+    widths.push(0xffff);
+    let row_words = total.div_ceil(16).max(1);
+    let row_bytes = row_words * 2;
+    let bitmap_len = row_bytes * usize::from(font.height);
+    let table_offset = 26 + bitmap_len + locations.len() * 2;
+    if table_offset + widths.len() * 2 > 16 * 1024 * 1024 {
+        return Err(bad("bold strike storage limit"));
+    }
+    let mut bitmap = vec![0u8; bitmap_len];
+    for (i, &new_start) in locations.iter().take(count).enumerate() {
+        let old_start = usize::from(font.word(font.locations + i * 2));
+        let old_end = usize::from(font.word(font.locations + (i + 1) * 2));
+        for y in 0..usize::from(font.height) {
+            for x in old_start..old_end {
+                if bytes[26 + y * font.row_bytes + x / 8] & (0x80 >> (x % 8)) != 0 {
+                    let start = usize::from(new_start) + x - old_start;
+                    for col in [start, start + 1] {
+                        bitmap[y * row_bytes + col / 8] |= 0x80 >> (col % 8);
+                    }
+                }
+            }
+        }
+    }
+    let mut output = bytes[..26].to_vec();
+    let offset_words = (table_offset - 16) / 2;
+    let high = if offset_words > usize::from(u16::MAX) {
+        (offset_words >> 16) as u16
+    } else {
+        let original = font.word(10) as i16;
+        if original <= 0 {
+            original as u16
+        } else {
+            0
+        }
+    };
+    for (offset, value) in [
+        (
+            6,
+            font.metrics
+                .maximum_width
+                .checked_add(1)
+                .ok_or_else(|| bad("bold metric overflow"))? as u16,
+        ),
+        (10, high),
+        (
+            12,
+            font.word(12)
+                .checked_add(1)
+                .ok_or_else(|| bad("bold frame width overflow"))?,
+        ),
+        (16, offset_words as u16),
+        (24, row_words as u16),
+    ] {
+        output[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    output.extend(bitmap);
+    output.extend(locations.into_iter().flat_map(u16::to_be_bytes));
+    output.extend(widths.into_iter().flat_map(u16::to_be_bytes));
+    Strike::parse(&output)?;
+    Ok(output)
+}
 impl<'a> Strike<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self> {
         if bytes.len() < 26 || bytes.len() > 16 * 1024 * 1024 {

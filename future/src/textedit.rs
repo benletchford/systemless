@@ -8,7 +8,15 @@ use crate::{
 };
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextBox {
+    pub text: GuestPtr,
+    pub length: i32,
+    pub rectangle: GuestPtr,
+    pub alignment: i16,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    TextBox(TextBox),
     Init,
     New {
         dest: GuestPtr,
@@ -200,7 +208,8 @@ impl Manager {
                 process.mem_error = 0;
                 Ok(handle)
             }
-            Op::Key { .. }
+            Op::TextBox(_)
+            | Op::Key { .. }
             | Op::Activate { .. }
             | Op::Idle(_)
             | Op::Delete(_)
@@ -501,6 +510,64 @@ impl Manager {
         }
         let data = pointer(memory, process, handle, 128)?;
         self.redraw(memory, process, gpu, GuestPtr(data.0 + 8), handle, true)
+    }
+    pub fn text_box(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &crate::graphics::Graphics,
+        request: TextBox,
+        ticks: u32,
+    ) -> Result<()> {
+        if !(0..=32767).contains(&request.length) {
+            return Err(bad("text box length must be between 0 and 32767"));
+        }
+        if !matches!(request.alignment, -2..=1) {
+            return Err(bad("unsupported text box alignment"));
+        }
+        let rect = crate::quickdraw::read_rect(memory, request.rectangle)?;
+        if rect.left >= rect.right || rect.top >= rect.bottom {
+            return Ok(());
+        }
+        let text = if request.length == 0 {
+            vec![]
+        } else {
+            if request.text.0 == 0 {
+                return Err(bad("nonempty text box requires a text pointer"));
+            }
+            memory.read(request.text, request.length as usize)?.to_vec()
+        };
+        let handle = self.call(
+            memory,
+            process,
+            Op::New {
+                dest: request.rectangle,
+                view: request.rectangle,
+                styled: false,
+            },
+            ticks,
+        )?;
+        if handle == 0 {
+            return Err(bad("text box record allocation failed"));
+        }
+        let result = (|| {
+            let data = pointer(memory, process, handle, 128)?;
+            memory.write(GuestPtr(data.0 + 58), &request.alignment.to_be_bytes())?;
+            self.layout(memory, process, handle, text, true, None)?;
+            if process.mem_error != 0 {
+                return Err(bad("text box layout allocation failed"));
+            }
+            let data = pointer(memory, process, handle, 128)?;
+            self.redraw(memory, process, gpu, GuestPtr(data.0 + 8), handle, true)
+        })();
+        let allocation_error = process.mem_error;
+        let cleanup = self
+            .call(memory, process, Op::Dispose(handle), ticks)
+            .map(|_| ());
+        if result.is_err() && allocation_error != 0 {
+            process.mem_error = allocation_error;
+        }
+        result.and(cleanup)
     }
     pub fn update(
         &mut self,

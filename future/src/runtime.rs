@@ -423,6 +423,22 @@ impl Runtime {
                             let ticks = self.tick_count()?;
                             let mut manager = std::mem::take(&mut self.process.textedit);
                             let result = match op {
+                                crate::textedit::Op::TextBox(request) => {
+                                    match self.graphics.as_ref() {
+                                        Some(gpu) => manager
+                                            .text_box(
+                                                &mut self.memory,
+                                                &mut self.process,
+                                                gpu,
+                                                request,
+                                                ticks,
+                                            )
+                                            .map(|()| 0),
+                                        None => Err(Error::Graphics(
+                                            "text box drawing requires a GPU".into(),
+                                        )),
+                                    }
+                                }
                                 crate::textedit::Op::Key { handle, byte } => {
                                     match self.graphics.as_ref() {
                                         Some(gpu) => manager

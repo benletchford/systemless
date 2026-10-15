@@ -13,6 +13,7 @@ int main(void) {
     TEHandle plain,styled;
     TEStyleHandle style;
     Handle text;
+    Point savedPen;
     InitGraf(&qd.thePort); InitFonts(); OpenPort(&port);
     TextFont(3); TextSize(9); TextFace(0); TextMode(srcOr);
     TEInit(); TEInit();
@@ -47,6 +48,11 @@ int main(void) {
     TEDispose(plain); TEDispose(styled);
     if (MemError()) return 9;
     plain=TENew(&dest,&view); if (!plain) return 10; TEDispose(plain);
+    TextFace(bold); MoveTo(23,27); savedPen=port.pnLoc;
+    TETextBox("AB CD EF",8,&view,teCenter);
+    if (port.pnLoc.h!=savedPen.h || port.pnLoc.v!=savedPen.v || port.txFace!=bold) return 20;
+    TETextBox(0,0,&view,teFlushRight);
+    if (port.pnLoc.h!=savedPen.h || port.pnLoc.v!=savedPen.v || MemError()) return 21;
     ClosePort(&port);
     PostEvent(diskEvt,0x600D); ExitToShell(); return 0;
 }

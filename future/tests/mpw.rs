@@ -424,8 +424,10 @@ fn compiled_plain_window_lifecycle_has_record_and_screen_parity() {
 }
 
 #[test]
-#[ignore = "requires generated MPW fixture"]
+#[ignore = "requires generated MPW fixture and real wgpu adapter"]
 fn compiled_textedit_records_and_style_lifetime_complete_on_both_cpus() {
+    use systemless_future::{graphics::Graphics, memory::GuestPtr};
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
     let code = std::fs::read(root.join("textedit.68k.rsrc")).expect("build MPW fixtures first");
     let pef = std::fs::read(root.join("textedit.ppc")).unwrap();
@@ -433,6 +435,9 @@ fn compiled_textedit_records_and_style_lifetime_complete_on_both_cpus() {
         LoadedApplication::code(&code).unwrap(),
         LoadedApplication::pef(&pef, None).unwrap(),
     ] {
+        app.runtime.graphics = Some(
+            pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
+        );
         assert_eq!(app.runtime.advance(20000).unwrap(), Stop::Exit(0));
         assert_eq!(
             app.runtime
@@ -445,6 +450,18 @@ fn compiled_textedit_records_and_style_lifetime_complete_on_both_cpus() {
                 ))
                 .count(),
             3
+        );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|call| matches!(
+                    call,
+                    Call::TextEdit(systemless_future::textedit::Op::TextBox(_))
+                ))
+                .count(),
+            2
         );
         assert_eq!(
             &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],

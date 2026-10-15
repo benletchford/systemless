@@ -62,7 +62,7 @@ pub(crate) fn font_bytes(
     mut size: i16,
     face: u8,
 ) -> Result<Vec<u8>> {
-    if face != 0 {
+    if face > 1 {
         return Err(Error::Graphics(
             "styled font metrics are not implemented".into(),
         ));
@@ -97,7 +97,12 @@ pub(crate) fn font_bytes(
     };
     let length = process.handle_size(memory, handle)? as usize;
     let data = GuestPtr(memory.u32(GuestPtr(handle))?);
-    Ok(memory.read(data, length)?.to_vec())
+    let bytes = memory.read(data, length)?;
+    if face == 1 {
+        crate::font::embolden(bytes)
+    } else {
+        Ok(bytes.to_vec())
+    }
 }
 pub fn font_info(
     memory: &mut Memory,

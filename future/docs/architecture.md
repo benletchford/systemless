@@ -748,7 +748,11 @@ modes. Temporary pen pattern/mode changes reuse the same GrafPort clipping/color
 pipeline and are restored even on failure. Measurement preserves pnLoc, while
 successful drawing publishes the advanced horizontal word. Geometry preflight is
 bounded; GPU errors remain terminal and can retain earlier completed glyph pixels.
-Synthetic styles, fractional spacing and DrawText/StdText remain explicit gaps.
+Bold face uses checked one-pixel rightward dilation of a source FONT strike and
+one-pixel advance growth, shared by measurement and drawing. Original font bytes,
+missing-character mapping and vertical metrics are preserved; no CPU destination
+renderer is introduced. Other styles, fractional spacing and DrawText/StdText
+remain explicit gaps. Native styled-font pixel parity is unverified.
 
 
 ## TextEdit record ownership
@@ -1170,3 +1174,15 @@ HiliteRGB global. HiliteMode and unsupported highlight transfer modes still
 fault before drawing; supported source modes do not consume highlight state.
 Original Super Mines PICT 184 now completes its metadata, 256-entry table,
 PackBitsRgn and mask through this path.
+
+## Transient TextBox drawing
+
+TETextBox/TextBox share one signed-length/alignment request across the 14-byte
+68K Pascal and four-register PPC adapters. The manager snapshots raw source bytes,
+creates a temporary plain TERec/text-handle pair, applies justification, runs the
+existing word-wrap layout and redraws with background erasure through wgpu.
+Caller clipping and port/pen state survive the draw; empty text erases the view.
+The temporary graph is disposed after success or failure, preserving allocation
+errors. Input length is bounded to 32767 bytes; unsupported alignment values fail
+before drawing. Allocation failure does not erase the existing display. GPU
+failure can retain completed pixels, as with other synchronous drawing services.

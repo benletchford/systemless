@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    TETextBox,
     FrameRect,
     EraseRect,
     InvertRect,
@@ -285,6 +286,7 @@ impl Abi {
             b"DrawMenuBar" => Some(Service::Menu(crate::menus::Op::Draw)),
             b"ClearMenuBar" => Some(Service::Menu(crate::menus::Op::Clear)),
             b"GetMenuBar" => Some(Service::Menu(crate::menus::Op::Snapshot)),
+            b"TETextBox" | b"TextBox" => Some(Service::TETextBox),
             b"TEInit" => Some(Service::TEInit),
             b"TEGetText" => Some(Service::TEGetText),
             b"TEGetStyleHandle" => Some(Service::TEGetStyleHandle),
@@ -1344,6 +1346,23 @@ impl Abi {
                     Reply::None,
                 ))
             }
+            0xa9ce => {
+                let args = memory.read(GuestPtr(sp), 14)?;
+                let pointer = |i| GuestPtr(u32::from_be_bytes(args[i..i + 4].try_into().unwrap()));
+                let request = crate::textedit::TextBox {
+                    alignment: i16::from_be_bytes(args[..2].try_into().unwrap()),
+                    rectangle: pointer(2),
+                    length: i32::from_be_bytes(args[6..10].try_into().unwrap()),
+                    text: pointer(10),
+                };
+                c.dar[15] = sp
+                    .checked_add(14)
+                    .ok_or_else(|| Error::Cpu("text box stack overflow".into()))?;
+                Ok((
+                    Call::TextEdit(crate::textedit::Op::TextBox(request)),
+                    Reply::None,
+                ))
+            }
             0xa8a1 | 0xa8a3..=0xa8a5 => {
                 use crate::quickdraw::RectangleOp;
                 let n = if opcode == 0xa8a5 { 8 } else { 4 };
@@ -1624,6 +1643,14 @@ impl Abi {
             }),
             Service::TEDelete => Call::TextEdit(crate::textedit::Op::Delete(c.gpr[3])),
             Service::TECalText => Call::TextEdit(crate::textedit::Op::Calculate(c.gpr[3])),
+            Service::TETextBox => {
+                Call::TextEdit(crate::textedit::Op::TextBox(crate::textedit::TextBox {
+                    text: GuestPtr(c.gpr[3]),
+                    length: c.gpr[4] as i32,
+                    rectangle: GuestPtr(c.gpr[5]),
+                    alignment: c.gpr[6] as i16,
+                }))
+            }
             Service::TEInit => Call::TextEdit(crate::textedit::Op::Init),
             Service::TEGetText => Call::TextEdit(crate::textedit::Op::GetText(c.gpr[3])),
             Service::TEGetStyleHandle => Call::TextEdit(crate::textedit::Op::GetStyle(c.gpr[3])),
@@ -1963,6 +1990,7 @@ impl Abi {
                         | Service::TEKey
                         | Service::TEIdle
                         | Service::TEActivate(_)
+                        | Service::TETextBox
                         | Service::TEInit
                         | Service::TEDispose
                         | Service::LineTo

@@ -105,3 +105,8 @@ activation-event delivery and InvalRect/ValidRect. Movement uses wgpu copies fro
 a preserved guest-memory snapshot and queues exposed content for application
 redraw. Legacy Systemless is the permitted comparison baseline; native System 7
 verification and complete original application interaction remain pending.
+
+TETextBox/TextBox now share transient TextEdit wrapping, alignment and clipped
+GPU erasure/drawing on both CPU adapters. Bold source strikes are synthesized
+without changing guest font resources. Super Mines startup passes its text boxes
+and reaches GetMouse; complete original application interaction remains pending.

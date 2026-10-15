@@ -1362,3 +1362,196 @@ fn key_adapters_read_the_low_character_byte_and_preserve_void_results() {
     assert!(Abi::trap(0xa9dc, c, &short).is_err());
     assert_eq!(c.dar[15], 0x1000);
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn text_box_aligns_erases_and_restores_port_without_leaking_transient_handles() {
+    use systemless_future::{graphics::Graphics, textedit::TextBox};
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let gpu = pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x4000))).unwrap();
+    let (mut m, mut p, mut manager) = setup();
+    m.write(GuestPtr(0x1040), &[0, 0, 0, 1, 0, 4, 0, 8])
+        .unwrap();
+    m.map(
+        GuestPtr(0x3000),
+        b"A".to_vec(),
+        Permissions {
+            read: true,
+            write: false,
+            execute: false,
+        },
+    )
+    .unwrap();
+    // Warm the persistent font cache before checking temporary allocations.
+    let prime = manager.call(&mut m, &mut p, new(false), 0).unwrap();
+    manager.call(&mut m, &mut p, Op::Dispose(prime), 0).unwrap();
+    fn capacity(m: &mut Memory, p: &mut Process) -> u32 {
+        let (mut low, mut high) = (0, HEAP_SIZE);
+        while low < high {
+            let size = low + (high - low).div_ceil(2);
+            let pointer = p.new_pointer(m, size, false).unwrap();
+            if pointer == 0 {
+                high = size - 1;
+            } else {
+                p.dispose_pointer(pointer);
+                low = size;
+            }
+        }
+        low
+    }
+    let free = capacity(&mut m, &mut p);
+    let port = m.read(GuestPtr(0x1080), 108).unwrap().to_vec();
+    let slot = m.u32(GuestPtr(0x1020)).unwrap();
+    for (alignment, pixels) in [
+        (0, [0x60, 0x33, 0x20, 0x44, 0x40, 0x55, 0, 0x66]),
+        (-2, [0x60, 0x33, 0x20, 0x44, 0x40, 0x55, 0, 0x66]),
+        (1, [0x70, 0x33, 0x50, 0x44, 0x20, 0x55, 0, 0x66]),
+        (-1, [0x1c, 0x33, 0x14, 0x44, 0x08, 0x55, 0, 0x66]),
+    ] {
+        m.write(GuestPtr(0x2000), &[0, 0x33, 0, 0x44, 0, 0x55, 0, 0x66])
+            .unwrap();
+        let request = TextBox {
+            text: GuestPtr(0x3000),
+            length: 1,
+            rectangle: GuestPtr(0x1040),
+            alignment,
+        };
+        manager.text_box(&mut m, &mut p, &gpu, request, 0).unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            pixels,
+            "alignment {alignment}"
+        );
+        assert_eq!(m.read(GuestPtr(0x1080), 108).unwrap(), port);
+        assert_eq!(m.u32(GuestPtr(0x1020)).unwrap(), slot);
+        assert_eq!(m.read(GuestPtr(0x3000), 1).unwrap(), b"A");
+        for invalid in [
+            TextBox {
+                length: -1,
+                ..request
+            },
+            TextBox {
+                length: 32768,
+                ..request
+            },
+            TextBox {
+                alignment: 2,
+                ..request
+            },
+            TextBox {
+                text: GuestPtr(0),
+                ..request
+            },
+        ] {
+            assert!(manager.text_box(&mut m, &mut p, &gpu, invalid, 0).is_err());
+            assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), pixels);
+        }
+        manager
+            .text_box(
+                &mut m,
+                &mut p,
+                &gpu,
+                TextBox {
+                    text: GuestPtr(0),
+                    length: 0,
+                    ..request
+                },
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0, 0x33, 0, 0x44, 0, 0x55, 0, 0x66]
+        );
+    }
+    m.map(GuestPtr(0x3100), b"AAA\rA".to_vec(), Permissions::RW)
+        .unwrap();
+    for (source, length) in [(GuestPtr(0x3100), 2), (GuestPtr(0x3102), 3)] {
+        manager
+            .text_box(
+                &mut m,
+                &mut p,
+                &gpu,
+                TextBox {
+                    text: source,
+                    length,
+                    rectangle: GuestPtr(0x1040),
+                    alignment: 0,
+                },
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            [0x60, 0x33, 0x20, 0x44, 0x60, 0x55, 0x20, 0x66]
+        );
+    }
+    // A failed transient allocation must not erase the existing display.
+    let before = m.read(GuestPtr(0x2000), 8).unwrap().to_vec();
+    let held = p.new_pointer(&mut m, free, false).unwrap();
+    assert_ne!(held, 0);
+    assert!(manager
+        .text_box(
+            &mut m,
+            &mut p,
+            &gpu,
+            TextBox {
+                text: GuestPtr(0x3000),
+                length: 1,
+                rectangle: GuestPtr(0x1040),
+                alignment: 0
+            },
+            0
+        )
+        .is_err());
+    assert_eq!(p.mem_error, -108);
+    assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), before);
+    p.dispose_pointer(held);
+    assert_eq!(capacity(&mut m, &mut p), free);
+}
+
+#[test]
+fn text_box_adapters_decode_signed_length_alignment_and_preserve_short_stack() {
+    use systemless_future::abi::{Abi, Reply, Service};
+    use systemless_future::cpu::Call;
+    use systemless_future::textedit::TextBox;
+    let request = TextBox {
+        text: GuestPtr(0x12345678),
+        length: -7,
+        rectangle: GuestPtr(0x55667788),
+        alignment: -2,
+    };
+    let mut args = (-2i16).to_be_bytes().to_vec();
+    args.extend(request.rectangle.0.to_be_bytes());
+    args.extend(request.length.to_be_bytes());
+    args.extend(request.text.0.to_be_bytes());
+    let mut m = Memory::default();
+    m.map(GuestPtr(0x1000), args.clone(), Permissions::RW)
+        .unwrap();
+    let mut cpu = m68k::CpuCore::default();
+    cpu.dar[15] = 0x1000;
+    let (call, reply) = Abi::trap(0xa9ce, &mut cpu, &m).unwrap();
+    assert!(matches!(call,Call::TextEdit(Op::TextBox(value)) if value==request));
+    assert_eq!(reply, Reply::None);
+    assert_eq!(cpu.dar[15], 0x100e);
+    let mut cpu = ppc::PpcCpu::default();
+    cpu.gpr[3] = request.text.0;
+    cpu.gpr[4] = request.length as u32;
+    cpu.gpr[5] = request.rectangle.0;
+    cpu.gpr[6] = 0xa5a5fffe;
+    let (call, reply) = Abi::import(Service::TETextBox, &cpu, &m).unwrap();
+    assert!(matches!(call,Call::TextEdit(Op::TextBox(value)) if value==request));
+    assert_eq!(reply, Reply::None);
+    for n in 0..14 {
+        let mut short = Memory::default();
+        if n > 0 {
+            short
+                .map(GuestPtr(0x2000), args[..n].to_vec(), Permissions::RW)
+                .unwrap();
+        }
+        let mut cpu = m68k::CpuCore::default();
+        cpu.dar[15] = 0x2000;
+        assert!(Abi::trap(0xa9ce, &mut cpu, &short).is_err());
+        assert_eq!(cpu.dar[15], 0x2000);
+    }
+}
