@@ -15,6 +15,7 @@ pub mod graphics;
 pub mod host_input;
 mod jump;
 mod lifecycle;
+pub mod lines;
 pub mod load;
 pub mod memory;
 pub mod menus;

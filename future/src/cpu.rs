@@ -13,6 +13,11 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    PenLine {
+        h: i16,
+        v: i16,
+        relative: bool,
+    },
     CopyBits(crate::quickdraw::CopyBits),
     DrawPicture {
         handle: u32,

@@ -1106,3 +1106,28 @@ The shared source-mode/color and destination clipping contract is also described
 in Apple's [CopyBits reference](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-166.html).
 The legacy one-bit reduction path references Inside Macintosh V, V-65 for OR
 compression; reduction checks distinguish it from nearest sampling.
+
+LineTo ($A891) and relative Line ($A892) use the same live GrafPort pen state
+on both CPUs. Signed-word locations, pen dimensions, visibility, pattern and
+mode follow the [documented QuickDraw pen model](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-59.html).
+Relative endpoints saturate at signed-word bounds, matching the legacy adapter.
+Hidden/zero-dimension pens advance pnLoc without requiring graphics; negative
+dimensions and recording/custom procedures are explicit faults. The pnLoc output
+is validated before drawing and published after successful GPU completion.
+
+The lines module computes bounded integer endpoint geometry, not pixel coverage.
+Draw::Line sends that geometry plus the usual pattern/colors/transfer mode to
+wgpu. For each destination pixel, the shader finds the interval of pen positions
+that could cover it. Minor coordinates are monotone and step at most one pixel,
+so interval endpoints determine coverage without stamping overlapping brushes
+repeatedly. Thick patXor lines apply the transfer once per covered pixel.
+Unsigned products support the full signed-word endpoint span without GPU int64
+or floating point. Clipping and packed bitmap synchronization reuse the existing
+QuickDraw target; region work scales with clip complexity, not line length.
+
+Integer nearest placement preserves both endpoints. This replaces the legacy
+fixed-point bias/overflow behavior rather than claiming identical diagonal
+rounding. The independent test oracle uses floating-point point placement and
+brush union only in tests. Axis behavior, pen state and union/transfer contracts
+are compared with legacy source/documentation; native diagonal pixel parity
+remains unverified. Polygon/region recording and lineProc callbacks remain gaps.

@@ -48,6 +48,17 @@ int main(void) {
         CopyBits(&first->portBits,&first->portBits,&sourceCopy,&destinationCopy,srcCopy,0);
         if (!(((unsigned char*)first->portBits.baseAddr)[55*first->portBits.rowBytes+5]&0x80)) return 51;
     }
+    {
+        unsigned char *pixels=(unsigned char*)first->portBits.baseAddr;
+        unsigned long offset=42*first->portBits.rowBytes+5;
+        unsigned char savedByte=pixels[offset];
+        PenSize(3,2); PenMode(patXor); MoveTo(1,1); LineTo(6,4);
+        if (first->pnLoc.h!=6 || first->pnLoc.v!=4 || !((pixels[offset]^savedByte)&0x20)) return 52;
+        MoveTo(1,1); LineTo(6,4);
+        if (pixels[offset]!=savedByte) return 53;
+        Line(-2,1); if (first->pnLoc.h!=4 || first->pnLoc.v!=5) return 54;
+        PenSize(1,1); PenMode(patCopy); MoveTo(0,0);
+    }
     ReleaseResource((Handle)picture);
     OpenPort(&offscreen); PortSize(8,4); MovePortTo(2,1);
     if (offscreen.portRect.right!=8 || offscreen.portRect.bottom!=4 || offscreen.portBits.bounds.left!=-2 || offscreen.portBits.bounds.top!=-1 || offscreen.portBits.bounds.right!=510 || offscreen.portBits.bounds.bottom!=341) return 49;

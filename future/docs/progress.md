@@ -2175,3 +2175,32 @@ Full rebuild goal remains active.
 Validation: all 223 tests pass (185 default, 38 optional GPU/MPW), including
 rebuilt paired compiler fixtures. Strict all-target Clippy and sequential changed-
 file formatting checks pass. No GPU tests were skipped.
+
+### GPU pen-line drawing
+
+LineTo and Line now share live pen state and GPU coverage across 68K/PPC. Pen
+patterns/modes, rectangular dimensions, visibility and caller clips use the same
+QuickDraw/BitMap synchronization path as existing drawing. Hidden/zero-size pens
+still advance; relative coordinates saturate like the legacy adapter. Output
+permissions are checked before drawing. Unsupported recording/custom procedures
+and negative pen dimensions remain explicit errors.
+
+The shader evaluates the union of rectangular pen positions once per pixel,
+avoiding repeated XOR at overlapping positions. Bounded integer geometry covers
+all octants and full signed-word endpoint spans. Endpoint-preserving placement
+avoids inheriting the legacy fixed-point diagonal bias/overflow; native diagonal
+rounding is not claimed. Tests independently enumerate point/brush unions and
+check patterns, XOR, clipping holes, pen state, ABI truncation/results and extreme
+coordinates. MPW windows verify a changed pixel, XOR restoration and relative
+Line pen advancement on both architectures.
+
+Fresh Super Mines startup passes LineTo and reaches EraseRect ($A8A3), PC
+$01000D62, trace index 20712. Next: rectangle erase/frame/invert/fill operations
+through shared drawing, then the application's full update cycle and actual UI
+interaction. Recording/callbacks, native presentation, Color QuickDraw and
+production Mixed Mode remain unfinished. Full rebuild goal remains active.
+
+Validation: all 228 tests pass (188 default, 40 optional GPU/MPW). The stronger
+clip-hole assertions also pass in a focused rerun; production code is unchanged.
+Strict all-target Clippy, MPW rebuilding and sequential changed-file formatting
+checks pass. No GPU tests were skipped.

@@ -367,6 +367,55 @@ impl Ports {
             Some(&indices),
         )
     }
+    pub fn line(
+        &self,
+        memory: &mut Memory,
+        gpu: Option<&Graphics>,
+        h: i16,
+        v: i16,
+        relative: bool,
+    ) -> Result<()> {
+        let port = self.current(memory)?;
+        let bytes = memory.read(port, PORT_SIZE)?;
+        if u16::from_be_bytes(bytes[6..8].try_into().unwrap()) & 0xc000 != 0 {
+            return Err(Error::Graphics("color line ports are unsupported".into()));
+        }
+        for i in [92, 96, 100, 104] {
+            if u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()) != 0 {
+                return Err(Error::Graphics(
+                    "line recording or custom procedures are unsupported".into(),
+                ));
+            }
+        }
+        let word = |i| i16::from_be_bytes(bytes[i..i + 2].try_into().unwrap());
+        let from = (word(50), word(48));
+        let to = if relative {
+            (from.0.saturating_add(h), from.1.saturating_add(v))
+        } else {
+            (h, v)
+        };
+        let geometry = crate::lines::geometry(from, to, word(54), word(52))?;
+        memory.validate_write(offset(port, 48)?, 4)?;
+        if word(66) >= 0 && geometry.width != 0 && geometry.height != 0 {
+            let (bitmap, _) = self.drawing_target(memory)?;
+            let bounds = crate::lines::bounds(geometry);
+            let clipped = Rect::new(
+                bounds.left.max(bitmap.bounds.left),
+                bounds.top.max(bitmap.bounds.top),
+                bounds.right.min(bitmap.bounds.right),
+                bounds.bottom.min(bitmap.bounds.bottom),
+            );
+            if clipped.left < clipped.right && clipped.top < clipped.bottom {
+                let gpu =
+                    gpu.ok_or_else(|| Error::Graphics("line drawing requires a GPU".into()))?;
+                self.paint_coverage_with_line(gpu, memory, clipped, None, Some(geometry))?;
+            }
+        }
+        let mut location = [0; 4];
+        location[..2].copy_from_slice(&to.1.to_be_bytes());
+        location[2..].copy_from_slice(&to.0.to_be_bytes());
+        memory.write(offset(port, 48)?, &location)
+    }
     pub fn paint_rect(&self, gpu: &Graphics, memory: &mut Memory, r: Rect) -> Result<()> {
         self.paint_coverage(gpu, memory, r, None)
     }
@@ -452,6 +501,16 @@ impl Ports {
         r: Rect,
         shape: Option<&[Rect]>,
     ) -> Result<()> {
+        self.paint_coverage_with_line(gpu, memory, r, shape, None)
+    }
+    fn paint_coverage_with_line(
+        &self,
+        gpu: &Graphics,
+        memory: &mut Memory,
+        r: Rect,
+        shape: Option<&[Rect]>,
+        line: Option<crate::graphics::PenLine>,
+    ) -> Result<()> {
         let p = self.current(memory)?;
         let bytes = memory.read(p, PORT_SIZE)?;
         let word = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
@@ -506,18 +565,35 @@ impl Ports {
         bitmap.execute_clipped(
             gpu,
             memory,
-            Draw::Fill {
-                rect: r,
-                clip: port_rect,
-                pattern,
-                foreground,
-                background,
-                mode: match mode & 3 {
-                    0 => Transfer::Copy,
-                    1 => Transfer::Or,
-                    2 => Transfer::Xor,
-                    _ => Transfer::Bic,
-                },
+            if let Some(line) = line {
+                Draw::Line {
+                    rect: r,
+                    clip: port_rect,
+                    line,
+                    pattern,
+                    foreground,
+                    background,
+                    mode: match mode & 3 {
+                        0 => Transfer::Copy,
+                        1 => Transfer::Or,
+                        2 => Transfer::Xor,
+                        _ => Transfer::Bic,
+                    },
+                }
+            } else {
+                Draw::Fill {
+                    rect: r,
+                    clip: port_rect,
+                    pattern,
+                    foreground,
+                    background,
+                    mode: match mode & 3 {
+                        0 => Transfer::Copy,
+                        1 => Transfer::Or,
+                        2 => Transfer::Xor,
+                        _ => Transfer::Bic,
+                    },
+                }
             },
             Some(&clips),
         )

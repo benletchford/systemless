@@ -323,6 +323,12 @@ impl Runtime {
                                 )?;
                             }
                         }
+                        Call::PenLine { h, v, relative } => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            ports.line(&mut self.memory, self.graphics.as_ref(), h, v, relative)?;
+                        }
                         Call::MoveTo { h, v } => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -1130,6 +1136,7 @@ impl Runtime {
                         | Call::Cursor(_)
                         | Call::Menu(_)
                         | Call::TextEdit(_)
+                        | Call::PenLine { .. }
                         | Call::MoveTo { .. }
                         | Call::TextDraw(_)
                         | Call::TextWidth(_)

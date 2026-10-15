@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    LineTo,
+    Line,
     CopyBits,
     GetNewWindow,
     SizeWindow,
@@ -238,6 +240,8 @@ impl Abi {
             b"DrawString" => Some(Service::TextDraw(true)),
             b"CharWidth" => Some(Service::TextWidth(false)),
             b"StringWidth" => Some(Service::TextWidth(true)),
+            b"LineTo" => Some(Service::LineTo),
+            b"Line" => Some(Service::Line),
             b"MoveTo" => Some(Service::MoveTo),
             b"TENew" => Some(Service::TENew(false)),
             b"TEStyleNew" => Some(Service::TENew(true)),
@@ -672,7 +676,7 @@ impl Abi {
                 Ok((Call::FontInfo(destination), Reply::None))
             }
             0xa8fe => Ok((Call::InitFonts, Reply::None)),
-            0xa893 => {
+            0xa891..=0xa893 => {
                 let v = memory.u16(GuestPtr(sp))? as i16;
                 let h = memory.u16(GuestPtr(
                     sp.checked_add(2)
@@ -681,7 +685,18 @@ impl Abi {
                 c.dar[15] = sp
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("point stack overflow".into()))?;
-                Ok((Call::MoveTo { h, v }, Reply::None))
+                Ok((
+                    if opcode == 0xa893 {
+                        Call::MoveTo { h, v }
+                    } else {
+                        Call::PenLine {
+                            h,
+                            v,
+                            relative: opcode == 0xa892,
+                        }
+                    },
+                    Reply::None,
+                ))
             }
             0xa885 | 0xa886 => {
                 let bytes = memory.read(GuestPtr(sp), 8)?;
@@ -1461,6 +1476,11 @@ impl Abi {
             },
             Service::FontInfo => Call::FontInfo(GuestPtr(c.gpr[3])),
             Service::InitFonts => Call::InitFonts,
+            Service::LineTo | Service::Line => Call::PenLine {
+                h: c.gpr[3] as i16,
+                v: c.gpr[4] as i16,
+                relative: service == Service::Line,
+            },
             Service::MoveTo => Call::MoveTo {
                 h: c.gpr[3] as i16,
                 v: c.gpr[4] as i16,
@@ -1905,6 +1925,8 @@ impl Abi {
                         | Service::TEActivate(_)
                         | Service::TEInit
                         | Service::TEDispose
+                        | Service::LineTo
+                        | Service::Line
                         | Service::MoveTo
                         | Service::TextBuffer(false)
                         | Service::TextDraw(_)

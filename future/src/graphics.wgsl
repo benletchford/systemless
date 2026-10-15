@@ -4,6 +4,12 @@
 @group(0) @binding(2) var<storage, read> palette: array<u32>;
 @group(0) @binding(3) var<storage, read> p: array<i32>;
 @group(0) @binding(4) var output: texture_storage_2d<rgba8unorm, write>;
+// Unsigned products fit in u32 for signed-word endpoints, including extremes.
+fn line_minor(origin:i32,delta:i32,steps:i32,t:i32)->i32 {
+    if steps==0 {return origin;}
+    let distance=i32((u32(abs(delta))*u32(t)+u32(steps/2))/u32(steps));
+    return origin+select(-distance,distance,delta>=0);
+}
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let x=i32(id.x); let y=i32(id.y); let w=p[0]; let h=p[1];
@@ -49,6 +55,22 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             } else { valid=false; }
             bit=bit ^ u32(p[20]);
             src=select(u32(p[12]),u32(p[11]),bit!=0u);
+        }
+        if p[2]==5 {
+            let q=25+4*max(p[24],0);
+            let delta=p[q]; let steps=p[q+1]; let vertical=p[q+2]!=0;
+            let direction=p[q+3];let pw=p[q+4];let ph=p[q+5];
+            var lo=0;var hi=0;
+            if vertical { lo=max(0,y-ph+1-p[15]);hi=min(steps,y-p[15]); }
+            else if direction>0 {lo=max(0,x-pw+1-p[14]);hi=min(steps,x-p[14]);}
+            else {lo=max(0,p[14]-x);hi=min(steps,p[14]-x+pw-1);}
+            valid=pw>0 && ph>0 && lo<=hi;
+            if valid {
+                let origin=select(p[15],p[14],vertical);
+                let a=line_minor(origin,delta,steps,lo);let b=line_minor(origin,delta,steps,hi);
+                let coordinate=select(y,x,vertical);let size=select(ph,pw,vertical);
+                valid=coordinate>=min(a,b) && coordinate<max(a,b)+size;
+            }
         }
         if valid { switch p[13] {
             case 0: { value=src; }

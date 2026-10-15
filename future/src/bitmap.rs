@@ -152,6 +152,27 @@ impl Bitmap {
                 ))
             }
             Draw::Present => Draw::Present,
+            Draw::Line {
+                rect: r,
+                clip,
+                mut line,
+                pattern,
+                foreground,
+                background,
+                mode,
+            } => {
+                line.origin_x = coordinate(line.origin_x, self.bounds.left)?;
+                line.origin_y = coordinate(line.origin_y, self.bounds.top)?;
+                Draw::Line {
+                    rect: rect(r)?,
+                    clip: rect(clip)?,
+                    line,
+                    pattern,
+                    foreground,
+                    background,
+                    mode,
+                }
+            }
             Draw::Fill {
                 rect: r,
                 clip,

@@ -29,6 +29,17 @@ pub enum Transfer {
     Bic = 3,
 }
 #[derive(Debug, Clone, Copy)]
+pub struct PenLine {
+    pub origin_x: i32,
+    pub origin_y: i32,
+    pub minor_delta: i32,
+    pub steps: u32,
+    pub vertical: bool,
+    pub direction: i32,
+    pub width: u16,
+    pub height: u16,
+}
+#[derive(Debug, Clone, Copy)]
 pub enum Draw {
     Present,
     Cursor {
@@ -36,6 +47,15 @@ pub enum Draw {
         y: i32,
         data: [u16; 16],
         mask: [u16; 16],
+    },
+    Line {
+        rect: Rect,
+        clip: Rect,
+        line: PenLine,
+        pattern: [u8; 8],
+        foreground: u8,
+        background: u8,
+        mode: Transfer,
     },
     Fill {
         rect: Rect,
@@ -257,6 +277,36 @@ impl Graphics {
                 (Rect::new(0, 0, 0, 0), Rect::new(0, 0, 0, 0))
             }
             Draw::Present => (Rect::new(0, 0, 0, 0), Rect::new(0, 0, 0, 0)),
+            Draw::Line {
+                rect,
+                clip,
+                line,
+                pattern,
+                foreground,
+                background,
+                mode,
+            } => {
+                if !(-65535..=65535).contains(&line.origin_x)
+                    || !(-65535..=65535).contains(&line.origin_y)
+                    || line.minor_delta.unsigned_abs() > line.steps
+                    || line.steps > 65535
+                    || ![-1, 1].contains(&line.direction)
+                    || line.width > 32767
+                    || line.height > 32767
+                {
+                    return Err(Error::Graphics("invalid line geometry".into()));
+                }
+                p[2] = 5;
+                p[11] = foreground.into();
+                p[12] = background.into();
+                p[13] = mode as i32;
+                p[14] = line.origin_x;
+                p[15] = line.origin_y;
+                for (i, b) in pattern.iter().enumerate() {
+                    p[16 + i] = i32::from(*b);
+                }
+                (rect, clip)
+            }
             Draw::Fill {
                 rect,
                 clip,
@@ -325,7 +375,11 @@ impl Graphics {
         // Bounds avoid signed overflow in shader copy-coordinate arithmetic.
         if p[3..11]
             .iter()
-            .chain(p[14..16].iter())
+            .chain(
+                p[14..16]
+                    .iter()
+                    .filter(|_| !matches!(draw, Draw::Line { .. })),
+            )
             .any(|v| !(-32768..=32767).contains(v))
         {
             return Err(Error::Graphics(
@@ -350,6 +404,16 @@ impl Graphics {
                 }
                 p.extend(coordinates);
             }
+        }
+        if let Draw::Line { line, .. } = draw {
+            p.extend([
+                line.minor_delta,
+                line.steps as i32,
+                i32::from(line.vertical),
+                line.direction,
+                i32::from(line.width),
+                i32::from(line.height),
+            ]);
         }
         if let Draw::Cursor { x, y, data, mask } = draw {
             if clips.is_some() {
