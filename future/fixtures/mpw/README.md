@@ -395,3 +395,7 @@ pointers through the same shared service.
 The drawing guest calls CopyMask with independent source/mask BitMaps and checks
 masked result bytes on every row plus unchanged destination row padding. The
 same compiled call must execute through both CPU adapters before fixture success.
+
+The tracking guest additionally obtains the standard watch cursor through both
+GetCursor and GetResource, verifies a shared 68-byte handle, sets/releases it,
+then reloads/releases it before exercising the existing host tracking sequence.

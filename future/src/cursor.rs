@@ -1,4 +1,5 @@
 //! Process-owned monochrome cursor value, independent of CPU architecture.
+mod resources;
 use crate::{
     events::Input,
     graphics::Draw,
@@ -6,6 +7,7 @@ use crate::{
     process::Process,
     Error, Result,
 };
+pub(crate) use resources::standard;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     Init,

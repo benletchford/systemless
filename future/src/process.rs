@@ -435,10 +435,11 @@ impl Process {
         memory: &mut Memory,
         kind: [u8; 4],
         name: GuestPtr,
-        _current_only: bool,
+        current_only: bool,
     ) -> Result<u32> {
-        // Both search modes currently visit the single application map. Names
-        // are case-sensitive raw Macintosh bytes (IM: More Toolbox, pp. 1-75–77).
+        // Named resources live in the application map; standard cursor fallbacks
+        // are unnamed. Only full-chain searches see that fallback CURS type.
+        // Names are case-sensitive raw Macintosh bytes (IM: More Toolbox, pp. 1-75–77).
         let length = memory.read(name, 1)?[0] as usize;
         let bytes = &memory.read(name, length + 1)?[1..];
         let id = self
@@ -449,7 +450,9 @@ impl Process {
         if let Some(id) = id {
             self.get_resource(memory, kind, id)
         } else {
-            self.res_error = if self.resources.entries().any(|r| r.kind == kind) {
+            self.res_error = if (!current_only && kind == *b"CURS")
+                || self.resources.entries().any(|r| r.kind == kind)
+            {
                 -192
             } else {
                 0
@@ -462,20 +465,26 @@ impl Process {
         if let Some(handle) = self.resource_handles.get(&(kind, id)) {
             return Ok(*handle);
         }
-        let Some(resource) = self.resources.get(kind, id) else {
-            // GetResource distinguishes an absent type from a missing ID.
-            if self.resources.entries().any(|r| r.kind == kind) {
+        let (contents, locked) = if let Some(resource) = self.resources.get(kind, id) {
+            if resource.attributes & 1 != 0 {
+                return Err(Error::Load(
+                    "compressed resource decoding not implemented".into(),
+                ));
+            }
+            (resource.data.clone(), resource.attributes & 0x10 != 0)
+        } else if let Some(cursor) = (kind == *b"CURS")
+            .then(|| crate::cursor::standard(id))
+            .flatten()
+        {
+            (cursor.to_vec(), false)
+        } else {
+            // Standard CURS records form a fallback provider after the application
+            // map. Their type exists even if this particular ID does not.
+            if kind == *b"CURS" || self.resources.entries().any(|r| r.kind == kind) {
                 self.res_error = -192;
             }
             return Ok(0);
         };
-        if resource.attributes & 1 != 0 {
-            return Err(Error::Load(
-                "compressed resource decoding not implemented".into(),
-            ));
-        }
-        let locked = resource.attributes & 0x10 != 0; // resLocked
-        let contents = resource.data.clone();
         let handle = self.new_handle(memory, contents.len() as u32, false)?;
         if handle == 0 {
             self.res_error = self.mem_error;

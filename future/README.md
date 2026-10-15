@@ -156,7 +156,9 @@ run on wgpu with shared clipping/pattern rules. The bounded original splash now
 reaches the chooser event loop; a live-control press waits in TrackControl and
 its release opens the game window. Shared NumToString/StringToNum now handle
 signed integers through Pack7 and PPC imports. The original renders its numeric
-labels and completes a shared GPU CopyMask call. A longer bounded run next fails
-after a missing standard watch cursor resource (CURS 4) reaches SetCursor(nil).
-The board remains blank and gameplay/control callbacks remain unfinished. Next:
-shared standard cursor-resource fallbacks. The full rebuild stays active.
+labels and completes a shared GPU CopyMask call. Standard cursor resource
+fallbacks now supply CURS 1..4 with normal shared handle lifetimes and application
+precedence. The longer original run sets its watch cursor, then stops at GetResInfo
+($A9A8) while loading TILE 1101. The board remains blank and gameplay/control
+callbacks remain unfinished. Next: resource metadata queries. The full rebuild
+stays active.

@@ -2857,3 +2857,56 @@ checks and four trap-patch regressions also pass on the final sources. Strict
 all-target Clippy, sequential changed-file formatting and whitespace checks pass.
 MPW drawing guests were rebuilt and pass on both real CPUs. The default and longer
 original-app probes retain the distinct acceptance limits recorded above.
+
+
+## 2026-10-15: standard cursor resource fallback provider
+
+The shared Resource Manager now searches a ROM-free fallback provider for unnamed
+CURS IDs 1..4 after the application map. Those IDs represent I-beam, crosshair,
+plus and watch cursors, following Apple's [Cursor Utilities contract](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-371.html).
+Their static 68-byte records use the legacy Systemless reference artwork and
+hotspots; they are not claimed as native System-file pixel parity. No System file,
+ROM, legacy runtime dependency or original-app bytes are bundled.
+
+GetCursor and GetResource('CURS',id) already marshal to the same resource service
+on both CPUs; they now obtain one cached, heap-owned handle. Release/dispose clear
+its identity, detach retains caller-owned storage and a later lookup reloads the
+fallback bytes independently. SetCursor still copies its image, so releasing the
+resource does not invalidate presentation. Heap exhaustion returns nil/ResErr
+without publishing a cache entry. Application cursor records take precedence,
+including short or compressed records; unsupported application compression fails
+rather than silently selecting a fallback. Standard fallbacks do not modify the
+application resource map or current resource file reference.
+
+The fallback CURS type participates in absent-ID and full-chain absent-name
+ResErr reporting. Fallback cursors are unnamed; Get1NamedResource continues to
+search only the application map. This provider does not establish support for
+multiple open resource maps, general system resources, enumeration of a virtual
+System resource file or writable resource maps.
+
+
+Three new default tests verify all four cursor layouts/hotspots, cached identity,
+release/detach/reload behavior, full heap reclamation/exhaustion recovery,
+application precedence, unsupported compression, missing-ID/type/name results,
+both real CPU adapters and copied cursor state after release. Existing resource
+lifetime and cursor rendering tests pass. Rebuilt MPW tracking guests obtain the
+watch through GetCursor and GetResource, check its 68-byte handle, set/release it
+and reload it before their existing held-button interaction on both CPUs.
+
+The original Super Mines 300000-boundary-per-step sequence (256,171), (145,150),
+(402,231) now passes GetResource('CURS',4) and SetCursor with a valid pointer.
+It continues new-game initialization, invalidates the board and loads TILE 1101,
+then stops at GetResInfo ($A9A8), post-trap PC $01005840. Native SP $0080FAA2 holds
+name=$0080FB1E, type=$0080FACA, ID=$0080FACE, resource handle=$10002544. Next:
+shared resource metadata/ownership queries and both ABI boundaries, then continue
+original tile loading. The board is still blank; gameplay and complete lifecycle
+acceptance remain unverified. Original PPC compatibility, production Mixed Mode,
+native presentation and the other recorded gaps remain required. The full rebuild
+goal stays active.
+
+Validation: all 304 tests pass (248 default and 56 optional GPU/MPW), with zero
+failures or skips. All 13 MPW fixture tests also pass with rebuilt tracking guests.
+Strict all-target Clippy, sequential changed-file formatting and whitespace checks
+pass. A test-only needless mutable borrow was corrected before strict acceptance.
+The original probe and screenshot establish watch-cursor initialization and the
+GetResInfo boundary above, without a board/gameplay acceptance claim.

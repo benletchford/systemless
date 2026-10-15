@@ -1420,3 +1420,29 @@ coordinates and protected destinations fail before pixels are published.
 The shared Trap Manager table advertises CopyMask with a readable built-in entry
 veneer, so availability checks and indirect native calls resolve the implemented
 service. Its availability test validates the same table entry and opcode.
+
+
+## 2026-10-15: standard cursor resource fallback provider
+
+The shared Resource Manager now searches a ROM-free fallback provider for unnamed
+CURS IDs 1..4 after the application map. Those IDs represent I-beam, crosshair,
+plus and watch cursors, following Apple's [Cursor Utilities contract](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-371.html).
+Their static 68-byte records use the legacy Systemless reference artwork and
+hotspots; they are not claimed as native System-file pixel parity. No System file,
+ROM, legacy runtime dependency or original-app bytes are bundled.
+
+GetCursor and GetResource('CURS',id) already marshal to the same resource service
+on both CPUs; they now obtain one cached, heap-owned handle. Release/dispose clear
+its identity, detach retains caller-owned storage and a later lookup reloads the
+fallback bytes independently. SetCursor still copies its image, so releasing the
+resource does not invalidate presentation. Heap exhaustion returns nil/ResErr
+without publishing a cache entry. Application cursor records take precedence,
+including short or compressed records; unsupported application compression fails
+rather than silently selecting a fallback. Standard fallbacks do not modify the
+application resource map or current resource file reference.
+
+The fallback CURS type participates in absent-ID and full-chain absent-name
+ResErr reporting. Fallback cursors are unnamed; Get1NamedResource continues to
+search only the application map. This provider does not establish support for
+multiple open resource maps, general system resources, enumeration of a virtual
+System resource file or writable resource maps.
