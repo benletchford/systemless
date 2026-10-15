@@ -27,6 +27,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             if sx>=0 && sy>=0 && sx<w && sy<h { src=source[u32(sy*w+sx)]; }
             else { valid=false; }
         }
+        if p[2]==4 {
+            let sx=p[14]+((x-p[3])*(p[18]-p[14]))/(p[5]-p[3]);
+            let sy=p[15]+((y-p[4])*(p[19]-p[15]))/(p[6]-p[4]);
+            if sx>=0 && sy>=0 && sx<p[16] && sy<p[17] {
+                let bit=source[u32(sy*p[16]+sx)] ^ u32(p[20]);
+                src=select(u32(p[12]),u32(p[11]),bit!=0u);
+            } else { valid=false; }
+        }
         if valid { switch p[13] {
             case 0: { value=src; }
             case 1: { value=value | src; }

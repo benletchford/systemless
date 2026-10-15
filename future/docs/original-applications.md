@@ -29,7 +29,7 @@ fork path and a maximum instruction count, and prints register/opcode context.
   original startup now initializes through $00400000, then passes ReleaseResource,
   InitFonts, InitWindows, FlushEvents and InitMenus with graphics enabled. It stops
   after InitCursor, TEInit, InitDialogs, SysEnvirons and EventAvail at unsupported
-  DrawPicture ($A8F6), PC $01000BB2 (trace index 17979), after
+  CopyBits ($A8EC), PC $01009634 (trace index 18066), after
   PBGetCatInfo reports a missing directory, PBDirCreate creates it and
   PBHGetFInfo completes a file lookup and GetNewWindow creates its first
   hidden dBoxProc resource window and DetachResource transfers loaded
@@ -39,7 +39,8 @@ fork path and a maximum instruction count, and prints register/opcode context.
   SystemTask preserves the empty periodic service state, PenSize updates live
   GrafPort dimensions and RectInRgn checks content intersections.
   GetPicture loads PICT 202, PortSize sizes its offscreen GrafPort and MovePortTo
-  sets the bitmap mapping before drawing. Picture drawing remains unsupported.
+  sets the bitmap mapping before drawing. DrawPicture now decodes that v1
+  PackBitsRect/srcOr resource and executes through wgpu before reaching CopyBits.
 - Centaurian's 68K path originally faulted writing $010000FC at PC $01000270
   (trace index 92039). The target is a JSR operand containing $00000028; startup
   adds A5 to relocate it to $00400028. Classic CODE now permits writes and these
@@ -73,7 +74,7 @@ InitCursor ($A850) now initializes shared cursor state for the GPU presentation
 overlay. InitDialogs ($A97B) now initializes shared dialog globals and parameter
 StringHandles. SysEnvirons now reports the shared compatibility profile; common
 loading maps/publishes the full fixed heap and MaxApplZone preserves its extent.
-Fresh traces pass EventAvail/SetRect and reach DrawPicture in Super Mines and GetGDevice in Centaurian. Actual
+Fresh traces pass EventAvail/SetRect and reach CopyBits in Super Mines and GetGDevice in Centaurian. Actual
 onscreen cursor behavior, heap-zone resizing, menu/dialog construction, window
 custom definitions and original application interaction remain unfinished.
 Dynamic memory loading is verified with the MPW resource-plugin fixture;

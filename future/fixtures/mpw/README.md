@@ -307,4 +307,5 @@ on the visible region. Both compiler outputs exercise the shared services.
 The window probes load PICT 322 through GetPicture and GetResource, compare
 handle identity/size, release it, and verify PortSize/MovePortTo fields in a
 temporary GrafPort before restoring the window. This verifies setup and loading;
-it does not claim DrawPicture execution.
+the current probes additionally draw a generated bitmap PICT and inspect
+canonical guest screen bytes. Both CPU builds must pass those pixel assertions.

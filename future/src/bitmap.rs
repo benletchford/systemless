@@ -178,6 +178,27 @@ impl Bitmap {
                     mode,
                 }
             }
+            Draw::Blit {
+                rect: r,
+                clip,
+                source,
+                width,
+                height,
+                foreground,
+                background,
+                invert,
+                mode,
+            } => Draw::Blit {
+                rect: rect(r)?,
+                clip: rect(clip)?,
+                source,
+                width,
+                height,
+                foreground,
+                background,
+                invert,
+                mode,
+            },
             Draw::Copy {
                 rect: r,
                 clip,

@@ -13,6 +13,10 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    DrawPicture {
+        handle: u32,
+        destination: GuestPtr,
+    },
     SystemTask,
     Rectangle(crate::rectangles::Op),
     ToolboxEvent {

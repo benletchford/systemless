@@ -14,7 +14,9 @@ Resource-fork/CODE and PowerPC PEF loaders share one Macintosh world. Resources,
 allocation, virtual directories/file metadata, OS/update events, Basic QuickDraw,
 fonts, plain TextEdit, cursor state, window records and controls use common
 services. GetPicture shares PICT loading with the Resource Manager; PortSize
-and MovePortTo support offscreen port setup. DrawPicture remains pending.
+and MovePortTo support offscreen port setup. DrawPicture supports bounded
+monochrome bitmap commands in PICT v1/v2 through wgpu; vector/text commands,
+color PixMaps and picture recording remain pending.
 Menus and dialogs currently provide startup/parameter subsets. Real
 Mixed Mode, custom WDEF/CDEF callbacks and complete application compatibility
 remain unfinished. Private fixture gateways are disabled for loaded applications.

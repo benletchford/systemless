@@ -1050,8 +1050,32 @@ GrafPort operations, not Window Manager movement/composition. Both adapters
 invoke the same shared operations; all output bytes are checked as one write.
 Word-coordinate arithmetic wraps explicitly. Color MovePortTo remains rejected.
 
-Next picture slice: decode bounded v1/v2 streams into drawing commands, keeping
-PackBits/packed-bit conversion on the CPU and scaling, transfer and composition
-on wgpu. PICT 202 in Super Mines is a v1 PackBitsRect bitmap with srcOr; its
-loading and offscreen port setup now execute, but DrawPicture remains unsupported.
-Unknown drawing opcodes must fault explicitly rather than silently disappear.
+PICT 202 in Super Mines is a v1 PackBitsRect bitmap with srcOr. Its loading,
+offscreen port setup and bitmap picture drawing now execute. The decoder and
+GPU transfer contract are described below. Unknown drawing opcodes fault
+explicitly rather than silently disappear.
+
+The picture module now decodes a bounded bitmap subset of PICT v1/v2 before
+issuing any drawing. It supports BitsRect/BitsRgn and PackBitsRect/PackBitsRgn
+for one-bit BitMaps, clip regions/masks, monochrome foreground/background colors,
+comments and v2 header metadata. The declared picSize is advisory; owned handle
+size bounds all reads. Input and expanded command storage are capped at 16 MiB,
+bitmap axes/source spans at 4096, and stream traversal at 4096 opcodes. Missing
+EndPic, malformed PackBits, color PixMaps and unknown drawing/state opcodes fail
+explicitly. Text/vector picture commands and picture recording remain gaps.
+
+CPU decoding converts compressed/packed storage to immutable one-bit indices.
+Graphics::Draw::Blit supplies independent source dimensions/rectangle, source
+colors and a transfer operation to wgpu. The compute shader scales using integer
+nearest sampling, excludes source coordinates outside the bitmap and performs
+copy/or/xor/bic plus inverted-source variants. No CPU picture renderer or CPU
+scaling path exists. The destination BitMap wrapper retains packed row padding
+and synchronizes canonical guest bytes before/after each command.
+
+QuickDraw drawing_target supplies the same portRect, bitmap, visRgn and clipRgn
+intersection to pattern drawing and pictures, including offscreen visibility
+rules. Picture frame/clip/mask coordinates map to the caller's destination;
+port state and region handles remain unchanged. Decode failures occur before
+pixel writes; GPU/runtime failures are still per-command errors, not whole-
+picture transactions. Generated pixels and legacy source contracts are evidence,
+not a claim of native System 7 scaling parity.

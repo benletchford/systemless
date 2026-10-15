@@ -40,7 +40,9 @@ int main(void) {
     PenSize(2,3); if (first->pnSize.h!=2 || first->pnSize.v!=3) return 46; PenSize(1,1);
     if (!RectInRgn(&local,first->visRgn)) return 47;
     picture=GetPicture(322);
-    if (!picture || (Handle)picture!=GetResource('PICT',322) || GetHandleSize((Handle)picture)!=14) return 48;
+    if (!picture || (Handle)picture!=GetResource('PICT',322) || GetHandleSize((Handle)picture)!=44) return 48;
+    DrawPicture(picture,&local);
+    if (!(((unsigned char*)first->portBits.baseAddr)[40*first->portBits.rowBytes+5]&0x80) || !(((unsigned char*)first->portBits.baseAddr)[55*first->portBits.rowBytes+6]&1)) return 50;
     ReleaseResource((Handle)picture);
     OpenPort(&offscreen); PortSize(8,4); MovePortTo(2,1);
     if (offscreen.portRect.right!=8 || offscreen.portRect.bottom!=4 || offscreen.portBits.bounds.left!=-2 || offscreen.portBits.bounds.top!=-1 || offscreen.portBits.bounds.right!=510 || offscreen.portBits.bounds.bottom!=341) return 49;

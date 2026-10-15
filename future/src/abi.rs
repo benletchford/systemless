@@ -126,6 +126,7 @@ pub enum Service {
     GetPattern,
     GetCursor,
     GetPicture,
+    DrawPicture,
     SetSoundVol,
     GetSoundVol,
     PBControlSync,
@@ -356,6 +357,7 @@ impl Abi {
             b"StripAddress" => Some(Service::StripAddress),
             b"HLock" => Some(Service::HLock),
             b"HUnlock" => Some(Service::HUnlock),
+            b"DrawPicture" => Some(Service::DrawPicture),
             b"GetPicture" => Some(Service::GetPicture),
             b"GetCursor" => Some(Service::GetCursor),
             b"GetPattern" => Some(Service::GetPattern),
@@ -1317,6 +1319,21 @@ impl Abi {
                     Reply::None,
                 ))
             }
+            0xa8f6 => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let destination = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let handle = u32::from_be_bytes(args[4..].try_into().unwrap());
+                c.dar[15] = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("picture stack overflow".into()))?;
+                Ok((
+                    Call::DrawPicture {
+                        handle,
+                        destination,
+                    },
+                    Reply::None,
+                ))
+            }
             0xa9b8 | 0xa9b9 | 0xa9bc => {
                 let id = memory.u16(GuestPtr(sp))? as i16;
                 let result = sp
@@ -1761,6 +1778,10 @@ impl Abi {
                 size: c.gpr[4],
             },
             Service::GetHandleSize => Call::HandleSize(c.gpr[3]),
+            Service::DrawPicture => Call::DrawPicture {
+                handle: c.gpr[3],
+                destination: GuestPtr(c.gpr[4]),
+            },
             Service::GetPicture => Call::GetResource {
                 kind: *b"PICT",
                 id: c.gpr[3] as i16,
@@ -1867,6 +1888,7 @@ impl Abi {
                         | Service::RoundRect(_)
                         | Service::CombineRegions(_)
                         | Service::Port(_)
+                        | Service::DrawPicture
                         | Service::MovePortTo
                         | Service::PortSize
                         | Service::PenSize

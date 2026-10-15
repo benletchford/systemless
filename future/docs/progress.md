@@ -2120,3 +2120,30 @@ unfinished. Full rebuild goal remains active.
 Validation: all 213 tests pass (180 default, 33 optional GPU/MPW), MPW fixtures
 rebuild and strict all-target Clippy passes. The strengthened port parity check
 also passes in a focused rerun; production code was unchanged throughout.
+
+### PICT bitmap decoding and GPU picture drawing
+
+DrawPicture now serves both CPU adapters through one bounded parser and shared
+QuickDraw target. PICT v1/v2 monochrome bitmap commands support raw/PackBits
+rows, normalized source rectangles, picture clips, bitmap masks, comments/header
+metadata and all eight source transfer modes. The GPU scales immutable decoded
+indices and applies clipping/colors/transfers. CPU work only decodes storage;
+packed guest pixels and padding synchronize through the existing BitMap boundary.
+
+Focused generated tests compare raw/packed v1/v2 commands, malformed/truncated
+streams, metadata alignment, clip/mask intersection and bounded input. Real
+68K/PPC calls draw equivalent scaled pixels while preserving port fields and
+caller stack padding. GPU mode tests intersect mapped picture and caller clips,
+mix direct guest writes and reject a malformed trailing opcode before any
+drawing. MPW windows now draw a generated PICT and inspect guest bitmap bits.
+
+Super Mines PICT 202 completes DrawPicture; startup reaches CopyBits ($A8EC),
+PC $01009634, trace index 18066. Next: shared CopyBits source/destination BitMap
+transfer, including overlap, scaling and optional regions, then follow the
+application through its first complete update cycle. Color PixMaps, vector/text
+picture commands, recording/custom procedures, original UI interaction, native
+presentation and production Mixed Mode remain unfinished. Full rebuild goal
+stays active; no native System 7 comparison was required or claimed.
+
+Validation: all 218 tests pass (183 default, 35 optional GPU/MPW); strict
+all-target Clippy passes and MPW fixtures rebuild. No GPU tests were skipped.

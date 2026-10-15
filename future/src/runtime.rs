@@ -678,6 +678,27 @@ impl Runtime {
                                 }
                             }
                         }
+                        Call::DrawPicture {
+                            handle,
+                            destination,
+                        } => {
+                            if handle != 0 {
+                                let ports = self.process.ports.ok_or_else(|| {
+                                    Error::Graphics("QuickDraw has not been initialized".into())
+                                })?;
+                                let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                    Error::Graphics("DrawPicture requires a GPU".into())
+                                })?;
+                                crate::picture::draw(
+                                    &mut self.memory,
+                                    &mut self.process,
+                                    ports,
+                                    gpu,
+                                    handle,
+                                    destination,
+                                )?;
+                            }
+                        }
                         Call::MovePortTo { left, top } => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -1108,6 +1129,7 @@ impl Runtime {
                         | Call::FragmentQuery(_)
                         | Call::InitGraf { .. }
                         | Call::Port { .. }
+                        | Call::DrawPicture { .. }
                         | Call::MovePortTo { .. }
                         | Call::PortSize { .. }
                         | Call::PenSize { .. }

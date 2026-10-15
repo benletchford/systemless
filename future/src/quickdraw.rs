@@ -286,6 +286,49 @@ impl Ports {
         };
         self.paint_coverage(gpu, memory, r, Some(&coverage))
     }
+    pub(crate) fn drawing_target(&self, memory: &Memory) -> Result<(Bitmap, Vec<Rect>)> {
+        let p = self.current(memory)?;
+        let bytes = memory.read(p, PORT_SIZE)?;
+        let word = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
+        if [92, 96, 100, 104].iter().any(|o| word(*o) != 0) {
+            return Err(Error::Graphics(
+                "QuickDraw recording or custom procedures are unsupported".into(),
+            ));
+        }
+        let port_rect = read_rect(memory, offset(p, 16)?)?;
+        let visible_handle = GuestPtr(word(24));
+        let clip = region(memory, GuestPtr(word(28)))?;
+        let intersect = |a: Rect, b: Rect| {
+            Rect::new(
+                a.left.max(b.left),
+                a.top.max(b.top),
+                a.right.min(b.right),
+                a.bottom.min(b.bottom),
+            )
+        };
+        let bitmap = Bitmap::read(memory, offset(p, 2)?)?;
+        let screen = Bitmap::read(memory, self.screen_bitmap)?;
+        let visible = if bitmap.base == screen.base {
+            region(memory, visible_handle)?
+        } else {
+            vec![bitmap.bounds]
+        };
+        if visible.len().saturating_mul(clip.len()) > 1_000_000 {
+            return Err(Error::Graphics(
+                "region intersection work limit exceeded".into(),
+            ));
+        }
+        let mut clips = Vec::new();
+        for a in &visible {
+            for b in &clip {
+                let r = intersect(port_rect, intersect(*a, *b));
+                if r.left < r.right && r.top < r.bottom {
+                    clips.push(r);
+                }
+            }
+        }
+        Ok((bitmap, clips))
+    }
     pub(crate) fn paint_coverage(
         &self,
         gpu: &Graphics,
@@ -323,8 +366,7 @@ impl Ports {
             pattern[((y as i32 - port_rect.top) & 7) as usize]
                 .rotate_right((port_rect.left & 7) as u32)
         });
-        let visible_handle = GuestPtr(word(24));
-        let clip = region(memory, GuestPtr(word(28)))?;
+        let (bitmap, mut clips) = self.drawing_target(memory)?;
         let intersect = |a: Rect, b: Rect| {
             Rect::new(
                 a.left.max(b.left),
@@ -333,27 +375,6 @@ impl Ports {
                 a.bottom.min(b.bottom),
             )
         };
-        let bitmap = Bitmap::read(memory, offset(p, 2)?)?;
-        let screen = Bitmap::read(memory, self.screen_bitmap)?;
-        let visible = if bitmap.base == screen.base {
-            region(memory, visible_handle)?
-        } else {
-            vec![bitmap.bounds]
-        };
-        if visible.len().saturating_mul(clip.len()) > 1_000_000 {
-            return Err(Error::Graphics(
-                "region intersection work limit exceeded".into(),
-            ));
-        }
-        let mut clips = Vec::new();
-        for a in &visible {
-            for b in &clip {
-                let r = intersect(port_rect, intersect(*a, *b));
-                if r.left < r.right && r.top < r.bottom {
-                    clips.push(r);
-                }
-            }
-        }
         if let Some(shape) = shape {
             if clips.len().saturating_mul(shape.len()) > 1_000_000 {
                 return Err(Error::Graphics(

@@ -45,6 +45,17 @@ pub enum Draw {
         background: u8,
         mode: Transfer,
     },
+    Blit {
+        rect: Rect,
+        clip: Rect,
+        source: Rect,
+        width: u32,
+        height: u32,
+        foreground: u8,
+        background: u8,
+        invert: bool,
+        mode: Transfer,
+    },
     Copy {
         rect: Rect,
         clip: Rect,
@@ -194,8 +205,7 @@ impl Graphics {
     ) -> Result<()> {
         self.execute_source(memory, draw, clips, None)
     }
-    /// Optional immutable indices belong to the same extent as the destination.
-    /// This supports window movement after exposure repair has changed pixels.
+    /// Immutable source indices support retained window copies and scaled bitmaps.
     pub(crate) fn execute_source(
         &self,
         memory: &mut Memory,
@@ -203,12 +213,38 @@ impl Graphics {
         clips: Option<&[Rect]>,
         copy_source: Option<&[u8]>,
     ) -> Result<()> {
-        if copy_source.is_some() && !matches!(draw, Draw::Copy { .. }) {
+        if copy_source.is_some() && !matches!(draw, Draw::Copy { .. } | Draw::Blit { .. }) {
             return Err(Error::Graphics(
                 "external source requires a copy command".into(),
             ));
         }
-        if copy_source.is_some_and(|s| s.len() != (self.width * self.height) as usize) {
+        let source_extent = if let Draw::Blit {
+            width,
+            height,
+            source,
+            ..
+        } = draw
+        {
+            if width == 0
+                || height == 0
+                || width > 4096
+                || height > 4096
+                || [source.left, source.top, source.right, source.bottom]
+                    .iter()
+                    .any(|v| !(-32768..=32767).contains(v))
+                || source.right <= source.left
+                || source.bottom <= source.top
+                || source.right - source.left > 4096
+                || source.bottom - source.top > 4096
+                || copy_source.is_none()
+            {
+                return Err(Error::Graphics("invalid scaled bitmap source".into()));
+            }
+            width * height
+        } else {
+            self.width * self.height
+        };
+        if copy_source.is_some_and(|s| s.len() != source_extent as usize) {
             return Err(Error::Graphics("copy source extent mismatch".into()));
         }
         self.check_error()?;
@@ -236,6 +272,30 @@ impl Graphics {
                 for (i, b) in pattern.iter().enumerate() {
                     p[16 + i] = i32::from(*b);
                 }
+                (rect, clip)
+            }
+            Draw::Blit {
+                rect,
+                clip,
+                source,
+                width,
+                height,
+                foreground,
+                background,
+                invert,
+                mode,
+            } => {
+                p[2] = 4;
+                p[11] = foreground.into();
+                p[12] = background.into();
+                p[13] = mode as i32;
+                p[14] = source.left;
+                p[15] = source.top;
+                p[16] = width as i32;
+                p[17] = height as i32;
+                p[18] = source.right;
+                p[19] = source.bottom;
+                p[20] = i32::from(invert);
                 (rect, clip)
             }
             Draw::Copy {
