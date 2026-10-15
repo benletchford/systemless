@@ -118,11 +118,7 @@ pub enum Call {
     TrackControl(crate::controls::TrackControl),
     NewControl(crate::controls::NewControl),
     Control(crate::controls::Op),
-    ResourceWindow {
-        id: i16,
-        storage: GuestPtr,
-        behind: u32,
-    },
+    ResourceWindow(crate::windows::ResourceWindow),
     Window {
         op: crate::windows::Op,
         pointer: u32,

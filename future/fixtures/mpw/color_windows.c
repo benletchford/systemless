@@ -48,5 +48,10 @@ int main(void) {
     DisposeWindow(other);SetPort(saved);CloseWindow(window);
     for (i=0;i<11;i++) {GetHandleSize(owned[i]);if (MemError()!=memWZErr) return 8;}
     if (GetHandleSize((Handle)table)!=24 || peek->port.grafVars!=vars) return 9;
+    other=GetNewCWindow(500,0,(WindowPtr)-1);
+    if (!other || ((CWindowPeek)other)->port.portVersion!=(short)0xc000 || ((CWindowPeek)other)->refCon!=0x01020304) return 13;
+    if (((CWindowPeek)other)->port.rgbBkColor.red!=65535 || ((CWindowPeek)other)->port.rgbBkColor.green || ((CWindowPeek)other)->port.rgbBkColor.blue) return 14;
+    DisposeWindow(other);
+    if (GetNewCWindow(999,0,(WindowPtr)-1)) return 15;
     PostEvent(diskEvt,0xc945);ExitToShell();return 0;
 }

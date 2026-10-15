@@ -410,7 +410,7 @@ impl Runtime {
                         Call::NewWindow(_)
                         | Call::NewColorWindow(_)
                         | Call::WindowChange { .. }
-                        | Call::ResourceWindow { .. }
+                        | Call::ResourceWindow(_)
                         | Call::Window { .. } => {
                             let gpu = self.graphics.as_ref().ok_or_else(|| {
                                 Error::Graphics("Window Manager requires a GPU".into())
@@ -426,17 +426,11 @@ impl Runtime {
                                         change,
                                     )
                                     .map(|()| 0),
-                                Call::ResourceWindow {
-                                    id,
-                                    storage,
-                                    behind,
-                                } => windows.from_resource(
+                                Call::ResourceWindow(request) => windows.from_resource(
                                     &mut self.memory,
                                     &mut self.process,
                                     gpu,
-                                    id,
-                                    storage,
-                                    behind,
+                                    request,
                                 ),
                                 Call::NewColorWindow(request) => windows.create_color(
                                     &mut self.memory,
@@ -1872,7 +1866,7 @@ impl Runtime {
                             | Call::TextWidth(_)
                             | Call::InitFonts
                             | Call::FontInfo(_)
-                            | Call::ResourceWindow { .. }
+                            | Call::ResourceWindow(_)
                             | Call::NewControl(_)
                             | Call::TrackControl(_)
                             | Call::Control(_)
@@ -1942,7 +1936,7 @@ impl Runtime {
                         | Call::PointerSize(_)
                         | Call::SetPointerSize { .. }
                         | Call::DisposePointer(_)
-                        | Call::ResourceWindow { .. }
+                        | Call::ResourceWindow(_)
                         | Call::NewControl(_)
                         | Call::TrackControl(_)
                         | Call::Control(_)

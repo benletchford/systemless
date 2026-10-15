@@ -30,6 +30,47 @@ pub struct NewWindow {
     pub ref_con: u32,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceWindow {
+    pub id: i16,
+    pub storage: GuestPtr,
+    pub behind: u32,
+    pub color: bool,
+}
+#[derive(Clone, Copy)]
+struct WindowColors([[u16; 3]; 5]);
+impl Default for WindowColors {
+    fn default() -> Self {
+        // Host standard window policy, matching existing NewCWindow drawing.
+        Self([[65535; 3], [0; 3], [0; 3], [0; 3], [65535; 3]])
+    }
+}
+impl WindowColors {
+    fn read(memory: &Memory, process: &mut Process, handle: u32) -> Result<Self> {
+        let size = process.handle_size(memory, handle)? as usize;
+        let data = GuestPtr(memory.u32(GuestPtr(handle))?);
+        let bytes = memory.read(data, size)?;
+        if size < 8 || bytes[4..6] != [0, 0] {
+            return Err(fail("invalid window color table header"));
+        }
+        let count = usize::from(u16::from_be_bytes(bytes[6..8].try_into().unwrap())) + 1;
+        if count > 5 || size < 8 + count * 8 {
+            return Err(fail("invalid window color table extent"));
+        }
+        let mut colors = Self::default();
+        let mut seen = [false; 5];
+        for entry in bytes[8..8 + count * 8].as_chunks::<8>().0 {
+            let part = usize::from(u16::from_be_bytes([entry[0], entry[1]]));
+            if part >= 5 || seen[part] {
+                return Err(fail("unsupported or duplicate window color part"));
+            }
+            seen[part] = true;
+            colors.0[part] =
+                std::array::from_fn(|i| u16::from_be_bytes([entry[2 + i * 2], entry[3 + i * 2]]));
+        }
+        Ok(colors)
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     Init,
     Front,
@@ -71,6 +112,7 @@ pub struct Windows {
     gray: u32,
     records: BTreeMap<u32, bool>,
     definitions: BTreeMap<u32, i16>,
+    colors: BTreeMap<u32, WindowColors>,
     update: Option<(u32, u32, u32)>,
 }
 fn fail(message: &str) -> Error {
@@ -485,7 +527,7 @@ impl Windows {
             gpu,
             &ink,
             Paint {
-                rgb: None,
+                rgb: self.colors.get(&w).map(|c| (c.0[1], c.0[0])),
                 pattern: [255; 8],
                 foreground: 33,
                 background: 30,
@@ -638,10 +680,17 @@ impl Windows {
         memory: &mut Memory,
         process: &mut Process,
         gpu: &Graphics,
-        id: i16,
-        storage: GuestPtr,
-        behind: u32,
+        request: ResourceWindow,
     ) -> Result<u32> {
+        let ResourceWindow {
+            id,
+            storage,
+            behind,
+            color,
+        } = request;
+        // Classic GetNewWindow is color-aware when a matching wctb exists
+        // (IM: Imaging With QuickDraw, CGrafPort), even without a forced color call.
+        let color = color || process.find_resource(*b"wctb", id).is_some();
         let h = process.get_resource(memory, *b"WIND", id)?;
         if h == 0 {
             return Ok(0);
@@ -663,6 +712,23 @@ impl Windows {
         if n >= aligned + 2 && bytes[aligned..aligned + 2] != [0, 0] {
             return Err(fail("WIND positioning specification is unsupported"));
         }
+        // Load optional colors through the current resource chain, then re-read
+        // the WIND master: resource allocations must not retain stale pointers.
+        let colors = if color {
+            if process.find_resource(*b"wctb", id).is_some() {
+                let table = process.get_resource(memory, *b"wctb", id)?;
+                if table == 0 {
+                    return Ok(0);
+                }
+                Some(WindowColors::read(memory, process, table)?)
+            } else {
+                Some(WindowColors::default())
+            }
+        } else {
+            None
+        };
+        let data = GuestPtr(memory.u32(GuestPtr(h))?);
+        let bytes = memory.read(data, n)?;
         let request = NewWindow {
             storage,
             bounds: data,
@@ -673,7 +739,7 @@ impl Windows {
             go_away: bytes[12] != 0,
             ref_con: u32::from_be_bytes(bytes[14..18].try_into().unwrap()),
         };
-        self.create(memory, process, gpu, request)
+        self.create_kind(memory, process, gpu, request, colors)
     }
     fn paint_window(
         &self,
@@ -734,7 +800,7 @@ impl Windows {
             gpu,
             &border,
             Paint {
-                rgb: None,
+                rgb: self.colors.get(&w).map(|c| (c.0[1], c.0[0])),
                 pattern: if matches!(self.definitions.get(&w), Some(1 | 4)) {
                     [0; 8]
                 } else {
@@ -879,7 +945,7 @@ impl Windows {
         gpu: &Graphics,
         request: NewWindow,
     ) -> Result<u32> {
-        self.create_kind(memory, process, gpu, request, false)
+        self.create_kind(memory, process, gpu, request, None)
     }
     pub fn create_color(
         &mut self,
@@ -888,7 +954,7 @@ impl Windows {
         gpu: &Graphics,
         request: NewWindow,
     ) -> Result<u32> {
-        self.create_kind(memory, process, gpu, request, true)
+        self.create_kind(memory, process, gpu, request, Some(WindowColors::default()))
     }
     fn create_kind(
         &mut self,
@@ -896,8 +962,16 @@ impl Windows {
         process: &mut Process,
         gpu: &Graphics,
         request: NewWindow,
-        color: bool,
+        colors: Option<WindowColors>,
     ) -> Result<u32> {
+        let color = colors.is_some();
+        if request.proc_id == 4
+            && colors.is_some_and(|c| c.0[1..] != WindowColors::default().0[1..])
+        {
+            return Err(fail(
+                "custom document-window title/frame colors are unsupported",
+            ));
+        }
         if !matches!(request.proc_id, 1 | 2 | 4) {
             return Err(fail(
                 "window definition requires an unsupported standard or custom WDEF",
@@ -1066,7 +1140,13 @@ impl Windows {
         }
         let mut bytes = memory.read(GuestPtr(w), 108)?.to_vec();
         bytes.resize(SIZE, 0);
-        if color {
+        if let Some(colors) = colors {
+            let target = crate::port_layout::bitmap(memory, GuestPtr(w))?;
+            let background = u32::from(target.nearest(colors.0[0]));
+            for (i, component) in colors.0[0].iter().enumerate() {
+                bytes[42 + i * 2..44 + i * 2].copy_from_slice(&component.to_be_bytes());
+            }
+            bytes[84..88].copy_from_slice(&background.to_be_bytes());
             let target = crate::port_layout::bounds_pointer(memory, GuestPtr(w))?;
             memory.write(target, &bitmap_bounds[2..])?;
         } else {
@@ -1088,6 +1168,9 @@ impl Windows {
         memory.write(GuestPtr(w), &bytes)?;
         self.records.insert(w, owned);
         self.definitions.insert(w, request.proc_id);
+        if let Some(colors) = colors {
+            self.colors.insert(w, colors);
+        }
         list.insert(index, w);
         self.relink(memory, &list)?;
         self.recalculate(memory, process)?;
@@ -1558,6 +1641,7 @@ impl Windows {
             process.dispose_pointer(w);
             self.records.remove(&w);
             self.definitions.remove(&w);
+            self.colors.remove(&w);
             return Ok(0);
         }
         let index = list
@@ -1685,12 +1769,14 @@ impl Windows {
             process.dispose_pointer(w);
             self.records.remove(&w);
             self.definitions.remove(&w);
+            self.colors.remove(&w);
         } else if !self.records[&w] {
             if process.pointer_size(w) >= SIZE as u32 && process.mem_error == 0 {
                 self.records.insert(w, true);
             } else {
                 self.records.remove(&w);
                 self.definitions.remove(&w);
+                self.colors.remove(&w);
             }
         }
         process.mem_error = 0;

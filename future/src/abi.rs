@@ -32,6 +32,7 @@ pub enum Service {
     CopyBits,
     CopyMask,
     GetNewWindow,
+    GetNewColorWindow,
     SizeWindow,
     MoveWindow,
     SelectWindow,
@@ -335,6 +336,7 @@ impl Abi {
             b"SizeWindow" => Some(Service::SizeWindow),
             b"ShowHide" => Some(Service::ShowHide),
             b"GetNewWindow" => Some(Service::GetNewWindow),
+            b"GetNewCWindow" => Some(Service::GetNewColorWindow),
             b"NewWindow" => Some(Service::NewWindow),
             b"NewCWindow" => Some(Service::NewColorWindow),
             b"ShowWindow" => Some(Service::Window(crate::windows::Op::Show)),
@@ -979,17 +981,18 @@ impl Abi {
                 c.dar[15] = result;
                 Ok((Call::Control(op), reply))
             }
-            0xa9bd => {
+            0xa9bd | 0xaa46 => {
                 let args = memory.read(GuestPtr(sp), 14)?;
                 let result = sp
                     .checked_add(10)
                     .ok_or_else(|| Error::Cpu("window stack overflow".into()))?;
                 memory.validate_write(GuestPtr(result), 4)?;
-                let call = Call::ResourceWindow {
+                let call = Call::ResourceWindow(crate::windows::ResourceWindow {
                     id: i16::from_be_bytes(args[8..10].try_into().unwrap()),
                     storage: GuestPtr(u32::from_be_bytes(args[4..8].try_into().unwrap())),
                     behind: u32::from_be_bytes(args[..4].try_into().unwrap()),
-                };
+                    color: opcode == 0xaa46,
+                });
                 c.dar[15] = result;
                 Ok((call, Reply::StackLong(GuestPtr(result))))
             }
@@ -3364,11 +3367,14 @@ impl Abi {
                 pointer: c.gpr[3],
                 change: crate::windows::Change::Visibility(c.gpr[4] as u8 != 0),
             },
-            Service::GetNewWindow => Call::ResourceWindow {
-                id: c.gpr[3] as i16,
-                storage: GuestPtr(c.gpr[4]),
-                behind: c.gpr[5],
-            },
+            Service::GetNewWindow | Service::GetNewColorWindow => {
+                Call::ResourceWindow(crate::windows::ResourceWindow {
+                    id: c.gpr[3] as i16,
+                    storage: GuestPtr(c.gpr[4]),
+                    behind: c.gpr[5],
+                    color: service == Service::GetNewColorWindow,
+                })
+            }
             Service::Random => Call::Random,
             Service::Logical(op) => Call::Logical {
                 op,

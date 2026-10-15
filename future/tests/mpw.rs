@@ -1425,6 +1425,21 @@ fn compiled_color_windows_share_hidden_geometry_drawing_and_attached_disposal_on
                 .services
                 .calls
                 .iter()
+                .filter(|call| matches!(
+                    call,
+                    Call::ResourceWindow(systemless_future::windows::ResourceWindow {
+                        color: true,
+                        ..
+                    })
+                ))
+                .count(),
+            2
+        );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
                 .filter(|call| matches!(call, Call::NewColorWindow(_)))
                 .count(),
             2

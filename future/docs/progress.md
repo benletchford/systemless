@@ -5447,3 +5447,63 @@ Sequential changed-file formatting and git diff --check pass. The earlier
 505-test full acceptance remains evidence for its frozen timer checkpoint; no
 new full-suite pass is claimed for this mode milestone. Native presentation and
 full runtime depth switching are still unverified/unfinished, respectively.
+
+
+## Resource-backed color windows advance original Marathon
+
+GetNewCWindow ($AA46 / PPC InterfaceLib) now decodes into the same ResourceWindow
+request and Window Manager as GetNewWindow. WIND title/bounds/flags/refCon come
+from the live loaded resource handle. Matching wctb is loaded through the current
+resource chain and parsed as window-part RGB settings, never as a device palette.
+Classic GetNewWindow also creates a color port when matching wctb is present,
+as specified in the classic CGrafPort reference. The color creation path owns
+independent attached records and copies color settings into window-owned state.
+It rereads the WIND master after resource allocations rather than retaining a
+stale data pointer. Existing windows are unaffected by later template edits.
+
+Content RGB and actual selected index initialize the live CGrafPort; content and
+plain/modal frames render through the existing wgpu path and retain their theme
+across hide/show and resize. Missing optional colors use the existing host standard
+black/white window policy. Duplicate/unknown parts, bad extents and unsupported
+custom document title/frame themes fail explicitly before publishing a window.
+General custom WDEFs, arbitrary document-title themes, public AuxWinRec access,
+SetWinColor/GetAuxWin and broader palette/window-color management remain open.
+The implementation does not claim those unimplemented APIs.
+
+The initial test run /tmp/systemless-color-window-tests.txt was deliberately
+superseded (exit 130) after the classic color-aware GetNewWindow correction.
+It is not an acceptance pass. Final runtime/test acceptance completed with exit 0:
+/tmp/systemless-color-window-final-tests.txt passes 20 tests (5 display,
+3 resource color-window and 12 window regressions), all GPU cases enabled,
+zero failed/ignored. The compiler fixture test also completes with exit 0 on
+both real CPU engines: /tmp/systemless-color-window-sdk-test.txt, one test,
+zero failed/ignored. Total: 21 distinct focused checks. Both command sessions
+85285 and 68552 are terminal; no continuation or restart is needed. Strict final-source Rust 1.99
+all-target Clippy passes: /tmp/systemless-color-window-acceptance-lint.txt (exit 0).
+
+Original Marathon now creates and shows both WIND 129 and WIND 128 color windows,
+resizes the first to 640x480, and completes HasDepth plus SetDepth(mode 128) on
+the existing indexed8 display. Its next missing service is SlotVInstall ($A06F),
+PC $01009364, D0 slot 0 and A0 $0001821C. The guest VBLTask header has qType 1,
+vblAddr $010093BE and count/phase 0. Verify VBL semantics and actual callback
+scheduling rather than fabricating installation. Public SDK Retrace.h confirms
+A0/D0 native arguments and D0 OSErr; evidence:
+/tmp/systemless-marathon-slot-vbl-sdk.txt. This is not SlotManager ($A06E).
+Trace: /tmp/systemless-marathon-color-window-first.txt, exit 1 for the explicit
+remaining service. EV still reaches ProtectEntry $AA3D at $0001ACFE:
+/tmp/systemless-ev-color-window-regression.txt, also exit 1. No gameplay pass.
+
+Primary references:
+https://leopard-adc.pepas.com/documentation/mac/Toolbox/Toolbox-225.html
+https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-203.html
+SDK window-part IDs/record declarations: /tmp/systemless-color-window-sdk.txt.
+The original compiler fixtures were regenerated with synthetic WIND/wctb resources
+and real GetNewCWindow calls: /tmp/systemless-color-window-sdk-build.txt, exit 0.
+
+
+Final sequential changed-file formatting and whitespace checks pass. The worktree
+contains only this resource-color-window milestone. No new full-suite result is
+claimed; earlier 505-test acceptance belongs to its recorded frozen checkpoint.
+Native window/audio and original title/menu/gameplay remain unverified. Keep the
+full rebuild active. Next executable work: real per-display VBL task ownership,
+queue/count/phase semantics and guarded callbacks for Marathon's SlotVInstall.

@@ -2012,3 +2012,36 @@ Sequential changed-file formatting and git diff --check pass. The earlier
 505-test full acceptance remains evidence for its frozen timer checkpoint; no
 new full-suite pass is claimed for this mode milestone. Native presentation and
 full runtime depth switching are still unverified/unfinished, respectively.
+
+
+### Marathon reaches display-refresh callback installation
+
+Shared resource-backed color windows now load live WIND/wctb and create actual
+CGrafPort ownership graphs. Marathon's own wctb 128/129 each specify five black
+window parts; these are window RGB settings, not display CLUT entries. It creates
+and shows both color windows, resizes the first to 640x480, then queries HasDepth
+and accepts its real mode ID through SetDepth. The next missing call is
+SlotVInstall ($A06F), PC $01009364, task $0001821C, slot 0, callback $010093BE.
+It still does not reach a verified title/menu or gameplay.
+
+Evidence: /tmp/systemless-marathon-color-window-first.txt, diagnostic exit 1.
+Reproduce with the previous Marathon trace command and the same original files.
+Retrace.h verifies this is display-retrace scheduling, not SlotManager:
+/tmp/systemless-marathon-slot-vbl-sdk.txt. EV preserves ProtectEntry ($AA3D),
+PC $0001ACFE: /tmp/systemless-ev-color-window-regression.txt, exit 1.
+
+Synthetic color-window tests inspect actual GPU content/frame colors, both CPU
+ABIs, copied live resource settings, caller/heap record ownership, attached handle
+teardown and malformed resources. Arbitrary document-title themes/custom WDEFs
+and public auxiliary-window color APIs remain unsupported and explicit. The full
+rebuild, native presentation/audio and original-game acceptance remain unfinished.
+
+
+Final resource-color-window validation passes 21 focused checks, no failures or
+ignored cases: /tmp/systemless-color-window-final-tests.txt (20 integration tests,
+including actual GPU readback) and /tmp/systemless-color-window-sdk-test.txt
+(one compiler-fixture test, both engines). Strict all-target Rust 1.99 Clippy:
+/tmp/systemless-color-window-acceptance-lint.txt, exit 0. Sequential changed-file
+formatting and whitespace checks pass. The preliminary run was superseded with
+exit 130 after correcting classic color-aware GetNewWindow; it is not a pass.
+Neither original game nor the full rebuild is complete.
