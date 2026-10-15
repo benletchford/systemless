@@ -1711,3 +1711,47 @@ queries resolve the same references. Existing relative/absolute path behavior,
 fork permissions and catalog ownership remain shared. The default volume still
 means the existing application-volume root; GetVol/SetVol/default-directory
 selection and multiple volumes remain separate work.
+
+
+### Cooperative classic save dialog and original game-file writes
+
+SFPutFile now shares one cooperative dialog implementation between native Pack3
+selector 1 and the PPC InterfaceLib import. Runtime retains its ABI reply while
+both CPU engines are suspended. The UI owns an ordinary registered monochrome
+modal window, five shared controls and a shared TextEdit filename record, with
+Window Manager, font/QuickDraw and wgpu drawing throughout. Input consumes the
+existing checked OS event queue, at most 20 events per poll. Empty polls execute
+no guest instructions; host ticks drive the existing caret behavior. No host
+filesystem chooser, ROM/System resources or legacy runtime dependency is used.
+
+The picker shows the process-local catalog, supports folder entry/Up, paging,
+file-name selection, typed edits, caret positioning, arrow/backspace and Cmd-A,
+horizontal filename scrolling, Save/Cancel and explicit replacement confirmation.
+It limits HFS leaf names to 31 bytes and disables Save for empty/invalid names,
+folder collisions and the protected application file. Exhausting WD capacity
+keeps the dialog interactive with cancellation available. Catalog snapshots are
+read-only views of the same live file/directory tree; acceptance returns an
+actual working-directory reference. The picker itself neither creates nor
+replaces a file. Caller port/error state is restored and owned UI allocations
+are disposed when it completes. GPU faults remain terminal and do not promise
+transactional pixel rollback.
+
+The native adapter consumes the exact 22-byte selector/argument frame and has a
+void result; PPC decodes the packed Point plus prompt/name/hook/reply arguments
+and preserves its void register result. SFReply is 74 bytes: successful replies
+publish good, the WD and Pascal name with checked bounds; cancellation changes
+only good, preserving all other bytes. The output is revalidated while waiting.
+Pascal inputs are snapshotted before guest allocation, and font/window/display
+requirements are checked explicitly. Nonzero hooks, other Pack3 selectors,
+modern/custom put-file APIs, multiple volumes, remembered Standard File folder
+globals, clipboard/drag-selection/focus-cycle parity and native pixel parity
+remain unfinished. The supported slice starts at the virtual volume root and
+lets the user choose real subfolders; it is not a root-only return shortcut.
+
+The original game next required PBHDelete before creating its selected file.
+PBDeleteSync/PBHDeleteSync and native $A009/$A209 now use the shared catalog and
+WD/path resolution. Closed mutable files lose both forks; open files, nonempty
+folders and folders with open WDs return fBsyErr. The loaded application is
+protected. Tests cover the signed CPU/parameter-block errors, closed-file
+removal and busy/protected directory cases. Deletion only affects process-local
+nodes; host paths and persistence remain outside this File Manager model.

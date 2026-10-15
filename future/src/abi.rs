@@ -181,6 +181,7 @@ pub enum Service {
     GetPicture,
     GetIcon,
     GetWMgrPort,
+    SFPutFile,
     DrawPicture,
     SetSoundVol,
     GetSoundVol,
@@ -290,6 +291,7 @@ impl Abi {
             b"ShowWindow" => Some(Service::Window(crate::windows::Op::Show)),
             b"HideWindow" => Some(Service::Window(crate::windows::Op::Hide)),
             b"InitWindows" => Some(Service::Window(crate::windows::Op::Init)),
+            b"SFPutFile" => Some(Service::SFPutFile),
             b"GetWMgrPort" => Some(Service::GetWMgrPort),
             b"FrontWindow" => Some(Service::Window(crate::windows::Op::Front)),
             b"CloseWindow" => Some(Service::Window(crate::windows::Op::Close)),
@@ -508,6 +510,12 @@ impl Abi {
                 hierarchical: false,
             })),
             b"PBHSetFInfoSync" => Some(Service::FileIo(crate::files::Op::SetInfo {
+                hierarchical: true,
+            })),
+            b"PBDeleteSync" => Some(Service::FileIo(crate::files::Op::Delete {
+                hierarchical: false,
+            })),
+            b"PBHDeleteSync" => Some(Service::FileIo(crate::files::Op::Delete {
                 hierarchical: true,
             })),
             b"PBCreateSync" => Some(Service::FileIo(crate::files::Op::Create {
@@ -860,6 +868,37 @@ impl Abi {
                 };
                 c.dar[15] = result;
                 Ok((Call::NewWindow(request), Reply::StackLong(GuestPtr(result))))
+            }
+            0xa9ea => {
+                let selector = memory.u16(GuestPtr(sp))?;
+                if selector != 1 {
+                    return Err(Error::Cpu(format!(
+                        "unsupported Standard File selector {selector:#06x}"
+                    )));
+                }
+                let bytes = memory.read(GuestPtr(sp), 22)?;
+                let long = |n| u32::from_be_bytes(bytes[n..n + 4].try_into().unwrap());
+                let request = crate::standard_file::PutFile {
+                    reply: GuestPtr(long(2)),
+                    hook: long(6),
+                    name: GuestPtr(long(10)),
+                    prompt: GuestPtr(long(14)),
+                    point: [
+                        i16::from_be_bytes(bytes[18..20].try_into().unwrap()),
+                        i16::from_be_bytes(bytes[20..22].try_into().unwrap()),
+                    ],
+                };
+                memory.validate_write(request.reply, 74)?;
+                if request.hook != 0 {
+                    return Err(Error::Cpu(
+                        "SFPutFile dialog hooks require guest callbacks".into(),
+                    ));
+                }
+                let next = sp
+                    .checked_add(22)
+                    .ok_or_else(|| Error::Cpu("SFPutFile stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((Call::StandardPutFile(request), Reply::None))
             }
             0xa910 => {
                 let destination = GuestPtr(memory.u32(GuestPtr(sp))?);
@@ -1924,8 +1963,8 @@ impl Abi {
                 },
                 Reply::M68kHandle,
             )),
-            0xa00d | 0xa20d | 0xa000 | 0xa200 | 0xa00a | 0xa20a | 0xa008 | 0xa208 | 0xa001
-            | 0xa002 | 0xa003 | 0xa011 | 0xa012 | 0xa018 | 0xa044 | 0xa045 => {
+            0xa00d | 0xa20d | 0xa000 | 0xa200 | 0xa00a | 0xa20a | 0xa008 | 0xa208 | 0xa009
+            | 0xa209 | 0xa001 | 0xa002 | 0xa003 | 0xa011 | 0xa012 | 0xa018 | 0xa044 | 0xa045 => {
                 use crate::files::{Fork, Op};
                 let op = match opcode {
                     0xa00d | 0xa20d => Op::SetInfo {
@@ -1937,6 +1976,9 @@ impl Abi {
                         } else {
                             Fork::Resource
                         },
+                        hierarchical: opcode & 0x200 != 0,
+                    },
+                    0xa009 | 0xa209 => Op::Delete {
                         hierarchical: opcode & 0x200 != 0,
                     },
                     0xa008 | 0xa208 => Op::Create {
@@ -2738,6 +2780,13 @@ impl Abi {
                 handle: c.gpr[3],
                 destination: GuestPtr(c.gpr[4]),
             },
+            Service::SFPutFile => Call::StandardPutFile(crate::standard_file::PutFile {
+                point: [(c.gpr[3] >> 16) as i16, c.gpr[3] as i16],
+                prompt: GuestPtr(c.gpr[4]),
+                name: GuestPtr(c.gpr[5]),
+                hook: c.gpr[6],
+                reply: GuestPtr(c.gpr[7]),
+            }),
             Service::GetWMgrPort => Call::GetWMgrPort(GuestPtr(c.gpr[3])),
             Service::GetIcon => Call::GetResource {
                 kind: *b"ICON",
@@ -2867,6 +2916,7 @@ impl Abi {
                                 | crate::menus::Op::Draw
                                 | crate::menus::Op::Clear
                         )
+                        | Service::SFPutFile
                         | Service::GetWMgrPort
                         | Service::InitGraf
                         | Service::PortColor(_)

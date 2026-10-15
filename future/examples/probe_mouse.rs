@@ -343,6 +343,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.runtime.memory.u16(GuestPtr(c.pc))
         );
     }
+    if std::env::var("SYSTEMLESS_PROBE_CATALOG").is_ok_and(|v| v == "1") {
+        let mut folders = vec![2];
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(folder) = folders.pop() {
+            if !visited.insert(folder) || visited.len() > 1024 {
+                return Err("catalog walk exceeds the process-local bound".into());
+            }
+            let view = app
+                .runtime
+                .process
+                .files
+                .directory_view(folder)
+                .map_err(|e| format!("catalog error {e}"))?;
+            for entry in view.entries {
+                if entry.directory {
+                    folders.push(entry.id);
+                } else {
+                    let data = app
+                        .runtime
+                        .process
+                        .files
+                        .catalog_fork(entry.id, systemless_future::files::Fork::Data)
+                        .unwrap_or(&[]);
+                    let resource = app
+                        .runtime
+                        .process
+                        .files
+                        .catalog_fork(entry.id, systemless_future::files::Fork::Resource)
+                        .unwrap_or(&[]);
+                    println!("catalog folder={folder} node={} name={:?} data={} resource={} prefix={:02x?}",entry.id,String::from_utf8_lossy(&entry.name),data.len(),resource.len(),&data[..data.len().min(16)]);
+                }
+            }
+        }
+    }
     if let Err(error) = &result {
         eprintln!("execution error: {error}");
         if let Cpu::M68k(c) = &app.runtime.cpu {

@@ -468,3 +468,11 @@ repeat identity, queries and close/stale errors. It creates and opens a file usi
 only the working-directory reference, verifies that file is absent at the volume
 root, and requires the success marker and Exit(0) on both compiled architectures.
 Run the ignored compiled_working_directories test after generating the forks.
+
+
+standard_file.c calls the public SFPutFile header with a packed Point and SFReply.
+The ignored compiled_standard_file_dialogs test drives Return or Escape after
+verifying a retained no-spin wait, then requires the guest's explicit save/cancel
+marker and Exit(0) on both architectures. On Save, the guest uses the returned WD
+to delete/create/open/write/close/query Fixture, and host catalog readback must
+be exactly ABC; Cancel must leave no such file. Requires a real wgpu adapter.

@@ -25,8 +25,10 @@ fn app() -> LoadedApplication {
             b"PBHOpenRFSync",
             b"PBFlushFileSync",
             b"PBHSetFInfoSync",
+            b"PBDeleteSync",
+            b"PBHDeleteSync",
         ],
-        16,
+        24,
     );
     let mut app = LoadedApplication::pef(&fixture.bytes, Some(&support::code())).unwrap();
     app.runtime
@@ -35,7 +37,7 @@ fn app() -> LoadedApplication {
         .unwrap();
     let traps = [
         0xa208u16, 0xa200, 0xa003, 0xa002, 0xa001, 0xa011, 0xa012, 0xa018, 0xa044, 0xa20a, 0xa045,
-        0xa20d,
+        0xa20d, 0xa009, 0xa209,
     ];
     app.runtime
         .memory
@@ -448,4 +450,52 @@ fn access_path_limit_failed_open_and_async_traps_preserve_their_boundaries() {
         systemless_future::cpu::Call::FileIo { op: Op::Read, .. }
     ));
     assert_eq!(app.runtime.memory.read(PB, 80).unwrap(), before);
+}
+
+#[test]
+fn both_cpu_delete_routes_remove_both_forks_and_reject_busy_protected_and_referenced_directories() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        fresh(&mut a, b"Game", 2, 0);
+        assert_eq!(native(&mut a, 0, arch), 0);
+        let reference = open(&mut a, b"Game", 3, Fork::Data).unwrap();
+        fresh(&mut a, b"Game", 2, 0);
+        assert_eq!(native(&mut a, 13, arch), -47);
+        io(&mut a, reference, 0, 0, 0);
+        assert_eq!(native(&mut a, 4, arch), 0);
+        fresh(&mut a, b"Game", 0, 0);
+        assert_eq!(native(&mut a, 12, arch), 0);
+        assert_eq!(open(&mut a, b"Game", 1, Fork::Data), Err(-43));
+        assert_eq!(open(&mut a, b"Game", 1, Fork::Resource), Err(-43));
+        fresh(&mut a, b"Application", 2, 0);
+        assert_eq!(native(&mut a, 13, arch), -45);
+        fresh(&mut a, b"Saves", 2, 0);
+        assert_eq!(
+            a.runtime
+                .process
+                .files
+                .create_directory(&mut a.runtime.memory, PB)
+                .unwrap(),
+            0
+        );
+        let folder = a.runtime.memory.u32(GuestPtr(PB.0 + 48)).unwrap();
+        let wd = a
+            .runtime
+            .process
+            .files
+            .open_working_directory(-1, folder, 0)
+            .unwrap();
+        fresh(&mut a, b"Saves", 2, 0);
+        assert_eq!(native(&mut a, 13, arch), -47);
+        a.runtime.process.files.close_working_directory(wd).unwrap();
+        fresh(&mut a, b"Game", folder, 0);
+        assert_eq!(native(&mut a, 0, arch), 0);
+        fresh(&mut a, b"Saves", 2, 0);
+        assert_eq!(native(&mut a, 13, arch), -47);
+        fresh(&mut a, b"Game", folder, 0);
+        assert_eq!(native(&mut a, 13, arch), 0);
+        fresh(&mut a, b"Saves", 2, 0);
+        assert_eq!(native(&mut a, 13, arch), 0);
+        assert!(a.runtime.process.files.directory_view(folder).is_err());
+    }
 }

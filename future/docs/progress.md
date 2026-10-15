@@ -3671,3 +3671,96 @@ MPW targets were rebuilt from public headers, and the original no-save Quit
 regression reaches Exit(0). Strict all-target Clippy, sequential changed-file
 stdin formatting, fixture shell syntax and whitespace checks pass. No original
 save-dialog/save/reload success is claimed. The full rebuild goal stays active.
+
+
+### Cooperative classic save dialog and original game-file writes
+
+SFPutFile now shares one cooperative dialog implementation between native Pack3
+selector 1 and the PPC InterfaceLib import. Runtime retains its ABI reply while
+both CPU engines are suspended. The UI owns an ordinary registered monochrome
+modal window, five shared controls and a shared TextEdit filename record, with
+Window Manager, font/QuickDraw and wgpu drawing throughout. Input consumes the
+existing checked OS event queue, at most 20 events per poll. Empty polls execute
+no guest instructions; host ticks drive the existing caret behavior. No host
+filesystem chooser, ROM/System resources or legacy runtime dependency is used.
+
+The picker shows the process-local catalog, supports folder entry/Up, paging,
+file-name selection, typed edits, caret positioning, arrow/backspace and Cmd-A,
+horizontal filename scrolling, Save/Cancel and explicit replacement confirmation.
+It limits HFS leaf names to 31 bytes and disables Save for empty/invalid names,
+folder collisions and the protected application file. Exhausting WD capacity
+keeps the dialog interactive with cancellation available. Catalog snapshots are
+read-only views of the same live file/directory tree; acceptance returns an
+actual working-directory reference. The picker itself neither creates nor
+replaces a file. Caller port/error state is restored and owned UI allocations
+are disposed when it completes. GPU faults remain terminal and do not promise
+transactional pixel rollback.
+
+The native adapter consumes the exact 22-byte selector/argument frame and has a
+void result; PPC decodes the packed Point plus prompt/name/hook/reply arguments
+and preserves its void register result. SFReply is 74 bytes: successful replies
+publish good, the WD and Pascal name with checked bounds; cancellation changes
+only good, preserving all other bytes. The output is revalidated while waiting.
+Pascal inputs are snapshotted before guest allocation, and font/window/display
+requirements are checked explicitly. Nonzero hooks, other Pack3 selectors,
+modern/custom put-file APIs, multiple volumes, remembered Standard File folder
+globals, clipboard/drag-selection/focus-cycle parity and native pixel parity
+remain unfinished. The supported slice starts at the virtual volume root and
+lets the user choose real subfolders; it is not a root-only return shortcut.
+
+The original game next required PBHDelete before creating its selected file.
+PBDeleteSync/PBHDeleteSync and native $A009/$A209 now use the shared catalog and
+WD/path resolution. Closed mutable files lose both forks; open files, nonempty
+folders and folders with open WDs return fBsyErr. The loaded application is
+protected. Tests cover the signed CPU/parameter-block errors, closed-file
+removal and busy/protected directory cases. Deletion only affects process-local
+nodes; host paths and persistence remain outside this File Manager model.
+
+Real-CPU tests verify exact ABI frames, bad outputs/hooks/selectors, no-spin
+waits, matching UI pixels across both architectures, cancellation and guards,
+folder selection/editing, replacement/back-out, disabled names, paging/Up,
+long names, WD exhaustion and caller state restoration. The public-header
+standard_file.c program suspends at the dialog on both compiler targets. Save
+returns through WD lookup to real Delete/Create/Open/Write/Close/GetFInfo calls,
+and the host verifies the resulting bytes are exactly ABC. Cancel returns its
+own explicit success marker and creates no file.
+
+The original Super Mines Yes-save route is now exercised through the visible
+SFPutFile dialog. From the changed board, select File > Quit, press Yes at
+(175,86), then Save at (407,299). The guest passes PBHDelete, creates/writes/closes
+Super Mines Game and reaches ExitToShell/Exit(0), post-exit PC $01000030. The
+process-local catalog contains its 1,972-byte data fork (no resource fork), with
+prefix 00 03 00 00 00 00 00 00 04 B0 00 00 0C DF 00 00. Evidence:
+/tmp/systemless-mines-save-catalog-probe.txt; the step-6 PNG confirms the visible
+filename, catalog and Save/Cancel controls. Private files/screenshots stay out
+of Git. SYSTEMLESS_PROBE_CATALOG=1 optionally prints catalog names, fork sizes
+and 16-byte prefixes for bounded original-app diagnostics.
+
+A separate original run presses Cancel at (407,269). It returns to the game's
+Waiting { ticks: 10 } state, and catalog readback confirms no Super Mines Game
+file. Evidence: /tmp/systemless-mines-save-cancel-probe.txt and private after.png.
+This verifies cancellation and save-to-process-local-bytes, not persistence or
+successful reload. The earlier board-border redraw difference remains unresolved.
+
+The next original reload slice is concrete: File > Open Game (drag to (60,52)),
+then decline saving at (270,86). It stops at SFGetFile, Pack3 selector 2, PC
+$010086EC, SP $0080FBCE. Its frame carries reply $0080FC56, nil dialog hook,
+type-list pointer $0080FCBE, one type, file-filter callback $004002F2, prompt
+$003FFD76 and where=(100,100). Evidence: /tmp/systemless-mines-open-next-probe.txt.
+Implement the cooperative open picker AND real guest filter invocation; ignoring
+that callback or returning false cancellation would not satisfy the slice.
+Persistent file backing, original PPC application acceptance, production Mixed
+Mode and the rest of the rebuild remain active.
+
+Contracts: Apple's [Standard File Package](https://dev.os9.ca/techpubs/mac/pdf/Files/StdFilePkg.pdf),
+[SFReply](https://leopard-adc.pepas.com/documentation/mac/Files/Files-316.html),
+and [PBHDelete](https://leopard-adc.pepas.com/documentation/mac/Files/Files-236.html).
+
+Validation: all 357 tests pass (288 default and 69 optional GPU/MPW), with zero
+failures or skips. Both public-header Standard File targets were rebuilt and
+exercise Save and Cancel through actual guest startup/return/file I/O. Final
+ABI and deletion regressions also pass after the canonical OS-trap table cleanup.
+Strict all-target Clippy, sequential changed-file stdin formatting, fixture shell
+syntax and whitespace checks pass. Original Save, save-dialog Cancel and the
+next Open Game fault were independently exercised. Persistent storage, reload,
+real filter callbacks and the complete rebuild remain unfinished and active.

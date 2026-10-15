@@ -1037,3 +1037,73 @@ fn compiled_working_directories_create_files_in_the_selected_folder_on_both_cpus
         );
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture and a real wgpu adapter"]
+fn compiled_standard_file_dialogs_suspend_both_cpus_and_return_save_or_cancel_to_real_file_io() {
+    use systemless_future::{events, files::Fork, graphics::Graphics, memory::GuestPtr};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code =
+        std::fs::read(root.join("standard_file.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("standard_file.ppc")).unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    for cancel in [false, true] {
+        for mut app in [
+            LoadedApplication::code(&code).unwrap(),
+            LoadedApplication::pef(&pef, Some(&code)).unwrap(),
+        ] {
+            app.runtime.graphics = Some(
+                pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000)))
+                    .unwrap(),
+            );
+            assert_eq!(
+                app.runtime.advance(20_000).unwrap(),
+                Stop::Waiting { ticks: 1 }
+            );
+            let n = app.runtime.instructions;
+            assert_eq!(
+                app.runtime.advance(20_000).unwrap(),
+                Stop::Waiting { ticks: 1 }
+            );
+            assert_eq!(app.runtime.instructions, n);
+            let input = app.runtime.process.input;
+            events::post(
+                &mut app.runtime.memory,
+                3,
+                if cancel { 27 } else { 13 },
+                0,
+                input,
+            )
+            .unwrap();
+            assert_eq!(app.runtime.advance(20_000).unwrap(), Stop::Exit(0));
+            let marker = if cancel { 0x600c } else { 0x600d };
+            assert!(app
+                .runtime
+                .services
+                .calls
+                .iter()
+                .any(|c| matches!(c,Call::PostEvent{what:7,message} if *message==marker)));
+            let view = app.runtime.process.files.directory_view(2).unwrap();
+            let file = view.entries.iter().find(|e| e.name == b"Fixture");
+            if cancel {
+                assert!(file.is_none());
+            } else {
+                assert_eq!(
+                    app.runtime
+                        .process
+                        .files
+                        .catalog_fork(file.unwrap().id, Fork::Data)
+                        .unwrap(),
+                    b"ABC"
+                );
+            }
+            assert_eq!(
+                app.runtime
+                    .memory
+                    .u32(systemless_future::windows::LIST)
+                    .unwrap(),
+                0
+            );
+        }
+    }
+}

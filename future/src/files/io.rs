@@ -9,6 +9,7 @@ pub(super) const LIMIT: usize = 64 * 1024 * 1024;
 pub enum Op {
     Open { kind: Fork, hierarchical: bool },
     Create { hierarchical: bool },
+    Delete { hierarchical: bool },
     SetInfo { hierarchical: bool },
     Close,
     Read,
@@ -106,9 +107,11 @@ impl Files {
             Op::Open {
                 hierarchical: true, ..
             }
-            | Op::Create { hierarchical: true } => 52,
+            | Op::Create { hierarchical: true }
+            | Op::Delete { hierarchical: true } => 52,
             Op::Open { .. } => 28,
             Op::Create { .. } => 48,
+            Op::Delete { .. } => 24,
             Op::Close | Op::Flush => 26,
             Op::GetEof | Op::SetEof => 32,
             _ => 50,
@@ -121,6 +124,30 @@ impl Files {
         Ok(error)
     }
     fn execute_io(&mut self, memory: &mut Memory, pb: &mut [u8], op: Op) -> Result<i16> {
+        if let Op::Delete { hierarchical } = op {
+            let node = match self.target(memory, pb, hierarchical)? {
+                Ok(node) => node,
+                Err(error) => return Ok(error),
+            };
+            if node == 16 {
+                return Ok(-45);
+            }
+            if node == 2
+                || self.open.values().any(|f| f.node == node)
+                || self.directories.contains_key(&node)
+                    && (!self.children(node, false).is_empty()
+                        || self
+                            .working
+                            .values()
+                            .any(|&(directory, _)| directory == node))
+            {
+                return Ok(-47);
+            }
+            if self.files.remove(&node).is_none() {
+                self.directories.remove(&node);
+            }
+            return Ok(0);
+        }
         if let Op::Open { kind, hierarchical } = op {
             let selected = self.target(memory, pb, hierarchical)?;
             let error = match selected {

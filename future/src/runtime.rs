@@ -38,6 +38,10 @@ enum Resume {
         stop: Stop,
     },
 }
+struct StandardFileWait {
+    dialog: crate::standard_file::Dialog,
+    reply: crate::abi::Reply,
+}
 struct MenuWait {
     tracking: crate::menus::Tracking,
     reply: crate::abi::Reply,
@@ -65,6 +69,7 @@ pub struct Runtime {
     event_wait: Option<EventWait>,
     control_wait: Option<ControlWait>,
     menu_wait: Option<MenuWait>,
+    standard_file_wait: Option<StandardFileWait>,
     terminal: Option<Stop>,
     pub(crate) lifecycle: Option<crate::lifecycle::Lifecycle>,
     faulted: bool,
@@ -84,6 +89,7 @@ impl Runtime {
             event_wait: None,
             control_wait: None,
             menu_wait: None,
+            standard_file_wait: None,
             terminal: None,
             lifecycle: None,
             faulted: false,
@@ -140,6 +146,11 @@ impl Runtime {
     fn advance_inner(&mut self, budget: u64) -> Result<Stop> {
         if budget == 0 {
             return Ok(Stop::Budget);
+        }
+        if let Some(wait) = self.standard_file_wait.take() {
+            if let Some(stop) = self.poll_standard_file(wait)? {
+                return Ok(stop);
+            }
         }
         if let Some(wait) = self.menu_wait.take() {
             if let Some(stop) = self.poll_menu_wait(wait)? {
@@ -228,6 +239,24 @@ impl Runtime {
                                     .windows
                                     .reference(&mut self.memory, pointer, value)?;
                             reply.apply(&mut self.cpu, &mut self.memory, result, 0)?;
+                        }
+                        Call::StandardPutFile(request) => {
+                            let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                Error::Graphics("Standard File requires a GPU".into())
+                            })?;
+                            let ticks = self.tick_count()?;
+                            let dialog = crate::standard_file::Dialog::start(
+                                &mut self.memory,
+                                &mut self.process,
+                                gpu,
+                                request,
+                                ticks,
+                            )?;
+                            if let Some(stop) =
+                                self.poll_standard_file(StandardFileWait { dialog, reply })?
+                            {
+                                return Ok(stop);
+                            }
                         }
                         Call::TrackControl(request) => {
                             if let crate::abi::Reply::StackWord(p) = reply {
@@ -1439,6 +1468,7 @@ impl Runtime {
                         | Call::FindWindow { .. }
                         | Call::EmptyRect(_)
                         | Call::PointInRect { .. }
+                        | Call::StandardPutFile(_)
                         | Call::GetWMgrPort(_)
                         | Call::GetMouse(_)
                         | Call::SystemTask
@@ -1636,6 +1666,40 @@ impl Runtime {
             ticks,
             self.process.input,
         )
+    }
+    fn poll_standard_file(&mut self, mut wait: StandardFileWait) -> Result<Option<Stop>> {
+        let ticks = self.tick_count()?;
+        let gpu = self
+            .graphics
+            .as_ref()
+            .ok_or_else(|| Error::Graphics("Standard File requires a GPU".into()))?;
+        for _ in 0..20 {
+            let event = crate::events::prepare_remove(
+                &self.memory,
+                (1 << 1) | (1 << 2) | (1 << 3) | (1 << 5),
+            )?;
+            let record = event.as_ref().map(|e| e.record);
+            let done = wait
+                .dialog
+                .poll(&mut self.memory, &mut self.process, gpu, record, ticks)?;
+            if let Some(event) = event {
+                event.commit(&mut self.memory)?;
+            }
+            if let Some(good) = done {
+                if wait
+                    .dialog
+                    .finish(&mut self.memory, &mut self.process, gpu, good)?
+                {
+                    wait.reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                    return Ok(None);
+                }
+            }
+            if record.is_none() {
+                break;
+            }
+        }
+        self.standard_file_wait = Some(wait);
+        Ok(Some(Stop::Waiting { ticks: 1 }))
     }
     fn poll_menu_wait(&mut self, mut wait: MenuWait) -> Result<Option<Stop>> {
         if let crate::abi::Reply::StackLong(p) = wait.reply {

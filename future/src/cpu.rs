@@ -44,6 +44,7 @@ pub enum Call {
     },
     GetMouse(GuestPtr),
     GetWMgrPort(GuestPtr),
+    StandardPutFile(crate::standard_file::PutFile),
     SystemTask,
     Rectangle(crate::rectangles::Op),
     ToolboxEvent {

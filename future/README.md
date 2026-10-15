@@ -182,6 +182,9 @@ and windows. Shared GetWMgrPort now returns the existing monochrome manager
 port; the original No-save Quit path completes file/resource cleanup and reaches
 ExitToShell with code 0. No-save New Game also returns through its chooser to a
 fresh board and the normal event wait. Cancel resumes the existing game with a
-remaining board-border redraw difference. The Yes-save branch next reaches unimplemented classic SFPutFile (Pack3
-selector 1). Exact board-redraw parity, save/reload and broader gameplay remain
-separate acceptance work. The full rebuild stays active.
+remaining board-border redraw difference. The Yes-save branch now uses a shared cooperative SFPutFile dialog, writes a
+1,972-byte game file in the process-local catalog and reaches Exit(0). Cancelling
+that dialog returns to the game without creating the file. Persistent storage,
+reload, exact board-redraw parity and broader gameplay remain separate acceptance
+work. Open Game next reaches SFGetFile (Pack3 selector 2) with a guest file-filter
+callback. The full rebuild stays active.

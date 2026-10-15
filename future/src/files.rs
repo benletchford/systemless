@@ -5,9 +5,11 @@ use crate::{
     Result,
 };
 use std::collections::BTreeMap;
+mod browse;
 mod io;
 mod resource;
 mod working;
+pub use browse::{CatalogEntry, DirectoryView};
 pub use io::Op;
 pub use working::WorkingOp;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

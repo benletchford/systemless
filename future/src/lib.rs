@@ -32,6 +32,7 @@ pub mod regions;
 pub mod rounded;
 pub mod runtime;
 pub mod sound;
+pub mod standard_file;
 mod stdlib;
 pub mod text;
 pub mod textedit;
