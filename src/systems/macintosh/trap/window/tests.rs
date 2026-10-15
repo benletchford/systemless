@@ -519,7 +519,7 @@ fn oversized_dialog_keeps_its_content_region_when_moved() {
         (0, -1000, 1024, 1000),
     );
 
-    disp.move_window_to_global(&mut bus, window_addr, -600, -212, false);
+    disp.move_window_to_global(&mut bus, &mut cpu, window_addr, -600, -212, false);
     assert_eq!(
         read_window_region_rect(
             &bus,
@@ -686,7 +686,7 @@ fn movewindow_offsets_windowrecord_manager_regions_globally() {
         0,
     );
 
-    disp.move_window_to_global(&mut bus, window_addr, 1800, 1600, false);
+    disp.move_window_to_global(&mut bus, &mut cpu, window_addr, 1800, 1600, false);
 
     assert_eq!(
         disp.window_global_port_rect(&bus, window_addr),
@@ -800,7 +800,7 @@ fn hidden_window_setorigin_preserves_global_regions_before_showwindow() {
         "a newly hidden window must start with an empty visRgn"
     );
 
-    disp.move_window_to_global(&mut bus, window_addr, 100, 100, false);
+    disp.move_window_to_global(&mut bus, &mut cpu, window_addr, 100, 100, false);
     let current_gdevice = *disp.current_gdevice;
     disp.set_current_port_state(&mut bus, &mut cpu, window_addr, Some(current_gdevice));
 
@@ -880,7 +880,7 @@ fn hidden_window_showwindow_uses_directly_expanded_port_rect_after_setorigin() {
         false,
         0,
     );
-    disp.move_window_to_global(&mut bus, window, 0, 0, false);
+    disp.move_window_to_global(&mut bus, &mut cpu, window, 0, 0, false);
     let current_gdevice = *disp.current_gdevice;
     disp.set_current_port_state(&mut bus, &mut cpu, window, Some(current_gdevice));
 
@@ -6421,7 +6421,7 @@ fn check_moved_dialog_background(visible: bool) {
         }
     }
 
-    disp.move_window_to_global(&mut bus, dialog, 100, 60, false);
+    disp.move_window_to_global(&mut bus, &mut cpu, dialog, 100, 60, false);
     assert_eq!(
         bus.read_byte(screen + 80 * 320 + 120),
         if visible { 250 } else { 80 }
@@ -6494,7 +6494,7 @@ fn move_window_restores_exposed_desktop_when_host_hides_menu_bar() {
         "precondition: old window content area starts white"
     );
 
-    disp.move_window_to_global(&mut bus, window_addr, 450, 230, true);
+    disp.move_window_to_global(&mut bus, &mut cpu, window_addr, 450, 230, true);
 
     assert_eq!(
         bus.read_byte(old_content_probe),
@@ -6568,7 +6568,7 @@ fn move_window_reveals_and_invalidates_background_content() {
     let exposed_pixel = screen_base + 80 * 320 + 100;
     bus.write_byte(exposed_pixel, 173);
 
-    disp.move_window_to_global(&mut bus, front, 190, 140, true);
+    disp.move_window_to_global(&mut bus, &mut cpu, front, 190, 140, true);
 
     assert!(
         super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 80, 100),
@@ -9249,4 +9249,124 @@ fn window_content_color_ignores_indexed_device_color_tables() {
         super::super::TrapDispatcher::window_content_color(&bus, ctab_handle),
         None
     );
+}
+
+#[test]
+fn sizewindow_growth_paints_port_pattern_and_preserves_old_content() {
+    for update in [false, true] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen = bus.alloc(96 * 80);
+        bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen);
+        disp.set_screen_mode_for_test(screen, 96, 96, 80, 8);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        let window = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus, &mut cpu, window, screen, 10, 10, 30, 30,
+            "", 2, true, false, false, 0,
+        );
+        let pattern = bus.alloc(8);
+        bus.write_bytes(pattern, &[0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55]);
+        cpu.write_reg(Register::A7, TEST_SP - 4);
+        bus.write_long(TEST_SP - 4, pattern);
+        disp.dispatch_quickdraw(true, 0x07C, &mut cpu, &mut bus).unwrap().unwrap();
+        disp.validate_window_rect(&mut bus, window, (0, 0, 20, 20));
+        disp.event_queue.clear();
+        let clip = bus.read_long(window + 28);
+        let previous_port = disp.ensure_window_manager_port(&mut bus);
+        disp.set_current_port_state(&mut bus, &mut cpu, previous_port, None);
+        bus.fill_bytes(screen, 96 * 80, 0x7B);
+
+        let sp = TEST_SP - 10;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, if update { 0x0100 } else { 0 });
+        bus.write_word(sp + 2, 40);
+        bus.write_word(sp + 4, 50);
+        bus.write_long(sp + 6, window);
+        dispatch(&mut disp, 0x11D, &mut cpu, &mut bus).unwrap().unwrap();
+
+        assert_eq!(bus.read_byte(screen + 15 * 96 + 15), 0x7B, "old content survives");
+        let a = bus.read_byte(screen + 15 * 96 + 40);
+        let b = bus.read_byte(screen + 15 * 96 + 41);
+        assert_ne!(a, 0x7B, "new content is painted even with fUpdate=FALSE");
+        assert_ne!(a, b, "background pattern must survive; a solid host clear is wrong");
+        assert_eq!(*disp.current_port, previous_port);
+        assert_eq!(bus.read_long(window + 28), clip, "temporary paint clip is restored");
+        assert_eq!(disp.window_update_rect(&bus, window).is_some(), update);
+    }
+}
+
+#[test]
+fn movewindow_paints_newly_onscreen_content_and_preserves_copied_pixels() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen = bus.alloc(96 * 80);
+    bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen);
+    disp.set_screen_mode_for_test(screen, 96, 96, 80, 8);
+    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+    let window = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, window, screen, 10, 80, 50, 130,
+        "", 2, true, false, false, 0,
+    );
+    bus.fill_bytes(screen, 96 * 80, 0x7B);
+    let old_port = *disp.current_port;
+    disp.move_window_to_global(&mut bus, &mut cpu, window, 30, 20, false);
+    assert_eq!(bus.read_byte(screen + 25 * 96 + 35), 0x7B, "valid screen pixels are copied");
+    assert_ne!(bus.read_byte(screen + 25 * 96 + 65), 0x7B, "offscreen content has no valid pixels to copy");
+    assert_eq!(*disp.current_port, old_port);
+    assert!(disp.window_update_rect(&bus, window).is_some());
+}
+
+#[test]
+fn sizewindow_growth_does_not_paint_through_the_front_window() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen = bus.alloc(96 * 80);
+    bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen);
+    disp.set_screen_mode_for_test(screen, 96, 96, 80, 8);
+    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+    let back = bus.alloc(256);
+    let front = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, back, screen, 10, 10, 30, 30,
+        "", 2, true, false, false, 0,
+    );
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, front, screen, 15, 45, 35, 65,
+        "", 2, true, false, false, 0,
+    );
+    bus.fill_bytes(screen, 96 * 80, 0x7B);
+    let covered = screen + 20 * 96 + 50;
+    bus.write_byte(covered, 0x4D);
+    let sp = TEST_SP - 10;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0);
+    bus.write_word(sp + 2, 40);
+    bus.write_word(sp + 4, 70);
+    bus.write_long(sp + 6, back);
+    dispatch(&mut disp, 0x11D, &mut cpu, &mut bus).unwrap().unwrap();
+    assert_eq!(bus.read_byte(covered), 0x4D, "front content is excluded by the complex visRgn");
+    assert_ne!(bus.read_byte(screen + 20 * 96 + 35), 0x7B, "uncovered growth is painted");
+    assert_eq!(bus.read_byte(screen + 15 * 96 + 15), 0x7B, "old background content is preserved");
+    assert_eq!(*disp.current_port, front);
+}
+
+#[test]
+fn sizewindow_hidden_growth_does_not_paint_screen_pixels() {
+    let (mut disp, mut cpu, mut bus) = setup();
+    let screen = bus.alloc(96 * 80);
+    bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen);
+    disp.set_screen_mode_for_test(screen, 96, 96, 80, 8);
+    let window = bus.alloc(256);
+    disp.init_cgraf_window(
+        &mut bus, &mut cpu, window, screen, 10, 10, 30, 30,
+        "", 2, false, false, false, 0,
+    );
+    bus.fill_bytes(screen, 96 * 80, 0x7B);
+    let sp = TEST_SP - 10;
+    cpu.write_reg(Register::A7, sp);
+    bus.write_word(sp, 0);
+    bus.write_word(sp + 2, 40);
+    bus.write_word(sp + 4, 50);
+    bus.write_long(sp + 6, window);
+    dispatch(&mut disp, 0x11D, &mut cpu, &mut bus).unwrap().unwrap();
+    assert!(bus.read_bytes(screen, 96 * 80).iter().all(|&value| value == 0x7B));
 }
