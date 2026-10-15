@@ -9297,23 +9297,34 @@ fn sizewindow_growth_paints_port_pattern_and_preserves_old_content() {
 
 #[test]
 fn movewindow_paints_newly_onscreen_content_and_preserves_copied_pixels() {
-    let (mut disp, mut cpu, mut bus) = setup();
-    let screen = bus.alloc(96 * 80);
-    bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen);
-    disp.set_screen_mode_for_test(screen, 96, 96, 80, 8);
-    bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
-    let window = bus.alloc(256);
-    disp.init_cgraf_window(
-        &mut bus, &mut cpu, window, screen, 10, 80, 50, 130,
-        "", 2, true, false, false, 0,
-    );
-    bus.fill_bytes(screen, 96 * 80, 0x7B);
-    let old_port = *disp.current_port;
-    disp.move_window_to_global(&mut bus, &mut cpu, window, 30, 20, false);
-    assert_eq!(bus.read_byte(screen + 25 * 96 + 35), 0x7B, "valid screen pixels are copied");
-    assert_ne!(bus.read_byte(screen + 25 * 96 + 65), 0x7B, "offscreen content has no valid pixels to copy");
-    assert_eq!(*disp.current_port, old_port);
-    assert!(disp.window_update_rect(&bus, window).is_some());
+    for paint_white in [0, 1] {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen = bus.alloc(96 * 80);
+        bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen);
+        disp.set_screen_mode_for_test(screen, 96, 96, 80, 8);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        let window = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus, &mut cpu, window, screen, 10, 80, 50, 130,
+            "", 2, true, false, false, 0,
+        );
+        disp.validate_window_rect(&mut bus, window, (0, 0, 40, 50));
+        assert!(disp.window_update_rect(&bus, window).is_none());
+        bus.fill_bytes(screen, 96 * 80, 0x7B);
+        bus.write_word(0x09DC, paint_white);
+        let old_port = *disp.current_port;
+        disp.move_window_to_global(&mut bus, &mut cpu, window, 30, 20, false);
+        assert_eq!(bus.read_byte(screen + 25 * 96 + 35), 0x7B, "valid screen pixels are copied");
+        let exposed = bus.read_byte(screen + 25 * 96 + 65);
+        if paint_white == 0 {
+            assert_eq!(exposed, 0x7B, "PaintWhite=FALSE suppresses the erase");
+        } else {
+            assert_ne!(exposed, 0x7B, "offscreen content has no valid pixels to copy");
+        }
+        assert_eq!(*disp.current_port, old_port);
+        assert_eq!(bus.read_word(0x09DC), paint_white, "caller flag is preserved");
+        assert!(disp.window_update_rect(&bus, window).is_some(), "both flag values deliver an update");
+    }
 }
 
 #[test]
