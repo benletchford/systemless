@@ -403,3 +403,7 @@ then reloads/releases it before exercising the existing host tracking sequence.
 The tracking guest also obtains the watch cursor's metadata with GetResInfo and
 checks ResError, signed ID, CURS type and empty Pascal name. These checks exercise
 the public compiler wrappers for both CPU ABIs before host-driven tracking.
+
+The environment guest compares both GetDateTime and ReadDateTime with the live
+low-memory Time word and requires a nonzero initialized calendar. Native inline
+reads/OS traps and PPC imports must agree before the existing success marker.

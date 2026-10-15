@@ -159,7 +159,9 @@ signed integers through Pack7 and PPC imports. The original renders its numeric
 labels and completes a shared GPU CopyMask call. Standard cursor resource
 fallbacks now supply CURS 1..4 with normal shared handle lifetimes and application
 precedence. Shared GetResInfo now reports live resource ID/type/name on both CPUs.
-The original passes TILE 1101 metadata and decoding, then a longer bounded run
-repeats Random calls with a zero QuickDraw seed despite an advancing clock. The
-board remains blank and gameplay/control callbacks remain unfinished. Next: trace
-that seed and guest initialization loop. The full rebuild stays active.
+The original passes TILE 1101 metadata and decoding. A shared initialized calendar
+clock now supplies its date-based seed and advances with execution/host ticks;
+Random itself is unchanged. The original draws a populated board, then stops at
+SetEmptyRgn ($A8DD) during update handling. Gameplay and control callbacks remain
+unfinished. Next: empty-region mutation and original board interaction. The full
+rebuild stays active.

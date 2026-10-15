@@ -19,6 +19,60 @@ fn screenshot(app: &mut LoadedApplication, path: &Path) -> Result<(), Box<dyn st
     std::fs::write(path, ppm)?;
     Ok(())
 }
+struct SeedTrace {
+    enabled: bool,
+    changes: u32,
+    random: u32,
+}
+fn seed(app: &LoadedApplication) -> Option<(u32, u32)> {
+    let address = app.runtime.process.ports?.current_slot.0.checked_sub(126)?;
+    Some((address, app.runtime.memory.u32(GuestPtr(address)).ok()?))
+}
+fn advance(
+    app: &mut LoadedApplication,
+    budget: u64,
+    trace: &mut SeedTrace,
+) -> systemless_future::Result<Stop> {
+    if !trace.enabled {
+        return app.runtime.advance(budget);
+    }
+    for _ in 0..budget {
+        let before = seed(app);
+        let pc = match &app.runtime.cpu {
+            Cpu::M68k(c) => c.pc,
+            Cpu::PowerPc(c) => c.pc,
+        };
+        let calls = app.runtime.services.calls.len();
+        let result = app.runtime.advance(1);
+        let after = seed(app);
+        let random = app.runtime.services.calls[calls..]
+            .iter()
+            .any(|c| matches!(c, systemless_future::cpu::Call::Random));
+        if before != after && (trace.changes < 64 || after.is_some_and(|(_, value)| value == 0))
+            || random && trace.random < 4
+        {
+            println!("seed trace pc={pc:08x} before={before:?} after={after:?} random={random} code={:02x?}",app.runtime.memory.read(GuestPtr(pc.saturating_sub(24)),64));
+            if let Cpu::M68k(c) = &app.runtime.cpu {
+                println!(
+                    "seed trace registers={:08x?} stack={:02x?}",
+                    c.dar,
+                    app.runtime.memory.read(GuestPtr(c.dar[15]), 32)
+                );
+            }
+        }
+        if before != after {
+            trace.changes += 1;
+        }
+        if random {
+            trace.random += 1;
+        }
+        match result {
+            Ok(Stop::Budget) => {}
+            other => return other,
+        }
+    }
+    Ok(Stop::Budget)
+}
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 4 || !args.len().is_multiple_of(2) {
@@ -47,6 +101,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("virtual ticks per step {ticks}");
     println!("per-step budget {budget}");
+    let mut trace = SeedTrace {
+        enabled: std::env::var("SYSTEMLESS_PROBE_TRACE_SEED").is_ok_and(|v| v == "1"),
+        changes: 0,
+        random: 0,
+    };
     let mut fork = Vec::new();
     std::fs::File::open(&args[0])?
         .take(IMAGE_LIMIT as u64 + 1)
@@ -60,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if ticks != 0 {
         app.runtime.elapse_ticks(ticks)?;
     }
-    println!("startup {:?}", app.runtime.advance(budget)?);
+    println!("startup {:?}", advance(&mut app, budget, &mut trace)?);
     screenshot(&mut app, Path::new(&format!("{}-before.ppm", args[1])))?;
     let mut pointer = Pointer::default();
     let first = app.runtime.services.calls.len();
@@ -81,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut app.runtime.process.input,
             true,
         )?;
-        result = app.runtime.advance(budget);
+        result = advance(&mut app, budget, &mut trace);
         println!("click {} mouse down {result:?}", index + 1);
         if matches!(result, Ok(Stop::Budget | Stop::Waiting { .. })) {
             if ticks != 0 {
@@ -92,7 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &mut app.runtime.process.input,
                 false,
             )?;
-            result = app.runtime.advance(budget);
+            result = advance(&mut app, budget, &mut trace);
             println!("click {} mouse up {result:?}", index + 1);
         }
         if args.len() > 4 {
@@ -109,7 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if ticks != 0 {
             app.runtime.elapse_ticks(ticks)?;
         }
-        result = app.runtime.advance(tail);
+        result = advance(&mut app, tail, &mut trace);
         println!("tail budget {tail}: {result:?}");
     }
     if let Some(ports) = app.runtime.process.ports {

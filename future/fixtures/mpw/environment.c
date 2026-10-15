@@ -127,5 +127,11 @@ int main(void) {
         StringToNum("\p-4294967295",&number); if (number!=1) return 49;
         NumToString(0,decimal); if (decimal[0]!=1 || decimal[1]!='0') return 50;
     }
+    {
+        unsigned long seconds;
+        GetDateTime(&seconds);
+        if (!seconds || seconds!=*(unsigned long *)0x20c) return 51;
+        if (ReadDateTime(&seconds) || seconds!=*(unsigned long *)0x20c) return 52;
+    }
     PostEvent(diskEvt,0x600d); ExitToShell(); return 0;
 }

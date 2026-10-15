@@ -14,6 +14,7 @@ pub enum Architecture {
 pub enum Call {
     CreateResourceFile(GuestPtr),
     Decimal(crate::decimal::Op),
+    ReadDateTime(GuestPtr),
     Gestalt(u32),
     StillDown,
     Random,

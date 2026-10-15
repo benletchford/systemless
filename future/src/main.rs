@@ -561,6 +561,13 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => LoadedApplication::pef(&data, fork.as_deref())?,
     };
+    let unix_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    // Classic Time is a wrapping unsigned 32-bit count in the host's UTC policy.
+    app.runtime.set_date_time(
+        unix_seconds.wrapping_add(systemless_future::calendar::UNIX_OFFSET) as u32,
+    )?;
     if window {
         let event_loop = EventLoop::new()?;
         let mut host = App {

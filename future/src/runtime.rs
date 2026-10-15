@@ -62,6 +62,7 @@ pub struct Runtime {
     terminal: Option<Stop>,
     pub(crate) lifecycle: Option<crate::lifecycle::Lifecycle>,
     faulted: bool,
+    calendar: crate::calendar::Clock,
 }
 impl Runtime {
     pub fn new(memory: Memory, cpu: Cpu, graphics: Option<Graphics>) -> Self {
@@ -79,6 +80,7 @@ impl Runtime {
             terminal: None,
             lifecycle: None,
             faulted: false,
+            calendar: crate::calendar::Clock::default(),
         }
     }
     /// Refresh the host display from canonical screen bytes, even after exit.
@@ -108,15 +110,21 @@ impl Runtime {
         }
         result
     }
+    /// Choose the guest calendar epoch without changing TickCount. Hosts may set
+    /// wall time once; fixtures keep the loader's reproducible epoch.
+    pub fn set_date_time(&mut self, seconds: u32) -> Result<()> {
+        if self.faulted || self.terminal.is_some() {
+            return Err(Error::Cpu("cannot set a stopped process clock".into()));
+        }
+        self.calendar.set(&mut self.memory, seconds)
+    }
     /// Host-controlled deterministic time, including periods with no guest CPU
     /// execution. A host can inject events before advancing this clock.
     pub fn elapse_ticks(&mut self, ticks: u32) -> Result<()> {
         if self.faulted || self.terminal.is_some() {
             return Err(Error::Cpu("cannot advance a stopped process clock".into()));
         }
-        let now = self.memory.u32(GuestPtr(0x16a))?;
-        self.memory
-            .write(GuestPtr(0x16a), &now.wrapping_add(ticks).to_be_bytes())?;
+        self.calendar.advance(&mut self.memory, ticks)?;
         if let Some(wait) = &mut self.event_wait {
             wait.remaining = wait.remaining.saturating_sub(ticks);
         }
@@ -143,8 +151,7 @@ impl Runtime {
                 .checked_add(1)
                 .ok_or_else(|| Error::Cpu("instruction clock overflow".into()))?;
             if !self.abi.fixture && self.instructions.is_multiple_of(1000) {
-                let ticks = self.memory.u32(GuestPtr(0x16a))?.wrapping_add(1);
-                self.memory.write(GuestPtr(0x16a), &ticks.to_be_bytes())?;
+                self.calendar.advance(&mut self.memory, 1)?;
             }
             match self.cpu.step_with_abi(&mut self.memory, &self.abi)? {
                 Outcome::Continue => {}
@@ -433,6 +440,10 @@ impl Runtime {
                                 Err(error) => (0, error),
                             };
                             reply.apply(&mut self.cpu, &mut self.memory, value, error)?;
+                        }
+                        Call::ReadDateTime(destination) => {
+                            crate::calendar::read(&mut self.memory, destination)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
                         Call::Decimal(op) => {
                             let result = crate::decimal::call(&mut self.memory, op)?;
@@ -1331,6 +1342,7 @@ impl Runtime {
                         | Call::Rectangle(_)
                         | Call::ToolboxEvent { .. }
                         | Call::Gestalt(_)
+                        | Call::ReadDateTime(_)
                         | Call::Decimal(_)
                         | Call::StillDown
                         | Call::FindWindow { .. }

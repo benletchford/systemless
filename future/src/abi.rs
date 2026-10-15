@@ -9,6 +9,8 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    GetDateTime,
+    ReadDateTime,
     NumToString,
     StringToNum,
     Gestalt,
@@ -231,6 +233,8 @@ impl Abi {
             return None;
         }
         match symbol {
+            b"GetDateTime" => Some(Service::GetDateTime),
+            b"ReadDateTime" => Some(Service::ReadDateTime),
             b"NumToString" => Some(Service::NumToString),
             b"StringToNum" => Some(Service::StringToNum),
             b"GetMemFragment" => Some(Service::GetMemFragment),
@@ -508,6 +512,7 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa039 => Ok((Call::ReadDateTime(GuestPtr(c.dar[8])), Reply::M68kError)),
             0xa9ee => {
                 let selector = memory.u16(GuestPtr(sp))?;
                 let (op, reply) = match selector {
@@ -2141,6 +2146,7 @@ impl Abi {
                 mask_rect: GuestPtr(c.gpr[7]),
                 destination_rect: GuestPtr(c.gpr[8]),
             }),
+            Service::GetDateTime | Service::ReadDateTime => Call::ReadDateTime(GuestPtr(c.gpr[3])),
             Service::NumToString => Call::Decimal(crate::decimal::Op::Format {
                 number: c.gpr[3] as i32,
                 destination: GuestPtr(c.gpr[4]),
@@ -2561,7 +2567,8 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Intersects | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::GetResInfo
+                    Service::GetDateTime
+                        | Service::GetResInfo
                         | Service::CopyMask
                         | Service::NumToString
                         | Service::StringToNum

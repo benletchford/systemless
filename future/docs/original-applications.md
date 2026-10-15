@@ -353,3 +353,65 @@ SYSTEMLESS_PROBE_TICKS_PER_STEP (u32, default zero) through the existing host cl
 API. It reports the ending clock/QuickDraw seed, skips continuation after a
 terminal result and propagates service faults. Guest seed storage is never patched.
 Per-step screenshots precede the tail; the final screenshot includes it.
+
+
+## 2026-10-15: initialized shared calendar clock
+
+The random-loop trace identified a guest instruction at $01005AFC (MOVE.L $020C,
+(A0)) copying low-memory Time into qd.randSeed at $003FFF7E. InitGraf had correctly
+initialized that seed to one, and earlier tile-setup Random calls produced valid
+nonzero values. The application then replaced it with the uninitialized zero
+calendar word. Advancing TickCount could not fix a separate calendar word that
+never advanced. Legacy Systemless normalizes zero seeds differently, but changing
+Random would mask this clock initialization defect; its rebuild implementation
+and existing sequence/zero-edge tests remain unchanged.
+
+One Calendar Clock now owns the subsecond phase for both CPU backends. Time at
+$020C is an unsigned wrapping count of seconds since 1904-01-01; Ticks at $016A
+retains its existing wrapping behavior. Both the existing execution quantum (one
+tick per 1000 boundaries) and explicit host elapse_ticks update the same clock.
+Sixty modeled ticks advance Time by one second, preserving the remainder across
+execution, idle time and TickCount wrapping. Reads and write permission checks
+for both words precede publication; a fault leaves words and fractional phase
+unchanged. Direct guest Time edits remain authoritative for future advancement.
+The host set_date_time API resets the fractional phase without changing Ticks
+and rejects stopped processes.
+
+Core CODE/PEF loads start at the reproducible epoch 2000-01-01 00:00:00
+(3029529600 Macintosh seconds). The native application launcher replaces that
+value once with current host UTC time. Core execution does not sample wall time;
+fixtures/probes retain the reproducible default unless the host explicitly sets
+another epoch. This is a UTC profile with a 60-tick modeled second, not exact
+hardware timing, local time-zone/DST conversion or a battery-backed clock chip.
+Calendar conversions, guest SetDateTime and long-date utilities remain gaps.
+
+PPC GetDateTime (void) and ReadDateTime (OSErr), and native ReadDateTime $A039
+(A0 output, D0 result, no stack pop), share the same checked Time copy. The native
+trap has a shared Trap Manager entry. Direct assembly reads of $020C see the same
+word. These contracts follow Apple's [date/time startup model](https://leopard-adc.pepas.com/documentation/mac/OSUtilities/OSUtilities-105.html)
+and [ReadDateTime reference](https://leopard-adc.pepas.com/documentation/mac/OSUtilities/OSUtilities-106.html).
+Created file/directory dates now derive from initialized, advancing Time; parent
+modification-date maintenance remains a separate gap.
+
+
+Four new default tests cover fractional/mixed execution/idle advancement, seconds
+and tick wrapping, huge elapses, reset behavior, atomic permission faults and
+phase rollback, unsigned dates, both real CPU date-read routes, output guards,
+MemErr/ResErr preservation and the exact observed direct-calendar-to-seed guest
+instruction sequence before Random. Rebuilt MPW environment guests compare
+GetDateTime and ReadDateTime with the live Time word on both compiler targets.
+
+The original Super Mines three-click sequence with a 2000000-boundary tail now
+leaves the random loop and draws a populated board: cells, number glyphs and the
+flag count are visible. Its final clock is 1132 and QuickDraw seed 1609244819.
+It next stops at SetEmptyRgn ($A8DD), post-trap PC $0100C986, with native
+SP $0080FEBE naming region handle $10000EC0. This is rendered board initialization,
+not accepted click-to-play/gameplay or completed update/lifecycle handling.
+Next: shared SetEmptyRgn mutation/ABI ownership and finish this update path, then
+exercise original board interactions. The full rebuild goal stays active.
+
+SYSTEMLESS_PROBE_TRACE_SEED=1 enables bounded instruction-by-instruction seed
+observation. It records up to 64 ordinary transitions, every transition to zero
+and the first four Random calls with PC/code/register context. It changes no
+guest bytes and preserves the same execution budgets/yield/fault outcomes. The
+original private code and trace files remain outside the repository.
