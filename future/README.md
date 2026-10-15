@@ -218,15 +218,19 @@ full application and rebuild acceptance remain active.
 
 Sound Manager channel creation/disposal and SndDoImmediate share ownership and
 standard sampled playback between 68K and PPC. The shared renderer reads live
-8-bit mono buffers, resamples/mixes stereo PCM and applies gain/pan/volume. Native
+standard 8-bit mono and extended 8/16-bit mono/stereo buffers, resamples/mixes stereo PCM and applies gain/pan/volume. Native
 output uses a bounded CPAL transport; headless virtual waits advance completion
 without an audio device. Compiler-generated guests verify exact samples and
 completion. SndDoCommand now executes an inline guest-visible FIFO, waits on full
 queues without spinning, and runs same-ISA callbacks through the guest CPU.
 SndPlay now parses loaded format-1/format-2 resources into this same queue,
-with real synchronous waits and resource-scoped completion. Other header formats
-and Sound Manager version/capability queries remain unfinished. Both original
-EV and Marathon still stop at sound startup. Super Mines' recorded interaction
+with real synchronous waits and resource-scoped completion. Live channel/manager
+status and a virtual Sound Manager 3.0 ABI target now share both adapters. The
+capabilities report stereo, multichannel mixing and software 16-bit samples;
+recording, codecs, disk/double-buffer playback remain unfinished. The PowerPC
+NumVersion structure uses the actual caller-provided return buffer. Both original
+68K games pass the earlier sound-version call; EV next needs graphics-device
+attributes, while Marathon reports that Color QuickDraw is required. Super Mines' recorded interaction
 is automated/offscreen; live desktop and win/loss acceptance remain incomplete.
 
 
@@ -235,7 +239,10 @@ HGetState/HSetState, HPurge/HNoPurge and resource-bit operations preserve lock,
 purgeable and resource flags without changing 32-bit master addresses. Resource
 loads initialize those flags; detaching clears the resource bit. MoveHHi can
 relocate into the immediately adjacent free interval without crossing other
-allocations. General compaction/purging remains unfinished. The sound-enabled
+allocations. HandToHand duplicates the payload into a new independently owned,
+unlocked, unpurgeable non-resource handle; both adapters publish real allocation
+errors. The current allocator has one application heap; multiple heap zones and
+general compaction/purging remain unfinished. The sound-enabled
 Super Mines now completes its resource-sound callback and Save/Open route in
 a bounded offscreen run with explicit volume and virtual time.
 

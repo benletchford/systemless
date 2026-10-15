@@ -102,13 +102,14 @@ fn parse(m: &Memory, base: u32, size: usize) -> Result<std::result::Result<Resou
             if offset < command_end || offset.checked_add(22).is_none_or(|end| end > size) {
                 return Ok(Err(-206));
             }
-            let header = &data[offset..offset + 22];
-            let source = u32::from_be_bytes(header[..4].try_into().unwrap());
-            let length = u32::from_be_bytes(header[4..8].try_into().unwrap()) as usize;
-            if source == 0
+            let shape = match playback::layout(&data[offset..]) {
+                Ok(v) => v,
+                Err(e) => return Ok(Err(e)),
+            };
+            if shape.sample == 0
                 && offset
-                    .checked_add(22)
-                    .and_then(|v| v.checked_add(length))
+                    .checked_add(shape.header)
+                    .and_then(|v| v.checked_add(shape.bytes))
                     .is_none_or(|end| end > size)
             {
                 return Ok(Err(-206));

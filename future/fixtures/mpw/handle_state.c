@@ -5,7 +5,7 @@
 #include <Processes.h>
 #include <MacErrors.h>
 int main(void) {
-    Handle h, r, fresh;
+    Handle h, r, fresh, duplicate;
     SignedByte saved;
     Ptr original;
     h=NewHandle(16);if (!h || HGetState(h)!=0) return 1;
@@ -22,6 +22,11 @@ int main(void) {
     HLock(h);original=*h;MoveHHi(h);if (MemError()!=memLockedErr || *h!=original) return 16;
     HUnlock(h);
     r=GetResource('DATA',128);if (!r || (unsigned char)HGetState(r)!=0xe0) return 8;
+    duplicate=r;if (HandToHand(&duplicate) || duplicate==r || *duplicate==*r || GetHandleSize(duplicate)!=GetHandleSize(r) || HGetState(duplicate)!=0) return 17;
+    if (**duplicate!=**r) return 18;
+    **duplicate=**duplicate+1;if (**duplicate==**r) return 19;
+    DisposeHandle(duplicate);
+    duplicate=0;if (HandToHand(&duplicate)!=nilHandleErr || duplicate) return 20;
     original=*r;saved=HGetState(r);HUnlock(r);HNoPurge(r);
     if ((unsigned char)HGetState(r)!=0x20) return 9;
     HSetState(r,saved);DetachResource(r);

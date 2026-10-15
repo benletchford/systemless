@@ -226,6 +226,7 @@ pub enum Call {
         clear: bool,
     },
     DisposeHandle(u32),
+    CopyHandle(u32),
     MoveHandleHigh(u32),
     HandleState {
         handle: u32,
@@ -259,6 +260,8 @@ pub enum Call {
     },
     SoundVolume(i16),
     SoundChannel(crate::sound::Op),
+    SoundVersion,
+    SoundStatus(crate::sound::Status),
     SoundPlay {
         channel: u32,
         handle: u32,

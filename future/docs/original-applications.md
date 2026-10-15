@@ -1573,3 +1573,28 @@ audio/desktop/win-loss acceptance. The retained muted/zero-tick profile separate
 completes Save/Open with final pixels identical to the queue checkpoint:
 /tmp/systemless-mines-resource-muted-profile.txt and after.ppm. Do not compare
 random-board/timer pixels across the two different virtual-time profiles.
+
+
+### 2026-10-16 sound status, extended PCM and handle-copy refresh
+
+Original EV 1.0.5 68K passes SndSoundManagerVersion and HandToHand, then stops
+at SetDeviceAttribute (AA2D), PC $00014942. Its offscreen graphics setup creates
+its own GDevice handle; this is not evidence of rendered gameplay. Trace:
+/tmp/systemless-ev-hand-copy-next.txt. Original Marathon v1.2 68K passes the sound
+version call but explicitly reports "Sorry, Marathon requires Color QuickDraw."
+The subsequent error dialog stops at A985, PC $010108B2. Trace:
+/tmp/systemless-marathon-sound-info-next.txt. The virtual profile still correctly
+does not claim complete Color QuickDraw; do not flip a flag to bypass the check.
+
+Current PPC loader diagnostics, with actual application resource forks: EV
+requires missing strong PBHGetVolParmsSync; Marathon still requires
+NewRoutineDescriptor. Logs /tmp/systemless-ev-ppc-sound-info-next.txt and
+/tmp/systemless-marathon-ppc-sound-info-next.txt. Neither original is playable.
+
+The extended PCM renderer refresh again accepts all 167 original sound resources
+through synthetic 68K/PPC callers. The 32-frame prefix hashes and completion/
+cleanup results match the prior checkpoint exactly. Logs:
+/tmp/systemless-ev-sounds-stereo-check.txt,
+/tmp/systemless-ev-music-stereo-check.txt and
+/tmp/systemless-marathon-sounds-stereo-check.txt. This does not establish complete
+waveform, host audio, or original-game playback acceptance.

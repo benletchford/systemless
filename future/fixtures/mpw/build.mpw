@@ -115,3 +115,8 @@ Link -d -t 'APPL' -c 'FUTR' resource_sound.68k.o "{Libraries}"MacRuntime.o "{Lib
 MrC -sym off -opt off resource_sound.c -o resource_sound.ppc.o
 PPCLink resource_sound.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o resource_sound.ppc
 Rez -append -o resource_sound.68k resource_sound.r
+SC -sym off sound_info.c -o sound_info.68k.o
+Link -d -t 'APPL' -c 'FUTR' sound_info.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o sound_info.68k
+MrC -sym off -opt off sound_info.c -o sound_info.ppc.o
+PPCLink sound_info.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o sound_info.ppc
+Rez -append -o sound_info.68k sound_info.r

@@ -362,6 +362,25 @@ impl Process {
         self.mem_error = 0;
         Ok(master)
     }
+    /// Copy the payload, not resource identity or handle attributes. The runtime
+    /// currently owns one application heap; multiple heap zones remain unsupported.
+    pub fn copy_handle(&mut self, memory: &mut Memory, handle: u32) -> Result<u32> {
+        if !self.check_handle_flags(memory, handle)? {
+            return Ok(0);
+        }
+        let source = self.handles[&handle];
+        // Snapshot before allocation: a future compacting allocator must not
+        // invalidate a borrowed guest payload while obtaining the new block.
+        let bytes = memory
+            .read(GuestPtr(source.data), source.size as usize)?
+            .to_vec();
+        let copy = self.new_handle(memory, source.size, false)?;
+        if copy != 0 {
+            let data = memory.u32(GuestPtr(copy))?;
+            memory.write(GuestPtr(data), &bytes)?;
+        }
+        Ok(copy)
+    }
     pub fn handle_size(&mut self, memory: &Memory, handle: u32) -> Result<u32> {
         let Some(&HandleBlock { data, size, .. }) = self.handles.get(&handle) else {
             self.mem_error = if handle == 0 { NIL_HANDLE } else { MEM_BAD };

@@ -1684,3 +1684,70 @@ fn headless_cli_finishes_resource_sound_and_callbacks_without_a_host_audio_devic
         );
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn compiled_sound_info_reports_live_status_and_plays_signed_stereo_and_extended_resources() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("sound_info.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("sound_info.ppc")).unwrap();
+    for mut a in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, Some(&code)).unwrap(),
+    ] {
+        assert_eq!(
+            a.runtime.advance(50000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert_eq!(
+            a.runtime.render_sound(2, 8000).unwrap(),
+            [[1000, 3000], [-2000, -4000]]
+        );
+        a.runtime.elapse_ticks(1).unwrap();
+        assert_eq!(
+            a.runtime.advance(50000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert_eq!(a.runtime.services.completed_sound_callbacks, 1);
+        assert_eq!(
+            a.runtime.render_sound(2, 8000).unwrap(),
+            [[2000; 2], [-3000; 2]]
+        );
+        assert_eq!(a.runtime.advance(50000).unwrap(), Stop::Exit(0));
+        assert!(a.runtime.services.calls.iter().any(|call| matches!(
+            call,
+            Call::PostEvent {
+                what: 7,
+                message: 0xa823
+            }
+        )));
+    }
+}
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn headless_cli_finishes_sound_status_and_extended_samples_without_a_host_device() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    for (flag, path) in [
+        ("--code", root.join("sound_info.68k.rsrc")),
+        ("--pef", root.join("sound_info.ppc")),
+    ] {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_systemless-future"));
+        command.arg(flag).arg(path);
+        if flag == "--pef" {
+            command
+                .arg("--resources")
+                .arg(root.join("sound_info.68k.rsrc"));
+        }
+        let output = command.args(["--budget", "100000"]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("Exit(0)"),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}

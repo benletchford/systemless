@@ -177,6 +177,7 @@ pub enum Service {
     NewHandle,
     NewHandleClear,
     DisposeHandle,
+    HandToHand,
     MoveHHi,
     HGetState,
     HSetState,
@@ -203,6 +204,9 @@ pub enum Service {
     SndDoImmediate,
     SndDoCommand,
     SndPlay,
+    SndSoundManagerVersion,
+    SndChannelStatus,
+    SndManagerStatus,
     SndDisposeChannel,
     GetSoundVol,
     PBControlSync,
@@ -232,6 +236,7 @@ pub enum Reply {
     M68kA0,
     M68kGestalt,
     PpcGestalt(GuestPtr),
+    PpcHandleCopy(GuestPtr),
     M68kFileError,
     M68kOSEvent,
     M68kD0,
@@ -509,6 +514,7 @@ impl Abi {
             b"NewHandle" => Some(Service::NewHandle),
             b"NewHandleClear" => Some(Service::NewHandleClear),
             b"DisposeHandle" => Some(Service::DisposeHandle),
+            b"HandToHand" => Some(Service::HandToHand),
             b"SetHandleSize" => Some(Service::SetHandleSize),
             b"GetHandleSize" => Some(Service::GetHandleSize),
             b"ReleaseResource" => Some(Service::ReleaseResource),
@@ -516,6 +522,9 @@ impl Abi {
             b"SndDoImmediate" => Some(Service::SndDoImmediate),
             b"SndDoCommand" => Some(Service::SndDoCommand),
             b"SndPlay" => Some(Service::SndPlay),
+            b"SndSoundManagerVersion" => Some(Service::SndSoundManagerVersion),
+            b"SndChannelStatus" => Some(Service::SndChannelStatus),
+            b"SndManagerStatus" => Some(Service::SndManagerStatus),
             b"SndNewChannel" => Some(Service::SndNewChannel),
             b"SndDisposeChannel" => Some(Service::SndDisposeChannel),
             b"SetSoundVol" => Some(Service::SetSoundVol),
@@ -957,6 +966,54 @@ impl Abi {
                     Call::Device(crate::devices::Op::Select(device)),
                     Reply::None,
                 ))
+            }
+            0xa800 => {
+                let selector = c.dar[0];
+                match selector & 0x00ff_ffff {
+                    0x000c0008 if selector >> 24 == 0 => {
+                        memory.validate_write(GuestPtr(sp), 4)?;
+                        Ok((Call::SoundVersion, Reply::StackLong(GuestPtr(sp))))
+                    }
+                    0x00100008 | 0x00140008
+                        if selector >> 24 == 0
+                            || selector >> 24
+                                == if selector & 0x00ff_ffff == 0x00100008 {
+                                    5
+                                } else {
+                                    3
+                                } =>
+                    {
+                        let size = if selector & 0x00ff_ffff == 0x00100008 {
+                            10
+                        } else {
+                            6
+                        };
+                        let bytes = memory.read(GuestPtr(sp), size)?;
+                        let result = sp
+                            .checked_add(size as u32)
+                            .ok_or_else(|| Error::Cpu("sound status stack overflow".into()))?;
+                        memory.validate_write(GuestPtr(result), 2)?;
+                        let request = crate::sound::Status {
+                            channel: if size == 10 {
+                                Some(u32::from_be_bytes(bytes[6..10].try_into().unwrap()))
+                            } else {
+                                None
+                            },
+                            length: i16::from_be_bytes(bytes[4..6].try_into().unwrap()),
+                            destination: GuestPtr(u32::from_be_bytes(
+                                bytes[..4].try_into().unwrap(),
+                            )),
+                        };
+                        c.dar[15] = result;
+                        Ok((
+                            Call::SoundStatus(request),
+                            Reply::StackWord(GuestPtr(result)),
+                        ))
+                    }
+                    _ => Err(Error::Cpu(format!(
+                        "unsupported SoundDispatch selector {selector:#010x}"
+                    ))),
+                }
             }
             0xa805 => {
                 let args = memory.read(GuestPtr(sp), 10)?;
@@ -2331,6 +2388,7 @@ impl Abi {
                 },
                 Reply::M68kError,
             )),
+            0xa9e1 => Ok((Call::CopyHandle(c.dar[8]), Reply::M68kHandle)),
             0xa023 => Ok((Call::DisposeHandle(c.dar[8]), Reply::M68kError)),
             0xa024 => Ok((
                 Call::SetHandleSize {
@@ -3124,6 +3182,12 @@ impl Abi {
                 handle: c.gpr[3],
                 locked: service == Service::HLock,
             },
+            Service::HandToHand => {
+                let output = GuestPtr(c.gpr[3]);
+                memory.validate_write(output, 4)?;
+                let source = memory.u32(output)?;
+                return Ok((Call::CopyHandle(source), Reply::PpcHandleCopy(output)));
+            }
             Service::DisposeHandle => Call::DisposeHandle(c.gpr[3]),
             Service::SetHandleSize => Call::SetHandleSize {
                 handle: c.gpr[3],
@@ -3200,6 +3264,17 @@ impl Abi {
                 kind: c.gpr[3].to_be_bytes(),
                 id: c.gpr[4] as i16,
             },
+            Service::SndSoundManagerVersion => Call::SoundVersion,
+            Service::SndChannelStatus => Call::SoundStatus(crate::sound::Status {
+                channel: Some(c.gpr[3]),
+                length: c.gpr[4] as i16,
+                destination: GuestPtr(c.gpr[5]),
+            }),
+            Service::SndManagerStatus => Call::SoundStatus(crate::sound::Status {
+                channel: None,
+                length: c.gpr[3] as i16,
+                destination: GuestPtr(c.gpr[4]),
+            }),
             Service::SndPlay => Call::SoundPlay {
                 channel: c.gpr[3],
                 handle: c.gpr[4],
@@ -3268,6 +3343,12 @@ impl Abi {
             },
             Service::CreateDirectory => Call::CreateDirectory(GuestPtr(c.gpr[3])),
         };
+        // NumVersion is a structure: the PowerPC ABI passes its return buffer in r3.
+        if service == Service::SndSoundManagerVersion {
+            let output = GuestPtr(c.gpr[3]);
+            memory.validate_write(output, 4)?;
+            return Ok((call, Reply::StackLong(output)));
+        }
         if service == Service::Gestalt {
             return Ok((call, Reply::PpcGestalt(GuestPtr(c.gpr[4]))));
         }
@@ -3430,6 +3511,13 @@ impl Reply {
                     c.dar[8] = value;
                 }
                 Self::M68kFileError.apply(cpu, memory, error as i32 as u32, error)?;
+            }
+            Self::PpcHandleCopy(output) => {
+                let Cpu::PowerPc(c) = cpu else {
+                    return Err(Error::Cpu("PPC handle copy result on 68K".into()));
+                };
+                memory.write(output, &value.to_be_bytes())?;
+                c.gpr[3] = error as i32 as u32;
             }
             Self::PpcGestalt(output) => {
                 let Cpu::PowerPc(c) = cpu else {

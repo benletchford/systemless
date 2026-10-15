@@ -2224,3 +2224,53 @@ full-waveform/native audio or original-application execution acceptance.
 References: [SndPlay](https://leopard-adc.pepas.com/documentation/mac/Sound/Sound-35.html),
 [resource formats](https://leopard-adc.pepas.com/documentation/mac/Sound/Sound-60.html)
 and [sound headers](https://dev.os9.ca/techpubs/mac/Sound/Sound-74.html).
+
+
+## Live sound status, version ABI and extended PCM
+
+The process sound registry serves SndChannelStatus and SndManagerStatus across
+both CPUs. SCStatus is 24 bytes, SMStatus 6; shorter/nil outputs return paramErr,
+unknown channels return badChannel, and no partial status is published. The
+channel busy bit reflects active samples, queued work and an executing callback.
+Attributes retain the channel's actual initialization flags. Manager channel count
+includes idle registered channels. Disk times, unsupported pause state and obsolete
+CPU-load fields remain zero. Larger outputs retain caller bytes beyond the known
+structure. Queries preserve MemErr and ResErr.
+
+SndSoundManagerVersion targets the NumVersion 3.0 final ABI. The 68K dispatcher
+writes its four-byte Pascal stack result; the PowerPC ABI receives a hidden
+return buffer in r3 because NumVersion is a structure. Real MPW-generated calls
+verify this distinction. Gestalt snd reports only stereo output, multichannel
+mixing and software 16-bit samples (0x1801). It does not advertise sound input,
+recording, hardware 16-bit I/O, codecs, disk or double-buffer playback. This is
+an implementation target, not a claim of complete Sound Manager 3.0 behavior.
+
+The shared sample layout parser accepts standard 22-byte unsigned 8-bit mono
+headers and 64-byte extended headers for one/two channels and 8/16-bit PCM. It
+checks frame count times channels times sample width against bounded input and
+resource extents before submission. Interleaved 16-bit samples are signed big
+endian; 8-bit samples are unsigned binary offset. A voice retains frame count
+and byte extent separately; silent advancement counts frames. Interpolation
+operates independently per side; mono channel output averages a stereo source,
+while explicit stereo initialization preserves left/right. This software policy
+has exact deterministic tests, not native filter/dither conformance evidence.
+
+Primary sources: [Sound Manager](https://dev.os9.ca/techpubs/mac/pdf/Sound/Sound_Manager.pdf),
+[ExtSoundHeader](https://dev.os9.ca/techpubs/mac/Sound/Sound-75.html),
+[capabilities](https://dev.os9.ca/techpubs/mac/Sound/Sound-64.html), and signed
+16-bit representation in [Sound Components](https://dev.os9.ca/techpubs/mac/pdf/Sound/Sound_Components.pdf).
+
+## Handle payload duplication
+
+HandToHand snapshots an owned live handle's payload and allocates a distinct
+handle through the same process allocator. It copies no resource identity or
+handle attributes; the new block starts unlocked, unpurgeable and non-resource.
+The original payload and metadata survive all failures. Empty nil masters return
+nilHandleErr; freed/unknown handles return memWZErr; insufficient heap returns
+memFullErr without leaking an allocation. Zero-byte allocated blocks remain
+valid. Both adapters update MemErr; ResErr is unchanged. The 68K call consumes
+A0 and returns new A0 plus D0 error, whereas PPC dereferences the caller's handle
+variable, stores the new handle and returns the error in r3. Output storage is
+validated before allocation. The current process owns one application heap, so
+multiple source heap-zone selection remains a broader allocator requirement.
+Source: [HandToHand](https://dev.os9.ca/techpubs/mac/Memory/Memory-106.html).

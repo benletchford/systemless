@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 mod playback;
 mod queue;
 mod resource;
+mod status;
 use playback::Playback;
 pub(crate) use resource::Play;
 pub const CHANNEL_SIZE: u32 = 1060;

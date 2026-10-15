@@ -1311,6 +1311,15 @@ impl Runtime {
                                 self.process.mem_error,
                             )?;
                         }
+                        Call::CopyHandle(handle) => {
+                            let value = self.process.copy_handle(&mut self.memory, handle)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                value,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::MoveHandleHigh(handle) => {
                             self.process.move_handle_high(&mut self.memory, handle)?;
                             reply.apply(
@@ -1426,6 +1435,24 @@ impl Runtime {
                         Call::GetResource { kind, id } => {
                             let v = self.process.get_resource(&mut self.memory, kind, id)?;
                             reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
+                        }
+                        Call::SoundVersion => reply.apply(
+                            &mut self.cpu,
+                            &mut self.memory,
+                            crate::sound::VERSION,
+                            0,
+                        )?,
+                        Call::SoundStatus(request) => {
+                            let sound = std::mem::take(&mut self.process.sound);
+                            let result = sound.status(&mut self.memory, &mut self.process, request);
+                            self.process.sound = sound;
+                            let error = result?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
                         }
                         Call::SoundPlay {
                             channel,
@@ -1676,6 +1703,7 @@ impl Runtime {
                             }
                             | Call::SetHandleLock { .. }
                             | Call::HandleState { .. }
+                            | Call::CopyHandle(_)
                             | Call::MoveHandleHigh(_)
                             | Call::HandleAttribute { .. }
                             | Call::DisposeHandle(_)
@@ -1798,6 +1826,7 @@ impl Runtime {
                         | Call::NewHandle { .. }
                         | Call::SetHandleLock { .. }
                         | Call::HandleState { .. }
+                        | Call::CopyHandle(_)
                         | Call::MoveHandleHigh(_)
                         | Call::HandleAttribute { .. }
                         | Call::DisposeHandle(_)
@@ -1811,6 +1840,8 @@ impl Runtime {
                         | Call::SoundImmediate { .. }
                         | Call::SoundQueue { .. }
                         | Call::SoundPlay { .. }
+                        | Call::SoundVersion
+                        | Call::SoundStatus(_)
                         | Call::SoundVolume(_)
                         | Call::GetSoundVolume(_)
                         | Call::DeviceControl(_)

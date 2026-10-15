@@ -4474,3 +4474,58 @@ Changed-source sequential stdin formatting, fixture shell syntax and whitespace
 checks pass. Original corpus/probe processes also exited successfully. Private
 assets/captures are excluded from Git. This is a resource-playback checkpoint;
 full original-game/native-timing and rebuild acceptance remain unfinished.
+
+
+## 2026-10-16: sound status, extended PCM and handle duplication
+
+- Added shared live channel/manager status, version 3.0 ABI target and bounded
+  sound capabilities (stereo, multichannel mixing, software 16-bit samples).
+- Standard unsigned 8-bit mono and extended 8/16-bit mono/stereo playback use
+  checked frame/channel/sample-width extents. Signed 16-bit samples are big endian.
+  Mono channel output averages stereo sources; explicit stereo preserves sides.
+- Both CPU adapters use the same services. An actual MPW-compiled fixture caught
+  and now verifies the PowerPC hidden structure-return buffer for NumVersion;
+  the 68K adapter uses its Pascal stack result. The compiled stereo/status/resource
+  fixture passes on both architectures. Focused regression and strict all-target lint pass.
+- Original EV 1.0.5 68K now passes the previous SoundDispatch version blocker and
+  executes HandToHand during offscreen setup and next stops at SetDeviceAttribute
+  (AA2D), PC $00014942. Original Marathon 1.2 68K passes
+  the same sound call, then reports that Color QuickDraw is required; its subsequent
+  error-dialog path stops at A985. These are startup traces, not playable games.
+- Do not advertise Color QuickDraw merely to bypass the capability check: the
+  current environment intentionally does not claim it. Complete the actual color
+  drawing/display slice and verify it before updating the profile.
+- Sound recording, codecs, disk/double-buffer playback and complete Sound Manager
+  compatibility remain unsupported. Version 3.0 is an ABI target, not full parity.
+  The full rebuild goal remains active. No original game data was added to Git.
+
+
+### Next original-game implementation slice
+
+The refreshed EV trace after HandToHand is /tmp/systemless-ev-hand-copy-next.txt:
+AA2D SetDeviceAttribute at $00014942, with a guest-created 62-byte GDevice handle.
+Implement actual gdFlags mutation with owned-record validation and atomic bounds
+checks, not a successful no-op. Attribute operations must support application
+created offscreen device records as well as the initial display device. Preserve
+the one real shared process/device model and both ABI paths. The 68K Boolean is
+at the high byte of its two-byte Pascal slot; verify with a public-header fixture.
+Source: [Apple SetDeviceAttribute](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-281.html).
+Do not conflate these per-record flags with advertising system Color QuickDraw.
+Full indexed drawing destinations and display/palette behavior remain required
+before publishing that broader capability to Marathon.
+
+
+Final checkpoint validation: 454 tests pass, zero failures or skips, including
+all 30 compiler/CLI fixtures and GPU checks. Strict all-target lint, sequential
+changed-source stdin formatting, fixture shell syntax and whitespace checks pass.
+Evidence: /tmp/systemless-sound-status-hand-copy-all.txt and
+/tmp/systemless-hand-copy-lint.txt. The rebuilt handle_state fixture verifies
+actual resource duplication and native calling conventions on both CPUs.
+
+The original sound-enabled Super Mines Save/Open refresh again completes one
+sound callback, reopens its 1,972-byte game and returns to Waiting{ticks:10},
+PC $0100C798. Its board screenshot was visually inspected. Evidence:
+/tmp/systemless-mines-status-stereo.txt and after.ppm/png. The 167 original sound
+resource prefix/completion results match the preceding checkpoint exactly;
+see /tmp/systemless-{ev-sounds,ev-music,marathon-sounds}-stereo-check.txt.
+The full rebuild and original EV/Marathon gameplay acceptance remain unfinished.

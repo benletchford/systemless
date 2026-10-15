@@ -11,6 +11,7 @@ pub const PROCESSOR: u16 = 3;
 pub fn gestalt(selector: u32) -> std::result::Result<u32, i16> {
     match &selector.to_be_bytes() {
         b"sysv" => Ok(u32::from(SYSTEM_VERSION)),
+        b"snd " => Ok(crate::sound::ATTRIBUTES),
         b"proc" => Ok(u32::from(PROCESSOR)),
         _ => Err(-5551),
     }

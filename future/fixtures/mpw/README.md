@@ -579,3 +579,11 @@ bytes are synthetic; private original resources remain external inputs.
 raw sound fork. It executes synthetic guest calls, compares 32-frame prefixes
 across adapters, advances remaining sound silently and checks internal cleanup.
 It does not run the original application or prove complete/audible playback.
+
+
+`sound_info.c`/`.r` exercise the public NumVersion return ABI, Gestalt flags,
+live channel/manager status during playback and a guest callback, interleaved
+signed stereo samples, and synchronous extended resource playback/downmix.
+The headless CLI also completes these guests without opening an audio device.
+`handle_state.c` additionally duplicates a locked/purgeable resource through
+HandToHand, verifies independent payload and cleared flags, and checks nil errors.

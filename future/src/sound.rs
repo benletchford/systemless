@@ -48,3 +48,14 @@ pub fn control(memory: &mut Memory, pointer: GuestPtr) -> Result<i16> {
 mod channels;
 pub(crate) use channels::Play;
 pub use channels::{Manager, NewChannel, Op, CHANNEL_SIZE};
+
+/// Virtual Sound Manager ABI target, not the Systemless package version.
+/// Features are queried independently; codecs/recording/double buffering are not advertised.
+pub const VERSION: u32 = 0x03008000;
+pub const ATTRIBUTES: u32 = (1 << 0) | (1 << 11) | (1 << 12);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Status {
+    pub channel: Option<u32>,
+    pub length: i16,
+    pub destination: GuestPtr,
+}

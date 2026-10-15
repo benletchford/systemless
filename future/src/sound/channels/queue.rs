@@ -29,7 +29,7 @@ pub(super) fn check(m: &Memory, c: &Channel, bytes: [u8; 8], queued: bool) -> Re
             m.validate_write(GuestPtr(value), if code == 45 { 2 } else { 4 })?;
         }
         81 => {
-            if c.init & !0xb7 != 0 {
+            if c.init & !0xf7 != 0 {
                 return Ok(-201);
             }
             if let Err(error) = super::playback::voice(m, value)? {
