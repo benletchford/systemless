@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             attempts: 0,
             redraw_at: None,
             smoke: args.iter().any(|a| a == "--smoke"),
+            volume: None,
         };
         event_loop.run_app(&mut app)?;
         if let Some(e) = app.error {
@@ -292,6 +293,7 @@ struct App {
     attempts: u32,
     redraw_at: Option<std::time::Instant>,
     smoke: bool,
+    volume: Option<systemless_future::volume::Volume>,
 }
 impl App {
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl ToString) {
@@ -352,7 +354,15 @@ impl ApplicationHandler for App {
             return;
         };
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                if let Some(volume) = &mut self.volume {
+                    if let Err(error) = volume.checkpoint(&state.rt.process.files) {
+                        self.fail(event_loop, error);
+                        return;
+                    }
+                }
+                event_loop.exit();
+            }
             WindowEvent::Occluded(false) => window.request_redraw(),
             WindowEvent::Resized(size) => {
                 state.pointer.leave();
@@ -369,7 +379,14 @@ impl ApplicationHandler for App {
                     );
                     return;
                 }
-                match state.draw(window.clone()) {
+                let drawn = state.draw(window.clone());
+                if let Some(volume) = &mut self.volume {
+                    if let Err(error) = volume.checkpoint(&state.rt.process.files) {
+                        self.fail(event_loop, error);
+                        return;
+                    }
+                }
+                match drawn {
                     Ok(true) => self.frames += 1,
                     Ok(false) => {
                         self.redraw_at =
@@ -501,6 +518,7 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     use systemless_future::load::LoadedApplication;
     let mut executable = None;
     let mut resources = None;
+    let mut volume_path = None;
     let mut budget = 1_000_000u64;
     let mut graphics = false;
     let mut window = false;
@@ -536,6 +554,11 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     return Err("duplicate resource fork".into());
                 }
             }
+            "--volume" => {
+                if volume_path.replace(value.as_str()).is_some() {
+                    return Err("duplicate volume option".into());
+                }
+            }
             "--budget" => {
                 budget = value.parse()?;
                 if budget == 0 {
@@ -561,6 +584,9 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => LoadedApplication::pef(&data, fork.as_deref())?,
     };
+    let mut volume = volume_path
+        .map(|path| systemless_future::volume::Volume::open(path, &mut app.runtime.process.files))
+        .transpose()?;
     let unix_seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs();
@@ -580,6 +606,7 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             attempts: 0,
             redraw_at: None,
             smoke,
+            volume,
         };
         event_loop.run_app(&mut host)?;
         if let Some(error) = host.error {
@@ -605,7 +632,11 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let started = app.runtime.instructions;
     let stop = loop {
         let remaining = budget.saturating_sub(app.runtime.instructions - started);
-        match app.runtime.advance(remaining)? {
+        let advanced = app.runtime.advance(remaining);
+        if let Some(volume) = &mut volume {
+            volume.checkpoint(&app.runtime.process.files)?;
+        }
+        match advanced? {
             Stop::Waiting { ticks } => app.runtime.elapse_ticks(ticks)?,
             stop => break stop,
         }

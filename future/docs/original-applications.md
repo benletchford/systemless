@@ -1083,3 +1083,49 @@ and flag-number area were inspected. The run ends at Waiting{ticks:10}; its
 catalog retains the same saved bytes. This demonstrates reload within one
 process, not persistence across launches, every game state or native pixel
 parity. The earlier Quit-Cancel board-border difference remains unresolved.
+
+## Super Mines reload after process restart
+
+The optional persistent backing now proves the same original saved game across
+separate host processes. Start with a new volume path; an existing game may
+require the normal replacement confirmation. The development run used
+`/tmp/systemless-mines-persistent.slv` and these two independent invocations:
+
+```sh
+SYSTEMLESS_PROBE_VOLUME=/tmp/systemless-mines-persistent.slv \
+SYSTEMLESS_PROBE_CATALOG=1 SYSTEMLESS_PROBE_TAIL_BUDGET=2000000 \
+SYSTEMLESS_PROBE_SETTLE_AFTER_CLICK=3,4,5,6,7 SYSTEMLESS_PROBE_DRAG=5:60:121 \
+cargo run --manifest-path future/Cargo.toml --example probe_mouse -- \
+  RAW_RESOURCE_FORK /tmp/systemless-mines-persist-save \
+  256 171 145 150 402 231 30 65 35 10 175 86 407 299
+
+SYSTEMLESS_PROBE_VOLUME=/tmp/systemless-mines-persistent.slv \
+SYSTEMLESS_PROBE_CATALOG=1 SYSTEMLESS_PROBE_TAIL_BUDGET=2000000 \
+SYSTEMLESS_PROBE_SETTLE_AFTER_CLICK=3,4,5,6,7,8 SYSTEMLESS_PROBE_DRAG=5:60:52 \
+cargo run --manifest-path future/Cargo.toml --example probe_mouse -- \
+  RAW_RESOURCE_FORK /tmp/systemless-mines-persist-open \
+  256 171 145 150 402 231 30 65 35 10 270 86 180 169 407 299
+```
+
+The first run changes cells, chooses Quit, confirms saving, accepts Save and
+reaches Exit(0). The second starts a fresh CPU/heap/catalog, restores the writable
+volume, changes its new board, chooses Open, declines saving that board, selects
+Super Mines Game and opens it. The real guest filter and file reads run again;
+the saved board redraws and returns to Waiting{ticks:10} at PC $0100C798. Both
+logs show node 19, 1,972 game data bytes and no resource bytes, with matching
+16-byte prefixes. The preferences folder/settings file also survive. The picker
+and final board screenshots were visually inspected. Evidence is
+/tmp/systemless-mines-persist-{save,open}-probe.txt and associated step/after PPMs.
+
+This proves one bounded original game state across process launches using the
+new runtime's volume format. It does not establish HFS disk-image compatibility,
+native-window interaction, every game state, original PPC acceptance, general
+Mixed Mode or exact native pixel parity. Host checkpoint and failure boundaries
+are specified in [volumes](volumes.md); the full rebuild remains active.
+
+
+Centaurian's PPC load was rerun during the persistence milestone with the same
+recorded data/resource SHA-256 values. It still fails before execution at the
+strong InterfaceLib SndDisposeChannel import. Evidence:
+/tmp/systemless-volume-centaurian-next.txt. This remains an actual loader gap;
+no original PPC application launch or sound-channel acceptance is claimed.

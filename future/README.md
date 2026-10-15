@@ -128,8 +128,9 @@ access permissions and supports reading/writing, positions, EOF, metadata and
 close/reopen on both CPUs. Working-directory references now carry real folder
 identity through classic file calls and explicit HFS directory overrides. Both
 CPU routes open/query/close those references against the same catalog. Loaded
-application forks stay read-only; persistence
-and full filesystem compatibility remain pending.
+application forks stay read-only. Optional --volume backing now persists the
+writable catalog; full filesystem compatibility and per-service host durability
+remain pending.
 
 GetMHandle/GetMenuHandle now searches live regular/hierarchical lists without
 loading resources. Gestalt shares the known virtual profile and reports missing
@@ -150,7 +151,8 @@ selection and gameplay remain unfinished.
 
 CreateResFile writes a valid empty map through the same File Manager fork store,
 and checked resource-fork serialization preserves supported resource metadata.
-Opening additional resource maps, resource updates and persistence remain pending.
+Opening additional resource maps and Resource Manager updates remain pending;
+initialized fork bytes can persist through explicit volume backing.
 An earlier continuation note incorrectly called the original NewMenu trap
 CreateResFile; resource-file creation is proven by fixtures, not this original run.
 
@@ -187,8 +189,20 @@ remaining board-border redraw difference. The Yes-save branch now uses a shared 
 1,972-byte game file in the process-local catalog and reaches Exit(0). Cancelling
 that dialog returns to the game without creating the file. A same-process
 Save Game > Open Game sequence now selects the saved file, executes the guest
-filter, reads it back and resumes the board/event wait. Persistent storage,
+filter, reads it back and resumes the board/event wait. Per-service host durability/error semantics,
 exact board-redraw parity and broader gameplay remain separate acceptance work.
 SFGetFile now shares the cooperative picker, type filtering and real
 budgeted guest file-filter callbacks between both CPU backends. The full rebuild
 stays active.
+
+
+Writable files can now survive launches with the explicit `--volume PATH`
+application option. CODE and PEF share a validated catalog image containing
+mutable directories, metadata and both forks; executable application bytes and
+transient references remain separate. Host checkpoints use exclusive locking
+and atomic replacement. See [volume format and durability boundaries](docs/volumes.md).
+
+The original Super Mines save-and-Quit route now writes an explicit volume, and
+an independent fresh process reopens that game through its real filter and
+returns to the restored board/event wait. This is a bounded cross-launch check;
+full application and rebuild acceptance remain active.

@@ -1,0 +1,363 @@
+//! Portable writable catalog image. No host I/O, handles, WDs or CPU state.
+use super::{Directory, File, Files};
+use crate::{Error, Result};
+use std::collections::{BTreeMap, BTreeSet};
+pub const IMAGE_LIMIT: usize = super::io::LIMIT + 128 * 1024;
+const MAGIC: &[u8; 8] = b"SLVOLUME";
+fn bad(message: &str) -> Error {
+    Error::Volume(message.into())
+}
+const fn crc_table() -> [u32; 256] {
+    let mut table = [0; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut v = i as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            v = (v >> 1) ^ (0xedb88320u32 & 0u32.wrapping_sub(v & 1));
+            bit += 1;
+        }
+        table[i] = v;
+        i += 1;
+    }
+    table
+}
+const CRC: [u32; 256] = crc_table();
+fn crc(bytes: &[u8]) -> u32 {
+    !bytes
+        .iter()
+        .fold(u32::MAX, |v, b| CRC[((v as u8) ^ b) as usize] ^ (v >> 8))
+}
+fn word(out: &mut Vec<u8>, value: u32) {
+    out.extend(value.to_be_bytes());
+}
+struct Reader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8]> {
+        let end = self
+            .at
+            .checked_add(n)
+            .ok_or_else(|| bad("range overflow"))?;
+        let bytes = self
+            .bytes
+            .get(self.at..end)
+            .ok_or_else(|| bad("truncated catalog image"))?;
+        self.at = end;
+        Ok(bytes)
+    }
+    fn word(&mut self) -> Result<u32> {
+        Ok(u32::from_be_bytes(self.take(4)?.try_into().unwrap()))
+    }
+    fn name(&mut self) -> Result<Vec<u8>> {
+        let n = self.take(1)?[0] as usize;
+        let name = self.take(n)?;
+        if n == 0 || n > 31 || name.contains(&0) || name.contains(&b':') {
+            return Err(bad("invalid HFS leaf name"));
+        }
+        Ok(name.to_vec())
+    }
+}
+impl Files {
+    /// Stable, big-endian writable volume image; the loaded application is excluded.
+    pub fn export_volume(&self) -> Result<Vec<u8>> {
+        if self.name.is_empty() {
+            return Err(bad("no application volume"));
+        }
+        let mut out = MAGIC.to_vec();
+        for v in [
+            1,
+            self.next_node,
+            self.directories.len() as u32,
+            self.files.len() as u32,
+            0,
+            0,
+        ] {
+            word(&mut out, v);
+        }
+        for (&id, d) in &self.directories {
+            for v in [id, d.parent, d.created] {
+                word(&mut out, v);
+            }
+            out.push(d.name.len() as u8);
+            out.extend(&d.name);
+        }
+        for (&id, f) in &self.files {
+            for v in [id, f.parent, f.created, f.modified] {
+                word(&mut out, v);
+            }
+            out.extend(f.finder);
+            word(&mut out, f.data.len() as u32);
+            word(&mut out, f.resource.len() as u32);
+            out.push(f.name.len() as u8);
+            out.extend(&f.name);
+            out.extend(&f.data);
+            out.extend(&f.resource);
+        }
+        if out.len() + 4 > IMAGE_LIMIT {
+            return Err(bad("catalog image exceeds size limit"));
+        }
+        let payload = (out.len() - 32) as u32;
+        out[24..28].copy_from_slice(&payload.to_be_bytes());
+        let check = crc(&out);
+        word(&mut out, check);
+        Ok(out)
+    }
+    /// Restore before guest execution into a fresh writable catalog. Application
+    /// forks and their loader-owned open reference are preserved, never imported.
+    pub fn restore_volume(&mut self, image: &[u8]) -> Result<()> {
+        if self.name.is_empty()
+            || !self.files.is_empty()
+            || !self.directories.is_empty()
+            || !self.working.is_empty()
+            || self.open.values().any(|f| f.node != 16)
+        {
+            return Err(bad("restore requires a fresh writable catalog"));
+        }
+        if image.len() < 36 || image.len() > IMAGE_LIMIT {
+            return Err(bad("invalid catalog image size"));
+        }
+        let end = image.len() - 4;
+        let check = u32::from_be_bytes(image[end..].try_into().unwrap());
+        if crc(&image[..end]) != check {
+            return Err(bad("catalog checksum mismatch"));
+        }
+        let mut r = Reader {
+            bytes: &image[..end],
+            at: 0,
+        };
+        if r.take(8)? != MAGIC || r.word()? != 1 {
+            return Err(bad("unsupported catalog image format"));
+        }
+        let next = r.word()?;
+        let nd = r.word()? as usize;
+        let nf = r.word()? as usize;
+        if nd > 1024 || nf > 1024 || nd + nf > 1024 || next < 17 {
+            return Err(bad("invalid catalog counts or next ID"));
+        }
+        if r.word()? as usize != end - 32 || r.word()? != 0 {
+            return Err(bad("invalid catalog header"));
+        }
+        let mut dirs = BTreeMap::new();
+        let mut files = BTreeMap::new();
+        let mut ids = BTreeSet::new();
+        let mut names = BTreeSet::from([(
+            2,
+            self.name
+                .iter()
+                .map(u8::to_ascii_lowercase)
+                .collect::<Vec<_>>(),
+        )]);
+        let mut register = |id: u32, parent: u32, name: &[u8]| -> Result<()> {
+            if id < 17
+                || id >= next
+                || !ids.insert(id)
+                || !names.insert((
+                    parent,
+                    name.iter().map(u8::to_ascii_lowercase).collect::<Vec<_>>(),
+                ))
+            {
+                return Err(bad("duplicate or invalid catalog node"));
+            }
+            Ok(())
+        };
+        for _ in 0..nd {
+            let id = r.word()?;
+            let parent = r.word()?;
+            let created = r.word()?;
+            let name = r.name()?;
+            register(id, parent, &name)?;
+            dirs.insert(
+                id,
+                Directory {
+                    name,
+                    parent,
+                    created,
+                },
+            );
+        }
+        let mut used = 0usize;
+        for _ in 0..nf {
+            let id = r.word()?;
+            let parent = r.word()?;
+            let created = r.word()?;
+            let modified = r.word()?;
+            let finder = r.take(16)?.try_into().unwrap();
+            let data_len = r.word()? as usize;
+            let resource_len = r.word()? as usize;
+            used = used
+                .checked_add(data_len)
+                .and_then(|v| v.checked_add(resource_len))
+                .filter(|v| *v <= super::io::LIMIT)
+                .ok_or_else(|| bad("writable forks exceed 64 MiB limit"))?;
+            let name = r.name()?;
+            register(id, parent, &name)?;
+            let data = r.take(data_len)?.to_vec();
+            let resource = r.take(resource_len)?.to_vec();
+            files.insert(
+                id,
+                File {
+                    name,
+                    parent,
+                    data,
+                    resource,
+                    created,
+                    modified,
+                    finder,
+                },
+            );
+        }
+        if r.at != end {
+            return Err(bad("trailing catalog data"));
+        }
+        for parent in dirs
+            .values()
+            .map(|d| d.parent)
+            .chain(files.values().map(|f| f.parent))
+        {
+            let mut node = parent;
+            let mut depth = 0;
+            while node != 2 {
+                node = dirs
+                    .get(&node)
+                    .ok_or_else(|| bad("missing catalog parent"))?
+                    .parent;
+                depth += 1;
+                if depth > nd {
+                    return Err(bad("cyclic catalog directories"));
+                }
+            }
+        }
+        self.directories = dirs;
+        self.files = files;
+        self.next_node = next;
+        self.changed();
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn catalog() -> Files {
+        let mut f = Files::application(b"original data", Some(b"original resources"));
+        f.directories.insert(
+            17,
+            Directory {
+                name: b"Saves".to_vec(),
+                parent: 2,
+                created: 123,
+            },
+        );
+        f.files.insert(
+            18,
+            File {
+                name: vec![0x8e, b'G'],
+                parent: 17,
+                data: b"game".to_vec(),
+                resource: b"RSRC".to_vec(),
+                created: 124,
+                modified: 125,
+                finder: *b"GAMEFUTR12345678",
+            },
+        );
+        f.next_node = 20;
+        f
+    }
+    fn repair(b: &mut [u8]) {
+        let n = b.len() - 4;
+        let c = crc(&b[..n]);
+        b[n..].copy_from_slice(&c.to_be_bytes());
+    }
+    #[test]
+    fn round_trip_preserves_catalog_ids_forks_dates_finder_bytes_but_not_application_or_access_paths(
+    ) {
+        assert_eq!(crc(b"123456789"), 0xcbf43926);
+        let mut f = catalog();
+        let appref = f.open(super::super::Fork::Resource).unwrap();
+        f.open_working_directory(-1, 17, 44).unwrap();
+        let image = f.export_volume().unwrap();
+        assert!(!image.windows(8).any(|b| b == b"original"));
+        let mut restored = Files::application(b"different app", None);
+        let r = restored.open(super::super::Fork::Data).unwrap();
+        restored.restore_volume(&image).unwrap();
+        assert_eq!(restored.export_volume().unwrap(), image);
+        assert_eq!(
+            restored.fork_bytes(super::super::Fork::Data).unwrap(),
+            b"different app"
+        );
+        assert_eq!(restored.open.len(), 1);
+        assert!(restored.open.contains_key(&r));
+        assert!(restored.working.is_empty());
+        assert_eq!(f.open[&appref].node, 16);
+        assert_eq!(restored.files[&18].finder, *b"GAMEFUTR12345678");
+        assert_eq!(
+            (restored.files[&18].created, restored.files[&18].modified),
+            (124, 125)
+        );
+        assert_eq!(restored.directories[&17].created, 123);
+    }
+    #[test]
+    fn malformed_images_fail_transactionally_including_valid_checksum_graph_corruption() {
+        let valid = catalog().export_volume().unwrap();
+        let empty = Files::application(&[], None).export_volume().unwrap();
+        for n in 0..valid.len() {
+            let mut f = Files::application(&[], None);
+            assert!(f.restore_volume(&valid[..n]).is_err());
+            assert_eq!(f.export_volume().unwrap(), empty);
+        }
+        for (offset, value) in [
+            (8, 2u32),
+            (12, 18),
+            (16, 1025),
+            (20, 1025),
+            (24, 0),
+            (28, 1),
+            (32, 16),
+            (36, 17),
+            (50, 17),
+            (54, 99),
+            (82, u32::MAX),
+            (86, u32::MAX),
+        ] {
+            let mut image = valid.clone();
+            image[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+            repair(&mut image);
+            let mut f = Files::application(&[], None);
+            assert!(f.restore_volume(&image).is_err(), "offset {offset}");
+            assert_eq!(f.export_volume().unwrap(), empty);
+        }
+        let mut corrupt = valid.clone();
+        corrupt[45] ^= 1;
+        assert!(Files::application(&[], None)
+            .restore_volume(&corrupt)
+            .is_err());
+        let mut f = catalog();
+        let before = f.export_volume().unwrap();
+        assert!(f.restore_volume(&valid).is_err());
+        assert_eq!(f.export_volume().unwrap(), before);
+    }
+    #[test]
+    fn exhausted_imported_ids_report_file_errors_without_wrapping_or_changing_catalog() {
+        use crate::memory::{GuestPtr, Memory, Permissions};
+        let mut source = Files::application(&[], None);
+        source.next_node = u32::MAX;
+        let image = source.export_volume().unwrap();
+        let mut f = Files::application(&[], None);
+        f.restore_volume(&image).unwrap();
+        assert_eq!(f.create_file(b"new", -1, 2, 0, [0; 16]), Err(-33));
+        let mut m = Memory::default();
+        m.map(GuestPtr(0), vec![0; 4096], Permissions::RW).unwrap();
+        m.map(GuestPtr(0x2000), vec![0; 128], Permissions::RW)
+            .unwrap();
+        m.write(GuestPtr(0x2050), b"\x03dir").unwrap();
+        m.write(GuestPtr(0x2012), &0x2050u32.to_be_bytes()).unwrap();
+        m.write(GuestPtr(0x2016), &(-1i16).to_be_bytes()).unwrap();
+        m.write(GuestPtr(0x2030), &2u32.to_be_bytes()).unwrap();
+        assert_eq!(f.create_directory(&mut m, GuestPtr(0x2000)).unwrap(), -33);
+        assert_eq!(m.u16(GuestPtr(0x2010)).unwrap() as i16, -33);
+        assert_eq!(f.export_volume().unwrap(), image);
+    }
+}

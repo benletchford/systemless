@@ -38,6 +38,7 @@ mod stdlib;
 pub mod text;
 pub mod textedit;
 pub mod traps;
+pub mod volume;
 pub mod windows;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -66,6 +67,8 @@ pub enum Error {
     Service(u32),
     #[error("graphics: {0}")]
     Graphics(String),
+    #[error("volume: {0}")]
+    Volume(String),
     #[error("invalid fixture: {0}")]
     Fixture(String),
 }

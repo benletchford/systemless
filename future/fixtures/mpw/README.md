@@ -486,3 +486,11 @@ The ignored compiled_open_file test checks two callback markers, equal dialog
 pixels, no-spin waits, Open/Cancel completion and window cleanup on both CPUs.
 Open must return Visible's type/name/WD and the guest must read ABC through it.
 No original application binary is included in this fixture.
+
+
+persistence.c creates a Saves:Game file with Finder type SAVE, data PERSIST and
+resource bytes RSRC. On subsequent launches it validates metadata and reads both
+forks. The ignored compiled_guests_preserve_both_forks test writes with 68K,
+reopens with fresh PPC and 68K runtimes, then launches both real CLI targets
+against the same volume. Every read must reach Exit(0) and leave the image bytes
+unchanged. This test needs generated MPW binaries but no GPU.

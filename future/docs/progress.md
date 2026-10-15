@@ -3834,3 +3834,72 @@ The original same-process save/reload was separately reproduced and its picker
 and final board were visually inspected. No complete-rebuild claim is made.
 Final focused callback/ABI tests, strict all-target Clippy, sequential changed-file
 stdin formatting checks, fixture shell syntax and whitespace checks also pass.
+
+
+### Portable writable volumes and original reload after restart
+
+The File Manager now exports and transactionally restores one versioned writable
+catalog image. Both forks, raw Macintosh names, catalog IDs/parents, Finder bytes
+and creation/modification dates persist. The loaded application image remains
+separate and its loader-owned open resource reference survives import. Live file
+and WD references, access marks, CPU/heap/UI state are never restored. The same
+catalog is reusable sequentially by CODE and PEF guests.
+
+The pure codec validates CRC-32, version/reserved/length fields, bounds, names,
+IDs, sibling uniqueness, parent existence/type and directory cycles before
+committing. It keeps the shared 64 MiB aggregate fork and 1,024-node limits,
+retains next-ID identity and reports exhausted IDs without wrapping or losing
+File Manager ioResult publication. Corrupt/truncated images leave the original
+catalog intact. The complete format is documented in volumes.md; it is an
+independent writable-volume format, not an HFS disk image or emulator save state.
+
+The host Volume owns explicit paths, bounded reads, a stable-sidecar exclusive
+OS lock, create-new temporary writes, file synchronization, atomic replacement
+and Unix parent-directory synchronization. Failed replacement leaves the old
+complete image available and supports retry. Successful File Manager mutations
+advance a host revision; unchanged/read-only/access-path boundaries do not
+rewrite the image. Host I/O stays outside guest services. --volume PATH works
+with both loaded application formats in headless/native launch paths; no-volume
+behavior remains process-local. Checkpoints occur after advance/draw boundaries
+and on normal host close, including successful file changes before a later
+budget/fault stop. Host I/O failures are reported by the host, not translated
+into already-completed guest service results. Per-service flush durability,
+concurrent mounting, in-flight operation crash recovery and native-window
+behavioral acceptance remain unfinished.
+
+Public-header persistence.c creates Saves:Game with Finder type SAVE, data
+PERSIST and resource RSRC. A fresh PPC process reopens the 68K-written image,
+validates metadata and reads both forks. Another fresh 68K runtime and actual
+CLI child processes repeat the read with identical saved bytes. New tests cover
+codec corruption/topology/limits, exclusive locking, atomic failure/retry,
+mutation checkpoints, error/unchanged paths, CLI malformed-image rejection and
+budget-boundary checkpointing. The compiler fixtures need no graphics adapter.
+
+Original Super Mines now saves and exits in one host process, then reloads its
+1,972-byte game in a separate fresh host process. The persisted Preferences and
+settings file also return. The second run executes its actual file filter,
+selects/reads the saved game, redraws the board and resumes Waiting{ticks:10} at
+$0100C798. Its picker and final board were visually inspected. Exact two-process
+recipes and logs are recorded in original-applications.md. Private binaries,
+volume images and screenshots remain outside Git.
+
+Next executable milestones: continue original PPC application loading through
+its concrete unresolved import/service gaps, expand original lifecycle/gameplay
+coverage and production cross-ISA callbacks, and resolve remaining graphics,
+File Manager flush/error and native host contracts. The full rebuild goal stays
+active until all original requirements are fulfilled.
+
+The next PPC gap was refreshed against the actual restored Centaurian FAT
+application: the current PEF loader still rejects the strong InterfaceLib
+SndDisposeChannel import before execution. Data/resource sizes and SHA-256 values
+match the original recorded inputs. Evidence:
+/tmp/systemless-volume-centaurian-next.txt. Implement real shared Sound Manager
+channel lifetime/ABI behavior rather than aliasing this import to success, then
+continue the original load through its next concrete gap.
+
+Validation: all 371 tests pass (299 default and 72 optional GPU/MPW), with zero
+failures or skips across 61 result groups. Strict all-target Clippy, sequential
+changed-file stdin formatting, fixture shell syntax and whitespace checks pass.
+The original game's two processes were separately run and visually inspected;
+the restored Centaurian PPC input was freshly checked for its next loader gap.
+No native System 7 comparison or completed-rebuild claim is made.

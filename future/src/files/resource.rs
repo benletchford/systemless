@@ -38,6 +38,7 @@ impl Files {
             return Err(-33);
         }
         let node = self.next_node;
+        let next = node.checked_add(1).ok_or(-33i16)?;
         self.files.insert(
             node,
             File {
@@ -50,7 +51,8 @@ impl Files {
                 finder,
             },
         );
-        self.next_node += 1;
+        self.next_node = next;
+        self.changed();
         Ok(node)
     }
     pub fn create_resource_file(&mut self, memory: &Memory, name: GuestPtr) -> Result<i16> {
@@ -91,6 +93,7 @@ impl Files {
             },
         };
         self.files.get_mut(&node).unwrap().resource = bytes;
+        self.changed();
         Ok(0)
     }
 }

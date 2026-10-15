@@ -8,9 +8,11 @@ use std::collections::BTreeMap;
 mod browse;
 mod io;
 mod resource;
+mod volume;
 mod working;
 pub use browse::{CatalogEntry, DirectoryView};
 pub use io::Op;
+pub use volume::IMAGE_LIMIT as VOLUME_IMAGE_LIMIT;
 pub use working::WorkingOp;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fork {
@@ -59,9 +61,17 @@ pub struct Files {
     files: BTreeMap<u32, File>,
     directories: BTreeMap<u32, Directory>,
     next_node: u32,
+    revision: u64,
     working: BTreeMap<i16, (u32, u32)>,
 }
 impl Files {
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+    fn changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     pub(crate) fn application(data: &[u8], resource: Option<&[u8]>) -> Self {
         Self {
             name: b"Application".to_vec(),
@@ -72,6 +82,7 @@ impl Files {
             files: BTreeMap::new(),
             directories: BTreeMap::new(),
             next_node: 17,
+            revision: 0,
             working: BTreeMap::new(),
         }
     }
@@ -304,7 +315,9 @@ impl Files {
                     Err(-120)
                 } else if self.child(parent, leaf).is_some() {
                     Err(-48)
-                } else if self.directories.len() + self.files.len() >= 1024 {
+                } else if self.directories.len() + self.files.len() >= 1024
+                    || self.next_node == u32::MAX
+                {
                     Err(-33)
                 } else {
                     Ok(parent)
@@ -314,6 +327,7 @@ impl Files {
         let error: i16 = match target {
             Ok(parent) => {
                 let id = self.next_node;
+                let next = id + 1;
                 let created = memory.u32(GuestPtr(0x20c))?; // shared Macintosh Time global.
                 self.directories.insert(
                     id,
@@ -323,7 +337,8 @@ impl Files {
                         created,
                     },
                 );
-                self.next_node += 1;
+                self.next_node = next;
+                self.changed();
                 pb[48..52].copy_from_slice(&id.to_be_bytes());
                 0
             }

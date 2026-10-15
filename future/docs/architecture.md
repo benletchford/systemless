@@ -239,8 +239,10 @@ files retain mutable, independent forks within the process. Host paths are not e
 PBGetFCBInfoSync and HFSDispatch selector 8 report actual fork length, allocation
 extent, read-only/resource flags, mark, name, volume and parent. Indexed and direct
 reference queries share the same table. Parameter/name destinations are validated
-before either is written. Asynchronous I/O, directory operations, guest open/read/
-write/close and persistence remain pending. This is a virtual volume model, not an
+before either is written. Directory operations and guest open/read/write/close
+now share the same catalog. Optional host backing persists writable files;
+asynchronous I/O and per-service host flush/error semantics remain pending.
+This is a virtual volume model, not an
 HFS disk-image implementation. Source fork bytes remain separate from mutable
 resource handles until an explicit save/flush model exists.
 
@@ -929,9 +931,10 @@ Guest output is validated before inserting or allocating an ID. Dates come from
 the shared low-memory Time value ($20C), initialized to the loader/host calendar
 epoch and advanced by the shared clock. Parent modification dates are not yet
 maintained.
-Directories and newly created files are in-memory process state: application
-bytes remain read-only. File deletion, persistence, working-directory references
-and MacRoman folding remain unfinished.
+Directories and newly created files use shared process state with optional host
+volume backing; application bytes remain read-only. File deletion and working
+directory references now share that catalog. MacRoman folding and complete host
+durability/error integration remain unfinished.
 
 PBGetFInfoSync and PBHGetFInfoSync share the catalog's application metadata
 projection, with their own 80-byte guest parameter layout. Hierarchical lookup
@@ -1754,7 +1757,7 @@ WD/path resolution. Closed mutable files lose both forks; open files, nonempty
 folders and folders with open WDs return fBsyErr. The loaded application is
 protected. Tests cover the signed CPU/parameter-block errors, closed-file
 removal and busy/protected directory cases. Deletion only affects process-local
-nodes; host paths and persistence remain outside this File Manager model.
+nodes; host paths and actual disk I/O remain outside this File Manager model.
 
 
 ### Classic open dialog and production file-filter callbacks
@@ -1789,4 +1792,19 @@ relative fragments, fat descriptors and cross-ISA routines explicitly fail.
 This is production same-ISA callback support, not general Mixed Mode or
 CallUniversalProc/NewRoutineDescriptor support. Native pixel parity, hooks,
 modern/custom Standard File APIs, remembered directories, multiple volumes,
-clipboard/focus behavior and host persistence remain unfinished.
+clipboard/focus behavior and complete host flush/error semantics remain unfinished.
+
+
+### Writable catalog persistence at the host boundary
+
+Files now encodes/transactionally restores one bounded portable writable catalog,
+including IDs, directories, Finder metadata/dates and both forks. Application
+forks, live file/WD references and guest execution state remain process-owned.
+The same File Manager mutation points update a host revision counter for both
+CPUs. The optional host Volume owns paths, locking, bounded reads and synchronized
+atomic image replacement; guest services do not acquire host path knowledge.
+Headless/native launch paths accept --volume and checkpoint at execution/close
+boundaries. No-volume behavior remains process-local. The codec, version-1 wire
+format, validation rules, platform evidence and incomplete per-service flush/error
+semantics are detailed in [volumes](volumes.md). This is persistence of Macintosh
+file state, not a snapshot of CPU/UI state or an HFS disk image.

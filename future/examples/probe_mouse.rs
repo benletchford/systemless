@@ -55,7 +55,7 @@ fn pixels(app: &LoadedApplication, points: &[(u32, u32)]) -> Option<Vec<bool>> {
         })
         .collect()
 }
-fn advance(
+fn advance_guest(
     app: &mut LoadedApplication,
     budget: u64,
     trace: &mut ProbeTrace,
@@ -111,6 +111,20 @@ fn advance(
         }
     }
     Ok(Stop::Budget)
+}
+fn advance(
+    app: &mut LoadedApplication,
+    budget: u64,
+    trace: &mut ProbeTrace,
+    volume: &mut Option<systemless_future::volume::Volume>,
+) -> systemless_future::Result<Stop> {
+    let result = advance_guest(app, budget, trace);
+    if let Some(volume) = volume {
+        volume
+            .checkpoint(&app.runtime.process.files)
+            .map_err(|e| systemless_future::Error::Volume(e.to_string()))?;
+    }
+    result
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
@@ -220,6 +234,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .take(IMAGE_LIMIT as u64 + 1)
         .read_to_end(&mut fork)?;
     let mut app = LoadedApplication::code(&fork)?;
+    let mut volume = std::env::var_os("SYSTEMLESS_PROBE_VOLUME")
+        .map(|path| systemless_future::volume::Volume::open(path, &mut app.runtime.process.files))
+        .transpose()?;
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let mut gpu = pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000)))?;
     gpu.palette[0] = [255; 4];
@@ -228,7 +245,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if ticks != 0 {
         app.runtime.elapse_ticks(ticks)?;
     }
-    println!("startup {:?}", advance(&mut app, budget, &mut trace)?);
+    println!(
+        "startup {:?}",
+        advance(&mut app, budget, &mut trace, &mut volume)?
+    );
     screenshot(&mut app, Path::new(&format!("{}-before.ppm", args[1])))?;
     let mut pointer = Pointer::default();
     let first = app.runtime.services.calls.len();
@@ -249,7 +269,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut app.runtime.process.input,
             true,
         )?;
-        result = advance(&mut app, budget, &mut trace);
+        result = advance(&mut app, budget, &mut trace, &mut volume);
         println!("click {} mouse down {result:?}", index + 1);
         if matches!(result, Ok(Stop::Budget | Stop::Waiting { .. })) {
             if ticks != 0 {
@@ -267,7 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     (512, 342),
                     (512, 342),
                 )?;
-                result = advance(&mut app, budget, &mut trace);
+                result = advance(&mut app, budget, &mut trace, &mut volume);
                 println!("click {step} drag ({x},{y}) {result:?}");
                 screenshot(
                     &mut app,
@@ -282,7 +302,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &mut app.runtime.process.input,
                 false,
             )?;
-            result = advance(&mut app, budget, &mut trace);
+            result = advance(&mut app, budget, &mut trace, &mut volume);
             println!("click {} mouse up {result:?}", index + 1);
         }
         if settle_after.contains(&(index + 1))
@@ -291,7 +311,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if ticks != 0 {
                 app.runtime.elapse_ticks(ticks)?;
             }
-            result = advance(&mut app, tail, &mut trace);
+            result = advance(&mut app, tail, &mut trace, &mut volume);
             println!("settle after click {} budget {tail}: {result:?}", index + 1);
         }
         if args.len() > 4 {
@@ -308,7 +328,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if ticks != 0 {
             app.runtime.elapse_ticks(ticks)?;
         }
-        result = advance(&mut app, tail, &mut trace);
+        result = advance(&mut app, tail, &mut trace, &mut volume);
         println!("tail budget {tail}: {result:?}");
     }
     if let Some(ports) = app.runtime.process.ports {

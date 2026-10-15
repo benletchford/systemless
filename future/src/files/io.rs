@@ -119,6 +119,14 @@ impl Files {
         let mut pb = memory.read(pointer, size)?.to_vec();
         memory.validate_write(pointer, size)?;
         let error = self.execute_io(memory, &mut pb, op)?;
+        if error == 0
+            && matches!(
+                op,
+                Op::Create { .. } | Op::Delete { .. } | Op::SetInfo { .. } | Op::Write | Op::SetEof
+            )
+        {
+            self.changed();
+        }
         pb[16..18].copy_from_slice(&error.to_be_bytes());
         memory.write(pointer, &pb)?;
         Ok(error)
