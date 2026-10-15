@@ -5259,3 +5259,123 @@ was inspected and is byte-identical to the resource-map checkpoint. Evidence:
 interaction-refresh step above; native presentation/audio and win/loss acceptance
 remain open. Both exhaustive acceptance batches remain running and must be resumed
 before changing runtime/test/compiler source. The full rebuild stays active.
+
+
+### Timer checkpoint follow-up: CI and next display slice
+
+GitHub's two Future runtime jobs for 28a3e05e07c24ebd5998e3872c5b8afa4c47d67c
+pass their default cargo test step but fail strict all-target Clippy. The remote
+stable toolchain is Rust 1.99; the local prior all-target pass used Rust 1.95.
+The reported failures are the newer constant-size chunk-iteration lint and a
+byte-literal lint. Evidence: /tmp/systemless-timers-ci-run-details.json and
+/tmp/systemless-timers-ci-lints.txt. Do not describe current CI as green.
+
+The repairs were prepared and validated in the isolated source tree
+/tmp/systemless-future-ci-style/future, then promoted after both exhaustive
+batches completed (see the following acceptance update). Patch:
+/tmp/systemless-ci-style.patch; changed-file list:
+/tmp/systemless-ci-style-changed-files.txt. It applies cleanly to the current
+worktree with git apply --check. Strict Rust 1.99 all-target lint passes, exit 0:
+/tmp/systemless-ci-style-rust199-clippy-acceptance.txt. Existing affected tests
+pass 114 cases, zero failures/skips, exit 0:
+/tmp/systemless-ci-style-rust199-tests.txt. This includes actual-GPU menu,
+dialog, TextEdit, polygon and indexed-pixel cases. No warnings were suppressed
+or toolchain pinned backward. The APIs used are stable since Rust 1.88; an
+isolated Rust 1.93 minimum-version check also passes, exit 0:
+/tmp/systemless-ci-style-msrv-check.txt.
+
+The timer batches 21627/76629 have now completed successfully; the source
+fingerprint was verified before promoting the patch. Compiler repair commit:
+e08716f8f, pushed to the authorized dev/future branch.
+
+Native smoke /tmp/systemless-timers-native-color-smoke.txt exits 1 after 3,144
+guest instructions exit successfully and surface presentation times out. The
+native UI tool separately confirms the Mac is locked and cannot inspect apps.
+No native-window pass is claimed. Retry on an unlocked desktop before attributing
+past timeouts to an implementation defect; the current lock does not prove the
+cause of older failures.
+
+Marathon's HasDepth request is the SDK D0-selector form: trap $AAA2, D0 low word
+$0A14, flags 1, whichFlags 1, depth 8, GDHandle $00010884. The native arguments
+occupy ten bytes (flags/whichFlags/depth words, then device long), followed by the
+word result; do not consume a nonexistent stacked selector. The pinned SDK's
+Palettes.h and Apple's HasDepth/SetDepth reference agree. Mode IDs are capability
+identities accepted by SetDepth; a result must correspond to actual device mode,
+pixels and palette. Current GDevice initialization leaves gdMode zero. Future
+mode work must reconcile gdMode, screen storage, QuickDraw globals and existing
+basic/color screen views, plus composition/redraw and palette state. Do not
+advertise unsupported depths, grayscale, direct color or fake a successful switch.
+References:
+https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-295.html
+https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-296.html
+SDK evidence: /tmp/systemless-display-depth-sdk.txt; invalid-depth cDepthErr is
+-157 in the SDK (/tmp/systemless-display-depth-errors-sdk.txt).
+
+
+Fresh EV diagnosis on the unchanged timer checkpoint now proves propagation of
+the earlier SysMap/FCB lead. /tmp/systemless-ev-timers-current-instructions.txt
+runs the original EV with actual 640x480x8 pixels; concise checked evidence is
+/tmp/systemless-ev-current-error-propagation.txt. Original CODE 12 bytes at $72E0
+are 31 78 0A 58 00 18 70 08 A2 60 66 24: copy SysMap ($0A58) into the real FCB
+parameter block, then invoke FCBInfo selector 8. Instruction 798545 at $0001B2EC
+calls it; 798546 receives -51. The helper returns a nonzero error, and instruction
+798557 at $00019974 assigns -4 to D3. The function returns that value through D0,
+the caller retains its word, and instructions 799413–799421 pass it to NumToString.
+The trace records Decimal(Format { number: -4, ... }) and the resulting Monitor
+Tool ID = -4 text, then the known missing ModalDialog boundary at $000260B4.
+This is now verified value propagation, not merely the first observed -4.
+
+This fallback exposes a missing ROM-free owned System resource-file /
+boot-directory capability, but later diagnosis below identifies an earlier
+trap-discovery error that avoids this fallback. SysMap is the
+System resource-file reference, not CurApRefNum; do not alias it to the app FCB
+or force success. Real map/search/handle ownership, file metadata and folder
+identity must agree. Resolving this first actual failure does not prove that the
+rest of Monitor Tool initialization or gameplay will work. Neither original game
+nor the full rebuild is complete.
+
+
+### Completed acceptance and Escape Velocity trap discovery
+
+Both frozen timer-checkpoint acceptance batches completed with exit 0: 311 and
+194 tests, 505 total, zero failures and zero ignored. All 79 integration targets
+and the library, binary and five examples were covered with ignored cases enabled.
+The source fingerprint was verified unchanged before subsequent implementation.
+Earlier references to sessions 21627/76629 as running are now superseded.
+
+The Rust 1.99 compatibility patch was validated separately with strict all-target
+Clippy, 114 affected existing tests (zero failed/ignored), and the Rust 1.93 minimum
+compiler check. All 12 promoted files match those validated sources exactly.
+These mechanical slice-array changes preserve the previous remainder handling.
+
+EV's earlier fallback diagnosis is superseded as the immediate startup blocker:
+the runtime already implements SysEnvirons, but its trap table omitted $A090.
+The original tests GetOSTrapAddress($90) against Unimplemented, then falls back to
+the SysMap lookup. Registering the real existing service avoids that fallback;
+the isolated original trace now invokes SysEnvirons and advances to missing
+trap $AA3D at $0001ACFE, after selecting the current graphics device. Evidence:
+/tmp/systemless-ev-sysenv-experiment.txt. No System file was fabricated or aliased
+to application resources. Other unadvertised traps require individual review.
+A new actual-CPU regression checks PPC/68K lookup identity and calls the returned
+68K veneer, verifying the shared profile, register results and restored stack.
+Neither original EV nor Marathon has reached verified gameplay. Marathon remains
+at HasDepth ($AAA2 selector $0A14). The full rebuild remains active.
+
+
+The next EV trap $AA3D is ProtectEntry (not GetPixBaseAddr). Apple's Advanced
+Color Imaging, Color Manager, “Managing the Device CLUT” explains that protection
+prevents SetEntries changes; reservation separately excludes an index from RGB
+matching. Both affect device-table invalidation. A coherent next slice must retain
+this per-device state and honor it in palette updates/matching; do not insert a
+no-op just to pass startup. Primary reference:
+https://dev.os9.ca/techpubs/mac/ACI/ACI-107.html
+
+
+Final combined source passes strict Rust 1.99 all-target Clippy, exit 0:
+/tmp/systemless-ev-trap-final-clippy.txt. Sequential formatting checks for the
+registration and new regression, and git diff --check, also pass. Focused actual-CPU verification passes 43 cases (6 environment, 33 loading,
+4 trap patching), zero failed/ignored, exit 0: /tmp/systemless-ev-trap-focused.txt.
+The final-source tracer builds successfully and the real original again reaches
+ProtectEntry $AA3D, PC $0001ACFE: /tmp/systemless-ev-trap-main-original.txt.
+Its diagnostic exit 1 is the expected explicit unsupported service, not a gameplay
+pass. No Monitor Tool error-dialog success is inferred from the earlier path.

@@ -292,3 +292,44 @@ fn gestalt_success_output_faults_preserve_ppc_registers_and_do_not_accept_regist
         assert!(Abi::trap(op, &mut cpu, &memory).is_err());
     }
 }
+
+#[test]
+fn environment_trap_discovery_and_callable_veneer_reach_the_shared_profile() {
+    use systemless_future::traps;
+    let fixture = support::pef_program(&[0x4e800020], &[b"SysEnvirons", b"GetOSTrapAddress"], 32);
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    assert_eq!(invoke(&mut app, 0, &[1, 0x300]), 0);
+    let expected = app
+        .runtime
+        .memory
+        .read(GuestPtr(0x300), 16)
+        .unwrap()
+        .to_vec();
+    let entry = invoke(&mut app, 1, &[0x90]);
+    assert_ne!(entry, traps::UNIMPLEMENTED);
+    assert_eq!(traps::opcode(entry), Some(0xa090));
+    // Discover the routine as EV does, then execute its actual register-ABI
+    // veneer through JSR. PPC lookup and 68K lookup must agree.
+    let code = support::words(&[
+        0x7090, 0xa346, 0x2448, 0x7001, 0x207c, 0, 0x0320, 0x4e92, 0x4e71,
+    ]);
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), code, Permissions::RX)
+        .unwrap();
+    let stack = STACK_BASE + 0x8000;
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000000, stack);
+    assert_eq!(app.runtime.advance(7).unwrap(), Stop::Budget);
+    let Cpu::M68k(cpu) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(cpu.dar[0], 0);
+    assert_eq!(cpu.dar[8], 0x320);
+    assert_eq!(cpu.dar[10], entry);
+    assert_eq!(cpu.dar[15], stack);
+    assert_eq!(cpu.pc, 0x50000010);
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(0x320), 16).unwrap(),
+        expected
+    );
+}

@@ -1904,3 +1904,63 @@ was inspected and is byte-identical to the resource-map checkpoint. Evidence:
 interaction-refresh step above; native presentation/audio and win/loss acceptance
 remain open. Both exhaustive acceptance batches remain running and must be resumed
 before changing runtime/test/compiler source. The full rebuild stays active.
+
+
+Fresh EV diagnosis on the unchanged timer checkpoint now proves propagation of
+the earlier SysMap/FCB lead. /tmp/systemless-ev-timers-current-instructions.txt
+runs the original EV with actual 640x480x8 pixels; concise checked evidence is
+/tmp/systemless-ev-current-error-propagation.txt. Original CODE 12 bytes at $72E0
+are 31 78 0A 58 00 18 70 08 A2 60 66 24: copy SysMap ($0A58) into the real FCB
+parameter block, then invoke FCBInfo selector 8. Instruction 798545 at $0001B2EC
+calls it; 798546 receives -51. The helper returns a nonzero error, and instruction
+798557 at $00019974 assigns -4 to D3. The function returns that value through D0,
+the caller retains its word, and instructions 799413–799421 pass it to NumToString.
+The trace records Decimal(Format { number: -4, ... }) and the resulting Monitor
+Tool ID = -4 text, then the known missing ModalDialog boundary at $000260B4.
+This is now verified value propagation, not merely the first observed -4.
+
+This fallback exposes a missing ROM-free owned System resource-file /
+boot-directory capability, but later diagnosis below identifies an earlier
+trap-discovery error that avoids this fallback. SysMap is the
+System resource-file reference, not CurApRefNum; do not alias it to the app FCB
+or force success. Real map/search/handle ownership, file metadata and folder
+identity must agree. Resolving this first actual failure does not prove that the
+rest of Monitor Tool initialization or gameplay will work. Neither original game
+nor the full rebuild is complete.
+
+
+### Completed acceptance and Escape Velocity trap discovery
+
+Both frozen timer-checkpoint acceptance batches completed with exit 0: 311 and
+194 tests, 505 total, zero failures and zero ignored. All 79 integration targets
+and the library, binary and five examples were covered with ignored cases enabled.
+The source fingerprint was verified unchanged before subsequent implementation.
+Earlier references to sessions 21627/76629 as running are now superseded.
+
+The Rust 1.99 compatibility patch was validated separately with strict all-target
+Clippy, 114 affected existing tests (zero failed/ignored), and the Rust 1.93 minimum
+compiler check. All 12 promoted files match those validated sources exactly.
+These mechanical slice-array changes preserve the previous remainder handling.
+
+EV's earlier fallback diagnosis is superseded as the immediate startup blocker:
+the runtime already implements SysEnvirons, but its trap table omitted $A090.
+The original tests GetOSTrapAddress($90) against Unimplemented, then falls back to
+the SysMap lookup. Registering the real existing service avoids that fallback;
+the isolated original trace now invokes SysEnvirons and advances to missing
+trap $AA3D at $0001ACFE, after selecting the current graphics device. Evidence:
+/tmp/systemless-ev-sysenv-experiment.txt. No System file was fabricated or aliased
+to application resources. Other unadvertised traps require individual review.
+A new actual-CPU regression checks PPC/68K lookup identity and calls the returned
+68K veneer, verifying the shared profile, register results and restored stack.
+Neither original EV nor Marathon has reached verified gameplay. Marathon remains
+at HasDepth ($AAA2 selector $0A14). The full rebuild remains active.
+
+
+Final-source confirmation: /tmp/systemless-ev-trap-main-original.txt again reaches
+ProtectEntry $AA3D at $0001ACFE after invoking discovered SysEnvirons. Diagnostic
+exit 1 is the explicit remaining unsupported service, not a playable-game pass.
+The discovery/call regression and related environment, loading and trap-patching
+checks pass 43 cases, zero failed/ignored: /tmp/systemless-ev-trap-focused.txt.
+Final Rust 1.99 strict all-target lint passes:
+/tmp/systemless-ev-trap-final-clippy.txt. Full acceptance above belongs to the
+preceding frozen timer checkpoint; it is not relabeled as a full final-source run.
