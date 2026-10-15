@@ -104,6 +104,61 @@ impl Ports {
         let value = next as i16;
         Ok(if value == i16::MIN { 0 } else { value })
     }
+    pub fn set_origin(
+        &self,
+        memory: &mut Memory,
+        process: &mut Process,
+        h: i16,
+        v: i16,
+    ) -> Result<()> {
+        let old_error = process.mem_error;
+        let result = (|| {
+            let port = self.current(memory)?;
+            let bytes = memory.read(port, PORT_SIZE)?;
+            if u16::from_be_bytes(bytes[6..8].try_into().unwrap()) & 0xc000 != 0 {
+                return Err(Error::Graphics("color GrafPorts are unsupported".into()));
+            }
+            let word = |at| i16::from_be_bytes(bytes[at..at + 2].try_into().unwrap());
+            let dh = i32::from(h.wrapping_sub(word(18)));
+            let dv = i32::from(v.wrapping_sub(word(16)));
+            let visible = u32::from_be_bytes(bytes[24..28].try_into().unwrap());
+            let clip = u32::from_be_bytes(bytes[28..32].try_into().unwrap());
+            if visible == clip {
+                return Err(Error::Graphics(
+                    "SetOrigin cannot alias visible and clip regions".into(),
+                ));
+            }
+            let mut fields = bytes[8..24].to_vec();
+            for at in (0..16).step_by(2) {
+                let delta = if (at / 2) % 2 == 0 { dv } else { dh };
+                let value = i16::try_from(
+                    i32::from(i16::from_be_bytes(fields[at..at + 2].try_into().unwrap())) + delta,
+                )
+                .map_err(|_| {
+                    Error::Graphics("SetOrigin exceeds signed-word coordinate storage".into())
+                })?;
+                fields[at..at + 2].copy_from_slice(&value.to_be_bytes());
+            }
+            let region = crate::regions::read(memory, process, visible)?;
+            let region = crate::region_geometry::translated(&region, dh, dv)?;
+            let data = GuestPtr(memory.u32(GuestPtr(visible))?);
+            let overlaps = |base: u32, len: usize| {
+                u64::from(base) < u64::from(port.0) + PORT_SIZE as u64
+                    && u64::from(port.0) < u64::from(base) + len as u64
+            };
+            if overlaps(data.0, region.len()) || overlaps(visible, 4) {
+                return Err(Error::Graphics(
+                    "SetOrigin region overlaps its port record".into(),
+                ));
+            }
+            memory.validate_write(offset(port, 8)?, 16)?;
+            memory.validate_write(data, region.len())?;
+            memory.write(data, &region)?;
+            memory.write(offset(port, 8)?, &fields)
+        })();
+        process.mem_error = old_error;
+        result
+    }
     pub fn move_port_to(&self, memory: &mut Memory, left: i16, top: i16) -> Result<()> {
         let port = self.current(memory)?;
         if memory.u16(offset(port, 6)?)? & 0xc000 != 0 {

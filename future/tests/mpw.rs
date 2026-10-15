@@ -205,6 +205,25 @@ fn compiled_wait_program_yields_times_out_and_wakes_on_input_on_both_cpus() {
             app.runtime.process.input,
         )
         .unwrap();
+        assert_eq!(
+            app.runtime.advance(10_000).unwrap(),
+            Stop::Waiting { ticks: 50 }
+        );
+        let before = app.runtime.instructions;
+        assert_eq!(
+            app.runtime.advance(10_000).unwrap(),
+            Stop::Waiting { ticks: 50 }
+        );
+        assert_eq!(app.runtime.instructions, before);
+        systemless_future::host_input::Pointer::default()
+            .motion(
+                &mut app.runtime.process.input,
+                &mut app.runtime.memory,
+                (20.0, 20.0),
+                (512, 342),
+                (512, 342),
+            )
+            .unwrap();
         assert_eq!(app.runtime.advance(10_000).unwrap(), Stop::Exit(0));
         let calls = &app.runtime.services.calls;
         assert_eq!(
@@ -212,7 +231,7 @@ fn compiled_wait_program_yields_times_out_and_wakes_on_input_on_both_cpus() {
                 .iter()
                 .filter(|c| matches!(c, Call::WaitEvent { .. }))
                 .count(),
-            3
+            4
         );
         assert_eq!(
             &calls[calls.len() - 2..],

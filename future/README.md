@@ -68,9 +68,9 @@ The resource fixtures both load a DATA resource, inspect its handle, allocate cl
 Supported loading is near-model CODE and PowerPC PEF, including pattern data and
 relocations. PEF initialization and termination run with bounded execution and a guest
 initialization block. Compressed resources, far-model CODE and unknown required
-imports fail explicitly. Guest file I/O, Toolbox window/high-level event synthesis, mouse regions, the remaining
-QuickDraw operations, handle locking/purging and general heap compaction and original-app compatibility
-remain pending. The rebuild goal is incomplete.
+imports fail explicitly. Persistent file I/O, high-level event synthesis, remaining
+QuickDraw operations, handle purging/general heap compaction and complete original-app
+compatibility remain pending. The rebuild goal is incomplete.
 
 Loaded applications can yield `Stop::Waiting { ticks }` from WaitNextEvent.
 Embedding hosts inject events and call `elapse_ticks` before resuming; waiting
@@ -162,6 +162,7 @@ precedence. Shared GetResInfo now reports live resource ID/type/name on both CPU
 The original passes TILE 1101 metadata and decoding. A shared initialized calendar
 clock now supplies its date-based seed and advances with execution/host ticks;
 Random itself is unchanged. The original draws a populated board, then stops at
-SetEmptyRgn ($A8DD) during update handling. Gameplay and control callbacks remain
-unfinished. Next: empty-region mutation and original board interaction. The full
-rebuild stays active.
+IsDialogEvent ($A97F) while routing a window update. Shared region emptying,
+origin/region shifts and mouse-aware waits now pass that earlier update/cursor
+path. Gameplay and control callbacks remain unfinished. Next: dialog-event
+classification and original board interaction. The full rebuild stays active.

@@ -12,6 +12,8 @@ pub enum Op {
     Intersects,
     Equal,
     Empty,
+    Clear,
+    Offset,
     Dispose,
     Copy,
     Rect,
@@ -81,6 +83,42 @@ pub fn call(memory: &mut Memory, process: &mut Process, op: Op, a: u32, b: u32) 
             }));
         }
 
+        Op::Offset => {
+            if a == 0 || b == 0 {
+                return Ok(0);
+            }
+            let old_error = process.mem_error;
+            let result = (|| {
+                let bytes = read(memory, process, a)?;
+                let bytes = crate::region_geometry::translated(
+                    &bytes,
+                    i32::from(b as i16),
+                    i32::from((b >> 16) as i16),
+                )?;
+                let data = GuestPtr(memory.u32(GuestPtr(a))?);
+                memory.write(data, &bytes)
+            })();
+            process.mem_error = old_error;
+            result?;
+        }
+        Op::Clear => {
+            if a == 0 {
+                return Ok(0);
+            }
+            let old_error = process.mem_error;
+            let result = (|| {
+                if process.handle_size(memory, a)? < 10 {
+                    return Err(Error::Graphics(
+                        "region requires an owned handle of at least ten bytes".into(),
+                    ));
+                }
+                // Destroy the previous description without parsing it. Shrinking
+                // owned storage also works while locked or with an exhausted heap.
+                write(memory, process, a, &[0, 10, 0, 0, 0, 0, 0, 0, 0, 0])
+            })();
+            process.mem_error = old_error;
+            result?;
+        }
         Op::New => {
             let handle = process.new_handle(memory, 10, true)?;
             if handle != 0 {

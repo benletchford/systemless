@@ -407,3 +407,8 @@ the public compiler wrappers for both CPU ABIs before host-driven tracking.
 The environment guest compares both GetDateTime and ReadDateTime with the live
 low-memory Time word and requires a nonzero initialized calendar. Native inline
 reads/OS traps and PPC imports must agree before the existing success marker.
+
+Window guests now empty a copied region, shift an offscreen origin while checking
+visibility/bitmap coordinates and unchanged pen location, and apply inverse region
+offsets. Wait guests additionally hold a nonempty mouse region and require host
+motion outside it to return osEvt/$FA000000 with the new global coordinates.

@@ -289,8 +289,8 @@ WaitNextEvent's adapters marshal a packed 68K Pascal frame/byte result or PPC
 register arguments. Runtime retains the typed request and deferred reply while
 returning `Stop::Waiting { ticks }`; the CPU is not stepped during idle polling.
 The host may add an event to the shared queue or advance deterministic time
-through `elapse_ticks`. Only a matching event or expiration completes the
-request. Unmatched events remain queued. A zero sleep never yields. The event
+through `elapse_ticks`. A matching event, pointer outside the supplied mouse
+region, or expiration completes the request. Unmatched events remain queued. A zero sleep never yields. The event
 record and deferred result are validated before consuming an event.
 
 Wait remaining time is a saturating duration; guest TickCount remains a wrapping
@@ -299,12 +299,10 @@ instruction clock while executing. No host wall clock or sleep is hidden inside
 the runtime. The file CLI advances directly to wakeup times, retaining a single
 instruction budget across all yields. Interactive host pacing remains pending.
 
-This implements low-level event delivery and null-event timeout in the current
-windowless process. Mouse-region handles currently fault explicitly; region
-containment and mouse-moved events must be added with QuickDraw regions.
-Window update/activation, high-level events, system event interception and
-GetNextEvent/EventAvail are still pending. Supporting a wait is not a claim of
-complete Toolbox Event Manager compatibility.
+This includes queued events, synthetic window activation/updates, null-event
+timeout and checked global mouse-region delivery in a single foreground process.
+High-level events, system interception, FKEY/alarm and complete process switching
+remain gaps. Supporting a wait is not complete Toolbox Event Manager compatibility.
 
 Contract: Apple's [WaitNextEvent reference](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-51.html)
 and MPW Events.h; compiled MPW callers verify both ABI paths.
@@ -578,7 +576,8 @@ portRect or cached host window coordinates. Local-to-global subtracts the bounds
 top/left; the reverse adds them. Points are copied before mutation and written as
 one checked four-byte value. Coordinates use signed-word wrapping arithmetic;
 native overflow comparison remains pending. Color GrafPorts are explicitly
-unsupported. SetOrigin, MovePortTo and Window Manager placement are still pending.
+unsupported. SetOrigin, MovePortTo and the implemented Window Manager placement
+operations share this guest coordinate model.
 
 The 68K Pascal pointer argument and PPC InterfaceLib argument both invoke Ports
 conversion. MPW programs verify a nonzero origin, the inverse operation and a
@@ -1515,3 +1514,39 @@ word. These contracts follow Apple's [date/time startup model](https://leopard-a
 and [ReadDateTime reference](https://leopard-adc.pepas.com/documentation/mac/OSUtilities/OSUtilities-106.html).
 Created file/directory dates now derive from initialized, advancing Time; parent
 modification-date maintenance remains a separate gap.
+
+
+## 2026-10-15: region transforms and mouse-aware cooperative waits
+
+SetEmptyRgn ($A8DD/InterfaceLib) now replaces an owned region with the canonical
+10-byte empty record, discarding the old description without parsing it. Shrinking
+locked storage succeeds even with a full heap and reclaims the tail. SetOrigin
+($A878) shifts the current basic port's bitmap bounds, portRect and visRgn while
+leaving clipRgn, pen, patterns and all other port fields unchanged. OffsetRgn
+($A8E0) shares the same checked inversion-storage translation without changing
+handle identity or storage size. All three preserve caller MemErr/ResErr. Nil
+empty/offset requests and zero displacement are inert per the legacy reference.
+The adapters preserve void results and exact four/eight-byte native frames.
+
+Translation validates full region geometry before altering bytes, preserves row
+sentinels, and checks all port/region destinations before publication. Unsupported
+signed-coordinate overflow or sentinel collisions fail explicitly; full native
+wrapping behavior is not claimed. Color ports and visible/clip handle aliasing
+remain unsupported. Origin changes reject port/region storage overlap. No drawing,
+GPU or guest allocation is needed for region/coordinate changes. GPU drawing
+subsequently uses the live shifted visibility and unchanged clipping.
+
+WaitNextEvent now retains a caller-owned mouse-region handle while suspended.
+Polling reads its live checked geometry and global Mouse coordinates. A pointer
+outside a nonempty region can return osEvt with message $FA000000 when osMask is
+requested; nil/empty regions disable this delivery. Existing matching queue,
+activation and update events retain priority. Unmatched events stay queued and
+mouse-moved delivery does not occupy an OS queue slot. Timeout/null behavior and
+non-spinning waits remain unchanged. Output/result validation precedes publication;
+invalid live region state faults without consuming a queued event. This is the
+single foreground-process model, not complete suspend/resume, desk accessory,
+FKEY/alarm or high-level event processing.
+
+Contracts: Apple's [region management reference](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-131.html),
+[origin/clipping discussion](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-312.html)
+and [WaitNextEvent reference](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-51.html).

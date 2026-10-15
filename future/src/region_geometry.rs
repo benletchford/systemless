@@ -219,3 +219,37 @@ pub(crate) fn encode(rectangles: &[Rect]) -> Result<Vec<u8>> {
     words[0] = (words.len() * 2) as i16;
     Ok(words.into_iter().flat_map(i16::to_be_bytes).collect())
 }
+
+/// Translate an owned region without changing its inversion storage size. Reject
+/// wrapping geometry or a translated coordinate colliding with the row sentinel.
+pub(crate) fn translated(bytes: &[u8], dh: i32, dv: i32) -> Result<Vec<u8>> {
+    decode(bytes)?;
+    let mut output = bytes.to_vec();
+    let mut shift = |at: usize, delta: i32, sentinel: bool| -> Result<()> {
+        let old = i16::from_be_bytes(bytes[at..at + 2].try_into().unwrap());
+        let new = i32::from(old) + delta;
+        if !(-32768..=32767).contains(&new) || sentinel && new == 32767 {
+            return Err(invalid());
+        }
+        output[at..at + 2].copy_from_slice(&(new as i16).to_be_bytes());
+        Ok(())
+    };
+    for (at, delta) in [(2, dv), (4, dh), (6, dv), (8, dh)] {
+        shift(at, delta, false)?;
+    }
+    let mut at = 10;
+    while at < bytes.len() {
+        if bytes[at..at + 2] == [0x7f, 0xff] {
+            break;
+        }
+        shift(at, dv, true)?;
+        at += 2;
+        while bytes[at..at + 2] != [0x7f, 0xff] {
+            shift(at, dh, true)?;
+            at += 2;
+        }
+        at += 2;
+    }
+    decode(&output)?;
+    Ok(output)
+}

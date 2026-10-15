@@ -3037,3 +3037,77 @@ failures or skips. Strict all-target Clippy, sequential changed-file formatting
 and whitespace checks pass. Rebuilt MPW date reads pass on both CPUs. The original
 board screenshot was inspected; the remaining SetEmptyRgn fault prevents claiming
 completed updates or gameplay. The full rebuild goal remains active.
+
+
+## 2026-10-15: region transforms and mouse-aware cooperative waits
+
+SetEmptyRgn ($A8DD/InterfaceLib) now replaces an owned region with the canonical
+10-byte empty record, discarding the old description without parsing it. Shrinking
+locked storage succeeds even with a full heap and reclaims the tail. SetOrigin
+($A878) shifts the current basic port's bitmap bounds, portRect and visRgn while
+leaving clipRgn, pen, patterns and all other port fields unchanged. OffsetRgn
+($A8E0) shares the same checked inversion-storage translation without changing
+handle identity or storage size. All three preserve caller MemErr/ResErr. Nil
+empty/offset requests and zero displacement are inert per the legacy reference.
+The adapters preserve void results and exact four/eight-byte native frames.
+
+Translation validates full region geometry before altering bytes, preserves row
+sentinels, and checks all port/region destinations before publication. Unsupported
+signed-coordinate overflow or sentinel collisions fail explicitly; full native
+wrapping behavior is not claimed. Color ports and visible/clip handle aliasing
+remain unsupported. Origin changes reject port/region storage overlap. No drawing,
+GPU or guest allocation is needed for region/coordinate changes. GPU drawing
+subsequently uses the live shifted visibility and unchanged clipping.
+
+WaitNextEvent now retains a caller-owned mouse-region handle while suspended.
+Polling reads its live checked geometry and global Mouse coordinates. A pointer
+outside a nonempty region can return osEvt with message $FA000000 when osMask is
+requested; nil/empty regions disable this delivery. Existing matching queue,
+activation and update events retain priority. Unmatched events stay queued and
+mouse-moved delivery does not occupy an OS queue slot. Timeout/null behavior and
+non-spinning waits remain unchanged. Output/result validation precedes publication;
+invalid live region state faults without consuming a queued event. This is the
+single foreground-process model, not complete suspend/resume, desk accessory,
+FKEY/alarm or high-level event processing.
+
+Contracts: Apple's [region management reference](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-131.html),
+[origin/clipping discussion](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-312.html)
+and [WaitNextEvent reference](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-51.html).
+
+
+Nine new default tests and one optional GPU test cover owned/locked/exhausted
+storage, canonical empties, malformed masters, complex visibility and region
+translation, untouched clip/pen bytes, signed ABI order/guards, transactional
+coordinate/permission failures, native/PPC state parity, exact GPU clipping after
+origin changes, region holes, masked/empty mouse regions, queue priority, global
+mouse authority, live handle edits and deferred waiting without CPU execution.
+The previous unsupported-mouse-region test now retains the invalid-handle fault
+case. Rebuilt MPW windows check emptying, origin/pen/visibility changes, inverse
+region offsets and their existing lifecycle. Rebuilt MPW wait guests sleep inside
+a region, then require a real host move to (20,20) and the correct mouse-moved
+record before success on both CPUs.
+
+The temporary original-app fork was restored from the local systemless-games
+archive and verified against its recorded SHA-256 before use. The original Super
+Mines sequence now passes emptying, origin shifts and cursor-region offsets, and
+WaitNextEvent returns a window update (what=6, message=$1000224C, ticks=1149,
+position v=231/h=402). It next stops at IsDialogEvent ($A97F), post-trap
+PC $0100C7D2, SP $0080FEAE, event pointer $0080FEB8. The update needs proper
+classification against dialog/window state; returning false unconditionally
+would not implement that service. Next: shared dialog-event classification and
+complete this main-loop update route, then deliver and verify a board interaction.
+The board is rendered, but gameplay and complete lifecycle acceptance remain
+unverified. The full rebuild goal stays active.
+
+SYSTEMLESS_PROBE_SETTLE_AFTER_CLICK selects a click after which the diagnostic
+runs one additional bounded tail slice, retaining the normal final tail. This
+allows initialization to finish before later input. The attempted board click at
+(30,65) after click three was correctly skipped because the settle slice faulted
+at IsDialogEvent. No failed-slice release or later input is silently injected.
+
+Validation: all 322 tests pass (265 default and 57 optional GPU/MPW), with zero
+failures or skips. Strict all-target Clippy, sequential changed-file formatting
+and whitespace checks pass. Rebuilt MPW window/wait guests pass on both real CPUs.
+The original returns a window update before the IsDialogEvent fault; the selected
+settle step correctly prevents the later board click. Gameplay is not accepted
+and the full rebuild goal remains active.

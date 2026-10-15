@@ -131,6 +131,7 @@ pub enum Service {
     PenMode,
     PenSize,
     PortSize,
+    SetOrigin,
     MovePortTo,
     WaitNextEvent,
     PostEvent,
@@ -362,6 +363,8 @@ impl Abi {
             b"RectInRgn" => Some(Service::Region(crate::regions::Op::Intersects)),
             b"PtInRgn" => Some(Service::Region(crate::regions::Op::Contains)),
             b"EqualRgn" => Some(Service::Region(crate::regions::Op::Equal)),
+            b"OffsetRgn" => Some(Service::Region(crate::regions::Op::Offset)),
+            b"SetEmptyRgn" => Some(Service::Region(crate::regions::Op::Clear)),
             b"EmptyRgn" => Some(Service::Region(crate::regions::Op::Empty)),
             b"NewRgn" => Some(Service::Region(crate::regions::Op::New)),
             b"DisposeRgn" => Some(Service::Region(crate::regions::Op::Dispose)),
@@ -397,6 +400,7 @@ impl Abi {
             b"FillRect" => Some(Service::FillRect),
             b"PaintRect" => Some(Service::Port(crate::quickdraw::PortOp::PaintRect)),
             b"PenPat" => Some(Service::Port(crate::quickdraw::PortOp::PenPat)),
+            b"SetOrigin" => Some(Service::SetOrigin),
             b"MovePortTo" => Some(Service::MovePortTo),
             b"PortSize" => Some(Service::PortSize),
             b"PenSize" => Some(Service::PenSize),
@@ -1560,6 +1564,22 @@ impl Abi {
                 ))
             }
 
+            0xa8e0 => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let delta = u32::from_be_bytes(args[..4].try_into().unwrap());
+                let handle = u32::from_be_bytes(args[4..].try_into().unwrap());
+                c.dar[15] = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("OffsetRgn stack overflow".into()))?;
+                Ok((
+                    Call::Region {
+                        op: crate::regions::Op::Offset,
+                        a: handle,
+                        b: delta,
+                    },
+                    Reply::None,
+                ))
+            }
             0xa8d8 => {
                 memory.read(GuestPtr(sp), 4)?;
                 Ok((
@@ -1571,7 +1591,7 @@ impl Abi {
                     Reply::StackLong(GuestPtr(sp)),
                 ))
             }
-            0xa8d9 | 0xa8dc | 0xa8df | 0xa879 | 0xa87a => {
+            0xa8d9 | 0xa8dd | 0xa8dc | 0xa8df | 0xa879 | 0xa87a => {
                 use crate::regions::Op;
                 let pair = opcode == 0xa8dc || opcode == 0xa8df;
                 let bytes = memory.read(GuestPtr(sp), if pair { 8 } else { 4 })?;
@@ -1586,6 +1606,7 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("region stack overflow".into()))?;
                 let op = match opcode {
                     0xa8d9 => Op::Dispose,
+                    0xa8dd => Op::Clear,
                     0xa8dc => Op::Copy,
                     0xa8df => Op::Rect,
                     0xa879 => Op::SetClip,
@@ -1626,7 +1647,7 @@ impl Abi {
                 };
                 Ok((call, Reply::None))
             }
-            0xa89b | 0xa876 | 0xa877 => {
+            0xa89b | 0xa876 | 0xa877 | 0xa878 => {
                 let args = memory.read(GuestPtr(sp), 4)?;
                 let height = i16::from_be_bytes(args[..2].try_into().unwrap());
                 let width = i16::from_be_bytes(args[2..].try_into().unwrap());
@@ -1634,7 +1655,12 @@ impl Abi {
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("QuickDraw stack overflow".into()))?;
                 Ok((
-                    if opcode == 0xa877 {
+                    if opcode == 0xa878 {
+                        Call::SetOrigin {
+                            h: width,
+                            v: height,
+                        }
+                    } else if opcode == 0xa877 {
                         Call::MovePortTo {
                             left: width,
                             top: height,
@@ -2362,7 +2388,11 @@ impl Abi {
             Service::Region(op) => Call::Region {
                 op,
                 a: c.gpr[3],
-                b: c.gpr[4],
+                b: if op == crate::regions::Op::Offset {
+                    ((c.gpr[5] as u16 as u32) << 16) | (c.gpr[4] as u16 as u32)
+                } else {
+                    c.gpr[4]
+                },
             },
             Service::CombineRegions(op) => Call::CombineRegions {
                 op,
@@ -2377,6 +2407,10 @@ impl Abi {
             Service::Port(op) => Call::Port {
                 op,
                 pointer: GuestPtr(c.gpr[3]),
+            },
+            Service::SetOrigin => Call::SetOrigin {
+                h: c.gpr[3] as i16,
+                v: c.gpr[4] as i16,
             },
             Service::MovePortTo => Call::MovePortTo {
                 left: c.gpr[3] as i16,
@@ -2657,6 +2691,7 @@ impl Abi {
                         | Service::FillRect
                         | Service::CopyBits
                         | Service::DrawPicture
+                        | Service::SetOrigin
                         | Service::MovePortTo
                         | Service::PortSize
                         | Service::PenSize

@@ -126,6 +126,10 @@ pub enum Call {
     PenVisibility(i16),
     PenNormal,
     PenMode(i16),
+    SetOrigin {
+        h: i16,
+        v: i16,
+    },
     MovePortTo {
         left: i16,
         top: i16,

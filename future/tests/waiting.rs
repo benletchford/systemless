@@ -83,14 +83,14 @@ fn only_matching_event_wakes_wait_and_zero_sleep_does_not_yield() {
     );
 }
 #[test]
-fn unsupported_mouse_regions_fault_before_mutating_output() {
+fn invalid_mouse_regions_fault_before_mutating_output() {
     let mut app = waiting_app(10, 1);
     assert!(app
         .runtime
         .advance(100)
         .unwrap_err()
         .to_string()
-        .contains("mouse regions"));
+        .contains("owned handle"));
     assert_eq!(
         app.runtime.memory.read(GuestPtr(0x5000), 16).unwrap(),
         &[0xa5; 16]

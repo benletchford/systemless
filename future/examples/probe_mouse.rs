@@ -94,6 +94,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if tail > 10_000_000 {
         return Err("SYSTEMLESS_PROBE_TAIL_BUDGET must be 0..=10000000".into());
     }
+    let settle_after: Option<usize> = std::env::var("SYSTEMLESS_PROBE_SETTLE_AFTER_CLICK")
+        .ok()
+        .map(|v| v.parse())
+        .transpose()?;
+    if settle_after.is_some_and(|n| n == 0 || n > (args.len() - 2) / 2)
+        || settle_after.is_some() && tail == 0
+    {
+        return Err(
+            "settle-after click must select an input step and requires a nonzero tail budget"
+                .into(),
+        );
+    }
     let ticks: u32 = match std::env::var("SYSTEMLESS_PROBE_TICKS_PER_STEP") {
         Ok(value) => value.parse()?,
         Err(std::env::VarError::NotPresent) => 0,
@@ -153,6 +165,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             result = advance(&mut app, budget, &mut trace);
             println!("click {} mouse up {result:?}", index + 1);
+        }
+        if settle_after == Some(index + 1)
+            && matches!(result, Ok(Stop::Budget | Stop::Waiting { .. }))
+        {
+            if ticks != 0 {
+                app.runtime.elapse_ticks(ticks)?;
+            }
+            result = advance(&mut app, tail, &mut trace);
+            println!("settle after click {} budget {tail}: {result:?}", index + 1);
         }
         if args.len() > 4 {
             screenshot(

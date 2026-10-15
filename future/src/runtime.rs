@@ -43,6 +43,7 @@ struct ControlWait {
     reply: crate::abi::Reply,
 }
 struct EventWait {
+    region: GuestPtr,
     mask: u16,
     destination: GuestPtr,
     reply: crate::abi::Reply,
@@ -894,6 +895,12 @@ impl Runtime {
                                 )?;
                             }
                         }
+                        Call::SetOrigin { h, v } => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("SetOrigin requires InitGraf".into())
+                            })?;
+                            ports.set_origin(&mut self.memory, &mut self.process, h, v)?;
+                        }
                         Call::MovePortTo { left, top } => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -935,13 +942,9 @@ impl Runtime {
                             sleep,
                             region,
                         } => {
-                            if region.0 != 0 {
-                                return Err(Error::Cpu(
-                                    "WaitNextEvent mouse regions are not implemented".into(),
-                                ));
-                            }
                             self.memory.validate_write(destination, 16)?;
                             let wait = EventWait {
+                                region,
                                 mask,
                                 destination,
                                 reply,
@@ -1257,7 +1260,13 @@ impl Runtime {
                     }
                     // Guest globals are the ABI-visible error authorities. Process
                     // fields carry operation outputs only, never readback authority.
-                    if matches!(
+                    if !matches!(
+                        call,
+                        Call::Region {
+                            op: crate::regions::Op::Clear | crate::regions::Op::Offset,
+                            ..
+                        }
+                    ) && matches!(
                         call,
                         Call::MaxApplZone
                             | Call::Dialog(
@@ -1373,6 +1382,7 @@ impl Runtime {
                         | Call::CopyMask(_)
                         | Call::CopyBits(_)
                         | Call::DrawPicture { .. }
+                        | Call::SetOrigin { .. }
                         | Call::MovePortTo { .. }
                         | Call::PortSize { .. }
                         | Call::PenSize { .. }
@@ -1574,9 +1584,40 @@ impl Runtime {
             Ok(Some(Stop::Waiting { ticks: 1 }))
         }
     }
+    fn mouse_region_input(&mut self, region: GuestPtr) -> Result<Option<crate::events::Input>> {
+        if region.0 == 0 {
+            return Ok(None);
+        }
+        let old_error = self.process.mem_error;
+        let bytes = crate::regions::read(&self.memory, &mut self.process, region.0);
+        self.process.mem_error = old_error;
+        let spans = crate::region_geometry::decode(&bytes?)?;
+        if spans.is_empty() {
+            return Ok(None);
+        }
+        let point = self.memory.read(crate::events::MOUSE, 4)?;
+        let v = i16::from_be_bytes(point[..2].try_into().unwrap());
+        let h = i16::from_be_bytes(point[2..].try_into().unwrap());
+        if spans.iter().any(|r| {
+            i32::from(h) >= r.left
+                && i32::from(h) < r.right
+                && i32::from(v) >= r.top
+                && i32::from(v) < r.bottom
+        }) {
+            return Ok(None);
+        }
+        Ok(Some(crate::events::Input {
+            vertical: v,
+            horizontal: h,
+            ..self.process.input
+        }))
+    }
     fn poll_event_wait(&mut self, wait: EventWait) -> Result<Option<Stop>> {
+        let movement = self
+            .mouse_region_input(wait.region)?
+            .filter(|_| wait.mask & 0x8000 != 0);
         let ready = self.toolbox_available(wait.mask)?;
-        if !ready && wait.remaining != 0 {
+        if !ready && movement.is_none() && wait.remaining != 0 {
             let ticks = wait.remaining;
             self.event_wait = Some(wait);
             return Ok(Some(Stop::Waiting { ticks }));
@@ -1586,7 +1627,16 @@ impl Runtime {
             self.memory.validate_write(p, 1)?;
         }
         let now = self.tick_count()?;
-        let found = self.receive_toolbox_event(wait.mask, wait.destination, true, now)?;
+        let found = match (ready, movement) {
+            (false, Some(input)) => {
+                self.memory.write(
+                    wait.destination,
+                    &crate::events::record(15, 0xfa00_0000, now, input),
+                )?;
+                true
+            }
+            _ => self.receive_toolbox_event(wait.mask, wait.destination, true, now)?,
+        };
         wait.reply
             .apply(&mut self.cpu, &mut self.memory, u32::from(found), 0)?;
         Ok(None)
