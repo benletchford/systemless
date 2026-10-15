@@ -66,6 +66,7 @@ pub enum Service {
     GetApplLimit,
     BlockMove,
     InitDialogs,
+    IsDialogEvent,
     ParamText,
     GetParamText,
     GetDAString,
@@ -322,6 +323,7 @@ impl Abi {
             b"MaxApplZone" => Some(Service::MaxApplZone),
             b"GetApplLimit" => Some(Service::GetApplLimit),
             b"BlockMove" | b"BlockMoveData" => Some(Service::BlockMove),
+            b"IsDialogEvent" => Some(Service::IsDialogEvent),
             b"InitDialogs" => Some(Service::InitDialogs),
             b"ParamText" => Some(Service::ParamText),
             b"LMGetDAStrings" => Some(Service::GetDAString),
@@ -1127,6 +1129,17 @@ impl Abi {
                 },
                 Reply::M68kD0,
             )),
+            0xa97f => {
+                let event = GuestPtr(memory.u32(GuestPtr(sp))?);
+                let result = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("IsDialogEvent stack overflow".into()))?;
+                c.dar[15] = result;
+                Ok((
+                    Call::Dialog(crate::dialogs::Op::IsEvent(event)),
+                    Reply::StackByte(GuestPtr(result)),
+                ))
+            }
             0xa97b | 0xa98c => {
                 let pointer = memory.u32(GuestPtr(sp))?;
                 c.dar[15] = sp
@@ -2182,6 +2195,7 @@ impl Abi {
                 destination: Some(GuestPtr(c.gpr[4])),
             }),
             Service::GetDAString => Call::Dialog(crate::dialogs::Op::Slot(c.gpr[3] as i16)),
+            Service::IsDialogEvent => Call::Dialog(crate::dialogs::Op::IsEvent(GuestPtr(c.gpr[3]))),
             Service::InitDialogs => Call::Dialog(crate::dialogs::Op::Init(c.gpr[3])),
             Service::ErrorSound => Call::Dialog(crate::dialogs::Op::Sound(c.gpr[3])),
             Service::SetDialogFont => Call::Dialog(crate::dialogs::Op::Font(c.gpr[3] as i16)),

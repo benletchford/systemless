@@ -88,6 +88,7 @@ fn windows_share_records_visibility_pixels_and_ownership_across_cpu_adapters() {
             b"FrontWindow",
             b"CloseWindow",
             b"DisposeWindow",
+            b"IsDialogEvent",
         ],
         512,
     );
@@ -132,6 +133,33 @@ fn windows_share_records_visibility_pixels_and_ownership_across_cpu_adapters() {
         0x12345678
     );
     assert_eq!(app.runtime.memory.u16(GuestPtr(first + 108)).unwrap(), 8);
+    let event = data + 96;
+    app.runtime.memory.write(GuestPtr(event), &[0; 16]).unwrap();
+    assert_eq!(invoke(&mut app, 6, &[event]), 0);
+    app.runtime
+        .memory
+        .write(GuestPtr(first + 108), &2u16.to_be_bytes())
+        .unwrap();
+    assert_eq!(invoke(&mut app, 6, &[event]), 1);
+    app.runtime
+        .memory
+        .map(GuestPtr(0x52000000), vec![0xa9, 0x7f], Permissions::RX)
+        .unwrap();
+    let sp = STACK_BASE + 0x8000;
+    let mut frame = event.to_be_bytes().to_vec();
+    frame.extend([0xa5; 2]);
+    app.runtime.memory.write(GuestPtr(sp), &frame).unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x52000000, sp);
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(sp + 4), 2).unwrap(),
+        [1, 0xa5]
+    );
+    app.runtime
+        .memory
+        .write(GuestPtr(first + 108), &8u16.to_be_bytes())
+        .unwrap();
+
     assert!(!pixel(&app, 40, 40));
     assert!(pixel(&app, 39, 40));
     rect(&mut app, data + 64, 50, 50, 70, 70);

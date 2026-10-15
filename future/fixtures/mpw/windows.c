@@ -1,6 +1,7 @@
 #include <Types.h>
 #include <Quickdraw.h>
 #include <Windows.h>
+#include <Dialogs.h>
 #include <Controls.h>
 #include <ControlDefinitions.h>
 #include <Memory.h>
@@ -36,6 +37,15 @@ int main(void) {
     if (old!=0 || FrontWindow()!=0) return 1;
     first=NewWindow(0,&firstBounds,"\ptest",true,plainDBox,(WindowPtr)-1,false,0x12345678);
     if (!first || ((WindowPeek)first)->windowKind!=8 || ((WindowPeek)first)->refCon!=0x12345678 || FrontWindow()!=first) return 2;
+    event.what=nullEvent; event.message=0; event.when=0;
+    event.where.v=0; event.where.h=0; event.modifiers=0;
+    if (IsDialogEvent(&event)!=false) return 100;
+    ((WindowPeek)first)->windowKind=dialogKind;
+    if (IsDialogEvent(&event)!=true) return 101;
+    event.what=updateEvt; event.message=0x12345678;
+    if (IsDialogEvent(&event)!=true) return 102;
+    ((WindowPeek)first)->windowKind=userKind;
+    if (IsDialogEvent(&event)!=false) return 103;
     GetPort(&old);
     if (old!=(GrafPtr)first || first->portRect.bottom!=20 || first->portRect.right!=20) return 3;
     savedMenuHeight=*(short*)0xbaa; *(short*)0xbaa=20;

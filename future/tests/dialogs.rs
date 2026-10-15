@@ -215,3 +215,79 @@ fn cpu_adapters_share_dialog_globals_and_parameter_handles() {
         [0; 16]
     );
 }
+
+#[test]
+fn dialog_event_query_uses_boolean_cpu_abis_and_preserves_error_globals() {
+    let f = support::pef_program(&[0x4e800020], &[b"IsDialogEvent"], 32);
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let event = app.info.toc_or_a5 + 32;
+    app.runtime.memory.write(GuestPtr(event), &[0; 16]).unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0x220), &(-108i16).to_be_bytes())
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0xa60), &(-192i16).to_be_bytes())
+        .unwrap();
+    app.runtime.process.mem_error = -111;
+    let tv = app
+        .runtime
+        .memory
+        .u32(GuestPtr(app.info.toc_or_a5 + 8))
+        .unwrap();
+    let pc = app.runtime.memory.u32(GuestPtr(tv)).unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::PowerPc, pc, STACK_BASE + 0x8000);
+    if let Cpu::PowerPc(c) = &mut app.runtime.cpu {
+        c.gpr[3] = event;
+        c.gpr[4] = 0x12345678;
+    }
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::PowerPc(c) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(c.gpr[3], 0);
+    assert_eq!(c.gpr[4], 0x12345678);
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa9, 0x7f], Permissions::RX)
+        .unwrap();
+    let sp = STACK_BASE + 0x8000;
+    let mut frame = event.to_be_bytes().to_vec();
+    frame.extend([0xa5; 4]);
+    app.runtime.memory.write(GuestPtr(sp), &frame).unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000000, sp);
+    if let Cpu::M68k(c) = &mut app.runtime.cpu {
+        c.dar[0] = 0x12345678;
+    }
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::M68k(c) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(c.dar[15], sp + 4);
+    assert_eq!(c.dar[0], 0x12345678);
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(sp + 4), 4).unwrap(),
+        [0, 0xa5, 0xa5, 0xa5]
+    );
+    assert_eq!(app.runtime.process.mem_error, -111);
+    assert_eq!(
+        app.runtime.memory.u16(GuestPtr(0x220)).unwrap(),
+        (-108i16) as u16
+    );
+    assert_eq!(
+        app.runtime.memory.u16(GuestPtr(0xa60)).unwrap(),
+        (-192i16) as u16
+    );
+    assert_ne!(
+        systemless_future::traps::address(0x17f, true),
+        systemless_future::traps::UNIMPLEMENTED
+    );
+    // A truncated guest EventRecord faults without pretending it is a document event.
+    app.runtime
+        .memory
+        .write(GuestPtr(sp), &0xfffffff8u32.to_be_bytes())
+        .unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000000, sp);
+    assert!(app.runtime.advance(1).is_err());
+}

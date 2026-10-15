@@ -527,6 +527,10 @@ impl Runtime {
                         Call::Dialog(op) => {
                             let value = if let crate::dialogs::Op::Slot(index) = op {
                                 crate::dialogs::slot(&self.memory, index)?
+                            } else if let crate::dialogs::Op::IsEvent(event) = op {
+                                u32::from(
+                                    self.process.windows.is_dialog_event(&self.memory, event)?,
+                                )
                             } else {
                                 let mut manager = std::mem::take(&mut self.process.dialogs);
                                 let result = manager.call(&mut self.memory, &mut self.process, op);

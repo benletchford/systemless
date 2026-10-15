@@ -1550,3 +1550,12 @@ FKEY/alarm or high-level event processing.
 Contracts: Apple's [region management reference](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-131.html),
 [origin/clipping discussion](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-312.html)
 and [WaitNextEvent reference](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-51.html).
+
+
+IsDialogEvent shares the WindowList traversal used by FrontWindow, and reads the
+live front visible windowKind rather than maintaining a second dialog-focus
+cache. The documented System 7 predicate is independent of event type/message;
+EventRecord storage must still be readable. The shared query has no graphics,
+allocation or event-consumption dependency. DialogSelect and dialog construction
+remain separate unsupported services. See Apple's [IsDialogEvent contract](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-427.html);
+legacy Systemless filters foreign updates/outside mouse clicks differently.

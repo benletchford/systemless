@@ -3111,3 +3111,45 @@ and whitespace checks pass. Rebuilt MPW window/wait guests pass on both real CPU
 The original returns a window update before the IsDialogEvent fault; the selected
 settle step correctly prevents the later board click. Gameplay is not accepted
 and the full rebuild goal remains active.
+
+
+### Live dialog event classification (2026-10-15)
+
+IsDialogEvent ($A97F / PPC import) now routes through shared Window Manager
+state. It validates the 16-byte EventRecord, walks the checked live WindowList,
+skips hidden windows and compares the first visible window's signed windowKind
+with dialogKind (2). No windows or a front document yields false; a front dialog
+yields true for every event, including null events and updates naming another
+window. This follows Apple's [System 7 contract](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-427.html):
+the caller must filter unsupported events before DialogSelect. Legacy Systemless
+instead filters foreign updates and mouse clicks outside the dialog; that is a
+reference difference, not a parity claim. No native System 7 comparison is required.
+
+Both CPU routes return canonical Boolean 0/1, preserve error globals and do not
+consume events, allocate, draw or change window state. The native adapter pops
+four bytes and writes only the result byte; PPC returns in r3. The installed
+Toolbox trap is discoverable. General dialog creation, item management and
+DialogSelect remain unimplemented; this classification does not pretend to
+implement them. Tests change live window kinds without claiming a constructed
+DialogRecord or interactive dialog acceptance.
+
+Two default geometry/state tests cover all event classes, visibility/order,
+signed kinds, empty lists, corrupted lists and truncated records. A
+third exercises both real CPU routes and error/register/result-byte guards. The
+existing GPU window acceptance now checks a positive dialog result on both CPUs.
+Rebuilt MPW window guests require four public IsDialogEvent calls and canonical
+true/false results after live windowKind changes before their success marker.
+
+The bounded Super Mines sequence (256,171), (145,150), (402,231), then a
+2,000,000-instruction settle slice passes IsDialogEvent on the game-window update
+and continues picture/region/control update work. It next faults at EmptyRect
+($A8AE), post-trap PC $01012076, SP $0080FE4C, rectangle pointer $0080FE6C.
+The later requested click (30,65) is correctly skipped, so no board interaction
+or gameplay acceptance is claimed. Next: shared rectangle emptiness through both
+ABIs, rerun the main-loop update and verify an actual board interaction. The
+full rebuild goal remains active.
+
+Validation: all 325 tests pass (268 default and 57 optional GPU/MPW), with zero
+failures or skips. Strict all-target Clippy, sequential changed-file formatting
+and whitespace checks pass. The rebuilt MPW window guests pass on both real CPUs.
+The original's bounded run reaches EmptyRect before the planned board click.

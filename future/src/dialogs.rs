@@ -9,6 +9,7 @@ const STRINGS: GuestPtr = GuestPtr(0xaa0);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     Init(u32),
+    IsEvent(GuestPtr),
     Slot(i16),
     Param([GuestPtr; 4]),
     Get([GuestPtr; 4]),
@@ -56,6 +57,7 @@ impl Dialogs {
     }
     pub fn call(&mut self, memory: &mut Memory, process: &mut Process, op: Op) -> Result<()> {
         match op {
+            Op::IsEvent(_) => Err(bad("dialog event query requires a value route")),
             Op::Slot(_) => Err(bad("dialog parameter slot requires a value route")),
             Op::Init(resume) => {
                 self.check(memory, process)?;

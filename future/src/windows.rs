@@ -231,6 +231,21 @@ impl Windows {
         }
         Ok(hit)
     }
+    /// Documented System 7 IsDialogEvent policy: any event belongs to the
+    /// front dialog, including null and updates for other windows. The caller
+    /// must filter events DialogSelect cannot handle (Toolbox Essentials 6-138).
+    pub fn is_dialog_event(&self, memory: &Memory, event: GuestPtr) -> Result<bool> {
+        memory.read(event, 16)?;
+        Ok(self.front(memory)?.is_some_and(|w| w.1 == 2))
+    }
+    fn front(&self, memory: &Memory) -> Result<Option<(u32, i16)>> {
+        for w in self.list(memory)? {
+            if memory.read(GuestPtr(w + 110), 1)?[0] != 0 {
+                return Ok(Some((w, memory.u16(GuestPtr(w + 108))? as i16)));
+            }
+        }
+        Ok(None)
+    }
     pub fn contains(&self, memory: &Memory, w: u32) -> Result<bool> {
         Ok(self.list(memory)?.contains(&w))
     }
@@ -1394,12 +1409,7 @@ impl Windows {
         }
         let mut list = self.list(memory)?;
         if op == Op::Front {
-            for w in list {
-                if memory.read(GuestPtr(w + 110), 1)?[0] != 0 {
-                    return Ok(w);
-                }
-            }
-            return Ok(0);
+            return Ok(self.front(memory)?.map_or(0, |(w, _)| w));
         }
         if op == Op::Dispose && !list.contains(&w) && self.records.get(&w) == Some(&true) {
             process.dispose_pointer(w);
@@ -1520,5 +1530,63 @@ impl Windows {
         }
         process.mem_error = 0;
         Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod dialog_event_tests {
+    use super::*;
+    fn setup() -> (Memory, Windows) {
+        let mut m = Memory::default();
+        m.map(GuestPtr(0), vec![0; 0x3000], crate::memory::Permissions::RW)
+            .unwrap();
+        let mut windows = Windows::default();
+        windows.records.insert(0x1000, false);
+        windows.records.insert(0x1100, false);
+        m.write(LIST, &0x1000u32.to_be_bytes()).unwrap();
+        m.write(GuestPtr(0x1000 + 144), &0x1100u32.to_be_bytes())
+            .unwrap();
+        m.write(GuestPtr(0x1000 + 108), &[0, 8, 1, 1]).unwrap();
+        m.write(GuestPtr(0x1100 + 108), &[0, 2, 1, 0]).unwrap();
+        (m, windows)
+    }
+    #[test]
+    fn dialog_events_follow_live_front_visibility_and_signed_kind_for_every_event() {
+        let (mut m, windows) = setup();
+        let event = GuestPtr(0x2000);
+        assert!(!windows.is_dialog_event(&m, event).unwrap()); // dialog behind document
+        m.write(GuestPtr(0x1000 + 110), &[0]).unwrap(); // hidden windows skipped
+        for what in [0u16, 1, 2, 3, 4, 5, 6, 7, 8, 15, 23, 0xffff] {
+            m.write(event, &what.to_be_bytes()).unwrap();
+            m.write(GuestPtr(event.0 + 2), &0x1000u32.to_be_bytes())
+                .unwrap();
+            let before = m.read(GuestPtr(0), 0x3000).unwrap().to_vec();
+            assert!(windows.is_dialog_event(&m, event).unwrap());
+            assert_eq!(m.read(GuestPtr(0), 0x3000).unwrap(), before);
+        }
+        // kind is read from guest storage, not the creation definition or hilite.
+        for kind in [0i16, -1, -32768, 8, 32767] {
+            m.write(GuestPtr(0x1100 + 108), &kind.to_be_bytes())
+                .unwrap();
+            assert!(!windows.is_dialog_event(&m, event).unwrap());
+        }
+        m.write(GuestPtr(0x1100 + 108), &2i16.to_be_bytes())
+            .unwrap();
+        m.write(GuestPtr(0x1100 + 110), &[0]).unwrap();
+        assert!(!windows.is_dialog_event(&m, event).unwrap());
+        m.write(LIST, &[0; 4]).unwrap();
+        assert!(!windows.is_dialog_event(&m, event).unwrap());
+    }
+    #[test]
+    fn dialog_event_faults_preserve_memory_and_validate_event_and_window_list() {
+        let (mut m, windows) = setup();
+        let before = m.read(GuestPtr(0), 0x3000).unwrap().to_vec();
+        assert!(windows.is_dialog_event(&m, GuestPtr(0x2ff1)).is_err());
+        assert_eq!(m.read(GuestPtr(0), 0x3000).unwrap(), before);
+        m.write(GuestPtr(0x1100 + 144), &0x1000u32.to_be_bytes())
+            .unwrap();
+        assert!(windows.is_dialog_event(&m, GuestPtr(0x2000)).is_err());
+        m.write(LIST, &0x1200u32.to_be_bytes()).unwrap();
+        assert!(windows.is_dialog_event(&m, GuestPtr(0x2000)).is_err());
     }
 }

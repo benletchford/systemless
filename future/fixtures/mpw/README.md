@@ -412,3 +412,11 @@ Window guests now empty a copied region, shift an offscreen origin while checkin
 visibility/bitmap coordinates and unchanged pen location, and apply inverse region
 offsets. Wait guests additionally hold a nonempty mouse region and require host
 motion outside it to return osEvt/$FA000000 with the new global coordinates.
+
+
+The window guests also check IsDialogEvent through the compiler's public Boolean
+wrappers: a front document returns false, changing its live windowKind to
+dialogKind returns true for null and foreign update events, and restoring
+userKind returns false. The acceptance host requires all four calls before the
+success marker. This verifies classification and ABI behavior, not dialog
+construction or DialogSelect.

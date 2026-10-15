@@ -162,7 +162,9 @@ precedence. Shared GetResInfo now reports live resource ID/type/name on both CPU
 The original passes TILE 1101 metadata and decoding. A shared initialized calendar
 clock now supplies its date-based seed and advances with execution/host ticks;
 Random itself is unchanged. The original draws a populated board, then stops at
-IsDialogEvent ($A97F) while routing a window update. Shared region emptying,
-origin/region shifts and mouse-aware waits now pass that earlier update/cursor
-path. Gameplay and control callbacks remain unfinished. Next: dialog-event
-classification and original board interaction. The full rebuild stays active.
+EmptyRect ($A8AE) after routing a window update through shared IsDialogEvent.
+Region emptying, origin/region shifts and mouse-aware waits pass the earlier
+update/cursor path. Dialog event classification reads live front-window visibility
+and windowKind through both CPU adapters. Gameplay and control callbacks remain
+unfinished. Next: rectangle emptiness and original board interaction. The full
+rebuild stays active.
