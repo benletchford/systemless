@@ -840,6 +840,16 @@ impl Runtime {
                             })?;
                             ports.draw_rectangle(&mut self.memory, gpu, rectangle, op)?;
                         }
+                        Call::CopyMask(request) => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("CopyMask requires InitGraf".into())
+                            })?;
+                            let gpu = self
+                                .graphics
+                                .as_ref()
+                                .ok_or_else(|| Error::Graphics("CopyMask requires a GPU".into()))?;
+                            ports.copy_mask(&mut self.memory, gpu, request)?;
+                        }
                         Call::CopyBits(request) => {
                             // Legacy comparison contract treats NIL bitmap parameters as inert.
                             if request.source.0 != 0 && request.destination.0 != 0 {
@@ -1342,6 +1352,7 @@ impl Runtime {
                         | Call::InitGraf { .. }
                         | Call::Port { .. }
                         | Call::DrawRectangle { .. }
+                        | Call::CopyMask(_)
                         | Call::CopyBits(_)
                         | Call::DrawPicture { .. }
                         | Call::MovePortTo { .. }

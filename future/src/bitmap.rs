@@ -245,6 +245,7 @@ impl Bitmap {
                 }
             }
             Draw::Blit {
+                mask,
                 rect: r,
                 clip,
                 source,
@@ -255,6 +256,7 @@ impl Bitmap {
                 invert,
                 mode,
             } => Draw::Blit {
+                mask,
                 rect: rect(r)?,
                 clip: rect(clip)?,
                 source,

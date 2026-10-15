@@ -27,6 +27,7 @@ pub enum Call {
         relative: bool,
     },
     CopyBits(crate::quickdraw::CopyBits),
+    CopyMask(crate::quickdraw::CopyMask),
     DrawPicture {
         handle: u32,
         destination: GuestPtr,

@@ -22,6 +22,15 @@ pub struct CopyBits {
     pub mask: GuestPtr,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CopyMask {
+    pub source: GuestPtr,
+    pub mask: GuestPtr,
+    pub destination: GuestPtr,
+    pub source_rect: GuestPtr,
+    pub mask_rect: GuestPtr,
+    pub destination_rect: GuestPtr,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RectangleOp {
     Frame,
     Erase,
@@ -405,38 +414,7 @@ impl Ports {
         {
             return Ok(());
         }
-        let port = self.current(memory)?;
-        let bytes = memory.read(port, PORT_SIZE)?;
-        let word = |i| u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap());
-        if [92, 96, 100, 104].iter().any(|i| word(*i) != 0) {
-            return Err(Error::Graphics(
-                "CopyBits recording or custom procedures are unsupported".into(),
-            ));
-        }
-        let color = |value| match value {
-            30 => Ok(0),
-            33 => Ok(1),
-            _ => Err(Error::Graphics("unsupported monochrome port color".into())),
-        };
-        let foreground = color(word(80))?;
-        let background = color(word(84))?;
-        let current = Bitmap::read(memory, offset(port, 2)?)?;
-        let mut clips = if current.base == destination.base {
-            if current.row_bytes != destination.row_bytes {
-                return Err(Error::Graphics(
-                    "CopyBits destination aliases a different port stride".into(),
-                ));
-            }
-            let (_, clips) = self.drawing_target_with_visibility(memory, true, false)?;
-            let dx = destination.bounds.left - current.bounds.left;
-            let dy = destination.bounds.top - current.bounds.top;
-            clips
-                .into_iter()
-                .map(|r| Rect::new(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy))
-                .collect()
-        } else {
-            vec![destination.bounds]
-        };
+        let (mut clips, foreground, background) = self.copy_context(memory, destination)?;
         if request.mask.0 != 0 {
             let mask = region(memory, request.mask)?;
             if clips.len().saturating_mul(mask.len()) > 65536 {
@@ -468,6 +446,7 @@ impl Ports {
             gpu,
             memory,
             Draw::Blit {
+                mask: None,
                 rect,
                 clip: destination.bounds,
                 source: source_rect,
@@ -486,6 +465,98 @@ impl Ports {
             Some(&clips),
             Some(&indices),
         )
+    }
+    pub fn copy_mask(&self, memory: &mut Memory, gpu: &Graphics, request: CopyMask) -> Result<()> {
+        let source = Bitmap::read(memory, request.source)?;
+        let mask = Bitmap::read(memory, request.mask)?;
+        let destination = Bitmap::read(memory, request.destination)?;
+        let src = read_rect(memory, request.source_rect)?;
+        let mr = read_rect(memory, request.mask_rect)?;
+        let rect = read_rect(memory, request.destination_rect)?;
+        if src.right - src.left != mr.right - mr.left || src.bottom - src.top != mr.bottom - mr.top
+        {
+            return Err(Error::Graphics(
+                "CopyMask source and mask rectangle sizes differ".into(),
+            ));
+        }
+        if src.left >= src.right
+            || src.top >= src.bottom
+            || rect.left >= rect.right
+            || rect.top >= rect.bottom
+        {
+            return Ok(());
+        }
+        let (clips, foreground, background) = self.copy_context(memory, destination)?;
+        let local = |r: Rect, b: Bitmap| {
+            Rect::new(
+                r.left - b.bounds.left,
+                r.top - b.bounds.top,
+                r.right - b.bounds.left,
+                r.bottom - b.bounds.top,
+            )
+        };
+        let indices = source.unpack(memory)?;
+        let bits = mask.unpack(memory)?;
+        let (width, height) = source.extent()?;
+        let (mw, mh) = mask.extent()?;
+        destination.execute_source(
+            gpu,
+            memory,
+            Draw::Blit {
+                mask: Some(crate::graphics::BlitMask {
+                    rect: local(mr, mask),
+                    width: mw as u32,
+                    height: mh as u32,
+                    bits: &bits,
+                }),
+                rect,
+                clip: destination.bounds,
+                source: local(src, source),
+                width: width as u32,
+                height: height as u32,
+                foreground,
+                background,
+                invert: false,
+                mode: Transfer::Copy,
+            },
+            Some(&clips),
+            Some(&indices),
+        )
+    }
+    fn copy_context(&self, memory: &Memory, destination: Bitmap) -> Result<(Vec<Rect>, u8, u8)> {
+        let port = self.current(memory)?;
+        let bytes = memory.read(port, PORT_SIZE)?;
+        let word = |i| u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap());
+        if [92, 96, 100, 104].iter().any(|i| word(*i) != 0) {
+            return Err(Error::Graphics(
+                "bitmap copying recording or custom procedures are unsupported".into(),
+            ));
+        }
+        let color = |value| match value {
+            30 => Ok(0),
+            33 => Ok(1),
+            _ => Err(Error::Graphics("unsupported monochrome port color".into())),
+        };
+        let foreground = color(word(80))?;
+        let background = color(word(84))?;
+        let current = Bitmap::read(memory, offset(port, 2)?)?;
+        let clips = if current.base == destination.base {
+            if current.row_bytes != destination.row_bytes {
+                return Err(Error::Graphics(
+                    "CopyBits destination aliases a different port stride".into(),
+                ));
+            }
+            let (_, clips) = self.drawing_target_with_visibility(memory, true, false)?;
+            let dx = destination.bounds.left - current.bounds.left;
+            let dy = destination.bounds.top - current.bounds.top;
+            clips
+                .into_iter()
+                .map(|r| Rect::new(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy))
+                .collect()
+        } else {
+            vec![destination.bounds]
+        };
+        Ok((clips, foreground, background))
     }
     pub fn line(
         &self,

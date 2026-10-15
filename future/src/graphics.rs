@@ -40,6 +40,13 @@ pub struct PenLine {
     pub height: u16,
 }
 #[derive(Debug, Clone, Copy)]
+pub struct BlitMask<'a> {
+    pub rect: Rect,
+    pub width: u32,
+    pub height: u32,
+    pub bits: &'a [u8],
+}
+#[derive(Debug, Clone, Copy)]
 pub enum Draw<'a> {
     Polygon {
         rect: Rect,
@@ -78,6 +85,7 @@ pub enum Draw<'a> {
         mode: Transfer,
     },
     Blit {
+        mask: Option<BlitMask<'a>>,
         rect: Rect,
         clip: Rect,
         source: Rect,
@@ -297,6 +305,32 @@ impl Graphics {
         if copy_source.is_some_and(|s| s.len() != source_extent as usize) {
             return Err(Error::Graphics("copy source extent mismatch".into()));
         }
+        if let Draw::Blit {
+            mask: Some(mask),
+            source,
+            ..
+        } = draw
+        {
+            if mask.width == 0
+                || mask.height == 0
+                || mask.width > 4096
+                || mask.height > 4096
+                || mask.bits.len() != (mask.width * mask.height) as usize
+                || mask.bits.iter().any(|&v| v > 1)
+                || [
+                    mask.rect.left,
+                    mask.rect.top,
+                    mask.rect.right,
+                    mask.rect.bottom,
+                ]
+                .iter()
+                .any(|v| !(-32768..=32767).contains(v))
+                || mask.rect.right - mask.rect.left != source.right - source.left
+                || mask.rect.bottom - mask.rect.top != source.bottom - source.top
+            {
+                return Err(Error::Graphics("invalid one-bit blit mask".into()));
+            }
+        }
         self.check_error()?;
         let mut p = vec![0i32; 24];
         p[0] = self.width as i32;
@@ -411,6 +445,7 @@ impl Graphics {
                 (rect, clip)
             }
             Draw::Blit {
+                mask: _,
                 rect,
                 clip,
                 source,
@@ -494,6 +529,19 @@ impl Graphics {
         if let Some(palette) = source_palette {
             p[21] = 1;
             p.extend(palette.iter().flatten().map(|&v| i32::from(v)));
+        }
+        if let Draw::Blit {
+            mask: Some(mask), ..
+        } = draw
+        {
+            p[22] = p.len() as i32;
+            p.extend([
+                mask.width as i32,
+                mask.height as i32,
+                mask.rect.left,
+                mask.rect.top,
+            ]);
+            p.extend(mask.bits.iter().map(|&v| i32::from(v)));
         }
         if let Draw::Polygon {
             vertices, frame, ..

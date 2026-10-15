@@ -205,3 +205,53 @@ dstBits=$1000224E, maskBits=$10010986, srcBits=$10010994. Next: shared GPU
 masked bitmap copying with checked snapshots, scaling and ABI coverage, then
 continue the original icon/board drawing. Popup interaction, gameplay and full
 application lifecycle acceptance remain unverified. The full rebuild stays active.
+
+
+## 2026-10-15: GPU one-bit masked bitmap copying
+
+CopyMask now marshals six checked pointers from the native 24-byte Pascal frame
+or PPC registers into one shared Ports service. Source, mask and destination are
+basic monochrome BitMaps with independent signed origins/strides. Equal-sized
+source/mask rectangles can scale to a different destination rectangle. Both input
+bitmaps are unpacked into immutable snapshots before destination publication,
+including aliased storage. The existing GPU blit accepts a borrowed one-bit mask;
+its bounded mask payload is serialized after clip/palette parameters. Pixel
+coverage and source selection run in WGSL, not a CPU framebuffer loop. Packing
+retains destination padding bits and row padding.
+
+CopyBits and CopyMask share live port colors, destination-alias stride checks,
+origin translation and visible/clip region coverage; offscreen targets use their
+own bounds. Masked scaling samples the source/mask pair with the legacy
+Systemless nearest-neighbor rule. Ordinary Basic CopyBits keeps its tested OR
+reduction. This reference comparison is not native System 7 pixel acceptance.
+One-bit copying follows Apple's [CopyMask contract](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-167.html).
+Indexed/direct source/destination PixMaps, deep/color masks, printing and active
+recording/custom-procedure contexts remain unsupported and fail explicitly.
+Bitmap/GPU extents remain bounded to 4096 per axis; clip work stays bounded.
+Malformed extents, rectangle-size mismatch, unsupported flags, excessive normalized
+coordinates and protected destinations fail before pixels are published.
+
+
+One default ABI test and three GPU tests exercise both real CPUs, exact argument
+order/void results, short frames, pixel masks, enlargement/reduction, differing
+origins, complex clip holes, source/mask/destination overlap, foreign targets,
+live colors, row padding, MemErr and rejected malformed/protected storage.
+Existing CopyBits pixel tests pass after sharing their target/clip setup. Rebuilt
+MPW drawing guests execute a masked copy and inspect all four result rows and
+padding bytes on both CPUs before their existing lifecycle success.
+
+The 30,000-boundary Super Mines sequence (256,171), (145,150), (402,231) completes
+its third release without a service fault, including one real CopyMask call.
+The captured frame has numeric labels and a status icon but a blank board. A
+longer 300,000-boundary-per-step run reaches a different fault: GetResource('CURS',4)
+returns nil, followed by SetCursor(nil), post-trap PC $010026B8, SP $0080FB0C.
+This is the missing standard watch cursor resource, not a CopyMask fault or
+accepted gameplay. Next: shared standard cursor-resource fallback ownership and
+application-resource precedence, then continue original new-game initialization.
+SetCursor(nil) must not be hidden behind a silent success. The original PPC app,
+production Mixed Mode, native presentation and other documented gaps remain.
+The full rebuild goal stays active.
+
+The mouse diagnostic now accepts SYSTEMLESS_PROBE_BUDGET (1..=10000000) to choose
+an explicit per-step boundary budget; the default remains 30000. It reports that
+budget, preserves separate press/release slices and still propagates faults.

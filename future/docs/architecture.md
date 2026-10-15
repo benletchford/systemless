@@ -1391,3 +1391,32 @@ CPU registers. Complete output validation precedes writes, including overlapping
 source/output. Guest-memory faults propagate without partial publication. Real
 MPW compiler wrappers on both CPUs and generated storage/ABI tests validate this
 boundary; original-app evidence is recorded separately.
+
+
+## 2026-10-15: GPU one-bit masked bitmap copying
+
+CopyMask now marshals six checked pointers from the native 24-byte Pascal frame
+or PPC registers into one shared Ports service. Source, mask and destination are
+basic monochrome BitMaps with independent signed origins/strides. Equal-sized
+source/mask rectangles can scale to a different destination rectangle. Both input
+bitmaps are unpacked into immutable snapshots before destination publication,
+including aliased storage. The existing GPU blit accepts a borrowed one-bit mask;
+its bounded mask payload is serialized after clip/palette parameters. Pixel
+coverage and source selection run in WGSL, not a CPU framebuffer loop. Packing
+retains destination padding bits and row padding.
+
+CopyBits and CopyMask share live port colors, destination-alias stride checks,
+origin translation and visible/clip region coverage; offscreen targets use their
+own bounds. Masked scaling samples the source/mask pair with the legacy
+Systemless nearest-neighbor rule. Ordinary Basic CopyBits keeps its tested OR
+reduction. This reference comparison is not native System 7 pixel acceptance.
+One-bit copying follows Apple's [CopyMask contract](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-167.html).
+Indexed/direct source/destination PixMaps, deep/color masks, printing and active
+recording/custom-procedure contexts remain unsupported and fail explicitly.
+Bitmap/GPU extents remain bounded to 4096 per axis; clip work stays bounded.
+Malformed extents, rectangle-size mismatch, unsupported flags, excessive normalized
+coordinates and protected destinations fail before pixels are published.
+
+The shared Trap Manager table advertises CopyMask with a readable built-in entry
+veneer, so availability checks and indirect native calls resolve the implemented
+service. Its availability test validates the same table entry and opcode.

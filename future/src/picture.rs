@@ -443,6 +443,7 @@ pub fn draw(
             gpu,
             memory,
             Draw::Blit {
+                mask: None,
                 rect,
                 clip: bitmap.bounds,
                 source: command.source,

@@ -156,5 +156,7 @@ run on wgpu with shared clipping/pattern rules. The bounded original splash now
 reaches the chooser event loop; a live-control press waits in TrackControl and
 its release opens the game window. Shared NumToString/StringToNum now handle
 signed integers through Pack7 and PPC imports. The original renders its numeric
-labels, then stops at CopyMask ($A817). Gameplay and control callbacks remain
-unfinished. Next: shared GPU masked bitmap copying. The full rebuild stays active.
+labels and completes a shared GPU CopyMask call. A longer bounded run next fails
+after a missing standard watch cursor resource (CURS 4) reaches SetCursor(nil).
+The board remains blank and gameplay/control callbacks remain unfinished. Next:
+shared standard cursor-resource fallbacks. The full rebuild stays active.

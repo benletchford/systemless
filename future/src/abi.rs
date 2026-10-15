@@ -25,6 +25,7 @@ pub enum Service {
     LineTo,
     Line,
     CopyBits,
+    CopyMask,
     GetNewWindow,
     SizeWindow,
     MoveWindow,
@@ -442,6 +443,7 @@ impl Abi {
             b"StripAddress" => Some(Service::StripAddress),
             b"HLock" => Some(Service::HLock),
             b"HUnlock" => Some(Service::HUnlock),
+            b"CopyMask" => Some(Service::CopyMask),
             b"CopyBits" => Some(Service::CopyBits),
             b"DrawPicture" => Some(Service::DrawPicture),
             b"GetPicture" => Some(Service::GetPicture),
@@ -1840,6 +1842,22 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("drawing stack overflow".into()))?;
                 Ok((Call::DrawRectangle { rectangle, op }, Reply::None))
             }
+            0xa817 => {
+                let args = memory.read(GuestPtr(sp), 24)?;
+                let pointer = |i| GuestPtr(u32::from_be_bytes(args[i..i + 4].try_into().unwrap()));
+                let request = crate::quickdraw::CopyMask {
+                    source: pointer(20),
+                    mask: pointer(16),
+                    destination: pointer(12),
+                    source_rect: pointer(8),
+                    mask_rect: pointer(4),
+                    destination_rect: pointer(0),
+                };
+                c.dar[15] = sp
+                    .checked_add(24)
+                    .ok_or_else(|| Error::Cpu("CopyMask stack overflow".into()))?;
+                Ok((Call::CopyMask(request), Reply::None))
+            }
             0xa8ec => {
                 let args = memory.read(GuestPtr(sp), 22)?;
                 let pointer = |i| GuestPtr(u32::from_be_bytes(args[i..i + 4].try_into().unwrap()));
@@ -2099,6 +2117,14 @@ impl Abi {
                 destination: GuestPtr(c.gpr[4]),
                 count: c.gpr[5] as i32,
             },
+            Service::CopyMask => Call::CopyMask(crate::quickdraw::CopyMask {
+                source: GuestPtr(c.gpr[3]),
+                mask: GuestPtr(c.gpr[4]),
+                destination: GuestPtr(c.gpr[5]),
+                source_rect: GuestPtr(c.gpr[6]),
+                mask_rect: GuestPtr(c.gpr[7]),
+                destination_rect: GuestPtr(c.gpr[8]),
+            }),
             Service::NumToString => Call::Decimal(crate::decimal::Op::Format {
                 number: c.gpr[3] as i32,
                 destination: GuestPtr(c.gpr[4]),
@@ -2513,7 +2539,8 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Intersects | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::NumToString
+                    Service::CopyMask
+                        | Service::NumToString
                         | Service::StringToNum
                         | Service::GetMouse
                         | Service::SystemTask

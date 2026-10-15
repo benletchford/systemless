@@ -391,3 +391,7 @@ The environment guest also requires five NumToString/StringToNum calls per CPU,
 checking the signed minimum, zero, low-nibble CAT parsing and negative overflow.
 The public SDK wrappers exercise native Pack7 register results and PPC output
 pointers through the same shared service.
+
+The drawing guest calls CopyMask with independent source/mask BitMaps and checks
+masked result bytes on every row plus unchanged destination row padding. The
+same compiled call must execute through both CPU adapters before fixture success.

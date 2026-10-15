@@ -78,6 +78,17 @@ int main(void) {
     SetPort(&port);
     bitmap.bounds = all;
     SetPortBits(&bitmap);
+    {
+        unsigned char srcPixels[8]={0xa5,0,0x5a,0,0xf0,0,0x0f,0};
+        unsigned char maskPixels[8]={0xf0,0,0x0f,0,0xaa,0,0x55,0};
+        BitMap srcBits,maskBits;
+        srcBits.baseAddr=(Ptr)srcPixels;srcBits.rowBytes=2;srcBits.bounds=all;
+        maskBits.baseAddr=(Ptr)maskPixels;maskBits.rowBytes=2;maskBits.bounds=all;
+        CopyMask(&srcBits,&maskBits,&bitmap,&all,&all,&all);
+        if (pixels[0]!=0xa0 || pixels[2]!=0x0a || pixels[4]!=0xa0 || pixels[6]!=0x05) return 83;
+        if (pixels[1]!=0x33 || pixels[3]!=0x44 || pixels[5]!=0x55 || pixels[7]!=0x66) return 84;
+        pixels[0]=0x80;pixels[2]=0;pixels[4]=0;pixels[6]=0;
+    }
     ClipRect(&clip);
     saved = NewRgn();
     temporary = NewRgn();

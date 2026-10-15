@@ -55,7 +55,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             let sx=p[14]+((x-p[3])*(p[18]-p[14]))/(p[5]-p[3]);
             let sy=p[15]+((y-p[4])*(p[19]-p[15]))/(p[6]-p[4]);
             var bit=0u;
-            if (p[18]-p[14])>(p[5]-p[3]) || (p[19]-p[15])>(p[6]-p[4]) {
+            if p[22]==0 && ((p[18]-p[14])>(p[5]-p[3]) || (p[19]-p[15])>(p[6]-p[4])) {
                 // Basic QuickDraw reductions OR the source footprint. Enlargement
                 // still samples a single source pixel along the enlarged axis.
                 let ex=max(sx+1,p[14]+((x-p[3]+1)*(p[18]-p[14]))/(p[5]-p[3]));
@@ -71,6 +71,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             } else if sx>=0 && sy>=0 && sx<p[16] && sy<p[17] {
                 bit=blit_bit(source[u32(sy*p[16]+sx)]);
             } else { valid=false; }
+            if p[22]!=0 {
+                // Masked copies use the legacy reference's nearest-neighbor
+                // source/mask pair; ordinary Basic CopyBits keeps OR reduction.
+                let q=p[22];let mx=p[q+2]+sx-p[14];let my=p[q+3]+sy-p[15];
+                if mx<0 || my<0 || mx>=p[q] || my>=p[q+1] {valid=false;}
+                else {valid=valid && p[q+4+my*p[q]+mx]!=0;}
+            }
             bit=bit ^ u32(p[20]);
             src=select(u32(p[12]),u32(p[11]),bit!=0u);
         }

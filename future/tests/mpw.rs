@@ -249,6 +249,13 @@ fn compiled_resource_drawing_and_event_app_has_pixel_parity() {
         assert_eq!(app.runtime.advance(10_000).unwrap(), Stop::Exit(0));
         let calls = &app.runtime.services.calls;
         assert_eq!(
+            calls
+                .iter()
+                .filter(|call| matches!(call, Call::CopyMask(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
             &calls[calls.len() - 2..],
             &[
                 Call::PostEvent {

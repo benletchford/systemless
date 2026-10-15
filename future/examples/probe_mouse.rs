@@ -23,6 +23,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 4 || !args.len().is_multiple_of(2) {
         return Err("usage: probe_mouse CODE_RESOURCE_FORK OUTPUT_PREFIX X Y [X Y ...]".into());
     }
+    let budget: u64 = match std::env::var("SYSTEMLESS_PROBE_BUDGET") {
+        Ok(value) => value.parse()?,
+        Err(std::env::VarError::NotPresent) => 30_000,
+        Err(error) => return Err(error.into()),
+    };
+    if !(1..=10_000_000).contains(&budget) {
+        return Err("SYSTEMLESS_PROBE_BUDGET must be 1..=10000000".into());
+    }
+    println!("per-step budget {budget}");
     let mut fork = Vec::new();
     std::fs::File::open(&args[0])?
         .take(IMAGE_LIMIT as u64 + 1)
@@ -33,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     gpu.palette[0] = [255; 4];
     gpu.palette[1] = [0, 0, 0, 255];
     app.runtime.graphics = Some(gpu);
-    println!("startup {:?}", app.runtime.advance(30_000)?);
+    println!("startup {:?}", app.runtime.advance(budget)?);
     screenshot(&mut app, Path::new(&format!("{}-before.ppm", args[1])))?;
     let mut pointer = Pointer::default();
     let first = app.runtime.services.calls.len();
@@ -51,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut app.runtime.process.input,
             true,
         )?;
-        result = app.runtime.advance(30_000);
+        result = app.runtime.advance(budget);
         println!("click {} mouse down {result:?}", index + 1);
         if result.is_ok() {
             pointer.button(
@@ -59,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &mut app.runtime.process.input,
                 false,
             )?;
-            result = app.runtime.advance(30_000);
+            result = app.runtime.advance(budget);
             println!("click {} mouse up {result:?}", index + 1);
         }
         if args.len() > 4 {
