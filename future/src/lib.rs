@@ -4,6 +4,7 @@ pub mod cfm;
 pub mod controls;
 pub mod cpu;
 pub mod cursor;
+pub mod decimal;
 pub mod dialogs;
 pub mod environment;
 pub mod events;

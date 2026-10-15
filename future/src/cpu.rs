@@ -13,6 +13,7 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     CreateResourceFile(GuestPtr),
+    Decimal(crate::decimal::Op),
     Gestalt(u32),
     StillDown,
     Random,

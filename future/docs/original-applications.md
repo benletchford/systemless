@@ -169,3 +169,39 @@ lifecycle acceptance remain unverified. Next: shared signed integer decimal
 conversion with the Pack7/PPC ABI boundaries, then continue real game drawing.
 Native presentation, original PPC compatibility, production Mixed Mode and the
 other documented gaps remain required. The full rebuild goal stays active.
+
+
+## 2026-10-15: shared integer decimal conversion
+
+NumToString/StringToNum now use one memory-only decimal service. Native Pack7
+$A9EE selectors zero/one pop only their selector word, use D0/A0 and preserve the
+void formatting result; parsing returns D0. PPC imports receive r3/r4, write the
+Pascal string or big-endian long output, and preserve void return registers.
+Unsupported SANE selectors remain explicit errors before selector-stack mutation.
+Signed formatting handles the complete i32 range and writes only the Pascal
+length/content. Parsing snapshots input before overlapping output and wraps
+multiply/add/negation at 32 bits. Neither operation allocates guest memory or
+changes MemErr/ResErr.
+
+The Roman parser consumes every character after an optional initial sign using
+its low four bits; spaces contribute zero, CAT yields 314 and 2: yields 30. This
+follows Apple's [Text Utilities reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Text_Utilities/DeprecationAppendix/AppendixADeprecatedAPI.html#//apple_ref/c/func/StringToNum).
+Legacy Systemless instead skips whitespace and stops at nondigits; that reference
+behavior is not copied where it contradicts the documented contract. Script
+Manager patching/international conversion and SANE decimal scanners remain gaps.
+
+Four new default tests cover signed limits, byte guards, atomic output faults,
+truncated/maximal Pascal input, overlapping storage, unusual digits/wrapping,
+unsupported/short selector frames and both real CPU routes/register preservation.
+Rebuilt MPW environment guests call both functions five times on each CPU and
+verify signed minimum, zero, CAT and negative overflow before successful exit.
+
+The same original Super Mines click sequence (256,171), (145,150), (402,231)
+passes two NumToString calls for 5 and 0, rendering those numbers in the partially
+drawn game window. It next stops at CopyMask ($A817), post-trap PC $0100B298,
+after loading cicn 130. The stack at $0080F8EA begins with six pointers, from
+last to first: dstRect=$0080F9DC, maskRect=$1001098C, srcRect=$1001099A,
+dstBits=$1000224E, maskBits=$10010986, srcBits=$10010994. Next: shared GPU
+masked bitmap copying with checked snapshots, scaling and ABI coverage, then
+continue the original icon/board drawing. Popup interaction, gameplay and full
+application lifecycle acceptance remain unverified. The full rebuild stays active.

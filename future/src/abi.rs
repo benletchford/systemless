@@ -9,6 +9,8 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    NumToString,
+    StringToNum,
     Gestalt,
     StillDown,
     FindWindow,
@@ -227,6 +229,8 @@ impl Abi {
             return None;
         }
         match symbol {
+            b"NumToString" => Some(Service::NumToString),
+            b"StringToNum" => Some(Service::StringToNum),
             b"GetMemFragment" => Some(Service::GetMemFragment),
             b"CloseConnection" => Some(Service::CloseConnection),
             b"FrameRoundRect" => Some(Service::RoundRect(true)),
@@ -500,6 +504,30 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa9ee => {
+                let selector = memory.u16(GuestPtr(sp))?;
+                let (op, reply) = match selector {
+                    0 => (
+                        crate::decimal::Op::Format {
+                            number: c.dar[0] as i32,
+                            destination: GuestPtr(c.dar[8]),
+                        },
+                        Reply::None,
+                    ),
+                    1 => (
+                        crate::decimal::Op::Parse {
+                            source: GuestPtr(c.dar[8]),
+                            destination: None,
+                        },
+                        Reply::M68kD0,
+                    ),
+                    _ => return Err(Error::Service(u32::from(opcode))),
+                };
+                c.dar[15] = sp
+                    .checked_add(2)
+                    .ok_or_else(|| Error::Cpu("decimal selector stack overflow".into()))?;
+                Ok((Call::Decimal(op), reply))
+            }
             0xa8b0 | 0xa8b1 => {
                 let bytes = memory.read(GuestPtr(sp), 8)?;
                 let height = i16::from_be_bytes(bytes[..2].try_into().unwrap());
@@ -2071,6 +2099,14 @@ impl Abi {
                 destination: GuestPtr(c.gpr[4]),
                 count: c.gpr[5] as i32,
             },
+            Service::NumToString => Call::Decimal(crate::decimal::Op::Format {
+                number: c.gpr[3] as i32,
+                destination: GuestPtr(c.gpr[4]),
+            }),
+            Service::StringToNum => Call::Decimal(crate::decimal::Op::Parse {
+                source: GuestPtr(c.gpr[3]),
+                destination: Some(GuestPtr(c.gpr[4])),
+            }),
             Service::GetDAString => Call::Dialog(crate::dialogs::Op::Slot(c.gpr[3] as i16)),
             Service::InitDialogs => Call::Dialog(crate::dialogs::Op::Init(c.gpr[3])),
             Service::ErrorSound => Call::Dialog(crate::dialogs::Op::Sound(c.gpr[3])),
@@ -2477,7 +2513,9 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Intersects | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::GetMouse
+                    Service::NumToString
+                        | Service::StringToNum
+                        | Service::GetMouse
                         | Service::SystemTask
                         | Service::InvalRect
                         | Service::ValidRect

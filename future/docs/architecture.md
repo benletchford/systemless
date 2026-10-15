@@ -1363,3 +1363,31 @@ architecture-specific Reply. Polling precedes further CPU execution and returns
 Waiting { ticks: 1 } while held. Event removal is preflighted before drawing and
 committed only on a successful release. This is distinct from guest callbacks;
 real Mixed Mode action procedures remain unimplemented.
+
+
+## 2026-10-15: shared integer decimal conversion
+
+NumToString/StringToNum now use one memory-only decimal service. Native Pack7
+$A9EE selectors zero/one pop only their selector word, use D0/A0 and preserve the
+void formatting result; parsing returns D0. PPC imports receive r3/r4, write the
+Pascal string or big-endian long output, and preserve void return registers.
+Unsupported SANE selectors remain explicit errors before selector-stack mutation.
+Signed formatting handles the complete i32 range and writes only the Pascal
+length/content. Parsing snapshots input before overlapping output and wraps
+multiply/add/negation at 32 bits. Neither operation allocates guest memory or
+changes MemErr/ResErr.
+
+The Roman parser consumes every character after an optional initial sign using
+its low four bits; spaces contribute zero, CAT yields 314 and 2: yields 30. This
+follows Apple's [Text Utilities reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Text_Utilities/DeprecationAppendix/AppendixADeprecatedAPI.html#//apple_ref/c/func/StringToNum).
+Legacy Systemless instead skips whitespace and stops at nondigits; that reference
+behavior is not copied where it contradicts the documented contract. Script
+Manager patching/international conversion and SANE decimal scanners remain gaps.
+
+The shared service takes typed Format/Parse operations with explicit guest
+pointers. Parse returns a scalar and optionally writes a guest output; the adapter
+alone chooses D0 versus PPC output-pointer delivery. The runtime does not inspect
+CPU registers. Complete output validation precedes writes, including overlapping
+source/output. Guest-memory faults propagate without partial publication. Real
+MPW compiler wrappers on both CPUs and generated storage/ABI tests validate this
+boundary; original-app evidence is recorded separately.

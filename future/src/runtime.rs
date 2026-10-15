@@ -434,6 +434,10 @@ impl Runtime {
                             };
                             reply.apply(&mut self.cpu, &mut self.memory, value, error)?;
                         }
+                        Call::Decimal(op) => {
+                            let result = crate::decimal::call(&mut self.memory, op)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, result, 0)?;
+                        }
                         Call::StillDown => {
                             let down = !crate::events::available(&self.memory, 0x0006)?;
                             reply.apply(&mut self.cpu, &mut self.memory, u32::from(down), 0)?;
@@ -1311,6 +1315,7 @@ impl Runtime {
                         | Call::Rectangle(_)
                         | Call::ToolboxEvent { .. }
                         | Call::Gestalt(_)
+                        | Call::Decimal(_)
                         | Call::StillDown
                         | Call::FindWindow { .. }
                         | Call::PointInRect { .. }

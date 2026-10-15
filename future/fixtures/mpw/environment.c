@@ -8,6 +8,7 @@
 #include <Devices.h>
 #include <Gestalt.h>
 #include <Resources.h>
+#include <TextUtils.h>
 int main(void) {
     SysEnvRec world;
     long response;
@@ -113,6 +114,18 @@ int main(void) {
         if (PBReadSync(&io) || io.ioParam.ioActCount!=16) return 42;
         if (*(long *)header!=256 || *(long *)(header+4)!=256 || *(long *)(header+8)!=0 || *(long *)(header+12)!=30) return 43;
         if (PBCloseSync(&io)) return 44;
+    }
+    {
+        Str255 decimal;
+        long number;
+        short i;
+        NumToString((long)0x80000000,decimal);
+        if (decimal[0]!=11) return 45;
+        for (i=0;i<11;i++) if (decimal[i+1]!="-2147483648"[i]) return 46;
+        StringToNum(decimal,&number); if (number!=(long)0x80000000) return 47;
+        StringToNum("\p+CAT",&number); if (number!=314) return 48;
+        StringToNum("\p-4294967295",&number); if (number!=1) return 49;
+        NumToString(0,decimal); if (decimal[0]!=1 || decimal[1]!='0') return 50;
     }
     PostEvent(diskEvt,0x600d); ExitToShell(); return 0;
 }

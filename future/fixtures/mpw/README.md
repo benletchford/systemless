@@ -386,3 +386,8 @@ It leaves the caller port nil, tracks a standard button while the host holds,
 drags out/reenters and releases, verifies the returned part and unchanged value,
 then disposes its control/window and exits. The menu fixture uses DisposeMenu for
 its NewMenu allocation.
+
+The environment guest also requires five NumToString/StringToNum calls per CPU,
+checking the signed minimum, zero, low-nibble CAT parsing and negative overflow.
+The public SDK wrappers exercise native Pack7 register results and PPC output
+pointers through the same shared service.
