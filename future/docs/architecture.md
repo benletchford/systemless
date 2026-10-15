@@ -1569,3 +1569,13 @@ truncated/unmapped input. Native $A8AE pops a four-byte pointer and writes only
 the canonical Boolean result byte; PPC returns 0/1 in r3. EmptyRect and
 IsDialogEvent preflight the native result byte before changing the stack pointer.
 The predicate follows Apple's [rectangle definition](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-19.html).
+
+
+EnableItem/DisableItem modify only the live classic MENU enableFlags word. Bit
+zero gates the whole menu while retaining all individual bits; supported existing
+items 1..31 have independent bits. No host enable-state cache, guest allocation,
+implicit redraw or graphics dependency is introduced. Checked handle/record
+reads precede the in-place write, and both CPU routes preserve caller error
+globals and void return values. The existing DrawMenuBar reads the live bit zero
+for title dimming. Standard MenuSelect tracking remains an explicit missing
+service rather than returning a fake no-selection result.

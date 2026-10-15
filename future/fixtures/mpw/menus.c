@@ -64,6 +64,13 @@ int main(void) {
         SetItemMark(menu,1,0x1234); if (((unsigned char *)*menu)[20]!=0x34) return 25;
         CheckItem(menu,1,true); if (((unsigned char *)*menu)[20]!=0x12) return 26;
         CheckItem(menu,1,false); if (((unsigned char *)*menu)[20]!=0) return 27;
+        DisableItem(menu,1); if ((((unsigned char *)*menu)[13]&3)!=1) return 30;
+        DisableItem(menu,0); if ((((unsigned char *)*menu)[13]&3)!=0) return 31;
+        EnableItem(menu,0); if ((((unsigned char *)*menu)[13]&3)!=1) return 32;
+        EnableItem(menu,1); if ((((unsigned char *)*menu)[13]&3)!=3) return 33;
+        DisableItem(menu,32); EnableItem(menu,-1);
+        if (((unsigned char *)*menu)[10]!=255 || ((unsigned char *)*menu)[11]!=255 || ((unsigned char *)*menu)[12]!=255 || ((unsigned char *)*menu)[13]!=255) return 34;
+
         SetItemCmd(menu,1,0x1250); if (((unsigned char *)*menu)[19]!=0x50) return 29;
         SetMenuItemText(menu,1,"\pLonger title");
         if (((unsigned char *)*menu)[16]!=12 || ((unsigned char *)*menu)[31]!=0 || CountMItems(menu)!=3) return 28;

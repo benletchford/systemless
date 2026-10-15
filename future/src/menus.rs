@@ -32,6 +32,11 @@ pub enum Op {
     },
     Dispose(u32),
     Count(u32),
+    Enable {
+        handle: u32,
+        item: i16,
+        enabled: bool,
+    },
     Command {
         handle: u32,
         item: i16,
@@ -244,6 +249,14 @@ impl Menus {
         if let Op::AppendResources { handle, kind } = op {
             return items::append_resources(memory, process, handle, kind);
         }
+        if let Op::Enable {
+            handle,
+            item,
+            enabled,
+        } = op
+        {
+            return items::set_enabled(memory, process, handle, item, enabled);
+        }
         if let Op::Count(handle) = op {
             let error = process.mem_error;
             let result = (|| {
@@ -427,6 +440,7 @@ impl Menus {
             | Op::Text { .. }
             | Op::Mark { .. }
             | Op::AppendResources { .. }
+            | Op::Enable { .. }
             | Op::Count(_)
             | Op::Handle(_)
             | Op::Load(_)

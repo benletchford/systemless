@@ -598,6 +598,15 @@ fn compiled_menu_initialization_colors_and_snapshot_lifetime_match_on_both_cpus(
             8
         );
         assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|c| matches!(c, Call::Menu(systemless_future::menus::Op::Enable { .. })))
+                .count(),
+            6
+        );
+        assert_eq!(
             &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],
             &[
                 Call::PostEvent {

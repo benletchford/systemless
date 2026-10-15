@@ -83,6 +83,7 @@ pub enum Service {
     SetItemCommand,
     SetItemMark,
     CheckItem,
+    EnableItem(bool),
     AppendResMenu,
     CountMenuItems,
     GetMenuHandle,
@@ -344,6 +345,8 @@ impl Abi {
             b"GetItem" | b"GetMenuItemText" => Some(Service::GetMenuItemText),
             b"SetItem" | b"SetMenuItemText" => Some(Service::SetMenuItemText),
             b"SetItemCmd" => Some(Service::SetItemCommand),
+            b"EnableItem" => Some(Service::EnableItem(true)),
+            b"DisableItem" => Some(Service::EnableItem(false)),
             b"SetItemMark" => Some(Service::SetItemMark),
             b"CheckItem" | b"CheckMenuItem" => Some(Service::CheckItem),
             b"AddResMenu" | b"AppendResMenu" => Some(Service::AppendResMenu),
@@ -1299,6 +1302,22 @@ impl Abi {
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("resource file stack overflow".into()))?;
                 Ok((Call::CreateResourceFile(name), Reply::None))
+            }
+            0xa939 | 0xa93a => {
+                let args = memory.read(GuestPtr(sp), 6)?;
+                let item = i16::from_be_bytes(args[..2].try_into().unwrap());
+                let handle = u32::from_be_bytes(args[2..].try_into().unwrap());
+                c.dar[15] = sp
+                    .checked_add(6)
+                    .ok_or_else(|| Error::Cpu("menu enable stack overflow".into()))?;
+                Ok((
+                    Call::Menu(crate::menus::Op::Enable {
+                        handle,
+                        item,
+                        enabled: opcode == 0xa939,
+                    }),
+                    Reply::None,
+                ))
             }
             0xa946 | 0xa947 => {
                 let args = memory.read(GuestPtr(sp), 10)?;
@@ -2269,6 +2288,11 @@ impl Abi {
                 handle: c.gpr[3],
                 kind: c.gpr[4].to_be_bytes(),
             }),
+            Service::EnableItem(enabled) => Call::Menu(crate::menus::Op::Enable {
+                handle: c.gpr[3],
+                item: c.gpr[4] as i16,
+                enabled,
+            }),
             Service::CountMenuItems => Call::Menu(crate::menus::Op::Count(c.gpr[3])),
             Service::GetMenuHandle => Call::Menu(crate::menus::Op::Handle(c.gpr[3] as i16)),
             Service::Menu(op) => Call::Menu(op),
@@ -2676,6 +2700,7 @@ impl Abi {
                         | Service::SetItemCommand
                         | Service::SetMenuItemText
                         | Service::GetMenuItemText
+                        | Service::EnableItem(_)
                         | Service::CheckItem
                         | Service::Menu(
                             crate::menus::Op::Init

@@ -553,3 +553,42 @@ faults at EnableItem ($A939), post-trap PC $01005200, SP $0080FE6E. The native
 frame requests item 4 on handle $100020BC. This is the next executable milestone:
 shared live menu enable/disable flags, then normal menu tracking/selection and
 application shutdown. The File menu has not yet opened or selected a command.
+
+
+### Shared menu enable state (2026-10-15)
+
+EnableItem ($A939) and DisableItem ($A93A), plus their classic PPC imports, now
+mutate the checked live MENU enableFlags field in place. Item zero changes only
+the menu-wide bit, preserving individually disabled items. Existing items 1..31
+have individual bits; negative, absent or >31 item requests are inert, matching
+the supported legacy Systemless contract. The whole-menu bit still controls
+items beyond 31. This classic API does not advertise newer extended-menu APIs.
+
+The query/mutation needs no GPU, guest allocation or handle resize. Locked
+handles work and keep their data identity. Unknown handles, corrupt masters and
+malformed standard records fail before changing flags. Process MemErr is restored
+on every path, and this operation bypasses stale error projection so caller
+MemErr/ResErr words stay unchanged. Both adapters preserve void results; native
+frames contain a signed word item followed by a long handle and pop six bytes.
+DrawMenuBar already reads the live whole-menu bit for its existing dimmed-title
+pattern; changing flags does not itself redraw the bar.
+
+Two new default tests cover bit 0/1/31 boundaries, more than 31 items, live guest
+edits, invalid/nonexistent indices, locked identity, corrupt masters, both real
+CPU routes, short frames, registers, padding and distinct process/guest errors.
+Rebuilt MPW menu guests require six public enable/disable calls, inspect the
+actual mask and preserve individually disabled state through whole-menu toggles
+before their existing rendering/lifecycle success marker.
+
+The bounded original sequence through chooser confirmation, one board click and
+a File-menu click at (35,10) now passes menu preparation. It next faults at
+MenuSelect ($A93D), post-trap PC $0100CD2C, SP $0080FE84, with the start Point
+v=10/h=35. The board interaction remains verified, but the menu has not yet been
+opened or selected. Next: cooperative shared standard MenuSelect tracking with
+real host motion/release, GPU dropdown restoration and exact packed return values,
+then rerun the original menu lifecycle. Full gameplay, original PPC, native
+presentation acceptance and real Mixed Mode remain incomplete. The full rebuild
+goal remains active.
+
+Primary contracts: Apple's [EnableItem](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-150.html)
+and [DisableItem](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-151.html).

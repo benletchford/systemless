@@ -426,3 +426,11 @@ The window guests require four EmptyRect results: all-zero, full signed-coordina
 range, zero height and a one-pixel rectangle. The host acceptance requires all
 four public calls on both compiler targets, then the existing final success
 marker. Native Boolean guards are also checked by the focused Rust fixtures.
+
+
+Menu guests now require six EnableItem/DisableItem calls and inspect the live
+32-bit flags: an individually disabled first item stays disabled through a whole
+menu disable/enable cycle, enabling it restores the original mask, and item 32
+and negative requests leave flags unchanged. Both compiler targets complete the
+existing title-rendering, resource and lifecycle acceptance afterward. MenuSelect
+interaction is not covered by this fixture yet.

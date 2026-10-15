@@ -168,5 +168,6 @@ returns to the event wait without a service fault. This verifies one basic board
 interaction; broader gameplay, menu-driven lifecycle and callbacks remain
 unfinished. Region/coordinate changes, mouse-region waits and dialog event
 classification share live guest state across both CPUs. A follow-up File-menu
-click stops at EnableItem ($A939); menu interaction is the next milestone. The
+click now passes shared EnableItem/DisableItem state and stops at MenuSelect
+($A93D). Cooperative menu tracking and selection are the next milestone. The
 full rebuild stays active.

@@ -1564,3 +1564,218 @@ fn dispose_menu_adapters_pop_one_handle_without_writing_a_result() {
     let Cpu::PowerPc(c) = cpu else { panic!() };
     assert_eq!(c.gpr[3], 0x10002000);
 }
+
+#[test]
+fn enable_flags_are_live_in_place_and_whole_menu_changes_preserve_item_bits() {
+    let f = support::pef_program(&[0x4e800020], &[], 32);
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let mut bytes = vec![0; 15];
+    bytes[10..14].copy_from_slice(&u32::MAX.to_be_bytes());
+    for _ in 0..32 {
+        bytes.extend([1, b'A', 0, 0, 0, 0]);
+    }
+    bytes.push(0);
+    let h = app
+        .runtime
+        .process
+        .new_handle(&mut app.runtime.memory, bytes.len() as u32, false)
+        .unwrap();
+    let base = ptr(&app.runtime.memory, h);
+    app.runtime.memory.write(base, &bytes).unwrap();
+    app.runtime
+        .process
+        .set_handle_lock(&app.runtime.memory, h, true)
+        .unwrap();
+    app.runtime.process.mem_error = -108;
+    let mut expected = u32::MAX;
+    for (item, enabled) in [
+        (2, false),
+        (31, false),
+        (0, false),
+        (0, true),
+        (2, true),
+        (31, true),
+        (-1, false),
+        (32, false),
+        (32767, false),
+    ] {
+        direct(
+            &mut app,
+            Op::Enable {
+                handle: h,
+                item,
+                enabled,
+            },
+        )
+        .unwrap();
+        if (0..=31).contains(&item) {
+            if enabled {
+                expected |= 1u32 << item;
+            } else {
+                expected &= !(1u32 << item);
+            }
+        }
+        let mut wanted = bytes.clone();
+        wanted[10..14].copy_from_slice(&expected.to_be_bytes());
+        assert_eq!(app.runtime.memory.read(base, bytes.len()).unwrap(), wanted);
+        assert_eq!(ptr(&app.runtime.memory, h), base);
+        assert_eq!(app.runtime.process.mem_error, -108);
+    }
+    // Guest edits, not a cached enable mask, govern the next update.
+    app.runtime
+        .memory
+        .write(GuestPtr(base.0 + 10), &0u32.to_be_bytes())
+        .unwrap();
+    direct(
+        &mut app,
+        Op::Enable {
+            handle: h,
+            item: 31,
+            enabled: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        app.runtime.memory.u32(GuestPtr(base.0 + 10)).unwrap(),
+        0x80000000
+    );
+    // A nonexistent item in a short menu is inert under the legacy contract.
+    let short = standard_menu(1, 65);
+    let h2 = app
+        .runtime
+        .process
+        .new_handle(&mut app.runtime.memory, short.len() as u32, false)
+        .unwrap();
+    let b2 = ptr(&app.runtime.memory, h2);
+    app.runtime.memory.write(b2, &short).unwrap();
+    direct(
+        &mut app,
+        Op::Enable {
+            handle: h2,
+            item: 2,
+            enabled: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(app.runtime.memory.read(b2, short.len()).unwrap(), short);
+    app.runtime.process.mem_error = -111;
+    let before = app.runtime.memory.read(base, bytes.len()).unwrap().to_vec();
+    app.runtime
+        .memory
+        .write(GuestPtr(h), &b2.0.to_be_bytes())
+        .unwrap();
+    assert!(direct(
+        &mut app,
+        Op::Enable {
+            handle: h,
+            item: 0,
+            enabled: false
+        }
+    )
+    .is_err());
+    assert_eq!(app.runtime.process.mem_error, -111);
+    assert_eq!(app.runtime.memory.read(base, bytes.len()).unwrap(), before);
+}
+#[test]
+fn enable_menu_abis_preserve_void_results_errors_and_unpack_six_byte_native_frame() {
+    let f = support::pef_program(&[0x4e800020], &[b"EnableItem", b"DisableItem"], 32);
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let bytes = standard_menu(7, 65);
+    let h = app
+        .runtime
+        .process
+        .new_handle(&mut app.runtime.memory, bytes.len() as u32, false)
+        .unwrap();
+    let base = ptr(&app.runtime.memory, h);
+    app.runtime.memory.write(base, &bytes).unwrap();
+    app.runtime
+        .memory
+        .map(
+            GuestPtr(0x50000000),
+            vec![0xa9, 0x39, 0xa9, 0x3a],
+            Permissions::RX,
+        )
+        .unwrap();
+    let sp = STACK_BASE + 0x8000;
+    app.runtime
+        .memory
+        .write(GuestPtr(0x220), &(-108i16).to_be_bytes())
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0xa60), &(-192i16).to_be_bytes())
+        .unwrap();
+    app.runtime.process.mem_error = -111;
+    for enabled in [false, true] {
+        let index = u32::from(!enabled);
+        let tv = app
+            .runtime
+            .memory
+            .u32(GuestPtr(app.info.toc_or_a5 + 8 + index * 4))
+            .unwrap();
+        let gate = app.runtime.memory.u32(GuestPtr(tv)).unwrap();
+        app.runtime.cpu = Cpu::new(Architecture::PowerPc, gate, sp);
+        if let Cpu::PowerPc(c) = &mut app.runtime.cpu {
+            c.gpr[3] = h;
+            c.gpr[4] = 0xabcd0001;
+        }
+        assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+        let Cpu::PowerPc(c) = &app.runtime.cpu else {
+            panic!()
+        };
+        assert_eq!(c.gpr[3], h);
+        assert_eq!(c.gpr[4], 0xabcd0001);
+        assert_eq!(
+            app.runtime.memory.u32(GuestPtr(base.0 + 10)).unwrap() & 2,
+            if enabled { 2 } else { 0 }
+        );
+        let mut frame = 1i16.to_be_bytes().to_vec();
+        frame.extend(h.to_be_bytes());
+        frame.extend([0xa5; 4]);
+        app.runtime.memory.write(GuestPtr(sp), &frame).unwrap();
+        app.runtime.cpu = Cpu::new(
+            Architecture::M68k,
+            0x50000000 + if enabled { 2 } else { 0 },
+            sp,
+        );
+        if let Cpu::M68k(c) = &mut app.runtime.cpu {
+            c.dar[0] = 0x12345678;
+        }
+        assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+        let Cpu::M68k(c) = &app.runtime.cpu else {
+            panic!()
+        };
+        assert_eq!(c.dar[15], sp + 6);
+        assert_eq!(c.dar[0], 0x12345678);
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(sp + 6), 4).unwrap(),
+            [0xa5; 4]
+        );
+        assert_eq!(
+            app.runtime.memory.u32(GuestPtr(base.0 + 10)).unwrap() & 2,
+            if enabled { 0 } else { 2 }
+        );
+        assert_eq!(app.runtime.process.mem_error, -111);
+        assert_eq!(
+            app.runtime.memory.u16(GuestPtr(0x220)).unwrap(),
+            (-108i16) as u16
+        );
+        assert_eq!(
+            app.runtime.memory.u16(GuestPtr(0xa60)).unwrap(),
+            (-192i16) as u16
+        );
+    }
+    for op in [0x139, 0x13a] {
+        assert_ne!(
+            systemless_future::traps::address(op, true),
+            systemless_future::traps::UNIMPLEMENTED
+        );
+    }
+    let mut m = Memory::default();
+    m.map(GuestPtr(0x1000), vec![0; 5], Permissions::RW)
+        .unwrap();
+    let mut c = m68k::CpuCore::default();
+    c.dar[15] = 0x1000;
+    assert!(Abi::trap(0xa939, &mut c, &m).is_err());
+    assert_eq!(c.dar[15], 0x1000);
+}

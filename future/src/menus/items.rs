@@ -308,3 +308,34 @@ pub(super) fn read_text(
     process.mem_error = error;
     result
 }
+
+/// Bit zero controls the whole menu without losing individual disabled items.
+pub(super) fn set_enabled(
+    memory: &mut Memory,
+    process: &mut Process,
+    handle: u32,
+    item: i16,
+    enabled: bool,
+) -> Result<u32> {
+    let error = process.mem_error;
+    let result = (|| {
+        let bytes = data(memory, process, handle)?;
+        let menu = Record::parse(&bytes)?;
+        if !(0..=31).contains(&item) || item as usize > menu.items.len() {
+            return Ok(0);
+        }
+        let bit = 1u32 << item;
+        let flags = if enabled {
+            menu.enabled | bit
+        } else {
+            menu.enabled & !bit
+        };
+        if flags != menu.enabled {
+            let base = memory.u32(GuestPtr(handle))?;
+            memory.write(GuestPtr(base + 10), &flags.to_be_bytes())?;
+        }
+        Ok(0)
+    })();
+    process.mem_error = error;
+    result
+}
