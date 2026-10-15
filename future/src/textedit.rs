@@ -24,6 +24,11 @@ pub enum Op {
         styled: bool,
     },
     GetText(u32),
+    Height {
+        handle: u32,
+        start: i32,
+        end: i32,
+    },
     GetStyle(u32),
     Dispose(u32),
     SetText {
@@ -88,6 +93,85 @@ fn validate_overlay_hooks(memory: &Memory, data: GuestPtr) -> Result<()> {
     Ok(())
 }
 impl Manager {
+    /// Inclusive one-based line heights, read from live layout storage. Zero or
+    /// negative endpoints denote line one; reversed endpoints are sorted before
+    /// intersection with the actual nonblank line range. Never invent metrics
+    /// for lines beyond the record, as legacy out-of-range loops could do.
+    fn height(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        handle: u32,
+        start: i32,
+        end: i32,
+    ) -> Result<u32> {
+        let errors = (process.mem_error, process.res_error);
+        let result = (|| {
+            self.call(memory, process, Op::GetText(handle), 0)?;
+            let owned = self.records[&handle].clone();
+            let data = pointer(memory, process, handle, 128)?;
+            let length = usize::from(memory.u16(GuestPtr(data.0 + 60))?);
+            let count = usize::from(memory.u16(GuestPtr(data.0 + 94))?);
+            if length > 32767 || count > 32767 {
+                return Err(bad("invalid TextEdit line/text count"));
+            }
+            let record = pointer(
+                memory,
+                process,
+                handle,
+                (128.max(96 + (count + 1) * 2)) as u32,
+            )?;
+            let text = pointer(memory, process, owned[1], length as u32)?;
+            let bytes = memory.read(text, length)?;
+            let starts_bytes = memory.read(GuestPtr(record.0 + 96), (count + 1) * 2)?;
+            let starts: Vec<usize> = starts_bytes
+                .chunks_exact(2)
+                .map(|b| usize::from(u16::from_be_bytes(b.try_into().unwrap())))
+                .collect();
+            if starts[0] != 0
+                || starts[count] != length
+                || starts.windows(2).any(|p| p[0] > p[1] || p[1] > length)
+            {
+                return Err(bad("invalid TextEdit line starts"));
+            }
+            let metrics = if owned.len() == 7 {
+                let p = pointer(memory, process, owned[3], ((count + 1) * 4) as u32)?;
+                memory
+                    .read(p, (count + 1) * 4)?
+                    .chunks_exact(4)
+                    .take(count)
+                    .map(|b| i16::from_be_bytes(b[..2].try_into().unwrap()))
+                    .collect::<Vec<_>>()
+            } else {
+                vec![memory.u16(GuestPtr(data.0 + 24))? as i16; count]
+            };
+            if metrics.iter().any(|&h| h <= 0) {
+                return Err(bad("invalid TextEdit line height"));
+            }
+            let mut effective = count;
+            while effective > 0
+                && bytes[starts[effective - 1]..starts[effective]]
+                    .iter()
+                    .all(|&c| matches!(c, b'\r' | b'\n'))
+            {
+                effective -= 1;
+            }
+            let a = start.max(1) as usize;
+            let b = end.max(1) as usize;
+            let first = a.min(b) - 1;
+            let last = a.max(b).min(effective);
+            if first >= last {
+                return Ok(0);
+            }
+            metrics[first..last].iter().try_fold(0u32, |total, &h| {
+                total
+                    .checked_add(h as u32)
+                    .ok_or_else(|| bad("TextEdit height overflow"))
+            })
+        })();
+        (process.mem_error, process.res_error) = errors;
+        result
+    }
     pub fn call(
         &mut self,
         memory: &mut Memory,
@@ -96,6 +180,7 @@ impl Manager {
         ticks: u32,
     ) -> Result<u32> {
         match op {
+            Op::Height { handle, start, end } => self.height(memory, process, handle, start, end),
             Op::Init => {
                 if self.scrap != 0 {
                     return Ok(0);

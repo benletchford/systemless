@@ -1622,3 +1622,27 @@ become dirty, while hidden controls only update geometry. A hidden owner has no
 destination pixels and needs no GPU. Both adapters preserve void results and
 caller errors/port state. Coordinate wrapping/nonpositive sizes, custom controls
 and recording ports remain explicit gaps; device faults are not rolled back.
+
+
+### Shared live TextEdit line-height measurement
+
+TEGetHeight now reads the registered record's live line starts and plain
+lineHeight or styled LHTable metrics. It measures inclusive one-based ranges,
+omits trailing blank lines, validates table bounds/ownership and positive heights,
+and preserves guest memory and both error globals. It requires neither guest
+allocation nor a current port/GPU. Both CPUs call this same implementation.
+The 68K TEDispatch selector 9 consumes a 14-byte selector/argument frame and
+returns a long; PPC uses three long arguments and a long register result.
+The public MPW TextEdit.h declaration and original caller verify the long ABI;
+Apple's TextEdit PDF incorrectly prints INTEGER for the result.
+
+For out-of-contract endpoints, values below one denote line one, reversed
+endpoints are sorted, and the range intersects actual nonblank lines. This is
+an explicit finite extension, not a claim of native out-of-range parity. Legacy
+Systemless/Executor can invent heights or read beyond line storage for such
+ranges; that behavior is not copied. Corrupt live tables fail explicitly.
+
+Focused tests cover live plain/styled metrics, extreme/reversed/outside ranges,
+trailing blanks, exhausted guest allocation, corrupt records, exact CPU frames,
+long results above 32767, a nil current port and unchanged error globals. The
+public MPW fixtures make four height queries on each architecture.

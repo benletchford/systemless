@@ -451,3 +451,8 @@ The window guests require four MoveControl/SizeControl calls, inspect exact live
 rectangles and visibility, and verify the current port remains nil across visible
 control relocation/resizing. They restore the original geometry and complete
 the existing window/control lifetime and pixel-parity checks on both targets.
+
+
+The TextEdit guests require four TEGetHeight calls: empty plain text, three
+plain lines, two styled lines and emptied styled text. Both compiled targets
+verify the public long result and reach their existing success/exit checks.

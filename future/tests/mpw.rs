@@ -568,6 +568,18 @@ fn compiled_textedit_records_and_style_lifetime_complete_on_both_cpus() {
             3
         );
         assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|c| matches!(
+                    c,
+                    Call::TextEdit(systemless_future::textedit::Op::Height { .. })
+                ))
+                .count(),
+            4
+        );
+        assert_eq!(
             &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],
             &[
                 Call::PostEvent {

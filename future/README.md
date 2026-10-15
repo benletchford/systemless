@@ -172,7 +172,7 @@ click now opens/tracks the File dropdown through shared MenuSelect. Separate
 New Game and Quit drags return their real packed commands and decode through
 shared HiWord/LoWord. Shared MoveControl/SizeControl now handle geometry,
 owner-background erasure and dirty regions. The original Quit route passes
-control movement and next stops at TEGetHeight (TEDispatch selector 9) while
-laying out its confirmation prompt. The prompt and shutdown are not yet accepted;
-TextEdit height measurement and confirmation/lifecycle are next. The full
+control movement and shared TEGetHeight while laying out its confirmation
+prompt, then stops at GetIcon(0). The prompt and shutdown are not yet accepted;
+icon resources/drawing and confirmation/lifecycle are next. The full
 rebuild stays active.

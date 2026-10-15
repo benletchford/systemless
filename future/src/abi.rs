@@ -107,6 +107,7 @@ pub enum Service {
     TEActivate(bool),
     TEInit,
     TEGetText,
+    TEGetHeight,
     TEGetStyleHandle,
     TEDispose,
     TextDraw(bool),
@@ -372,6 +373,7 @@ impl Abi {
             b"GetMenuBar" => Some(Service::Menu(crate::menus::Op::Snapshot)),
             b"TETextBox" | b"TextBox" => Some(Service::TETextBox),
             b"TEInit" => Some(Service::TEInit),
+            b"TEGetHeight" => Some(Service::TEGetHeight),
             b"TEGetText" => Some(Service::TEGetText),
             b"TEGetStyleHandle" => Some(Service::TEGetStyleHandle),
             b"TEDispose" => Some(Service::TEDispose),
@@ -1546,6 +1548,23 @@ impl Abi {
             0xa9cb | 0xa9cd | 0xa83d => {
                 let extra = if opcode == 0xa83d {
                     let selector = memory.u16(GuestPtr(sp))?;
+                    if selector == 9 {
+                        let args = memory.read(GuestPtr(sp), 14)?;
+                        let long = |at| u32::from_be_bytes(args[at..at + 4].try_into().unwrap());
+                        let result = sp
+                            .checked_add(14)
+                            .ok_or_else(|| Error::Cpu("TEGetHeight stack overflow".into()))?;
+                        memory.validate_write(GuestPtr(result), 4)?;
+                        c.dar[15] = result;
+                        return Ok((
+                            Call::TextEdit(crate::textedit::Op::Height {
+                                handle: long(2),
+                                start: long(6) as i32,
+                                end: long(10) as i32,
+                            }),
+                            Reply::StackLong(GuestPtr(result)),
+                        ));
+                    }
                     if selector != 4 {
                         return Err(Error::Cpu(format!(
                             "unsupported TextEdit selector {selector:#06x}"
@@ -2393,6 +2412,11 @@ impl Abi {
                 }))
             }
             Service::TEInit => Call::TextEdit(crate::textedit::Op::Init),
+            Service::TEGetHeight => Call::TextEdit(crate::textedit::Op::Height {
+                handle: c.gpr[5],
+                start: c.gpr[4] as i32,
+                end: c.gpr[3] as i32,
+            }),
             Service::TEGetText => Call::TextEdit(crate::textedit::Op::GetText(c.gpr[3])),
             Service::TEGetStyleHandle => Call::TextEdit(crate::textedit::Op::GetStyle(c.gpr[3])),
             Service::TEDispose => Call::TextEdit(crate::textedit::Op::Dispose(c.gpr[3])),

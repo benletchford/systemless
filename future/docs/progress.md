@@ -3403,3 +3403,49 @@ changed-file formatting and whitespace checks pass. Rebuilt MPW window guests
 complete public move/size calls and their existing lifetime/pixel acceptance.
 The original Quit run reaches TEGetHeight before displaying its confirmation;
 shutdown and the full rebuild remain incomplete.
+
+
+### Shared live TextEdit line-height measurement
+
+TEGetHeight now reads the registered record's live line starts and plain
+lineHeight or styled LHTable metrics. It measures inclusive one-based ranges,
+omits trailing blank lines, validates table bounds/ownership and positive heights,
+and preserves guest memory and both error globals. It requires neither guest
+allocation nor a current port/GPU. Both CPUs call this same implementation.
+The 68K TEDispatch selector 9 consumes a 14-byte selector/argument frame and
+returns a long; PPC uses three long arguments and a long register result.
+The public MPW TextEdit.h declaration and original caller verify the long ABI;
+Apple's TextEdit PDF incorrectly prints INTEGER for the result.
+
+For out-of-contract endpoints, values below one denote line one, reversed
+endpoints are sorted, and the range intersects actual nonblank lines. This is
+an explicit finite extension, not a claim of native out-of-range parity. Legacy
+Systemless/Executor can invent heights or read beyond line storage for such
+ranges; that behavior is not copied. Corrupt live tables fail explicitly.
+
+Focused tests cover live plain/styled metrics, extreme/reversed/outside ranges,
+trailing blanks, exhausted guest allocation, corrupt records, exact CPU frames,
+long results above 32767, a nil current port and unchanged error globals. The
+public MPW fixtures make four height queries on each architecture.
+
+The original Super Mines Quit route passes TEGetHeight with start=32767/end=0,
+continues prompt layout and control relocation, then stops at GetIcon ($A9BB),
+icon ID 0, post-trap PC $0100E9A2, SP $0080FBF2. Evidence is the private bounded
+run /tmp/systemless-mines-teheight-probe.txt; original binaries remain outside
+Git. The confirmation has not displayed or been accepted and shutdown has not
+completed. Next: resource-backed icon lookup/drawing, then continue the real
+confirmation interaction. Full rebuild and mixed-mode work remain active.
+
+Contract: Apple's [TextEdit reference](https://dev.os9.ca/techpubs/mac/pdf/Text/TextEdit.pdf),
+TEGetHeight, p. 2-92; pinned MPW Interfaces/CIncludes/TextEdit.h for the ABI.
+
+Legacy inspection for the next slice: GetIcon delegates to resource lookup and
+its built-in icon fallback supports ID 1 only, not the requested ID 0. Preserve
+resource-miss semantics; establish whether the application supplies ICON 0
+before introducing fallback artwork.
+
+Validation: all 346 tests pass (282 default and 64 optional GPU/MPW), with zero
+failures or skips. Strict all-target Clippy, sequential changed-file stdin
+formatting, fixture shell syntax and whitespace checks pass. Both MPW targets
+were rebuilt from the public headers and the original Quit path was rerun.
+The full rebuild goal remains active; this is one executable milestone.

@@ -1328,6 +1328,7 @@ impl Runtime {
                             ..
                         } | Call::Menu(crate::menus::Op::Enable { .. })
                             | Call::Control(crate::controls::Op::Geometry { .. })
+                            | Call::TextEdit(crate::textedit::Op::Height { .. })
                     ) && matches!(
                         call,
                         Call::MaxApplZone

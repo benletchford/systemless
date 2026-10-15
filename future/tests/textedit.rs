@@ -1555,3 +1555,322 @@ fn text_box_adapters_decode_signed_length_alignment_and_preserve_short_stack() {
         assert_eq!(cpu.dar[15], 0x2000);
     }
 }
+
+#[test]
+fn height_queries_read_live_plain_and_styled_metrics_bound_ranges_and_omit_trailing_blanks() {
+    for styled in [false, true] {
+        let (mut m, mut p, mut manager) = setup();
+        let h = manager.call(&mut m, &mut p, new(styled), 0).unwrap();
+        m.map(GuestPtr(0x3000), vec![0; 64], Permissions::RW)
+            .unwrap();
+        m.write(GuestPtr(0x3000), b"A\rB\rA").unwrap();
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0x3000),
+                    length: 5,
+                    handle: h,
+                },
+                0,
+            )
+            .unwrap();
+        let record = ptr(&m, h);
+        assert_eq!(m.u16(GuestPtr(record.0 + 94)).unwrap(), 3);
+        if styled {
+            let style = manager.call(&mut m, &mut p, Op::GetStyle(h), 0).unwrap();
+            let table = ptr(&m, style);
+            let lines = m.u32(GuestPtr(table.0 + 8)).unwrap();
+            let data = ptr(&m, lines);
+            for (i, height) in [20i16, 25, 30].into_iter().enumerate() {
+                m.write(GuestPtr(data.0 + i as u32 * 4), &height.to_be_bytes())
+                    .unwrap();
+            }
+        } else {
+            m.write(GuestPtr(record.0 + 24), &25i16.to_be_bytes())
+                .unwrap();
+        }
+        let total = 75;
+        for (start, end, expected) in [
+            (1, 3, total),
+            (2, 2, 25),
+            (2, 9, if styled { 55 } else { 50 }),
+            (9, 2, if styled { 55 } else { 50 }),
+            (4, 9, 0),
+            (0, 32767, total),
+            (32767, 0, total),
+            (i32::MIN, i32::MAX, total),
+            (-1, 0, if styled { 20 } else { 25 }),
+        ] {
+            p.mem_error = -111;
+            p.res_error = -192;
+            let before = m
+                .read(GuestPtr(0x10000000), HEAP_SIZE as usize)
+                .unwrap()
+                .to_vec();
+            assert_eq!(
+                manager
+                    .call(
+                        &mut m,
+                        &mut p,
+                        Op::Height {
+                            handle: h,
+                            start,
+                            end
+                        },
+                        0
+                    )
+                    .unwrap(),
+                expected
+            );
+            assert!(m.read(GuestPtr(0x10000000), HEAP_SIZE as usize).unwrap() == before);
+            assert_eq!((p.mem_error, p.res_error), (-111, -192));
+        }
+        m.write(GuestPtr(0x3000), b"A\r\r").unwrap();
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0x3000),
+                    length: 3,
+                    handle: h,
+                },
+                0,
+            )
+            .unwrap();
+        let height = manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::Height {
+                    handle: h,
+                    start: 1,
+                    end: 1,
+                },
+                0,
+            )
+            .unwrap();
+        assert!(height > 0);
+        assert_eq!(
+            manager
+                .call(
+                    &mut m,
+                    &mut p,
+                    Op::Height {
+                        handle: h,
+                        start: 1,
+                        end: 100
+                    },
+                    0
+                )
+                .unwrap(),
+            height
+        );
+        assert_eq!(
+            manager
+                .call(
+                    &mut m,
+                    &mut p,
+                    Op::Height {
+                        handle: h,
+                        start: 2,
+                        end: 2
+                    },
+                    0
+                )
+                .unwrap(),
+            0
+        );
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::SetText {
+                    source: GuestPtr(0),
+                    length: 0,
+                    handle: h,
+                },
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            manager
+                .call(
+                    &mut m,
+                    &mut p,
+                    Op::Height {
+                        handle: h,
+                        start: 0,
+                        end: i32::MAX
+                    },
+                    0
+                )
+                .unwrap(),
+            0
+        );
+    }
+}
+#[test]
+fn height_queries_fault_on_corrupt_live_tables_and_need_no_guest_allocation() {
+    let (mut m, mut p, mut manager) = setup();
+    let h = manager.call(&mut m, &mut p, new(false), 0).unwrap();
+    m.map(GuestPtr(0x3000), b"A\rB".to_vec(), Permissions::RX)
+        .unwrap();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 3,
+                handle: h,
+            },
+            0,
+        )
+        .unwrap();
+    let record = ptr(&m, h);
+    for shift in (2..=HEAP_SIZE.ilog2()).rev() {
+        while p.new_pointer(&mut m, 1 << shift, false).unwrap() != 0 {}
+    }
+    p.mem_error = -108;
+    let expected = u32::from(m.u16(GuestPtr(record.0 + 24)).unwrap()) * 2;
+    assert_eq!(
+        manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::Height {
+                    handle: h,
+                    start: 1,
+                    end: 2
+                },
+                0
+            )
+            .unwrap(),
+        expected
+    );
+    assert_eq!(p.mem_error, -108);
+    assert_eq!(p.new_pointer(&mut m, 4, false).unwrap(), 0);
+    let original = m.read(record, 128).unwrap().to_vec();
+    for (offset, value) in [(94u32, 16000u16), (98, 0xffff), (100, 0), (24, 0)] {
+        m.write(GuestPtr(record.0 + offset), &value.to_be_bytes())
+            .unwrap();
+        p.mem_error = -111;
+        let before = m.read(record, 128).unwrap().to_vec();
+        assert!(manager
+            .call(
+                &mut m,
+                &mut p,
+                Op::Height {
+                    handle: h,
+                    start: 1,
+                    end: 2
+                },
+                0
+            )
+            .is_err());
+        assert_eq!(p.mem_error, -111);
+        assert_eq!(m.read(record, 128).unwrap(), before);
+        m.write(record, &original).unwrap();
+    }
+    assert!(manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::Height {
+                handle: 0,
+                start: 1,
+                end: 2
+            },
+            0
+        )
+        .is_err());
+}
+#[test]
+fn height_cpu_routes_use_the_long_result_and_exact_selector_frame_without_graphics() {
+    use systemless_future::{
+        abi::{Abi, Service},
+        cpu::{Architecture, Cpu},
+        runtime::{Runtime, Stop},
+    };
+    let (mut m, mut p, mut manager) = setup();
+    let h = manager.call(&mut m, &mut p, new(false), 0).unwrap();
+    m.map(GuestPtr(0x3000), b"A\rB".to_vec(), Permissions::RW)
+        .unwrap();
+    manager
+        .call(
+            &mut m,
+            &mut p,
+            Op::SetText {
+                source: GuestPtr(0x3000),
+                length: 3,
+                handle: h,
+            },
+            0,
+        )
+        .unwrap();
+    let record = ptr(&m, h);
+    m.write(GuestPtr(record.0 + 24), &16384i16.to_be_bytes())
+        .unwrap();
+    m.map(GuestPtr(0x4000), vec![0; 64], Permissions::RW)
+        .unwrap();
+    m.map(GuestPtr(0x50000000), vec![0xa8, 0x3d], Permissions::RX)
+        .unwrap();
+    p.textedit = manager;
+    systemless_future::traps::install(&mut m).unwrap();
+    let mut rt = Runtime::new(m, Cpu::new(Architecture::M68k, 0x50000000, 0x4000), None);
+    rt.process = p;
+    rt.process.ports = None;
+    rt.abi = Abi::macintosh();
+    rt.abi.imports.insert(0x50000010, Service::TEGetHeight);
+    assert_eq!(
+        Abi::resolve(b"InterfaceLib", b"TEGetHeight"),
+        Some(Service::TEGetHeight)
+    );
+    rt.memory
+        .write(GuestPtr(0x220), &(-108i16).to_be_bytes())
+        .unwrap();
+    rt.memory
+        .write(GuestPtr(0xa60), &(-192i16).to_be_bytes())
+        .unwrap();
+    rt.process.mem_error = -111;
+    let mut frame = 9u16.to_be_bytes().to_vec();
+    frame.extend(h.to_be_bytes());
+    frame.extend(32767i32.to_be_bytes());
+    frame.extend(0i32.to_be_bytes());
+    frame.extend([0xa5; 8]);
+    rt.memory.write(GuestPtr(0x4000), &frame).unwrap();
+    assert_eq!(rt.advance(1).unwrap(), Stop::Budget);
+    let Cpu::M68k(c) = &rt.cpu else { panic!() };
+    assert_eq!(c.dar[15], 0x400e);
+    assert_eq!(rt.memory.u32(GuestPtr(0x400e)).unwrap(), 32768);
+    assert_eq!(rt.memory.u32(GuestPtr(0x4012)).unwrap(), 0xa5a5a5a5);
+    rt.cpu = Cpu::new(Architecture::PowerPc, 0x50000010, 0x4000);
+    if let Cpu::PowerPc(c) = &mut rt.cpu {
+        c.gpr[3] = 0;
+        c.gpr[4] = 32767;
+        c.gpr[5] = h;
+        c.gpr[6] = 0x12345678;
+    }
+    assert_eq!(rt.advance(1).unwrap(), Stop::Budget);
+    let Cpu::PowerPc(c) = &rt.cpu else { panic!() };
+    assert_eq!(c.gpr[3], 32768);
+    assert_eq!(c.gpr[6], 0x12345678);
+    assert_eq!(rt.process.mem_error, -111);
+    assert_eq!(rt.memory.u16(GuestPtr(0x220)).unwrap(), (-108i16) as u16);
+    assert_eq!(rt.memory.u16(GuestPtr(0xa60)).unwrap(), (-192i16) as u16);
+    let mut m = Memory::default();
+    let mut readonly = vec![0; 18];
+    readonly[1] = 9;
+    m.map(GuestPtr(0x1000), readonly, Permissions::RX).unwrap();
+    m.map(GuestPtr(0x2000), vec![0, 9, 0, 0], Permissions::RW)
+        .unwrap();
+    for sp in [0x1000, 0x2000] {
+        let mut c = m68k::CpuCore::default();
+        c.dar[15] = sp;
+        assert!(Abi::trap(0xa83d, &mut c, &m).is_err());
+        assert_eq!(c.dar[15], sp);
+    }
+}

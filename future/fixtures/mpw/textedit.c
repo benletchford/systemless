@@ -23,6 +23,7 @@ int main(void) {
     if ((*plain)->destRect.left!=3 || (*plain)->viewRect.bottom!=50 || (*plain)->lineHeight<=0 || (*plain)->fontAscent<=0) return 2;
     text=TEGetText(plain);
     if (!text || text!=(*plain)->hText || GetHandleSize(text)!=0 || TEGetStyleHandle(plain)!=0) return 3;
+    if (TEGetHeight(32767,0,plain)!=0) return 30;
     styled=TEStyleNew(&dest,&view);
     if (!styled || (*styled)->txSize!=-1 || (*styled)->lineHeight!=-1 || (*styled)->fontAscent!=-1) return 4;
     style=TEGetStyleHandle(styled);
@@ -34,6 +35,7 @@ int main(void) {
     TESetText("AB CD EF",8,plain);
     if (TEGetText(plain)!=(*plain)->hText || (*plain)->teLength!=8 || (*plain)->selStart!=8 || (*plain)->selEnd!=8 || (*plain)->nLines!=3) return 11;
     if ((*plain)->lineStarts[0]!=0 || (*plain)->lineStarts[1]!=3 || (*plain)->lineStarts[2]!=6 || (*plain)->lineStarts[3]!=8) return 12;
+    if (TEGetHeight(32767,0,plain)!=(long)(*plain)->lineHeight*3) return 31;
     TESetSelect(2,32767,plain);
     if ((*plain)->selStart!=2 || (*plain)->selEnd!=8) return 18;
     TESetSelect(3,3,styled);
@@ -44,7 +46,9 @@ int main(void) {
     if ((*styled)->nLines!=3 || (*styled)->teLength!=8 || (*style)->runs[1].startChar!=9) return 14;
     if (GetHandleSize((Handle)(*style)->lhTab)!=16 || (**(*style)->lhTab).lhHeight<=0) return 15;
     TESetText(returnText,6,styled); if ((*styled)->nLines!=2 || (*styled)->lineStarts[1]!=4) return 16;
+    if (TEGetHeight(32767,0,styled)!=(long)(**(*style)->styleTab).stHeight*2) return 32;
     TESetText(0,0,styled); if ((*styled)->teLength || (*styled)->nLines || GetHandleSize(TEGetText(styled))) return 17;
+    if (TEGetHeight(1,1,styled)!=0) return 33;
     TEDispose(plain); TEDispose(styled);
     if (MemError()) return 9;
     plain=TENew(&dest,&view); if (!plain) return 10; TEDispose(plain);
