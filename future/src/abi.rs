@@ -80,6 +80,7 @@ pub enum Service {
     SetApplLimit,
     BlockMove,
     InitDialogs,
+    DialogItemText(bool),
     DrawDialog,
     SetDialogDefaultItem,
     GetNewDialog,
@@ -395,6 +396,8 @@ impl Abi {
             b"BlockMove" | b"BlockMoveData" => Some(Service::BlockMove),
             b"IsDialogEvent" => Some(Service::IsDialogEvent),
             b"InitDialogs" => Some(Service::InitDialogs),
+            b"SetDialogItemText" | b"SetIText" => Some(Service::DialogItemText(true)),
+            b"GetDialogItemText" | b"GetIText" => Some(Service::DialogItemText(false)),
             b"DrawDialog" => Some(Service::DrawDialog),
             b"SetDialogDefaultItem" => Some(Service::SetDialogDefaultItem),
             b"GetNewDialog" => Some(Service::GetNewDialog),
@@ -2661,6 +2664,32 @@ impl Abi {
                 c.dar[15] = result;
                 Ok((call, Reply::StackWord(GuestPtr(result))))
             }
+            0xa98f | 0xa990 => {
+                let b = memory.read(GuestPtr(sp), 8)?;
+                let pointer = GuestPtr(u32::from_be_bytes(b[..4].try_into().unwrap()));
+                let handle = u32::from_be_bytes(b[4..8].try_into().unwrap());
+                if pointer.0 == 0 {
+                    return Err(Error::Cpu("nil dialog text string".into()));
+                }
+                if opcode == 0xa990 {
+                    memory.validate_write(pointer, 1)?;
+                } else {
+                    let n = memory.read(pointer, 1)?[0];
+                    memory.read(pointer, usize::from(n) + 1)?;
+                }
+                let next = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("dialog text stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((
+                    Call::Dialog(crate::dialogs::Op::Text {
+                        handle,
+                        pointer,
+                        set: opcode == 0xa98f,
+                    }),
+                    Reply::None,
+                ))
+            }
             0xa981 => {
                 let dialog = memory.u32(GuestPtr(sp))?;
                 let next = sp
@@ -2939,6 +2968,11 @@ impl Abi {
             }),
             Service::GetDAString => Call::Dialog(crate::dialogs::Op::Slot(c.gpr[3] as i16)),
             Service::IsDialogEvent => Call::Dialog(crate::dialogs::Op::IsEvent(GuestPtr(c.gpr[3]))),
+            Service::DialogItemText(set) => Call::Dialog(crate::dialogs::Op::Text {
+                handle: c.gpr[3],
+                pointer: GuestPtr(c.gpr[4]),
+                set,
+            }),
             Service::DrawDialog => Call::Dialog(crate::dialogs::Op::Draw(c.gpr[3])),
             Service::SetDialogDefaultItem => Call::Dialog(crate::dialogs::Op::DefaultItem {
                 dialog: c.gpr[3],
@@ -3520,6 +3554,7 @@ impl Abi {
                     Service::SetDevice
                         | Service::GetDialogItem
                         | Service::DrawDialog
+                        | Service::DialogItemText(_)
                         | Service::DisposeDialog(_)
                         | Service::MakeITable
                         | Service::SetDeviceAttribute

@@ -1679,3 +1679,16 @@ is separately tested with public text/parameter, ICON and scaled PICT fixtures
 through both actual CPUs and full GPU/bitmap comparison. Next replace/redraw item
 text and investigate the Monitor Tool failure without fabricating capability or
 operation success. Marathon's requirements remain unchanged.
+
+
+### Item text and Monitor Tool diagnostics
+
+EV 1.0.5 68K now updates/draws its error text, flushes events and reaches
+ModalDialog ($A991), PC $0002582C. The complete guest message reports Monitor Tool
+error ID -4. Current-device PixMap depth is 1; of requested RBlt/MBlt resource IDs
+1,2,4,8,16,32, only ID 8 exists. /tmp/systemless-ev-itemtext-next.txt. The mismatch
+is evidence to investigate rather than proof of the precise error cause. The
+bounded instruction trace is /tmp/systemless-ev-monitor-instructions.txt.
+Actual indexed-color destinations/displays are a priority for EV and Marathon;
+do not relabel one-bit storage or synthesize operation success. The modal error
+UI and full gameplay remain unfinished.

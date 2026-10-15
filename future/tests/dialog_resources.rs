@@ -139,6 +139,8 @@ fn setup(kind: u8) -> LoadedApplication {
             b"HideWindow",
             b"DrawDialog",
             b"ParamText",
+            b"SetDialogItemText",
+            b"GetDialogItemText",
         ],
         512,
     );
@@ -151,7 +153,8 @@ fn setup(kind: u8) -> LoadedApplication {
         .map(
             GuestPtr(0x50000000),
             vec![
-                0xa9, 0x7c, 0xa9, 0x8d, 0xa9, 0x82, 0xa9, 0x83, 0xaa, 0x68, 0xa9, 0x81,
+                0xa9, 0x7c, 0xa9, 0x8d, 0xa9, 0x82, 0xa9, 0x83, 0xaa, 0x68, 0xa9, 0x81, 0xa9, 0x8f,
+                0xa9, 0x90,
             ],
             Permissions::RX,
         )
@@ -586,4 +589,106 @@ fn draw_dialog_uses_live_text_parameters_icons_pictures_and_both_cpu_void_routes
         )
         .unwrap();
     a.runtime.process.dialogs = dialogs;
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn item_text_replacement_redraws_only_the_text_item_and_shares_live_payloads_on_both_cpus() {
+    let mut a = setup(0x88);
+    a.runtime
+        .memory
+        .map(GuestPtr(0x52000000), vec![0xcc; 258], Permissions::RW)
+        .unwrap();
+    let w = invoke(&mut a, 2, &[129, 0, u32::MAX]);
+    invoke(&mut a, 10, &[w]);
+    let (_, h, _) = item(&mut a, w, 2, false);
+    let before = screen(&a);
+    let slot = a.runtime.process.ports.unwrap().current_slot;
+    let previous = a.runtime.memory.u32(slot).unwrap();
+    let port = a.runtime.memory.read(GuestPtr(w), 108).unwrap().to_vec();
+    let input = b"\x0aMMMMMMMMMM";
+    a.runtime.memory.write(GuestPtr(0x51000000), input).unwrap();
+    a.runtime.process.res_error = -52;
+    let mut frame = 0x51000000u32.to_be_bytes().to_vec();
+    frame.extend(h.to_be_bytes());
+    m68(&mut a, 12, &frame, 8, false);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0x220)).unwrap(), 0);
+    assert_eq!(a.runtime.process.res_error, -52);
+    let after = screen(&a);
+    assert_ne!(after, before);
+    let gx = -i32::from(a.runtime.memory.u16(GuestPtr(w + 10)).unwrap() as i16);
+    let gy = -i32::from(a.runtime.memory.u16(GuestPtr(w + 8)).unwrap() as i16);
+    for y in 0..342 {
+        for x in 0..512 {
+            if x >= gx + 5 && x < gx + 125 && y >= gy + 5 && y < gy + 40 {
+                continue;
+            }
+            let index = y as usize * 64 + x as usize / 8;
+            let mask = 0x80 >> (x as usize % 8);
+            assert_eq!(
+                after[index] & mask,
+                before[index] & mask,
+                "outside text {x},{y}"
+            );
+        }
+    }
+    assert_eq!(invoke(&mut a, 13, &[h, 0x52000001]), h);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(0x52000001), 11).unwrap(),
+        input
+    );
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(0x52000000), 1).unwrap(),
+        [0xcc]
+    );
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(0x5200000c), 1).unwrap(),
+        [0xcc]
+    );
+    a.runtime.memory.write(GuestPtr(0x51000000), &[0]).unwrap();
+    assert_eq!(invoke(&mut a, 12, &[h, 0x51000000]), h);
+    assert!((5..40).all(|y| (5..125).all(|x| !at(&a, w, x, y))));
+    assert_eq!(a.runtime.memory.read(GuestPtr(w), 108).unwrap(), port);
+    assert_eq!(a.runtime.memory.u32(slot).unwrap(), previous);
+    let mut frame = 0x52000001u32.to_be_bytes().to_vec();
+    frame.extend(h.to_be_bytes());
+    m68(&mut a, 14, &frame, 8, false);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(0x52000001), 2).unwrap(),
+        [0, b'M']
+    );
+    invoke(&mut a, 9, &[w]);
+    let hidden = screen(&a);
+    let gpu = a.runtime.graphics.take();
+    a.runtime
+        .memory
+        .write(GuestPtr(0x51000000), b"\x01A")
+        .unwrap();
+    invoke(&mut a, 12, &[h, 0x51000000]);
+    assert_eq!(screen(&a), hidden);
+    invoke(&mut a, 13, &[h, 0x52000001]);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(0x52000001), 2).unwrap(),
+        b"\x01A"
+    );
+    a.runtime.graphics = gpu;
+    invoke(&mut a, 8, &[w]);
+    invoke(&mut a, 10, &[w]);
+    assert!((5..40).any(|y| (5..125).any(|x| at(&a, w, x, y))));
+    invoke(&mut a, 5, &[w]);
+}
+#[test]
+fn item_text_native_frames_validate_initial_output_and_input_before_popping() {
+    use systemless_future::{abi::Abi, memory::Memory};
+    for opcode in [0xa98f, 0xa990] {
+        let mut m = Memory::default();
+        let mut frame = 0x2000u32.to_be_bytes().to_vec();
+        frame.extend(0x3000u32.to_be_bytes());
+        m.map(GuestPtr(0x1000), frame, Permissions::RW).unwrap();
+        m.map(GuestPtr(0x2000), vec![255], Permissions::RX).unwrap();
+        let mut cpu = Cpu::new(Architecture::M68k, 0, 0x1000);
+        let Cpu::M68k(c) = &mut cpu else { panic!() };
+        assert!(Abi::trap(opcode, c, &m).is_err());
+        assert_eq!(c.dar[15], 0x1000);
+    }
 }

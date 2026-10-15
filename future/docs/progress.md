@@ -4828,3 +4828,53 @@ trap-patching checks). Additional log: /tmp/systemless-draw-dialog-sdk-tests.txt
 Strict all-target lint passes: /tmp/systemless-draw-dialog-final-lint.txt.
 Sequential changed-file formatting and whitespace checks pass. The prior full
 467-test run is historical, not a full-suite rerun for this extension.
+
+
+## 2026-10-16: live item-text access and immediate redraw
+
+SetDialogItemText ($A98F / SetIText) and GetDialogItemText ($A990 / GetIText)
+now marshal through one shared service on both CPUs. Text handles contain raw
+characters; accessor strings are Pascal bytes. Get returns at most 255 characters
+and validates the complete actual output before writing. Native input strings
+and the initial output byte are checked before stack pop. Source bytes are frozen
+before a resize, including input aliases into the handle being changed. Shared
+staged handle replacement preserves flags/identity and leaves data unchanged on
+allocation failure. Successful setters publish MemErr; getters preserve error
+state and both operations preserve ResErr.
+
+Known static text items redraw immediately through shared TextEdit, limited to
+their own rectangle and effective clipping. This erases old trailing glyphs when
+shortened or emptied without redrawing unrelated images/controls. Hidden item
+changes require no GPU. Generic owned raw-text handles also support the storage
+conversion without inventing an owner or a UI. Edit-text construction and modal
+handling remain unfinished. Drawing failures remain explicit runtime faults.
+
+Actual CPU/GPU tests cover both accessor routes, void returns, input aliases and guarded outputs, flags, failed growth without mutation, empty/max-length/truncated reads,
+output guards, initial native preflight, hidden changes and item-only erasure.
+A new public-header compiler case verifies raw/Pascal conversions and empty text
+through native/PPC mappings. The OOM fixture measures actual remaining heap space
+because allocation rounds to its alignment; it does not assume one free byte from
+a request leaving one nominal byte. All 94 selected library/dialog/TextEdit,
+compiler/CLI and trap tests pass with zero failures/skips:
+/tmp/systemless-itemtext-acceptance.txt. Fresh fixture build:
+/tmp/systemless-itemtext-sdk-build.txt. Strict all-target lint, sequential
+changed-file formatting, shell syntax and whitespace checks pass; lint evidence:
+/tmp/systemless-itemtext-final-lint.txt. No new full-suite run is claimed; the
+preceding complete run passed 467 tests.
+
+Original EV now changes/draws the static error text, flushes events and reaches
+ModalDialog ($A991), PC $0002582C. Its message reports Monitor Tool error ID -4.
+Read-only tracing also confirms current GDevice PixMap depth 1 and RBlt/MBlt
+resources only for ID 8 among requested depths 1/2/4/8/16/32. This supports a
+possible depth incompatibility, but does not prove the precise error branch.
+Evidence: /tmp/systemless-ev-itemtext-next.txt; detailed native instruction trace:
+/tmp/systemless-ev-monitor-instructions.txt. Diagnostics change no guest state.
+
+Prioritize actual indexed-color destination/display support, with coherent guest
+pixel bytes, PixMaps/palettes, wgpu transfers, classic-port operations and truthful
+capability reporting, to address the real EV/Marathon requirements. Do not expose
+an 8-bit PixMap over one-bit storage or force success through the Monitor Tool
+path. ModalDialog remains the next observed error-UI service, but passing it alone
+will not make EV playable. Neither original game nor the full rebuild is complete.
+Sources: [Apple SetDialogItemText](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-419.html),
+[GetDialogItemText](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-418.html).

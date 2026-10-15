@@ -170,6 +170,72 @@ impl Dialogs {
         result
     }
 }
+impl Dialogs {
+    pub(super) fn redraw_text(
+        &self,
+        m: &mut Memory,
+        p: &mut Process,
+        g: Option<&Graphics>,
+        dialog: u32,
+        rect: Rect,
+        bytes: &[u8],
+    ) -> Result<()> {
+        if m.read(GuestPtr(dialog + 110), 1)?[0] == 0 {
+            return Ok(());
+        }
+        let ports = p
+            .ports
+            .ok_or_else(|| bad("dialog text requires InitGraf"))?;
+        let previous = m.u32(ports.current_slot)?;
+        m.validate_write(ports.current_slot, 4)?;
+        let saved = m.read(GuestPtr(dialog), 108)?.to_vec();
+        m.validate_write(GuestPtr(dialog), 108)?;
+        ports.set(m, GuestPtr(dialog))?;
+        let target = ports.drawing_target(m);
+        m.write(ports.current_slot, &previous.to_be_bytes())?;
+        let (_, clips) = target?;
+        if !clips.iter().any(|c| {
+            rect.left < c.right && rect.right > c.left && rect.top < c.bottom && rect.bottom > c.top
+        }) {
+            return Ok(());
+        }
+        let g = g.ok_or_else(|| bad("visible dialog text requires a GPU"))?;
+        let text = expanded(bytes, &self.check(m, p)?)?;
+        let scratch = p.new_pointer(m, 16 + text.len() as u32, false)?;
+        if scratch == 0 {
+            return Err(bad("dialog text scratch allocation failed"));
+        }
+        let result = (|| {
+            m.write(GuestPtr(scratch), &rect_bytes(rect)?)?;
+            m.write(GuestPtr(scratch + 16), &text)?;
+            ports.set(m, GuestPtr(dialog))?;
+            let mut te = std::mem::take(&mut p.textedit);
+            let result = te.text_box(
+                m,
+                p,
+                g,
+                TextBox {
+                    text: GuestPtr(scratch + 16),
+                    length: text.len() as i32,
+                    rectangle: GuestPtr(scratch),
+                    alignment: 0,
+                },
+                0,
+            );
+            p.textedit = te;
+            result
+        })();
+        let allocation_error = p.mem_error;
+        m.write(GuestPtr(dialog), &saved)?;
+        m.write(ports.current_slot, &previous.to_be_bytes())?;
+        p.dispose_pointer(scratch);
+        if result.is_err() {
+            p.mem_error = allocation_error;
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

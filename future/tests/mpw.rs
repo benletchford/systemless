@@ -691,6 +691,17 @@ fn compiled_dialog_startup_and_parameter_strings_complete_on_both_cpus() {
             })
             .collect();
         assert_eq!(defaults, [(0, 1), (0, -1)]);
+        let text_calls: Vec<_> = app
+            .runtime
+            .services
+            .calls
+            .iter()
+            .filter_map(|c| match c {
+                Call::Dialog(systemless_future::dialogs::Op::Text { set, .. }) => Some(*set),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text_calls, [true, false, true, false]);
 
         assert_eq!(
             &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],

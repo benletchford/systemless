@@ -115,6 +115,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         for call in &app.runtime.services.calls[calls..] {
             println!("service {call:?}");
+            use systemless_future::{cpu::Call, dialogs::Op, memory::GuestPtr};
+            if let Call::Dialog(Op::Text {
+                pointer, set: true, ..
+            }) = call
+            {
+                let m = &app.runtime.memory;
+                if let Ok(n) = m.read(*pointer, 1) {
+                    if let Some(start) = pointer.0.checked_add(1) {
+                        if let Ok(bytes) = m.read(GuestPtr(start), usize::from(n[0])) {
+                            println!("dialog item text: {:?}", String::from_utf8_lossy(bytes));
+                        }
+                    }
+                }
+            }
+            if let Call::GetCurrentResource { kind, id } = call {
+                let entry = app.runtime.process.resources.get(*kind, *id);
+                println!("current resource metadata: kind={kind:?} id={id} bytes={:?} ResErr={} MemErr={}",entry.map(|r|r.data.len()),app.runtime.process.res_error,app.runtime.process.mem_error);
+                let m = &app.runtime.memory;
+                let depth = (|| -> systemless_future::Result<u16> {
+                    let h = m.u32(systemless_future::devices::CURRENT)?;
+                    if h == 0 {
+                        return Err(systemless_future::Error::Graphics(
+                            "no current graphics device".into(),
+                        ));
+                    }
+                    let d = m.u32(GuestPtr(h))?;
+                    let map_h = m.u32(GuestPtr(d.checked_add(22).ok_or_else(|| {
+                        systemless_future::Error::Graphics("device address overflow".into())
+                    })?))?;
+                    let map = m.u32(GuestPtr(map_h))?;
+                    m.u16(GuestPtr(map.checked_add(32).ok_or_else(|| {
+                        systemless_future::Error::Graphics("PixMap address overflow".into())
+                    })?))
+                })();
+                println!("current display PixMap depth: {depth:?}");
+            }
             if let systemless_future::cpu::Call::Dialog(systemless_future::dialogs::Op::Param(
                 strings,
             )) = call

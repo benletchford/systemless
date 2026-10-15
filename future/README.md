@@ -310,3 +310,12 @@ application-defined item callbacks, edit-text construction, updates and modal
 events remain unfinished. Original EV passes drawing, then reaches item-text
 replacement in a dialog reporting a Monitor Tool opening error. This establishes
 an error-reporting path, not title/menu or gameplay.
+
+
+Dialog item text access now converts live raw handle bytes to/from Pascal
+strings, preserves handle identity/flags, validates output extents and stages
+alias-safe updates. Known static items redraw only their text rectangle, including
+shortening/empty erasure; hidden changes need no GPU. Original EV now reaches
+ModalDialog after displaying Monitor Tool error ID -4. Its current display depth
+is one bit while only 8-bit blitter resources are present; actual indexed-color
+rendering remains a priority, and the exact error cause is still under study.

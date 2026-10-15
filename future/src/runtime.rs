@@ -716,6 +716,7 @@ impl Runtime {
                             let value = if matches!(
                                 op,
                                 crate::dialogs::Op::Resource { .. }
+                                    | crate::dialogs::Op::Text { .. }
                                     | crate::dialogs::Op::Draw(_)
                                     | crate::dialogs::Op::DefaultItem { .. }
                                     | crate::dialogs::Op::Item { .. }
@@ -724,6 +725,7 @@ impl Runtime {
                                 if !matches!(
                                     op,
                                     crate::dialogs::Op::Item { .. }
+                                        | crate::dialogs::Op::Text { .. }
                                         | crate::dialogs::Op::Draw(_)
                                         | crate::dialogs::Op::DefaultItem { .. }
                                 ) && self.graphics.is_none()
@@ -734,6 +736,20 @@ impl Runtime {
                                 }
                                 let mut manager = std::mem::take(&mut self.process.dialogs);
                                 let result = match op {
+                                    crate::dialogs::Op::Text {
+                                        handle,
+                                        pointer,
+                                        set,
+                                    } => manager
+                                        .item_text(
+                                            &mut self.memory,
+                                            &mut self.process,
+                                            self.graphics.as_ref(),
+                                            handle,
+                                            pointer,
+                                            set,
+                                        )
+                                        .map(|_| 0),
                                     crate::dialogs::Op::Draw(dialog) => manager
                                         .draw(
                                             &mut self.memory,
@@ -1789,6 +1805,7 @@ impl Runtime {
                             | Call::MaxApplZone
                             | Call::Dialog(
                                 crate::dialogs::Op::Resource { .. }
+                                    | crate::dialogs::Op::Text { set: true, .. }
                                     | crate::dialogs::Op::Dispose { .. }
                             )
                             | Call::Dialog(

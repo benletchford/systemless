@@ -41,5 +41,10 @@ int main(void) {
     if (*(long *)0xa8c || *(long *)0xa9c || *(short *)0xafa || *(Handle *)0xaa0 || *(Handle *)0xaa4) return 7;
     readParams(a,b,c,d); if (a[0] || b[0] || c[0] || d[0] || MemError()) return 8;
     if (SetDialogDefaultItem(0,1)!=-50 || SetDialogDefaultItem(0,-1)!=-50) return 9;
+    h=NewHandle(0); if (!h) return 10;
+    SetDialogItemText(h,first); GetDialogItemText(h,a);
+    if (GetHandleSize(h)!=3 || a[0]!=3 || a[1]!='A' || a[2]!=0x80 || a[3]!='B') return 11;
+    SetDialogItemText(h,empty); GetDialogItemText(h,a); if (a[0] || GetHandleSize(h)) return 12;
+    DisposeHandle(h);
     PostEvent(diskEvt,0x600d); ExitToShell(); return 0;
 }

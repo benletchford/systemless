@@ -26,6 +26,11 @@ pub enum Op {
         dialog: u32,
         close: bool,
     },
+    Text {
+        handle: u32,
+        pointer: GuestPtr,
+        set: bool,
+    },
     Draw(u32),
     DefaultItem {
         dialog: u32,
@@ -85,7 +90,8 @@ impl Dialogs {
             | Op::Item { .. }
             | Op::Dispose { .. }
             | Op::DefaultItem { .. }
-            | Op::Draw(_) => Err(bad("dialog operation requires its record/value route")),
+            | Op::Draw(_)
+            | Op::Text { .. } => Err(bad("dialog operation requires its record/value route")),
             Op::IsEvent(_) => Err(bad("dialog event query requires a value route")),
             Op::Slot(_) => Err(bad("dialog parameter slot requires a value route")),
             Op::Init(resume) => {

@@ -291,3 +291,67 @@ fn dialog_event_query_uses_boolean_cpu_abis_and_preserves_error_globals() {
     app.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000000, sp);
     assert!(app.runtime.advance(1).is_err());
 }
+
+#[test]
+fn raw_item_text_handles_use_pascal_boundaries_frozen_aliases_flags_and_atomic_growth() {
+    let (mut m, mut p, mut d) = setup();
+    let h = p.new_handle(&mut m, 4, false).unwrap();
+    let data = ptr(&m, h);
+    m.write(data, b"\x03ABC").unwrap();
+    p.set_handle_state(&m, h, 0xc0).unwrap();
+    p.res_error = -52;
+    d.item_text(&mut m, &mut p, None, h, data, true).unwrap();
+    assert_eq!(p.handle_size(&m, h).unwrap(), 3);
+    assert_eq!(m.read(ptr(&m, h), 3).unwrap(), b"ABC");
+    assert_eq!(p.handle_state(&m, h).unwrap(), 0xc0);
+    assert_eq!(p.res_error, -52);
+    m.map(GuestPtr(0x2000), vec![0xcc; 258], Permissions::RW)
+        .unwrap();
+    p.mem_error = -51;
+    d.item_text(&mut m, &mut p, None, h, GuestPtr(0x2001), false)
+        .unwrap();
+    assert_eq!(m.read(GuestPtr(0x2001), 4).unwrap(), b"\x03ABC");
+    assert_eq!(p.mem_error, -51);
+    assert_eq!(m.read(GuestPtr(0x2000), 1).unwrap(), [0xcc]);
+    assert_eq!(m.read(GuestPtr(0x2005), 1).unwrap(), [0xcc]);
+    m.map(GuestPtr(0x3000), vec![0xdd; 256], Permissions::RX)
+        .unwrap();
+    assert!(d
+        .item_text(&mut m, &mut p, None, h, GuestPtr(0x3000), false)
+        .is_err());
+    assert_eq!(m.read(GuestPtr(0x3000), 4).unwrap(), [0xdd; 4]);
+    assert_eq!(p.mem_error, -51);
+    let mut long = vec![255];
+    long.extend([0x80; 255]);
+    m.write(GuestPtr(0x1000), &long).unwrap();
+    let free = p.free_memory();
+    let held = p.new_pointer(&mut m, free - 1, false).unwrap();
+    assert_ne!(held, 0);
+    let old = ptr(&m, h);
+    let remaining = p.free_memory();
+    d.item_text(&mut m, &mut p, None, h, GuestPtr(0x1000), true)
+        .unwrap();
+    assert_eq!(p.mem_error, -108);
+    assert_eq!(ptr(&m, h), old);
+    assert_eq!(m.read(old, 3).unwrap(), b"ABC");
+    assert_eq!(p.free_memory(), remaining);
+    p.dispose_pointer(held);
+    p.set_handle_state(&m, h, 0).unwrap();
+    d.item_text(&mut m, &mut p, None, h, GuestPtr(0x1000), true)
+        .unwrap();
+    assert_eq!(p.handle_size(&m, h).unwrap(), 255);
+    assert_eq!(m.read(ptr(&m, h), 255).unwrap(), [0x80; 255]);
+    p.set_handle_size(&mut m, h, 300).unwrap();
+    m.write(ptr(&m, h), &[0x80; 300]).unwrap();
+    d.item_text(&mut m, &mut p, None, h, GuestPtr(0x2001), false)
+        .unwrap();
+    assert_eq!(m.read(GuestPtr(0x2001), 256).unwrap(), long);
+    assert_eq!(m.read(GuestPtr(0x2101), 1).unwrap(), [0xcc]);
+    m.map(GuestPtr(0x5000), vec![255], Permissions::RW).unwrap();
+    let free = p.free_memory();
+    assert!(d
+        .item_text(&mut m, &mut p, None, h, GuestPtr(0x5000), true)
+        .is_err());
+    assert_eq!(p.free_memory(), free);
+    assert_eq!(p.handle_size(&m, h).unwrap(), 300);
+}
