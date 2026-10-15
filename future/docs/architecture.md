@@ -1646,3 +1646,19 @@ Focused tests cover live plain/styled metrics, extreme/reversed/outside ranges,
 trailing blanks, exhausted guest allocation, corrupt records, exact CPU frames,
 long results above 32767, a nil current port and unchanged error globals. The
 public MPW fixtures make four height queries on each architecture.
+
+
+### Shared resource-backed icon lookup
+
+GetIcon now routes 68K trap $A9BB and the InterfaceLib PPC import to the same
+GetResource('ICON', signed ID) service. The native adapter validates its long
+result before popping the two-byte ID; PPC takes the low signed word in r3.
+The trap is installed for guest availability queries. Handles share Resource
+Manager identity, mutation, release/reload and errors; missing resources return
+nil through the actual lookup. No substitute icon is created for a missing ID.
+PlotIcon, colored icon loading, icon suites and standard system-icon fallback
+artwork remain separate unfinished work.
+
+The shared real-CPU resource test now runs for both PICT and ICON, including
+negative IDs, 128-byte icon contents, GetResource identity, guest mutation,
+release/reload, missing ID zero, result guards and readonly native outputs.

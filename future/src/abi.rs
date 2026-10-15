@@ -179,6 +179,7 @@ pub enum Service {
     GetPattern,
     GetCursor,
     GetPicture,
+    GetIcon,
     DrawPicture,
     SetSoundVol,
     GetSoundVol,
@@ -476,6 +477,7 @@ impl Abi {
             b"CopyMask" => Some(Service::CopyMask),
             b"CopyBits" => Some(Service::CopyBits),
             b"DrawPicture" => Some(Service::DrawPicture),
+            b"GetIcon" => Some(Service::GetIcon),
             b"GetPicture" => Some(Service::GetPicture),
             b"GetCursor" => Some(Service::GetCursor),
             b"GetPattern" => Some(Service::GetPattern),
@@ -2063,7 +2065,7 @@ impl Abi {
                     Reply::None,
                 ))
             }
-            0xa9b8 | 0xa9b9 | 0xa9bc => {
+            0xa9b8 | 0xa9b9 | 0xa9bb | 0xa9bc => {
                 let id = memory.u16(GuestPtr(sp))? as i16;
                 let result = sp
                     .checked_add(2)
@@ -2075,6 +2077,7 @@ impl Abi {
                         kind: match opcode {
                             0xa9b9 => *b"CURS",
                             0xa9bc => *b"PICT",
+                            0xa9bb => *b"ICON",
                             _ => *b"PAT ",
                         },
                         id,
@@ -2708,6 +2711,10 @@ impl Abi {
             Service::DrawPicture => Call::DrawPicture {
                 handle: c.gpr[3],
                 destination: GuestPtr(c.gpr[4]),
+            },
+            Service::GetIcon => Call::GetResource {
+                kind: *b"ICON",
+                id: c.gpr[3] as i16,
             },
             Service::GetPicture => Call::GetResource {
                 kind: *b"PICT",

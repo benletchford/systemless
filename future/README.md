@@ -173,6 +173,8 @@ New Game and Quit drags return their real packed commands and decode through
 shared HiWord/LoWord. Shared MoveControl/SizeControl now handle geometry,
 owner-background erasure and dirty regions. The original Quit route passes
 control movement and shared TEGetHeight while laying out its confirmation
-prompt, then stops at GetIcon(0). The prompt and shutdown are not yet accepted;
-icon resources/drawing and confirmation/lifecycle are next. The full
+prompt. Shared GetIcon returns the real missing-resource result for ICON 0;
+the Quit confirmation displays and pressing No disposes its controls/TextEdit
+and windows. Shutdown then stops at GetWMgrPort ($A910). Window Manager port
+access and the remaining lifecycle are next; guest exit is not yet verified. The full
 rebuild stays active.

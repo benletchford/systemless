@@ -3449,3 +3449,45 @@ failures or skips. Strict all-target Clippy, sequential changed-file stdin
 formatting, fixture shell syntax and whitespace checks pass. Both MPW targets
 were rebuilt from the public headers and the original Quit path was rerun.
 The full rebuild goal remains active; this is one executable milestone.
+
+
+### Shared resource-backed icon lookup
+
+GetIcon now routes 68K trap $A9BB and the InterfaceLib PPC import to the same
+GetResource('ICON', signed ID) service. The native adapter validates its long
+result before popping the two-byte ID; PPC takes the low signed word in r3.
+The trap is installed for guest availability queries. Handles share Resource
+Manager identity, mutation, release/reload and errors; missing resources return
+nil through the actual lookup. No substitute icon is created for a missing ID.
+PlotIcon, colored icon loading, icon suites and standard system-icon fallback
+artwork remain separate unfinished work.
+
+The shared real-CPU resource test now runs for both PICT and ICON, including
+negative IDs, 128-byte icon contents, GetResource identity, guest mutation,
+release/reload, missing ID zero, result guards and readonly native outputs.
+
+Inspection of the original Super Mines resource map finds ICON 128 and 129,
+128 bytes each, but no ICON 0. The original Quit route now passes the real
+missing-resource lookup and displays its prompt and Yes/No/Cancel controls.
+Private screenshot /tmp/systemless-mines-geticon-after.png verifies the visible
+"Save game before quitting?" prompt; the bounded guest continues its custom
+event loop without a service fault. No native System 7 comparison was required.
+
+Contract: Apple's [Icon Utilities](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-287.html)
+and [resource disposal](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-290.html).
+
+The follow-up Quit run presses No at global (270,86), after the identical splash,
+chooser, board and File-menu sequence. It disposes the confirmation TextEdit
+record, all four controls, its window and the game window, then stops at
+GetWMgrPort ($A910), post-trap PC $0101161A, SP $0080FD1C. The confirmation
+acceptance/cleanup is verified; ExitToShell has not been reached. The save and
+Cancel branches and New Game confirmation were not exercised in this slice.
+Evidence: /tmp/systemless-mines-quit-no-probe.txt. Next: shared Window Manager
+port identity/access and continuation of original shutdown. Full rebuild remains
+active, with PPC originals and real Mixed Mode still outstanding.
+
+Validation for this adapter milestone: 282 default tests pass, zero failures,
+64 optional tests explicitly skipped; the preceding complete 346-test run is
+recorded above. The final focused PICT/ICON real-CPU test, strict all-target
+Clippy, sequential changed-file formatting and whitespace checks pass. Original
+confirmation display and No-button cleanup were rerun with bounded execution.
