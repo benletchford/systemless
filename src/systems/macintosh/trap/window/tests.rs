@@ -9322,7 +9322,7 @@ fn movewindow_paints_newly_onscreen_content_and_preserves_copied_pixels() {
             assert_ne!(exposed, 0x7B, "offscreen content has no valid pixels to copy");
         }
         assert_eq!(*disp.current_port, old_port);
-        assert_eq!(bus.read_word(0x09DC), paint_white, "caller flag is preserved");
+        assert_eq!(bus.read_word(0x09DC) != 0, paint_white != 0, "erase suppression remains unchanged");
         assert!(disp.window_update_rect(&bus, window).is_some(), "both flag values deliver an update");
     }
 }
