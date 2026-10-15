@@ -1308,6 +1308,18 @@ fn compiled_devices_share_screen_records_flags_and_palette_on_both_cpus() {
                 .iter()
                 .filter(|call| matches!(
                     call,
+                    Call::Device(systemless_future::devices::Op::Depth { .. })
+                ))
+                .count(),
+            5
+        );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|call| matches!(
+                    call,
                     Call::Device(systemless_future::devices::Op::Index { .. })
                 ))
                 .count(),

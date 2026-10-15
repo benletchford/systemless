@@ -1964,3 +1964,51 @@ checks pass 43 cases, zero failed/ignored: /tmp/systemless-ev-trap-focused.txt.
 Final Rust 1.99 strict all-target lint passes:
 /tmp/systemless-ev-trap-final-clippy.txt. Full acceptance above belongs to the
 preceding frozen timer checkpoint; it is not relabeled as a full final-source run.
+
+
+### Marathon advances through backed display-depth discovery
+
+The new shared HasDepth/SetDepth calls expose the host-selected display's actual
+mode (gdMode 128), with real mono or indexed8 storage. Only the configured depth
+and color format are supported; SetDepth accepts that mode ID or raw depth and
+returns cDepthErr (-157) for other configurations without changing records or
+pixels. Runtime depth switching, grayscale/direct color and more video devices
+remain unfinished. The native ABI uses D0 selectors $0A14/$0A13 with ten argument
+bytes and a word result, not a stacked selector.
+
+Original Marathon, with unchanged raw-fork hash
+`afa4e77d8b53c42062fe4b730472cfbb396aacf715c2181aeb5dd12ea60491a1`,
+now invokes HasDepth(device=$00010884, depth=8, whichFlags=1, flags=1), passes
+that startup check, allocates further regions/handles, and reaches missing
+GetNewCWindow ($AA46), PC $01007F10. Trace:
+/tmp/systemless-marathon-display-modes-first.txt. Reproduction:
+
+    future/target/debug/examples/trace_application code /tmp/systemless-original-marathon/application.raw-rsrc 1000000 --graphics --display 640x480x8 --volume /tmp/systemless-marathon-assets.slv --services-only
+
+Original EV's raw hash remains
+`d739c1d5bd0d5c7efddc55f34bfadd8f66a25c819a00bbed9523c7c56e3f716b`;
+its final-source regression still reaches ProtectEntry ($AA3D), PC $0001ACFE:
+/tmp/systemless-ev-display-modes-regression.txt. Both diagnostic exits are 1 for
+explicit missing services, not passes for gameplay. Neither original game nor
+the complete rebuild is finished. Native presentation/audio remain unverified.
+
+Both real Apple-header compiler guests pass five display calls and exit 0:
+/tmp/systemless-display-modes-sdk-tests.txt. Compiler fixture generation succeeds
+in /tmp/systemless-display-modes-sdk-build.txt. It checks HasDepth/current gdMode,
+unsupported color depth, SetDepth by mode/raw depth and failure preservation.
+
+
+Final display-mode acceptance: 18 distinct device/display/mode integration tests
+plus the compiler-fixture test pass (19 checks), zero failures/ignored. Actual
+GPU cases were explicitly enabled. The final mode-target rerun after applying the
+project's explicit-GPU annotation passes all five cases with --include-ignored,
+including readback; none skipped. Evidence:
+/tmp/systemless-display-modes-tests.txt,
+/tmp/systemless-display-modes-final-tests.txt,
+/tmp/systemless-display-modes-sdk-tests.txt.
+Strict final-source all-target Rust 1.99 Clippy passes, exit 0:
+/tmp/systemless-display-modes-clippy-final-acceptance.txt.
+Sequential changed-file formatting and git diff --check pass. The earlier
+505-test full acceptance remains evidence for its frozen timer checkpoint; no
+new full-suite pass is claimed for this mode milestone. Native presentation and
+full runtime depth switching are still unverified/unfinished, respectively.

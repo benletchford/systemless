@@ -72,6 +72,8 @@ pub enum Service {
     ColorPort(crate::color_ports::Action),
     NextDevice,
     SetDevice,
+    HasDepth,
+    SetDepth,
     DeviceAttribute,
     SetDeviceAttribute,
     MakeITable,
@@ -393,6 +395,8 @@ impl Abi {
             b"GetMainDevice" => Some(Service::Device(crate::devices::Op::Main)),
             b"GetDeviceList" => Some(Service::Device(crate::devices::Op::First)),
             b"GetNextDevice" => Some(Service::NextDevice),
+            b"HasDepth" => Some(Service::HasDepth),
+            b"SetDepth" => Some(Service::SetDepth),
             b"TestDeviceAttribute" => Some(Service::DeviceAttribute),
             b"SetDeviceAttribute" => Some(Service::SetDeviceAttribute),
             b"MakeITable" => Some(Service::MakeITable),
@@ -1556,6 +1560,26 @@ impl Abi {
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("color port ABI stack overflow".into()))?;
                 Ok((Call::ColorPort { action, port }, Reply::None))
+            }
+            0xaaa2 => {
+                let selector = c.dar[0] as u16;
+                if !matches!(selector, 0x0a13 | 0x0a14) {
+                    return Err(Error::Service(u32::from(opcode)));
+                }
+                let args = memory.read(GuestPtr(sp), 12)?;
+                let next = sp
+                    .checked_add(10)
+                    .ok_or_else(|| Error::Cpu("display depth stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 2)?;
+                let op = crate::devices::Op::Depth {
+                    flags: u16::from_be_bytes(args[0..2].try_into().unwrap()),
+                    which_flags: u16::from_be_bytes(args[2..4].try_into().unwrap()),
+                    depth: i16::from_be_bytes(args[4..6].try_into().unwrap()),
+                    device: u32::from_be_bytes(args[6..10].try_into().unwrap()),
+                    set: selector == 0x0a13,
+                };
+                c.dar[15] = next;
+                Ok((Call::Device(op), Reply::StackWord(GuestPtr(next))))
             }
             0xaa40 => {
                 memory.validate_write(GuestPtr(sp), 2)?;
@@ -3054,6 +3078,13 @@ impl Abi {
                 resolution: c.gpr[5] as i16,
             }),
             Service::QDError => Call::Color(crate::color::Op::Error),
+            Service::HasDepth | Service::SetDepth => Call::Device(crate::devices::Op::Depth {
+                device: c.gpr[3],
+                depth: c.gpr[4] as i16,
+                which_flags: c.gpr[5] as u16,
+                flags: c.gpr[6] as u16,
+                set: service == Service::SetDepth,
+            }),
             Service::Device(op) => Call::Device(op),
             Service::SetDevice => Call::Device(crate::devices::Op::Select(c.gpr[3])),
             Service::NextDevice => Call::Device(crate::devices::Op::Next(c.gpr[3])),

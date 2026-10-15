@@ -5379,3 +5379,71 @@ The final-source tracer builds successfully and the real original again reaches
 ProtectEntry $AA3D, PC $0001ACFE: /tmp/systemless-ev-trap-main-original.txt.
 Its diagnostic exit 1 is the expected explicit unsupported service, not a gameplay
 pass. No Monitor Tool error-dialog success is inferred from the earlier path.
+
+
+## Host-backed display mode queries
+
+HasDepth and SetDepth now decode through the same devices manager on 68K and
+PPC. The native PaletteDispatch $AAA2 uses the documented D0 selectors $0A14 /
+$0A13, ten argument bytes and a word result. Unsupported selectors fail explicitly;
+result permissions are checked before stack adjustment. PPC imports use r3-r6.
+
+The existing host-selected display has one actual backed mode, identity 128,
+published in gdMode. HasDepth advertises only that profile's pixel depth and
+color format. SetDepth accepts its returned mode ID or its raw depth, preserves
+existing storage, and rejects other depths/formats with cDepthErr (-157). This is
+not runtime depth switching: different depths, grayscale, direct color and extra
+video devices remain unfinished. Copied/offscreen GDevices do not inherit the
+main screen's mode capabilities. A record inconsistent with checked live pixels
+fails explicitly. No alternate mode is advertised before its storage can exist.
+
+The public-header devices fixture now queries mode identity and unsupported
+color depth, accepts current mode ID/raw depth, and verifies failed selection
+preserves gdMode. Both original compiler artifacts were regenerated successfully:
+/tmp/systemless-display-modes-sdk-build.txt. Primary ABI/semantics references:
+https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-295.html
+https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-296.html
+
+Strict final-source Rust 1.99 all-target Clippy passes, exit 0:
+/tmp/systemless-display-modes-clippy-acceptance.txt. The old checkpoint 110d4178a
+has successful GitHub Future runtime CPU-contract jobs; the broader Ubuntu build
+was still running at observation (/tmp/systemless-display-mode-pr-before.json).
+This does not establish CI success for the unpushed display-mode change.
+
+
+Actual original Marathon now passes HasDepth(depth=8, whichFlags=1, flags=1) on
+its backed 640x480x8 screen, then allocates further regions/handles and reaches
+GetNewCWindow $AA46, PC $01007F10. Evidence:
+/tmp/systemless-marathon-display-modes-first.txt (explicit missing-service exit 1).
+EV's regression preserves ProtectEntry $AA3D at $0001ACFE:
+/tmp/systemless-ev-display-modes-regression.txt (also exit 1). Both raw-fork hashes
+were rechecked unchanged. Neither trace demonstrates gameplay or native display.
+The rebuilt public-header device fixture passes on both CPU engines, with all
+five new display calls exercised and ExitToShell(0):
+/tmp/systemless-display-modes-sdk-tests.txt, exit 0.
+
+Next: implement resource-backed color-window construction for Marathon using the
+shared Window Manager's existing resource ownership and actual CGrafPort graph.
+GetNewWindow/from_resource currently creates a basic window; NewCWindow already
+owns the color graph. Retain real WIND resource parsing and handle lifetimes,
+validate the native/PPC ABI and report unsupported custom color/WDEF features.
+EV's ProtectEntry/ReserveEntry/SetEntries slice must retain coherent device/client
+ownership, palette updates and matching. Do not silently accept palette calls.
+Different-depth switching remains open and requires coherent pixel conversion,
+port/device/global records, palette state and redraw. The full rebuild stays active.
+
+
+Final display-mode acceptance: 18 distinct device/display/mode integration tests
+plus the compiler-fixture test pass (19 checks), zero failures/ignored. Actual
+GPU cases were explicitly enabled. The final mode-target rerun after applying the
+project's explicit-GPU annotation passes all five cases with --include-ignored,
+including readback; none skipped. Evidence:
+/tmp/systemless-display-modes-tests.txt,
+/tmp/systemless-display-modes-final-tests.txt,
+/tmp/systemless-display-modes-sdk-tests.txt.
+Strict final-source all-target Rust 1.99 Clippy passes, exit 0:
+/tmp/systemless-display-modes-clippy-final-acceptance.txt.
+Sequential changed-file formatting and git diff --check pass. The earlier
+505-test full acceptance remains evidence for its frozen timer checkpoint; no
+new full-suite pass is claimed for this mode milestone. Native presentation and
+full runtime depth switching are still unverified/unfinished, respectively.

@@ -1,6 +1,7 @@
 #include <Types.h>
 #include <Quickdraw.h>
 #include <Memory.h>
+#include <Palettes.h>
 #include <Events.h>
 #include <Processes.h>
 QDGlobals qd;
@@ -11,6 +12,7 @@ int main(void) {
     ITabHandle inverse;
     unsigned char *lookup;
     long tableSize;
+    short mode;
     RGBColor rgb;
     offscreen=(GDHandle)NewHandleClear(sizeof(GDevice));if (!offscreen) return 11;
     (**offscreen).gdRefCon=0x12345678;
@@ -25,6 +27,10 @@ int main(void) {
     if (!device || GetMainDevice()!=device || GetDeviceList()!=device || GetNextDevice(device)) return 1;
     if (!TestDeviceAttribute(device,mainScreen) || !TestDeviceAttribute(device,screenDevice) || !TestDeviceAttribute(device,screenActive) || TestDeviceAttribute(device,gdDevType)) return 2;
     if (*(GDHandle *)0x08a4!=device || *(GDHandle *)0x08a8!=device || *(GDHandle *)0x0cc8!=device) return 3;
+    mode=HasDepth(device,1,1,0);
+    if (!mode || mode!=(**device).gdMode || HasDepth(device,8,1,1)) return 23;
+    if (SetDepth(device,mode,1,0) || SetDepth(device,1,0,0)) return 24;
+    if (SetDepth(device,8,1,1)!=-157 || (**device).gdMode!=mode) return 25;
     pixels=(**device).gdPMap;
     if (!pixels || (**pixels).pixelSize!=1 || (**pixels).cmpCount!=1 || (**pixels).cmpSize!=1 || (**pixels).rowBytes!=(short)0x8040) return 4;
     if ((**pixels).baseAddr!=qd.screenBits.baseAddr || (**pixels).bounds.right!=qd.screenBits.bounds.right || (**pixels).bounds.bottom!=qd.screenBits.bounds.bottom) return 5;

@@ -9,16 +9,34 @@ use crate::{
 pub const MAIN: GuestPtr = GuestPtr(0x08a4);
 pub const FIRST: GuestPtr = GuestPtr(0x08a8);
 pub const CURRENT: GuestPtr = GuestPtr(0x0cc8);
+const HOST_MODE: i16 = 128;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    Depth {
+        device: u32,
+        depth: i16,
+        which_flags: u16,
+        flags: u16,
+        set: bool,
+    },
     Current,
     Select(u32),
     Main,
     First,
     Next(u32),
-    Attribute { device: u32, bit: i16 },
-    SetAttribute { device: u32, bit: i16, value: bool },
-    Index { index: i32, destination: GuestPtr },
+    Attribute {
+        device: u32,
+        bit: i16,
+    },
+    SetAttribute {
+        device: u32,
+        bit: i16,
+        value: bool,
+    },
+    Index {
+        index: i32,
+        destination: GuestPtr,
+    },
 }
 #[derive(Default)]
 pub struct Manager {
@@ -112,6 +130,9 @@ impl Manager {
             gd[20..22].copy_from_slice(&(0xe800u16 | u16::from(depth > 1)).to_be_bytes());
             gd[22..26].copy_from_slice(&pixels.to_be_bytes());
             gd[34..42].copy_from_slice(&bounds);
+            // One real host-selected mode. It has a stable driver-style identity;
+            // unsupported depths are not advertised as switchable modes.
+            gd[42..46].copy_from_slice(&(HOST_MODE as u32).to_be_bytes());
             memory.write(data, &gd)?;
             Ok(device)
         })();
@@ -148,6 +169,55 @@ impl Manager {
     pub fn call(&mut self, memory: &mut Memory, process: &mut Process, op: Op) -> Result<u32> {
         let saved = process.mem_error;
         let result = (|| {
+            if let Op::Depth {
+                device,
+                depth,
+                which_flags,
+                flags,
+                set,
+            } = op
+            {
+                // Validate the requested record before any lazy allocation. Only
+                // the main display is a video device; copied/offscreen records
+                // cannot acquire its host capabilities by aliasing its PixMap.
+                let data = record(memory, process, device, 62)?;
+                let failure = if set { (-157i32) as u32 } else { 0 };
+                if self.device != Some(device) {
+                    return Ok(failure);
+                }
+                let actual_depth = process.display.depth();
+                let mode = HOST_MODE;
+                let pixels = memory.u32(GuestPtr(data.0 + 22))?;
+                let pm = record(memory, process, pixels, 50)?;
+                let screen = process.display.bitmap();
+                let storage = crate::pixmap::destination(memory, pm)?;
+                if storage.bounds != screen.bounds
+                    || storage.depth != actual_depth
+                    || memory.u32(GuestPtr(data.0 + 42))? != mode as u32
+                    || memory.u16(GuestPtr(pm.0 + 32))? != actual_depth
+                    || memory.u32(pm)? != screen.base.0
+                    || memory.u16(GuestPtr(pm.0 + 4))? != (0x8000 | screen.row_bytes as u16)
+                {
+                    return Err(invalid(
+                        "display mode record disagrees with actual screen storage",
+                    ));
+                }
+                // gdDevType is bit zero. A zero mask preserves the configured
+                // color format. Other flag controls have no host implementation.
+                let color = u16::from(actual_depth > 1);
+                let supported = which_flags & !1 == 0
+                    && (flags & which_flags) == (color & which_flags)
+                    && (depth == actual_depth as i16 || (set && depth == mode));
+                return Ok(if supported {
+                    if set {
+                        0
+                    } else {
+                        mode as u32
+                    }
+                } else {
+                    failure
+                });
+            }
             // Applications also own offscreen GDevice records. Attribute access
             // changes only that record; it must not initialize/select a screen.
             if let Op::Attribute { device, bit } | Op::SetAttribute { device, bit, .. } = op {
@@ -193,7 +263,7 @@ impl Manager {
             };
             let data = record(memory, process, device, 62)?;
             match op {
-                Op::Select(_) | Op::Next(_) => unreachable!(),
+                Op::Depth { .. } | Op::Select(_) | Op::Next(_) => unreachable!(),
                 Op::Current | Op::Main | Op::First => {
                     let pointer = match op {
                         Op::Current => CURRENT,
