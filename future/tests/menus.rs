@@ -1148,3 +1148,192 @@ fn menu_text_adapters_unpack_pascal_pointer_and_signed_item_without_return_value
         );
     }
 }
+
+#[test]
+fn new_menus_are_owned_empty_records_without_graphics_resources_or_installation() {
+    let fixture = support::pef_program(&[0x4e800020], &[], 32);
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    let source = GuestPtr(
+        app.runtime
+            .process
+            .new_pointer(&mut app.runtime.memory, 256, false)
+            .unwrap(),
+    );
+    app.runtime.memory.write(source, b"\x04Menu").unwrap();
+    app.runtime.process.res_error = -192;
+    let h = direct(
+        &mut app,
+        Op::New {
+            id: -17,
+            title: source,
+        },
+    )
+    .unwrap();
+    assert_ne!(h, 0);
+    assert_eq!(app.runtime.process.res_error, -192);
+    let bytes = payload(&app.runtime.memory, &mut app.runtime.process, h);
+    let menu = systemless_future::menus::record::Record::parse(&bytes).unwrap();
+    assert_eq!(
+        (menu.id, menu.title, menu.enabled),
+        (-17, &b"Menu"[..], u32::MAX)
+    );
+    assert!(menu.items.is_empty());
+    assert_eq!(&bytes[2..10], &[0; 8]);
+    assert_eq!(direct(&mut app, Op::Count(h)).unwrap(), 0);
+    assert_eq!(app.runtime.memory.u32(GuestPtr(0xa1c)).unwrap(), 0);
+    let empty = direct(
+        &mut app,
+        Op::New {
+            id: 0,
+            title: GuestPtr(0),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        payload(&app.runtime.memory, &mut app.runtime.process, empty).len(),
+        16
+    );
+    assert!(direct(
+        &mut app,
+        Op::New {
+            id: 1,
+            title: GuestPtr(0xdead0000)
+        }
+    )
+    .is_err());
+    app.runtime
+        .process
+        .dispose_handle(&mut app.runtime.memory, h)
+        .unwrap();
+    app.runtime
+        .process
+        .dispose_handle(&mut app.runtime.memory, empty)
+        .unwrap();
+}
+#[test]
+fn new_menu_adapters_validate_long_results_and_unpack_signed_id_before_allocation() {
+    let mut m = Memory::default();
+    m.map(
+        GuestPtr(0x1000),
+        vec![0, 0, 0x30, 0, 255, 239, 0xa5, 0xa5, 0xa5, 0xa5],
+        Permissions::RW,
+    )
+    .unwrap();
+    let mut c = m68k::CpuCore::default();
+    c.dar[15] = 0x1000;
+    let expected = Call::Menu(Op::New {
+        id: -17,
+        title: GuestPtr(0x3000),
+    });
+    assert_eq!(
+        Abi::trap(0xa931, &mut c, &m).unwrap(),
+        (expected, Reply::StackLong(GuestPtr(0x1006)))
+    );
+    assert_eq!(c.dar[15], 0x1006);
+    c.dar[15] = 0x1002;
+    assert!(Abi::trap(0xa931, &mut c, &m).is_err());
+    assert_eq!(c.dar[15], 0x1002);
+    let mut c = ppc::PpcCpu::default();
+    c.gpr[3] = 0xabcdffef;
+    c.gpr[4] = 0x3000;
+    assert_eq!(
+        Abi::import(Service::NewMenu, &c, &m).unwrap(),
+        (expected, Reply::PpcR3)
+    );
+}
+
+#[test]
+fn append_menu_decodes_items_attributes_styles_and_enable_bits_atomically() {
+    let fixture = support::pef_program(&[0x4e800020], &[], 32);
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    let h = direct(
+        &mut app,
+        Op::New {
+            id: 12,
+            title: GuestPtr(0),
+        },
+    )
+    .unwrap();
+    let source = GuestPtr(
+        app.runtime
+            .process
+            .new_pointer(&mut app.runtime.memory, 256, false)
+            .unwrap(),
+    );
+    let spec = b"One^2!*/O<BI;(Disabled<US\r-";
+    let mut p = vec![spec.len() as u8];
+    p.extend(spec);
+    app.runtime.memory.write(source, &p).unwrap();
+    direct(&mut app, Op::Append { handle: h, source }).unwrap();
+    let bytes = payload(&app.runtime.memory, &mut app.runtime.process, h);
+    let menu = systemless_future::menus::record::Record::parse(&bytes).unwrap();
+    assert_eq!(
+        menu.items.iter().map(|i| i.text).collect::<Vec<_>>(),
+        [&b"One"[..], b"Disabled", b"-"]
+    );
+    assert_eq!(
+        (
+            menu.items[0].icon,
+            menu.items[0].command,
+            menu.items[0].mark,
+            menu.items[0].style
+        ),
+        (2, b'O', b'*', 3)
+    );
+    assert_eq!(menu.items[1].style, 20);
+    assert_eq!(menu.enabled & 15, 11);
+    assert!(direct(
+        &mut app,
+        Op::Append {
+            handle: h,
+            source: GuestPtr(0xdead0000)
+        }
+    )
+    .is_err());
+    assert_eq!(
+        payload(&app.runtime.memory, &mut app.runtime.process, h),
+        bytes
+    );
+    app.runtime.memory.write(source, b"\x02!*").unwrap();
+    assert!(direct(&mut app, Op::Append { handle: h, source }).is_err());
+    assert_eq!(
+        payload(&app.runtime.memory, &mut app.runtime.process, h),
+        bytes
+    );
+    app.runtime.memory.write(source, b"\x03;;;").unwrap();
+    direct(&mut app, Op::Append { handle: h, source }).unwrap();
+    assert_eq!(direct(&mut app, Op::Count(h)).unwrap(), 3);
+}
+#[test]
+fn append_menu_adapters_preserve_void_results_and_validate_complete_argument_storage() {
+    let mut m = Memory::default();
+    m.map(
+        GuestPtr(0x1000),
+        vec![0, 0, 0x30, 0, 0x10, 0, 0x20, 0],
+        Permissions::RW,
+    )
+    .unwrap();
+    let mut c = m68k::CpuCore::default();
+    c.dar[15] = 0x1000;
+    let expected = Call::Menu(Op::Append {
+        handle: 0x10002000,
+        source: GuestPtr(0x3000),
+    });
+    assert_eq!(
+        Abi::trap(0xa933, &mut c, &m).unwrap(),
+        (expected, Reply::None)
+    );
+    assert_eq!(c.dar[15], 0x1008);
+    c.dar[15] = 0x1002;
+    assert!(Abi::trap(0xa933, &mut c, &m).is_err());
+    assert_eq!(c.dar[15], 0x1002);
+    let mut c = ppc::PpcCpu::default();
+    c.gpr[3] = 0x10002000;
+    c.gpr[4] = 0x3000;
+    let (call, reply) = Abi::import(Service::AppendMenu, &c, &m).unwrap();
+    assert_eq!(call, expected);
+    let mut cpu = Cpu::PowerPc(Box::new(c));
+    reply.apply(&mut cpu, &mut m, 99, 0).unwrap();
+    let Cpu::PowerPc(c) = cpu else { panic!() };
+    assert_eq!(c.gpr[3], 0x10002000);
+}

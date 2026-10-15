@@ -177,3 +177,103 @@ pub(super) fn set_text(
     process.replace_handles(memory, vec![(handle, result)])?;
     Ok(0)
 }
+
+/// AppendMenu's metacharacters describe item attributes; unlike AppendResMenu,
+/// the supplied names are parsed rather than copied literally.
+pub(super) fn append_specs(
+    memory: &mut Memory,
+    process: &mut Process,
+    handle: u32,
+    source: GuestPtr,
+) -> Result<u32> {
+    let original = data(memory, process, handle)?;
+    let menu = Record::parse(&original)?;
+    let n = usize::from(memory.read(source, 1)?[0]);
+    let input = memory.read(source, n + 1)?;
+    let mut additions = Vec::new();
+    for spec in input[1..]
+        .split(|c| matches!(*c, b';' | b'\r'))
+        .filter(|s| !s.is_empty())
+    {
+        let mut text = Vec::new();
+        let mut fields = [0u8; 4];
+        let mut enabled = true;
+        let mut at = 0;
+        while at < spec.len() {
+            match spec[at] {
+                b'(' => {
+                    enabled = false;
+                    at += 1;
+                }
+                b'^' | b'/' | b'!' if at + 1 < spec.len() => {
+                    let field = match spec[at] {
+                        b'^' => 0,
+                        b'/' => 1,
+                        _ => 2,
+                    };
+                    fields[field] = if field == 0 {
+                        spec[at + 1].saturating_sub(b'0')
+                    } else {
+                        spec[at + 1]
+                    };
+                    at += 2;
+                }
+                b'<' if at + 1 < spec.len() => {
+                    at += 1;
+                    while at < spec.len() {
+                        let style = match spec[at] {
+                            b'B' => 1,
+                            b'I' => 2,
+                            b'U' => 4,
+                            b'O' => 8,
+                            b'S' => 16,
+                            _ => break,
+                        };
+                        fields[3] |= style;
+                        at += 1;
+                    }
+                }
+                c => {
+                    text.push(c);
+                    at += 1;
+                }
+            }
+        }
+        if text.is_empty() {
+            return Err(bad("menu item specification has no text"));
+        }
+        additions.push((text, fields, enabled));
+    }
+    if additions.is_empty() {
+        return Ok(0);
+    }
+    if menu.items.len() + additions.len() > 1024 {
+        return Err(bad("menu item limit exceeded"));
+    }
+    let end = 15
+        + menu.title.len()
+        + menu
+            .items
+            .iter()
+            .map(|i| 1 + i.text.len() + 4)
+            .sum::<usize>();
+    let mut bytes = original[..end].to_vec();
+    let mut flags = menu.enabled;
+    for (i, (text, fields, enabled)) in additions.into_iter().enumerate() {
+        bytes.push(text.len() as u8);
+        bytes.extend(text);
+        bytes.extend(fields);
+        let item = menu.items.len() + i + 1;
+        if item <= 31 {
+            if enabled {
+                flags |= 1u32 << item;
+            } else {
+                flags &= !(1u32 << item);
+            }
+        }
+    }
+    bytes.push(0);
+    bytes[10..14].copy_from_slice(&flags.to_be_bytes());
+    process.replace_handles(memory, vec![(handle, bytes)])?;
+    Ok(0)
+}

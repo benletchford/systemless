@@ -74,8 +74,18 @@ int main(void) {
         if ((pixels[64*8+2]&0x70)!=0x70 || qd.thePort!=&port) return 20;
         if (GetNewMBar(43)!=0 || ResError()!=-192 || GetMenuHandle(70)!=menu) return 21;
     }
+    {
+        MenuHandle created=NewMenu(-17,"\pTemporary");
+        if (!created || (*created)->menuID!=-17 || CountMItems(created)!=0 || GetHandleSize((Handle)created)!=25) return 30;
+        AppendMenu(created,"\pOne/O;Two");
+        if (CountMItems(created)!=2 || ((unsigned char *)*created)[29]!='O') return 31;
+        DisposeHandle((Handle)created);
+    }
     InitCursor(); HideCursor(); HideCursor(); ShowCursor();
     cursor=GetCursor(-123); if (!cursor || GetHandleSize((Handle)cursor)!=68) return 9;
     SetCursor(*cursor); ShowCursor(); ShowCursor();
+    MoveTo(23,29); PenSize(4,3); PenMode(patXor); PenPat(&qd.gray); PenNormal();
+    if (port.pnSize.h!=1 || port.pnSize.v!=1 || port.pnMode!=patCopy || port.pnLoc.h!=23 || port.pnLoc.v!=29) return 32;
+    { short i; for (i=0;i<8;i++) if (((unsigned char *)&port.pnPat)[i]!=255) return 33; }
     ClosePort(&port); PostEvent(diskEvt,0x600d); ExitToShell(); return 0;
 }

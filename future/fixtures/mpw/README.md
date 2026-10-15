@@ -369,3 +369,9 @@ The menu guest also counts live items, appends named TEST resources with default
 attributes and checks repeated-append deduplication. It sets/checks/unchecks a mark,
 sets a command byte and grows/shrinks item text, verifying the raw record after
 each change. It uses SDK-declared AppendResMenu and SetMenuItemText C names.
+
+The menu guest also exercises NewMenu/AppendMenu and verifies PenNormal's size,
+mode, pattern and preserved location. The environment guest creates ResourceStore,
+checks duplicate ResErr and unchanged current resource reference, then uses File
+Manager calls to read the real empty-fork header. Pattern values use SDK structure
+addresses. This is separate from writable Resource Manager map/open acceptance.

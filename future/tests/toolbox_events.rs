@@ -360,3 +360,62 @@ fn rectangle_region_intersection_checks_holes_edges_and_native_boolean_padding()
         bytes
     );
 }
+
+#[test]
+fn pen_normal_resets_only_size_mode_pattern_through_both_real_cpus() {
+    let f = support::pef_program(
+        &[0x4e800020],
+        &[b"InitGraf", b"OpenPort", b"SetPort", b"PenNormal"],
+        0,
+    );
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    invoke(&mut app, 0, &[0x600]);
+    invoke(&mut app, 1, &[0x800]);
+    invoke(&mut app, 2, &[0x800]);
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa8, 0x9e], Permissions::RX)
+        .unwrap();
+    for arch in [Architecture::PowerPc, Architecture::M68k] {
+        app.runtime
+            .memory
+            .write(GuestPtr(0x830), &[0xff, 0xf9, 0, 23])
+            .unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(0x834), &[0x55; 14])
+            .unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(0x842), &(-1i16).to_be_bytes())
+            .unwrap();
+        let mut expected = app
+            .runtime
+            .memory
+            .read(GuestPtr(0x800), 108)
+            .unwrap()
+            .to_vec();
+        expected[52..66]
+            .copy_from_slice(&[0, 1, 0, 1, 0, 8, 255, 255, 255, 255, 255, 255, 255, 255]);
+        if arch == Architecture::PowerPc {
+            assert_eq!(invoke(&mut app, 3, &[0xdeadbeef]), 0xdeadbeef);
+        } else {
+            let stack = STACK_BASE + 0x8000;
+            app.runtime.cpu = Cpu::new(arch, 0x50000000, stack);
+            let Cpu::M68k(c) = &mut app.runtime.cpu else {
+                panic!()
+            };
+            c.dar[0] = 0xdeadbeef;
+            assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+            let Cpu::M68k(c) = &app.runtime.cpu else {
+                panic!()
+            };
+            assert_eq!(c.dar[15], stack);
+            assert_eq!(c.dar[0], 0xdeadbeef);
+        }
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(0x800), 108).unwrap(),
+            expected
+        );
+    }
+}

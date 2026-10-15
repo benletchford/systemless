@@ -6,6 +6,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 mod io;
+mod resource;
 pub use io::Op;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fork {

@@ -67,6 +67,8 @@ pub enum Service {
     ErrorSound,
     Cursor(crate::cursor::Op),
     SetCursor,
+    AppendMenu,
+    NewMenu,
     SetMenuItemText,
     SetItemCommand,
     SetItemMark,
@@ -111,6 +113,7 @@ pub enum Service {
     CombineRegions(crate::region_geometry::Boolean),
     Region(crate::regions::Op),
     Port(crate::quickdraw::PortOp),
+    PenNormal,
     PenMode,
     PenSize,
     PortSize,
@@ -146,6 +149,7 @@ pub enum Service {
     DetachResource,
     GetHandleSize,
     SetHandleSize,
+    CreateResFile,
     GetResource,
     GetPattern,
     GetCursor,
@@ -309,6 +313,8 @@ impl Abi {
             b"ObscureCursor" => Some(Service::Cursor(crate::cursor::Op::Obscure)),
             b"SetCursor" => Some(Service::SetCursor),
             b"GetMHandle" | b"GetMenuHandle" => Some(Service::GetMenuHandle),
+            b"AppendMenu" => Some(Service::AppendMenu),
+            b"NewMenu" => Some(Service::NewMenu),
             b"SetItem" | b"SetMenuItemText" => Some(Service::SetMenuItemText),
             b"SetItemCmd" => Some(Service::SetItemCommand),
             b"SetItemMark" => Some(Service::SetItemMark),
@@ -372,6 +378,7 @@ impl Abi {
             b"MovePortTo" => Some(Service::MovePortTo),
             b"PortSize" => Some(Service::PortSize),
             b"PenSize" => Some(Service::PenSize),
+            b"PenNormal" => Some(Service::PenNormal),
             b"PenMode" => Some(Service::PenMode),
             b"WaitNextEvent" => Some(Service::WaitNextEvent),
             b"PostEvent" => Some(Service::PostEvent),
@@ -413,6 +420,7 @@ impl Abi {
             b"GetPicture" => Some(Service::GetPicture),
             b"GetCursor" => Some(Service::GetCursor),
             b"GetPattern" => Some(Service::GetPattern),
+            b"CreateResFile" => Some(Service::CreateResFile),
             b"GetResource" => Some(Service::GetResource),
             b"MemError" => Some(Service::MemError),
             b"PBOpenSync" => Some(Service::FileIo(crate::files::Op::Open {
@@ -1083,6 +1091,40 @@ impl Abi {
                 }),
                 Reply::None,
             )),
+            0xa89e => Ok((Call::PenNormal, Reply::None)),
+            0xa933 => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let source = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let handle = u32::from_be_bytes(args[4..8].try_into().unwrap());
+                c.dar[15] = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("append menu stack overflow".into()))?;
+                Ok((
+                    Call::Menu(crate::menus::Op::Append { handle, source }),
+                    Reply::None,
+                ))
+            }
+            0xa931 => {
+                let args = memory.read(GuestPtr(sp), 6)?;
+                let title = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let id = i16::from_be_bytes(args[4..6].try_into().unwrap());
+                let result = sp
+                    .checked_add(6)
+                    .ok_or_else(|| Error::Cpu("new menu stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 4)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::Menu(crate::menus::Op::New { id, title }),
+                    Reply::StackLong(GuestPtr(result)),
+                ))
+            }
+            0xa9b1 => {
+                let name = GuestPtr(memory.u32(GuestPtr(sp))?);
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("resource file stack overflow".into()))?;
+                Ok((Call::CreateResourceFile(name), Reply::None))
+            }
             0xa947 => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let source = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
@@ -1932,6 +1974,14 @@ impl Abi {
             Service::GetMenu => Call::Menu(crate::menus::Op::Load(c.gpr[3] as i16)),
             Service::GetNewMBar => Call::Menu(crate::menus::Op::Bar(c.gpr[3] as i16)),
             Service::SetMenuBar => Call::Menu(crate::menus::Op::Set(c.gpr[3])),
+            Service::AppendMenu => Call::Menu(crate::menus::Op::Append {
+                handle: c.gpr[3],
+                source: GuestPtr(c.gpr[4]),
+            }),
+            Service::NewMenu => Call::Menu(crate::menus::Op::New {
+                id: c.gpr[3] as i16,
+                title: GuestPtr(c.gpr[4]),
+            }),
             Service::SetMenuItemText => Call::Menu(crate::menus::Op::Text {
                 handle: c.gpr[3],
                 item: c.gpr[4] as i16,
@@ -2131,6 +2181,7 @@ impl Abi {
                 width: c.gpr[3] as i16,
                 height: c.gpr[4] as i16,
             },
+            Service::PenNormal => Call::PenNormal,
             Service::PenMode => Call::PenMode(c.gpr[3] as i16),
 
             Service::WaitNextEvent => Call::WaitEvent {
@@ -2237,6 +2288,7 @@ impl Abi {
                 kind: *b"PAT ",
                 id: c.gpr[3] as i16,
             },
+            Service::CreateResFile => Call::CreateResourceFile(GuestPtr(c.gpr[3])),
             Service::GetResource => Call::GetResource {
                 kind: c.gpr[3].to_be_bytes(),
                 id: c.gpr[4] as i16,
@@ -2316,6 +2368,8 @@ impl Abi {
                         | Service::Cursor(_)
                         | Service::SetCursor
                         | Service::SetMenuBar
+                        | Service::CreateResFile
+                        | Service::AppendMenu
                         | Service::AppendResMenu
                         | Service::SetItemMark
                         | Service::SetItemCommand
@@ -2369,6 +2423,7 @@ impl Abi {
                         | Service::PortSize
                         | Service::PenSize
                         | Service::PenMode
+                        | Service::PenNormal
                         | Service::ExitToShell
                         | Service::SetPointerSize
                         | Service::DisposePointer

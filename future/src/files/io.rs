@@ -1,10 +1,10 @@
 //! Synchronous process-local fork I/O. No host paths or asynchronous callbacks.
-use super::{File, Files, Fork};
+use super::{Files, Fork};
 use crate::{
     memory::{GuestPtr, Memory},
     Result,
 };
-const LIMIT: usize = 64 * 1024 * 1024;
+pub(super) const LIMIT: usize = 64 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     Open { kind: Fork, hierarchical: bool },
@@ -188,47 +188,19 @@ impl Files {
             let parent = if hierarchical { long(pb, 48) } else { 2 };
             let parent = if parent == 0 { 2 } else { parent };
             let name = Self::name_input(memory, GuestPtr(long(pb, 18)))?;
-            let split = name.iter().rposition(|&c| c == b':');
-            let leaf = split.map_or(name.as_slice(), |i| &name[i + 1..]);
-            let parent = if !matches!(volume, -1..=1) {
-                Err(-35)
-            } else if self.name.is_empty() {
-                Err(-43)
-            } else if leaf.is_empty() || leaf.len() > 31 || leaf.contains(&0) {
-                Err(-37)
-            } else {
-                match split {
-                    Some(0) => Ok(parent),
-                    Some(i) => self.path(&name[..=i], parent),
-                    None => Ok(parent),
-                }
-            };
-            let parent = match parent {
-                Ok(p) => p,
-                Err(e) => return Ok(e),
-            };
-            if !self.directory_exists(parent) {
-                return Ok(-120);
-            }
-            if self.child(parent, leaf).is_some() {
-                return Ok(-48);
-            }
-            if self.files.len() + self.directories.len() >= 1024 {
-                return Ok(-33);
-            }
             let created = memory.u32(GuestPtr(0x20c))?;
-            let file = File {
-                name: leaf.to_vec(),
-                parent,
-                data: Vec::new(),
-                resource: Vec::new(),
-                created,
-                modified: created,
-                finder: pb[32..48].try_into().unwrap(),
-            };
-            self.files.insert(self.next_node, file);
-            self.next_node += 1;
-            return Ok(0);
+            return Ok(
+                match self.create_file(
+                    &name,
+                    volume,
+                    parent,
+                    created,
+                    pb[32..48].try_into().unwrap(),
+                ) {
+                    Ok(_) => 0,
+                    Err(e) => e,
+                },
+            );
         }
         let reference = word(pb, 24);
         if matches!(op, Op::Read | Op::Write) {

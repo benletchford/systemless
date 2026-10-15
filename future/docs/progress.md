@@ -2553,18 +2553,91 @@ The bounded Super Mines transition passes CountMItems, AddResMenu('DRVR') and it
 first populated DrawMenuBar. Offscreen inspection shows File, Edit and Super Mines
 titles on the desktop after the splash is dismissed. It sets menu 4/item 4's mark,
 changes item 5's text and command byte, continues settings reads and constructs
-WIND 1000 plus two controls. It stops at CreateResFile ($A9B1), post-trap
+WIND 1000 plus two controls. It stops at NewMenu ($A931), post-trap
 PC $0100DB86. This is menu setup and further resource-window construction, not
-completed gameplay or menu interaction. The next milestone is writable resource
-file creation/opening, integrating real resource maps with the existing shared
-fork store and preserving resource-map/handle identity across both CPUs. Native
+completed gameplay or menu interaction. The next original-app milestone is dynamic menu construction. Resource-file
+creation/opening, real maps in the shared fork store and map/handle identity
+across both CPUs also remain required. Native
 presentation, original PPC interaction and production Mixed Mode remain unfinished.
 The full rebuild goal stays active.
 
 Validation: all 268 tests pass (221 default, 47 optional GPU/MPW), with no skips.
 Strict all-target Clippy, sequential changed-file formatting and whitespace checks
 pass. Rebuilt MPW guests execute the new menu operations on both CPUs. The original
-probe reaches CreateResFile and its offscreen image shows the menu titles; it
+probe reaches NewMenu and its offscreen image shows the menu titles; it
 propagates that unsupported call rather than treating the run as application
 completion. Legacy comparison is permitted; native System 7 and native host
 presentation are not claimed.
+
+
+### Resource-file creation, menu construction and pen defaults
+
+Correction to the previous continuation record: decimal service 43313 is $A931
+(NewMenu), not $A9B1 (CreateResFile). The earlier hexadecimal conversion was wrong.
+The corrected original-app boundary above and the current trace below distinguish
+application evidence from the independently exercised Resource Manager feature.
+
+ResourceFork::encode now writes checked classic resource headers, length-prefixed
+data, reference/type lists, named/unnamed entries and map attributes. It preserves
+resource IDs, MacRoman name bytes and resource attributes, aligns data records and
+map starts to words, and rejects unrepresentable 24-bit data offsets, 16-bit map/name
+references and oversized strings/counts before publishing an output. Empty maps
+encode to a real 286-byte fork. Semantic round trips and deterministic re-encoding
+are checked; this is not yet a complete writable Resource Manager implementation.
+
+CreateResFile uses that encoding and the existing File Manager catalog/fork store.
+It creates a new file with an empty data fork or fills an existing zero-length
+resource fork without replacing its data or Finder metadata. An existing map is
+left unchanged with dupFNErr; locked application forks and invalid names/parents
+return errors. Capacity checks precede catalog mutation, so disk exhaustion cannot
+leave a partial file. Existing raw access paths observe the same updated EOF and
+bytes. Both CPU adapters preserve the void result and publish ResErr without
+changing CurResFile. File Manager creation now uses the same checked node-creation
+helper. Additional resource maps, resource-file open/close/search, changed-resource
+writes and host persistence remain unfinished.
+
+NewMenu allocates an ordinary caller-owned standard MENU record with a signed ID,
+Pascal title, default enabled flags and an empty item terminator. It needs no GPU,
+resource map or initialized menu bar and does not install itself. AppendMenu parses
+item separators, icons, marks, keyboard equivalents, disabled flags and styles,
+then atomically replaces the same live handle. Repeated or combined uppercase style
+letters are supported as documented by Apple; this differs from the legacy parser's
+one-letter-per-angle-bracket rule. Literal metacharacters still use SetMenuItemText.
+Modifier-only specifications fail rather than publishing an empty item terminator.
+Bounds, input faults and result storage are checked before relevant mutations.
+Hosted MDEF, popup tracking and additional styles' drawing remain incomplete.
+
+PenNormal shares a checked current-port operation that resets only pen size to
+1 by 1, transfer mode to patCopy and pen pattern to black. Location, visibility,
+text state, clipping and unrelated port bytes are preserved. It performs no drawing.
+Generated tests run it through both real CPUs and compare the entire port record.
+Rebuilt MPW menu guests create/append/count a menu and inspect exact pen defaults;
+environment guests create a resource file, check duplicate ResErr/current refnum,
+open the same raw fork and read its actual serialized header on both CPUs.
+
+The original bounded Super Mines click now creates menu 5010, appends four game
+names, shows WIND 1000 and draws its game/difficulty chooser, including title,
+icons and borders. It passes PenNormal and reaches GetMenuItemText/GetItem ($A946),
+post-trap PC $0101090C. Offscreen inspection confirms this chooser screen; labels
+and setup are not yet complete, and no chooser selection, popup interaction or
+gameplay is accepted. CreateResFile acceptance comes from generated/MPW fixtures;
+the original has not called it in this transition. Next: live menu-item text reads,
+then continue the chooser's setup/input path. Resource-file opening and writable
+maps remain required as part of the full rebuild, alongside original PPC behavior,
+native presentation, Color QuickDraw/devices and production Mixed Mode.
+The full rebuild goal remains active.
+
+Continuation ABI: the verified next trap is decimal 43334 = $A946, GetItem/
+GetMenuItemText. Native arguments are output Pascal-string pointer at SP, signed
+item word at SP+4 and MenuHandle at SP+6; pop 10, no function result. PPC takes
+handle/item/output in r3/r4/r5 and must preserve its void return. Read the checked
+live record (including uninstalled menus), snapshot text and validate the complete
+output write before changing any destination bytes.
+
+Validation: all 279 tests pass (232 default, 47 optional GPU/MPW), with no skips.
+Strict all-target Clippy, sequential changed-file formatting and whitespace checks
+pass. Rebuilt MPW menu/environment guests pass on both CPUs. Focused failures in
+the fixture's Pattern structure arguments, malformed-spec example and timestamp
+setup were corrected before the final suite. Offscreen chooser inspection is
+accepted only for the bounded partial setup described above; native presentation,
+native System 7 and actual chooser/gameplay interaction remain unverified.

@@ -1,5 +1,6 @@
 //! Resource file format: Inside Macintosh: More Macintosh Toolbox (1993),
 //! pp. 1-121–1-128, figures 1-11–1-18. Names remain original MacRoman bytes.
+mod encode;
 use super::{bytes, invalid, limit, u16_at, u32_at};
 use crate::Result;
 use std::collections::{BTreeMap, BTreeSet};

@@ -1306,3 +1306,16 @@ Popup rendering, tracking and guest definitions remain executable milestones.
 Resource layouts follow Apple's [MENU](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-183.html)
 and [MBAR](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-184.html) descriptions;
 layout/sizing evidence is separately identified as legacy Systemless comparison.
+
+
+## Resource-fork creation and encoding
+
+The checked ResourceFork format layer now serializes supported maps without a
+legacy-runtime dependency. File Manager catalog nodes remain the only owners of
+mutable fork bytes. CreateResFile preflights capacity, initializes an empty map
+and leaves existing raw access paths coherent; it neither installs a process map
+nor changes the current resource reference. Native and PPC adapters reach this
+same operation, with errors published through ResErr and no function result.
+Additional open resource maps, cached-resource ownership across those maps and
+changed-resource publication remain required future operations; raw file writes
+still do not automatically attach Resource Manager maps.

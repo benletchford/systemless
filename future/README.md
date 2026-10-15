@@ -111,7 +111,7 @@ GPU erasure/drawing on both CPU adapters. Bold source strikes are synthesized
 without changing guest font resources. Super Mines startup passes its text boxes
 and enters event/mouse polling. A bounded press/release dismisses its splash,
 creates/reads settings, loads, installs and draws its resource menu bar, updates menu items and reaches
-CreateResFile;
+GetMenuItemText;
 gameplay and complete application lifecycle acceptance remain pending.
 
 GetMouse shares checked current-port coordinates and live guest Mouse globals;
@@ -138,3 +138,14 @@ CountMItems, resource-name append, item marks/checks, command keys and item text
 now operate on the same live menu records through both CPU adapters. Super Mines
 passes menu setup and starts another resource window; writable Resource Manager
 files, menu interaction and full application acceptance remain unfinished.
+
+NewMenu and AppendMenu now construct live standard records and parse item
+specifications on both CPUs. PenNormal resets pen defaults without changing other
+port state. Super Mines reaches its partially drawn game/difficulty chooser;
+selection and gameplay remain unfinished.
+
+CreateResFile writes a valid empty map through the same File Manager fork store,
+and checked resource-fork serialization preserves supported resource metadata.
+Opening additional resource maps, resource updates and persistence remain pending.
+An earlier continuation note incorrectly called the original NewMenu trap
+CreateResFile; resource-file creation is proven by fixtures, not this original run.

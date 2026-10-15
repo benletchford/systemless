@@ -12,6 +12,7 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    CreateResourceFile(GuestPtr),
     Gestalt(u32),
     StillDown,
     Random,
@@ -117,6 +118,7 @@ pub enum Call {
         op: crate::quickdraw::PortOp,
         pointer: GuestPtr,
     },
+    PenNormal,
     PenMode(i16),
     MovePortTo {
         left: i16,

@@ -813,6 +813,12 @@ impl Runtime {
                             bytes[2..].copy_from_slice(&width.to_be_bytes());
                             self.memory.write(GuestPtr(p.0 + 52), &bytes)?;
                         }
+                        Call::PenNormal => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            ports.pen_normal(&mut self.memory)?;
+                        }
                         Call::PenMode(mode) => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -1037,6 +1043,14 @@ impl Runtime {
                             self.process.release_resource(&mut self.memory, handle)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::CreateResourceFile(name) => {
+                            self.memory.validate_write(GuestPtr(0xa60), 2)?;
+                            self.process.res_error = self
+                                .process
+                                .files
+                                .create_resource_file(&self.memory, name)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::GetResource { kind, id } => {
                             let v = self.process.get_resource(&mut self.memory, kind, id)?;
                             reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
@@ -1184,7 +1198,8 @@ impl Runtime {
                                 | crate::menus::Op::Load(_)
                                 | crate::menus::Op::Bar(_)
                                 | crate::menus::Op::AppendResources { .. }
-                        ) | Call::FontInfo(_)
+                        ) | Call::CreateResourceFile(_)
+                            | Call::FontInfo(_)
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
                             | Call::DetachResource(_)
@@ -1247,6 +1262,7 @@ impl Runtime {
                         | Call::PortSize { .. }
                         | Call::PenSize { .. }
                         | Call::PenMode(_)
+                        | Call::PenNormal
                         | Call::WaitEvent { .. }
                         | Call::PostEvent { .. }
                         | Call::OSEvent { .. }
@@ -1276,6 +1292,7 @@ impl Runtime {
                         | Call::DetachResource(_)
                         | Call::ReleaseResource(_)
                         | Call::CurResFile
+                        | Call::CreateResourceFile(_)
                         | Call::GetNamedResource { .. }
                         | Call::CreateDirectory(_)
                         | Call::FileInfo { .. }

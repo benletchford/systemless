@@ -7,6 +7,7 @@
 #include <Files.h>
 #include <Devices.h>
 #include <Gestalt.h>
+#include <Resources.h>
 int main(void) {
     SysEnvRec world;
     long response;
@@ -95,6 +96,23 @@ int main(void) {
         io.ioParam.ioRefNum=opened.ioParam.ioRefNum;io.ioParam.ioBuffer=bytes;io.ioParam.ioReqCount=8;io.ioParam.ioPosMode=fsFromStart;io.ioParam.ioPosOffset=0;
         if (PBReadSync(&io)!=eofErr || io.ioParam.ioActCount!=2 || bytes[0]!='A' || bytes[1]!='B') return 37;
         if (PBCloseSync(&io)) return 38;
+    }
+    {
+        HParamBlockRec opened;
+        ParamBlockRec io;
+        unsigned char header[16];
+        short current=CurResFile(),i;
+        CreateResFile("\pResourceStore"); if (ResError() || CurResFile()!=current) return 39;
+        CreateResFile("\pResourceStore"); if (ResError()!=dupFNErr) return 40;
+        for (i=0;i<sizeof(opened);i++) ((char *)&opened)[i]=0;
+        for (i=0;i<sizeof(io);i++) ((char *)&io)[i]=0;
+        opened.ioParam.ioNamePtr="\pResourceStore"; opened.ioParam.ioPermssn=fsRdPerm;
+        opened.fileParam.ioDirID=2;
+        if (PBHOpenRFSync(&opened)) return 41;
+        io.ioParam.ioRefNum=opened.ioParam.ioRefNum; io.ioParam.ioBuffer=(Ptr)header; io.ioParam.ioReqCount=16;
+        if (PBReadSync(&io) || io.ioParam.ioActCount!=16) return 42;
+        if (*(long *)header!=256 || *(long *)(header+4)!=256 || *(long *)(header+8)!=0 || *(long *)(header+12)!=30) return 43;
+        if (PBCloseSync(&io)) return 44;
     }
     PostEvent(diskEvt,0x600d); ExitToShell(); return 0;
 }

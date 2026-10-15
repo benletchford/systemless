@@ -200,6 +200,13 @@ impl Ports {
         process.dispose_handle(memory, visible)?;
         process.dispose_handle(memory, clip)
     }
+    pub fn pen_normal(&self, memory: &mut Memory) -> Result<()> {
+        let port = self.current(memory)?;
+        memory.write(
+            GuestPtr(port.0 + 52),
+            &[0, 1, 0, 1, 0, 8, 255, 255, 255, 255, 255, 255, 255, 255],
+        )
+    }
     pub fn open(&self, memory: &mut Memory, process: &mut Process, port: GuestPtr) -> Result<()> {
         memory.validate_write(port, PORT_SIZE)?;
         memory.validate_write(self.current_slot, 4)?;

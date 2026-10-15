@@ -17,6 +17,14 @@ const HEIGHT: GuestPtr = GuestPtr(0xbaa);
 const EMPTY: [u8; 12] = [0; 12];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    New {
+        id: i16,
+        title: GuestPtr,
+    },
+    Append {
+        handle: u32,
+        source: GuestPtr,
+    },
     Count(u32),
     Command {
         handle: u32,
@@ -170,6 +178,28 @@ impl Menus {
         gpu: Option<&Graphics>,
         op: Op,
     ) -> Result<u32> {
+        if let Op::Append { handle, source } = op {
+            return items::append_specs(memory, process, handle, source);
+        }
+        if let Op::New { id, title } = op {
+            let text = if title.0 == 0 {
+                Vec::new()
+            } else {
+                let n = usize::from(memory.read(title, 1)?[0]);
+                memory.read(title, n + 1)?[1..].to_vec()
+            };
+            let mut bytes = vec![0; 14];
+            bytes[..2].copy_from_slice(&id.to_be_bytes());
+            bytes[10..14].copy_from_slice(&u32::MAX.to_be_bytes());
+            bytes.push(text.len() as u8);
+            bytes.extend(text);
+            bytes.push(0);
+            let h = process.new_handle(memory, bytes.len() as u32, false)?;
+            if h != 0 {
+                memory.write(GuestPtr(memory.u32(GuestPtr(h))?), &bytes)?;
+            }
+            return Ok(h);
+        }
         if let Op::Text {
             handle,
             item,
@@ -366,7 +396,9 @@ impl Menus {
                 )?;
                 Ok(0)
             }
-            Op::Command { .. }
+            Op::Append { .. }
+            | Op::New { .. }
+            | Op::Command { .. }
             | Op::Init
             | Op::Text { .. }
             | Op::Mark { .. }

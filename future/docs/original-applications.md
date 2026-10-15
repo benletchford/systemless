@@ -41,7 +41,7 @@ fork path and a maximum instruction count, and prints register/opcode context.
   and StillDown, hides/disposes the demonstration splash, restores its saved
   nil port, creates/updates/reads its settings file, loads/installs its menu bar
   draws its menu titles, updates live items, constructs WIND 1000/two controls
-  and reaches unsupported CreateResFile ($A9B1).
+  and reaches unsupported GetMenuItemText ($A946).
   SystemTask preserves the empty periodic service state, PenSize updates live
   GrafPort dimensions and RectInRgn checks content intersections.
   GetPicture loads PICT 202, PortSize sizes its offscreen GrafPort and MovePortTo
@@ -116,12 +116,16 @@ directory. The missing-file path creates both forks, sets Finder metadata, reope
 the data fork and executes EOF/seek/write/read operations. It then queries GetMHandle(4), closes the file and probes Gestalt selectors
 ppc-space and evnt, both correctly unavailable. It loads and installs MBAR 1000,
 counts menu 1's items, calls AddResMenu('DRVR') and draws the original menu bar.
-Offscreen inspection shows File, Edit and Super Mines titles. It sets menu 4's
-item mark, text and command key, reads settings and constructs WIND 1000 plus two
-controls. The next unsupported call is CreateResFile ($A9B1), post-trap
-PC $0100DB86. The bounded transition proves splash dismissal, process-local
-settings I/O and menu setup; gameplay, popup interaction and a complete lifecycle
-remain unverified. Files persist only within the process, with no host filesystem
-writes. Next: resource-file creation/opening and coherent writable resource maps
-in the shared fork store, then continue this same transition.
+It changes menu 4's mark, text and command key, reads settings, constructs WIND
+1000/two controls, creates menu 5010 and appends four game names. It shows the
+window and draws the game/difficulty chooser's title, icons and borders, passing
+PenNormal. The next unsupported call is GetMenuItemText/GetItem ($A946), post-trap
+PC $0101090C. The bounded transition proves splash dismissal, process-local
+settings I/O, menu setup and partial chooser drawing. Chooser selection, popup
+interaction, gameplay and a complete lifecycle remain unverified. Files remain
+process-local. Next: checked live menu text reads, then continue this chooser.
+
+An earlier record mislabeled decimal 43313 as $A9B1/CreateResFile. It is actually
+$A931/NewMenu; the original trace did not exercise resource-file creation. That
+feature is accepted separately through generated and MPW-compiled guests.
 The full rebuild goal remains active.
