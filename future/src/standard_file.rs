@@ -1,5 +1,5 @@
-//! Cooperative classic SFPutFile, backed by shared Window/Control/TextEdit/File state.
-//! IM: Files, Standard File Package, pp. 3-48–3-49. No guest callbacks yet.
+//! Cooperative classic Standard File, backed by shared Window/Control/TextEdit/File state.
+//! IM: Files, Standard File Package. Guest file filters run cooperatively in Runtime.
 use crate::{
     controls::{NewControl, Op as ControlOp},
     files::DirectoryView,
@@ -19,7 +19,32 @@ pub struct PutFile {
     pub hook: u32,
     pub reply: GuestPtr,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetFile {
+    pub point: [i16; 2],
+    pub filter: u32,
+    pub count: i16,
+    pub types: GuestPtr,
+    pub hook: u32,
+    pub reply: GuestPtr,
+}
+impl GetFile {
+    pub(crate) fn validate(self, m: &Memory) -> Result<()> {
+        m.validate_write(self.reply, 74)?;
+        if self.hook != 0 {
+            return Err(bad("SFGetFile dialog hooks require guest callbacks"));
+        }
+        if !(-1..=4).contains(&self.count) {
+            return Err(bad("SFGetFile requires -1 or at most four file types"));
+        }
+        if self.count > 0 {
+            m.read(self.types, self.count as usize * 4)?;
+        }
+        Ok(())
+    }
+}
 mod input;
+mod open;
 mod render;
 const WIDTH: i32 = 360;
 const HEIGHT: i32 = 222;
@@ -134,6 +159,7 @@ enum Target {
 }
 pub(crate) struct Dialog {
     request: PutFile,
+    open: Option<open::Open>,
     scratch: u32,
     window: u32,
     editor: u32,
@@ -156,6 +182,16 @@ impl Dialog {
         g: &Graphics,
         request: PutFile,
         ticks: u32,
+    ) -> Result<Self> {
+        Self::start_impl(m, p, g, request, ticks, None)
+    }
+    fn start_impl(
+        m: &mut Memory,
+        p: &mut Process,
+        g: &Graphics,
+        request: PutFile,
+        ticks: u32,
+        open: Option<open::Open>,
     ) -> Result<Self> {
         let errors = (p.mem_error, p.res_error);
         let result = (|| {
@@ -187,10 +223,13 @@ impl Dialog {
             }
             let left = i32::from(request.point[1]).clamp(8, g.width as i32 - WIDTH - 8);
             let top = i32::from(request.point[0]).clamp(menu + 8, g.height as i32 - HEIGHT - 8);
-            let directory = p
+            let mut directory = p
                 .files
                 .directory_view(2)
                 .map_err(|_| bad("Standard File application volume is unavailable"))?;
+            if open.is_some() {
+                directory.entries.retain(|e| e.directory);
+            }
             // All caller data is snapshotted before guest allocations can reuse it.
             let scratch = p.new_pointer(m, SCRATCH, true)?;
             if scratch == 0 {
@@ -198,6 +237,7 @@ impl Dialog {
             }
             let mut dialog = Self {
                 request,
+                open,
                 scratch,
                 window: 0,
                 editor: 0,
@@ -323,6 +363,9 @@ impl Dialog {
             return Err(bad("Standard File filename field allocation failed"));
         }
         self.set_name(m, p, name, ticks)?;
+        if self.open.is_some() {
+            return self.render(m, p, g, ticks);
+        }
         // Keep the actual TERecord active so selection and caret use shared drawing.
         let mut te = std::mem::take(&mut p.textedit);
         let r = te.activate(m, p, g, self.editor, true, ticks);
@@ -373,6 +416,12 @@ impl Dialog {
         Ok(())
     }
     fn can_save(&self, m: &Memory) -> Result<bool> {
+        if self.open.is_some() {
+            return Ok(self
+                .selected
+                .and_then(|id| self.directory.entries.iter().find(|e| e.id == id))
+                .is_some_and(|e| !e.directory));
+        }
         let name = self.name(m)?;
         if name.is_empty() || name.contains(&b':') || name.contains(&0) {
             return Ok(false);
@@ -393,7 +442,25 @@ impl Dialog {
         m.validate_write(self.request.reply, 74)?;
         let errors = (p.mem_error, p.res_error);
         let result = (|| {
-            let name = self.name(m)?;
+            let selected = self
+                .selected
+                .and_then(|id| self.directory.entries.iter().find(|e| e.id == id));
+            let name = if self.open.is_some() && good {
+                selected
+                    .filter(|e| !e.directory)
+                    .ok_or_else(|| bad("Standard File has no selected file"))?
+                    .name
+                    .clone()
+            } else {
+                self.name(m)?
+            };
+            let kind = if self.open.is_some() && good {
+                p.files
+                    .file_type(selected.unwrap().id)
+                    .ok_or_else(|| bad("Standard File selected file disappeared"))?
+            } else {
+                [0; 4]
+            };
             let reference = if good {
                 match p.files.open_working_directory(-1, self.directory.id, 0) {
                     Ok(reference) => Some(reference),
@@ -411,6 +478,7 @@ impl Dialog {
             if let Some(reference) = reference {
                 let mut reply = [0; 74];
                 reply[0] = 1;
+                reply[2..6].copy_from_slice(&kind);
                 reply[6..8].copy_from_slice(&reference.to_be_bytes());
                 reply[10] = name.len() as u8;
                 reply[11..11 + name.len()].copy_from_slice(&name);

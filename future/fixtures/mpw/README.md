@@ -476,3 +476,13 @@ verifying a retained no-spin wait, then requires the guest's explicit save/cance
 marker and Exit(0) on both architectures. On Save, the guest uses the returned WD
 to delete/create/open/write/close/query Fixture, and host catalog readback must
 be exactly ABC; Cancel must leave no such file. Requires a real wgpu adapter.
+
+
+open_file.c creates typed Hidden and Visible files containing ABC, then calls
+SFGetFile through the public header. Its actual guest filter calls PostEvent,
+checks Finder type/data length and rejects Hidden. The PPC target uses Apple's
+static BUILD_ROUTINE_DESCRIPTOR; the 68K target uses its Pascal code pointer.
+The ignored compiled_open_file test checks two callback markers, equal dialog
+pixels, no-spin waits, Open/Cancel completion and window cleanup on both CPUs.
+Open must return Visible's type/name/WD and the guest must read ABC through it.
+No original application binary is included in this fixture.

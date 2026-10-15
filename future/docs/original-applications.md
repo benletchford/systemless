@@ -1,7 +1,7 @@
 # Original application reconnaissance
 
-These are bounded startup checks, not application acceptance. No window or game
-interaction has been exercised. The binaries are external fixtures and are not
+These notes record bounded startup checks and the specific Super Mines
+interactions below. They do not establish complete application acceptance. The binaries are external fixtures and are not
 redistributed in this repository.
 
 Source archives were read from the local `systemless-games` corpus. Extract with
@@ -1051,3 +1051,35 @@ Mode and the rest of the rebuild remain active.
 Contracts: Apple's [Standard File Package](https://dev.os9.ca/techpubs/mac/pdf/Files/StdFilePkg.pdf),
 [SFReply](https://leopard-adc.pepas.com/documentation/mac/Files/Files-316.html),
 and [PBHDelete](https://leopard-adc.pepas.com/documentation/mac/Files/Files-236.html).
+
+
+## Same-process Super Mines save and reload
+
+The cooperative classic SFGetFile dialog now executes the original app's
+nonzero file filter ($004002F2) through its real Pascal guest entry, after
+matching its one Finder type. The picker displays Preferences and the actual
+1,972-byte Super Mines Game file, and acceptance returns its name/type/WD. The
+guest opens, reads and closes that file, redraws its board and resumes
+WaitNextEvent with sleep=10 at PC $0100C798. No unsupported-service fault occurs.
+
+Reproduce with the private raw resource fork and a real wgpu adapter:
+
+```sh
+SYSTEMLESS_PROBE_CATALOG=1 \
+SYSTEMLESS_PROBE_TAIL_BUDGET=2000000 \
+SYSTEMLESS_PROBE_SETTLE_AFTER_CLICK=3,4,5,6,7,8,9 \
+SYSTEMLESS_PROBE_DRAG=5:60:71,7:60:52 \
+cargo run --manifest-path future/Cargo.toml --example probe_mouse -- \
+  RAW_RESOURCE_FORK /tmp/systemless-mines-reload \
+  256 171 145 150 402 231 30 65 35 10 407 299 35 10 180 169 407 299
+```
+
+Steps dismiss the splash, choose/start a board, reveal cells, drag File > Save
+Game, accept Save, drag File > Open Game, select the file and accept Open.
+The diagnostic now supports comma-separated held drags at distinct click steps;
+existing single-drag syntax remains valid. Evidence from the development run is
+/tmp/systemless-mines-reload-probe.txt and its step/after PPMs. The returned board
+and flag-number area were inspected. The run ends at Waiting{ticks:10}; its
+catalog retains the same saved bytes. This demonstrates reload within one
+process, not persistence across launches, every game state or native pixel
+parity. The earlier Quit-Cancel board-border difference remains unresolved.

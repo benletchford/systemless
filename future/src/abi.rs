@@ -182,6 +182,7 @@ pub enum Service {
     GetIcon,
     GetWMgrPort,
     SFPutFile,
+    SFGetFile,
     DrawPicture,
     SetSoundVol,
     GetSoundVol,
@@ -292,6 +293,7 @@ impl Abi {
             b"HideWindow" => Some(Service::Window(crate::windows::Op::Hide)),
             b"InitWindows" => Some(Service::Window(crate::windows::Op::Init)),
             b"SFPutFile" => Some(Service::SFPutFile),
+            b"SFGetFile" => Some(Service::SFGetFile),
             b"GetWMgrPort" => Some(Service::GetWMgrPort),
             b"FrontWindow" => Some(Service::Window(crate::windows::Op::Front)),
             b"CloseWindow" => Some(Service::Window(crate::windows::Op::Close)),
@@ -871,6 +873,27 @@ impl Abi {
             }
             0xa9ea => {
                 let selector = memory.u16(GuestPtr(sp))?;
+                if selector == 2 {
+                    let bytes = memory.read(GuestPtr(sp), 28)?;
+                    let long = |n| u32::from_be_bytes(bytes[n..n + 4].try_into().unwrap());
+                    let request = crate::standard_file::GetFile {
+                        reply: GuestPtr(long(2)),
+                        hook: long(6),
+                        types: GuestPtr(long(10)),
+                        count: i16::from_be_bytes(bytes[14..16].try_into().unwrap()),
+                        filter: long(16),
+                        point: [
+                            i16::from_be_bytes(bytes[24..26].try_into().unwrap()),
+                            i16::from_be_bytes(bytes[26..28].try_into().unwrap()),
+                        ],
+                    };
+                    request.validate(memory)?;
+                    let next = sp
+                        .checked_add(28)
+                        .ok_or_else(|| Error::Cpu("SFGetFile stack overflow".into()))?;
+                    c.dar[15] = next;
+                    return Ok((Call::StandardGetFile(request), Reply::None));
+                }
                 if selector != 1 {
                     return Err(Error::Cpu(format!(
                         "unsupported Standard File selector {selector:#06x}"
@@ -2780,6 +2803,18 @@ impl Abi {
                 handle: c.gpr[3],
                 destination: GuestPtr(c.gpr[4]),
             },
+            Service::SFGetFile => {
+                let request = crate::standard_file::GetFile {
+                    point: [(c.gpr[3] >> 16) as i16, c.gpr[3] as i16],
+                    filter: c.gpr[5],
+                    count: c.gpr[6] as i16,
+                    types: GuestPtr(c.gpr[7]),
+                    hook: c.gpr[8],
+                    reply: GuestPtr(c.gpr[9]),
+                };
+                request.validate(memory)?;
+                Call::StandardGetFile(request)
+            }
             Service::SFPutFile => Call::StandardPutFile(crate::standard_file::PutFile {
                 point: [(c.gpr[3] >> 16) as i16, c.gpr[3] as i16],
                 prompt: GuestPtr(c.gpr[4]),
@@ -2917,6 +2952,7 @@ impl Abi {
                                 | crate::menus::Op::Clear
                         )
                         | Service::SFPutFile
+                        | Service::SFGetFile
                         | Service::GetWMgrPort
                         | Service::InitGraf
                         | Service::PortColor(_)

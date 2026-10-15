@@ -1107,3 +1107,87 @@ fn compiled_standard_file_dialogs_suspend_both_cpus_and_return_save_or_cancel_to
         }
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture and a real wgpu adapter"]
+fn compiled_open_file_filters_both_cpus_and_reads_selected_file_or_cancels() {
+    use systemless_future::{events, graphics::Graphics, memory::GuestPtr};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("open_file.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("open_file.ppc")).unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    for cancel in [false, true] {
+        let mut pixels = None;
+        for mut app in [
+            LoadedApplication::code(&code).unwrap(),
+            LoadedApplication::pef(&pef, Some(&code)).unwrap(),
+        ] {
+            app.runtime.graphics = Some(
+                pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000)))
+                    .unwrap(),
+            );
+            assert_eq!(
+                app.runtime.advance(20_000).unwrap(),
+                Stop::Waiting { ticks: 1 }
+            );
+            assert_eq!(
+                app.runtime
+                    .services
+                    .calls
+                    .iter()
+                    .filter(|c| matches!(
+                        c,
+                        Call::PostEvent {
+                            what: 7,
+                            message: 0xf17e
+                        }
+                    ))
+                    .count(),
+                2
+            );
+            let snapshot = app.runtime.graphics.as_ref().unwrap().read_rgba().unwrap();
+            if let Some(expected) = &pixels {
+                assert_eq!(&snapshot, expected);
+            } else {
+                pixels = Some(snapshot);
+            }
+            let n = app.runtime.instructions;
+            assert_eq!(
+                app.runtime.advance(20_000).unwrap(),
+                Stop::Waiting { ticks: 1 }
+            );
+            assert_eq!(app.runtime.instructions, n);
+            let input = app.runtime.process.input;
+            if !cancel {
+                events::post(&mut app.runtime.memory, 3, 0x1f, 0, input).unwrap();
+                assert_eq!(
+                    app.runtime.advance(20_000).unwrap(),
+                    Stop::Waiting { ticks: 1 }
+                );
+            }
+            events::post(
+                &mut app.runtime.memory,
+                3,
+                if cancel { 27 } else { 13 },
+                0,
+                input,
+            )
+            .unwrap();
+            assert_eq!(app.runtime.advance(20_000).unwrap(), Stop::Exit(0));
+            let marker = if cancel { 0x0bec } else { 0x0bed };
+            assert!(app
+                .runtime
+                .services
+                .calls
+                .iter()
+                .any(|c| matches!(c,Call::PostEvent{what:7,message} if *message==marker)));
+            assert_eq!(
+                app.runtime
+                    .memory
+                    .u32(systemless_future::windows::LIST)
+                    .unwrap(),
+                0
+            );
+        }
+    }
+}

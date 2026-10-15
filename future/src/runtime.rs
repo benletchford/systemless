@@ -23,6 +23,10 @@ struct Continuation {
 }
 enum Resume {
     Fixture,
+    StandardFile {
+        wait: Box<StandardFileWait>,
+        result: crate::callback::BooleanResult,
+    },
     Loaded {
         connection: u32,
         request: crate::cfm::LoadRequest,
@@ -246,6 +250,24 @@ impl Runtime {
                             })?;
                             let ticks = self.tick_count()?;
                             let dialog = crate::standard_file::Dialog::start(
+                                &mut self.memory,
+                                &mut self.process,
+                                gpu,
+                                request,
+                                ticks,
+                            )?;
+                            if let Some(stop) =
+                                self.poll_standard_file(StandardFileWait { dialog, reply })?
+                            {
+                                return Ok(stop);
+                            }
+                        }
+                        Call::StandardGetFile(request) => {
+                            let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                Error::Graphics("Standard File requires a GPU".into())
+                            })?;
+                            let ticks = self.tick_count()?;
+                            let dialog = crate::standard_file::Dialog::start_open(
                                 &mut self.memory,
                                 &mut self.process,
                                 gpu,
@@ -1468,6 +1490,7 @@ impl Runtime {
                         | Call::FindWindow { .. }
                         | Call::EmptyRect(_)
                         | Call::PointInRect { .. }
+                        | Call::StandardGetFile(_)
                         | Call::StandardPutFile(_)
                         | Call::GetWMgrPort(_)
                         | Call::GetMouse(_)
@@ -1674,6 +1697,25 @@ impl Runtime {
             .as_ref()
             .ok_or_else(|| Error::Graphics("Standard File requires a GPU".into()))?;
         for _ in 0..20 {
+            if let Some((routine, argument)) =
+                wait.dialog
+                    .filter_call(&mut self.memory, &mut self.process, gpu, ticks)?
+            {
+                if self.continuations.len() >= 32 {
+                    return Err(Error::Cpu("callback depth exceeded".into()));
+                }
+                let (callee, result) =
+                    crate::callback::file_filter(&self.cpu, &mut self.memory, routine, argument)?;
+                let caller = std::mem::replace(&mut self.cpu, callee);
+                self.continuations.push(Continuation {
+                    caller,
+                    resume: Resume::StandardFile {
+                        wait: Box::new(wait),
+                        result,
+                    },
+                });
+                return Ok(None);
+            }
             let event = crate::events::prepare_remove(
                 &self.memory,
                 (1 << 1) | (1 << 2) | (1 << 3) | (1 << 5),
@@ -1859,6 +1901,10 @@ impl Runtime {
         self.cpu = frame.caller;
         match frame.resume {
             Resume::Fixture => self.cpu.set_result(value),
+            Resume::StandardFile { mut wait, result } => {
+                wait.dialog.filtered(result.read(&self.memory, value)?)?;
+                return self.poll_standard_file(*wait);
+            }
             Resume::Loaded {
                 connection,
                 request,

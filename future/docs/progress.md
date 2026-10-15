@@ -3764,3 +3764,73 @@ Strict all-target Clippy, sequential changed-file stdin formatting, fixture shel
 syntax and whitespace checks pass. Original Save, save-dialog Cancel and the
 next Open Game fault were independently exercised. Persistent storage, reload,
 real filter callbacks and the complete rebuild remain unfinished and active.
+
+
+### Cooperative classic open dialog and original saved-game reload
+
+SFGetFile now shares the retained Standard File window, controls, catalog,
+input queue, paging/navigation, cancellation and wgpu rendering with SFPutFile.
+Native Pack3 selector 2 reads exactly 28 bytes, validates the 74-byte reply,
+type list and nil hook before popping; PPC uses the seven public arguments with
+packed Point, signed type count and a void result. The prompt is ignored.
+Type counts -1 and 0–4 are explicit: all, none, or matching actual Finder types.
+Folders remain navigable. Selection/Open, Return, double-click and Cancel are
+handled cooperatively. Success publishes the real type/name/WD; Cancel changes
+only good. Typed filename editing remains exclusive to the save picker.
+
+Real guest file filters now run after type matching, with true suppressing a
+file. The File Manager constructs a catalog PB using its existing FileParam
+metadata projection and actual parent/fork lengths. Runtime suspends the whole
+caller CPU, marshals a checked Pascal/PowerPC callback frame and resumes the
+ordinary instruction-budget loop. Native callbacks inherit A5; PPC uses the
+transition-vector entry/TOC. A retained continuation holds the dialog until the
+Boolean return, preserving caller private/register/stack state. Toolbox calls
+from filters use the same process. No matching files and nil filters need no
+callback. Empty UI waits execute no guest instructions; looping filters consume
+only the caller's requested budget. A depth limit of 32 remains explicit.
+
+Supported UPPs are raw 68K code and version-7 single-record prepared absolute
+same-ISA RoutineDescriptors with procInfo $D0. The compiled PPC fixture uses
+Apple's BUILD_ROUTINE_DESCRIPTOR directly. Unsupported flags, relative or
+unprepared fragments, fat/cross-ISA descriptors explicitly fault. General
+Mixed Mode, dynamic descriptor creation and CallUniversalProc are unfinished;
+this production same-ISA path does not replace those rebuild requirements.
+
+Public-header open_file.c creates GAME-typed Hidden/Visible files with ABC,
+checks file metadata in its real callback, posts two callback markers and
+rejects Hidden. Both compiler targets produce identical picker pixels, wait
+without spinning and complete Open or Cancel. On Open the guest validates the
+returned type/name/WD and reads ABC through File Manager; both outcomes reach
+explicit success markers, Exit(0) and a disposed modal window. ABI fault cases,
+Pascal pointer/Boolean layout, invalid descriptors/stack frames and actual
+budgeted looping filters have separate regression coverage.
+
+Original Super Mines now completes Save Game then Open Game in one process.
+The picker lists/selects its real 1,972-byte saved game; the original nonzero
+filter executes, the guest opens/reads/closes the selected file, redraws the
+board and resumes Waiting{ticks:10} at $0100C798. Evidence:
+/tmp/systemless-mines-reload-probe.txt and step-7/step-8/after images; the exact
+bounded multi-drag recipe is in original-applications.md. The earlier empty
+Open dialog and the saved-file selection were separately inspected. No original
+binary or screenshot is committed. Full original PPC acceptance, host-backed
+persistence and the complete rebuild are still active; the earlier Quit-Cancel
+border discrepancy remains open.
+
+Contracts: Apple [Standard File Package](https://dev.os9.ca/techpubs/mac/pdf/Files/StdFilePkg.pdf),
+[File Filter technical note](https://leopard-adc.pepas.com/technotes/fl/fl_33.html),
+[Mixed Mode Manager](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Mixed_Mode_Manager/index.html)
+and the pinned MPW StandardFile.h/MixedMode.h public headers. No native System 7
+comparison is required by the user; no native parity is claimed.
+
+Next executable milestones: explicit host-backed save/reload across process
+launches, further original-app lifecycle/gameplay checks, then continue the
+original PPC compatibility gaps and production cross-ISA Mixed Mode. Keep the
+overall goal active until the complete rebuild is actually finished.
+
+Validation: all 362 tests pass (291 default and 71 optional GPU/MPW), zero failed
+or skipped, across 60 result groups. The new public-header targets were rebuilt
+with the pinned MPW image, then Open and Cancel ran on both real CPU engines.
+The original same-process save/reload was separately reproduced and its picker
+and final board were visually inspected. No complete-rebuild claim is made.
+Final focused callback/ABI tests, strict all-target Clippy, sequential changed-file
+stdin formatting checks, fixture shell syntax and whitespace checks also pass.

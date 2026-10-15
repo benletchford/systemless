@@ -17,7 +17,7 @@ impl Dialog {
         if self.replacing {
             return Ok(None);
         }
-        if inside(NAME_RECT, point) {
+        if self.open.is_none() && inside(NAME_RECT, point) {
             return Ok(Some(Target::Name));
         }
         if inside(Rect::new(15, 45, 250, 141), point) {
@@ -31,6 +31,10 @@ impl Dialog {
             .files
             .directory_view(directory)
             .map_err(|_| bad("Standard File directory disappeared"))?;
+        if let Some(open) = &mut self.open {
+            open.source = None;
+            self.directory.entries.clear();
+        }
         self.page = 0;
         self.selected = None;
         self.last_folder = None;
@@ -40,6 +44,9 @@ impl Dialog {
     fn accept(&mut self, m: &Memory) -> Result<Option<bool>> {
         if !self.can_save(m)? {
             return Ok(None);
+        }
+        if self.open.is_some() {
+            return Ok(Some(true));
         }
         let name = self.name(m)?;
         if !self.replacing
@@ -72,16 +79,18 @@ impl Dialog {
                 return Err(bad("Standard File dialog window disappeared"));
             }
             text_call(m, p, TextOp::GetText(self.editor), ticks)?;
-            let fresh = p
-                .files
-                .directory_view(self.directory.id)
-                .map_err(|_| bad("Standard File directory disappeared"))?;
-            if fresh != self.directory {
-                self.directory = fresh;
-                self.page = self
-                    .page
-                    .min(self.directory.entries.len().saturating_sub(1) / ROWS * ROWS);
-                self.render(m, p, g, ticks)?;
+            if self.open.is_none() {
+                let fresh = p
+                    .files
+                    .directory_view(self.directory.id)
+                    .map_err(|_| bad("Standard File directory disappeared"))?;
+                if fresh != self.directory {
+                    self.directory = fresh;
+                    self.page = self
+                        .page
+                        .min(self.directory.entries.len().saturating_sub(1) / ROWS * ROWS);
+                    self.render(m, p, g, ticks)?;
+                }
             }
             let Some(event) = event else {
                 if let Some(Target::Button(i)) = self.pressed {
@@ -93,7 +102,7 @@ impl Dialog {
                         controls(m, p, g, ControlOp::Hilite(self.buttons[i], value))?;
                     }
                 }
-                if self.pressed.is_none() && !self.replacing {
+                if self.open.is_none() && self.pressed.is_none() && !self.replacing {
                     let mut te = std::mem::take(&mut p.textedit);
                     let r = te.idle(m, p, Some(g), self.editor, ticks);
                     p.textedit = te;
@@ -157,6 +166,13 @@ impl Dialog {
                                     } else {
                                         self.last_folder = Some((id, ticks));
                                     }
+                                } else if self.open.is_some() {
+                                    if self.last_folder.is_some_and(|(last, when)| {
+                                        last == id && ticks.wrapping_sub(when) <= 30
+                                    }) {
+                                        return Ok(Some(true));
+                                    }
+                                    self.last_folder = Some((id, ticks));
                                 } else {
                                     self.set_name(m, p, &entry.name, ticks)?;
                                     self.last_folder = None;
@@ -204,7 +220,7 @@ impl Dialog {
                             return Ok(Some(false));
                         }
                     } else if modifiers & 0x100 != 0 {
-                        if matches!(byte, b'a' | b'A') && !self.replacing {
+                        if self.open.is_none() && matches!(byte, b'a' | b'A') && !self.replacing {
                             only_name = self.selected.is_none();
                             self.selected = None;
                             let length = self.name(m)?.len() as u32;
@@ -243,7 +259,8 @@ impl Dialog {
                             self.selected = Some(self.directory.entries[index].id);
                             self.page = index / ROWS * ROWS;
                         }
-                    } else if !self.replacing
+                    } else if self.open.is_none()
+                        && !self.replacing
                         && (byte >= 32 && byte != 127 && byte != b':'
                             || matches!(byte, 8 | 127 | 0x1c | 0x1d))
                     {

@@ -7,8 +7,9 @@ expansion and presentation use wgpu. This build does not link the legacy runtime
 **Current acceptance: generated and MPW-compiled guests run across 68K/PPC,
 including shared resource/heap lifetime, CFM loading, events/waits, drawing,
 TextEdit, window updates, resource-defined windows and button-family controls.
-Offscreen GPU output is checked. Original applications have bounded startup
-traces; original UI interaction and native presentation remain unverified.**
+Offscreen GPU output is checked. Super Mines has bounded splash, board, menu,
+save and open interactions; full original application acceptance and native
+presentation remain unfinished.**
 
 Resource-fork/CODE and PowerPC PEF loaders share one Macintosh world. Resources,
 allocation, virtual directories/file metadata, OS/update events, Basic QuickDraw,
@@ -23,7 +24,7 @@ overlapping storage. LineTo/Line share GPU rectangular-pen coverage, patterns,
 transfer modes and live pen advancement. Rectangle frame/erase/invert/fill use
 shared clipping and operation-specific patterns; FillRect updates fillPat.
 Recording/custom procedures remain gaps.
-Menus and dialogs currently provide startup/parameter subsets. Real
+Menus and dialogs implement bounded standard monochrome subsets. General
 Mixed Mode, custom WDEF/CDEF callbacks and complete application compatibility
 remain unfinished. Private fixture gateways are disabled for loaded applications.
 See [architecture](docs/architecture.md) and [progress](docs/progress.md).
@@ -184,7 +185,10 @@ ExitToShell with code 0. No-save New Game also returns through its chooser to a
 fresh board and the normal event wait. Cancel resumes the existing game with a
 remaining board-border redraw difference. The Yes-save branch now uses a shared cooperative SFPutFile dialog, writes a
 1,972-byte game file in the process-local catalog and reaches Exit(0). Cancelling
-that dialog returns to the game without creating the file. Persistent storage,
-reload, exact board-redraw parity and broader gameplay remain separate acceptance
-work. Open Game next reaches SFGetFile (Pack3 selector 2) with a guest file-filter
-callback. The full rebuild stays active.
+that dialog returns to the game without creating the file. A same-process
+Save Game > Open Game sequence now selects the saved file, executes the guest
+filter, reads it back and resumes the board/event wait. Persistent storage,
+exact board-redraw parity and broader gameplay remain separate acceptance work.
+SFGetFile now shares the cooperative picker, type filtering and real
+budgeted guest file-filter callbacks between both CPU backends. The full rebuild
+stays active.

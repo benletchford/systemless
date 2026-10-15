@@ -129,7 +129,13 @@ fn string(a: &mut LoadedApplication, p: GuestPtr, s: &[u8]) {
 fn app() -> LoadedApplication {
     let f = support::pef_program(
         &[0x4e800020],
-        &[b"InitGraf", b"InitWindows", b"SFPutFile", b"InitFonts"],
+        &[
+            b"InitGraf",
+            b"InitWindows",
+            b"SFPutFile",
+            b"InitFonts",
+            b"SFGetFile",
+        ],
         0,
     );
     let mut a = LoadedApplication::pef(&f.bytes, None).unwrap();
@@ -517,4 +523,141 @@ fn save_constraints_paging_navigation_and_exhausted_directory_storage_keep_the_d
         [b'W'; 31]
     );
     check_restored(&a, Architecture::M68k);
+}
+
+#[test]
+fn classic_open_abis_validate_the_full_frame_types_hooks_and_reply_before_popping() {
+    use systemless_future::standard_file::GetFile;
+    let mut m = Memory::default();
+    m.map(REPLY, vec![0xa5; 80], Permissions::RW).unwrap();
+    m.map(NAME, b"GAME".to_vec(), Permissions::RX).unwrap();
+    let mut bytes = Vec::new();
+    bytes.extend(2u16.to_be_bytes());
+    for v in [REPLY.0, 0, NAME.0] {
+        bytes.extend(v.to_be_bytes());
+    }
+    bytes.extend(1i16.to_be_bytes());
+    for v in [0x4002f2u32, 0xffff_ffff] {
+        bytes.extend(v.to_be_bytes());
+    }
+    bytes.extend((-2i16).to_be_bytes());
+    bytes.extend(100i16.to_be_bytes());
+    assert_eq!(bytes.len(), 28);
+    m.map(GuestPtr(0x2000), bytes.clone(), Permissions::RW)
+        .unwrap();
+    let request = GetFile {
+        point: [-2, 100],
+        filter: 0x4002f2,
+        count: 1,
+        types: NAME,
+        hook: 0,
+        reply: REPLY,
+    };
+    let mut cpu = Cpu::new(Architecture::M68k, 0, 0x2000);
+    let Cpu::M68k(c) = &mut cpu else { panic!() };
+    assert_eq!(
+        Abi::trap(0xa9ea, c, &m).unwrap(),
+        (Call::StandardGetFile(request), Reply::None)
+    );
+    assert_eq!(c.dar[15], 0x201c);
+    for (offset, value) in [(6, 1u32), (10, NAME.0 + 1), (2, REPLY.0 + 7)] {
+        let mut bad = bytes.clone();
+        bad[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+        m.write(GuestPtr(0x2000), &bad).unwrap();
+        c.dar[15] = 0x2000;
+        assert!(Abi::trap(0xa9ea, c, &m).is_err());
+        assert_eq!(c.dar[15], 0x2000);
+    }
+    for count in [-2i16, 5] {
+        let mut bad = bytes.clone();
+        bad[14..16].copy_from_slice(&count.to_be_bytes());
+        m.write(GuestPtr(0x2000), &bad).unwrap();
+        c.dar[15] = 0x2000;
+        assert!(Abi::trap(0xa9ea, c, &m).is_err());
+        assert_eq!(c.dar[15], 0x2000);
+    }
+    m.map(GuestPtr(0x3000), bytes[..27].to_vec(), Permissions::RW)
+        .unwrap();
+    c.dar[15] = 0x3000;
+    assert!(Abi::trap(0xa9ea, c, &m).is_err());
+    assert_eq!(c.dar[15], 0x3000);
+    let mut cpu = Cpu::new(Architecture::PowerPc, 0, STACK);
+    let Cpu::PowerPc(c) = &mut cpu else { panic!() };
+    c.gpr[3] = 0xfffe0064;
+    c.gpr[4] = u32::MAX;
+    c.gpr[5] = request.filter;
+    c.gpr[6] = 1;
+    c.gpr[7] = NAME.0;
+    c.gpr[8] = 0;
+    c.gpr[9] = REPLY.0;
+    assert_eq!(
+        Abi::resolve(b"InterfaceLib", b"SFGetFile"),
+        Some(Service::SFGetFile)
+    );
+    assert_eq!(
+        Abi::import(Service::SFGetFile, c, &m).unwrap(),
+        (Call::StandardGetFile(request), Reply::None)
+    );
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn file_filter_guest_loops_remain_budgeted_on_both_architectures() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        let code = match arch {
+            Architecture::M68k => vec![0x60, 0xfe],
+            Architecture::PowerPc => 0x48000000u32.to_be_bytes().to_vec(),
+        };
+        a.runtime
+            .memory
+            .map(GuestPtr(0x53000000), code, Permissions::RX)
+            .unwrap();
+        // A real static single-record PowerPC UPP points to a transition vector.
+        let mut rd = [0; 40];
+        rd[..4].copy_from_slice(&[0xaa, 0xfe, 7, 0]);
+        rd[12..16].copy_from_slice(&0xd0u32.to_be_bytes());
+        rd[17] = 1;
+        rd[20..24].copy_from_slice(&0x54000020u32.to_be_bytes());
+        rd[32..36].copy_from_slice(&0x53000000u32.to_be_bytes());
+        rd[36..40].copy_from_slice(&0xdead1000u32.to_be_bytes());
+        a.runtime
+            .memory
+            .map(GuestPtr(0x54000000), rd.to_vec(), Permissions::RX)
+            .unwrap();
+        match arch {
+            Architecture::M68k => {
+                let mut b = vec![0, 2];
+                for v in [REPLY.0, 0, 0] {
+                    b.extend(v.to_be_bytes());
+                }
+                b.extend((-1i16).to_be_bytes());
+                for v in [0x53000000u32, 0] {
+                    b.extend(v.to_be_bytes());
+                }
+                b.extend([0, 60, 0, 70]);
+                a.runtime.memory.write(GuestPtr(STACK), &b).unwrap();
+                a.runtime.cpu = Cpu::new(arch, 0x51000000, STACK);
+            }
+            Architecture::PowerPc => {
+                a.runtime.cpu = Cpu::new(arch, gate(&a, 4), STACK);
+                if let Cpu::PowerPc(c) = &mut a.runtime.cpu {
+                    c.gpr[3] = (60 << 16) | 70;
+                    c.gpr[4] = u32::MAX;
+                    c.gpr[5] = 0x54000000;
+                    c.gpr[6] = u32::MAX;
+                    c.gpr[7] = 0;
+                    c.gpr[8] = 0;
+                    c.gpr[9] = REPLY.0;
+                }
+            }
+        }
+        let before = a.runtime.instructions;
+        assert_eq!(a.runtime.advance(17).unwrap(), Stop::Budget);
+        assert_eq!(a.runtime.instructions, before + 17);
+        assert_eq!(a.runtime.cpu.pc(), 0x53000000);
+        assert_eq!(a.runtime.advance(19).unwrap(), Stop::Budget);
+        assert_eq!(a.runtime.instructions, before + 36);
+        assert_eq!(a.runtime.memory.read(REPLY, 74).unwrap(), [0xa5; 74]);
+    }
 }

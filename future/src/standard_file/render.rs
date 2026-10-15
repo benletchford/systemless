@@ -81,8 +81,10 @@ impl Dialog {
         if rows.is_empty() {
             self.label(m, p, g, 20, 60, b"No files")?;
         }
-        self.label(m, p, g, 15, 166, b"Save as:")?;
-        self.shape(m, p, g, Rect::new(13, 172, 252, 194), RectangleOp::Frame)?;
+        if self.open.is_none() {
+            self.label(m, p, g, 15, 166, b"Save as:")?;
+            self.shape(m, p, g, Rect::new(13, 172, 252, 194), RectangleOp::Frame)?;
+        }
         self.label(m, p, g, 15, 215, &self.status)?;
         let enabled = [
             self.can_save(m)?,
@@ -93,6 +95,8 @@ impl Dialog {
         ];
         let title = if self.replacing {
             b"Replace".as_slice()
+        } else if self.open.is_some() {
+            b"Open".as_slice()
         } else {
             b"Save".as_slice()
         };
@@ -107,6 +111,9 @@ impl Dialog {
                 0
             };
             controls(m, p, g, ControlOp::Hilite(self.buttons[i], part))?;
+        }
+        if self.open.is_some() {
+            return Ok(());
         }
         self.scroll_name(m, p, ticks)?;
         let mut te = std::mem::take(&mut p.textedit);
@@ -127,6 +134,9 @@ impl Dialog {
         let data = m.u32(GuestPtr(self.buttons[0]))?;
         if m.read(GuestPtr(data + 17), 1)?[0] != value {
             controls(m, p, g, ControlOp::Hilite(self.buttons[0], value))?;
+        }
+        if self.open.is_some() {
+            return Ok(());
         }
         self.scroll_name(m, p, ticks)?;
         let mut te = std::mem::take(&mut p.textedit);

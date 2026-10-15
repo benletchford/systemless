@@ -61,6 +61,33 @@ impl Files {
             entries,
         })
     }
+    pub(crate) fn file_type(&self, node: u32) -> Option<[u8; 4]> {
+        Some(self.file(node)?.finder[..4].try_into().unwrap())
+    }
+    /// Catalog parameter block (classic FileParam prefix), using the same metadata projection as PBGetFInfo.
+    pub(crate) fn filter_info(
+        &self,
+        m: &mut crate::memory::Memory,
+        node: u32,
+        pb: crate::memory::GuestPtr,
+        name: crate::memory::GuestPtr,
+    ) -> crate::Result<()> {
+        let file = self
+            .file(node)
+            .ok_or_else(|| crate::Error::Cpu("Standard File filter target disappeared".into()))?;
+        m.validate_write(pb, 108)?;
+        m.validate_write(name, file.name.len() + 1)?;
+        let mut bytes = [0; 108];
+        bytes[18..22].copy_from_slice(&name.0.to_be_bytes());
+        bytes[22..24].copy_from_slice(&(-1i16).to_be_bytes());
+        self.fill_file_info(&mut bytes, node);
+        bytes[100..104].copy_from_slice(&file.parent.to_be_bytes());
+        bytes[104..108].copy_from_slice(&4096u32.to_be_bytes());
+        let mut pascal = vec![file.name.len() as u8];
+        pascal.extend(file.name);
+        m.write(name, &pascal)?;
+        m.write(pb, &bytes)
+    }
     pub fn catalog_fork(&self, node: u32, kind: super::Fork) -> Option<&[u8]> {
         self.node_fork(node, kind)
     }

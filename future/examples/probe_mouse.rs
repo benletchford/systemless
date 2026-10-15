@@ -147,22 +147,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "settle-after clicks must select input steps and require a nonzero tail budget".into(),
         );
     }
-    let drag: Option<(usize, f64, f64)> = std::env::var("SYSTEMLESS_PROBE_DRAG")
+    let drags: Vec<(usize, f64, f64)> = std::env::var("SYSTEMLESS_PROBE_DRAG")
         .ok()
-        .map(|v| -> Result<_, Box<dyn std::error::Error>> {
-            let fields: Vec<_> = v.split(':').collect();
-            if fields.len() != 3 {
-                return Err("drag must be CLICK:X:Y".into());
-            }
-            let step = fields[0].parse::<usize>()?;
-            let x = fields[1].parse::<f64>()?;
-            let y = fields[2].parse::<f64>()?;
-            if step == 0 || step > (args.len() - 2) / 2 || !x.is_finite() || !y.is_finite() {
-                return Err("invalid drag input step or coordinate".into());
-            }
-            Ok((step, x, y))
+        .map(|value| {
+            value
+                .split(',')
+                .map(|v| -> Result<_, Box<dyn std::error::Error>> {
+                    let fields: Vec<_> = v.split(':').collect();
+                    if fields.len() != 3 {
+                        return Err("drag must be CLICK:X:Y".into());
+                    }
+                    let step = fields[0].parse::<usize>()?;
+                    let x = fields[1].parse::<f64>()?;
+                    let y = fields[2].parse::<f64>()?;
+                    if step == 0 || step > (args.len() - 2) / 2 || !x.is_finite() || !y.is_finite()
+                    {
+                        return Err("invalid drag input step or coordinate".into());
+                    }
+                    Ok((step, x, y))
+                })
+                .collect()
         })
-        .transpose()?;
+        .transpose()?
+        .unwrap_or_default();
+    if drags
+        .iter()
+        .enumerate()
+        .any(|(i, d)| drags[..i].iter().any(|other| other.0 == d.0))
+    {
+        return Err("only one held drag is allowed per click".into());
+    }
     let ticks: u32 = match std::env::var("SYSTEMLESS_PROBE_TICKS_PER_STEP") {
         Ok(value) => value.parse()?,
         Err(std::env::VarError::NotPresent) => 0,
@@ -241,7 +255,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if ticks != 0 {
                 app.runtime.elapse_ticks(ticks)?;
             }
-            if let Some((step, x, y)) = drag.filter(|(step, _, _)| *step == index + 1) {
+            if let Some((step, x, y)) = drags
+                .iter()
+                .copied()
+                .find(|(step, _, _)| *step == index + 1)
+            {
                 pointer.motion(
                     &mut app.runtime.process.input,
                     &mut app.runtime.memory,

@@ -1742,7 +1742,7 @@ and preserves its void register result. SFReply is 74 bytes: successful replies
 publish good, the WD and Pascal name with checked bounds; cancellation changes
 only good, preserving all other bytes. The output is revalidated while waiting.
 Pascal inputs are snapshotted before guest allocation, and font/window/display
-requirements are checked explicitly. Nonzero hooks, other Pack3 selectors,
+requirements are checked explicitly. Nonzero dialog hooks, custom Pack3 selectors,
 modern/custom put-file APIs, multiple volumes, remembered Standard File folder
 globals, clipboard/drag-selection/focus-cycle parity and native pixel parity
 remain unfinished. The supported slice starts at the virtual volume root and
@@ -1755,3 +1755,38 @@ folders and folders with open WDs return fBsyErr. The loaded application is
 protected. Tests cover the signed CPU/parameter-block errors, closed-file
 removal and busy/protected directory cases. Deletion only affects process-local
 nodes; host paths and persistence remain outside this File Manager model.
+
+
+### Classic open dialog and production file-filter callbacks
+
+SFGetFile (Pack3 selector 2 / InterfaceLib) uses the same registered modal window,
+controls, catalog, input queue and wgpu renderer as SFPutFile. Its 28-byte native
+selector/argument frame and seven PPC arguments have checked ABI boundaries;
+the ignored prompt pointer is never dereferenced. The type list is snapshotted
+before allocation: -1 admits every file type, 0 admits none, and 1–4 compare real
+Finder types. Folders remain navigable without invoking the file filter. Success
+returns the selected file's Finder type, name and actual WD; Cancel modifies only
+the good byte. It creates no files and performs no host I/O.
+
+A retained dialog prepares the shared File Manager's catalog parameter block,
+including the classic FileParam prefix, Finder info, fork lengths, dates and
+parent directory. Runtime suspends the entire caller CPU in a continuation and
+executes one guest filter using the ordinary bounded instruction loop. A true
+Boolean suppresses the file; false admits it. Callback Toolbox calls use the
+same dispatcher and shared process. Returning resumes filtering before accepting
+input. Idle waits execute no guest instructions. Structural catalog changes or
+folder navigation invalidate the filtered listing.
+
+The native callback inherits A5/register context and receives a real Pascal
+pointer argument and word-sized Boolean result slot, with a checked guest return
+gate. PPC receives r3 and a checked 64-byte aligned caller linkage frame, loading
+entry/TOC from its transition vector. The whole suspended CPU restores private
+and architectural caller state on completion. The supported UPP form is raw
+68K code or a version-7, single-record, prepared absolute same-ISA routine
+descriptor with procInfo $D0. Apple BUILD_ROUTINE_DESCRIPTOR output is exercised
+by the compiled PPC fixture. Other descriptor versions/flags, unprepared or
+relative fragments, fat descriptors and cross-ISA routines explicitly fail.
+This is production same-ISA callback support, not general Mixed Mode or
+CallUniversalProc/NewRoutineDescriptor support. Native pixel parity, hooks,
+modern/custom Standard File APIs, remembered directories, multiple volumes,
+clipboard/focus behavior and host persistence remain unfinished.
