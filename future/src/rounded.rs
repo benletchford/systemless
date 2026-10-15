@@ -81,6 +81,9 @@ pub fn coverage(
     if pw < 0 || ph < 0 {
         return Err(Error::Graphics("negative QuickDraw pen size".into()));
     }
+    if pen.is_some() && (pw == 0 || ph == 0) {
+        return Ok(vec![]);
+    }
     let outer = spans(r, i32::from(oval_width), i32::from(oval_height));
     let inner_rect = Rect::new(r.left + pw, r.top + ph, r.right - pw, r.bottom - ph);
     let inner = if pen.is_some() {

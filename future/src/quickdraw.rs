@@ -21,6 +21,19 @@ pub struct CopyBits {
     pub mode: i16,
     pub mask: GuestPtr,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RectangleOp {
+    Frame,
+    Erase,
+    Invert,
+    Fill(GuestPtr),
+}
+#[derive(Clone, Copy)]
+struct PatternPaint {
+    pattern: [u8; 8],
+    mode: u16,
+    monochrome: bool,
+}
 fn offset(p: GuestPtr, n: u32) -> Result<GuestPtr> {
     p.0.checked_add(n)
         .map(GuestPtr)
@@ -408,13 +421,62 @@ impl Ports {
             if clipped.left < clipped.right && clipped.top < clipped.bottom {
                 let gpu =
                     gpu.ok_or_else(|| Error::Graphics("line drawing requires a GPU".into()))?;
-                self.paint_coverage_with_line(gpu, memory, clipped, None, Some(geometry))?;
+                self.paint_coverage_with_line(gpu, memory, clipped, None, Some(geometry), None)?;
             }
         }
         let mut location = [0; 4];
         location[..2].copy_from_slice(&to.1.to_be_bytes());
         location[2..].copy_from_slice(&to.0.to_be_bytes());
         memory.write(offset(port, 48)?, &location)
+    }
+    pub fn draw_rectangle(
+        &self,
+        memory: &mut Memory,
+        gpu: &Graphics,
+        rectangle: GuestPtr,
+        op: RectangleOp,
+    ) -> Result<()> {
+        let r = read_rect(memory, rectangle)?;
+        if op == RectangleOp::Frame {
+            return self.round_rect(gpu, memory, r, 0, 0, true);
+        }
+        let port = self.current(memory)?;
+        let (paint, fill) = match op {
+            RectangleOp::Erase => (
+                PatternPaint {
+                    pattern: memory.read(offset(port, 32)?, 8)?.try_into().unwrap(),
+                    mode: 8,
+                    monochrome: false,
+                },
+                false,
+            ),
+            RectangleOp::Invert => (
+                PatternPaint {
+                    pattern: [255; 8],
+                    mode: 10,
+                    monochrome: true,
+                },
+                false,
+            ),
+            RectangleOp::Fill(pattern) => {
+                let pattern = memory.read(pattern, 8)?.try_into().unwrap();
+                memory.validate_write(offset(port, 40)?, 8)?;
+                (
+                    PatternPaint {
+                        pattern,
+                        mode: 8,
+                        monochrome: false,
+                    },
+                    true,
+                )
+            }
+            RectangleOp::Frame => unreachable!(),
+        };
+        self.paint_coverage_with_line(gpu, memory, r, None, None, Some(paint))?;
+        if fill {
+            memory.write(offset(port, 40)?, &paint.pattern)?;
+        }
+        Ok(())
     }
     pub fn paint_rect(&self, gpu: &Graphics, memory: &mut Memory, r: Rect) -> Result<()> {
         self.paint_coverage(gpu, memory, r, None)
@@ -501,7 +563,7 @@ impl Ports {
         r: Rect,
         shape: Option<&[Rect]>,
     ) -> Result<()> {
-        self.paint_coverage_with_line(gpu, memory, r, shape, None)
+        self.paint_coverage_with_line(gpu, memory, r, shape, None, None)
     }
     fn paint_coverage_with_line(
         &self,
@@ -510,6 +572,7 @@ impl Ports {
         r: Rect,
         shape: Option<&[Rect]>,
         line: Option<crate::graphics::PenLine>,
+        paint: Option<PatternPaint>,
     ) -> Result<()> {
         let p = self.current(memory)?;
         let bytes = memory.read(p, PORT_SIZE)?;
@@ -519,7 +582,10 @@ impl Ports {
                 "QuickDraw recording or custom procedures are unsupported".into(),
             ));
         }
-        let mode = u16::from_be_bytes(bytes[56..58].try_into().unwrap());
+        let mode = paint.map_or_else(
+            || u16::from_be_bytes(bytes[56..58].try_into().unwrap()),
+            |p| p.mode,
+        );
         if !(8..=15).contains(&mode) {
             return Err(Error::Graphics("unsupported QuickDraw pen mode".into()));
         }
@@ -528,9 +594,13 @@ impl Ports {
             30 => Ok(0),
             _ => Err(Error::Graphics("unsupported monochrome port color".into())),
         };
-        let foreground = color(word(80))?;
-        let background = color(word(84))?;
-        let mut pattern: [u8; 8] = bytes[58..66].try_into().unwrap();
+        let (foreground, background) = if paint.is_some_and(|p| p.monochrome) {
+            (1, 0)
+        } else {
+            (color(word(80))?, color(word(84))?)
+        };
+        let mut pattern: [u8; 8] =
+            paint.map_or_else(|| bytes[58..66].try_into().unwrap(), |p| p.pattern);
         if mode & 4 != 0 {
             for row in &mut pattern {
                 *row = !*row;

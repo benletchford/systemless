@@ -13,6 +13,10 @@ pub enum Architecture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
     Random,
+    DrawRectangle {
+        rectangle: GuestPtr,
+        op: crate::quickdraw::RectangleOp,
+    },
     PenLine {
         h: i16,
         v: i16,

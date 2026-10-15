@@ -2204,3 +2204,31 @@ Validation: all 228 tests pass (188 default, 40 optional GPU/MPW). The stronger
 clip-hole assertions also pass in a focused rerun; production code is unchanged.
 Strict all-target Clippy, MPW rebuilding and sequential changed-file formatting
 checks pass. No GPU tests were skipped.
+
+### Shared rectangle drawing attributes
+
+FrameRect, EraseRect, InvertRect and FillRect now use shared checked ABIs and
+QuickDraw GPU drawing. Erase selects bkPat, Fill selects a caller pattern with
+patCopy and updates fillPat, and Invert ignores pen/color state to toggle bits.
+Pen attributes/location are preserved. FillPat output permissions are checked
+before drawing. Frames honor hidden pens and either zero pen dimension; the
+zero-dimension rule is corrected for framed rounded rectangles too.
+
+Generated 68K/PPC checks verify Pascal pointer order/popping, register truncation,
+void results and truncated arguments. GPU checks compare exact frame/background/
+invert/fill pixels, pen-state preservation, FillPat changes, clipping holes and
+read-only output faults. Rebuilt MPW windows erase, invert twice, frame and fill
+a rectangle, checking guest screen bits and the live fillPat field.
+
+Super Mines now passes EraseRect and reaches a later DrawPicture at PC $0100E988,
+trace index 21273, which explicitly faults on PICT opcode $001E (DefHilite).
+Next: render PICT 184 through its version-2 DefHilite metadata and indexed
+8-bit PackBitsRgn ($0099, rowBytes $80A8) with color table/mask conversion.
+The resource is 4424 bytes with a 168-by-58 frame; metadata handling alone
+will not complete this application-driven slice.
+Original application interaction, native presentation, Color QuickDraw and
+production Mixed Mode remain unfinished. Full rebuild goal stays active.
+
+Validation: all 232 tests pass (190 default, 42 optional GPU/MPW), strict
+all-target Clippy passes, MPW fixtures rebuild and sequential changed-file
+formatting checks pass. No GPU tests were skipped.

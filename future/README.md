@@ -19,7 +19,9 @@ monochrome bitmap commands in PICT v1/v2 through wgpu; vector/text commands,
 color PixMaps and picture recording remain pending. CopyBits shares GPU scaling,
 source transfer modes and complex masks for monochrome BitMaps, including
 overlapping storage. LineTo/Line share GPU rectangular-pen coverage, patterns,
-transfer modes and live pen advancement; recording/custom procedures remain gaps.
+transfer modes and live pen advancement. Rectangle frame/erase/invert/fill use
+shared clipping and operation-specific patterns; FillRect updates fillPat.
+Recording/custom procedures remain gaps.
 Menus and dialogs currently provide startup/parameter subsets. Real
 Mixed Mode, custom WDEF/CDEF callbacks and complete application compatibility
 remain unfinished. Private fixture gateways are disabled for loaded applications.

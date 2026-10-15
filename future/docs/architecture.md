@@ -1030,8 +1030,8 @@ Legacy Systemless provides the comparison contract; native System 7 was not run.
 
 PenSize writes the signed vertical/horizontal words together at GrafPort +52;
 68K decodes height then width on its Pascal stack, PPC decodes width/height in
-r3/r4. Existing wgpu frame coverage reads these live dimensions. A zero/zero pen
-produces no frame coverage; negative dimensions remain rejected by drawing.
+r3/r4. Existing wgpu frame coverage reads these live dimensions. Either zero pen dimension
+suppresses frame coverage; negative dimensions remain rejected by drawing.
 RectInRgn uses positive-area overlap against decoded region spans, including
 holes/disjoint rows, rather than region bounding boxes. Both adapters share it;
 the 68K Boolean writes one byte and preserves the caller's padding. Output
@@ -1131,3 +1131,19 @@ rounding. The independent test oracle uses floating-point point placement and
 brush union only in tests. Axis behavior, pen state and union/transfer contracts
 are compared with legacy source/documentation; native diagonal pixel parity
 remains unverified. Polygon/region recording and lineProc callbacks remain gaps.
+
+Rectangle drawing adds FrameRect, EraseRect, InvertRect and FillRect to the same
+QuickDraw target as PaintRect. FrameRect uses pen pattern/mode and inside-border
+geometry; hidden pens or either zero dimension suppress the frame. The same
+zero-dimension correction applies to framed rounded rectangles.
+
+Erase uses live bkPat with patCopy; Fill uses the caller's pattern with patCopy;
+Invert uses all-one XOR independently of pnPat, pnMode and port colors. These
+attributes are selected for the drawing command without temporarily editing pen
+state. FillRect additionally writes the documented fillPat field after successful
+drawing, with its output permissions validated before any pixels change. Source
+patterns and rectangle words are checked guest reads. Other pen/location fields
+remain unchanged. [Apple's drawing contracts](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-59.html)
+define the distinct fill/erase/invert semantics. Recording/custom procedures and
+color ports remain unsupported; ordinary clipping and packed-row preservation
+continue through shared wgpu/BitMap synchronization.

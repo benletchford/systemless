@@ -10,6 +10,10 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
     Random,
+    FrameRect,
+    EraseRect,
+    InvertRect,
+    FillRect,
     LineTo,
     Line,
     CopyBits,
@@ -321,6 +325,10 @@ impl Abi {
             b"GetPort" => Some(Service::Port(crate::quickdraw::PortOp::Get)),
             b"SetPortBits" => Some(Service::Port(crate::quickdraw::PortOp::SetBits)),
             b"ClipRect" => Some(Service::Port(crate::quickdraw::PortOp::ClipRect)),
+            b"FrameRect" => Some(Service::FrameRect),
+            b"EraseRect" => Some(Service::EraseRect),
+            b"InvertRect" => Some(Service::InvertRect),
+            b"FillRect" => Some(Service::FillRect),
             b"PaintRect" => Some(Service::Port(crate::quickdraw::PortOp::PaintRect)),
             b"PenPat" => Some(Service::Port(crate::quickdraw::PortOp::PenPat)),
             b"MovePortTo" => Some(Service::MovePortTo),
@@ -1336,6 +1344,27 @@ impl Abi {
                     Reply::None,
                 ))
             }
+            0xa8a1 | 0xa8a3..=0xa8a5 => {
+                use crate::quickdraw::RectangleOp;
+                let n = if opcode == 0xa8a5 { 8 } else { 4 };
+                let args = memory.read(GuestPtr(sp), n)?;
+                let first = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let rectangle = if n == 8 {
+                    GuestPtr(u32::from_be_bytes(args[4..8].try_into().unwrap()))
+                } else {
+                    first
+                };
+                let op = match opcode {
+                    0xa8a1 => RectangleOp::Frame,
+                    0xa8a3 => RectangleOp::Erase,
+                    0xa8a4 => RectangleOp::Invert,
+                    _ => RectangleOp::Fill(first),
+                };
+                c.dar[15] = sp
+                    .checked_add(n as u32)
+                    .ok_or_else(|| Error::Cpu("drawing stack overflow".into()))?;
+                Ok((Call::DrawRectangle { rectangle, op }, Reply::None))
+            }
             0xa8ec => {
                 let args = memory.read(GuestPtr(sp), 22)?;
                 let pointer = |i| GuestPtr(u32::from_be_bytes(args[i..i + 4].try_into().unwrap()));
@@ -1816,6 +1845,17 @@ impl Abi {
                 size: c.gpr[4],
             },
             Service::GetHandleSize => Call::HandleSize(c.gpr[3]),
+            Service::FrameRect | Service::EraseRect | Service::InvertRect | Service::FillRect => {
+                Call::DrawRectangle {
+                    rectangle: GuestPtr(c.gpr[3]),
+                    op: match service {
+                        Service::FrameRect => crate::quickdraw::RectangleOp::Frame,
+                        Service::EraseRect => crate::quickdraw::RectangleOp::Erase,
+                        Service::InvertRect => crate::quickdraw::RectangleOp::Invert,
+                        _ => crate::quickdraw::RectangleOp::Fill(GuestPtr(c.gpr[4])),
+                    },
+                }
+            }
             Service::CopyBits => Call::CopyBits(crate::quickdraw::CopyBits {
                 source: GuestPtr(c.gpr[3]),
                 destination: GuestPtr(c.gpr[4]),
@@ -1936,6 +1976,10 @@ impl Abi {
                         | Service::RoundRect(_)
                         | Service::CombineRegions(_)
                         | Service::Port(_)
+                        | Service::FrameRect
+                        | Service::EraseRect
+                        | Service::InvertRect
+                        | Service::FillRect
                         | Service::CopyBits
                         | Service::DrawPicture
                         | Service::MovePortTo

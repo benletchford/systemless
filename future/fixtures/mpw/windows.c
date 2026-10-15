@@ -59,6 +59,22 @@ int main(void) {
         Line(-2,1); if (first->pnLoc.h!=4 || first->pnLoc.v!=5) return 54;
         PenSize(1,1); PenMode(patCopy); MoveTo(0,0);
     }
+    {
+        Rect box={1,1,7,7};
+        Pattern fill={255,255,255,255,255,255,255,255};
+        unsigned char *pixels=(unsigned char*)first->portBits.baseAddr;
+        unsigned long offset=42*first->portBits.rowBytes+5;
+        unsigned char savedByte;
+        EraseRect(&box); if (pixels[offset]&0x20) return 55;
+        savedByte=pixels[offset]; InvertRect(&box);
+        if (!((pixels[offset]^savedByte)&0x20)) return 56;
+        InvertRect(&box); if (pixels[offset]!=savedByte) return 57;
+        FrameRect(&box);
+        if (!(pixels[41*first->portBits.rowBytes+5]&0x40) || (pixels[offset]&0x20)) return 58;
+        FillRect(&box,&fill);
+        if (!(pixels[offset]&0x20) || ((unsigned char*)&first->fillPat)[0]!=255 || ((unsigned char*)&first->fillPat)[7]!=255) return 59;
+        EraseRect(&box);
+    }
     ReleaseResource((Handle)picture);
     OpenPort(&offscreen); PortSize(8,4); MovePortTo(2,1);
     if (offscreen.portRect.right!=8 || offscreen.portRect.bottom!=4 || offscreen.portBits.bounds.left!=-2 || offscreen.portBits.bounds.top!=-1 || offscreen.portBits.bounds.right!=510 || offscreen.portBits.bounds.bottom!=341) return 49;

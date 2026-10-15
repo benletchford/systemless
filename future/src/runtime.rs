@@ -684,6 +684,15 @@ impl Runtime {
                                 }
                             }
                         }
+                        Call::DrawRectangle { rectangle, op } => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                Error::Graphics("rectangle drawing requires a GPU".into())
+                            })?;
+                            ports.draw_rectangle(&mut self.memory, gpu, rectangle, op)?;
+                        }
                         Call::CopyBits(request) => {
                             // Legacy comparison contract treats NIL bitmap parameters as inert.
                             if request.source.0 != 0 && request.destination.0 != 0 {
@@ -1148,6 +1157,7 @@ impl Runtime {
                         | Call::FragmentQuery(_)
                         | Call::InitGraf { .. }
                         | Call::Port { .. }
+                        | Call::DrawRectangle { .. }
                         | Call::CopyBits(_)
                         | Call::DrawPicture { .. }
                         | Call::MovePortTo { .. }

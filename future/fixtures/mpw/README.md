@@ -317,3 +317,7 @@ compiler ABI/guest-pixel coverage on both CPUs.
 The window probes draw a thick patXor line, verify a changed screen bit, draw it
 again to restore the bitmap, and check relative Line pnLoc advancement. Pen
 size/mode/location are reset before continuing the other window checks.
+
+The same window guests also erase/invert/frame/fill rectangles, inspect changed
+and restored screen bits, and verify that FillRect stores its pattern in the
+live fillPat field.
