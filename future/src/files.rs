@@ -45,6 +45,7 @@ struct FileView<'a> {
 }
 #[derive(Clone, Copy)]
 struct OpenFork {
+    resource_map: bool,
     node: u32,
     writable: bool,
     shared: bool,
@@ -140,6 +141,7 @@ impl Files {
         self.open.insert(
             reference,
             OpenFork {
+                resource_map: false,
                 node,
                 kind,
                 mark: 0,

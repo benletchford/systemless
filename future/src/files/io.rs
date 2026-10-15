@@ -27,6 +27,40 @@ fn long(pb: &[u8], at: usize) -> u32 {
     u32::from_be_bytes(pb[at..at + 4].try_into().unwrap())
 }
 impl Files {
+    pub(super) fn open_access(
+        &mut self,
+        node: u32,
+        kind: Fork,
+        permission: u8,
+    ) -> std::result::Result<i16, i16> {
+        if permission > 4 {
+            Err(-50)
+        } else if let Some(view) = self.file(node) {
+            if self.node_fork(node, kind).is_none() {
+                Err(-43)
+            } else {
+                let writers: Vec<_> = self
+                    .open
+                    .values()
+                    .filter(|f| f.node == node && f.kind == kind && f.writable)
+                    .collect();
+                let writable = if permission == 0 {
+                    !view.locked && writers.is_empty()
+                } else {
+                    permission != 1
+                };
+                if writable && view.locked {
+                    Err(-45)
+                } else if writable && writers.iter().any(|f| permission != 4 || !f.shared) {
+                    Err(-49)
+                } else {
+                    self.open_node(node, kind, writable, permission == 4)
+                }
+            }
+        } else {
+            Err(-43)
+        }
+    }
     fn target(
         &self,
         memory: &Memory,
@@ -166,38 +200,7 @@ impl Files {
             let selected = self.target(memory, pb, hierarchical)?;
             let error = match selected {
                 Err(error) => Err(error),
-                Ok(node) => {
-                    let permission = pb[27];
-                    if permission > 4 {
-                        Err(-50)
-                    } else if let Some(view) = self.file(node) {
-                        if self.node_fork(node, kind).is_none() {
-                            Err(-43)
-                        } else {
-                            let writers: Vec<_> = self
-                                .open
-                                .values()
-                                .filter(|f| f.node == node && f.kind == kind && f.writable)
-                                .collect();
-                            let writable = if permission == 0 {
-                                !view.locked && writers.is_empty()
-                            } else {
-                                permission != 1
-                            };
-                            if writable && view.locked {
-                                Err(-45)
-                            } else if writable
-                                && writers.iter().any(|f| permission != 4 || !f.shared)
-                            {
-                                Err(-49)
-                            } else {
-                                self.open_node(node, kind, writable, permission == 4)
-                            }
-                        }
-                    } else {
-                        Err(-43)
-                    }
-                }
+                Ok(node) => self.open_access(node, kind, pb[27]),
             };
             match error {
                 Ok(reference) => {
@@ -248,9 +251,21 @@ impl Files {
         let Some(file) = self.open.get(&reference).copied() else {
             return Ok(-51);
         };
+        if file.kind == Fork::Resource
+            && matches!(op, Op::Write | Op::SetEof)
+            && self
+                .open
+                .values()
+                .any(|f| f.node == file.node && f.resource_map)
+        {
+            return Ok(-47);
+        }
         let length = self.node_fork(file.node, file.kind).unwrap().len();
         match op {
             Op::Close => {
+                if file.resource_map {
+                    return Ok(-47);
+                }
                 self.open.remove(&reference);
             }
             Op::Flush => {} // writes already commit to this process-local fork.

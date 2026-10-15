@@ -71,7 +71,7 @@ pub(crate) fn font_bytes(
     }
     let id = i16::try_from(i32::from(family) * 128 + i32::from(size))
         .map_err(|_| Error::Graphics("FONT family/size resource ID overflow".into()))?;
-    let handle = if process.resources.get(*b"FONT", id).is_some() {
+    let handle = if process.find_resource(*b"FONT", id).is_some() {
         process.get_resource(memory, *b"FONT", id)?
     } else {
         if !process.fonts.initialized {

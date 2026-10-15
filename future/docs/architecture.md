@@ -2433,3 +2433,27 @@ volume state, and a fresh process starts at the root. No host path enters a serv
 This remains one virtual Application Volume. Asynchronous selection, high-level
 wrappers, multiple volumes and broader search-path fallback remain unfinished.
 Primary contract: [Apple File Manager, default-volume routines, pp. 2-150–2-154](https://leopard-adc.pepas.com/documentation/mac/pdf/Files/File_Manager.pdf).
+
+
+Resource-file maps now share real catalog resource forks and File Manager access
+paths through OpenRFPerm/OpenResFile, UseResFile, CloseResFile and HomeResFile on
+both CPU adapters. Lookup starts at the selected map and follows older maps;
+handles are scoped by owning file as well as type/ID. Named lookups and shared
+font/menu/dialog consumers follow the same selection. Reopening an existing map
+returns its reference without selecting it. Preload failure rolls back attached
+allocations and the access path; closing releases only attached resources from
+that file, retaining detached handles. Managed access paths reject raw close and
+resource-fork writes that would invalidate parsed maps. CurMap ($0A5A) reflects
+API selection. SysMap ($0A58) is not fabricated or aliased to the application.
+
+Limits remain explicit: at most 64 external maps and 64 MiB aggregate external
+fork bytes; compressed preload decoding, changed-map writeback, guest map-header
+handles/TopMapHndl, direct low-memory map-chain manipulation, general System
+resources and full Resource Manager compatibility remain unfinished. The built-in
+cursor fallback at reference zero does not represent an installed System file.
+
+Original Marathon now reaches sound-channel creation and next requests InsTime
+($A058), PC $010122DA. The instruction trace confirms ResError = 0 after OpenRFPerm; reaching this
+point is not gameplay.
+Escape Velocity retains its monitor setup boundary. Neither original game nor
+the whole rebuild is complete.

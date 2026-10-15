@@ -48,8 +48,8 @@ pub(super) fn append_resources(
     let menu = Record::parse(&original)?;
     memory.validate_write(GuestPtr(0xa5e), 1)?;
     let records = process
-        .resources
-        .entries()
+        .resource_entries()
+        .into_iter()
         .filter(|r| r.kind == kind || (kind == *b"FONT" && r.kind == *b"FOND"))
         .filter_map(|r| r.name.as_ref().map(|name| (r.kind, r.id, name.clone())))
         .collect::<Vec<_>>();
@@ -62,8 +62,8 @@ pub(super) fn append_resources(
         .map(|i| i.text.to_vec())
         .collect::<std::collections::BTreeSet<_>>();
     let mut names = std::collections::BTreeSet::new();
-    for (kind, id, name) in records {
-        let h = process.get_resource(memory, kind, id)?;
+    for (kind, _id, name) in records {
+        let h = process.get_named_resource_bytes(memory, kind, &name, false)?;
         if h == 0 {
             memory.write(GuestPtr(0xa5e), &[1])?;
             return Ok(0);

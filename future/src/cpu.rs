@@ -292,6 +292,7 @@ pub enum Call {
     FreeMemory,
     ResError,
     CurResFile,
+    ResourceFile(crate::process::resources::Op),
     GetNamedResource {
         kind: [u8; 4],
         name: GuestPtr,

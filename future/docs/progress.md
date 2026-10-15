@@ -5113,3 +5113,55 @@ final evidence. Strict all-target lint exits 0:
 /tmp/systemless-setvol-verified-lint.txt. Sequential staged Rust formatting and
 whitespace checks pass. No new full all-target suite is claimed; its preceding
 checkpoint remains 488 passes. Neither game nor the rebuild is complete.
+
+
+Resource-file maps now share real catalog resource forks and File Manager access
+paths through OpenRFPerm/OpenResFile, UseResFile, CloseResFile and HomeResFile on
+both CPU adapters. Lookup starts at the selected map and follows older maps;
+handles are scoped by owning file as well as type/ID. Named lookups and shared
+font/menu/dialog consumers follow the same selection. Reopening an existing map
+returns its reference without selecting it. Preload failure rolls back attached
+allocations and the access path; closing releases only attached resources from
+that file, retaining detached handles. Managed access paths reject raw close and
+resource-fork writes that would invalidate parsed maps. CurMap ($0A5A) reflects
+API selection. SysMap ($0A58) is not fabricated or aliased to the application.
+
+Limits remain explicit: at most 64 external maps and 64 MiB aggregate external
+fork bytes; compressed preload decoding, changed-map writeback, guest map-header
+handles/TopMapHndl, direct low-memory map-chain manipulation, general System
+resources and full Resource Manager compatibility remain unfinished. The built-in
+cursor fallback at reference zero does not represent an installed System file.
+
+Original Marathon now reaches sound-channel creation and next requests InsTime
+($A058), PC $010122DA. The instruction trace confirms ResError = 0 after OpenRFPerm; reaching this
+point is not gameplay.
+Escape Velocity retains its monitor setup boundary. Neither original game nor
+the whole rebuild is complete.
+
+
+Resource-map checkpoint validation: four new final-source tests pass, zero
+failures/skips, exit 0 (/tmp/systemless-resource-maps-four-tests.txt). These cover
+actual 68K/PPC opening/selection/closing/home calls, duplicate IDs with distinct
+names, fallback search, managed raw-close protection, detached lifetimes, errors,
+native result boundaries and preload rollback. The preceding 68 selected
+regressions passed before the final selection/builtin/preflight refinements;
+that earlier run is not claimed as final-source full acceptance. Final-source
+strict all-target lint exits 0 (/tmp/systemless-resource-maps-lint.txt), sequential
+changed-file formatting and git diff --check pass.
+
+Original traces: /tmp/systemless-{marathon,ev}-resource-maps.txt. Marathon's
+instruction trace (/tmp/systemless-marathon-resource-maps-instructions.txt) shows
+ResError = 0 after OpenRFPerm, then three sound channels and missing InsTime
+($A058). EV retains Monitor Tool -4 and missing ModalDialog ($A991). The refreshed
+Super Mines regression (/tmp/systemless-mines-resource-maps.txt) completes one
+sound callback, reopens 1,972 bytes and waits at $0100C798; its inspected screenshot
+is byte-identical to /tmp/systemless-mines-setvol-complete-after.ppm. No native
+window/audio or original-game gameplay pass is claimed.
+
+Full all-target acceptance remains RUNNING, not passed, in command session 98583
+(/tmp/systemless-resource-maps-all-tests.txt). Resume that same job rather than
+restarting it. It has completed compilation and its first library/CPU/graphics
+modules without a failure so far. Record its final exit and totals before
+claiming broad acceptance. Next executable implementation: shared Time Manager
+task ownership, scheduling and state-preserving same-ISA callbacks for Marathon;
+continue EV's genuine SysMap/FCB/Monitor Tool diagnosis. Keep the rebuild active.

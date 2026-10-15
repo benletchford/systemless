@@ -226,6 +226,8 @@ pub enum Service {
     FreeMemory,
     ResError,
     CurResFile,
+    OpenResourceFile(bool),
+    ResourceFile(crate::process::resources::Action),
     GetNamedResource,
     Get1NamedResource,
     FileIo(crate::files::Op),
@@ -658,6 +660,17 @@ impl Abi {
             b"PBDirCreateSync" => Some(Service::CreateDirectory),
             b"GetNamedResource" => Some(Service::GetNamedResource),
             b"Get1NamedResource" => Some(Service::Get1NamedResource),
+            b"OpenRFPerm" => Some(Service::OpenResourceFile(true)),
+            b"OpenResFile" => Some(Service::OpenResourceFile(false)),
+            b"UseResFile" => Some(Service::ResourceFile(
+                crate::process::resources::Action::Use,
+            )),
+            b"CloseResFile" => Some(Service::ResourceFile(
+                crate::process::resources::Action::Close,
+            )),
+            b"HomeResFile" => Some(Service::ResourceFile(
+                crate::process::resources::Action::Home,
+            )),
             b"CurResFile" => Some(Service::CurResFile),
             b"ResError" => Some(Service::ResError),
             _ => None,
@@ -2797,6 +2810,68 @@ impl Abi {
                     Reply::StackLong(GuestPtr(result)),
                 ))
             }
+            0xa997 | 0xa9c4 => {
+                let n = if opcode == 0xa9c4 { 8 } else { 4 };
+                let bytes = memory.read(GuestPtr(sp), n + 2)?;
+                let (name, volume, permission) = if n == 8 {
+                    (
+                        GuestPtr(u32::from_be_bytes(bytes[4..8].try_into().unwrap())),
+                        i16::from_be_bytes(bytes[2..4].try_into().unwrap()),
+                        bytes[0] as i8,
+                    )
+                } else {
+                    (
+                        GuestPtr(u32::from_be_bytes(bytes[..4].try_into().unwrap())),
+                        0,
+                        0,
+                    )
+                };
+                if name.0 == 0 {
+                    return Err(Error::Cpu("nil resource filename".into()));
+                }
+                let len = usize::from(memory.read(name, 1)?[0]);
+                memory.read(name, len + 1)?;
+                let result = sp
+                    .checked_add(n as u32)
+                    .ok_or_else(|| Error::Cpu("resource open stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::ResourceFile(crate::process::resources::Op::Open {
+                        name,
+                        volume,
+                        permission,
+                    }),
+                    Reply::StackWord(GuestPtr(result)),
+                ))
+            }
+            0xa998 | 0xa99a => {
+                let reference = memory.u16(GuestPtr(sp))? as i16;
+                let next = sp
+                    .checked_add(2)
+                    .ok_or_else(|| Error::Cpu("resource file stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((
+                    Call::ResourceFile(if opcode == 0xa998 {
+                        crate::process::resources::Op::Use(reference)
+                    } else {
+                        crate::process::resources::Op::Close(reference)
+                    }),
+                    Reply::None,
+                ))
+            }
+            0xa9a4 => {
+                let h = memory.u32(GuestPtr(sp))?;
+                let result = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("HomeResFile stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::ResourceFile(crate::process::resources::Op::Home(h)),
+                    Reply::StackWord(GuestPtr(result)),
+                ))
+            }
             0xa994 => {
                 memory.read(GuestPtr(sp), 2)?;
                 Ok((Call::CurResFile, Reply::StackWord(GuestPtr(sp))))
@@ -3545,6 +3620,24 @@ impl Abi {
             Service::MemError => Call::MemError,
             Service::ResError => Call::ResError,
             Service::CurResFile => Call::CurResFile,
+            Service::OpenResourceFile(permission) => {
+                Call::ResourceFile(crate::process::resources::Op::Open {
+                    name: GuestPtr(c.gpr[3]),
+                    volume: if permission { c.gpr[4] as i16 } else { 0 },
+                    permission: if permission { c.gpr[5] as i8 } else { 0 },
+                })
+            }
+            Service::ResourceFile(action) => Call::ResourceFile(match action {
+                crate::process::resources::Action::Use => {
+                    crate::process::resources::Op::Use(c.gpr[3] as i16)
+                }
+                crate::process::resources::Action::Close => {
+                    crate::process::resources::Op::Close(c.gpr[3] as i16)
+                }
+                crate::process::resources::Action::Home => {
+                    crate::process::resources::Op::Home(c.gpr[3])
+                }
+            }),
             Service::GetNamedResource | Service::Get1NamedResource => Call::GetNamedResource {
                 kind: c.gpr[3].to_be_bytes(),
                 name: GuestPtr(c.gpr[4]),
@@ -3717,6 +3810,10 @@ impl Abi {
                         | Service::SetHandleSize
                         | Service::DetachResource
                         | Service::ReleaseResource
+                        | Service::ResourceFile(
+                            crate::process::resources::Action::Use
+                                | crate::process::resources::Action::Close
+                        )
                         | Service::SetSoundVol
                         | Service::GetSoundVol
                         | Service::MoveHHi

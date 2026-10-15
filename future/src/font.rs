@@ -253,7 +253,7 @@ pub fn initialize(
     let family = memory.u16(crate::memory::GuestPtr(0xba6))? as i16;
     let id = i16::try_from(i32::from(family) * 128 + i32::from(size))
         .map_err(|_| bad("system FONT resource ID overflow"))?;
-    if process.resources.get(*b"FONT", id).is_some() {
+    if process.find_resource(*b"FONT", id).is_some() {
         let handle = process.get_resource(memory, *b"FONT", id)?;
         let length = process.handle_size(memory, handle)? as usize;
         let data = crate::memory::GuestPtr(memory.u32(crate::memory::GuestPtr(handle))?);

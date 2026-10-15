@@ -1794,6 +1794,10 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::ResourceFile(op) => {
+                            let value = self.process.resource_file(&mut self.memory, op)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, value as i32 as u32, 0)?;
+                        }
                         Call::CurResFile => {
                             let value = self.process.current_resource_file() as i32 as u32;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
@@ -1865,6 +1869,7 @@ impl Runtime {
                             | Call::Region { .. }
                             | Call::HandleSize(_)
                             | Call::SetHandleSize { .. }
+                            | Call::ResourceFile(crate::process::resources::Op::Open { .. })
                             | Call::GetCurrentResource { .. }
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
@@ -1880,6 +1885,7 @@ impl Runtime {
                                 | crate::menus::Op::Bar(_)
                                 | crate::menus::Op::AppendResources { .. }
                         ) | Call::CreateResourceFile(_)
+                            | Call::ResourceFile(_)
                             | Call::FontInfo(_)
                             | Call::ResourceInfo(_)
                             | Call::Dialog(crate::dialogs::Op::Resource { .. })
@@ -2012,6 +2018,7 @@ impl Runtime {
                         | Call::DetachResource(_)
                         | Call::ReleaseResource(_)
                         | Call::CurResFile
+                        | Call::ResourceFile(_)
                         | Call::CreateResourceFile(_)
                         | Call::GetNamedResource { .. }
                         | Call::CreateDirectory(_)

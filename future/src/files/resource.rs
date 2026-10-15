@@ -6,6 +6,58 @@ use crate::{
     Result,
 };
 impl Files {
+    pub(crate) fn protect_resource_access(&mut self, reference: i16) {
+        self.open.get_mut(&reference).unwrap().resource_map = true;
+    }
+    pub(crate) fn resource_target(
+        &self,
+        memory: &Memory,
+        name: GuestPtr,
+        volume: i16,
+    ) -> Result<std::result::Result<u32, i16>> {
+        let name = Self::name_input(memory, name)?;
+        if name.is_empty() {
+            return Ok(Err(-37));
+        }
+        Ok(self
+            .classic_parent(volume)
+            .and_then(|p| self.path(&name, p))
+            .and_then(|node| {
+                self.node_fork(node, super::Fork::Resource)
+                    .map(|_| node)
+                    .ok_or(-43)
+            }))
+    }
+    pub(crate) fn resource_bytes(&self, node: u32) -> Option<&[u8]> {
+        self.node_fork(node, super::Fork::Resource)
+    }
+    pub(crate) fn open_resource_access(
+        &mut self,
+        node: u32,
+        permission: u8,
+    ) -> std::result::Result<(i16, bool), i16> {
+        let reference = self.open_access(node, super::Fork::Resource, permission)?;
+        let entry = self.open.get_mut(&reference).unwrap();
+        entry.resource_map = true;
+        Ok((reference, entry.writable))
+    }
+    pub(crate) fn validate_resource_access(&self, reference: i16) -> Result<()> {
+        if !self.open.get(&reference).is_some_and(|f| f.resource_map) {
+            return Err(crate::Error::Load(
+                "resource map lost its file access path".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub(crate) fn close_resource_access(&mut self, reference: i16) -> Result<()> {
+        if self.open.remove(&reference).is_none() {
+            return Err(crate::Error::Load(
+                "resource map lost its file access path".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn create_file(
         &mut self,
         name: &[u8],

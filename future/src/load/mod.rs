@@ -68,6 +68,10 @@ impl LoadedApplication {
     pub fn code(resource_fork: &[u8]) -> Result<Self> {
         let mut app = code(ResourceFork::parse(resource_fork)?)?;
         app.runtime.process.install_files(&[], Some(resource_fork));
+        app.runtime.memory.write(
+            GuestPtr(0xa5a),
+            &app.runtime.process.current_resource_file().to_be_bytes(),
+        )?;
         Ok(app)
     }
     pub fn pef(data_fork: &[u8], resource_fork: Option<&[u8]>) -> Result<Self> {
@@ -79,6 +83,10 @@ impl LoadedApplication {
                 .unwrap_or_default(),
         )?;
         app.runtime.process.install_files(data_fork, resource_fork);
+        app.runtime.memory.write(
+            GuestPtr(0xa5a),
+            &app.runtime.process.current_resource_file().to_be_bytes(),
+        )?;
         Ok(app)
     }
 }

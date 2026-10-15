@@ -7,6 +7,7 @@ use crate::{
     Error, Result,
 };
 use std::collections::{BTreeMap, BTreeSet};
+pub mod resources;
 pub const HEAP_BASE: u32 = 0x1000_0000;
 pub const HEAP_SIZE: u32 = 4 * 1024 * 1024;
 const MEM_FULL: i16 = -108;
@@ -40,6 +41,7 @@ pub struct Process {
     pub controls: crate::controls::Controls,
     pub ports: Option<crate::quickdraw::Ports>,
     resource_ref: i16,
+    resource_files: resources::Maps,
     pub mem_error: i16,
     pub res_error: i16,
     heap: Option<Heap>,
@@ -48,7 +50,7 @@ pub struct Process {
     free_masters: Vec<u32>,
     pooled_masters: BTreeSet<u32>,
     pointers: BTreeMap<u32, u32>,
-    resource_handles: BTreeMap<([u8; 4], i16), u32>,
+    resource_handles: BTreeMap<(i16, [u8; 4], i16), u32>,
 }
 #[derive(Clone, Copy)]
 struct HandleBlock {
@@ -150,6 +152,7 @@ impl Process {
     pub fn install_application_resources(&mut self, resources: ResourceFork) {
         self.resources = resources;
         self.resource_ref = 1;
+        self.resource_files = resources::Maps::default();
     }
     pub(crate) fn install_files(&mut self, data: &[u8], resource: Option<&[u8]>) {
         self.files = crate::files::Files::application(data, resource);
@@ -160,9 +163,16 @@ impl Process {
         } else {
             0
         };
+        if self.resource_ref != 0 {
+            self.files.protect_resource_access(self.resource_ref);
+        }
     }
     pub fn current_resource_file(&self) -> i16 {
-        self.resource_ref
+        if self.resource_files.current == resources::APPLICATION {
+            self.resource_ref
+        } else {
+            self.resource_files.current
+        }
     }
 
     fn heap_base(&self) -> u32 {
@@ -458,13 +468,16 @@ impl Process {
             self.mem_error = -117;
             return Ok(());
         }
-        if self.resource_handles.iter().any(|(&(kind, id), &h)| {
-            h == handle
-                && self
-                    .resources
-                    .get(kind, id)
-                    .is_some_and(|r| r.attributes & 2 != 0)
-        }) {
+        if self
+            .resource_handles
+            .iter()
+            .any(|(&(owner, kind, id), &h)| {
+                h == handle
+                    && self
+                        .resource_metadata(owner, kind, id)
+                        .is_some_and(|r| r.attributes & 2 != 0)
+            })
+        {
             return Err(Error::Load(
                 "MoveHHi of changed resource requires unimplemented WriteResource".into(),
             ));
@@ -667,182 +680,6 @@ impl Process {
         self.resource_handles.retain(|_, h| *h != handle);
         self.mem_error = 0;
         Ok(())
-    }
-    /// IM: More Macintosh Toolbox, ReleaseResource. Released handles
-    /// lose resource identity; a later lookup loads the original fork bytes.
-    pub fn release_resource(&mut self, memory: &mut Memory, handle: u32) -> Result<()> {
-        self.res_error = 0;
-        let Some((&(kind, id), _)) = self.resource_handles.iter().find(|(_, h)| **h == handle)
-        else {
-            self.res_error = -192;
-            return Ok(());
-        };
-        if self
-            .resources
-            .get(kind, id)
-            .is_some_and(|r| r.attributes & 2 != 0)
-        {
-            return Ok(()); // resChanged resources must remain resident.
-        }
-        self.dispose_handle(memory, handle)
-    }
-    /// DetachResource retains the owned master/data blocks while severing
-    /// resource identity. Changed resources remain attached with resAttrErr.
-    pub fn detach_resource(&mut self, memory: &Memory, handle: u32) -> Result<()> {
-        self.res_error = 0;
-        let Some((&key, _)) = self.resource_handles.iter().find(|(_, h)| **h == handle) else {
-            self.res_error = -192;
-            return Ok(());
-        };
-        if self
-            .resources
-            .get(key.0, key.1)
-            .is_some_and(|r| r.attributes & 2 != 0)
-        {
-            self.res_error = -198;
-            return Ok(());
-        }
-        let old_error = self.mem_error;
-        let checked = self.handle_size(memory, handle);
-        self.mem_error = old_error;
-        checked?;
-        self.resource_handles.remove(&key);
-        self.handles.get_mut(&handle).unwrap().attributes &= !0x20;
-        Ok(())
-    }
-    /// Read metadata from resource identity, never from mutable payload bytes.
-    pub fn resource_info(&mut self, memory: &mut Memory, request: ResourceInfo) -> Result<()> {
-        let Some((&(kind, id), _)) = self
-            .resource_handles
-            .iter()
-            .find(|(_, h)| **h == request.handle)
-        else {
-            self.res_error = -192;
-            return Ok(());
-        };
-        let old_error = self.mem_error;
-        let checked = self.handle_size(memory, request.handle);
-        self.mem_error = old_error;
-        checked?;
-        let name = self
-            .resources
-            .get(kind, id)
-            .and_then(|r| r.name.as_deref())
-            .unwrap_or(&[]);
-        let mut pascal = Vec::with_capacity(name.len() + 1);
-        pascal.push(name.len() as u8);
-        pascal.extend_from_slice(name);
-        for (pointer, length) in [
-            (request.id, 2),
-            (request.kind, 4),
-            (request.name, pascal.len()),
-        ] {
-            if pointer.0 != 0 {
-                memory.validate_write(pointer, length)?;
-            }
-        }
-        // Snapshot all metadata before outputs can overlap each other or a handle.
-        if request.id.0 != 0 {
-            memory.write(request.id, &id.to_be_bytes())?;
-        }
-        if request.kind.0 != 0 {
-            memory.write(request.kind, &kind)?;
-        }
-        if request.name.0 != 0 {
-            memory.write(request.name, &pascal)?;
-        }
-        self.res_error = 0;
-        Ok(())
-    }
-    pub fn get_named_resource(
-        &mut self,
-        memory: &mut Memory,
-        kind: [u8; 4],
-        name: GuestPtr,
-        current_only: bool,
-    ) -> Result<u32> {
-        // Named resources live in the application map; standard cursor fallbacks
-        // are unnamed. Only full-chain searches see that fallback CURS type.
-        // Names are case-sensitive raw Macintosh bytes (IM: More Toolbox, pp. 1-75–77).
-        let length = memory.read(name, 1)?[0] as usize;
-        let bytes = &memory.read(name, length + 1)?[1..];
-        let id = self
-            .resources
-            .entries()
-            .find(|r| r.kind == kind && r.name.as_deref() == Some(bytes))
-            .map(|r| r.id);
-        if let Some(id) = id {
-            self.get_resource(memory, kind, id)
-        } else {
-            self.res_error = if (!current_only && kind == *b"CURS")
-                || self.resources.entries().any(|r| r.kind == kind)
-            {
-                -192
-            } else {
-                0
-            };
-            Ok(0)
-        }
-    }
-    /// Current application map only. Check its entry before consulting cached
-    /// identity, since the full search may already have loaded a fallback cursor.
-    pub fn get_current_resource(
-        &mut self,
-        memory: &mut Memory,
-        kind: [u8; 4],
-        id: i16,
-    ) -> Result<u32> {
-        if self.resources.get(kind, id).is_none() {
-            self.res_error = if self.resources.entries().any(|r| r.kind == kind) {
-                -192
-            } else {
-                0
-            };
-            return Ok(0);
-        }
-        self.get_resource(memory, kind, id)
-    }
-    pub fn get_resource(&mut self, memory: &mut Memory, kind: [u8; 4], id: i16) -> Result<u32> {
-        self.res_error = 0;
-        if let Some(handle) = self.resource_handles.get(&(kind, id)) {
-            return Ok(*handle);
-        }
-        let (contents, locked, purgeable) = if let Some(resource) = self.resources.get(kind, id) {
-            if resource.attributes & 1 != 0 {
-                return Err(Error::Load(
-                    "compressed resource decoding not implemented".into(),
-                ));
-            }
-            (
-                resource.data.clone(),
-                resource.attributes & 0x10 != 0,
-                resource.attributes & 0x20 != 0,
-            )
-        } else if let Some(cursor) = (kind == *b"CURS")
-            .then(|| crate::cursor::standard(id))
-            .flatten()
-        {
-            (cursor.to_vec(), false, false)
-        } else {
-            // Standard CURS records form a fallback provider after the application
-            // map. Their type exists even if this particular ID does not.
-            if kind == *b"CURS" || self.resources.entries().any(|r| r.kind == kind) {
-                self.res_error = -192;
-            }
-            return Ok(0);
-        };
-        let handle = self.new_handle(memory, contents.len() as u32, false)?;
-        if handle == 0 {
-            self.res_error = self.mem_error;
-            return Ok(0);
-        }
-        let data = memory.u32(GuestPtr(handle))?;
-        memory.write(GuestPtr(data), &contents)?;
-        let block = self.handles.get_mut(&handle).unwrap();
-        block.locked = locked;
-        block.attributes = 0x20 | if purgeable { 0x40 } else { 0 };
-        self.resource_handles.insert((kind, id), handle);
-        Ok(handle)
     }
 }
 

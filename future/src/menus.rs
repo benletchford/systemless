@@ -335,7 +335,7 @@ impl Menus {
                 data(memory, process, self.colors)?
             };
             process.res_error = memory.u16(GuestPtr(0xa60))? as i16;
-            if process.resources.get(*b"mctb", 0).is_some() {
+            if process.find_resource(*b"mctb", 0).is_some() {
                 let source = process.get_resource(memory, *b"mctb", 0)?;
                 if source == 0 {
                     return Ok(0);

@@ -279,9 +279,9 @@ inverse-table construction, while main/list display identity remains separate.
 Empty paint geometry returns without pixel access; nonempty requests retain
 bitmap checks. General indexed destinations and full color acceptance remain open.
 
-Get1Resource now uses the installed application map and shares real resource
-identity/loading with GetResource while excluding cached fallback cursors. Dynamic
-resource-map chains and UseResFile remain unfinished.
+Get1Resource searches the selected resource map and shares real file-scoped
+identity/loading with GetResource. OpenRFPerm/OpenResFile and UseResFile manage
+the search chain; cached fallback cursors are excluded from application-only lookup.
 
 
 GetNewDialog now loads checked DLOG/DITL resources into real 170-byte records,
@@ -356,3 +356,27 @@ reference distinctions, failed selections leave state intact, and process
 selection stays outside persistent volume images. Marathon now passes PBHSetVol
 and next requests OpenRFPerm ($A9C4) to open a resource file. Neither original
 game nor the full rebuild is complete.
+
+
+Resource-file maps now share real catalog resource forks and File Manager access
+paths through OpenRFPerm/OpenResFile, UseResFile, CloseResFile and HomeResFile on
+both CPU adapters. Lookup starts at the selected map and follows older maps;
+handles are scoped by owning file as well as type/ID. Named lookups and shared
+font/menu/dialog consumers follow the same selection. Reopening an existing map
+returns its reference without selecting it. Preload failure rolls back attached
+allocations and the access path; closing releases only attached resources from
+that file, retaining detached handles. Managed access paths reject raw close and
+resource-fork writes that would invalidate parsed maps. CurMap ($0A5A) reflects
+API selection. SysMap ($0A58) is not fabricated or aliased to the application.
+
+Limits remain explicit: at most 64 external maps and 64 MiB aggregate external
+fork bytes; compressed preload decoding, changed-map writeback, guest map-header
+handles/TopMapHndl, direct low-memory map-chain manipulation, general System
+resources and full Resource Manager compatibility remain unfinished. The built-in
+cursor fallback at reference zero does not represent an installed System file.
+
+Original Marathon now reaches sound-channel creation and next requests InsTime
+($A058), PC $010122DA. The instruction trace confirms ResError = 0 after OpenRFPerm; reaching this
+point is not gameplay.
+Escape Velocity retains its monitor setup boundary. Neither original game nor
+the whole rebuild is complete.

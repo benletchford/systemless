@@ -157,7 +157,7 @@ impl Dialogs {
             return Ok(0);
         }
         let t = template(&payload(m, p, source)?)?;
-        if p.resources.get(*b"dctb", id).is_some() {
+        if p.find_resource(*b"dctb", id).is_some() {
             return Err(bad("dialog color tables are unsupported"));
         }
         let source = p.get_resource(m, *b"DITL", t.items)?;
