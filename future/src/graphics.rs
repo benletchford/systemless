@@ -104,6 +104,12 @@ pub enum Draw<'a> {
         mode: Transfer,
     },
 }
+pub(crate) struct IndexedTarget<'a> {
+    pub depth: u16,
+    pub rgb: &'a [[u16; 3]; 256],
+    pub defined: &'a [bool; 256],
+    pub direct_source: bool,
+}
 pub struct Graphics {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -265,6 +271,17 @@ impl Graphics {
         clips: Option<&[Rect]>,
         copy_source: Option<&[u8]>,
         source_palette: Option<&[[u16; 3]; 256]>,
+    ) -> Result<()> {
+        self.execute_indexed(memory, draw, clips, copy_source, source_palette, None)
+    }
+    pub(crate) fn execute_indexed(
+        &self,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+        copy_source: Option<&[u8]>,
+        source_palette: Option<&[[u16; 3]; 256]>,
+        target: Option<IndexedTarget<'_>>,
     ) -> Result<()> {
         if source_palette.is_some() && !matches!(draw, Draw::Blit { .. }) {
             return Err(Error::Graphics(
@@ -587,6 +604,50 @@ impl Graphics {
                 ));
             }
         }
+        if let Some(target) = &target {
+            let expensive = match draw {
+                Draw::Fill { mode, .. } | Draw::Line { mode, .. } | Draw::Polygon { mode, .. } => {
+                    matches!(mode, Transfer::Xor)
+                }
+                Draw::Copy { mode, .. } => !matches!(mode, Transfer::Copy),
+                Draw::Blit {
+                    mode,
+                    invert,
+                    foreground,
+                    background,
+                    ..
+                } => {
+                    let identity = target.direct_source
+                        && !invert
+                        && target.rgb[usize::from(foreground)] == [0; 3]
+                        && target.rgb[usize::from(background)] == [65535; 3]
+                        && matches!(mode, Transfer::Copy);
+                    !identity
+                        && (matches!(mode, Transfer::Xor)
+                            || source_palette.is_some_and(|p| {
+                                p.iter().any(|rgb| *rgb != [0; 3] && *rgb != [65535; 3])
+                            }))
+                }
+                _ => false,
+            };
+            let width = (rect.right.min(clip.right).min(self.width as i32)
+                - rect.left.max(clip.left).max(0))
+            .max(0) as u64;
+            let height = (rect.bottom.min(clip.bottom).min(self.height as i32)
+                - rect.top.max(clip.top).max(0))
+            .max(0) as u64;
+            if expensive && width * height * (1u64 << target.depth) > 128_000_000 {
+                return Err(Error::Graphics(
+                    "indexed color matching work limit exceeded".into(),
+                ));
+            }
+            p[2] |= 256;
+            p.extend([i32::from(target.depth), i32::from(target.direct_source)]);
+            for i in 0..256 {
+                p.extend(target.rgb[i].map(i32::from));
+                p.push(i32::from(target.defined[i]));
+            }
+        }
         let indices = words_bytes(
             memory
                 .read(self.base, (self.width * self.height) as usize)?
@@ -614,7 +675,22 @@ impl Graphics {
         );
         let colors = buffer(
             "palette",
-            &self.palette.iter().flatten().copied().collect::<Vec<_>>(),
+            &target
+                .as_ref()
+                .map_or(self.palette, |t| {
+                    std::array::from_fn(|i| {
+                        [
+                            (t.rgb[i][0] >> 8) as u8,
+                            (t.rgb[i][1] >> 8) as u8,
+                            (t.rgb[i][2] >> 8) as u8,
+                            255,
+                        ]
+                    })
+                })
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>(),
             wgpu::BufferUsages::STORAGE,
         );
         let params = buffer(

@@ -405,9 +405,8 @@ pub fn draw(
         return Ok(());
     }
     let port = ports.current(memory)?;
-    let foreground = color(memory.read(GuestPtr(port.0 + 80), 4)?)?;
-    let background = color(memory.read(GuestPtr(port.0 + 84), 4)?)?;
     let (bitmap, port_clips) = ports.drawing_target(memory)?;
+    let (foreground, background) = crate::port_layout::colors(memory, port, &bitmap)?;
     let mut prepared = Vec::new();
     for command in &picture.commands {
         let rect = mapped(command.destination, picture.frame, destination)?;
@@ -449,8 +448,12 @@ pub fn draw(
                 source: command.source,
                 width: command.width,
                 height: command.height,
-                foreground: command.foreground.unwrap_or(foreground),
-                background: command.background.unwrap_or(background),
+                foreground: command.foreground.map_or(foreground, |v| {
+                    bitmap.nearest(if v == 0 { [65535; 3] } else { [0; 3] })
+                }),
+                background: command.background.map_or(background, |v| {
+                    bitmap.nearest(if v == 0 { [65535; 3] } else { [0; 3] })
+                }),
                 invert: command.mode & 4 != 0,
                 mode: match command.mode & 3 {
                     0 => Transfer::Copy,

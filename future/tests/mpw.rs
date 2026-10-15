@@ -1312,7 +1312,31 @@ fn compiled_color_ports_own_attached_records_but_borrow_device_tables_on_both_cp
         LoadedApplication::code(&code).unwrap(),
         LoadedApplication::pef(&pef, Some(&code)).unwrap(),
     ] {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        app.runtime.graphics = Some(
+            pollster::block_on(systemless_future::graphics::Graphics::new(
+                &instance,
+                None,
+                5,
+                2,
+                systemless_future::memory::GuestPtr(0x4000),
+            ))
+            .unwrap(),
+        );
         assert_eq!(app.runtime.advance(30000).unwrap(), Stop::Exit(0));
+        assert_eq!(
+            app.runtime.graphics.as_ref().unwrap().read_rgba().unwrap(),
+            [0u8, 255, 0, 255].repeat(10)
+        );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|c| matches!(c, Call::RgbColor { .. }))
+                .count(),
+            2
+        );
         assert!(app.runtime.services.calls.iter().any(|call| matches!(
             call,
             Call::PostEvent {
@@ -1322,7 +1346,7 @@ fn compiled_color_ports_own_attached_records_but_borrow_device_tables_on_both_cp
         )));
         for (action, count) in [
             (systemless_future::color_ports::Action::Open, 2),
-            (systemless_future::color_ports::Action::Init, 2),
+            (systemless_future::color_ports::Action::Init, 4),
             (systemless_future::color_ports::Action::Close, 2),
         ] {
             assert_eq!(

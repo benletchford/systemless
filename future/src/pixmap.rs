@@ -32,22 +32,9 @@ pub(crate) fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
         palette,
         defined,
     } = indexed(memory, address)?;
-    let (width, height) = bitmap.extent()?;
-    let count = width * height;
-    let data = memory.read(bitmap.base, bitmap.byte_len()?)?;
-    let mut indices = Vec::with_capacity(count);
-    let depth = usize::from(depth);
-    let mask = ((1u16 << depth) - 1) as u8;
-    for y in 0..height {
-        for x in 0..width {
-            let index = (data[y * bitmap.row_bytes + x * depth / 8]
-                >> (8 - depth - (x * depth % 8)))
-                & mask;
-            if !defined[index as usize] {
-                return Err(bad());
-            }
-            indices.push(index);
-        }
+    let indices = crate::surface::unpack_pixels(memory, bitmap, depth)?;
+    if indices.iter().any(|v| !defined[*v as usize]) {
+        return Err(bad());
     }
     Ok(Source {
         bitmap,
@@ -112,6 +99,11 @@ fn indexed(memory: &Memory, address: GuestPtr) -> Result<Indexed> {
     }
     let head = memory.read(table, 8)?;
     let flags = u16::from_be_bytes(head[4..6].try_into().unwrap());
+    if flags & 0x4000 != 0 {
+        return Err(Error::Graphics(
+            "palette-relative color tables are unsupported".into(),
+        ));
+    }
     let entries = usize::from(u16::from_be_bytes(head[6..8].try_into().unwrap())) + 1;
     if entries > 256 {
         return Err(bad());
@@ -138,29 +130,42 @@ fn indexed(memory: &Memory, address: GuestPtr) -> Result<Indexed> {
         defined,
     })
 }
-/// Destination packing remains one-bit; tagged PixMaps must use the actual
-/// white/black device palette rather than silently treating indices as RGB.
-pub(crate) fn destination(memory: &Memory, address: GuestPtr) -> Result<Bitmap> {
-    if memory.u16(GuestPtr(address.0.checked_add(4).ok_or_else(bad)?))? & 0x8000 != 0 {
-        monochrome(memory, address)
-    } else {
-        Bitmap::read(memory, address)
-    }
+/// Port initialization selects colors without interpreting or changing pixel bytes.
+pub(crate) fn default_colors(memory: &Memory, address: GuestPtr) -> Result<(u32, u32)> {
+    let Indexed {
+        depth,
+        palette,
+        defined,
+        ..
+    } = indexed(memory, address)?;
+    let nearest = |rgb| {
+        crate::color::nearest_color(
+            rgb,
+            (0..1usize << depth)
+                .filter(|i| defined[*i])
+                .map(|i| (i as u8, palette[i])),
+        )
+        .map(u32::from)
+        .ok_or_else(bad)
+    };
+    Ok((nearest([0; 3])?, nearest([65535; 3])?))
 }
-pub(crate) fn monochrome(memory: &Memory, address: GuestPtr) -> Result<Bitmap> {
+/// Destination metadata and live packed pixel bytes share the same checked view.
+pub(crate) fn destination(memory: &Memory, address: GuestPtr) -> Result<crate::surface::Surface> {
+    if memory.u16(GuestPtr(address.0.checked_add(4).ok_or_else(bad)?))? & 0x8000 == 0 {
+        return Ok(crate::surface::Surface::mono(Bitmap::read(
+            memory, address,
+        )?));
+    }
     let Indexed {
         bitmap,
         depth,
         palette,
         defined,
     } = indexed(memory, address)?;
-    if depth != 1 || !defined[0] || !defined[1] || palette[0] != [65535; 3] || palette[1] != [0; 3]
-    {
-        return Err(Error::Graphics(
-            "color destinations currently require a one-bit white/black palette".into(),
-        ));
-    }
-    Ok(bitmap)
+    let surface = crate::surface::Surface::indexed(bitmap, depth, palette, defined)?;
+    surface.unpack(memory)?;
+    Ok(surface)
 }
 
 #[cfg(test)]

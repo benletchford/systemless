@@ -42,6 +42,7 @@ pub mod runtime;
 pub mod sound;
 pub mod standard_file;
 mod stdlib;
+mod surface;
 pub mod text;
 pub mod textedit;
 pub mod traps;

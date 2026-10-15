@@ -4878,3 +4878,68 @@ path. ModalDialog remains the next observed error-UI service, but passing it alo
 will not make EV playable. Neither original game nor the full rebuild is complete.
 Sources: [Apple SetDialogItemText](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-419.html),
 [GetDialogItemText](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-418.html).
+
+
+## Packed indexed destination milestone
+
+One shared Surface boundary now decodes/encodes packed 1/2/4/8-bit guest storage
+for both CPUs. Indexed 2/4/8-bit destinations render through wgpu with live
+16-bit palette colors, nearest-color matching, pattern and copy modes, complex
+clips, negative origins, overlap snapshots and duplicate-index-preserving
+same-palette copies. Direct guest writes are reloaded, padding/tail bits retained
+and packed bytes synchronized before returning. RGBForeColor/RGBBackColor retain
+requested RGB and actual device-matched indices. InitCPort/OpenCPort can copy a
+selected indexed device's format/table without taking pixel/table ownership.
+Controls, text and pictures share the new destination boundary.
+
+Nearest-color ties choose the lowest pixel index; GPU distance arithmetic retains
+full precision using integer carry. This deterministic policy is not a claim of
+ROM tie/propagation equivalence or native correctness for undefined colored
+Boolean combinations. Matching work is bounded. Palette-relative/reserved-client
+semantics, custom search/complement procedures, arithmetic/dither transfers,
+expanded PixPat, direct color and indexed cursor presentation remain unfinished.
+The main display remains genuinely one-bit 512×342. Real configurable color-screen
+storage, coherent basic/color port views, window composition and palette/device
+lifecycle are the next executable milestone; capability reporting must follow
+actual behavior rather than bypass either original game's checks.
+
+Seven new tests exercise real native/PPC calls, all packed color depths, all
+eight source/pattern modes, sparse/reordered tables, full-precision RGB reference
+matching, CPU/GPU synchronization, duplicate indices, overlapping copies,
+complex clips, readonly storage, guarded padding and native input preflight.
+All pass. A freshly rebuilt public-header SC68K/MrC color-port fixture additionally
+initializes from an actual four-bit selected device, paints green into packed
+storage and verifies GPU readback on both architectures. All 30 compiler fixture
+artifacts rebuilt successfully: /tmp/systemless-indexed-sdk-final-build.txt;
+compiled color acceptance: /tmp/systemless-indexed-compiled-color.txt. Strict
+all-target lint and sequential changed-file formatting pass; lint:
+/tmp/systemless-indexed-final-lint.txt.
+
+Original traces retain EV's Monitor Tool ID -4/ModalDialog boundary and Marathon's
+Color QuickDraw requirement/Alert boundary. The new offscreen foundation does not
+yet resolve those screen requirements or make either game playable. Sound-enabled
+Super Mines Save/Open again restores 1,972 bytes, completes one callback and waits
+normally; inspected final pixels exactly match the preceding checkpoint.
+Evidence: /tmp/systemless-{ev,marathon,mines}-indexed-foundation.txt. PPC imports
+PBHGetVolParmsSync and NewRoutineDescriptor remain separate known blockers.
+The full rebuild goal stays active.
+
+Primary references: Apple's [Color QuickDraw drawing semantics](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-199.html)
+and [CopyBits](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-166.html).
+
+Continuation points for the color-screen slice: `quickdraw::install`,
+`screen_bitmap` and `initialize` currently hardcode one-bit storage/stride;
+`devices::Manager::initialize` creates its matching two-entry table;
+`Runtime::refresh_screen` explicitly presents that fixed screen; window move and
+composition paths still unpack its basic bitmap. Replace these together with a
+single display-owned format/storage model. Keep the canonical screen distinct
+from selected offscreen devices and current application ports. Test direct screen
+writes followed by Toolbox drawing and refresh, basic/color port sharing,
+window moves/exposure, cursor overlay and palette changes on both CPUs before
+using the new display for original-game acceptance.
+
+Final full acceptance: 482 tests passed, zero failures and zero skips, with
+`--locked --all-targets --no-fail-fast -- --include-ignored`, exit 0. Evidence:
+/tmp/systemless-indexed-all.txt. This includes all 30 freshly built compiler
+fixtures and the seven new indexed destination tests. Strict all-target lint,
+sequential changed-file formatting and whitespace checks also passed.

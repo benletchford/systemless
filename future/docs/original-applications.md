@@ -1692,3 +1692,22 @@ bounded instruction trace is /tmp/systemless-ev-monitor-instructions.txt.
 Actual indexed-color destinations/displays are a priority for EV and Marathon;
 do not relabel one-bit storage or synthesize operation success. The modal error
 UI and full gameplay remain unfinished.
+
+
+### Indexed offscreen foundation
+
+Packed 2/4/8-bit destination drawing, shared RGB setters and initialization from
+selected indexed devices now pass real 68K/PPC tests and a public-header compiled
+fixture. This does not yet change the main one-bit display or advertise full
+Color QuickDraw. EV still reports Monitor Tool ID -4 and reaches ModalDialog
+($A991), PC $0002582C; Marathon still reports that Color QuickDraw is required and
+reaches Alert ($A985), PC $010108B2. Evidence:
+/tmp/systemless-ev-indexed-foundation.txt and
+/tmp/systemless-marathon-indexed-foundation.txt. Neither game is playable.
+
+Original Super Mines again completes the sound-enabled Save/Open sequence,
+reopens its 1,972-byte game, completes one actual sound callback and returns to
+WaitNextEvent at PC $0100C798. Its final screenshot was inspected and is byte-for-byte
+identical to /tmp/systemless-mines-offscreen-after.ppm. Evidence:
+/tmp/systemless-mines-indexed-foundation.txt and matching -after.ppm. Native
+window/audio and win/loss acceptance are still separate unfinished work.

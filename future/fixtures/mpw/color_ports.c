@@ -7,9 +7,11 @@
 QDGlobals qd;
 static CGrafPort first, second;
 static GrafPort basic;
+static unsigned char colorBytes[10];
 int main(void) {
     GrafPtr saved, current;
-    GDHandle device;
+    GDHandle device, colorDevice;
+    RGBColor ink;
     CTabHandle deviceTable, custom;
     Handle attached[7];
     GVarHandle vars;
@@ -32,6 +34,26 @@ int main(void) {
     first.txSize=27;(**first.pnPixPat).pat1Data.pat[0]=0x55;
     InitCPort(&first); if (MemError() || first.txSize || (**first.pnPixPat).pat1Data.pat[0]!=255) return 10;
     GetPort(&current); if (current!=(GrafPtr)&first || attached[0]!=(Handle)first.portPixMap || attached[4]!=(Handle)first.pnPixPat) return 11;
+    /* A real four-bit offscreen map, palette and selected device. */
+    custom=(CTabHandle)NewHandle(sizeof(ColorTable)+15*sizeof(ColorSpec)); if (!custom) return 18;
+    (**custom).ctSeed=0x12345678;(**custom).ctFlags=(short)0x8000;(**custom).ctSize=15;
+    for (i=0;i<16;i++) {(**custom).ctTable[i].value=i;(**custom).ctTable[i].rgb.red=0;(**custom).ctTable[i].rgb.green=0;(**custom).ctTable[i].rgb.blue=0;}
+    (**custom).ctTable[0].rgb.red=65535;(**custom).ctTable[0].rgb.green=65535;(**custom).ctTable[0].rgb.blue=65535;
+    (**custom).ctTable[1].rgb.red=65535;(**custom).ctTable[2].rgb.green=65535;
+    for (i=0;i<10;i++) colorBytes[i]=0xa5;
+    SetPort((GrafPtr)&second);SetRect(&second.portRect,0,0,5,2);RectRgn(second.visRgn,&second.portRect);RectRgn(second.clipRgn,&second.portRect);
+    (**second.portPixMap).baseAddr=(Ptr)&colorBytes[1];(**second.portPixMap).rowBytes=(short)0x8004;(**second.portPixMap).bounds=second.portRect;
+    (**second.portPixMap).pixelSize=4;(**second.portPixMap).cmpCount=1;(**second.portPixMap).cmpSize=4;(**second.portPixMap).pmTable=custom;
+    colorDevice=(GDHandle)NewHandle(sizeof(GDevice)); if (!colorDevice) return 19;
+    **colorDevice=**device;(**colorDevice).gdPMap=second.portPixMap;(**colorDevice).gdFlags=(short)0x4001;SetGDevice(colorDevice);
+    InitCPort(&first);if ((**first.portPixMap).pixelSize!=4 || (**first.portPixMap).pmTable!=custom || (**first.portPixMap).baseAddr!=(Ptr)&colorBytes[1]) return 23;
+    SetPort((GrafPtr)&second);
+    ink.red=0;ink.green=65535;ink.blue=0;RGBForeColor(&ink);ink.red=65535;ink.blue=65535;RGBBackColor(&ink);
+    if (second.fgColor!=2 || second.bkColor || second.rgbFgColor.green!=65535) return 20;
+    PaintRect(&second.portRect);
+    if (colorBytes[0]!=0xa5 || colorBytes[9]!=0xa5) return 21;
+    for (i=0;i<2;i++) if (colorBytes[1+i*4]!=0x22 || colorBytes[2+i*4]!=0x22 || colorBytes[3+i*4]!=0x25 || colorBytes[4+i*4]!=0xa5) return 22;
+    SetGDevice(device);InitCPort(&second);DisposeHandle((Handle)colorDevice);DisposeHandle((Handle)custom);SetPort((GrafPtr)&first);
     custom=(CTabHandle)NewHandle(24); if (!custom) return 12;
     (**first.portPixMap).pmTable=custom;
     SetPort((GrafPtr)&second);CloseCPort(&first);

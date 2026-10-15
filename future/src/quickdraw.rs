@@ -197,16 +197,51 @@ impl Ports {
         bytes[2..].copy_from_slice(&left.wrapping_add(width).to_be_bytes());
         memory.write(offset(port, 20)?, &bytes)
     }
+    pub fn set_rgb(&self, memory: &mut Memory, background: bool, pointer: GuestPtr) -> Result<()> {
+        if pointer.0 == 0 {
+            return Err(Error::Graphics("nil RGBColor".into()));
+        }
+        let bytes = memory.read(pointer, 6)?.to_vec();
+        let rgb = std::array::from_fn(|i| u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]));
+        let port = self.current(memory)?;
+        let target = port_layout::bitmap(memory, port)?;
+        let index = if port_layout::color(memory, port)? {
+            let selected = port_layout::selected_surface(memory)?;
+            if !target.compatible(&selected) {
+                return Err(Error::Graphics(
+                    "RGB color requires matching current-device and destination tables".into(),
+                ));
+            }
+            selected.nearest(rgb)
+        } else {
+            target.nearest(rgb)
+        };
+        let field = GuestPtr(port.0 + if background { 84 } else { 80 });
+        memory.validate_write(field, 4)?;
+        if port_layout::color(memory, port)? {
+            let wanted = GuestPtr(port.0 + if background { 42 } else { 36 });
+            memory.validate_write(wanted, 6)?;
+            memory.write(wanted, &bytes)?;
+            memory.write(field, &u32::from(index).to_be_bytes())
+        } else {
+            memory.write(
+                field,
+                &(if index == 0 { 30u32 } else { 33u32 }).to_be_bytes(),
+            )
+        }
+    }
     pub fn set_color(&self, memory: &mut Memory, background: bool, color: u32) -> Result<()> {
         let port = self.current(memory)?;
         let field = offset(port, if background { 84 } else { 80 })?;
         if port_layout::color(memory, port)? {
-            port_layout::bitmap(memory, port)?;
-            let (rgb, index) = match color {
-                33 => ([0u8; 6], 1u32),
-                30 => ([255u8; 6], 0u32),
+            let target = port_layout::bitmap(memory, port)?;
+            let rgb = match color {
+                33 => [0u8; 6],
+                30 => [255u8; 6],
                 _ => return Err(Error::Graphics("unsupported color constant".into())),
             };
+            let wanted = std::array::from_fn(|i| u16::from_be_bytes([rgb[i * 2], rgb[i * 2 + 1]]));
+            let index = u32::from(target.nearest(wanted));
             let rgb_field = offset(port, if background { 42 } else { 36 })?;
             memory.validate_write(field, 4)?;
             memory.validate_write(rgb_field, 6)?;
@@ -493,7 +528,7 @@ impl Ports {
         {
             return Ok(());
         }
-        let (mut clips, foreground, background) = self.copy_context(memory, destination)?;
+        let (mut clips, foreground, background) = self.copy_context(memory, &destination)?;
         if request.mask.0 != 0 {
             let mask = region(memory, request.mask)?;
             if clips.len().saturating_mul(mask.len()) > 65536 {
@@ -565,7 +600,7 @@ impl Ports {
         {
             return Ok(());
         }
-        let (clips, foreground, background) = self.copy_context(memory, destination)?;
+        let (clips, foreground, background) = self.copy_context(memory, &destination)?;
         let local = |r: Rect, b: Bitmap| {
             Rect::new(
                 r.left - b.bounds.left,
@@ -602,7 +637,11 @@ impl Ports {
             Some(&indices),
         )
     }
-    fn copy_context(&self, memory: &Memory, destination: Bitmap) -> Result<(Vec<Rect>, u8, u8)> {
+    fn copy_context(
+        &self,
+        memory: &Memory,
+        destination: &crate::surface::Surface,
+    ) -> Result<(Vec<Rect>, u8, u8)> {
         let port = self.current(memory)?;
         let bytes = memory.read(port, PORT_SIZE)?;
         let word = |i| u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap());
@@ -611,18 +650,12 @@ impl Ports {
                 "bitmap copying recording or custom procedures are unsupported".into(),
             ));
         }
-        let is_color = port_layout::color(memory, port)?;
-        let color = |value| match value {
-            30 => Ok(0),
-            33 => Ok(1),
-            0 | 1 if is_color => Ok(value as u8),
-            _ => Err(Error::Graphics("unsupported monochrome port color".into())),
-        };
-        let foreground = color(word(80))?;
-        let background = color(word(84))?;
         let current = port_layout::bitmap(memory, port)?;
+        let (fg, bg) = port_layout::colors(memory, port, &current)?;
+        let foreground = destination.nearest(current.rgb(fg)?);
+        let background = destination.nearest(current.rgb(bg)?);
         let clips = if current.base == destination.base {
-            if current.row_bytes != destination.row_bytes {
+            if current.row_bytes != destination.row_bytes || current.depth != destination.depth {
                 return Err(Error::Graphics(
                     "CopyBits destination aliases a different port stride".into(),
                 ));
@@ -798,7 +831,10 @@ impl Ports {
         };
         self.paint_coverage(gpu, memory, r, Some(&coverage))
     }
-    pub(crate) fn drawing_target(&self, memory: &Memory) -> Result<(Bitmap, Vec<Rect>)> {
+    pub(crate) fn drawing_target(
+        &self,
+        memory: &Memory,
+    ) -> Result<(crate::surface::Surface, Vec<Rect>)> {
         self.drawing_target_with_visibility(memory, false, false)
     }
     fn drawing_target_with_visibility(
@@ -806,7 +842,7 @@ impl Ports {
         memory: &Memory,
         force_visibility: bool,
         recording_polygon: bool,
-    ) -> Result<(Bitmap, Vec<Rect>)> {
+    ) -> Result<(crate::surface::Surface, Vec<Rect>)> {
         let p = self.current(memory)?;
         let bytes = memory.read(p, PORT_SIZE)?;
         let word = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
@@ -891,17 +927,11 @@ impl Ports {
         if !(8..=15).contains(&mode) {
             return Err(Error::Graphics("unsupported QuickDraw pen mode".into()));
         }
-        let is_color = port_layout::color(memory, p)?;
-        let color = |v| match v {
-            33 => Ok(1),
-            30 => Ok(0),
-            0 | 1 if is_color => Ok(v as u8),
-            _ => Err(Error::Graphics("unsupported monochrome port color".into())),
-        };
-        let (foreground, background) = if paint.is_some_and(|p| p.monochrome) {
-            (1, 0)
+        let target = port_layout::bitmap(memory, p)?;
+        let (foreground, background) = if paint.is_some_and(|v| v.monochrome) {
+            (target.nearest([0; 3]), target.nearest([65535; 3]))
         } else {
-            (color(word(80))?, color(word(84))?)
+            port_layout::colors(memory, p, &target)?
         };
         let mut pattern: [u8; 8] = match paint {
             Some(p) => p.pattern,

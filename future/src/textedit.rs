@@ -966,7 +966,11 @@ impl Manager {
             memory.write(GuestPtr(port.0 + 70), &[face])?;
             memory.write(GuestPtr(port.0 + 72), &mode.to_be_bytes())?;
             memory.write(GuestPtr(port.0 + 74), &size.to_be_bytes())?;
-            memory.write(GuestPtr(port.0 + 80), &color.to_be_bytes())?;
+            if styled {
+                ports.set_color(memory, false, color)?;
+            } else {
+                memory.write(GuestPtr(port.0 + 80), &color.to_be_bytes())?;
+            }
             for (h, v, start, end) in lines {
                 crate::text::move_to(memory, ports, h, v)?;
                 crate::text::draw_strike(memory, ports, gpu, &text[start..end], &strike)?;
@@ -979,8 +983,8 @@ impl Manager {
                     crate::port_layout::Pattern::Pen,
                     &[255; 8],
                 )?;
-                memory.write(GuestPtr(port.0 + 80), &33u32.to_be_bytes())?;
-                memory.write(GuestPtr(port.0 + 84), &30u32.to_be_bytes())?;
+                ports.set_color(memory, false, 33)?;
+                ports.set_color(memory, true, 30)?;
                 for rect in overlays {
                     ports.paint_rect(gpu, memory, rect)?;
                 }

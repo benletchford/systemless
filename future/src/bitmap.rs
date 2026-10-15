@@ -2,7 +2,7 @@
 //! Apple: Imaging With QuickDraw, Basic QuickDraw, BitMap record.
 use crate::{
     graphics::{Draw, Graphics, Rect},
-    memory::{GuestPtr, Memory, Permissions},
+    memory::{GuestPtr, Memory},
     Error, Result,
 };
 #[derive(Debug, Clone, Copy)]
@@ -55,56 +55,18 @@ impl Bitmap {
     pub(crate) fn byte_len(&self) -> Result<usize> {
         Ok(self.row_bytes * self.extent()?.1)
     }
+
     pub(crate) fn unpack(&self, memory: &Memory) -> Result<Vec<u8>> {
-        let (width, height) = self.extent()?;
-        let bytes = memory.read(self.base, self.byte_len()?)?;
-        let mut indices = Vec::with_capacity(width * height);
-        for y in 0..height {
-            for x in 0..width {
-                indices.push((bytes[y * self.row_bytes + x / 8] >> (7 - x % 8)) & 1);
-            }
-        }
-        Ok(indices)
+        crate::surface::Surface::mono(*self).unpack(memory)
     }
-    fn pack(&self, memory: &mut Memory, indices: &[u8]) -> Result<()> {
-        let (width, height) = self.extent()?;
-        if indices.len() != width * height || indices.iter().any(|v| *v > 1) {
-            return Err(Error::Graphics("non-monochrome bitmap result".into()));
-        }
-        // Retain bits outside logical bounds, including partial final bytes.
-        let mut bytes = memory.read(self.base, self.byte_len()?)?.to_vec();
-        for y in 0..height {
-            for x in 0..width {
-                let mask = 1u8 << (7 - x % 8);
-                let byte = &mut bytes[y * self.row_bytes + x / 8];
-                *byte = (*byte & !mask) | (indices[y * width + x] << (7 - x % 8));
-            }
-        }
-        memory.write(self.base, &bytes)
-    }
-    /// Refresh a presentation texture without changing guest bytes. Unlike a
-    /// drawing operation this also accepts read-only guest pixel mappings.
     pub fn present(&self, gpu: &Graphics, memory: &Memory) -> Result<()> {
-        self.present_draw(gpu, memory, Draw::Present)
+        crate::surface::Surface::mono(*self).present_draw(gpu, memory, Draw::Present)
     }
     pub fn present_draw(&self, gpu: &Graphics, memory: &Memory, draw: Draw) -> Result<()> {
-        if !matches!(draw, Draw::Present | Draw::Cursor { .. }) {
-            return Err(Error::Graphics(
-                "presentation requires a presentation command".into(),
-            ));
-        }
-        let (width, height) = self.extent()?;
-        if (width, height) != (gpu.width as usize, gpu.height as usize) {
-            return Err(Error::Graphics("presentation extent mismatch".into()));
-        }
-        let mut staging = Memory::default();
-        staging.map(gpu.base, self.unpack(memory)?, Permissions::RW)?;
-        gpu.execute(&mut staging, draw)
+        crate::surface::Surface::mono(*self).present_draw(gpu, memory, draw)
     }
-    /// Commands use bitmap-local QuickDraw coordinates. Temporary indices only
-    /// encode storage; all pixel operations still execute through wgpu.
     pub fn execute(&self, gpu: &Graphics, memory: &mut Memory, draw: Draw) -> Result<()> {
-        self.execute_clipped(gpu, memory, draw, None)
+        crate::surface::Surface::mono(*self).execute(gpu, memory, draw)
     }
     pub fn execute_clipped(
         &self,
@@ -113,7 +75,7 @@ impl Bitmap {
         draw: Draw,
         clips: Option<&[Rect]>,
     ) -> Result<()> {
-        self.execute_source(gpu, memory, draw, clips, None)
+        crate::surface::Surface::mono(*self).execute_clipped(gpu, memory, draw, clips)
     }
     pub(crate) fn execute_source(
         &self,
@@ -123,170 +85,6 @@ impl Bitmap {
         clips: Option<&[Rect]>,
         source: Option<&[u8]>,
     ) -> Result<()> {
-        self.execute_source_palette(gpu, memory, draw, clips, source, None)
-    }
-    pub(crate) fn execute_source_palette(
-        &self,
-        gpu: &Graphics,
-        memory: &mut Memory,
-        draw: Draw,
-        clips: Option<&[Rect]>,
-        source: Option<&[u8]>,
-        palette: Option<&[[u16; 3]; 256]>,
-    ) -> Result<()> {
-        if palette.is_none() && source.is_some_and(|s| s.iter().any(|v| *v > 1)) {
-            return Err(Error::Graphics("non-monochrome copy source".into()));
-        }
-        let (width, height) = self.extent()?;
-        memory.validate_write(self.base, self.byte_len()?)?;
-        if (width, height) != (gpu.width as usize, gpu.height as usize) {
-            let target = gpu.target(width as u32, height as u32)?;
-            return self.execute_source_palette(&target, memory, draw, clips, source, palette);
-        }
-        let coordinate = |value: i32, origin: i32| {
-            value
-                .checked_sub(origin)
-                .ok_or_else(|| Error::Graphics("bitmap coordinate overflow".into()))
-        };
-        let rect = |r: Rect| -> Result<Rect> {
-            Ok(Rect::new(
-                coordinate(r.left, self.bounds.left)?,
-                coordinate(r.top, self.bounds.top)?,
-                coordinate(r.right, self.bounds.left)?,
-                coordinate(r.bottom, self.bounds.top)?,
-            ))
-        };
-        let draw = match draw {
-            Draw::Cursor { .. } => {
-                return Err(Error::Graphics(
-                    "cursor commands require the presentation route".into(),
-                ))
-            }
-            Draw::Present => Draw::Present,
-            Draw::Polygon {
-                rect: r,
-                clip,
-                vertices,
-                origin_x,
-                origin_y,
-                frame,
-                pattern,
-                foreground,
-                background,
-                mode,
-            } => {
-                if foreground > 1 || background > 1 {
-                    return Err(Error::Graphics(
-                        "monochrome colors must be bit values".into(),
-                    ));
-                }
-                let pattern = std::array::from_fn(|y| {
-                    pattern[((self.bounds.top + y as i32) & 7) as usize]
-                        .rotate_left((self.bounds.left & 7) as u32)
-                });
-                Draw::Polygon {
-                    rect: rect(r)?,
-                    clip: rect(clip)?,
-                    vertices,
-                    origin_x: coordinate(origin_x, self.bounds.left)?,
-                    origin_y: coordinate(origin_y, self.bounds.top)?,
-                    frame,
-                    pattern,
-                    foreground,
-                    background,
-                    mode,
-                }
-            }
-            Draw::Line {
-                rect: r,
-                clip,
-                mut line,
-                pattern,
-                foreground,
-                background,
-                mode,
-            } => {
-                line.origin_x = coordinate(line.origin_x, self.bounds.left)?;
-                line.origin_y = coordinate(line.origin_y, self.bounds.top)?;
-                Draw::Line {
-                    rect: rect(r)?,
-                    clip: rect(clip)?,
-                    line,
-                    pattern,
-                    foreground,
-                    background,
-                    mode,
-                }
-            }
-            Draw::Fill {
-                rect: r,
-                clip,
-                pattern,
-                foreground,
-                background,
-                mode,
-            } => {
-                if foreground > 1 || background > 1 {
-                    return Err(Error::Graphics(
-                        "monochrome colors must be bit values".into(),
-                    ));
-                }
-                let pattern = std::array::from_fn(|y| {
-                    pattern[((self.bounds.top + y as i32) & 7) as usize]
-                        .rotate_left((self.bounds.left & 7) as u32)
-                });
-                Draw::Fill {
-                    rect: rect(r)?,
-                    clip: rect(clip)?,
-                    pattern,
-                    foreground,
-                    background,
-                    mode,
-                }
-            }
-            Draw::Blit {
-                mask,
-                rect: r,
-                clip,
-                source,
-                width,
-                height,
-                foreground,
-                background,
-                invert,
-                mode,
-            } => Draw::Blit {
-                mask,
-                rect: rect(r)?,
-                clip: rect(clip)?,
-                source,
-                width,
-                height,
-                foreground,
-                background,
-                invert,
-                mode,
-            },
-            Draw::Copy {
-                rect: r,
-                clip,
-                source_x,
-                source_y,
-                mode,
-            } => Draw::Copy {
-                rect: rect(r)?,
-                clip: rect(clip)?,
-                source_x: coordinate(source_x, self.bounds.left)?,
-                source_y: coordinate(source_y, self.bounds.top)?,
-                mode,
-            },
-        };
-        let mut staging = Memory::default();
-        staging.map(gpu.base, self.unpack(memory)?, Permissions::RW)?;
-        let translated = clips
-            .map(|clips| clips.iter().copied().map(rect).collect::<Result<Vec<_>>>())
-            .transpose()?;
-        gpu.execute_source_palette(&mut staging, draw, translated.as_deref(), source, palette)?;
-        self.pack(memory, staging.read(gpu.base, width * height)?)
+        crate::surface::Surface::mono(*self).execute_source(gpu, memory, draw, clips, source)
     }
 }

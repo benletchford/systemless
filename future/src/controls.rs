@@ -276,8 +276,8 @@ impl Controls {
             if erase {
                 memory.write(GuestPtr(owner + 80), &saved[80..88])?;
             } else {
-                memory.write(GuestPtr(owner + 80), &33u32.to_be_bytes())?;
-                memory.write(GuestPtr(owner + 84), &30u32.to_be_bytes())?;
+                ports.set_color(memory, false, 33)?;
+                ports.set_color(memory, true, 30)?;
             }
             memory.write(GuestPtr(owner + 52), &[0, 1, 0, 1])?;
             memory.write(GuestPtr(owner + 56), &8u16.to_be_bytes())?;
@@ -389,8 +389,8 @@ impl Controls {
             let font = crate::font::Strike::parse(&data)?;
             memory.write(GuestPtr(owner + 72), &1u16.to_be_bytes())?;
             if pressed && kind == 0 {
-                memory.write(GuestPtr(owner + 80), &30u32.to_be_bytes())?;
-                memory.write(GuestPtr(owner + 84), &33u32.to_be_bytes())?;
+                ports.set_color(memory, false, 30)?;
+                ports.set_color(memory, true, 33)?;
             }
             let lines: Vec<_> = label[1..].split(|&c| c == 13).collect();
             let height = i32::from(font.metrics.ascent + font.metrics.descent);

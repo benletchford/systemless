@@ -126,6 +126,10 @@ pub enum Call {
         op: crate::windows::Op,
         pointer: u32,
     },
+    RgbColor {
+        background: bool,
+        pointer: GuestPtr,
+    },
     PortColor {
         background: bool,
         color: u32,

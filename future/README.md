@@ -17,15 +17,16 @@ fonts, plain TextEdit, cursor state, window records and controls use common
 services. GetPicture shares PICT loading with the Resource Manager; PortSize
 and MovePortTo support offscreen port setup. DrawPicture supports bounded
 monochrome bitmap commands in PICT v1/v2 and 8-bit indexed PICT v2 source
-PixMaps with GPU palette conversion to the monochrome destination. Vector/text
-commands, other PICT source depths, color destinations and picture recording
-remain pending. CopyBits shares GPU scaling, transfer modes and complex masks
+PixMaps with GPU palette conversion into monochrome or indexed destinations.
+Vector/text commands, other PICT source depths and picture recording remain
+pending. CopyBits shares GPU scaling, transfer modes and complex masks
 for monochrome BitMaps and checked live 1/2/4/8-bit indexed PixMap sources,
 including overlapping storage. Device queries expose owned GDevice/PixMap/table
 records for the actual initial monochrome screen; Index2Color reads its live
-palette. Color-port lifetime and one-bit drawing use attached PixMap/PixPat
-records, including text and temporary pattern restoration. Multiple devices,
-depth changes and general color destinations remain pending. NewCWindow shares
+palette. Color-port lifetime and packed 1/2/4/8-bit drawing use attached PixMap/PixPat
+records, including text and temporary pattern restoration. Selected offscreen
+devices can initialize color ports; main-screen depth changes, palette lifecycle
+and general Color QuickDraw remain pending. NewCWindow shares
 standard one-bit window creation, updates, geometry, painting and disposal with
 NewWindow, including hidden empty windows that are resized before display.
 LineTo/Line share GPU rectangular-pen coverage, patterns,
@@ -319,3 +320,12 @@ shortening/empty erasure; hidden changes need no GPU. Original EV now reaches
 ModalDialog after displaying Monitor Tool error ID -4. Its current display depth
 is one bit while only 8-bit blitter resources are present; actual indexed-color
 rendering remains a priority, and the exact error cause is still under study.
+
+
+Indexed offscreen destinations now support packed 2/4/8-bit pixels through the
+same wgpu drawing boundary as monochrome BitMaps. Both CPUs share real RGB color
+setters, live palette matching, clipping, pattern/copy modes and synchronized
+guest bytes. Selected indexed devices can initialize color ports. The main
+512×342 display remains one-bit; configurable color display, window composition,
+palette/device lifecycle and broader Color QuickDraw remain unfinished. Original
+EV and Marathon still stop at their existing error paths and are not playable.

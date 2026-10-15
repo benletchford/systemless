@@ -35,6 +35,25 @@ fn owned(m: &Memory, p: &mut Process, h: u32, min: u32) -> Result<GuestPtr> {
     }
     Ok(GuestPtr(data))
 }
+pub(crate) fn nearest_color(
+    rgb: [u16; 3],
+    entries: impl Iterator<Item = (u8, [u16; 3])>,
+) -> Option<u8> {
+    entries
+        .map(|(index, color)| {
+            let distance = color
+                .into_iter()
+                .zip(rgb)
+                .map(|(a, b)| {
+                    let delta = i64::from(a) - i64::from(b);
+                    (delta * delta) as u64
+                })
+                .sum::<u64>();
+            ((distance, index), index)
+        })
+        .min_by_key(|(key, _)| *key)
+        .map(|(_, i)| i)
+}
 struct Palette {
     seed: u32,
     entries: Vec<(u8, [u16; 3])>,
@@ -49,7 +68,11 @@ fn palette(m: &Memory, p: &mut Process, h: u32) -> Result<Palette> {
     let count = last as usize + 1;
     owned(m, p, h, (8 + 8 * count) as u32)?;
     let raw = m.read(data, 8 + 8 * count)?;
-    let device = u16::from_be_bytes(raw[4..6].try_into().unwrap()) & 0x8000 != 0;
+    let flags = u16::from_be_bytes(raw[4..6].try_into().unwrap());
+    if flags & 0x4000 != 0 {
+        return Err(bad("palette-relative inverse tables are unsupported"));
+    }
+    let device = flags & 0x8000 != 0;
     let mut used = [false; 256];
     let mut entries = Vec::with_capacity(count);
     for ordinal in 0..count {
@@ -90,21 +113,8 @@ fn table(palette: &Palette, resolution: u16) -> Vec<u8> {
             let q = (cell >> ((2 - i) * usize::from(resolution))) & mask;
             ((q << shift) + (1usize << (shift - 1))) as i64
         });
-        let best = palette
-            .entries
-            .iter()
-            .min_by_key(|(_, color)| {
-                color
-                    .iter()
-                    .zip(rgb)
-                    .map(|(&v, w)| {
-                        let d = i64::from(v) - w;
-                        d * d
-                    })
-                    .sum::<i64>()
-            })
-            .unwrap();
-        bytes.push(best.0);
+        let best = nearest_color(rgb.map(|v| v as u16), palette.entries.iter().copied()).unwrap();
+        bytes.push(best);
     }
     bytes
 }

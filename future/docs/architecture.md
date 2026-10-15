@@ -309,7 +309,7 @@ remain gaps. Supporting a wait is not complete Toolbox Event Manager compatibili
 Contract: Apple's [WaitNextEvent reference](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-51.html)
 and MPW Events.h; compiled MPW callers verify both ABI paths.
 
-## Packed Basic QuickDraw bitmap boundary
+## Packed QuickDraw surface boundary
 
 `bitmap.rs` reads the 14-byte guest BitMap record and validates its base address,
 row stride, signed bounds and mapped image extent. The current GPU extent limit
@@ -318,14 +318,31 @@ explicitly. Commands use the bitmap's local coordinates. Translation to GPU
 coordinates includes pattern phase, so nonzero or negative origins do not shift
 an 8x8 pattern incorrectly.
 
-Basic QuickDraw's packed one-bit rows are decoded to temporary index bytes,
-processed by the existing wgpu compute commands, then packed back into the
-canonical guest bitmap before returning. CPU work is storage conversion only,
-not a drawing fallback. Padding bytes and unused bits of partial rows retain
-their prior values. Each draw reloads guest bytes; a direct guest write between
-operations is therefore visible. A different bitmap extent uses a temporary texture on the same GPU device;
-the synchronized guest result outlives this scratch target.
-A monochrome presentation uses palette index 0 for white and 1 for black.
+`surface.rs` shares packed 1/2/4/8-bit storage conversion and drawing dispatch
+between basic BitMaps and indexed PixMaps. Metadata, live palette entries and
+pixel indices are validated before rendering. CPU work unpacks/repacks storage;
+geometry and pixel transfers execute in wgpu. Each operation reloads guest bytes
+and synchronizes the packed result before returning, preserving row padding and
+unused tail bits. A different extent uses a temporary texture on the same GPU
+device. Palette changes are read on the next operation.
+
+Indexed destinations use actual pixel indices, live 16-bit RGB entries and exact
+integer nearest-color matching, with lowest pixel index breaking ties. GPU
+matching preserves full distance precision using carry arithmetic. Matching work
+is bounded. Same-palette source copies preserve duplicate-color index identity
+and snapshot overlapping sources. Pattern transfers use actual foreground and
+background colors; color transfers operate in RGB space before palette matching.
+This deterministic policy does not establish native ROM tie/propagation behavior
+or conformance for colored Boolean combinations Apple leaves undefined.
+
+RGBForeColor/RGBBackColor share requested RGB and device-matched index state on
+both CPUs. Initialization copies the selected indexed device's format/table;
+attachments remain owned and the color table borrowed. Custom device search or
+comparison procedures, palette-relative tables, direct color, arithmetic/dither
+modes, expanded pixel patterns and indexed cursor presentation remain explicit
+unsupported boundaries. One-bit drawing retains white/black palette semantics.
+The production main display remains one-bit 512×342: this milestone supplies real
+indexed offscreen targets, not a color-screen capability claim.
 
 This bitmap/backend boundary also serves loaded applications through the
 GrafPort services and real QuickDraw ABI adapters described below.

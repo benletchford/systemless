@@ -81,35 +81,17 @@ impl Manager {
         let pixels = memory.u32(GuestPtr(gd.0 + 22))?;
         let source = owned(memory, process, pixels, 50)?;
         let pm = memory.read(source, 50)?.to_vec();
-        if u16::from_be_bytes(pm[32..34].try_into().unwrap()) != 1 {
-            return Err(bad(
-                "initial color ports require the current one-bit device",
-            ));
+        if u16::from_be_bytes(pm[4..6].try_into().unwrap()) & 0xc000 != 0x8000 {
+            return Err(bad("current device requires an indexed PixMap"));
         }
         let table = u32::from_be_bytes(pm[42..46].try_into().unwrap());
-        let ct = owned(memory, process, table, 24)?;
-        let colors = memory.read(ct, 24)?;
-        if colors[4..8] != [0x80, 0, 0, 1] {
-            return Err(bad("unsupported initial color-port device table"));
+        let ct = owned(memory, process, table, 8)?;
+        let count = u32::from(memory.u16(GuestPtr(ct.0 + 6))?) + 1;
+        if count > 256 {
+            return Err(bad("invalid current-device color table"));
         }
-        let nearest = |white: bool| -> u32 {
-            let wanted = if white { 65535i64 } else { 0 };
-            (0..2usize)
-                .min_by_key(|&index| {
-                    (0..3)
-                        .map(|channel| {
-                            let at = 10 + index * 8 + channel * 2;
-                            let delta = i64::from(u16::from_be_bytes(
-                                colors[at..at + 2].try_into().unwrap(),
-                            )) - wanted;
-                            delta * delta
-                        })
-                        .sum::<i64>()
-                })
-                .unwrap() as u32
-        };
-        let foreground = nearest(false);
-        let background = nearest(true);
+        owned(memory, process, table, 8 + count * 8)?;
+        let (foreground, background) = crate::pixmap::default_colors(memory, source)?;
         let mut visibility = vec![0; 10];
         visibility[..2].copy_from_slice(&10u16.to_be_bytes());
         visibility[2..].copy_from_slice(&pm[6..14]);

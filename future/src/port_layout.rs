@@ -42,11 +42,14 @@ pub(crate) fn bounds_pointer(memory: &Memory, port: GuestPtr) -> Result<GuestPtr
         GuestPtr(port.0 + 8)
     })
 }
-pub(crate) fn bitmap(memory: &Memory, port: GuestPtr) -> Result<Bitmap> {
+pub(crate) fn bitmap(memory: &Memory, port: GuestPtr) -> Result<crate::surface::Surface> {
     if color(memory, port)? {
-        crate::pixmap::monochrome(memory, pixmap(memory, port)?)
+        crate::pixmap::destination(memory, pixmap(memory, port)?)
     } else {
-        Bitmap::read(memory, GuestPtr(port.0 + 2))
+        Ok(crate::surface::Surface::mono(Bitmap::read(
+            memory,
+            GuestPtr(port.0 + 2),
+        )?))
     }
 }
 pub(crate) fn pattern_pointer(
@@ -102,4 +105,50 @@ pub(crate) fn write_pattern(
     }
     let pointer = pattern_pointer(memory, port, kind)?;
     memory.write(pointer, pattern)
+}
+
+pub(crate) fn colors(
+    memory: &Memory,
+    port: GuestPtr,
+    target: &crate::surface::Surface,
+) -> Result<(u8, u8)> {
+    let resolve = |at| {
+        let value = memory.u32(GuestPtr(port.0 + at))?;
+        if color(memory, port)? {
+            target.index(value)
+        } else {
+            match value {
+                33 => Ok(target.nearest([0; 3])),
+                30 => Ok(target.nearest([65535; 3])),
+                _ => Err(Error::Graphics("unsupported basic port color".into())),
+            }
+        }
+    };
+    Ok((resolve(80)?, resolve(84)?))
+}
+
+pub(crate) fn selected_surface(memory: &Memory) -> Result<crate::surface::Surface> {
+    let h = memory.u32(crate::devices::CURRENT)?;
+    if h == 0 {
+        return Err(bad());
+    }
+    let data = memory.u32(GuestPtr(h))?;
+    if data == 0 {
+        return Err(bad());
+    }
+    let record = memory.read(GuestPtr(data), 62)?;
+    if record[12..20].iter().any(|v| *v != 0) {
+        return Err(Error::Graphics(
+            "custom color search/complement procedures are unsupported".into(),
+        ));
+    }
+    let map_h = memory.u32(GuestPtr(data.checked_add(22).ok_or_else(bad)?))?;
+    if map_h == 0 {
+        return Err(bad());
+    }
+    let map = memory.u32(GuestPtr(map_h))?;
+    if map == 0 {
+        return Err(bad());
+    }
+    crate::pixmap::destination(memory, GuestPtr(map))
 }

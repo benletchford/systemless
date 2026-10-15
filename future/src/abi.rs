@@ -138,6 +138,7 @@ pub enum Service {
     NewWindow,
     NewColorWindow,
     Window(crate::windows::Op),
+    RgbColor(bool),
     PortColor(bool),
     RoundRect(bool),
     GetMemFragment,
@@ -292,6 +293,8 @@ impl Abi {
             b"CloseConnection" => Some(Service::CloseConnection),
             b"FrameRoundRect" => Some(Service::RoundRect(true)),
             b"PaintRoundRect" => Some(Service::RoundRect(false)),
+            b"RGBForeColor" => Some(Service::RgbColor(false)),
+            b"RGBBackColor" => Some(Service::RgbColor(true)),
             b"ForeColor" => Some(Service::PortColor(false)),
             b"BackColor" => Some(Service::PortColor(true)),
             b"TrackControl" => Some(Service::TrackControl),
@@ -2664,6 +2667,24 @@ impl Abi {
                 c.dar[15] = result;
                 Ok((call, Reply::StackWord(GuestPtr(result))))
             }
+            0xaa14 | 0xaa15 => {
+                let pointer = GuestPtr(memory.u32(GuestPtr(sp))?);
+                if pointer.0 == 0 {
+                    return Err(Error::Cpu("nil RGBColor".into()));
+                }
+                memory.read(pointer, 6)?;
+                let next = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("RGBColor stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((
+                    Call::RgbColor {
+                        background: opcode == 0xaa15,
+                        pointer,
+                    },
+                    Reply::None,
+                ))
+            }
             0xa98f | 0xa990 => {
                 let b = memory.read(GuestPtr(sp), 8)?;
                 let pointer = GuestPtr(u32::from_be_bytes(b[..4].try_into().unwrap()));
@@ -2779,6 +2800,10 @@ impl Abi {
                 width: c.gpr[4] as i16,
                 height: c.gpr[5] as i16,
                 frame,
+            },
+            Service::RgbColor(background) => Call::RgbColor {
+                background,
+                pointer: GuestPtr(c.gpr[3]),
             },
             Service::PortColor(background) => Call::PortColor {
                 background,
@@ -3621,6 +3646,7 @@ impl Abi {
                         | Service::GetWMgrPort
                         | Service::InitGraf
                         | Service::PortColor(_)
+                        | Service::RgbColor(_)
                         | Service::Window(
                             crate::windows::Op::Init
                                 | crate::windows::Op::Close
