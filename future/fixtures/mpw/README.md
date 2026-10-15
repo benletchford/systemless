@@ -375,3 +375,8 @@ mode, pattern and preserved location. The environment guest creates ResourceStor
 checks duplicate ResErr and unchanged current resource reference, then uses File
 Manager calls to read the real empty-fork header. Pattern values use SDK structure
 addresses. This is separate from writable Resource Manager map/open acceptance.
+
+The menu guest now requires live GetMenuItemText bytes and a full polygon cycle:
+OpenPoly/LineTo/ClosePoly, visible port state, bounding box, paint/invert/fill/frame/
+erase, offset, balanced pen visibility and disposal. Both compiled CPUs execute
+these through the common manager and GPU services before emitting success.

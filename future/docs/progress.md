@@ -2641,3 +2641,86 @@ the fixture's Pattern structure arguments, malformed-spec example and timestamp
 setup were corrected before the final suite. Offscreen chooser inspection is
 accepted only for the bounded partial setup described above; native presentation,
 native System 7 and actual chooser/gameplay interaction remain unverified.
+
+
+### Live menu text and GPU polygon lifecycle
+
+GetItem/GetMenuItemText now reads checked live MENU records, including uninstalled
+menus, and writes a Pascal-string snapshot. It preserves MemErr, handles output
+aliases, leaves guards untouched, clears an out-of-range item's output length and
+validates the full destination before any write. Nil output is a no-op. Native
+signed item/stack pointer order differs from PPC's handle/item/output registers;
+both retain their void result. Rebuilt MPW guests require the actual item bytes.
+
+The shared polygon manager now owns recording state tied to a live current port
+and ordinary guest handle. OpenPoly initializes checked storage, sets polySave and
+calls the equivalent of HidePen. Line/LineTo update live vertices and bounds even
+while hidden; pen pattern, size and mode do not affect the saved definition.
+ClosePoly clears polySave and balances visibility without moving the pen. Guest
+suspension through a nil polySave is respected, as are ShowPen/HidePen visibility
+changes. Nested/foreign/combined recording, disconnected line chains and custom
+procedures fail explicitly. Recording grows through checked heap replacement;
+locked growth/size-limit failures cannot partially advance the record or pen.
+KillPoly disposes closed handles; OffsetPoly changes their signed-word coordinates
+without allocating. Pure reads, drawing and offsets preserve the caller's MemErr.
+
+FramePoly/PaintPoly/ErasePoly/InvertPoly/FillPoly now invoke wgpu coverage rather
+than a CPU framebuffer rasterizer. Borrowed source vertices are serialized into
+one bounded GPU command. Even-odd fill samples integer guest coordinates, matching
+the permitted legacy Systemless reference; exact integer cross-products avoid its
+floating-point intersections. Frame edges use the same line-brush predicate as
+ordinary lines and form a coverage union, applying XOR once at shared corners.
+Existing patterns, transfer modes, origin translation and region/visibility clips
+remain shared. Frame operations preserve all port state; FillPoly follows the
+existing fill-pattern field policy. Hidden/empty drawing needs no GPU.
+
+Records are bounded to 64 KB and raster extents to 32767 per axis; GPU work is
+bounded before execution. Signed-word offset wrapping is retained, while drawing
+requires consistent bounds and supported extents. Color ports, region/picture
+recording integration, custom procedures and native polygon pixel parity remain
+gaps. This is source-geometry comparison with legacy Systemless, not a claimed
+native System 7 or complete polygon compatibility pass.
+
+Tests cover live headers/vertices, suspension, visibility, metadata and malformed
+storage, locked growth, the 64-KB limit, visible-recording rollback without a GPU,
+exact native/PPC arguments and return guards. GPU checks compare independent
+scanline expectations for triangles, concave/self-intersecting contours and reverse
+winding; cover XOR edge unions, invert/erase, supplied patterns, clip holes, visible
+recording, negative/extreme bitmap origins and rejected excessive work. Existing
+line pixel tests are rerun because their shader predicate is shared. Rebuilt MPW
+menu guests execute the complete polygon record/draw/offset/dispose cycle and
+visibility checks on both real CPUs before success.
+
+The bounded Super Mines splash press/release now completes without a service fault
+and its chooser reaches an event loop after drawing a polygon indicator. A second
+click at (145,150) also completes, and offscreen inspection shows the chooser title,
+Super Mines/Mini Mines labels and controls. This does not prove a selection. The
+initial estimated confirmation click at (330,230) misses the live control bounds.
+Guest records place the active upper control at local (304,192)-(384,210); a press
+at global (402,231) reaches TrackControl ($A968), post-trap PC $0100EC06. The third
+press stops there before release, so confirmation and gameplay remain unaccepted.
+Next: proper held-mouse control tracking and its callback/return boundaries, then
+continue this chooser interaction. Original PPC execution, writable resource maps,
+native presentation, Color QuickDraw/devices and production Mixed Mode remain
+required. The full rebuild goal stays active.
+
+The bounded mouse diagnostic accepts multiple coordinate pairs, writes optional
+per-click screens, prints the exact hexadecimal service error and stack arguments,
+and reports live control hit bounds/status without changing guest state.
+
+Continuation tracking evidence: the final probe's native stack at $0080FC6C
+contains actionProc=0, local startPt=(v=201,h=344), control=$10002354 and a word
+result slot at SP+12. TrackControl must pop 12 bytes only after validating that
+result storage, remain active while the button is held, update hilite on pointer
+motion and return the released part (or zero outside). The observed path needs no
+action callback, but nonzero callback and custom-definition boundaries must remain
+explicit until implemented; an immediate TestControl return would not satisfy it.
+
+Validation: all 285 tests pass (237 default, 48 optional GPU/MPW), with no skips.
+Strict all-target Clippy, sequential changed-file formatting and whitespace checks
+pass. The rebuilt MPW menu guest passes on both real CPUs. Shader parse diagnostics
+were corrected before pixel acceptance; focused test setup now separates hidden
+recording from ordinary suspended drawing. The final multi-click probe reports
+the exact TrackControl stack above and stops before its third release. Native
+presentation, native System 7 parity and accepted confirmation/gameplay are not
+claimed.

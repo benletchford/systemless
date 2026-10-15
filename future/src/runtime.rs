@@ -323,11 +323,57 @@ impl Runtime {
                                 )?;
                             }
                         }
+                        Call::Polygon(op) => {
+                            let mut manager = std::mem::take(&mut self.process.polygons);
+                            let result = manager.call(
+                                &mut self.memory,
+                                &mut self.process,
+                                self.graphics.as_ref(),
+                                op,
+                            );
+                            self.process.polygons = manager;
+                            let value = result?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                value,
+                                self.process.mem_error,
+                            )?;
+                        }
+                        Call::PenVisibility(delta) => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("QuickDraw has not been initialized".into())
+                            })?;
+                            ports.pen_visibility(&mut self.memory, delta)?;
+                        }
                         Call::PenLine { h, v, relative } => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
                             })?;
-                            ports.line(&mut self.memory, self.graphics.as_ref(), h, v, relative)?;
+                            let mut manager = std::mem::take(&mut self.process.polygons);
+                            let result = manager.line(
+                                &mut self.memory,
+                                &mut self.process,
+                                self.graphics.as_ref(),
+                                h,
+                                v,
+                                relative,
+                            );
+                            self.process.polygons = manager;
+                            if result? {
+                                self.memory.write(
+                                    GuestPtr(0x220),
+                                    &self.process.mem_error.to_be_bytes(),
+                                )?;
+                            } else {
+                                ports.line(
+                                    &mut self.memory,
+                                    self.graphics.as_ref(),
+                                    h,
+                                    v,
+                                    relative,
+                                )?;
+                            }
                         }
                         Call::MoveTo { h, v } => {
                             let ports = self.process.ports.ok_or_else(|| {
@@ -1156,6 +1202,7 @@ impl Runtime {
                                 crate::dialogs::Op::Init(_) | crate::dialogs::Op::Param(_)
                             )
                             | Call::Menu(_)
+                            | Call::Polygon(_)
                             | Call::TextEdit(_)
                             | Call::TextDraw(_)
                             | Call::TextWidth(_)
@@ -1263,6 +1310,8 @@ impl Runtime {
                         | Call::PenSize { .. }
                         | Call::PenMode(_)
                         | Call::PenNormal
+                        | Call::PenVisibility(_)
+                        | Call::Polygon(_)
                         | Call::WaitEvent { .. }
                         | Call::PostEvent { .. }
                         | Call::OSEvent { .. }

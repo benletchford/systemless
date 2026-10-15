@@ -163,6 +163,40 @@ impl Bitmap {
                 ))
             }
             Draw::Present => Draw::Present,
+            Draw::Polygon {
+                rect: r,
+                clip,
+                vertices,
+                origin_x,
+                origin_y,
+                frame,
+                pattern,
+                foreground,
+                background,
+                mode,
+            } => {
+                if foreground > 1 || background > 1 {
+                    return Err(Error::Graphics(
+                        "monochrome colors must be bit values".into(),
+                    ));
+                }
+                let pattern = std::array::from_fn(|y| {
+                    pattern[((self.bounds.top + y as i32) & 7) as usize]
+                        .rotate_left((self.bounds.left & 7) as u32)
+                });
+                Draw::Polygon {
+                    rect: rect(r)?,
+                    clip: rect(clip)?,
+                    vertices,
+                    origin_x: coordinate(origin_x, self.bounds.left)?,
+                    origin_y: coordinate(origin_y, self.bounds.top)?,
+                    frame,
+                    pattern,
+                    foreground,
+                    background,
+                    mode,
+                }
+            }
             Draw::Line {
                 rect: r,
                 clip,

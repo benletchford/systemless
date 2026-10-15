@@ -1337,3 +1337,164 @@ fn append_menu_adapters_preserve_void_results_and_validate_complete_argument_sto
     let Cpu::PowerPc(c) = cpu else { panic!() };
     assert_eq!(c.gpr[3], 0x10002000);
 }
+
+#[test]
+fn menu_text_reads_live_uninstalled_records_preserve_guards_memerr_and_overlap() {
+    let fixture = support::pef_program(&[0x4e800020], &[], 32);
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    let source = GuestPtr(
+        app.runtime
+            .process
+            .new_pointer(&mut app.runtime.memory, 256, false)
+            .unwrap(),
+    );
+    app.runtime.memory.write(source, b"\x03One").unwrap();
+    let h = direct(
+        &mut app,
+        Op::New {
+            id: 12,
+            title: GuestPtr(0),
+        },
+    )
+    .unwrap();
+    direct(&mut app, Op::Append { handle: h, source }).unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa5; 256], Permissions::RW)
+        .unwrap();
+    let destination = GuestPtr(0x50000000);
+    let original = payload(&app.runtime.memory, &mut app.runtime.process, h);
+    app.runtime.process.mem_error = -117;
+    direct(
+        &mut app,
+        Op::ReadText {
+            handle: h,
+            item: 1,
+            destination,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        app.runtime.memory.read(destination, 6).unwrap(),
+        [3, b'O', b'n', b'e', 0xa5, 0xa5]
+    );
+    assert_eq!(app.runtime.process.mem_error, -117);
+    assert_eq!(
+        payload(&app.runtime.memory, &mut app.runtime.process, h),
+        original
+    );
+    app.runtime.process.mem_error = -117;
+    for item in [-1, 0, 2, 32767] {
+        app.runtime.memory.write(destination, &[0xa5; 6]).unwrap();
+        direct(
+            &mut app,
+            Op::ReadText {
+                handle: h,
+                item,
+                destination,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            app.runtime.memory.read(destination, 6).unwrap(),
+            [0, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5]
+        );
+    }
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), vec![0x5a; 2], Permissions::RW)
+        .unwrap();
+    assert!(direct(
+        &mut app,
+        Op::ReadText {
+            handle: h,
+            item: 1,
+            destination: GuestPtr(0x51000000)
+        }
+    )
+    .is_err());
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(0x51000000), 2).unwrap(),
+        [0x5a; 2]
+    );
+    assert_eq!(app.runtime.process.mem_error, -117);
+    app.runtime
+        .memory
+        .map(GuestPtr(0x52000000), vec![0x5a; 256], Permissions::RX)
+        .unwrap();
+    assert!(direct(
+        &mut app,
+        Op::ReadText {
+            handle: h,
+            item: 1,
+            destination: GuestPtr(0x52000000)
+        }
+    )
+    .is_err());
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(0x52000000), 4).unwrap(),
+        [0x5a; 4]
+    );
+    direct(
+        &mut app,
+        Op::ReadText {
+            handle: 0,
+            item: 1,
+            destination: GuestPtr(0),
+        },
+    )
+    .unwrap();
+    assert_eq!(app.runtime.process.mem_error, -117);
+    let alias = GuestPtr(ptr(&app.runtime.memory, h).0 + 17);
+    direct(
+        &mut app,
+        Op::ReadText {
+            handle: h,
+            item: 1,
+            destination: alias,
+        },
+    )
+    .unwrap();
+    assert_eq!(app.runtime.memory.read(alias, 4).unwrap(), b"\x03One");
+}
+#[test]
+fn menu_text_read_adapters_keep_void_results_and_unpack_signed_items() {
+    let mut m = Memory::default();
+    m.map(
+        GuestPtr(0x1000),
+        vec![0, 0, 0x30, 0, 255, 249, 0x10, 0, 0x20, 0],
+        Permissions::RW,
+    )
+    .unwrap();
+    let expected = Call::Menu(Op::ReadText {
+        handle: 0x10002000,
+        item: -7,
+        destination: GuestPtr(0x3000),
+    });
+    let mut c = m68k::CpuCore::default();
+    c.dar[15] = 0x1000;
+    assert_eq!(
+        Abi::trap(0xa946, &mut c, &m).unwrap(),
+        (expected, Reply::None)
+    );
+    assert_eq!(c.dar[15], 0x100a);
+    c.dar[15] = 0x1002;
+    assert!(Abi::trap(0xa946, &mut c, &m).is_err());
+    assert_eq!(c.dar[15], 0x1002);
+    let mut c = ppc::PpcCpu::default();
+    c.gpr[3] = 0x10002000;
+    c.gpr[4] = 0xabcdfff9;
+    c.gpr[5] = 0x3000;
+    let (call, reply) = Abi::import(Service::GetMenuItemText, &c, &m).unwrap();
+    assert_eq!(call, expected);
+    let mut cpu = Cpu::PowerPc(Box::new(c));
+    reply.apply(&mut cpu, &mut m, 99, 0).unwrap();
+    let Cpu::PowerPc(c) = cpu else { panic!() };
+    assert_eq!(c.gpr[3], 0x10002000);
+    for name in [b"GetItem".as_slice(), b"GetMenuItemText"] {
+        assert_eq!(
+            Abi::resolve(b"InterfaceLib", name),
+            Some(Service::GetMenuItemText)
+        );
+    }
+}

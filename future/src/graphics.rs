@@ -40,7 +40,19 @@ pub struct PenLine {
     pub height: u16,
 }
 #[derive(Debug, Clone, Copy)]
-pub enum Draw {
+pub enum Draw<'a> {
+    Polygon {
+        rect: Rect,
+        clip: Rect,
+        vertices: &'a [(i16, i16)],
+        origin_x: i32,
+        origin_y: i32,
+        frame: Option<(i16, i16)>,
+        pattern: [u8; 8],
+        foreground: u8,
+        background: u8,
+        mode: Transfer,
+    },
     Present,
     Cursor {
         x: i32,
@@ -124,7 +136,10 @@ impl Graphics {
         let error = Arc::new(Mutex::new(None));
         let errors = error.clone();
         device.on_uncaptured_error(Arc::new(move |e: wgpu::Error| {
-            *errors.lock().unwrap() = Some(e.to_string());
+            let mut first = errors.lock().unwrap();
+            if first.is_none() {
+                *first = Some(e.to_string());
+            }
         }));
         let errors = error.clone();
         device.set_device_lost_callback(move |reason, message| {
@@ -292,6 +307,62 @@ impl Graphics {
                 (Rect::new(0, 0, 0, 0), Rect::new(0, 0, 0, 0))
             }
             Draw::Present => (Rect::new(0, 0, 0, 0), Rect::new(0, 0, 0, 0)),
+            Draw::Polygon {
+                rect,
+                clip,
+                vertices,
+                origin_x,
+                origin_y,
+                frame,
+                pattern,
+                foreground,
+                background,
+                mode,
+            } => {
+                if !(-65535..=65535).contains(&origin_x)
+                    || !(-65535..=65535).contains(&origin_y)
+                    || vertices.len() > 16381
+                    || frame.is_some_and(|(w, h)| w < 0 || h < 0)
+                {
+                    return Err(Error::Graphics("invalid polygon geometry".into()));
+                }
+                if !vertices.is_empty() {
+                    let min_x = vertices.iter().map(|p| i32::from(p.0)).min().unwrap();
+                    let max_x = vertices.iter().map(|p| i32::from(p.0)).max().unwrap();
+                    let min_y = vertices.iter().map(|p| i32::from(p.1)).min().unwrap();
+                    let max_y = vertices.iter().map(|p| i32::from(p.1)).max().unwrap();
+                    if frame.is_none()
+                        && (rect.left < min_x + origin_x
+                            || rect.right > max_x + origin_x
+                            || rect.top < min_y + origin_y
+                            || rect.bottom > max_y + origin_y)
+                    {
+                        return Err(Error::Graphics(
+                            "polygon fill bounds exceed vertex extent".into(),
+                        ));
+                    }
+                    if max_x - min_x > 32767 || max_y - min_y > 32767 {
+                        return Err(Error::Graphics(
+                            "polygon extent exceeds signed-word raster limit".into(),
+                        ));
+                    }
+                }
+                let width = (rect.right.min(self.width as i32) - rect.left.max(0)).max(0) as u64;
+                let height = (rect.bottom.min(self.height as i32) - rect.top.max(0)).max(0) as u64;
+                if width * height * vertices.len() as u64 > 32_000_000 {
+                    return Err(Error::Graphics("GPU polygon work limit exceeded".into()));
+                }
+                p[2] = 6;
+                p[11] = foreground.into();
+                p[12] = background.into();
+                p[13] = mode as i32;
+                p[14] = origin_x;
+                p[15] = origin_y;
+                for (i, b) in pattern.iter().enumerate() {
+                    p[16 + i] = i32::from(*b);
+                }
+                (rect, clip)
+            }
             Draw::Line {
                 rect,
                 clip,
@@ -393,7 +464,7 @@ impl Graphics {
             .chain(
                 p[14..16]
                     .iter()
-                    .filter(|_| !matches!(draw, Draw::Line { .. })),
+                    .filter(|_| !matches!(draw, Draw::Line { .. } | Draw::Polygon { .. })),
             )
             .any(|v| !(-32768..=32767).contains(v))
         {
@@ -423,6 +494,16 @@ impl Graphics {
         if let Some(palette) = source_palette {
             p[21] = 1;
             p.extend(palette.iter().flatten().map(|&v| i32::from(v)));
+        }
+        if let Draw::Polygon {
+            vertices, frame, ..
+        } = draw
+        {
+            let (w, h) = frame.unwrap_or((-1, -1));
+            p.extend([vertices.len() as i32, i32::from(w), i32::from(h)]);
+            for &(x, y) in vertices {
+                p.extend([i32::from(x), i32::from(y)]);
+            }
         }
         if let Draw::Line { line, .. } = draw {
             p.extend([

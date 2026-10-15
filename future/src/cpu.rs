@@ -118,6 +118,8 @@ pub enum Call {
         op: crate::quickdraw::PortOp,
         pointer: GuestPtr,
     },
+    Polygon(crate::polygons::Op),
+    PenVisibility(i16),
     PenNormal,
     PenMode(i16),
     MovePortTo {

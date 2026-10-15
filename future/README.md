@@ -111,7 +111,7 @@ GPU erasure/drawing on both CPU adapters. Bold source strikes are synthesized
 without changing guest font resources. Super Mines startup passes its text boxes
 and enters event/mouse polling. A bounded press/release dismisses its splash,
 creates/reads settings, loads, installs and draws its resource menu bar, updates menu items and reaches
-GetMenuItemText;
+the chooser event loop;
 gameplay and complete application lifecycle acceptance remain pending.
 
 GetMouse shares checked current-port coordinates and live guest Mouse globals;
@@ -149,3 +149,9 @@ and checked resource-fork serialization preserves supported resource metadata.
 Opening additional resource maps, resource updates and persistence remain pending.
 An earlier continuation note incorrectly called the original NewMenu trap
 CreateResFile; resource-file creation is proven by fixtures, not this original run.
+
+GetMenuItemText now reads live menu records through both adapters. Polygon recording,
+visibility, offsets and disposal share guest handles; polygon fills and edge unions
+run on wgpu with shared clipping/pattern rules. The bounded original splash now
+reaches the chooser event loop; a live-control press reaches TrackControl. Actual
+confirmation/gameplay and control callbacks remain unfinished.

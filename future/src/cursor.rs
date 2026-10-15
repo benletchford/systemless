@@ -103,7 +103,7 @@ impl Cursor {
         }
         Ok(())
     }
-    pub fn draw(&self, input: Input) -> Draw {
+    pub fn draw(&self, input: Input) -> Draw<'static> {
         match self.image.filter(|_| self.visible()) {
             Some(image) => Draw::Cursor {
                 x: i32::from(input.horizontal) - i32::from(image.horizontal),

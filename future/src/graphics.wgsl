@@ -17,6 +17,17 @@ fn line_minor(origin:i32,delta:i32,steps:i32,t:i32)->i32 {
     let distance=i32((u32(abs(delta))*u32(t)+u32(steps/2))/u32(steps));
     return origin+select(-distance,distance,delta>=0);
 }
+// Shared line-brush membership, used once per pixel for polygon edge unions.
+fn line_contains(x:i32,y:i32,ox:i32,oy:i32,delta:i32,steps:i32,vertical:bool,direction:i32,pw:i32,ph:i32)->bool {
+    var lo=0;var hi=0;
+    if vertical {lo=max(0,y-ph+1-oy);hi=min(steps,y-oy);}
+    else if direction>0 {lo=max(0,x-pw+1-ox);hi=min(steps,x-ox);}
+    else {lo=max(0,ox-x);hi=min(steps,ox-x+pw-1);}
+    if pw<=0 || ph<=0 || lo>hi {return false;}
+    let origin=select(oy,ox,vertical);let a=line_minor(origin,delta,steps,lo);let b=line_minor(origin,delta,steps,hi);
+    let coordinate=select(y,x,vertical);let size=select(ph,pw,vertical);
+    return coordinate>=min(a,b) && coordinate<max(a,b)+size;
+}
 @compute @workgroup_size(8,8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let x=i32(id.x); let y=i32(id.y); let w=p[0]; let h=p[1];
@@ -65,18 +76,33 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         if p[2]==5 {
             let q=25+4*max(p[24],0);
-            let delta=p[q]; let steps=p[q+1]; let vertical=p[q+2]!=0;
-            let direction=p[q+3];let pw=p[q+4];let ph=p[q+5];
-            var lo=0;var hi=0;
-            if vertical { lo=max(0,y-ph+1-p[15]);hi=min(steps,y-p[15]); }
-            else if direction>0 {lo=max(0,x-pw+1-p[14]);hi=min(steps,x-p[14]);}
-            else {lo=max(0,p[14]-x);hi=min(steps,p[14]-x+pw-1);}
-            valid=pw>0 && ph>0 && lo<=hi;
-            if valid {
-                let origin=select(p[15],p[14],vertical);
-                let a=line_minor(origin,delta,steps,lo);let b=line_minor(origin,delta,steps,hi);
-                let coordinate=select(y,x,vertical);let size=select(ph,pw,vertical);
-                valid=coordinate>=min(a,b) && coordinate<max(a,b)+size;
+            valid=line_contains(x,y,p[14],p[15],p[q],p[q+1],p[q+2]!=0,p[q+3],p[q+4],p[q+5]);
+        }
+        if p[2]==6 {
+            let q=25+4*max(p[24],0);let count=p[q];let pw=p[q+1];let ph=p[q+2];let lx=x-p[14];let ly=y-p[15];
+            valid=false;
+            if pw<0 && count>=3 {
+                // Even-odd fill at integer guest coordinates, matching the legacy
+                // reference sampling rule. Products stay signed-32-bit
+                // because host validation limits both geometric extents to 32767.
+                for (var i=0;i<count;i=i+1) {
+                    let a=q+3+2*i;let b=q+3+2*((i+1)%count);
+                    let x0=p[a];let y0=p[a+1];let x1=p[b];let y1=p[b+1];
+                    let yy=ly;
+                    if (y0>yy)!=(y1>yy) {
+                        let left=(lx-x0)*(y1-y0);let right=(yy-y0)*(x1-x0);
+                        if select((left > right),(left < right),(y1 > y0)) {valid=!valid;}
+                    }
+                }
+            } else if pw>=0 && count>=2 {
+                for (var i=0;i<count && !valid;i=i+1) {
+                    let a=q+3+2*i;let b=q+3+2*((i+1)%count);
+                    var sx=p[a];var sy=p[a+1];var ex=p[b];var ey=p[b+1];
+                    if sx==ex && sy==ey {continue;}
+                    if sy>ey {let tx=sx;let ty=sy;sx=ex;sy=ey;ex=tx;ey=ty;}
+                    let dh=abs(ex-sx);let dv=ey-sy;let vertical=dv>=dh;
+                    valid=line_contains(lx,ly,sx,sy,select(dv,ex-sx,vertical),max(dh,dv),vertical,select(-1,1,ex>=sx),pw,ph);
+                }
             }
         }
         if valid { switch p[13] {

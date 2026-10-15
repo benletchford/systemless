@@ -20,6 +20,7 @@ pub mod load;
 pub mod memory;
 pub mod menus;
 pub mod picture;
+pub mod polygons;
 pub mod process;
 pub mod quickdraw;
 pub mod rectangles;

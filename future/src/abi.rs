@@ -69,6 +69,7 @@ pub enum Service {
     SetCursor,
     AppendMenu,
     NewMenu,
+    GetMenuItemText,
     SetMenuItemText,
     SetItemCommand,
     SetItemMark,
@@ -113,6 +114,12 @@ pub enum Service {
     CombineRegions(crate::region_geometry::Boolean),
     Region(crate::regions::Op),
     Port(crate::quickdraw::PortOp),
+    Polygon(crate::polygons::Op),
+    PolygonDraw(crate::polygons::Verb),
+    KillPoly,
+    OffsetPoly,
+    FillPoly,
+    PenVisibility(i16),
     PenNormal,
     PenMode,
     PenSize,
@@ -315,6 +322,7 @@ impl Abi {
             b"GetMHandle" | b"GetMenuHandle" => Some(Service::GetMenuHandle),
             b"AppendMenu" => Some(Service::AppendMenu),
             b"NewMenu" => Some(Service::NewMenu),
+            b"GetItem" | b"GetMenuItemText" => Some(Service::GetMenuItemText),
             b"SetItem" | b"SetMenuItemText" => Some(Service::SetMenuItemText),
             b"SetItemCmd" => Some(Service::SetItemCommand),
             b"SetItemMark" => Some(Service::SetItemMark),
@@ -378,6 +386,17 @@ impl Abi {
             b"MovePortTo" => Some(Service::MovePortTo),
             b"PortSize" => Some(Service::PortSize),
             b"PenSize" => Some(Service::PenSize),
+            b"OpenPoly" => Some(Service::Polygon(crate::polygons::Op::Open)),
+            b"ClosePoly" => Some(Service::Polygon(crate::polygons::Op::Close)),
+            b"KillPoly" => Some(Service::KillPoly),
+            b"OffsetPoly" => Some(Service::OffsetPoly),
+            b"FramePoly" => Some(Service::PolygonDraw(crate::polygons::Verb::Frame)),
+            b"PaintPoly" => Some(Service::PolygonDraw(crate::polygons::Verb::Paint)),
+            b"ErasePoly" => Some(Service::PolygonDraw(crate::polygons::Verb::Erase)),
+            b"InvertPoly" => Some(Service::PolygonDraw(crate::polygons::Verb::Invert)),
+            b"FillPoly" => Some(Service::FillPoly),
+            b"HidePen" => Some(Service::PenVisibility(-1)),
+            b"ShowPen" => Some(Service::PenVisibility(1)),
             b"PenNormal" => Some(Service::PenNormal),
             b"PenMode" => Some(Service::PenMode),
             b"WaitNextEvent" => Some(Service::WaitNextEvent),
@@ -1091,6 +1110,60 @@ impl Abi {
                 }),
                 Reply::None,
             )),
+            0xa896 | 0xa897 => Ok((
+                Call::PenVisibility(if opcode == 0xa896 { -1 } else { 1 }),
+                Reply::None,
+            )),
+            0xa8cb => {
+                memory.validate_write(GuestPtr(sp), 4)?;
+                Ok((
+                    Call::Polygon(crate::polygons::Op::Open),
+                    Reply::StackLong(GuestPtr(sp)),
+                ))
+            }
+            0xa8cc => Ok((Call::Polygon(crate::polygons::Op::Close), Reply::None)),
+            0xa8c6..=0xa8c9 | 0xa8cd => {
+                let handle = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("polygon stack overflow".into()))?;
+                let op = if opcode == 0xa8cd {
+                    crate::polygons::Op::Kill(handle)
+                } else {
+                    crate::polygons::Op::Draw {
+                        handle,
+                        verb: match opcode {
+                            0xa8c6 => crate::polygons::Verb::Frame,
+                            0xa8c7 => crate::polygons::Verb::Paint,
+                            0xa8c8 => crate::polygons::Verb::Erase,
+                            _ => crate::polygons::Verb::Invert,
+                        },
+                    }
+                };
+                Ok((Call::Polygon(op), Reply::None))
+            }
+            0xa8ca | 0xa8ce => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let handle = u32::from_be_bytes(args[4..8].try_into().unwrap());
+                let op = if opcode == 0xa8ca {
+                    crate::polygons::Op::Draw {
+                        handle,
+                        verb: crate::polygons::Verb::Fill(GuestPtr(u32::from_be_bytes(
+                            args[..4].try_into().unwrap(),
+                        ))),
+                    }
+                } else {
+                    crate::polygons::Op::Offset {
+                        handle,
+                        dh: i16::from_be_bytes(args[2..4].try_into().unwrap()),
+                        dv: i16::from_be_bytes(args[..2].try_into().unwrap()),
+                    }
+                };
+                c.dar[15] = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("polygon stack overflow".into()))?;
+                Ok((Call::Polygon(op), Reply::None))
+            }
             0xa89e => Ok((Call::PenNormal, Reply::None)),
             0xa933 => {
                 let args = memory.read(GuestPtr(sp), 8)?;
@@ -1125,7 +1198,7 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("resource file stack overflow".into()))?;
                 Ok((Call::CreateResourceFile(name), Reply::None))
             }
-            0xa947 => {
+            0xa946 | 0xa947 => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let source = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
                 let item = i16::from_be_bytes(args[4..6].try_into().unwrap());
@@ -1134,10 +1207,18 @@ impl Abi {
                     .checked_add(10)
                     .ok_or_else(|| Error::Cpu("menu text stack overflow".into()))?;
                 Ok((
-                    Call::Menu(crate::menus::Op::Text {
-                        handle,
-                        item,
-                        source,
+                    Call::Menu(if opcode == 0xa946 {
+                        crate::menus::Op::ReadText {
+                            handle,
+                            item,
+                            destination: source,
+                        }
+                    } else {
+                        crate::menus::Op::Text {
+                            handle,
+                            item,
+                            source,
+                        }
                     }),
                     Reply::None,
                 ))
@@ -1982,6 +2063,11 @@ impl Abi {
                 id: c.gpr[3] as i16,
                 title: GuestPtr(c.gpr[4]),
             }),
+            Service::GetMenuItemText => Call::Menu(crate::menus::Op::ReadText {
+                handle: c.gpr[3],
+                item: c.gpr[4] as i16,
+                destination: GuestPtr(c.gpr[5]),
+            }),
             Service::SetMenuItemText => Call::Menu(crate::menus::Op::Text {
                 handle: c.gpr[3],
                 item: c.gpr[4] as i16,
@@ -2181,6 +2267,22 @@ impl Abi {
                 width: c.gpr[3] as i16,
                 height: c.gpr[4] as i16,
             },
+            Service::Polygon(op) => Call::Polygon(op),
+            Service::PolygonDraw(verb) => Call::Polygon(crate::polygons::Op::Draw {
+                handle: c.gpr[3],
+                verb,
+            }),
+            Service::FillPoly => Call::Polygon(crate::polygons::Op::Draw {
+                handle: c.gpr[3],
+                verb: crate::polygons::Verb::Fill(GuestPtr(c.gpr[4])),
+            }),
+            Service::KillPoly => Call::Polygon(crate::polygons::Op::Kill(c.gpr[3])),
+            Service::OffsetPoly => Call::Polygon(crate::polygons::Op::Offset {
+                handle: c.gpr[3],
+                dh: c.gpr[4] as i16,
+                dv: c.gpr[5] as i16,
+            }),
+            Service::PenVisibility(delta) => Call::PenVisibility(delta),
             Service::PenNormal => Call::PenNormal,
             Service::PenMode => Call::PenMode(c.gpr[3] as i16),
 
@@ -2374,6 +2476,7 @@ impl Abi {
                         | Service::SetItemMark
                         | Service::SetItemCommand
                         | Service::SetMenuItemText
+                        | Service::GetMenuItemText
                         | Service::CheckItem
                         | Service::Menu(
                             crate::menus::Op::Init
@@ -2424,6 +2527,12 @@ impl Abi {
                         | Service::PenSize
                         | Service::PenMode
                         | Service::PenNormal
+                        | Service::PenVisibility(_)
+                        | Service::Polygon(crate::polygons::Op::Close)
+                        | Service::PolygonDraw(_)
+                        | Service::KillPoly
+                        | Service::OffsetPoly
+                        | Service::FillPoly
                         | Service::ExitToShell
                         | Service::SetPointerSize
                         | Service::DisposePointer

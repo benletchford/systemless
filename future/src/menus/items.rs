@@ -277,3 +277,34 @@ pub(super) fn append_specs(
     process.replace_handles(memory, vec![(handle, bytes)])?;
     Ok(0)
 }
+
+/// Snapshot before the destination write, including aliased guest output storage.
+pub(super) fn read_text(
+    memory: &mut Memory,
+    process: &mut Process,
+    handle: u32,
+    item: i16,
+    destination: GuestPtr,
+) -> Result<u32> {
+    if destination.0 == 0 {
+        return Ok(0);
+    }
+    let error = process.mem_error;
+    let result = (|| {
+        let bytes = data(memory, process, handle)?;
+        let menu = Record::parse(&bytes)?;
+        let text = if item > 0 {
+            menu.items
+                .get(item as usize - 1)
+                .map_or(&[][..], |i| i.text)
+        } else {
+            &[]
+        };
+        let mut output = vec![text.len() as u8];
+        output.extend(text);
+        memory.write(destination, &output)?;
+        Ok(0)
+    })();
+    process.mem_error = error;
+    result
+}

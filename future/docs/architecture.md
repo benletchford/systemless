@@ -1319,3 +1319,25 @@ same operation, with errors published through ResErr and no function result.
 Additional open resource maps, cached-resource ownership across those maps and
 changed-resource publication remain required future operations; raw file writes
 still do not automatically attach Resource Manager maps.
+
+
+## Polygon recording and GPU coverage
+
+The process polygon manager stores only active handle/port identity. Vertex bytes,
+size and bounds remain in the shared guest heap; line calls read/update those live
+bytes. Open/Close balance pen visibility and publish/clear polySave. Suspension,
+foreign state, heap failures and unsupported callback/recording combinations have
+explicit boundaries. CPU adapters marshal the same lifecycle and drawing operations.
+
+Polygon source vertices are borrowed during synchronous command submission and
+copied into the GPU parameter buffer. The compute shader performs bounded even-odd
+fill tests or a union of the shared line-brush predicate. Transfer executes once per
+covered pixel, retaining XOR corners, clipping, patterns and direct-memory coherence.
+No second framebuffer renderer or CPU polygon scan conversion is introduced.
+Raster sampling follows the permitted legacy reference, with integer arithmetic;
+native pixel parity and broader recording integration remain unverified. The first
+GPU validation error is retained so shader faults are not hidden by pipeline fallout.
+
+OpenPoly visibility semantics follow Apple's [OpenPoly reference](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-121.html).
+Legacy fill sampling is separately evidenced by `trap/shapes.rs::draw_poly` and
+`loader/ppc/regions.rs::ppc_fill_polygon_interior` in the preserved original runtime.

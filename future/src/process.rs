@@ -21,6 +21,7 @@ pub struct Process {
     pub cursor: crate::cursor::Cursor,
     pub input: crate::events::Input,
     pub menus: crate::menus::Menus,
+    pub polygons: crate::polygons::Manager,
     pub textedit: crate::textedit::Manager,
     pub fonts: crate::font::Manager,
     pub windows: crate::windows::Windows,

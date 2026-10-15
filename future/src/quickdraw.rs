@@ -34,6 +34,16 @@ struct PatternPaint {
     mode: u16,
     monochrome: bool,
 }
+#[derive(Clone, Copy)]
+enum Coverage<'a> {
+    Shape(Option<&'a [Rect]>),
+    Line(crate::graphics::PenLine),
+    RecordingLine(crate::graphics::PenLine),
+    Polygon {
+        vertices: &'a [(i16, i16)],
+        frame: Option<(i16, i16)>,
+    },
+}
 fn offset(p: GuestPtr, n: u32) -> Result<GuestPtr> {
     p.0.checked_add(n)
         .map(GuestPtr)
@@ -200,6 +210,79 @@ impl Ports {
         process.dispose_handle(memory, visible)?;
         process.dispose_handle(memory, clip)
     }
+    pub fn pen_visibility(&self, memory: &mut Memory, delta: i16) -> Result<()> {
+        let port = self.current(memory)?;
+        let at = GuestPtr(port.0 + 66);
+        let value = (memory.u16(at)? as i16).wrapping_add(delta);
+        memory.write(at, &value.to_be_bytes())
+    }
+    pub(crate) fn draw_polygon(
+        &self,
+        memory: &mut Memory,
+        gpu: Option<&Graphics>,
+        vertices: &[(i16, i16)],
+        verb: crate::polygons::Verb,
+    ) -> Result<()> {
+        use crate::polygons::Verb;
+        let port = self.current(memory)?;
+        let bytes = memory.read(port, PORT_SIZE)?.to_vec();
+        let word = |at| i16::from_be_bytes(bytes[at..at + 2].try_into().unwrap());
+        let frame = if verb == Verb::Frame {
+            Some((word(54), word(52)))
+        } else {
+            None
+        };
+        if frame.is_some_and(|(w, h)| w < 0 || h < 0) {
+            return Err(Error::Graphics("negative polygon pen size".into()));
+        }
+        if vertices.len() < if frame.is_some() { 2 } else { 3 }
+            || frame.is_some_and(|(w, h)| w == 0 || h == 0 || word(66) < 0)
+        {
+            return Ok(());
+        }
+        let min_x = vertices.iter().map(|p| i32::from(p.0)).min().unwrap();
+        let min_y = vertices.iter().map(|p| i32::from(p.1)).min().unwrap();
+        let max_x = vertices.iter().map(|p| i32::from(p.0)).max().unwrap();
+        let max_y = vertices.iter().map(|p| i32::from(p.1)).max().unwrap();
+        let paint = match verb {
+            Verb::Frame | Verb::Paint => None,
+            Verb::Erase => Some(PatternPaint {
+                pattern: bytes[32..40].try_into().unwrap(),
+                mode: 8,
+                monochrome: false,
+            }),
+            Verb::Invert => Some(PatternPaint {
+                pattern: [255; 8],
+                mode: 10,
+                monochrome: true,
+            }),
+            Verb::Fill(p) => {
+                memory.validate_write(GuestPtr(port.0 + 40), 8)?;
+                Some(PatternPaint {
+                    pattern: memory.read(p, 8)?.try_into().unwrap(),
+                    mode: 8,
+                    monochrome: false,
+                })
+            }
+        };
+        let (bitmap, _) = self.drawing_target(memory)?;
+        let (w, h) = frame.unwrap_or((0, 0));
+        let r = Rect::new(
+            min_x.max(bitmap.bounds.left),
+            min_y.max(bitmap.bounds.top),
+            (max_x + i32::from(w)).min(bitmap.bounds.right),
+            (max_y + i32::from(h)).min(bitmap.bounds.bottom),
+        );
+        if r.left < r.right && r.top < r.bottom {
+            let gpu =
+                gpu.ok_or_else(|| Error::Graphics("polygon drawing requires a GPU".into()))?;
+            self.paint_geometry(gpu, memory, r, Coverage::Polygon { vertices, frame }, paint)?;
+        }
+        if matches!(verb, Verb::Fill(_)) {
+            memory.write(GuestPtr(port.0 + 40), &paint.unwrap().pattern)?;
+        }
+        Ok(())
+    }
     pub fn pen_normal(&self, memory: &mut Memory) -> Result<()> {
         let port = self.current(memory)?;
         memory.write(
@@ -335,7 +418,7 @@ impl Ports {
                     "CopyBits destination aliases a different port stride".into(),
                 ));
             }
-            let (_, clips) = self.drawing_target_with_visibility(memory, true)?;
+            let (_, clips) = self.drawing_target_with_visibility(memory, true, false)?;
             let dx = destination.bounds.left - current.bounds.left;
             let dy = destination.bounds.top - current.bounds.top;
             clips
@@ -403,13 +486,36 @@ impl Ports {
         v: i16,
         relative: bool,
     ) -> Result<()> {
+        self.line_impl(memory, gpu, h, v, relative, false)
+    }
+    pub(crate) fn line_recorded(
+        &self,
+        memory: &mut Memory,
+        gpu: Option<&Graphics>,
+        h: i16,
+        v: i16,
+        relative: bool,
+    ) -> Result<()> {
+        self.line_impl(memory, gpu, h, v, relative, true)
+    }
+    fn line_impl(
+        &self,
+        memory: &mut Memory,
+        gpu: Option<&Graphics>,
+        h: i16,
+        v: i16,
+        relative: bool,
+        recording: bool,
+    ) -> Result<()> {
         let port = self.current(memory)?;
         let bytes = memory.read(port, PORT_SIZE)?;
         if u16::from_be_bytes(bytes[6..8].try_into().unwrap()) & 0xc000 != 0 {
             return Err(Error::Graphics("color line ports are unsupported".into()));
         }
         for i in [92, 96, 100, 104] {
-            if u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()) != 0 {
+            if u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()) != 0
+                && !(i == 100 && recording)
+            {
                 return Err(Error::Graphics(
                     "line recording or custom procedures are unsupported".into(),
                 ));
@@ -425,7 +531,7 @@ impl Ports {
         let geometry = crate::lines::geometry(from, to, word(54), word(52))?;
         memory.validate_write(offset(port, 48)?, 4)?;
         if word(66) >= 0 && geometry.width != 0 && geometry.height != 0 {
-            let (bitmap, _) = self.drawing_target(memory)?;
+            let (bitmap, _) = self.drawing_target_with_visibility(memory, false, recording)?;
             let bounds = crate::lines::bounds(geometry);
             let clipped = Rect::new(
                 bounds.left.max(bitmap.bounds.left),
@@ -436,7 +542,17 @@ impl Ports {
             if clipped.left < clipped.right && clipped.top < clipped.bottom {
                 let gpu =
                     gpu.ok_or_else(|| Error::Graphics("line drawing requires a GPU".into()))?;
-                self.paint_coverage_with_line(gpu, memory, clipped, None, Some(geometry), None)?;
+                self.paint_geometry(
+                    gpu,
+                    memory,
+                    clipped,
+                    if recording {
+                        Coverage::RecordingLine(geometry)
+                    } else {
+                        Coverage::Line(geometry)
+                    },
+                    None,
+                )?;
             }
         }
         let mut location = [0; 4];
@@ -487,7 +603,7 @@ impl Ports {
             }
             RectangleOp::Frame => unreachable!(),
         };
-        self.paint_coverage_with_line(gpu, memory, r, None, None, Some(paint))?;
+        self.paint_geometry(gpu, memory, r, Coverage::Shape(None), Some(paint))?;
         if fill {
             memory.write(offset(port, 40)?, &paint.pattern)?;
         }
@@ -522,17 +638,21 @@ impl Ports {
         self.paint_coverage(gpu, memory, r, Some(&coverage))
     }
     pub(crate) fn drawing_target(&self, memory: &Memory) -> Result<(Bitmap, Vec<Rect>)> {
-        self.drawing_target_with_visibility(memory, false)
+        self.drawing_target_with_visibility(memory, false, false)
     }
     fn drawing_target_with_visibility(
         &self,
         memory: &Memory,
         force_visibility: bool,
+        recording_polygon: bool,
     ) -> Result<(Bitmap, Vec<Rect>)> {
         let p = self.current(memory)?;
         let bytes = memory.read(p, PORT_SIZE)?;
         let word = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
-        if [92, 96, 100, 104].iter().any(|o| word(*o) != 0) {
+        if [92, 96, 100, 104]
+            .iter()
+            .any(|o| word(*o) != 0 && !(*o == 100 && recording_polygon))
+        {
             return Err(Error::Graphics(
                 "QuickDraw recording or custom procedures are unsupported".into(),
             ));
@@ -578,21 +698,22 @@ impl Ports {
         r: Rect,
         shape: Option<&[Rect]>,
     ) -> Result<()> {
-        self.paint_coverage_with_line(gpu, memory, r, shape, None, None)
+        self.paint_geometry(gpu, memory, r, Coverage::Shape(shape), None)
     }
-    fn paint_coverage_with_line(
+    fn paint_geometry(
         &self,
         gpu: &Graphics,
         memory: &mut Memory,
         r: Rect,
-        shape: Option<&[Rect]>,
-        line: Option<crate::graphics::PenLine>,
+        coverage: Coverage<'_>,
         paint: Option<PatternPaint>,
     ) -> Result<()> {
         let p = self.current(memory)?;
         let bytes = memory.read(p, PORT_SIZE)?;
         let word = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
-        if [92, 96, 100, 104].iter().any(|o| word(*o) != 0) {
+        if [92, 96, 100, 104].iter().any(|o| {
+            word(*o) != 0 && !(*o == 100 && matches!(coverage, Coverage::RecordingLine(_)))
+        }) {
             return Err(Error::Graphics(
                 "QuickDraw recording or custom procedures are unsupported".into(),
             ));
@@ -626,7 +747,11 @@ impl Ports {
             pattern[((y as i32 - port_rect.top) & 7) as usize]
                 .rotate_right((port_rect.left & 7) as u32)
         });
-        let (bitmap, mut clips) = self.drawing_target(memory)?;
+        let (bitmap, mut clips) = self.drawing_target_with_visibility(
+            memory,
+            false,
+            matches!(coverage, Coverage::RecordingLine(_)),
+        )?;
         let intersect = |a: Rect, b: Rect| {
             Rect::new(
                 a.left.max(b.left),
@@ -635,7 +760,7 @@ impl Ports {
                 a.bottom.min(b.bottom),
             )
         };
-        if let Some(shape) = shape {
+        if let Coverage::Shape(Some(shape)) = coverage {
             if clips.len().saturating_mul(shape.len()) > 1_000_000 {
                 return Err(Error::Graphics(
                     "shape intersection work limit exceeded".into(),
@@ -650,7 +775,25 @@ impl Ports {
         bitmap.execute_clipped(
             gpu,
             memory,
-            if let Some(line) = line {
+            if let Coverage::Polygon { vertices, frame } = coverage {
+                Draw::Polygon {
+                    rect: r,
+                    clip: port_rect,
+                    vertices,
+                    origin_x: 0,
+                    origin_y: 0,
+                    frame,
+                    pattern,
+                    foreground,
+                    background,
+                    mode: match mode & 3 {
+                        0 => Transfer::Copy,
+                        1 => Transfer::Or,
+                        2 => Transfer::Xor,
+                        _ => Transfer::Bic,
+                    },
+                }
+            } else if let Coverage::Line(line) | Coverage::RecordingLine(line) = coverage {
                 Draw::Line {
                     rect: r,
                     clip: port_rect,

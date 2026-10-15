@@ -75,10 +75,12 @@ int main(void) {
         if (GetNewMBar(43)!=0 || ResError()!=-192 || GetMenuHandle(70)!=menu) return 21;
     }
     {
+        Str255 item;
         MenuHandle created=NewMenu(-17,"\pTemporary");
         if (!created || (*created)->menuID!=-17 || CountMItems(created)!=0 || GetHandleSize((Handle)created)!=25) return 30;
         AppendMenu(created,"\pOne/O;Two");
         if (CountMItems(created)!=2 || ((unsigned char *)*created)[29]!='O') return 31;
+        GetMenuItemText(created,1,item); if (item[0]!=3 || item[1]!='O' || item[2]!='n' || item[3]!='e') return 34;
         DisposeHandle((Handle)created);
     }
     InitCursor(); HideCursor(); HideCursor(); ShowCursor();
@@ -87,5 +89,20 @@ int main(void) {
     MoveTo(23,29); PenSize(4,3); PenMode(patXor); PenPat(&qd.gray); PenNormal();
     if (port.pnSize.h!=1 || port.pnSize.v!=1 || port.pnMode!=patCopy || port.pnLoc.h!=23 || port.pnLoc.v!=29) return 32;
     { short i; for (i=0;i<8;i++) if (((unsigned char *)&port.pnPat)[i]!=255) return 33; }
+    {
+        PolyHandle polygon;
+        MoveTo(100,100); polygon=OpenPoly();
+        if (!polygon || port.pnVis!=-1 || !port.polySave) return 35;
+        LineTo(108,100); LineTo(100,108); ClosePoly();
+        if (port.pnVis || port.polySave || (*polygon)->polyBBox.left!=100 || (*polygon)->polyBBox.bottom!=108) return 36;
+        PaintPoly(polygon); if (!(pixels[64*100+12]&8)) return 37;
+        InvertPoly(polygon); if (pixels[64*100+12]&8) return 38;
+        FillPoly(polygon,&qd.black); if (!(pixels[64*100+12]&8)) return 39;
+        FramePoly(polygon); if (port.pnLoc.h!=100 || port.pnLoc.v!=108) return 40;
+        ErasePoly(polygon); OffsetPoly(polygon,4,2);
+        if ((*polygon)->polyBBox.left!=104 || (*polygon)->polyBBox.top!=102) return 41;
+        HidePen(); if (port.pnVis!=-1) return 42; ShowPen(); if (port.pnVis) return 43;
+        KillPoly(polygon);
+    }
     ClosePort(&port); PostEvent(diskEvt,0x600d); ExitToShell(); return 0;
 }

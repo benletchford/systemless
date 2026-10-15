@@ -25,6 +25,11 @@ pub enum Op {
         handle: u32,
         source: GuestPtr,
     },
+    ReadText {
+        handle: u32,
+        item: i16,
+        destination: GuestPtr,
+    },
     Count(u32),
     Command {
         handle: u32,
@@ -178,6 +183,14 @@ impl Menus {
         gpu: Option<&Graphics>,
         op: Op,
     ) -> Result<u32> {
+        if let Op::ReadText {
+            handle,
+            item,
+            destination,
+        } = op
+        {
+            return items::read_text(memory, process, handle, item, destination);
+        }
         if let Op::Append { handle, source } = op {
             return items::append_specs(memory, process, handle, source);
         }
@@ -396,7 +409,8 @@ impl Menus {
                 )?;
                 Ok(0)
             }
-            Op::Append { .. }
+            Op::ReadText { .. }
+            | Op::Append { .. }
             | Op::New { .. }
             | Op::Command { .. }
             | Op::Init

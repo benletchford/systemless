@@ -41,7 +41,8 @@ fork path and a maximum instruction count, and prints register/opcode context.
   and StillDown, hides/disposes the demonstration splash, restores its saved
   nil port, creates/updates/reads its settings file, loads/installs its menu bar
   draws its menu titles, updates live items, constructs WIND 1000/two controls
-  and reaches unsupported GetMenuItemText ($A946).
+  records/draws its polygon indicator and reaches the chooser event loop.
+  A recorded-button press then reaches TrackControl ($A968).
   SystemTask preserves the empty periodic service state, PenSize updates live
   GrafPort dimensions and RectInRgn checks content intersections.
   GetPicture loads PICT 202, PortSize sizes its offscreen GrafPort and MovePortTo
@@ -118,14 +119,23 @@ ppc-space and evnt, both correctly unavailable. It loads and installs MBAR 1000,
 counts menu 1's items, calls AddResMenu('DRVR') and draws the original menu bar.
 It changes menu 4's mark, text and command key, reads settings, constructs WIND
 1000/two controls, creates menu 5010 and appends four game names. It shows the
-window and draws the game/difficulty chooser's title, icons and borders, passing
-PenNormal. The next unsupported call is GetMenuItemText/GetItem ($A946), post-trap
-PC $0101090C. The bounded transition proves splash dismissal, process-local
-settings I/O, menu setup and partial chooser drawing. Chooser selection, popup
-interaction, gameplay and a complete lifecycle remain unverified. Files remain
-process-local. Next: checked live menu text reads, then continue this chooser.
+window and draws the game/difficulty chooser, including its polygon indicator.
+The splash press/release finishes its bounded execution without a service fault.
+A second click at (145,150) also completes; this is input delivery and drawing,
+not accepted chooser selection. The estimated point (330,230) misses the actual
+control rectangle. A press at global (402,231), chosen from live bounds/status,
+reaches TrackControl ($A968), post-trap PC $0100EC06, before mouse release.
+Confirmation, popup interaction, gameplay and a complete lifecycle remain unverified.
+Files remain process-local. Next: actual held-mouse control tracking/callbacks and
+resume this chooser interaction, preserving the real CPU reply and input lifecycle.
 
 An earlier record mislabeled decimal 43313 as $A9B1/CreateResFile. It is actually
-$A931/NewMenu; the original trace did not exercise resource-file creation. That
-feature is accepted separately through generated and MPW-compiled guests.
+$A931/NewMenu; resource-file creation is accepted separately through generated and
+MPW-compiled guests. Original-app bytes remain outside the repository.
 The full rebuild goal remains active.
+
+The diagnostic also accepts additional coordinate pairs. To reproduce the current
+tracking boundary, append `145 150 402 231` after the initial `256 171` click.
+Every press/release has a separate 30,000-boundary budget. A failed press is not
+followed by a release or later click. Multiple-click runs save per-step screens;
+error output includes the hexadecimal trap and native stack bytes for continuation.

@@ -20,8 +20,8 @@ fn screenshot(app: &mut LoadedApplication, path: &Path) -> Result<(), Box<dyn st
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.len() != 4 {
-        return Err("usage: probe_mouse CODE_RESOURCE_FORK OUTPUT_PREFIX X Y".into());
+    if args.len() < 4 || !args.len().is_multiple_of(2) {
+        return Err("usage: probe_mouse CODE_RESOURCE_FORK OUTPUT_PREFIX X Y [X Y ...]".into());
     }
     let mut fork = Vec::new();
     std::fs::File::open(&args[0])?
@@ -36,32 +36,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("startup {:?}", app.runtime.advance(30_000)?);
     screenshot(&mut app, Path::new(&format!("{}-before.ppm", args[1])))?;
     let mut pointer = Pointer::default();
-    pointer.motion(
-        &mut app.runtime.process.input,
-        &mut app.runtime.memory,
-        (args[2].parse()?, args[3].parse()?),
-        (512, 342),
-        (512, 342),
-    )?;
-    pointer.button(
-        &mut app.runtime.memory,
-        &mut app.runtime.process.input,
-        true,
-    )?;
     let first = app.runtime.services.calls.len();
-    let mut result = app.runtime.advance(30_000);
-    println!("mouse down {result:?}");
-    if result.is_ok() {
+    let mut result = Ok(systemless_future::runtime::Stop::Budget);
+    for (index, coordinates) in args[2..].chunks_exact(2).enumerate() {
+        pointer.motion(
+            &mut app.runtime.process.input,
+            &mut app.runtime.memory,
+            (coordinates[0].parse()?, coordinates[1].parse()?),
+            (512, 342),
+            (512, 342),
+        )?;
         pointer.button(
             &mut app.runtime.memory,
             &mut app.runtime.process.input,
-            false,
+            true,
         )?;
         result = app.runtime.advance(30_000);
-        println!("mouse up {result:?}");
+        println!("click {} mouse down {result:?}", index + 1);
+        if result.is_ok() {
+            pointer.button(
+                &mut app.runtime.memory,
+                &mut app.runtime.process.input,
+                false,
+            )?;
+            result = app.runtime.advance(30_000);
+            println!("click {} mouse up {result:?}", index + 1);
+        }
+        if args.len() > 4 {
+            screenshot(
+                &mut app,
+                Path::new(&format!("{}-step-{}.ppm", args[1], index + 1)),
+            )?;
+        }
+        if result.is_err() {
+            break;
+        }
     }
     for call in &app.runtime.services.calls[first..] {
         println!("service {call:?}");
+    }
+    if let Some(ports) = app.runtime.process.ports {
+        if let Ok(owner) = app.runtime.memory.u32(ports.current_slot) {
+            if app
+                .runtime
+                .process
+                .windows
+                .contains(&app.runtime.memory, owner)
+                .unwrap_or(false)
+            {
+                let mut control = app.runtime.memory.u32(GuestPtr(owner + 140)).unwrap_or(0);
+                for _ in 0..256 {
+                    if control == 0 {
+                        break;
+                    }
+                    let Ok(record) = app.runtime.memory.u32(GuestPtr(control)) else {
+                        break;
+                    };
+                    let Some(status) = record.checked_add(8) else {
+                        break;
+                    };
+                    println!(
+                        "control {control:08x} bounds/status={:02x?}",
+                        app.runtime.memory.read(GuestPtr(status), 10)
+                    );
+                    control = app.runtime.memory.u32(GuestPtr(record)).unwrap_or(0);
+                }
+            }
+        }
     }
     if let Cpu::M68k(c) = &app.runtime.cpu {
         println!(
@@ -72,8 +113,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.runtime.memory.u16(GuestPtr(c.pc))
         );
     }
-    if result.is_err() {
+    if let Err(error) = &result {
+        eprintln!("execution error: {error}");
         if let Cpu::M68k(c) = &app.runtime.cpu {
+            println!(
+                "fault SP={:08x} stack={:02x?}",
+                c.dar[15],
+                app.runtime.memory.read(GuestPtr(c.dar[15]), 32)
+            );
             let pb = GuestPtr(c.dar[8]);
             println!(
                 "fault A0={:08x} bytes={:02x?}",
