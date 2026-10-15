@@ -70,6 +70,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.runtime.memory.u16(GuestPtr(c.pc))
         );
     }
+    if result.is_err() {
+        if let Cpu::M68k(c) = &app.runtime.cpu {
+            let pb = GuestPtr(c.dar[8]);
+            println!(
+                "fault A0={:08x} bytes={:02x?}",
+                pb.0,
+                app.runtime.memory.read(pb, 80)
+            );
+            if let Some(name) =
+                pb.0.checked_add(18)
+                    .and_then(|address| app.runtime.memory.u32(GuestPtr(address)).ok())
+            {
+                if let Ok(length) = app.runtime.memory.read(GuestPtr(name), 1) {
+                    println!(
+                        "parameter name={:02x?}",
+                        app.runtime
+                            .memory
+                            .read(GuestPtr(name), usize::from(length[0]) + 1)
+                    );
+                }
+            }
+        }
+    }
     screenshot(&mut app, Path::new(&format!("{}-after.ppm", args[1])))?;
     result?;
     Ok(())

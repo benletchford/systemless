@@ -233,7 +233,8 @@ Macintosh Str31). The virtual volume has reference -1, drive 1, root directory I
 2 and application file ID 16, with 4096-byte allocation units. File opens have
 distinct references and independent marks; resource-map identity is the reference
 of the resource fork opened at launch. No resource fork supplied means no open
-resource reference, not a fabricated empty open file. Host paths are not exposed.
+resource reference, not a fabricated empty open file. Additional guest-created
+files retain mutable, independent forks within the process. Host paths are not exposed.
 
 PBGetFCBInfoSync and HFSDispatch selector 8 report actual fork length, allocation
 extent, read-only/resource flags, mark, name, volume and parent. Indexed and direct
@@ -924,13 +925,13 @@ creation date and are visible to named and directory-ID catalog queries. Root
 indexed enumeration includes its direct children; child counts derive from the
 live tree. Colon paths support the virtual volume name, relative prefixes,
 trailing directory separators and parent traversal without escaping the root.
-The 1024-directory limit returns dirFulErr; duplicate names return dupFNErr.
+The combined 1024-created-node limit returns dirFulErr; duplicate names return dupFNErr.
 Guest output is validated before inserting or allocating an ID. Dates come from
 the shared low-memory Time value ($20C), initially zero; advancing/seeding the
 calendar clock and parent modification dates are not yet implemented.
-Directories are in-memory process state: application bytes remain read-only,
-file creation/write/delete, persistence, working-directory references and
-MacRoman folding remain unfinished.
+Directories and newly created files are in-memory process state: application
+bytes remain read-only. File deletion, persistence, working-directory references
+and MacRoman folding remain unfinished.
 
 PBGetFInfoSync and PBHGetFInfoSync share the catalog's application metadata
 projection, with their own 80-byte guest parameter layout. Hierarchical lookup
@@ -938,9 +939,8 @@ uses ioDirID for parent/indexed queries; flat lookup selects the root. Queries
 return first open reference, open-fork/locked attributes, logical/physical sizes
 and file ID. Named closed-file queries preserve caller pathnames; indexed/open
 queries return the leaf name. Parameter and optional name output are validated
-together. These query only the loaded application; writable file creation and
-additional virtual files remain unfinished. Finder metadata/dates still default
-to zero.
+together. These now query loaded and guest-created files. New files retain Finder
+metadata and dates; imported application metadata still has deterministic defaults.
 
 GetNewWindow decodes the live guest-loaded WIND handle through the shared
 Resource Manager and calls the same creator as NewWindow. Bounds, definition
@@ -1230,3 +1230,35 @@ also consulted physical state and only queued mouse-up, so that comparison is
 not treated as authority for this case. Button/WaitMouseUp are separate contracts
 and remain unimplemented. Nil SetPort restores a saved empty current-port slot;
 operations requiring a drawable port still fail until a real port is selected.
+
+## Process-local fork I/O
+
+File Manager operations share one catalog, access-path table and fork storage on
+68K and PPC. File creation adds an empty data/resource pair to an existing parent
+with a stable node ID; catalog/file/FCB queries project those same bytes, dates,
+Finder information and open flags. Named/indexed catalog queries honor ioDirID
+as their parent; callers must not reuse an earlier returned file ID as a directory.
+This corrects the previous root-only lookup assumption and its fixtures.
+
+Synchronous PB[H]Open/OpenRF, PBHOpenDF, create, read/write, position, EOF, flush,
+Finder-info updates and close have checked ABI routes. fsCurPerm falls back to
+reading when write access is unavailable; fsWrPerm aliases exclusive read/write.
+Shared and exclusive write paths are distinct, fork-specific access decisions.
+Loaded application forks remain locked; newly created forks are writable. Marks
+belong to access paths, while bytes/EOF belong to a file fork. Reads report actual
+counts, partial EOF and newline termination; writes snapshot guest source bytes,
+zero-fill extension and preserve the other fork. All parameter/buffer outputs are
+validated before publishing state; memory faults do not consume references, move
+marks or modify bytes. Flush commits no extra work because writes already update
+the canonical process storage.
+
+The model bounds created nodes to 1024, simultaneous paths to 256 and total mutable
+logical bytes to 64 MiB. Shrinking releases excess fork storage. Parameter errors,
+missing/locked files, permission/share conflicts, bad references and bounded-volume
+exhaustion are guest errors. Unsupported asynchronous completion remains an explicit
+fault; the generic PPC read/write/close entry points accept only synchronous calls.
+Devices.h supplies MPW's register-based I/O declarations. Resource-file byte I/O
+does not attach a new Resource Manager map. Persistence, deletion/rename, imported
+Finder data, raw allocation/range locks, working directories, read-verify flags and
+asynchronous callbacks remain unfinished. Virtual 4 KiB extents are metadata
+projections, not a physical HFS allocation implementation.

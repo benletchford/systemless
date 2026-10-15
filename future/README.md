@@ -109,7 +109,7 @@ verification and complete original application interaction remain pending.
 TETextBox/TextBox now share transient TextEdit wrapping, alignment and clipped
 GPU erasure/drawing on both CPU adapters. Bold source strikes are synthesized
 without changing guest font resources. Super Mines startup passes its text boxes
-and enters event/mouse polling. A bounded press/release now dismisses its splash and reaches PBHOpen;
+and enters event/mouse polling. A bounded press/release now dismisses its splash, creates/reads settings and reaches GetMHandle;
 gameplay and complete application lifecycle acceptance remain pending.
 
 GetMouse shares checked current-port coordinates and live guest Mouse globals;
@@ -119,3 +119,8 @@ captures offscreen screens and propagates faults for original-app diagnostics.
 FindWindow and FindControl query live guest window/control lists through shared
 services. StillDown examines pending mouse events without consuming them.
 SetPort(nil) supports saved-port restoration while drawing without a port fails.
+
+Shared process-local file I/O now creates mutable data/resource forks, enforces
+access permissions and supports reading/writing, positions, EOF, metadata and
+close/reopen on both CPUs. Loaded application forks stay read-only; persistence
+and full filesystem compatibility remain pending.

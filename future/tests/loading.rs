@@ -169,17 +169,39 @@ fn pef_imports_add_to_nonzero_slots_and_weak_missing_symbols_resolve_zero() {
     assert_eq!(app.runtime.memory.u32(GuestPtr(data + 8)).unwrap(), 0);
 }
 #[test]
-fn loaded_apps_cannot_call_private_fixture_traps() {
-    let mut b = code(); // find the TickCount opcode in the CODE payload
-    let at = b.windows(2).position(|w| w == [0xa9, 0x75]).unwrap();
-    b[at..at + 2].copy_from_slice(&[0xa0, 0]);
-    let mut app = LoadedApplication::code(&b).unwrap();
-    assert!(matches!(
-        app.runtime.advance(100),
-        Err(Error::Service(0xa000))
-    ));
-    assert!(app.runtime.services.calls.is_empty());
+fn loaded_apps_resolve_real_open_instead_of_private_fixture_add() {
+    use systemless_future::{
+        files::{Fork, Op},
+        memory::Permissions,
+    };
+    let mut app =
+        LoadedApplication::code(&code_program(&[0x207c, 0x5100, 0, 0xa000, 0xa9f4])).unwrap();
+    let mut pb = vec![0; 128];
+    w32(&mut pb, 18, 0x51000040);
+    pb[27] = 1;
+    pb[64..76].copy_from_slice(b"\x0bApplication");
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), pb, Permissions::RW)
+        .unwrap();
+    assert_eq!(app.runtime.advance(100).unwrap(), Stop::Exit(0));
+    assert_eq!(
+        app.runtime.services.calls,
+        [
+            Call::FileIo {
+                pointer: GuestPtr(0x51000000),
+                op: Op::Open {
+                    kind: Fork::Data,
+                    hierarchical: false
+                }
+            },
+            Call::Exit(0)
+        ]
+    );
+    assert_eq!(app.runtime.memory.u16(GuestPtr(0x51000010)).unwrap(), 0);
+    assert_ne!(app.runtime.memory.u16(GuestPtr(0x51000018)).unwrap(), 0);
 }
+
 #[test]
 fn both_loaded_architectures_read_resources_and_allocate_through_one_process_model() {
     let resource_fork = resource_code();

@@ -149,6 +149,8 @@ pub enum Service {
     CurResFile,
     GetNamedResource,
     Get1NamedResource,
+    FileIo(crate::files::Op),
+    FileIoWithAsync(crate::files::Op),
     FcbInfo,
     CatalogInfo,
     FileInfo(bool),
@@ -389,6 +391,45 @@ impl Abi {
             b"GetPattern" => Some(Service::GetPattern),
             b"GetResource" => Some(Service::GetResource),
             b"MemError" => Some(Service::MemError),
+            b"PBOpenSync" => Some(Service::FileIo(crate::files::Op::Open {
+                kind: crate::files::Fork::Data,
+                hierarchical: false,
+            })),
+            b"PBHOpenSync" | b"PBHOpenDFSync" => Some(Service::FileIo(crate::files::Op::Open {
+                kind: crate::files::Fork::Data,
+                hierarchical: true,
+            })),
+            b"PBOpenRFSync" => Some(Service::FileIo(crate::files::Op::Open {
+                kind: crate::files::Fork::Resource,
+                hierarchical: false,
+            })),
+            b"PBHOpenRFSync" => Some(Service::FileIo(crate::files::Op::Open {
+                kind: crate::files::Fork::Resource,
+                hierarchical: true,
+            })),
+            b"PBSetFInfoSync" => Some(Service::FileIo(crate::files::Op::SetInfo {
+                hierarchical: false,
+            })),
+            b"PBHSetFInfoSync" => Some(Service::FileIo(crate::files::Op::SetInfo {
+                hierarchical: true,
+            })),
+            b"PBCreateSync" => Some(Service::FileIo(crate::files::Op::Create {
+                hierarchical: false,
+            })),
+            b"PBHCreateSync" => Some(Service::FileIo(crate::files::Op::Create {
+                hierarchical: true,
+            })),
+            b"PBCloseSync" => Some(Service::FileIo(crate::files::Op::Close)),
+            b"PBRead" => Some(Service::FileIoWithAsync(crate::files::Op::Read)),
+            b"PBWrite" => Some(Service::FileIoWithAsync(crate::files::Op::Write)),
+            b"PBClose" => Some(Service::FileIoWithAsync(crate::files::Op::Close)),
+            b"PBReadSync" => Some(Service::FileIo(crate::files::Op::Read)),
+            b"PBWriteSync" => Some(Service::FileIo(crate::files::Op::Write)),
+            b"PBGetEOFSync" => Some(Service::FileIo(crate::files::Op::GetEof)),
+            b"PBSetEOFSync" => Some(Service::FileIo(crate::files::Op::SetEof)),
+            b"PBGetFPosSync" => Some(Service::FileIo(crate::files::Op::GetPosition)),
+            b"PBSetFPosSync" => Some(Service::FileIo(crate::files::Op::SetPosition)),
+            b"PBFlushFileSync" => Some(Service::FileIo(crate::files::Op::Flush)),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
             b"PBGetCatInfoSync" => Some(Service::CatalogInfo),
             b"PBGetFInfoSync" => Some(Service::FileInfo(false)),
@@ -1388,6 +1429,42 @@ impl Abi {
                 },
                 Reply::M68kHandle,
             )),
+            0xa00d | 0xa20d | 0xa000 | 0xa200 | 0xa00a | 0xa20a | 0xa008 | 0xa208 | 0xa001
+            | 0xa002 | 0xa003 | 0xa011 | 0xa012 | 0xa018 | 0xa044 | 0xa045 => {
+                use crate::files::{Fork, Op};
+                let op = match opcode {
+                    0xa00d | 0xa20d => Op::SetInfo {
+                        hierarchical: opcode & 0x200 != 0,
+                    },
+                    0xa000 | 0xa200 | 0xa00a | 0xa20a => Op::Open {
+                        kind: if opcode & 0xff == 0 {
+                            Fork::Data
+                        } else {
+                            Fork::Resource
+                        },
+                        hierarchical: opcode & 0x200 != 0,
+                    },
+                    0xa008 | 0xa208 => Op::Create {
+                        hierarchical: opcode & 0x200 != 0,
+                    },
+                    0xa001 => Op::Close,
+                    0xa002 => Op::Read,
+                    0xa003 => Op::Write,
+                    0xa011 => Op::GetEof,
+                    0xa012 => Op::SetEof,
+                    0xa018 => Op::GetPosition,
+                    0xa044 => Op::SetPosition,
+                    0xa045 => Op::Flush,
+                    _ => unreachable!(),
+                };
+                Ok((
+                    Call::FileIo {
+                        pointer: GuestPtr(c.dar[8]),
+                        op,
+                    },
+                    Reply::M68kFileError,
+                ))
+            }
             0xa004 | 0xa204 => Ok((
                 Call::DeviceControl(GuestPtr(c.dar[8])),
                 Reply::M68kFileError,
@@ -1528,6 +1605,16 @@ impl Abi {
                 Call::FileInfo {
                     pointer: GuestPtr(c.dar[8]),
                     hierarchical: opcode == 0xa20c,
+                },
+                Reply::M68kFileError,
+            )),
+            0xa260 if c.dar[0] as u16 == 0x1a => Ok((
+                Call::FileIo {
+                    pointer: GuestPtr(c.dar[8]),
+                    op: crate::files::Op::Open {
+                        kind: crate::files::Fork::Data,
+                        hierarchical: true,
+                    },
                 },
                 Reply::M68kFileError,
             )),
@@ -2014,6 +2101,21 @@ impl Abi {
                 kind: c.gpr[3].to_be_bytes(),
                 name: GuestPtr(c.gpr[4]),
                 current_only: service == Service::Get1NamedResource,
+            },
+            Service::FileIoWithAsync(op) => {
+                if c.gpr[4] as u8 != 0 {
+                    return Err(Error::Cpu(
+                        "asynchronous file completion is unsupported".into(),
+                    ));
+                }
+                Call::FileIo {
+                    pointer: GuestPtr(c.gpr[3]),
+                    op,
+                }
+            }
+            Service::FileIo(op) => Call::FileIo {
+                pointer: GuestPtr(c.gpr[3]),
+                op,
             },
             Service::FcbInfo => Call::FcbInfo(GuestPtr(c.gpr[3])),
             Service::CatalogInfo => Call::CatalogInfo(GuestPtr(c.gpr[3])),

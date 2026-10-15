@@ -607,6 +607,42 @@ fn compiled_environment_and_maximum_heap_contracts_complete_on_both_cpus() {
         LoadedApplication::pef(&pef, None).unwrap(),
     ] {
         assert_eq!(app.runtime.advance(20000).unwrap(), Stop::Exit(0));
+        let io_calls: Vec<_> = app
+            .runtime
+            .services
+            .calls
+            .iter()
+            .filter_map(|call| {
+                if let Call::FileIo { op, .. } = call {
+                    Some(*op)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for expected in [
+            systemless_future::files::Op::Create { hierarchical: true },
+            systemless_future::files::Op::Open {
+                kind: systemless_future::files::Fork::Data,
+                hierarchical: true,
+            },
+            systemless_future::files::Op::Open {
+                kind: systemless_future::files::Fork::Resource,
+                hierarchical: true,
+            },
+            systemless_future::files::Op::Read,
+            systemless_future::files::Op::Write,
+            systemless_future::files::Op::GetEof,
+            systemless_future::files::Op::SetEof,
+            systemless_future::files::Op::GetPosition,
+            systemless_future::files::Op::SetPosition,
+            systemless_future::files::Op::Flush,
+            systemless_future::files::Op::SetInfo { hierarchical: true },
+            systemless_future::files::Op::Close,
+        ] {
+            assert!(io_calls.contains(&expected), "missing {expected:?}");
+        }
+
         assert_eq!(
             &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],
             &[

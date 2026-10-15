@@ -1098,6 +1098,15 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::FileIo { pointer, op } => {
+                            let error = self.process.files.io(&mut self.memory, pointer, op)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::FcbInfo(pointer) => {
                             let error = self.process.files.fcb_info(&mut self.memory, pointer)?;
                             reply.apply(
@@ -1259,6 +1268,7 @@ impl Runtime {
                         | Call::CreateDirectory(_)
                         | Call::FileInfo { .. }
                         | Call::CatalogInfo(_)
+                        | Call::FileIo { .. }
                         | Call::FcbInfo(_) => {
                             return Err(Error::Cpu("Macintosh service on fixture route".into()))
                         }

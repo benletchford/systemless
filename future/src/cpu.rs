@@ -221,6 +221,10 @@ pub enum Call {
         name: GuestPtr,
         current_only: bool,
     },
+    FileIo {
+        pointer: GuestPtr,
+        op: crate::files::Op,
+    },
     FcbInfo(GuestPtr),
     CatalogInfo(GuestPtr),
     FileInfo {

@@ -150,10 +150,10 @@ fn catalog_metadata_matches_loaded_forks_and_native_cpu_results() {
     for app in [&mut m, &mut p] {
         app.runtime.process.files.set_name(b"Probe").unwrap();
         setup(app, 0, 1);
-        // Nonnegative lookup ignores ioDirID, which may hold an earlier file ID.
+        // Indexed lookup names its parent; an earlier file ID is not a directory.
         app.runtime
             .memory
-            .write(GuestPtr(PB + 48), &16u32.to_be_bytes())
+            .write(GuestPtr(PB + 48), &2u32.to_be_bytes())
             .unwrap();
         let expected_data = app
             .runtime
@@ -278,6 +278,7 @@ fn directory_paths_duplicates_errors_and_failed_outputs_preserve_catalog() {
     assert_eq!(files.catalog_info(m, GuestPtr(PB)).unwrap(), 0);
     assert_eq!(m.u32(GuestPtr(PB + 100)).unwrap(), parent);
     m.write(GuestPtr(PB + 28), &0u16.to_be_bytes()).unwrap();
+    m.write(GuestPtr(PB + 48), &2u32.to_be_bytes()).unwrap();
     m.write(GuestPtr(PB + 128), b"\x0d:pReFs:nEsTeD").unwrap();
     assert_eq!(files.catalog_info(m, GuestPtr(PB)).unwrap(), 0);
     assert_eq!(m.u32(GuestPtr(PB + 48)).unwrap(), child);
@@ -285,9 +286,11 @@ fn directory_paths_duplicates_errors_and_failed_outputs_preserve_catalog() {
         .unwrap();
     assert_eq!(files.catalog_info(m, GuestPtr(PB)).unwrap(), 0);
     assert_eq!(m.u32(GuestPtr(PB + 48)).unwrap(), child);
+    m.write(GuestPtr(PB + 48), &2u32.to_be_bytes()).unwrap();
     m.write(GuestPtr(PB + 128), b"\x0f:Prefs:Nested::").unwrap();
     assert_eq!(files.catalog_info(m, GuestPtr(PB)).unwrap(), 0);
     assert_eq!(m.u32(GuestPtr(PB + 48)).unwrap(), parent);
+    m.write(GuestPtr(PB + 48), &2u32.to_be_bytes()).unwrap();
     m.write(GuestPtr(PB + 28), &2u16.to_be_bytes()).unwrap();
     assert_eq!(files.catalog_info(m, GuestPtr(PB)).unwrap(), 0);
     assert_eq!(m.u32(GuestPtr(PB + 48)).unwrap(), parent);

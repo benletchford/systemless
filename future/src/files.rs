@@ -1,10 +1,12 @@
-//! Process-local virtual directories and a read-only application with independent forks and
-//! open-file marks. Host paths never enter File Manager service implementations.
+//! Process-local directories/files, immutable loaded application forks and independent
+//! access-path marks. Host paths never enter File Manager service implementations.
 use crate::{
     memory::{GuestPtr, Memory},
     Result,
 };
 use std::collections::BTreeMap;
+mod io;
+pub use io::Op;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fork {
     Data,
@@ -15,7 +17,30 @@ struct Directory {
     parent: u32,
     created: u32,
 }
+struct File {
+    name: Vec<u8>,
+    parent: u32,
+    data: Vec<u8>,
+    resource: Vec<u8>,
+    created: u32,
+    modified: u32,
+    finder: [u8; 16],
+}
+struct FileView<'a> {
+    name: &'a [u8],
+    parent: u32,
+    data: &'a [u8],
+    resource: Option<&'a [u8]>,
+    locked: bool,
+    created: u32,
+    modified: u32,
+    finder: [u8; 16],
+}
+#[derive(Clone, Copy)]
 struct OpenFork {
+    node: u32,
+    writable: bool,
+    shared: bool,
     kind: Fork,
     mark: u32,
 }
@@ -26,6 +51,7 @@ pub struct Files {
     resource: Option<Vec<u8>>,
     open: BTreeMap<i16, OpenFork>,
     next_ref: i16,
+    files: BTreeMap<u32, File>,
     directories: BTreeMap<u32, Directory>,
     next_node: u32,
 }
@@ -37,6 +63,7 @@ impl Files {
             resource: resource.map(Vec::from),
             open: BTreeMap::new(),
             next_ref: 1,
+            files: BTreeMap::new(),
             directories: BTreeMap::new(),
             next_node: 17,
         }
@@ -65,10 +92,94 @@ impl Files {
         if self.fork_bytes(kind).is_none() {
             return Err(-43);
         }
+        self.open_node(16, kind, false, false)
+    }
+    fn open_node(
+        &mut self,
+        node: u32,
+        kind: Fork,
+        writable: bool,
+        shared: bool,
+    ) -> std::result::Result<i16, i16> {
+        if self.open.len() >= 256 {
+            return Err(-42);
+        }
+        while self.open.contains_key(&self.next_ref) {
+            self.next_ref = if self.next_ref == i16::MAX {
+                1
+            } else {
+                self.next_ref + 1
+            };
+        }
         let reference = self.next_ref;
-        self.next_ref = self.next_ref.checked_add(1).ok_or(-42i16)?;
-        self.open.insert(reference, OpenFork { kind, mark: 0 });
+        self.next_ref = if self.next_ref == i16::MAX {
+            1
+        } else {
+            self.next_ref + 1
+        };
+        self.open.insert(
+            reference,
+            OpenFork {
+                node,
+                kind,
+                mark: 0,
+                writable,
+                shared,
+            },
+        );
         Ok(reference)
+    }
+    fn file(&self, id: u32) -> Option<FileView<'_>> {
+        if id == 16 && !self.name.is_empty() {
+            Some(FileView {
+                name: &self.name,
+                parent: 2,
+                data: &self.data,
+                resource: self.resource.as_deref(),
+                locked: true,
+                created: 0,
+                modified: 0,
+                finder: [0; 16],
+            })
+        } else {
+            self.files.get(&id).map(|f| FileView {
+                name: &f.name,
+                parent: f.parent,
+                data: &f.data,
+                resource: Some(&f.resource),
+                locked: false,
+                created: f.created,
+                modified: f.modified,
+                finder: f.finder,
+            })
+        }
+    }
+    fn node_fork(&self, id: u32, kind: Fork) -> Option<&[u8]> {
+        let file = self.file(id)?;
+        match kind {
+            Fork::Data => Some(file.data),
+            Fork::Resource => file.resource,
+        }
+    }
+    fn children(&self, parent: u32, files_only: bool) -> Vec<u32> {
+        let mut result = Vec::new();
+        if parent == 2 && !self.name.is_empty() {
+            result.push(16);
+        }
+        result.extend(
+            self.files
+                .iter()
+                .filter_map(|(&id, f)| (f.parent == parent).then_some(id)),
+        );
+        if !files_only {
+            result.extend(
+                self.directories
+                    .iter()
+                    .filter_map(|(&id, d)| (d.parent == parent).then_some(id)),
+            );
+        }
+        result.sort_unstable();
+        result
     }
     fn directory_exists(&self, id: u32) -> bool {
         id == 2 || self.directories.contains_key(&id)
@@ -77,11 +188,21 @@ impl Files {
         if parent == 2 && name.eq_ignore_ascii_case(&self.name) {
             return Some(16);
         }
+        if let Some((&id, _)) = self
+            .files
+            .iter()
+            .find(|(_, f)| f.parent == parent && name.eq_ignore_ascii_case(&f.name))
+        {
+            return Some(id);
+        }
         self.directories.iter().find_map(|(&id, d)| {
             (d.parent == parent && name.eq_ignore_ascii_case(&d.name)).then_some(id)
         })
     }
     fn path(&self, name: &[u8], parent: u32) -> std::result::Result<u32, i16> {
+        if name.contains(&0) {
+            return Err(-37);
+        }
         let (mut node, parts) = if name.starts_with(b":") {
             (parent, &name[1..])
         } else if let Some(colon) = name.iter().position(|&c| c == b':') {
@@ -112,6 +233,9 @@ impl Files {
                     return Err(-120);
                 }
             } else {
+                if component.len() > 31 {
+                    return Err(-37);
+                }
                 if !self.directory_exists(node) {
                     return Err(-120);
                 }
@@ -172,7 +296,7 @@ impl Files {
                     Err(-120)
                 } else if self.child(parent, leaf).is_some() {
                     Err(-48)
-                } else if self.directories.len() >= 1024 {
+                } else if self.directories.len() + self.files.len() >= 1024 {
                     Err(-33)
                 } else {
                     Ok(parent)
@@ -202,21 +326,29 @@ impl Files {
         memory.write(pointer, &pb)?;
         Ok(error)
     }
-    fn fill_application_info(&self, pb: &mut [u8]) {
-        let reference = self.open.keys().next().copied().unwrap_or(0);
+    fn fill_file_info(&self, pb: &mut [u8], node: u32) {
+        let file = self.file(node).expect("checked file node");
+        let reference = self
+            .open
+            .iter()
+            .find_map(|(&r, f)| (f.node == node).then_some(r))
+            .unwrap_or(0);
         pb[24..26].copy_from_slice(&reference.to_be_bytes());
-        pb[30] = self.open.values().fold(1, |flags, fork| {
-            flags
-                | 0x80
-                | match fork.kind {
-                    Fork::Resource => 4,
-                    Fork::Data => 8,
-                }
-        });
-        pb[32..48].fill(0);
-        pb[48..52].copy_from_slice(&16u32.to_be_bytes());
-        let data = self.data.len() as u32;
-        let resource = self.resource.as_ref().map_or(0, |bytes| bytes.len() as u32);
+        pb[30] = self.open.values().filter(|f| f.node == node).fold(
+            u8::from(file.locked),
+            |flags, fork| {
+                flags
+                    | 0x80
+                    | match fork.kind {
+                        Fork::Resource => 4,
+                        Fork::Data => 8,
+                    }
+            },
+        );
+        pb[32..48].copy_from_slice(&file.finder);
+        pb[48..52].copy_from_slice(&node.to_be_bytes());
+        let data = file.data.len() as u32;
+        let resource = file.resource.map_or(0, |bytes| bytes.len() as u32);
         pb[52..54].copy_from_slice(&(if data == 0 { 0u16 } else { 1 }).to_be_bytes());
         pb[62..64].copy_from_slice(
             &(if resource == 0 {
@@ -234,9 +366,10 @@ impl Files {
         ] {
             pb[at..at + 4].copy_from_slice(&value.to_be_bytes());
         }
-        pb[72..80].fill(0);
+        pb[72..76].copy_from_slice(&file.created.to_be_bytes());
+        pb[76..80].copy_from_slice(&file.modified.to_be_bytes());
     }
-    /// PB[H]GetFInfo synchronous projection of the same application fork state.
+    /// PB[H]GetFInfo projection of the same virtual fork state.
     pub fn file_info(
         &self,
         memory: &mut Memory,
@@ -260,16 +393,23 @@ impl Files {
         } else if index > 0 {
             if !self.directory_exists(parent) {
                 Err(-120)
-            } else if parent == 2 && index == 1 {
-                Ok(16)
             } else {
-                Err(-43)
+                self.children(parent, true)
+                    .get(index as usize - 1)
+                    .copied()
+                    .ok_or(-43)
             }
         } else {
             self.path(&Self::name_input(memory, name_ptr)?, parent)
-                .and_then(|id| if id == 16 { Ok(id) } else { Err(-43) })
+                .and_then(|id| {
+                    if self.file(id).is_some() {
+                        Ok(id)
+                    } else {
+                        Err(-43)
+                    }
+                })
         };
-        let error: i16 = selected.err().unwrap_or(0);
+        let error: i16 = selected.as_ref().err().copied().unwrap_or(0);
         memory.validate_write(GuestPtr(pointer.0 + 12), 6)?;
         if error != 0 {
             memory.write(GuestPtr(pointer.0 + 12), &[0; 4])?;
@@ -278,53 +418,54 @@ impl Files {
         }
         let mut pb = memory.read(pointer, 80)?.to_vec();
         memory.validate_write(pointer, 80)?;
-        let output_name = name_ptr.0 != 0 && (index > 0 || !self.open.is_empty());
-        let mut name = vec![self.name.len() as u8];
-        name.extend(&self.name);
+        let node = selected.unwrap();
+        let file = self.file(node).unwrap();
+        let output_name =
+            name_ptr.0 != 0 && (index > 0 || self.open.values().any(|f| f.node == node));
+        let mut name = vec![file.name.len() as u8];
+        name.extend(file.name);
         if output_name {
             memory.validate_write(name_ptr, name.len())?;
         }
         pb[12..18].fill(0);
-        self.fill_application_info(&mut pb);
+        self.fill_file_info(&mut pb, node);
         if output_name {
             memory.write(name_ptr, &name)?;
         }
         memory.write(pointer, &pb)?;
         Ok(0)
     }
-    /// Catalog queries for the application and the process-local directory tree.
+    /// Catalog queries for all process-local files and directories.
     pub fn catalog_info(&self, memory: &mut Memory, pointer: GuestPtr) -> Result<i16> {
         let header = memory.read(pointer, 52)?.to_vec();
         let volume = i16::from_be_bytes(header[22..24].try_into().unwrap());
         let index = i16::from_be_bytes(header[28..30].try_into().unwrap());
         let directory = u32::from_be_bytes(header[48..52].try_into().unwrap());
         let name_ptr = GuestPtr(u32::from_be_bytes(header[18..22].try_into().unwrap()));
+        let parent = if directory == 0 { 2 } else { directory };
         let selected = if !matches!(volume, -1..=1) {
             Err(-35)
         } else if self.name.is_empty() {
             Err(-43)
         } else if index < 0 {
-            let id = if directory == 0 { 2 } else { directory };
-            if self.directory_exists(id) {
-                Ok(id)
+            if self.directory_exists(parent) {
+                Ok(parent)
             } else {
                 Err(-120)
             }
         } else if index == 0 {
-            self.path(&Self::name_input(memory, name_ptr)?, 2)
+            self.path(&Self::name_input(memory, name_ptr)?, parent)
+        } else if !self.directory_exists(parent) {
+            Err(-120)
         } else {
-            std::iter::once(16)
-                .chain(
-                    self.directories
-                        .iter()
-                        .filter_map(|(&id, d)| (d.parent == 2).then_some(id)),
-                )
-                .nth(index as usize - 1)
+            self.children(parent, false)
+                .get(index as usize - 1)
+                .copied()
                 .ok_or(-43)
         };
         let error: i16 = selected.as_ref().err().copied().unwrap_or(0);
         let node = selected.unwrap_or(2);
-        let root = node != 16;
+        let root = self.file(node).is_none();
         memory.validate_write(GuestPtr(pointer.0 + 12), 6)?;
         if error != 0 {
             memory.write(GuestPtr(pointer.0 + 12), &[0; 4])?;
@@ -339,7 +480,7 @@ impl Files {
         } else if root {
             &self.directories[&node].name
         } else {
-            &self.name
+            self.file(node).unwrap().name
         };
         let mut output_name = vec![name.len() as u8];
         output_name.extend(name);
@@ -351,43 +492,47 @@ impl Files {
         let reference = if root {
             0
         } else {
-            self.open.keys().next().copied().unwrap_or(0)
+            self.open
+                .iter()
+                .find_map(|(&r, f)| (f.node == node).then_some(r))
+                .unwrap_or(0)
         };
         pb[24..26].copy_from_slice(&reference.to_be_bytes());
         pb[30] = if root {
             0x10
         } else {
-            self.open.values().fold(1, |flags, fork| {
-                flags
-                    | 0x80
-                    | match fork.kind {
-                        Fork::Resource => 4,
-                        Fork::Data => 8,
-                    }
-            })
+            self.open.values().filter(|f| f.node == node).fold(
+                u8::from(self.file(node).unwrap().locked),
+                |flags, fork| {
+                    flags
+                        | 0x80
+                        | match fork.kind {
+                            Fork::Resource => 4,
+                            Fork::Data => 8,
+                        }
+                },
+            )
         };
         pb[31] = 0;
         pb[32..48].fill(0); // Finder info: virtual files have no imported Finder metadata.
         pb[48..52].copy_from_slice(&node.to_be_bytes());
         if root {
-            let children = self
-                .directories
-                .values()
-                .filter(|d| d.parent == node)
-                .count()
-                + usize::from(node == 2);
+            let children = self.children(node, false).len();
             pb[52..54].copy_from_slice(&(children as u16).to_be_bytes());
         } else {
-            self.fill_application_info(&mut pb);
+            self.fill_file_info(&mut pb, node);
             pb[104..108].copy_from_slice(&4096u32.to_be_bytes());
         }
-        pb[72..100].fill(0); // deterministic dates and extended Finder info.
+        pb[80..100].fill(0);
+        if root {
+            pb[72..80].fill(0);
+        }
         let parent = if node == 2 {
             1
         } else if root {
             self.directories[&node].parent
         } else {
-            2
+            self.file(node).unwrap().parent
         };
         pb[100..104].copy_from_slice(&parent.to_be_bytes());
         if root && node != 2 {
@@ -428,17 +573,19 @@ impl Files {
         };
         pb[16..18].copy_from_slice(&(error as i16).to_be_bytes());
         if let Some((&reference, file)) = selected.filter(|_| error == 0) {
-            let length = self.fork_bytes(file.kind).unwrap().len() as u32;
+            let view = self.file(file.node).unwrap();
+            let length = self.node_fork(file.node, file.kind).unwrap().len() as u32;
             let physical = length.div_ceil(4096) * 4096;
             let name_ptr = u32::from_be_bytes(pb[18..22].try_into().unwrap());
-            let mut name = vec![self.name.len() as u8];
-            name.extend(&self.name);
+            let mut name = vec![view.name.len() as u8];
+            name.extend(view.name);
             if name_ptr != 0 {
                 memory.validate_write(GuestPtr(name_ptr), name.len())?;
             }
             pb[24..26].copy_from_slice(&reference.to_be_bytes());
-            pb[32..36].copy_from_slice(&16u32.to_be_bytes()); // application catalog node
-            let flags = 0x2000u16
+            pb[32..36].copy_from_slice(&file.node.to_be_bytes()); // virtual catalog node
+            let flags = if view.locked { 0x2000u16 } else { 0 }
+                | if file.writable { 0x0100 } else { 0 }
                 | if file.kind == Fork::Resource {
                     0x200
                 } else {
@@ -450,7 +597,7 @@ impl Files {
             } else if file.kind == Fork::Data {
                 1
             } else {
-                1 + (self.data.len() as u32).div_ceil(4096) as u16
+                1 + (view.data.len() as u32).div_ceil(4096) as u16
             };
             pb[38..40].copy_from_slice(&block.to_be_bytes());
             for (at, value) in [
@@ -458,7 +605,7 @@ impl Files {
                 (44, physical),
                 (48, file.mark),
                 (54, 4096),
-                (58, 2),
+                (58, view.parent),
             ] {
                 pb[at..at + 4].copy_from_slice(&value.to_be_bytes());
             }

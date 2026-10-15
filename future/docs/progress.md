@@ -2371,3 +2371,52 @@ Validation: all 248 tests pass (203 default, 45 optional GPU/MPW); none skipped.
 The final focused query rerun also verifies preserved MemErr. Strict all-target
 Clippy, rebuilt MPW fixtures, sequential changed-file formatting and whitespace
 checks pass. Native System 7 comparison and native presentation are not claimed.
+
+
+### Shared settings-file lifecycle
+
+The next original request is PBHOpen ($A200), permission 3, for the raw Pascal
+name Super Mines Demo Settings in directory 17. The shared file model now has
+mutable guest-created files alongside the locked loaded application. Stable node
+IDs, parent/name lookup, Finder metadata, dates and fork bytes feed catalog,
+PB[H]GetFInfo and FCB projections. Non-root catalog input now honors ioDirID;
+older root-only fixtures were corrected to pass their actual parent rather than
+reuse an output file ID. No host paths enter file services.
+
+Both ABIs route synchronous data/resource open, creation, read/write, mark/EOF,
+flush, Finder-info update and close into the same state. Access paths own marks;
+forks own bytes/EOF. Current permission can downgrade to reading, write-only is
+Macintosh's read/write alias, and shared/exclusive writing differs per fork.
+Loaded application bytes remain locked. Guest-created data/resource forks remain
+independent through writes/truncation/close/reopen. Reads include partial EOF and
+newline completion; zero-fill extension and real metadata retention are checked.
+
+Storage is bounded to 1024 created nodes, 256 simultaneous paths and 64 MiB mutable
+logical bytes. Validation occurs before reference/state/output publication;
+readonly/unmapped buffers and parameter blocks cannot partially alter files or
+marks. Async traps and async=true generic PPC imports remain explicit failures.
+Resource Manager maps are not automatically created from these raw fork bytes.
+Persistence, deletion/rename, imported metadata, working directories, raw physical
+allocation/range locking and read-verify flags remain unfinished.
+
+Generated checks use both real CPUs and inspect bytes, signed error results/CCR,
+marks, EOF/counts, sharing/permissions, fork isolation, Finder/catalog/FCB identity,
+non-root queries, bad buffers, bounded exhaustion and explicit async boundaries.
+MPW environment guests execute a complete create/write/read/seek/truncate/metadata/
+close/reopen cycle on both architectures; acceptance requires every operation.
+The fixture includes Devices.h for Apple's register-based I/O declarations.
+
+The original bounded click now dismisses the splash, creates the missing settings
+file, applies its Finder type/creator, opens it read/write and performs multiple
+EOF/position/write/read operations. It reaches GetMHandle ($A949), post-trap
+PC $01005148. Next: menu handle/resource identity and the application's menu setup,
+then continue the same transition. Gameplay, complete lifecycles, native
+presentation, devices/sound, Color QuickDraw and production Mixed Mode remain
+unfinished. The full rebuild goal stays active.
+
+Validation: the 253-test suite passes (208 default, 45 optional GPU/MPW), with no
+GPU skips. Final focused file/catalog and compiled-environment reruns also pass
+after the HFS-name validation fix. Strict all-target Clippy, sequential formatting
+and whitespace checks pass. MPW guests were rebuilt with Devices.h and explicit
+catalog parents; acceptance confirms actual create/read/write/metadata operations.
+Native System 7 execution and cross-process settings persistence are not claimed.

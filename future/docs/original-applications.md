@@ -39,7 +39,8 @@ fork path and a maximum instruction count, and prints register/opcode context.
   A 100,000-instruction trace completes without an unsupported service.
   A bounded press/release at global (256,171) passes FindWindow, FindControl
   and StillDown, hides/disposes the demonstration splash, restores its saved
-  nil port and reaches unsupported PBHOpen ($A200).
+  nil port, creates/updates/reads its settings file and reaches unsupported
+  GetMHandle ($A949).
   SystemTask preserves the empty periodic service state, PenSize updates live
   GrafPort dimensions and RectInRgn checks content intersections.
   GetPicture loads PICT 202, PortSize sizes its offscreen GrafPort and MovePortTo
@@ -108,10 +109,12 @@ mouse-down, then permits up to 30,000 more boundaries before mouse-up and anothe
 30,000. It propagates service faults; screenshots are evidence, not automatic
 acceptance. No original application/resource bytes are added to the repository.
 
-The current probe at (256,171) records mouse-down Budget, then mouse-up failing
-at PBHOpen ($A200), after HideWindow, control/resource disposal, DisposeWindow
-and SetPort(nil). Before/after screenshots show the demonstration splash replaced
-by the desktop. This proves one original 68K splash-dismissal interaction, not
-menus, gameplay, preferences or a complete application lifecycle. Next: shared
-hierarchical data-fork opening and its real access/error behavior, then resume
-this same application transition. The full rebuild goal remains active.
+The current probe at (256,171) dismisses the splash, then opens
+`Super Mines Demo Settings` with read/write permission in its created preferences
+directory. The missing-file path creates both forks, sets Finder metadata, reopens
+the data fork and executes EOF/seek/write/read operations. It then reaches
+GetMHandle ($A949), with post-trap PC $01005148. This is one bounded 68K splash
+interaction plus settings I/O; menus, gameplay and a full lifecycle remain
+unverified. Files persist only within the process, with no host filesystem writes.
+Next: shared menu-handle/resource identity and the menu-loading path reached here.
+The full rebuild goal remains active.

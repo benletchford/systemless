@@ -343,3 +343,11 @@ output pointers, FindControl button/radio/miss parts, non-consuming StillDown
 behavior before/after a queued mouse-up and SetPort(nil)/GetPort restoration.
 Both compiler guests must execute all new queries before their success marker;
 no visual/native compatibility is inferred from those fixture checks alone.
+
+The environment fixture also creates a file under Prefs, opens data/resource forks,
+writes and reads actual bytes, checks EOF/marks, seeks/truncates/flushes, closes and
+reopens, and verifies Finder metadata and retained fork lengths. The acceptance
+host requires every operation before the final success marker on both real CPUs.
+Devices.h is required for the compiler's register-based PBReadSync/PBWriteSync/
+PBCloseSync declarations; Files.h alone permits erroneous implicit declarations.
+Root-relative catalog calls explicitly reset ioDirID after receiving a file ID.
