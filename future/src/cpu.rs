@@ -60,6 +60,10 @@ pub enum Call {
     MaxApplZone,
     MoreMasters,
     Device(crate::devices::Op),
+    ColorPort {
+        action: crate::color_ports::Action,
+        port: GuestPtr,
+    },
     GetApplLimit,
     SetApplLimit(u32),
     MoveBytes {

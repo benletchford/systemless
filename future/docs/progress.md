@@ -4082,3 +4082,43 @@ and /tmp/systemless-device-gpu-final.txt. Super Mines Save/Open was rerun and it
 final PPM is byte-identical to the preceding heap-layout milestone, with normal
 Waiting{ticks:10} after reopening its 1,972-byte game. Fresh original-game
 boundaries are recorded in original-applications.md. Full rebuild remains active.
+
+
+## Shared CGrafPort attached-handle lifetime
+
+The next EV requirement is NewCWindow. Its port prerequisite now has actual
+OpenCPort/InitCPort/CloseCPort services, one shared registry, real SDK layouts,
+seven owned attached handles, and borrowed device palette/pixel lifetime.
+Reset reuses existing guest allocations, including under heap exhaustion;
+partial open OOM rolls back without publishing the caller record/current port.
+Close validates all owned fields before freeing, retaining caller storage,
+borrowed/custom palettes and other ports. InitCPort on a basic port is inert.
+Native frame/void/PPC marshalling and public-header compiled guests pass.
+
+Color-window integration/rendering remains next: introduce shared port bitmap
+and PixPat accessors, then adapt existing painting, text, geometry and window
+creation/rollback/disposal. Legacy inline-field mutations now reject color
+ports rather than corrupting their attached handles. No Color QuickDraw
+capability or original gameplay acceptance is claimed. The rebuild remains
+active; exact ownership/default/error limits are in architecture.md.
+
+
+EV's captured NewCWindow frame specifically requests nil storage, hidden
+plainDBoxProc=2, behind=-1, no close box and refCon=0; bounds/title pointers are
+$0080FB4C/$003FEFEE. The visible Boolean padding byte is $94, so preserve the
+existing byte-based Boolean ABI decoding. Evidence:
+/tmp/systemless-ev-color-window-frame.txt. This adds a concrete standard WDEF 2
+case to the next shared window/color-port integration.
+
+
+Final CGrafPort lifetime validation: all 397 tests pass with zero failures or
+ignored tests under the complete locked acceptance command, including GPU and
+compiled Macintosh guest fixtures. Three new ownership/ABI/failure tests and
+one public-header compiled guest cover the slice. Strict all-target Clippy,
+sequential changed-source formatting, fixture script syntax and whitespace
+checks pass. Logs: /tmp/systemless-color-ports-acceptance-final.txt,
+/tmp/systemless-color-ports-lint-verified.txt,
+/tmp/systemless-color-ports-final-focused.txt and
+/tmp/systemless-color-ports-mpw-final.txt. EV still requires NewCWindow; Marathon
+still requires sound-version support. Super Mines retains its save/open result
+and byte-identical final board. The complete rebuild remains active.

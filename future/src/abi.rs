@@ -67,6 +67,7 @@ pub enum Service {
     MaxApplZone,
     MoreMasters,
     Device(crate::devices::Op),
+    ColorPort(crate::color_ports::Action),
     NextDevice,
     DeviceAttribute,
     Index2Color,
@@ -347,6 +348,9 @@ impl Abi {
             b"GetMouse" => Some(Service::GetMouse),
             b"SystemTask" => Some(Service::SystemTask),
             b"SysEnvirons" => Some(Service::SysEnvirons),
+            b"OpenCPort" => Some(Service::ColorPort(crate::color_ports::Action::Open)),
+            b"InitCPort" => Some(Service::ColorPort(crate::color_ports::Action::Init)),
+            b"CloseCPort" => Some(Service::ColorPort(crate::color_ports::Action::Close)),
             b"GetGDevice" => Some(Service::Device(crate::devices::Op::Current)),
             b"GetMainDevice" => Some(Service::Device(crate::devices::Op::Main)),
             b"GetDeviceList" => Some(Service::Device(crate::devices::Op::First)),
@@ -1277,6 +1281,33 @@ impl Abi {
                 },
                 Reply::M68kD0,
             )),
+            0xaa00..=0xaa02 => {
+                let port = GuestPtr(memory.u32(GuestPtr(sp))?);
+                if port.0 == 0 {
+                    return Err(Error::Graphics("nil color port".into()));
+                }
+                let action = match opcode {
+                    0xaa00 => crate::color_ports::Action::Open,
+                    0xaa01 => crate::color_ports::Action::Init,
+                    _ => crate::color_ports::Action::Close,
+                };
+                match action {
+                    crate::color_ports::Action::Open => memory.validate_write(port, 108)?,
+                    crate::color_ports::Action::Init => {
+                        let bytes = memory.read(port, 108)?;
+                        if u16::from_be_bytes(bytes[6..8].try_into().unwrap()) & 0xc000 == 0xc000 {
+                            memory.validate_write(port, 108)?;
+                        }
+                    }
+                    crate::color_ports::Action::Close => {
+                        memory.read(port, 108)?;
+                    }
+                }
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("color port ABI stack overflow".into()))?;
+                Ok((Call::ColorPort { action, port }, Reply::None))
+            }
             0xaa29 | 0xaa2a | 0xaa32 => {
                 memory.validate_write(GuestPtr(sp), 4)?;
                 let op = match opcode {
@@ -2508,6 +2539,10 @@ impl Abi {
                 version: c.gpr[3] as i16,
                 record: GuestPtr(c.gpr[4]),
             },
+            Service::ColorPort(action) => Call::ColorPort {
+                action,
+                port: GuestPtr(c.gpr[3]),
+            },
             Service::Device(op) => Call::Device(op),
             Service::NextDevice => Call::Device(crate::devices::Op::Next(c.gpr[3])),
             Service::DeviceAttribute => Call::Device(crate::devices::Op::Attribute {
@@ -3067,6 +3102,7 @@ impl Abi {
                         | Service::OffsetRect
                         | Service::InsetRect
                         | Service::MoreMasters
+                        | Service::ColorPort(_)
                         | Service::Index2Color
                         | Service::SetApplLimit
                         | Service::MaxApplZone

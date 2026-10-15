@@ -717,6 +717,9 @@ impl Manager {
         let styled = owned.len() == 7;
         let port = GuestPtr(u32::from_be_bytes(record[82..86].try_into().unwrap()));
         let saved = memory.read(port, 108)?.to_vec();
+        if u16::from_be_bytes(saved[6..8].try_into().unwrap()) & 0xc000 != 0 {
+            return Err(bad("TextEdit rendering in color ports is not implemented"));
+        }
         memory.validate_write(port, 108)?;
         let ports = process
             .ports

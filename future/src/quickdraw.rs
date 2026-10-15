@@ -90,6 +90,16 @@ fn write_region(memory: &mut Memory, handle: GuestPtr, r: Rect) -> Result<()> {
     memory.write(data, &bytes)
 }
 impl Ports {
+    pub(crate) fn require_basic(&self, memory: &Memory) -> Result<()> {
+        let port = self.current(memory)?;
+        if memory.u16(offset(port, 6)?)? & 0xc000 != 0 {
+            return Err(Error::Graphics(
+                "drawing and pattern changes in color ports are not implemented".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// QuickDraw's unsigned seed is part of QDGlobals, independent of the
     /// selected port and the unrelated low-memory random-seed location.
     pub fn random(&self, memory: &mut Memory) -> Result<i16> {
@@ -297,6 +307,7 @@ impl Ports {
         verb: crate::polygons::Verb,
     ) -> Result<()> {
         use crate::polygons::Verb;
+        self.require_basic(memory)?;
         let port = self.current(memory)?;
         let bytes = memory.read(port, PORT_SIZE)?.to_vec();
         let word = |at| i16::from_be_bytes(bytes[at..at + 2].try_into().unwrap());
@@ -357,6 +368,7 @@ impl Ports {
         Ok(())
     }
     pub fn pen_normal(&self, memory: &mut Memory) -> Result<()> {
+        self.require_basic(memory)?;
         let port = self.current(memory)?;
         memory.write(
             GuestPtr(port.0 + 52),
@@ -442,6 +454,7 @@ impl Ports {
         self.set(memory, port)
     }
     pub fn set_bits(&self, memory: &mut Memory, bitmap: GuestPtr) -> Result<()> {
+        self.require_basic(memory)?;
         Bitmap::read(memory, bitmap)?;
         let bytes: [u8; 14] = memory.read(bitmap, 14)?.try_into().unwrap();
         memory.write(offset(self.current(memory)?, 2)?, &bytes)
@@ -703,6 +716,7 @@ impl Ports {
         rectangle: GuestPtr,
         op: RectangleOp,
     ) -> Result<()> {
+        self.require_basic(memory)?;
         let r = read_rect(memory, rectangle)?;
         if op == RectangleOp::Frame {
             return self.round_rect(gpu, memory, r, 0, 0, true);
@@ -782,6 +796,7 @@ impl Ports {
         force_visibility: bool,
         recording_polygon: bool,
     ) -> Result<(Bitmap, Vec<Rect>)> {
+        self.require_basic(memory)?;
         let p = self.current(memory)?;
         let bytes = memory.read(p, PORT_SIZE)?;
         let word = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());

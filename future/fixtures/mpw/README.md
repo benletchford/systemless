@@ -515,3 +515,10 @@ screen-memory aliasing, then checks Index2Color before/after a table edit. Both
 real CPU engines must post marker $D311 and exit successfully without a GPU.
 This initial one-bit device fixture does not establish color-window or original
 gameplay support. The separate optional GPU regression copies its PixMap source.
+
+
+`color_ports.c` uses the public CGrafPort/PixMap/PixPat/GrafVars definitions to
+check OpenCPort/InitCPort/CloseCPort on both CPUs: exact sizes and defaults,
+HiliteRGB, independent handles, borrowed device tables, allocation-free reset,
+caller/custom table survival and inert basic-port initialization. Both must post
+$C907 and exit. This does not draw into a color port or create a color window.

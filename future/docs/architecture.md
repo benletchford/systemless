@@ -1889,8 +1889,48 @@ prepared before destination writes, retaining overlap safety.
 
 The existing wgpu palette path converts indexed RGB through the already-tested
 monochrome destination policy used for PICT. This is not full native color
-quantization parity or a color destination implementation. CGrafPorts,
+quantization parity or a color destination implementation. CGrafPort drawing,
 NewCWindow, indexed destination memory/drawing, configurable screen modes and
 palette-to-presentation synchronization remain required next steps. Tests copy
 both the actual device PixMap and a read-only eight-bit RGB source through both
 CPU adapters and check destination bytes, padding and real GPU readback.
+
+
+## CGrafPort lifecycle before color-window integration
+
+One process-owned color-port registry now implements OpenCPort, InitCPort and
+CloseCPort through both CPU adapters. The SDK-verified 108-byte CGrafPort owns
+seven attached handles: a PixMap, visibility/clip regions, three old-style
+PixPats, and the 26-byte GrafVars record. The copied PixMap borrows the current
+device's color table and pixel storage; those are not freed on close. Caller
+port storage remains caller-owned. Defaults include portVersion $C000,
+pnLocHFrac $8000, black/white requested RGB, old-style white/black patterns,
+zero opColor, and the live HiliteRGB ($0DA0) copied to GrafVars. Fore/background
+indices are selected against the current two-entry device table.
+
+Opening validates caller storage/current-slot output first and rolls back a
+partial attached-handle allocation. Allocation failure returns through MemErr
+without publishing a port or replacing the current port. Shared device creation
+is a separate prerequisite and its lazy device objects persist independently.
+InitCPort reuses the existing attached handles without guest allocation; a basic
+GrafPort is an inert case that preserves its bytes, current selection and guest
+MemErr. Close validates the complete owned graph before disposal and never
+frees a borrowed/replaced table or the screen. Caller record bytes/current port
+selection survive close, matching the existing ClosePort contract; callers must
+select another usable port before further drawing.
+
+Unknown/closed ports, replaced owned fields and unsupported expanded/color
+pattern graphs fail explicitly. The supported patterns are the initialized
+old-style PixPat form; general PixPat cache/resource ownership is unfinished.
+Reset/close require the owned handle identities to remain attached, while a
+custom pmTable remains caller-owned. Nil/short/read-only native output storage
+is rejected before popping the caller frame.
+
+This stage does not implement NewCWindow or CGrafPort rendering. Legacy paths
+that would write inline bitmap/pattern fields into a color record now reject
+the operation first; TextEdit rejects color-port redraw before temporary port
+mutation. Common selection/clip/pen-visibility fields retain their existing
+shared layout. No Color QuickDraw capability is newly advertised. The next
+integration needs shared port bitmap/pattern accessors and color rendering,
+then the existing Window Manager can use the color-port owner for creation,
+rollback, updates, painting and disposal without a second window manager.

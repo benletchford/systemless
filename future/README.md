@@ -23,7 +23,8 @@ remain pending. CopyBits shares GPU scaling, transfer modes and complex masks
 for monochrome BitMaps and checked live 1/2/4/8-bit indexed PixMap sources,
 including overlapping storage. Device queries expose owned GDevice/PixMap/table
 records for the actual initial monochrome screen; Index2Color reads its live
-palette. Multiple devices, depth changes and color ports remain pending. LineTo/Line share GPU rectangular-pen coverage, patterns,
+palette. Color-port attached-record lifecycle is implemented; multiple devices, depth
+changes, color-port drawing and color windows remain pending. LineTo/Line share GPU rectangular-pen coverage, patterns,
 transfer modes and live pen advancement. Rectangle frame/erase/invert/fill use
 shared clipping and operation-specific patterns; FillRect updates fillPat.
 Recording/custom procedures remain gaps.

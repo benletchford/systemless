@@ -1379,3 +1379,44 @@ returned to Waiting{ticks:10} at PC $0100C798; its final board image was visuall
 inspected. Evidence: /tmp/systemless-mines-device-reload.txt and
 /tmp/systemless-mines-device-reload-after.png. This retains the prior bounded
 offscreen interaction result; live desktop and win/loss acceptance remain gaps.
+
+
+### Owned color-port foundation for EV's window path
+
+OpenCPort/InitCPort/CloseCPort now create, reset and dispose actual shared
+CGrafPort attached records, with borrowed device palette/screen lifetime and
+caller-owned port storage. Both real CPUs pass a public-header fixture that
+inspects sizes/defaults, resets patterns, opens independent ports and checks
+that closing one preserves the other port and both device/custom color tables.
+The fixture posts marker $C907 and exits successfully. Evidence:
+/tmp/systemless-color-ports-mpw-build-final.txt and
+/tmp/systemless-color-ports-mpw-final.txt.
+
+This is a prerequisite for NewCWindow, not an implementation of that window
+call or color-port drawing. EV's next recorded blocker remains NewCWindow;
+Marathon's sound-version and PPC routine-descriptor requirements remain. Legacy
+operations that would misinterpret color-port fields now fail before mutating
+them. The monochrome display/profile is unchanged, and neither original target
+is playable. Full port/drawing limitations are in architecture.md.
+
+
+A final original-game refresh confirms EV still stops at NewCWindow ($AA45),
+and Marathon with its companion volume still stops at SoundDispatch ($A800):
+/tmp/systemless-ev-color-ports-next.txt and
+/tmp/systemless-marathon-color-ports-next.txt. This stage adds the required
+port owner/lifecycle; it does not advance either original beyond that boundary.
+Super Mines Save/Open completed after publication of the new port traps, reopened
+its 1,972-byte game and returned to Waiting{ticks:10} at PC $0100C798. Its final
+PPM is byte-identical to the preceding device milestone's inspected board.
+Evidence: /tmp/systemless-mines-color-ports-reload.txt and associated after.ppm.
+
+
+A bounded final development trace captures EV's actual $AA45 frame at PC
+$00015B7C/SP $0080FAC4: nil caller storage, bounds pointer $0080FB4C, title
+pointer $003FEFEE, visible=false, plainDBoxProc=2, behind=$FFFFFFFF,
+goAway=false and refCon=0. The Boolean's padding byte is nonzero ($94) and must
+not be treated as part of the visible value. Evidence:
+/tmp/systemless-ev-color-window-frame.txt. The tracer now reports bounded stack
+bytes on a 68K service fault, without changing guest state. The next window slice
+must support this standard hidden dialog and use color-port bitmap/pattern
+accessors rather than interpreting CGrafPort offsets 8/32 as inline bitmap data.

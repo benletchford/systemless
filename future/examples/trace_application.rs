@@ -76,6 +76,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(error) => {
                 if let Cpu::M68k(c) = &app.runtime.cpu {
                     println!(
+                        "fault stack memory={:02x?}",
+                        app.runtime
+                            .memory
+                            .read(systemless_future::memory::GuestPtr(c.dar[15]), 64)
+                    );
+                    println!(
                         "fault A0 memory={:02x?}",
                         app.runtime
                             .memory

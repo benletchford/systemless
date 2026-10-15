@@ -3,6 +3,7 @@ pub mod bitmap;
 pub mod calendar;
 mod callback;
 pub mod cfm;
+pub mod color_ports;
 pub mod controls;
 pub mod cpu;
 pub mod cursor;

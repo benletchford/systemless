@@ -581,6 +581,14 @@ impl Runtime {
                                 0,
                             )?;
                         }
+                        Call::ColorPort { action, port } => {
+                            let mut ports = std::mem::take(&mut self.process.color_ports);
+                            let result =
+                                ports.call(&mut self.memory, &mut self.process, action, port);
+                            self.process.color_ports = ports;
+                            result?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::Device(op) => {
                             let mut devices = std::mem::take(&mut self.process.devices);
                             let result = devices.call(&mut self.memory, &mut self.process, op);
@@ -974,6 +982,7 @@ impl Runtime {
                                     ports.clip_rect(&mut self.memory, r)?;
                                 }
                                 PortOp::PenPat => {
+                                    ports.require_basic(&self.memory)?;
                                     let pattern: [u8; 8] =
                                         self.memory.read(pointer, 8)?.try_into().unwrap();
                                     let p = ports.current(&self.memory)?;
@@ -1440,7 +1449,8 @@ impl Runtime {
                             | Call::TextEdit(crate::textedit::Op::Height { .. })
                     ) && matches!(
                         call,
-                        Call::SetApplLimit(_)
+                        Call::ColorPort { .. }
+                            | Call::SetApplLimit(_)
                             | Call::MoreMasters
                             | Call::MaxApplZone
                             | Call::Dialog(
@@ -1537,6 +1547,7 @@ impl Runtime {
                         | Call::GetMouse(_)
                         | Call::SystemTask
                         | Call::SysEnvirons { .. }
+                        | Call::ColorPort { .. }
                         | Call::Device(_)
                         | Call::SetApplLimit(_)
                         | Call::MoreMasters

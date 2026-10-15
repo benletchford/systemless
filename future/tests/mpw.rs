@@ -1276,3 +1276,41 @@ fn compiled_devices_share_screen_records_flags_and_palette_on_both_cpus() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn compiled_color_ports_own_attached_records_but_borrow_device_tables_on_both_cpus() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("color_ports.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("color_ports.ppc")).unwrap();
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, Some(&code)).unwrap(),
+    ] {
+        assert_eq!(app.runtime.advance(30000).unwrap(), Stop::Exit(0));
+        assert!(app.runtime.services.calls.iter().any(|call| matches!(
+            call,
+            Call::PostEvent {
+                what: 7,
+                message: 0xc907
+            }
+        )));
+        for (action, count) in [
+            (systemless_future::color_ports::Action::Open, 2),
+            (systemless_future::color_ports::Action::Init, 2),
+            (systemless_future::color_ports::Action::Close, 2),
+        ] {
+            assert_eq!(
+                app.runtime
+                    .services
+                    .calls
+                    .iter()
+                    .filter(
+                        |call| matches!(call,Call::ColorPort{action:actual,..} if *actual==action)
+                    )
+                    .count(),
+                count
+            );
+        }
+    }
+}

@@ -1,0 +1,357 @@
+mod support;
+use systemless_future::{
+    color_ports::Action,
+    cpu::{Architecture, Cpu},
+    load::{LoadedApplication, STACK_BASE},
+    memory::{GuestPtr, Permissions},
+    process::HEAP_SIZE,
+    runtime::Stop,
+};
+const PORT: u32 = 0x50000000;
+const FIELDS: [u32; 7] = [2, 24, 28, 32, 58, 62, 8];
+fn app() -> LoadedApplication {
+    let fixture = support::pef_program(
+        &[0x4e800020],
+        &[
+            b"InitGraf",
+            b"OpenCPort",
+            b"InitCPort",
+            b"CloseCPort",
+            b"GetGDevice",
+            b"OpenPort",
+        ],
+        64,
+    );
+    let mut a = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    a.runtime
+        .memory
+        .map(GuestPtr(PORT), vec![0xcc; 512], Permissions::RW)
+        .unwrap();
+    a.runtime
+        .memory
+        .map(
+            GuestPtr(0x51000000),
+            vec![0xaa, 0, 0xaa, 1, 0xaa, 2],
+            Permissions::RX,
+        )
+        .unwrap();
+    ppc(&mut a, 0, 0x600);
+    a
+}
+fn ppc(a: &mut LoadedApplication, index: u32, argument: u32) -> u32 {
+    let tv = a
+        .runtime
+        .memory
+        .u32(GuestPtr(a.info.toc_or_a5 + 8 + index * 4))
+        .unwrap();
+    let pc = a.runtime.memory.u32(GuestPtr(tv)).unwrap();
+    a.runtime.cpu = Cpu::new(Architecture::PowerPc, pc, STACK_BASE + 0x8000);
+    let Cpu::PowerPc(c) = &mut a.runtime.cpu else {
+        panic!()
+    };
+    c.gpr[3] = argument;
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::PowerPc(c) = &a.runtime.cpu else {
+        panic!()
+    };
+    c.gpr[3]
+}
+fn native(a: &mut LoadedApplication, action: u32, port: u32) {
+    let stack = STACK_BASE + 0x8000;
+    a.runtime
+        .memory
+        .write(GuestPtr(stack), &port.to_be_bytes())
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(stack + 4), &[0x5a; 4])
+        .unwrap();
+    a.runtime.cpu = Cpu::new(Architecture::M68k, 0x51000000 + action * 2, stack);
+    let Cpu::M68k(c) = &mut a.runtime.cpu else {
+        panic!()
+    };
+    c.dar[0] = 0x12345678;
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::M68k(c) = &a.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(c.dar[15], stack + 4);
+    assert_eq!(c.dar[0], 0x12345678);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(stack + 4), 4).unwrap(),
+        [0x5a; 4]
+    );
+}
+fn handles(a: &LoadedApplication, port: u32) -> [u32; 7] {
+    FIELDS.map(|offset| a.runtime.memory.u32(GuestPtr(port + offset)).unwrap())
+}
+fn largest(a: &mut LoadedApplication) -> u32 {
+    let (mut low, mut high) = (0, HEAP_SIZE);
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        let pointer = a
+            .runtime
+            .process
+            .new_pointer(&mut a.runtime.memory, mid, false)
+            .unwrap();
+        if pointer == 0 {
+            high = mid - 1;
+        } else {
+            a.runtime.process.dispose_pointer(pointer);
+            low = mid;
+        }
+    }
+    low
+}
+fn call(a: &mut LoadedApplication, action: Action, port: u32) -> systemless_future::Result<()> {
+    let mut manager = std::mem::take(&mut a.runtime.process.color_ports);
+    let result = manager.call(
+        &mut a.runtime.memory,
+        &mut a.runtime.process,
+        action,
+        GuestPtr(port),
+    );
+    a.runtime.process.color_ports = manager;
+    result
+}
+#[test]
+fn real_cpus_share_color_port_graph_reset_without_allocation_and_preserve_borrowed_tables() {
+    let mut a = app();
+    a.runtime
+        .memory
+        .write(GuestPtr(0xda0), &[1, 2, 3, 4, 5, 6])
+        .unwrap();
+    native(&mut a, 0, PORT);
+    assert_eq!(a.runtime.memory.u32(GuestPtr(0x600)).unwrap(), PORT);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(PORT + 6)).unwrap(), 0xc000);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(PORT + 14)).unwrap(), 0x8000);
+    let first = handles(&a, PORT);
+    assert_eq!(
+        first
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        7
+    );
+    for (handle, size) in first.into_iter().zip([50, 10, 10, 28, 28, 28, 26]) {
+        assert_eq!(
+            a.runtime
+                .process
+                .handle_size(&a.runtime.memory, handle)
+                .unwrap(),
+            size
+        );
+    }
+    let device = ppc(&mut a, 4, 0);
+    let gd = a.runtime.memory.u32(GuestPtr(device)).unwrap();
+    let device_pm = a.runtime.memory.u32(GuestPtr(gd + 22)).unwrap();
+    let device_data = a.runtime.memory.u32(GuestPtr(device_pm)).unwrap();
+    let table = a.runtime.memory.u32(GuestPtr(device_data + 42)).unwrap();
+    let pm = a.runtime.memory.u32(GuestPtr(first[0])).unwrap();
+    assert_ne!(first[0], device_pm);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(pm), 50).unwrap(),
+        a.runtime.memory.read(GuestPtr(device_data), 50).unwrap()
+    );
+    let vars = a.runtime.memory.u32(GuestPtr(first[6])).unwrap();
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(vars), 12).unwrap(),
+        [0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6]
+    );
+    for (index, value) in [(3, 0), (4, 255), (5, 255)] {
+        let data = a.runtime.memory.u32(GuestPtr(first[index])).unwrap();
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(data + 20), 8).unwrap(),
+            [value; 8]
+        );
+    }
+    assert_eq!(ppc(&mut a, 1, PORT + 256), PORT + 256);
+    assert_ne!(handles(&a, PORT + 256), first);
+    a.runtime
+        .memory
+        .write(GuestPtr(PORT + 74), &99u16.to_be_bytes())
+        .unwrap();
+    let capacity = largest(&mut a);
+    let fill = a
+        .runtime
+        .process
+        .new_pointer(&mut a.runtime.memory, capacity, false)
+        .unwrap();
+    assert_ne!(fill, 0);
+    assert_eq!(ppc(&mut a, 2, PORT), PORT);
+    assert_eq!(handles(&a, PORT), first);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(PORT + 74)).unwrap(), 0);
+    assert_eq!(a.runtime.memory.u32(GuestPtr(0x600)).unwrap(), PORT);
+    a.runtime.process.dispose_pointer(fill);
+    let custom = a
+        .runtime
+        .process
+        .new_handle(&mut a.runtime.memory, 24, true)
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(pm + 42), &custom.to_be_bytes())
+        .unwrap();
+    a.runtime
+        .process
+        .ports
+        .unwrap()
+        .set(&mut a.runtime.memory, GuestPtr(PORT + 256))
+        .unwrap();
+    let before = a.runtime.memory.read(GuestPtr(PORT), 108).unwrap().to_vec();
+    native(&mut a, 2, PORT);
+    assert_eq!(a.runtime.memory.read(GuestPtr(PORT), 108).unwrap(), before);
+    assert_eq!(a.runtime.memory.u32(GuestPtr(0x600)).unwrap(), PORT + 256);
+    for handle in first {
+        assert_eq!(
+            a.runtime
+                .process
+                .handle_size(&a.runtime.memory, handle)
+                .unwrap(),
+            0
+        );
+    }
+    assert_eq!(
+        a.runtime
+            .process
+            .handle_size(&a.runtime.memory, custom)
+            .unwrap(),
+        24
+    );
+    assert_eq!(
+        a.runtime
+            .process
+            .handle_size(&a.runtime.memory, table)
+            .unwrap(),
+        24
+    );
+    assert!(call(&mut a, Action::Init, PORT).is_err());
+    assert_eq!(ppc(&mut a, 3, PORT + 256), PORT + 256);
+    assert_eq!(
+        a.runtime
+            .process
+            .handle_size(&a.runtime.memory, table)
+            .unwrap(),
+        24
+    );
+}
+#[test]
+fn basic_init_is_inert_and_unsupported_pattern_mutations_do_not_corrupt_color_handles() {
+    let mut a = app();
+    ppc(&mut a, 5, PORT);
+    let before = a.runtime.memory.read(GuestPtr(PORT), 108).unwrap().to_vec();
+    a.runtime
+        .memory
+        .write(GuestPtr(0x220), &(-42i16).to_be_bytes())
+        .unwrap();
+    a.runtime.process.mem_error = -7;
+    native(&mut a, 1, PORT);
+    assert_eq!(a.runtime.memory.read(GuestPtr(PORT), 108).unwrap(), before);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0x220)).unwrap() as i16, -42);
+    a.runtime
+        .memory
+        .map(GuestPtr(0x52000000), vec![0; 108], Permissions::RX)
+        .unwrap();
+    native(&mut a, 1, 0x52000000);
+    assert_eq!(a.runtime.memory.u32(GuestPtr(0x600)).unwrap(), PORT);
+    ppc(&mut a, 1, PORT + 256);
+    let before = a
+        .runtime
+        .memory
+        .read(GuestPtr(PORT + 256), 108)
+        .unwrap()
+        .to_vec();
+    let ports = a.runtime.process.ports.unwrap();
+    assert!(ports.pen_normal(&mut a.runtime.memory).is_err());
+    assert!(ports
+        .set_bits(&mut a.runtime.memory, GuestPtr(PORT + 2))
+        .is_err());
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(PORT + 256), 108).unwrap(),
+        before
+    );
+}
+#[test]
+fn partial_oom_rolls_back_without_publishing_and_bad_frames_preserve_stack_and_graph() {
+    let mut a = app();
+    ppc(&mut a, 4, 0);
+    let capacity = largest(&mut a);
+    let fill = a
+        .runtime
+        .process
+        .new_pointer(&mut a.runtime.memory, capacity - 80, false)
+        .unwrap();
+    assert_ne!(fill, 0);
+    let before = a.runtime.memory.read(GuestPtr(PORT), 108).unwrap().to_vec();
+    native(&mut a, 0, PORT);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0x220)).unwrap() as i16, -108);
+    assert_eq!(a.runtime.memory.read(GuestPtr(PORT), 108).unwrap(), before);
+    assert_eq!(a.runtime.memory.u32(GuestPtr(0x600)).unwrap(), 0);
+    let remaining = a
+        .runtime
+        .process
+        .new_pointer(&mut a.runtime.memory, 80, false)
+        .unwrap();
+    assert_ne!(remaining, 0);
+    a.runtime.process.dispose_pointer(remaining);
+    a.runtime.process.dispose_pointer(fill);
+    assert_eq!(ppc(&mut a, 1, PORT), PORT);
+    let graph = handles(&a, PORT);
+    a.runtime
+        .memory
+        .write(GuestPtr(PORT + 24), &graph[2].to_be_bytes())
+        .unwrap();
+    assert!(call(&mut a, Action::Close, PORT).is_err());
+    for (handle, size) in graph.into_iter().zip([50, 10, 10, 28, 28, 28, 26]) {
+        assert_eq!(
+            a.runtime
+                .process
+                .handle_size(&a.runtime.memory, handle)
+                .unwrap(),
+            size
+        );
+    }
+    a.runtime
+        .memory
+        .write(GuestPtr(PORT + 24), &graph[1].to_be_bytes())
+        .unwrap();
+    let pattern = a.runtime.memory.u32(GuestPtr(graph[3])).unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(pattern), &1u16.to_be_bytes())
+        .unwrap();
+    assert!(call(&mut a, Action::Close, PORT).is_err());
+    assert_eq!(
+        a.runtime
+            .process
+            .handle_size(&a.runtime.memory, graph[0])
+            .unwrap(),
+        50
+    );
+    a.runtime
+        .memory
+        .write(GuestPtr(pattern), &0u16.to_be_bytes())
+        .unwrap();
+    a.runtime
+        .memory
+        .map(GuestPtr(0x53000000), vec![0; 107], Permissions::RW)
+        .unwrap();
+    let low_memory = a.runtime.memory.read(GuestPtr(0), 108).unwrap().to_vec();
+    for action in [Action::Open, Action::Init, Action::Close] {
+        assert!(call(&mut a, action, 0).is_err());
+    }
+    let stack = STACK_BASE + 0x8000;
+    for port in [0u32, 0x53000000] {
+        a.runtime
+            .memory
+            .write(GuestPtr(stack), &port.to_be_bytes())
+            .unwrap();
+        a.runtime.cpu = Cpu::new(Architecture::M68k, 0x51000000, stack);
+        assert!(a.runtime.advance(1).is_err());
+        let Cpu::M68k(c) = &a.runtime.cpu else {
+            panic!()
+        };
+        assert_eq!(c.dar[15], stack);
+    }
+    assert_eq!(a.runtime.memory.read(GuestPtr(0), 108).unwrap(), low_memory);
+}
