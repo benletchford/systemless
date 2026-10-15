@@ -230,7 +230,8 @@ capabilities report stereo, multichannel mixing and software 16-bit samples;
 recording, codecs, disk/double-buffer playback remain unfinished. The PowerPC
 NumVersion structure uses the actual caller-provided return buffer. Both original
 68K games pass the earlier sound-version call; EV passes offscreen graphics-device
-attribute updates and next needs inverse color tables, while Marathon reports
+attribute updates and inverse-table construction, and next needs selection of
+its offscreen device. Marathon reports
 that Color QuickDraw is required. Super Mines' recorded interaction
 is automated/offscreen; live desktop and win/loss acceptance remain incomplete.
 
@@ -265,3 +266,9 @@ ignores unused note-pitch/loop metadata, covering the original EV asset cases.
 Synthetic guest callers accepted 167 scanned EV/Marathon sounds through both
 adapters, with matching 32-frame PCM prefixes and silent completion/cleanup.
 This is asset-level evidence; original EV/Marathon gameplay remains unfinished.
+
+
+MakeITable now generates the public inverse lookup portion in real owned handles
+for resolutions 3/4/5, with default-device parameters and shared QDError state.
+ROM tie/hidden-color matching, reserved clients and full color drawing remain
+unfinished. No ROM-derived lookup tables are included.

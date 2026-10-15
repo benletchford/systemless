@@ -8,6 +8,9 @@ int main(void) {
     GDHandle device, offscreen;
     PixMapHandle pixels;
     CTabHandle colors;
+    ITabHandle inverse;
+    unsigned char *lookup;
+    long tableSize;
     RGBColor rgb;
     offscreen=(GDHandle)NewHandleClear(sizeof(GDevice));if (!offscreen) return 11;
     (**offscreen).gdRefCon=0x12345678;
@@ -31,6 +34,13 @@ int main(void) {
     Index2Color(0,&rgb); if (rgb.red!=65535 || rgb.green!=65535 || rgb.blue!=65535) return 8;
     Index2Color(1,&rgb); if (rgb.red || rgb.green || rgb.blue) return 9;
     colors=(**pixels).pmTable;
+    inverse=(ITabHandle)NewHandle(2);if (!inverse) return 14;
+    MakeITable(colors,inverse,3);if (QDError() || GetHandleSize((Handle)inverse)<518 || (**inverse).iTabSeed!=(**colors).ctSeed || (**inverse).iTabRes!=3) return 15;
+    lookup=(unsigned char *)(*inverse);if (lookup[6]!=1 || lookup[517]!=0) return 16;
+    tableSize=GetHandleSize((Handle)inverse);
+    MakeITable(colors,inverse,2);if (QDError()!=-156 || GetHandleSize((Handle)inverse)!=tableSize) return 17;
+    MakeITable(0,0,0);if (QDError() || !(**device).gdITable || (**((**device).gdITable)).iTabRes!=4) return 18;
+    DisposeHandle((Handle)inverse);
     (**colors).ctTable[0].rgb.red=0x1234;
     Index2Color(0,&rgb); if (rgb.red!=0x1234 || rgb.green!=65535 || rgb.blue!=65535) return 10;
     PostEvent(diskEvt,0xd311); ExitToShell(); return 0;

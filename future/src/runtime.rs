@@ -641,6 +641,12 @@ impl Runtime {
                             result?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::Color(op) => {
+                            let mut manager = std::mem::take(&mut self.process.color);
+                            let result = manager.call(&mut self.memory, &mut self.process, op);
+                            self.process.color = manager;
+                            reply.apply(&mut self.cpu, &mut self.memory, result?, 0)?;
+                        }
                         Call::Device(op) => {
                             let mut devices = std::mem::take(&mut self.process.devices);
                             let result = devices.call(&mut self.memory, &mut self.process, op);
@@ -1772,6 +1778,7 @@ impl Runtime {
                         | Call::SystemTask
                         | Call::SysEnvirons { .. }
                         | Call::ColorPort { .. }
+                        | Call::Color(_)
                         | Call::Device(_)
                         | Call::SetApplLimit(_)
                         | Call::MoreMasters

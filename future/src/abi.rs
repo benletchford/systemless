@@ -73,6 +73,8 @@ pub enum Service {
     SetDevice,
     DeviceAttribute,
     SetDeviceAttribute,
+    MakeITable,
+    QDError,
     Index2Color,
     GetApplLimit,
     SetApplLimit,
@@ -377,6 +379,8 @@ impl Abi {
             b"GetNextDevice" => Some(Service::NextDevice),
             b"TestDeviceAttribute" => Some(Service::DeviceAttribute),
             b"SetDeviceAttribute" => Some(Service::SetDeviceAttribute),
+            b"MakeITable" => Some(Service::MakeITable),
+            b"QDError" => Some(Service::QDError),
             b"Index2Color" => Some(Service::Index2Color),
             b"MoreMasters" => Some(Service::MoreMasters),
             b"MaxApplZone" => Some(Service::MaxApplZone),
@@ -1499,6 +1503,26 @@ impl Abi {
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("color port ABI stack overflow".into()))?;
                 Ok((Call::ColorPort { action, port }, Reply::None))
+            }
+            0xaa40 => {
+                memory.validate_write(GuestPtr(sp), 2)?;
+                Ok((
+                    Call::Color(crate::color::Op::Error),
+                    Reply::StackWord(GuestPtr(sp)),
+                ))
+            }
+            0xaa39 => {
+                let args = memory.read(GuestPtr(sp), 10)?;
+                let op = crate::color::Op::Make {
+                    source: u32::from_be_bytes(args[6..10].try_into().unwrap()),
+                    destination: u32::from_be_bytes(args[2..6].try_into().unwrap()),
+                    resolution: i16::from_be_bytes(args[..2].try_into().unwrap()),
+                };
+                let next = sp
+                    .checked_add(10)
+                    .ok_or_else(|| Error::Cpu("MakeITable stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((Call::Color(op), Reply::None))
             }
             0xaa2d => {
                 let args = memory.read(GuestPtr(sp), 8)?;
@@ -2780,6 +2804,12 @@ impl Abi {
                 action,
                 port: GuestPtr(c.gpr[3]),
             },
+            Service::MakeITable => Call::Color(crate::color::Op::Make {
+                source: c.gpr[3],
+                destination: c.gpr[4],
+                resolution: c.gpr[5] as i16,
+            }),
+            Service::QDError => Call::Color(crate::color::Op::Error),
             Service::Device(op) => Call::Device(op),
             Service::SetDevice => Call::Device(crate::devices::Op::Select(c.gpr[3])),
             Service::NextDevice => Call::Device(crate::devices::Op::Next(c.gpr[3])),
@@ -3378,6 +3408,7 @@ impl Abi {
                 || matches!(
                     service,
                     Service::SetDevice
+                        | Service::MakeITable
                         | Service::SetDeviceAttribute
                         | Service::GetDateTime
                         | Service::GetResInfo

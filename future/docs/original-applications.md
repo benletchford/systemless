@@ -1607,3 +1607,13 @@ GDevice. It next stops at MakeITable, AA39, PC $00014964. Trace:
 /tmp/systemless-ev-device-attributes-next.txt. This is further setup execution,
 not a rendered title screen or gameplay. Marathon's prior color-capability and
 PPC routine-descriptor requirements remain unresolved.
+
+
+### Inverse-table refresh
+
+EV 1.0.5 68K now completes four MakeITable requests using its actual color-table
+and inverse-table handles. It next selects its application-created offscreen
+GDevice (handle 79676); selection is still limited to the initial display, so it
+stops at PC $00017694. /tmp/systemless-ev-inverse-detail.txt prints the failed
+service argument explicitly. No title/menu/gameplay is established. Original
+Marathon's color capability and PPC routine-descriptor requirements remain open.

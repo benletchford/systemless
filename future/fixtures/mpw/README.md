@@ -591,3 +591,7 @@ HandToHand, verifies independent payload and cleared flags, and checks nil error
 `devices.c` also verifies SetDeviceAttribute/TestDeviceAttribute on an owned
 offscreen GDevice before InitGraf, preserving a reference-value guard and then
 checking the unchanged initial screen, palette and low-memory device globals.
+
+The device fixture additionally checks MakeITable's seed, resolution and public
+lookup bytes, nil/default parameters, and persistent QDError for invalid
+resolution. It permits private allocation beyond the documented table portion.

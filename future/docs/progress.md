@@ -4562,3 +4562,44 @@ fixtures pass, including actual 68K/PPC offscreen attribute calls. Log:
 /tmp/systemless-device-attributes-sdk-test.txt. The preceding full suite remains the
 454-test checkpoint; no full-suite rerun is claimed for this device extension.
 The full rebuild and original-game acceptance remain active.
+
+
+## 2026-10-16: generated inverse lookup tables and shared QDError
+
+The shared Color Manager now builds the public inverse-table data for 3/4/5-bit
+resolutions in real owned guest handles: color seed, resolution and RGB-indexed
+lookup bytes. It supports device ordinals and sparse explicit pixel values,
+resizes through staged allocator updates, preserves source bytes/flags and
+publishes resolution/OOM errors through one process QDError state. Nil parameters
+resolve through the current GDevice; the initial device now has resolution 4.
+The two CPU adapters decode actual Pascal frames/import calls and share this
+state. Diagnostic traces now print the latest service at a fault.
+
+Matching currently measures integer RGB distance at each quantized cell center.
+No ROM lookup blobs are embedded. This is the public lookup portion, not complete
+ROM propagation/tie or hidden-color matching conformance. Tagged/reserved client
+entries fail explicitly pending reservation ownership; Color2Index, palette
+invalidation and full color drawing remain unfinished. Temporary matching work
+uses bounded host memory rather than emulating native scratch-heap pressure.
+
+Both CPU tests cover entire two-color lookup cubes at all three resolutions,
+nontrivial sparse RGB pixels, byte order, source preservation, default resolution/
+handle reuse, invalid resolution, allocation rollback and errors posted by one
+CPU then queried by the other in the same process. A fresh public-header
+Macintosh fixture inspects documented table bytes and QDError on both CPUs while
+allowing implementation-private table storage. All 57 focused tests pass with
+zero failures or skips (27 inverse/device/color-port/window tests including GPU,
+plus 30 compiled/CLI fixtures). Strict all-target lint, sequential changed-file
+formatting and whitespace checks pass. This is focused validation, not a new
+full-suite result. Logs: /tmp/systemless-inverse-focused.txt,
+/tmp/systemless-inverse-sdk-tests.txt, /tmp/systemless-inverse-cross-cpu-final.txt
+and /tmp/systemless-inverse-final-lint.txt.
+
+Original EV 1.0.5 68K completes four MakeITable calls and reaches SetGDevice for
+its own offscreen handle 79676, PC $00017694. It stops because selection currently
+accepts only the initial display. Trace: /tmp/systemless-ev-inverse-detail.txt.
+Next implement real selection/current-device state for owned offscreen records,
+retain the actual main/list device, and make palette/default-table queries use
+that selected record. Do not infer a nil selection from the already-popped fault
+stack. Full color destinations, original-game gameplay and the rebuild remain
+unfinished; no capability flag was raised to bypass Marathon's startup check.

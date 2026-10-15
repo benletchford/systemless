@@ -93,6 +93,7 @@ impl Manager {
             memory.write(pixel_data, &map)?;
             let data = record(memory, process, device, 62)?;
             let mut gd = [0u8; 62];
+            gd[10..12].copy_from_slice(&4u16.to_be_bytes());
             gd[20..22].copy_from_slice(&0xe800u16.to_be_bytes());
             gd[22..26].copy_from_slice(&pixels.to_be_bytes());
             gd[34..42].copy_from_slice(&bounds);

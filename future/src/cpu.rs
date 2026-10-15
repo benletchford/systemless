@@ -65,6 +65,7 @@ pub enum Call {
     MaxApplZone,
     MoreMasters,
     Device(crate::devices::Op),
+    Color(crate::color::Op),
     ColorPort {
         action: crate::color_ports::Action,
         port: GuestPtr,

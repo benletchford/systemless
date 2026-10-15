@@ -78,6 +78,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let stop = match app.runtime.advance(1) {
             Ok(stop) => stop,
             Err(error) => {
+                println!(
+                    "latest service before fault: {:?}",
+                    app.runtime.services.calls.last()
+                );
                 if let Cpu::M68k(c) = &app.runtime.cpu {
                     println!(
                         "fault pc={:08x} d0={:08x} sp={:08x} regs={:08x?}",

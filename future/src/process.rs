@@ -28,6 +28,7 @@ pub struct Process {
     pub sound: crate::sound::Manager,
     pub devices: crate::devices::Manager,
     pub color_ports: crate::color_ports::Manager,
+    pub color: crate::color::Manager,
     pub cursor: crate::cursor::Cursor,
     pub input: crate::events::Input,
     pub menus: crate::menus::Menus,

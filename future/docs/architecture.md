@@ -2290,3 +2290,29 @@ application records before InitGraf, then unchanged screen/device behavior.
 Source: [Apple SetDeviceAttribute](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-281.html).
 This extends state access; it does not implement inverse tables, arbitrary device
 selection, indexed drawing destinations or advertise full Color QuickDraw.
+
+
+### Generated inverse-table data and Color Manager errors
+
+Process owns one Color Manager, including the latest MakeITable result queried
+through QDError. The 68K ABI uses reversed 10-byte Pascal arguments for MakeITable
+and a two-byte no-pop result for QDError; PPC uses its normal arguments and signed
+return. Internal allocation errors do not replace MemErr/ResErr. Invalid resolution
+reports cResErr (-156); a failed staged resize retains output bytes and identity.
+
+The builder reads bounded owned ColorTable records, snapshots their entries and
+writes the public six-byte ITab header plus 2^(3*resolution) byte indices. RGB
+coordinates concatenate red, green and blue. Device tables use ordinals; ordinary
+tables use unique explicit byte-sized pixel values. A bounded integer nearest
+match at each cell center generates this software table. Source seed/bounds and
+3/4/5-bit resolution are checked, and default parameters read current-device
+state. Missing default ITab handles are allocated and published after success.
+No legacy runtime dependency or ROM table bytes are introduced. Table creation
+is state preparation on the CPU, not a graphics rendering fallback.
+
+This does not yet provide hidden-color data/search, reserved client entries,
+ROM tie/propagation equivalence or native temporary-memory accounting. Those
+remain explicit Color Manager requirements. The supplied C fixture tests public
+bytes while allowing private extra allocation. Sources:
+[Apple inverse tables](https://dev.os9.ca/techpubs/mac/ACI/ACI-103.html) and
+[QuickDraw Reference, MakeITable/QDError](https://leopard-adc.pepas.com/documentation/Carbon/Reference/QuickDraw_Ref/QuickDraw_Ref.pdf).
