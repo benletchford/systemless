@@ -281,3 +281,14 @@ bitmap checks. General indexed destinations and full color acceptance remain ope
 Get1Resource now uses the installed application map and shares real resource
 identity/loading with GetResource while excluding cached fallback cursors. Dynamic
 resource-map chains and UseResFile remain unfinished.
+
+
+GetNewDialog now loads checked DLOG/DITL resources into real 170-byte records,
+independent copied item lists and shared window/control ownership. GetDialogItem,
+CloseDialog and DisposeDialog use the same records through native traps and PPC
+imports. Standard buttons, checkboxes, radio controls and static text are owned;
+icon/picture handles refer to actual resources. Controls draw on creation;
+non-control update drawing, modal event handling, edit-text items, color dialogs,
+custom definitions and additional positioning modes remain unfinished. Original
+EV passes dialog creation and next requests SetDialogDefaultItem; no dialog or
+original-game gameplay acceptance is claimed.

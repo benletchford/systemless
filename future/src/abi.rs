@@ -80,6 +80,9 @@ pub enum Service {
     SetApplLimit,
     BlockMove,
     InitDialogs,
+    GetNewDialog,
+    GetDialogItem,
+    DisposeDialog(bool),
     IsDialogEvent,
     ParamText,
     GetParamText,
@@ -390,6 +393,10 @@ impl Abi {
             b"BlockMove" | b"BlockMoveData" => Some(Service::BlockMove),
             b"IsDialogEvent" => Some(Service::IsDialogEvent),
             b"InitDialogs" => Some(Service::InitDialogs),
+            b"GetNewDialog" => Some(Service::GetNewDialog),
+            b"GetDialogItem" | b"GetDItem" => Some(Service::GetDialogItem),
+            b"DisposeDialog" | b"DisposDialog" => Some(Service::DisposeDialog(false)),
+            b"CloseDialog" => Some(Service::DisposeDialog(true)),
             b"ParamText" => Some(Service::ParamText),
             b"LMGetDAStrings" => Some(Service::GetDAString),
             b"GetParamText" => Some(Service::GetParamText),
@@ -2637,6 +2644,51 @@ impl Abi {
             0xa260 if c.dar[0] as u16 == 8 => {
                 Ok((Call::FcbInfo(GuestPtr(c.dar[8])), Reply::M68kFileError))
             }
+            0xa97c => {
+                let b = memory.read(GuestPtr(sp), 14)?;
+                let result = sp
+                    .checked_add(10)
+                    .ok_or_else(|| Error::Cpu("GetNewDialog stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 4)?;
+                let op = crate::dialogs::Op::Resource {
+                    id: i16::from_be_bytes(b[8..10].try_into().unwrap()),
+                    storage: GuestPtr(u32::from_be_bytes(b[4..8].try_into().unwrap())),
+                    behind: u32::from_be_bytes(b[..4].try_into().unwrap()),
+                };
+                c.dar[15] = result;
+                Ok((Call::Dialog(op), Reply::StackLong(GuestPtr(result))))
+            }
+            0xa98d => {
+                let b = memory.read(GuestPtr(sp), 18)?;
+                let ptr = |i| GuestPtr(u32::from_be_bytes(b[i..i + 4].try_into().unwrap()));
+                let op = crate::dialogs::Op::Item {
+                    dialog: ptr(14).0,
+                    number: i16::from_be_bytes(b[12..14].try_into().unwrap()),
+                    kind: ptr(8),
+                    handle: ptr(4),
+                    bounds: ptr(0),
+                };
+                for (at, n) in [(8, 2), (4, 4), (0, 8)] {
+                    memory.validate_write(ptr(at), n)?;
+                }
+                c.dar[15] = sp
+                    .checked_add(18)
+                    .ok_or_else(|| Error::Cpu("GetDialogItem stack overflow".into()))?;
+                Ok((Call::Dialog(op), Reply::None))
+            }
+            0xa982 | 0xa983 => {
+                let dialog = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("dialog disposal stack overflow".into()))?;
+                Ok((
+                    Call::Dialog(crate::dialogs::Op::Dispose {
+                        dialog,
+                        close: opcode == 0xa982,
+                    }),
+                    Reply::None,
+                ))
+            }
             0xa9a1 | 0xa820 => {
                 let args = memory.read(GuestPtr(sp), 12)?;
                 let name = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
@@ -2862,6 +2914,22 @@ impl Abi {
             }),
             Service::GetDAString => Call::Dialog(crate::dialogs::Op::Slot(c.gpr[3] as i16)),
             Service::IsDialogEvent => Call::Dialog(crate::dialogs::Op::IsEvent(GuestPtr(c.gpr[3]))),
+            Service::GetNewDialog => Call::Dialog(crate::dialogs::Op::Resource {
+                id: c.gpr[3] as i16,
+                storage: GuestPtr(c.gpr[4]),
+                behind: c.gpr[5],
+            }),
+            Service::GetDialogItem => Call::Dialog(crate::dialogs::Op::Item {
+                dialog: c.gpr[3],
+                number: c.gpr[4] as i16,
+                kind: GuestPtr(c.gpr[5]),
+                handle: GuestPtr(c.gpr[6]),
+                bounds: GuestPtr(c.gpr[7]),
+            }),
+            Service::DisposeDialog(close) => Call::Dialog(crate::dialogs::Op::Dispose {
+                dialog: c.gpr[3],
+                close,
+            }),
             Service::InitDialogs => Call::Dialog(crate::dialogs::Op::Init(c.gpr[3])),
             Service::ErrorSound => Call::Dialog(crate::dialogs::Op::Sound(c.gpr[3])),
             Service::SetDialogFont => Call::Dialog(crate::dialogs::Op::Font(c.gpr[3] as i16)),
@@ -3420,6 +3488,8 @@ impl Abi {
                 || matches!(
                     service,
                     Service::SetDevice
+                        | Service::GetDialogItem
+                        | Service::DisposeDialog(_)
                         | Service::MakeITable
                         | Service::SetDeviceAttribute
                         | Service::GetDateTime

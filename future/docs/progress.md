@@ -4685,3 +4685,50 @@ Multiple open resource maps, UseResFile and resource-load policy changes remain
 unfinished; this extension uses the current installed application map. Full
 Marathon and rebuild requirements remain active.
 Source: [Apple Get1Resource](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-51.html).
+
+
+## 2026-10-16: resource-backed dialog construction
+
+GetNewDialog ($A97C / InterfaceLib) now parses DLOG and DITL into shared
+Window/Control Manager state and a real 170-byte DialogRecord. Each instance
+owns an independent DITL copy and raw static-text handles; controls use the shared
+control records, while icon/picture handles are actual loaded resources. Original
+resources remain loaded and unchanged. GetDialogItem ($A98D), CloseDialog ($A982)
+and DisposeDialog ($A983), including their PPC imports, operate on this ownership.
+Native result/output storage is validated before consuming arguments. Caller
+storage is checked for the complete record; failed construction restores it and
+releases constructor allocations. The previous drawing port is restored.
+
+Supported templates use standard modal/plain/no-grow definitions and default or
+centerMainScreen positioning. Standard buttons, checkboxes, radio controls,
+static text, icon/picture references and empty user items are parsed; unsupported
+edit text, resource controls, help/custom definitions, color tables and positioning
+modes fail explicitly. Controls draw on creation and are validated from the update
+region; non-control item update drawing and modal interaction remain unfinished.
+This follows Apple's creation/update boundary without synthesizing a dialog result.
+
+Real 68K/PPC tests verify independent instances and text ownership, raw item types
+and bounds, source DITL retention, Close/Dispose and caller storage guards. They also
+exercise missing resources, scratch-allocation failure, unsupported items before
+window publication and native writable-output preflight. The focused tests pass on
+a real GPU adapter; strict all-target lint, sequential formatting and whitespace
+checks pass. Full-suite evidence follows below.
+
+Original EV now creates dialog 3000 and sets its port. Its next stop is
+DialogDispatch ($AA68), D0=$0304, SetDialogDefaultItem, PC $000257A8:
+/tmp/systemless-ev-dialog-next.txt. This is record/control construction evidence,
+not complete dialog rendering, title/menu or gameplay. Implement default-button
+state and drawing, item text/update drawing and real modal event handling next.
+Marathon still requires actual Color QuickDraw support; PPC EV volume parameters
+and Marathon production routine descriptors remain open. Neither original is
+playable, and the full rebuild goal remains active.
+Sources: [Apple GetNewDialog](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-402.html),
+[DITL format](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-438.html),
+[Dialog Manager helpers](https://leopard-adc.pepas.com/technotes/tn/tn1148.html).
+
+Final acceptance: all 467 tests pass, zero failures and zero skips, including real
+GPU tests and all 30 public compiler/CLI fixtures. Full all-target run:
+/tmp/systemless-dialog-all.txt. Strict all-target lint:
+/tmp/systemless-dialog-final-lint.txt. Sequential changed-file formatting and
+whitespace checks pass. The original EV trace is separate application evidence;
+no native gameplay or complete dialog rendering is claimed.

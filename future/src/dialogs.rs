@@ -1,13 +1,31 @@
-//! Shared Dialog Manager startup and parameter strings. Guest DAStrings are
-//! Pascal StringHandles; no architecture-specific host text cache is used.
+//! Shared Dialog Manager startup, resource records and item ownership.
+//! Guest DAStrings are Pascal StringHandles; no architecture-specific text cache is used.
 use crate::{
     memory::{GuestPtr, Memory},
     process::Process,
     Error, Result,
 };
+mod resources;
+use std::collections::BTreeMap;
 const STRINGS: GuestPtr = GuestPtr(0xaa0);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    Resource {
+        id: i16,
+        storage: GuestPtr,
+        behind: u32,
+    },
+    Item {
+        dialog: u32,
+        number: i16,
+        kind: GuestPtr,
+        handle: GuestPtr,
+        bounds: GuestPtr,
+    },
+    Dispose {
+        dialog: u32,
+        close: bool,
+    },
     Init(u32),
     IsEvent(GuestPtr),
     Slot(i16),
@@ -19,6 +37,7 @@ pub enum Op {
 #[derive(Default)]
 pub struct Dialogs {
     strings: [u32; 4],
+    records: BTreeMap<u32, resources::Record>,
 }
 fn bad(message: &str) -> Error {
     Error::Graphics(message.into())
@@ -57,6 +76,9 @@ impl Dialogs {
     }
     pub fn call(&mut self, memory: &mut Memory, process: &mut Process, op: Op) -> Result<()> {
         match op {
+            Op::Resource { .. } | Op::Item { .. } | Op::Dispose { .. } => {
+                Err(bad("dialog operation requires its record/value route"))
+            }
             Op::IsEvent(_) => Err(bad("dialog event query requires a value route")),
             Op::Slot(_) => Err(bad("dialog parameter slot requires a value route")),
             Op::Init(resume) => {

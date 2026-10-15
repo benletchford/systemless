@@ -691,7 +691,66 @@ impl Runtime {
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
                         Call::Dialog(op) => {
-                            let value = if let crate::dialogs::Op::Slot(index) = op {
+                            let value = if matches!(
+                                op,
+                                crate::dialogs::Op::Resource { .. }
+                                    | crate::dialogs::Op::Item { .. }
+                                    | crate::dialogs::Op::Dispose { .. }
+                            ) {
+                                if !matches!(op, crate::dialogs::Op::Item { .. })
+                                    && self.graphics.is_none()
+                                {
+                                    return Err(Error::Graphics(
+                                        "dialog operation requires a GPU".into(),
+                                    ));
+                                }
+                                let mut manager = std::mem::take(&mut self.process.dialogs);
+                                let result = match op {
+                                    crate::dialogs::Op::Resource {
+                                        id,
+                                        storage,
+                                        behind,
+                                    } => manager.resource(
+                                        &mut self.memory,
+                                        &mut self.process,
+                                        self.graphics
+                                            .as_ref()
+                                            .expect("GPU checked before taking dialog manager"),
+                                        id,
+                                        storage,
+                                        behind,
+                                    ),
+                                    crate::dialogs::Op::Item {
+                                        dialog,
+                                        number,
+                                        kind,
+                                        handle,
+                                        bounds,
+                                    } => manager
+                                        .item(
+                                            &mut self.memory,
+                                            &mut self.process,
+                                            dialog,
+                                            number,
+                                            [kind, handle, bounds],
+                                        )
+                                        .map(|_| 0),
+                                    crate::dialogs::Op::Dispose { dialog, close } => manager
+                                        .dispose(
+                                            &mut self.memory,
+                                            &mut self.process,
+                                            self.graphics
+                                                .as_ref()
+                                                .expect("GPU checked before taking dialog manager"),
+                                            dialog,
+                                            close,
+                                        )
+                                        .map(|_| 0),
+                                    _ => unreachable!(),
+                                };
+                                self.process.dialogs = manager;
+                                result?
+                            } else if let crate::dialogs::Op::Slot(index) = op {
                                 crate::dialogs::slot(&self.memory, index)?
                             } else if let crate::dialogs::Op::IsEvent(event) = op {
                                 u32::from(
@@ -1684,6 +1743,10 @@ impl Runtime {
                             | Call::MoreMasters
                             | Call::MaxApplZone
                             | Call::Dialog(
+                                crate::dialogs::Op::Resource { .. }
+                                    | crate::dialogs::Op::Dispose { .. }
+                            )
+                            | Call::Dialog(
                                 crate::dialogs::Op::Init(_) | crate::dialogs::Op::Param(_)
                             )
                             | Call::Menu(_)
@@ -1740,6 +1803,7 @@ impl Runtime {
                         ) | Call::CreateResourceFile(_)
                             | Call::FontInfo(_)
                             | Call::ResourceInfo(_)
+                            | Call::Dialog(crate::dialogs::Op::Resource { .. })
                             | Call::GetCurrentResource { .. }
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }

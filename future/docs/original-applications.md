@@ -1642,3 +1642,17 @@ EV 1.0.5 68K executes twelve Get1Resource calls for RBlt/MBlt IDs and reaches
 GetNewDialog (A97C), PC $0002577C. The unconsumed frame specifies dialog 3000,
 nil storage and front-window placement. /tmp/systemless-ev-get1-next.txt. The
 resource lookup barrier is removed; no dialog/title/gameplay has been verified.
+
+
+### Resource-backed dialog refresh
+
+EV 1.0.5 68K now creates DLOG/DITL 3000 through GetNewDialog, receives a
+real 170-byte DialogRecord and sets its port. It next stops at DialogDispatch
+($AA68), D0=$0304 (SetDialogDefaultItem), PC $000257A8. Evidence:
+/tmp/systemless-ev-dialog-next.txt. This establishes record/control construction,
+not complete dialog rendering, modal interaction, title/menu or gameplay.
+The new shared implementation copies DITL, retains source resources, owns control
+and raw static-text handles, and loads actual picture/icon resource handles.
+Controls are drawn; non-control item update drawing remains unfinished. Neither
+original game is playable. Marathon's Color QuickDraw and PPC routine-descriptor
+requirements remain unchanged.
