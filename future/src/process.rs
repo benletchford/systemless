@@ -143,6 +143,14 @@ impl Process {
     fn heap_base(&self) -> u32 {
         self.reservation.map_or(HEAP_BASE, |r| r.0)
     }
+    /// Total unallocated extents in the eagerly grown application heap.
+    /// This includes fragmented free blocks, not just the largest allocation.
+    pub fn free_memory(&self) -> u32 {
+        self.heap.as_ref().map_or_else(
+            || self.heap_capacity(),
+            |heap| heap.free.values().copied().sum(),
+        )
+    }
     fn heap_capacity(&self) -> u32 {
         self.reservation.map_or(HEAP_SIZE, |r| r.1)
     }

@@ -8,3 +8,22 @@ pub fn word(value: u32, high: bool) -> i16 {
         value as i16
     }
 }
+
+/// Toolbox logical operations use all 32 bits and have no manager state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Logic {
+    And,
+    Or,
+    Xor,
+    Not,
+}
+impl Logic {
+    pub fn apply(self, left: u32, right: u32) -> u32 {
+        match self {
+            Self::And => left & right,
+            Self::Or => left | right,
+            Self::Xor => left ^ right,
+            Self::Not => !left,
+        }
+    }
+}

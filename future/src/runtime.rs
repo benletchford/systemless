@@ -322,6 +322,7 @@ impl Runtime {
                             reply.apply(&mut self.cpu, &mut self.memory, result?, 0)?;
                         }
                         Call::NewWindow(_)
+                        | Call::NewColorWindow(_)
                         | Call::WindowChange { .. }
                         | Call::ResourceWindow { .. }
                         | Call::Window { .. } => {
@@ -350,6 +351,12 @@ impl Runtime {
                                     id,
                                     storage,
                                     behind,
+                                ),
+                                Call::NewColorWindow(request) => windows.create_color(
+                                    &mut self.memory,
+                                    &mut self.process,
+                                    gpu,
+                                    request,
                                 ),
                                 Call::NewWindow(request) => windows.create(
                                     &mut self.memory,
@@ -829,6 +836,14 @@ impl Runtime {
                                 &mut self.memory,
                                 value,
                                 self.process.mem_error,
+                            )?;
+                        }
+                        Call::Logical { op, left, right } => {
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                op.apply(left, right),
+                                0,
                             )?;
                         }
                         Call::Random => {
@@ -1358,6 +1373,14 @@ impl Runtime {
                             // Utilities specifies an unchanged address in that mode.
                             reply.apply(&mut self.cpu, &mut self.memory, address, 0)?;
                         }
+                        Call::FreeMemory => {
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                self.process.free_memory(),
+                                0,
+                            )?;
+                        }
                         Call::MemError => {
                             let value = self.memory.u16(GuestPtr(0x220))? as i16 as i32 as u32;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
@@ -1474,6 +1497,7 @@ impl Runtime {
                             | Call::WindowInvalidation { .. }
                             | Call::WindowChange { .. }
                             | Call::NewWindow(_)
+                            | Call::NewColorWindow(_)
                             | Call::Window { .. }
                             | Call::NewPointer { .. }
                             | Call::PointerSize(_)
@@ -1534,6 +1558,7 @@ impl Runtime {
                         | Call::WindowReference { .. }
                         | Call::WindowChange { .. }
                         | Call::NewWindow(_)
+                        | Call::NewColorWindow(_)
                         | Call::Window { .. }
                         | Call::TextState { .. }
                         | Call::Rectangle(_)
@@ -1573,6 +1598,7 @@ impl Runtime {
                         | Call::InitFonts
                         | Call::FontInfo(_)
                         | Call::Random
+                        | Call::Logical { .. }
                         | Call::LoadFragment(_)
                         | Call::CloseFragment(_)
                         | Call::FragmentQuery(_)
@@ -1617,6 +1643,7 @@ impl Runtime {
                         | Call::DeviceControl(_)
                         | Call::StripAddress(_)
                         | Call::MemError
+                        | Call::FreeMemory
                         | Call::ResError
                         | Call::DetachResource(_)
                         | Call::ReleaseResource(_)

@@ -3,14 +3,16 @@ use systemless_future::{cpu::Cpu, load::LoadedApplication, runtime::Stop};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--volume IMAGE]".into());
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--volume IMAGE] [--services-only]".into());
     }
     let mut graphics = false;
+    let mut services_only = false;
     let mut volume = None;
     let mut index = 3;
     while index < args.len() {
         match args[index].as_str() {
             "--graphics" if !graphics => graphics = true,
+            "--services-only" if !services_only => services_only = true,
             "--volume" if volume.is_none() => {
                 index += 1;
                 volume = Some(args.get(index).ok_or("missing volume image")?);
@@ -51,8 +53,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let budget: u64 = args[2].parse()?;
     for _ in 0..budget {
-        match &app.runtime.cpu {
-            Cpu::M68k(c) => println!(
+        if !services_only {
+            match &app.runtime.cpu {
+                Cpu::M68k(c) => println!(
                 "{} pc={:08x} sp={:08x} a5={:08x} a0={:08x} d0={:08x} regs={:08x?} opcode={:04x?}",
                 app.runtime.instructions,
                 c.pc,
@@ -65,16 +68,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .memory
                     .u16(systemless_future::memory::GuestPtr(c.pc))
             ),
-            Cpu::PowerPc(c) => println!(
-                "{} pc={:08x} sp={:08x} toc={:08x} lr={:08x} r3={:08x}",
-                app.runtime.instructions, c.pc, c.gpr[1], c.gpr[2], c.lr, c.gpr[3]
-            ),
+                Cpu::PowerPc(c) => println!(
+                    "{} pc={:08x} sp={:08x} toc={:08x} lr={:08x} r3={:08x}",
+                    app.runtime.instructions, c.pc, c.gpr[1], c.gpr[2], c.lr, c.gpr[3]
+                ),
+            }
         }
         let calls = app.runtime.services.calls.len();
         let stop = match app.runtime.advance(1) {
             Ok(stop) => stop,
             Err(error) => {
                 if let Cpu::M68k(c) = &app.runtime.cpu {
+                    println!(
+                        "fault pc={:08x} d0={:08x} sp={:08x} regs={:08x?}",
+                        c.pc, c.dar[0], c.dar[15], c.dar
+                    );
                     println!(
                         "fault stack memory={:02x?}",
                         app.runtime

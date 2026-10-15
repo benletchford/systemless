@@ -18,6 +18,11 @@ pub enum Call {
     Gestalt(u32),
     StillDown,
     Random,
+    Logical {
+        op: crate::integer::Logic,
+        left: u32,
+        right: u32,
+    },
     DrawRectangle {
         rectangle: GuestPtr,
         op: crate::quickdraw::RectangleOp,
@@ -95,6 +100,7 @@ pub enum Call {
         value: u16,
     },
     NewWindow(crate::windows::NewWindow),
+    NewColorWindow(crate::windows::NewWindow),
     WindowInvalidation {
         rectangle: GuestPtr,
         valid: bool,
@@ -247,6 +253,7 @@ pub enum Call {
     DeviceControl(GuestPtr),
     StripAddress(u32),
     MemError,
+    FreeMemory,
     ResError,
     CurResFile,
     GetNamedResource {

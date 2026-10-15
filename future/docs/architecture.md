@@ -1937,7 +1937,48 @@ CopyBits/CopyMask accept one-bit PixMap destinations with the canonical palette.
 
 This is bounded one-bit drawing. The destination must be depth one with white
 index zero and black index one; other depths/palettes and expanded/color PixPat
-caches fail explicitly. NewCWindow, display modes and full Color QuickDraw
-remain unfinished. No new Color QuickDraw capability is advertised. The existing
-Window Manager still needs color-port ownership, rollback, updates, painting and
-disposal integration.
+caches fail explicitly. NewCWindow now uses the same Window Manager described
+below; display modes and full Color QuickDraw remain unfinished. No new Color
+QuickDraw capability is advertised.
+
+
+## Shared color-window lifecycle and startup utilities
+
+NewCWindow ($AA45 / InterfaceLib) decodes into a distinct typed call and joins
+NewWindow in one Window Manager. Standard supported definitions (1, 2 and 4),
+ordering, visibility, drawing, updates, movement, sizing and close/dispose share
+the existing implementation. CWindowRecord is 156 bytes: its CGrafPort owns
+seven attached records and its standard window tail owns four handles. The
+Window Manager preflights the entire graph, master writes and cross-graph alias
+checks before unlinking a color window or removing its controls. Close releases
+all eleven handles once while preserving caller storage and borrowed device
+palette/pixels. Dispose also releases heap-owned window storage.
+
+Failure while allocating window-tail/port attachments rolls back those
+allocations, returns nil with MemErr=-108 and preserves caller storage and the
+current port/window list. Subsequent visibility-region growth and painting keep
+the existing Window Manager fault behavior; full rollback after publication is
+not yet guaranteed. Lazy
+device bootstrap remains an independent prerequisite. Hidden empty rectangles
+are valid setup windows; port dimensions retain degeneracy while region storage
+uses canonical empty rectangles. Resizing an empty window reconstructs its
+global origin from port/PixMap bounds rather than the normalized empty region.
+Visible empty or inverted rectangles remain unsupported. Native Boolean slots
+use the high byte only; nonzero padding does not make EV's hidden window visible.
+
+The manager reads/writes PixMap bounds through shared accessors, preserving
+CGrafPort grafVars/chExtra. Content background painting resolves bkPixPat and
+converts the one-bit foreground/background indices for the monochrome manager
+port. Display depth, destination palette and PixPat limitations still apply;
+GetNewCWindow, general WDEFs, multiple devices and display modes are unfinished.
+
+SetGDevice selects an already registered device by writing the live current
+device global, preserving the current port and errors. The initial single-device
+profile permits restoring that registered selection after a guest global edit;
+nil/foreign handles fail without creating a device or changing selection.
+BitAnd/BitOr/BitXor/BitNot use exact shared 32-bit logical operations. FreeMem
+reports the sum of actual free allocator extents, including fragmentation,
+master-pointer storage, heap-specific CODE reservations and reclaimed blocks.
+These utilities preserve guest error globals. FreeMem neither compacts/purges
+nor reports an invented compatibility floor; system zones and memory compaction
+remain unfinished. Both native register/stack and PPC import ABIs are tested.

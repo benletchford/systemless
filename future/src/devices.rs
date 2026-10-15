@@ -12,6 +12,7 @@ pub const CURRENT: GuestPtr = GuestPtr(0x0cc8);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     Current,
+    Select(u32),
     Main,
     First,
     Next(u32),
@@ -120,9 +121,19 @@ impl Manager {
             if let Op::Index { destination, .. } = op {
                 memory.validate_write(destination, 6)?;
             }
+            if let Op::Select(requested) = op {
+                memory.validate_write(CURRENT, 4)?;
+                if self.device != Some(requested) {
+                    return Err(invalid("SetGDevice requires a registered graphics device"));
+                }
+            }
             let device = self.initialize(memory, process)?;
             let data = record(memory, process, device, 62)?;
             match op {
+                Op::Select(_) => {
+                    memory.write(CURRENT, &device.to_be_bytes())?;
+                    Ok(0)
+                }
                 Op::Current | Op::Main | Op::First => {
                     let pointer = match op {
                         Op::Current => CURRENT,

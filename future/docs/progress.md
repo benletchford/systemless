@@ -4151,3 +4151,45 @@ invokes PaintRect through both actual CPUs and checks text selection/drawing,
 tagged PixMap copying and pattern restoration. Strict lint and changed-source
 format checks are recorded separately. NewCWindow and original-game sound
 remain unfinished; no gameplay or full rebuild completion is claimed.
+
+
+## Original EV reaches the shared sound boundary
+
+NewCWindow now uses the existing shared Window Manager with actual CGrafPort
+ownership, rollback, painting, geometry, updates and teardown. EV's hidden
+all-zero setup rectangle is supported; subsequent sizing preserves its origin.
+Both CPUs pass exact frame/Boolean-padding tests and a real GPU lifecycle test;
+heap-exhaustion tests verify no published record/list/current-port changes or
+leaked partial attachments. A public-header compiler fixture validates packed
+CWindowRecord fields, child records, pixel writes, movement, resizing, updates,
+CloseWindow/DisposeWindow and borrowed palette lifetime on actual 68K and PPC.
+
+The same original executable then required BitAnd, SetGDevice and FreeMem.
+Logical operations share exact full-width integer semantics; selection uses the
+registered device; FreeMem reports real free extents and distinguishes total
+free space from the largest allocatable block. No sound/version bypass was added.
+EV now reaches SoundDispatch ($A800), D0=$000C0008, at PC $0001436C. This is the
+same sound-version request previously reached by Marathon. Neither game has
+verified gameplay; original PPC sound imports/Mixed Mode remain outstanding.
+Trace evidence: /tmp/systemless-ev-newcwindow-sound-trace.txt. The bounded tracer
+now has --services-only to avoid unnecessary instruction log volume.
+
+The complete acceptance run passes all 407 tests with zero failures or skips,
+including GPU tests and all public-header compiler guests. Focused manager and
+compiler runs also pass. Logs: /tmp/systemless-newcwindow-acceptance.txt,
+/tmp/systemless-newcwindow-managers-final.txt,
+/tmp/systemless-newcwindow-mpw-final.txt and
+/tmp/systemless-newcwindow-mpw-build-final.txt. Changed Rust files were checked
+sequentially through stdin; fixture shell syntax and whitespace checks pass.
+Super Mines Save/Open was rebuilt and rerun against this source, reopened its
+1,972-byte game and returned to Waiting{ticks:10} at $0100C798. Its final PPM is
+byte-identical to the preceding inspected milestone. Evidence:
+/tmp/systemless-mines-cwindow-reload.txt and associated after.ppm. Marathon with
+its original companion volume still reaches $A800:
+/tmp/systemless-marathon-cwindow-next.txt. The full rebuild remains active.
+
+Strict all-target lint also passes with -D warnings:
+/tmp/systemless-newcwindow-lint.txt. No complete-rebuild or original-gameplay
+claim is made; the next executable milestone is real sound processing/output
+at the shared SndSoundManagerVersion boundary, followed by further display and
+PPC routine-descriptor/Mixed Mode work.

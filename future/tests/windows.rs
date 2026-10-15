@@ -1551,3 +1551,332 @@ fn window_manager_port_before_initialization_faults_without_publishing_output() 
     );
     assert_eq!(app.runtime.memory.u32(GuestPtr(0x9de)).unwrap(), 0);
 }
+
+fn color_window_app() -> LoadedApplication {
+    let f = pef_program(
+        &[0x4e800020],
+        &[
+            b"InitGraf",
+            b"InitWindows",
+            b"NewCWindow",
+            b"ShowWindow",
+            b"HideWindow",
+            b"SetPort",
+            b"PaintRect",
+            b"MoveWindow",
+            b"SizeWindow",
+            b"BeginUpdate",
+            b"EndUpdate",
+            b"CloseWindow",
+            b"DisposeWindow",
+            b"GetGDevice",
+        ],
+        512,
+    );
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    app.runtime
+        .memory
+        .map(
+            GuestPtr(0x50000000),
+            [0xaa45u16, 0xa914, 0xa92d, 0xa8a2, 0xa873]
+                .into_iter()
+                .flat_map(u16::to_be_bytes)
+                .collect(),
+            Permissions::RX,
+        )
+        .unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), vec![0x5a; 256], Permissions::RW)
+        .unwrap();
+    invoke(&mut app, 0, &[0x600]);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    app.runtime.graphics =
+        Some(pollster::block_on(Graphics::new(&instance, None, 512, 342, SCREEN)).unwrap());
+    invoke(&mut app, 1, &[]);
+    rect(&mut app, 0x300, 60, 40, 120, 120);
+    app.runtime
+        .memory
+        .write(GuestPtr(0x320), b"\x05Color")
+        .unwrap();
+    app
+}
+fn color_window_frame(storage: u32) -> Vec<u8> {
+    let mut frame = 0x12345678u32.to_be_bytes().to_vec();
+    frame.extend([0, 0x94]); // goAway is the high byte only.
+    frame.extend(u32::MAX.to_be_bytes());
+    frame.extend(2i16.to_be_bytes());
+    frame.extend([0, 0x94]); // EV uses nonzero visible padding.
+    frame.extend(0x320u32.to_be_bytes());
+    frame.extend(0x300u32.to_be_bytes());
+    frame.extend(storage.to_be_bytes());
+    frame
+}
+#[test]
+fn color_window_native_frame_preserves_boolean_padding_and_faults_before_pop() {
+    use systemless_future::{
+        abi::{Abi, Reply},
+        cpu::Call,
+        memory::Memory,
+    };
+    let frame = color_window_frame(0);
+    let mut memory = Memory::default();
+    memory
+        .map(
+            GuestPtr(0x1000),
+            [frame.clone(), vec![0; 4]].concat(),
+            Permissions::RW,
+        )
+        .unwrap();
+    let Cpu::M68k(mut c) = Cpu::new(Architecture::M68k, 0, 0x1000) else {
+        panic!()
+    };
+    let (call, reply) = Abi::trap(0xaa45, &mut c, &memory).unwrap();
+    let Call::NewColorWindow(request) = call else {
+        panic!()
+    };
+    assert!(!request.visible && !request.go_away);
+    assert_eq!(request.proc_id, 2);
+    assert_eq!(request.behind, u32::MAX);
+    assert_eq!(request.ref_con, 0x12345678);
+    assert_eq!(reply, Reply::StackLong(GuestPtr(0x101a)));
+    assert_eq!(c.dar[15], 0x101a);
+    for length in [25, 26, 29] {
+        let mut short = Memory::default();
+        short
+            .map(GuestPtr(0x1000), vec![0; length], Permissions::RW)
+            .unwrap();
+        c.dar[15] = 0x1000;
+        assert!(Abi::trap(0xaa45, &mut c, &short).is_err());
+        assert_eq!(c.dar[15], 0x1000);
+    }
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn color_windows_share_creation_geometry_pixels_updates_and_attached_lifetime() {
+    for native in [false, true] {
+        let mut app = color_window_app();
+        let storage = if native { 0x51000000 } else { 0 };
+        let old = app.runtime.memory.u32(GuestPtr(0x600)).unwrap();
+        let device = invoke(&mut app, 13, &[]);
+        let gd = app.runtime.memory.u32(GuestPtr(device)).unwrap();
+        let device_pm = app.runtime.memory.u32(GuestPtr(gd + 22)).unwrap();
+        let device_data = app.runtime.memory.u32(GuestPtr(device_pm)).unwrap();
+        let device_before = app
+            .runtime
+            .memory
+            .read(GuestPtr(device_data), 50)
+            .unwrap()
+            .to_vec();
+        let w = if native {
+            m68(&mut app, 0, &color_window_frame(storage), 26, true)
+        } else {
+            invoke(
+                &mut app,
+                2,
+                &[storage, 0x300, 0x320, 0, 2, u32::MAX, 0, 0x12345678],
+            )
+        };
+        assert_ne!(w, 0);
+        assert_eq!(app.runtime.memory.u32(GuestPtr(0x600)).unwrap(), old);
+        assert_eq!(app.runtime.memory.u16(GuestPtr(w + 6)).unwrap(), 0xc000);
+        assert_eq!(app.runtime.memory.read(GuestPtr(w + 110), 1).unwrap(), [0]);
+        assert!(region(&app, w, 24).is_empty());
+        let fields = [2, 24, 28, 32, 58, 62, 8, 114, 118, 122, 134];
+        let handles: Vec<_> = fields
+            .iter()
+            .map(|at| app.runtime.memory.u32(GuestPtr(w + at)).unwrap())
+            .collect();
+        let map = app.runtime.memory.u32(GuestPtr(handles[0])).unwrap();
+        let vars = app
+            .runtime
+            .memory
+            .read(GuestPtr(w + 8), 8)
+            .unwrap()
+            .to_vec();
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(map + 6), 4).unwrap(),
+            [0xff, 0xc4, 0xff, 0xd8]
+        );
+        invoke(&mut app, 3, &[w]);
+        assert!(contains(&region(&app, w, 24), 0, 0));
+        invoke(&mut app, 5, &[w]);
+        rect(&mut app, 0x340, 0, 0, 1, 8);
+        if native {
+            m68(&mut app, 6, &0x340u32.to_be_bytes(), 4, false);
+        } else {
+            invoke(&mut app, 6, &[0x340]);
+        }
+        assert!(pixel(&app, 40, 60));
+        invoke(&mut app, 9, &[w]);
+        invoke(&mut app, 10, &[w]);
+        invoke(&mut app, 7, &[w, 100, 80, 0]);
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(map + 6), 4).unwrap(),
+            [0xff, 0xb0, 0xff, 0x9c]
+        );
+        assert_eq!(app.runtime.memory.read(GuestPtr(w + 8), 8).unwrap(), vars);
+        invoke(&mut app, 8, &[w, 96, 72, 1]);
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(w + 20), 4).unwrap(),
+            [0, 72, 0, 96]
+        );
+        // A changed child pattern must fail close before unlinking/freeing anything.
+        let pat = app.runtime.memory.u32(GuestPtr(handles[4])).unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(pat), &1u16.to_be_bytes())
+            .unwrap();
+        let mut windows = std::mem::take(&mut app.runtime.process.windows);
+        let result = windows.call(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            app.runtime.graphics.as_ref().unwrap(),
+            systemless_future::windows::Op::Close,
+            w,
+        );
+        app.runtime.process.windows = windows;
+        assert!(result.is_err());
+        assert_eq!(
+            app.runtime
+                .memory
+                .u32(systemless_future::windows::LIST)
+                .unwrap(),
+            w
+        );
+        for &h in &handles {
+            assert!(
+                app.runtime
+                    .process
+                    .handle_size(&app.runtime.memory, h)
+                    .unwrap()
+                    > 0
+            );
+        }
+        app.runtime
+            .memory
+            .write(GuestPtr(pat), &0u16.to_be_bytes())
+            .unwrap();
+        if native {
+            m68(&mut app, 4, &w.to_be_bytes(), 4, false);
+        } else {
+            invoke(&mut app, 12, &[w]);
+        }
+        // Native caller storage used CloseWindow; heap storage used DisposeWindow.
+        assert_eq!(
+            app.runtime
+                .memory
+                .u32(systemless_future::windows::LIST)
+                .unwrap(),
+            0
+        );
+        for &h in &handles {
+            assert_eq!(
+                app.runtime
+                    .process
+                    .handle_size(&app.runtime.memory, h)
+                    .unwrap(),
+                0
+            );
+        }
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(device_data), 50).unwrap(),
+            device_before
+        );
+        if native {
+            assert_eq!(app.runtime.memory.read(GuestPtr(w + 8), 8).unwrap(), vars);
+        } else {
+            assert_eq!(app.runtime.process.pointer_size(w) as i32, -111);
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn hidden_empty_color_windows_resize_at_their_saved_origin_and_partial_oom_rolls_back() {
+    let mut app = color_window_app();
+    invoke(&mut app, 13, &[]); // Device bootstrap is an independent prerequisite.
+    rect(&mut app, 0x300, 70, 50, 70, 50);
+    let w = invoke(&mut app, 2, &[0, 0x300, 0x320, 0, 2, u32::MAX, 0, 0]);
+    assert_ne!(w, 0);
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(w + 16), 8).unwrap(),
+        [0; 8]
+    );
+    invoke(&mut app, 8, &[w, 80, 60, 1]);
+    assert_eq!(region(&app, w, 118), [Rect::new(50, 70, 130, 130)]);
+    invoke(&mut app, 3, &[w]);
+    invoke(&mut app, 5, &[w]);
+    rect(&mut app, 0x340, 0, 0, 1, 8);
+    invoke(&mut app, 6, &[0x340]);
+    assert!(pixel(&app, 50, 70));
+    invoke(&mut app, 12, &[w]);
+    rect(&mut app, 0x300, 60, 40, 120, 120);
+    let mut low = 0u32;
+    let mut high = systemless_future::process::HEAP_SIZE + 1;
+    while low + 1 < high {
+        let mid = low + (high - low) / 2;
+        let p = app
+            .runtime
+            .process
+            .new_pointer(&mut app.runtime.memory, mid, false)
+            .unwrap();
+        if p == 0 {
+            high = mid;
+        } else {
+            low = mid;
+            app.runtime.process.dispose_pointer(p);
+        }
+    }
+    let capacity = low;
+    for remaining in [0, 32, 80, 160, 240] {
+        let fill = app
+            .runtime
+            .process
+            .new_pointer(&mut app.runtime.memory, capacity - remaining, false)
+            .unwrap();
+        assert_ne!(fill, 0);
+        let before = app
+            .runtime
+            .memory
+            .read(GuestPtr(0x51000000), 156)
+            .unwrap()
+            .to_vec();
+        let current = app.runtime.memory.u32(GuestPtr(0x600)).unwrap();
+        let w = invoke(
+            &mut app,
+            2,
+            &[0x51000000, 0x300, 0x320, 0, 2, u32::MAX, 0, 0],
+        );
+        assert_eq!(w, 0, "remaining {remaining}");
+        assert_eq!(
+            app.runtime.memory.u16(GuestPtr(0x220)).unwrap() as i16,
+            -108
+        );
+        assert_eq!(
+            app.runtime
+                .memory
+                .u32(systemless_future::windows::LIST)
+                .unwrap(),
+            0
+        );
+        assert_eq!(app.runtime.memory.u32(GuestPtr(0x600)).unwrap(), current);
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(0x51000000), 156).unwrap(),
+            before
+        );
+        if remaining != 0 {
+            let probe = app
+                .runtime
+                .process
+                .new_pointer(&mut app.runtime.memory, remaining, false)
+                .unwrap();
+            assert_ne!(
+                probe, 0,
+                "leaked partial window allocation with remaining {remaining}"
+            );
+            app.runtime.process.dispose_pointer(probe);
+        }
+        app.runtime.process.dispose_pointer(fill);
+    }
+}

@@ -683,8 +683,21 @@ impl Windows {
         let border = region_geometry::combine(&structure, &content, Boolean::Difference)?;
         let border = region_geometry::combine(&border, dirty, Boolean::Intersection)?;
         let content = region_geometry::combine(&content, dirty, Boolean::Intersection)?;
-        let pattern: [u8; 8] = memory.read(GuestPtr(w + 32), 8)?.try_into().unwrap();
-        let origin = read_rect(memory, GuestPtr(w + 8))?;
+        let pattern = crate::port_layout::pattern(
+            memory,
+            GuestPtr(w),
+            crate::port_layout::Pattern::Background,
+        )?;
+        let is_color = crate::port_layout::color(memory, GuestPtr(w))?;
+        let legacy_color = |value| match value {
+            0 if is_color => 30,
+            1 if is_color => 33,
+            value => value,
+        };
+        let origin = read_rect(
+            memory,
+            crate::port_layout::bounds_pointer(memory, GuestPtr(w))?,
+        )?;
         let pattern = std::array::from_fn(|y| {
             pattern[((y as i32 + origin.top) & 7) as usize].rotate_right((-origin.left & 7) as u32)
         });
@@ -695,8 +708,8 @@ impl Windows {
             &content,
             Paint {
                 pattern,
-                foreground: memory.u32(GuestPtr(w + 80))?,
-                background: memory.u32(GuestPtr(w + 84))?,
+                foreground: legacy_color(memory.u32(GuestPtr(w + 80))?),
+                background: legacy_color(memory.u32(GuestPtr(w + 84))?),
             },
         )?;
         self.paint(
@@ -735,7 +748,10 @@ impl Windows {
                 rect_bytes(Rect::new(0, 0, 0, 0))?
             };
             let vis = region_geometry::combine(&available, &covered, Boolean::Difference)?;
-            let local = read_rect(memory, GuestPtr(w + 8))?;
+            let local = read_rect(
+                memory,
+                crate::port_layout::bounds_pointer(memory, GuestPtr(w))?,
+            )?;
             put_region(
                 memory,
                 process,
@@ -759,7 +775,10 @@ impl Windows {
             {
                 continue;
             }
-            let origin = read_rect(memory, GuestPtr(w + 8))?;
+            let origin = read_rect(
+                memory,
+                crate::port_layout::bounds_pointer(memory, GuestPtr(w))?,
+            )?;
             let visible = shifted(
                 &region(memory, process, handle(memory, w, 24)?)?,
                 -origin.left,
@@ -786,7 +805,10 @@ impl Windows {
         let vis = handle(memory, w, 24)?;
         let old = region(memory, process, vis)?;
         let update = handle(memory, w, 122)?;
-        let origin = read_rect(memory, GuestPtr(w + 8))?;
+        let origin = read_rect(
+            memory,
+            crate::port_layout::bounds_pointer(memory, GuestPtr(w))?,
+        )?;
         let local = shifted(&region(memory, process, update)?, origin.left, origin.top)?;
         let clip = region_geometry::combine(&old, &local, Boolean::Intersection)?;
         let ports = process
@@ -840,6 +862,25 @@ impl Windows {
         gpu: &Graphics,
         request: NewWindow,
     ) -> Result<u32> {
+        self.create_kind(memory, process, gpu, request, false)
+    }
+    pub fn create_color(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &Graphics,
+        request: NewWindow,
+    ) -> Result<u32> {
+        self.create_kind(memory, process, gpu, request, true)
+    }
+    fn create_kind(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &Graphics,
+        request: NewWindow,
+        color: bool,
+    ) -> Result<u32> {
         if !matches!(request.proc_id, 1 | 2 | 4) {
             return Err(fail(
                 "window definition requires an unsupported standard or custom WDEF",
@@ -871,8 +912,11 @@ impl Windows {
             return Err(fail("window count limit exceeded"));
         }
         let bounds = read_rect(memory, request.bounds)?;
-        if bounds.left >= bounds.right || bounds.top >= bounds.bottom {
-            return Err(fail("empty window bounds"));
+        if bounds.left > bounds.right
+            || bounds.top > bounds.bottom
+            || (request.visible && (bounds.left == bounds.right || bounds.top == bounds.bottom))
+        {
+            return Err(fail("invalid or visible empty window bounds"));
         }
         let margin = if request.proc_id == 1 { 8 } else { 1 };
         let structure = Rect::new(
@@ -894,12 +938,16 @@ impl Windows {
             screen.bottom - bounds.top,
         );
         let bitmap_bounds = rect_bytes(bitmap_bounds)?;
-        let local = rect_bytes(Rect::new(
-            0,
-            0,
-            bounds.right - bounds.left,
-            bounds.bottom - bounds.top,
-        ))?;
+        // Port rectangles retain degenerate dimensions. Region encodings
+        // canonicalize empty bounds and cannot represent this port geometry.
+        let mut local = vec![0, 0];
+        for value in [0, 0, bounds.bottom - bounds.top, bounds.right - bounds.left] {
+            local.extend(
+                i16::try_from(value)
+                    .map_err(|_| fail("window dimensions exceed signed words"))?
+                    .to_be_bytes(),
+            );
+        }
         let n = usize::from(memory.read(request.title, 1)?[0]);
         let title = memory.read(request.title, n + 1)?.to_vec();
         let owned = request.storage.0 == 0;
@@ -960,18 +1008,41 @@ impl Windows {
             memory.write(GuestPtr(data), bytes)?;
             handles.push(h);
         }
-        if let Err(error) = ports.open(memory, process, GuestPtr(w)) {
+        let opened = if color {
+            let mut manager = std::mem::take(&mut process.color_ports);
+            let result = manager.call(
+                memory,
+                process,
+                crate::color_ports::Action::Open,
+                GuestPtr(w),
+            );
+            process.color_ports = manager;
+            result
+        } else {
+            ports.open(memory, process, GuestPtr(w))
+        };
+        if opened.is_err() || process.mem_error == -108 {
+            let exhausted = process.mem_error == -108;
             for h in handles {
                 process.dispose_handle(memory, h)?;
             }
             if owned {
                 process.dispose_pointer(w);
             }
-            return Err(error);
+            if exhausted {
+                process.mem_error = -108;
+            }
+            opened?;
+            return Ok(0);
         }
         let mut bytes = memory.read(GuestPtr(w), 108)?.to_vec();
         bytes.resize(SIZE, 0);
-        bytes[8..16].copy_from_slice(&bitmap_bounds[2..]);
+        if color {
+            let target = crate::port_layout::bounds_pointer(memory, GuestPtr(w))?;
+            memory.write(target, &bitmap_bounds[2..])?;
+        } else {
+            bytes[8..16].copy_from_slice(&bitmap_bounds[2..]);
+        }
         bytes[16..24].copy_from_slice(&local[2..]);
         bytes[108..110].copy_from_slice(&8u16.to_be_bytes());
         bytes[110] = u8::from(request.visible);
@@ -1054,7 +1125,10 @@ impl Windows {
         if !self.list(memory)?.contains(&w) {
             return Err(fail("invalidation owner is not a live window"));
         }
-        let local = read_rect(memory, GuestPtr(w + 8))?;
+        let local = read_rect(
+            memory,
+            crate::port_layout::bounds_pointer(memory, GuestPtr(w))?,
+        )?;
         let global = rect_bytes(Rect::new(
             r.left - local.left,
             r.top - local.top,
@@ -1123,7 +1197,10 @@ impl Windows {
         }
         let mut states = Vec::new();
         for window in list {
-            let local = read_rect(memory, GuestPtr(window + 8))?;
+            let local = read_rect(
+                memory,
+                crate::port_layout::bounds_pointer(memory, GuestPtr(window))?,
+            )?;
             let old_vis = region(memory, process, handle(memory, window, 24)?)?;
             states.push(Shape {
                 window,
@@ -1158,7 +1235,20 @@ impl Windows {
                 update,
             } => {
                 let p = GuestPtr(memory.u32(GuestPtr(handle(memory, w, 118)?))? + 2);
-                let r = read_rect(memory, p)?;
+                let mut r = read_rect(memory, p)?;
+                if r.left >= r.right || r.top >= r.bottom {
+                    let port = read_rect(memory, GuestPtr(w + 16))?;
+                    let screen = Bitmap::read(
+                        memory,
+                        process
+                            .ports
+                            .ok_or_else(|| fail("window size requires InitGraf"))?
+                            .screen_bitmap,
+                    )?
+                    .bounds;
+                    r.left = screen.left + port.left - states[index].local.left;
+                    r.top = screen.top + port.top - states[index].local.top;
+                }
                 let content = Rect::new(
                     r.left,
                     r.top,
@@ -1229,7 +1319,8 @@ impl Windows {
                 let old = states[index].local;
                 let next = Rect::new(old.left - dx, old.top - dy, old.right - dx, old.bottom - dy);
                 let bytes = rect_bytes(next)?;
-                memory.validate_write(GuestPtr(w + 8), 8)?;
+                memory
+                    .validate_write(crate::port_layout::bounds_pointer(memory, GuestPtr(w))?, 8)?;
                 bitmap_bounds = Some(bytes[2..].to_vec());
                 states[index].local = next;
                 states[index].content = shifted(&states[index].content, dx, dy)?;
@@ -1301,7 +1392,10 @@ impl Windows {
             return Err(fail("window region update allocation failed"));
         }
         if let Some(bounds) = bitmap_bounds {
-            memory.write(GuestPtr(w + 8), &bounds)?;
+            memory.write(
+                crate::port_layout::bounds_pointer(memory, GuestPtr(w))?,
+                &bounds,
+            )?;
         }
         if selecting {
             let order: Vec<_> = states.iter().map(|s| s.window).collect();
@@ -1460,19 +1554,30 @@ impl Windows {
         if op == Op::Dispose && process.mem_error != 0 {
             return Err(fail("DisposeWindow storage is not an owned pointer"));
         }
-        let handles = [24, 28, 114, 118, 122, 134]
+        let color = crate::port_layout::color(memory, GuestPtr(w))?;
+        let mut handles = [114, 118, 122, 134]
             .map(|offset| handle(memory, w, offset))
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
-        if handles
+        let mut all_handles = handles.clone();
+        if color {
+            let manager = std::mem::take(&mut process.color_ports);
+            let attached = manager.attached(memory, process, GuestPtr(w));
+            process.color_ports = manager;
+            all_handles.extend(attached?);
+        } else {
+            handles.extend([handle(memory, w, 24)?, handle(memory, w, 28)?]);
+            all_handles = handles.clone();
+        }
+        if all_handles
             .iter()
             .collect::<std::collections::BTreeSet<_>>()
             .len()
-            != handles.len()
+            != all_handles.len()
         {
-            return Err(fail("window region handles alias"));
+            return Err(fail("window attached handles alias"));
         }
-        for &h in &handles {
+        for &h in &all_handles {
             if process.handle_size(memory, h)? == 0 {
                 return Err(fail("corrupt window ownership"));
             }
@@ -1528,6 +1633,17 @@ impl Windows {
         self.refresh_chrome(memory, process, gpu, 0)?;
         for h in handles {
             process.dispose_handle(memory, h)?;
+        }
+        if color {
+            let mut manager = std::mem::take(&mut process.color_ports);
+            let result = manager.call(
+                memory,
+                process,
+                crate::color_ports::Action::Close,
+                GuestPtr(w),
+            );
+            process.color_ports = manager;
+            result?;
         }
         memory.write(GuestPtr(w + 110), &[0])?;
         memory.write(GuestPtr(w + 144), &0u32.to_be_bytes())?;

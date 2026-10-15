@@ -51,6 +51,18 @@ impl Manager {
         }
         Ok(handles)
     }
+    pub(crate) fn attached(
+        &self,
+        memory: &Memory,
+        process: &mut Process,
+        port: GuestPtr,
+    ) -> Result<[u32; 7]> {
+        let handles = self.validate(memory, process, port)?;
+        for handle in handles {
+            memory.validate_write(GuestPtr(handle), 4)?;
+        }
+        Ok(handles)
+    }
     fn reset(
         memory: &mut Memory,
         process: &mut Process,

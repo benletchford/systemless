@@ -21,6 +21,7 @@ fn app() -> LoadedApplication {
             b"OpenPort",
             b"SetPortBits",
             b"CopyBits",
+            b"SetGDevice",
         ],
         64,
     );
@@ -29,10 +30,12 @@ fn app() -> LoadedApplication {
         .memory
         .map(
             GuestPtr(0x50000000),
-            [0xaa32u16, 0xaa2a, 0xaa29, 0xaa2b, 0xaa2c, 0xaa34, 0xa8ec]
-                .into_iter()
-                .flat_map(u16::to_be_bytes)
-                .collect(),
+            [
+                0xaa32u16, 0xaa2a, 0xaa29, 0xaa2b, 0xaa2c, 0xaa34, 0xa8ec, 0xaa31,
+            ]
+            .into_iter()
+            .flat_map(u16::to_be_bytes)
+            .collect(),
             Permissions::RX,
         )
         .unwrap();
@@ -327,5 +330,40 @@ fn device_pixmap_is_a_real_copybits_source_for_both_cpus_and_gpu_readback() {
             };
             assert_eq!(rgba[x * 4..x * 4 + 4], expected);
         }
+    }
+}
+
+#[test]
+fn both_cpus_select_the_registered_device_restore_guest_selection_and_preserve_port_and_errors() {
+    let mut a = app();
+    assert!(call(&mut a, Op::Select(0)).is_err());
+    assert_eq!(a.runtime.memory.u32(devices::CURRENT).unwrap(), 0);
+    let device = ppc(&mut a, 0, &[]);
+    a.runtime
+        .memory
+        .write(GuestPtr(0x220), &(-42i16).to_be_bytes())
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(0xa60), &(-43i16).to_be_bytes())
+        .unwrap();
+    for native_cpu in [false, true] {
+        a.runtime
+            .memory
+            .write(devices::CURRENT, &0u32.to_be_bytes())
+            .unwrap();
+        if native_cpu {
+            assert!(native(&mut a, 7, &device.to_be_bytes(), 0).is_empty());
+        } else {
+            assert_eq!(ppc(&mut a, 10, &[device]), device);
+        }
+        for address in [devices::CURRENT, devices::MAIN, devices::FIRST] {
+            assert_eq!(a.runtime.memory.u32(address).unwrap(), device);
+        }
+        assert!(a.runtime.process.ports.is_none());
+        assert_eq!(a.runtime.memory.u16(GuestPtr(0x220)).unwrap() as i16, -42);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(0xa60)).unwrap() as i16, -43);
+        assert!(call(&mut a, Op::Select(device + 4)).is_err());
+        assert_eq!(a.runtime.memory.u32(devices::CURRENT).unwrap(), device);
     }
 }

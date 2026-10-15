@@ -25,7 +25,9 @@ including overlapping storage. Device queries expose owned GDevice/PixMap/table
 records for the actual initial monochrome screen; Index2Color reads its live
 palette. Color-port lifetime and one-bit drawing use attached PixMap/PixPat
 records, including text and temporary pattern restoration. Multiple devices,
-depth changes, general color destinations and color windows remain pending.
+depth changes and general color destinations remain pending. NewCWindow shares
+standard one-bit window creation, updates, geometry, painting and disposal with
+NewWindow, including hidden empty windows that are resized before display.
 LineTo/Line share GPU rectangular-pen coverage, patterns,
 transfer modes and live pen advancement. Rectangle frame/erase/invert/fill use
 shared clipping and operation-specific patterns; FillRect updates fillPat.

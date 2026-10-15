@@ -522,3 +522,13 @@ check OpenCPort/InitCPort/CloseCPort on both CPUs: exact sizes and defaults,
 HiliteRGB, independent handles, borrowed device tables, allocation-free reset,
 caller/custom table survival and inert basic-port initialization. Both must post
 $C907 and exit. This does not draw into a color port or create a color window.
+
+
+`color_windows.c` uses the original public CWindowRecord/CGrafPort definitions
+and NewCWindow ABI. Both actual CPU engines must create hidden empty windows,
+resize/show/draw/move/update them, create an independent visible window, dispose
+heap storage and close caller storage without losing the borrowed device table.
+All eleven attachments are checked after close. It also checks exact logical
+utilities, allocation-driven FreeMem changes and SetGDevice(GetGDevice()).
+Success requires marker $C945 and Exit(0), with a real wgpu adapter. This fixture
+uses the current one-bit display and does not establish original-game gameplay.

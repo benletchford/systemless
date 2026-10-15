@@ -1437,3 +1437,26 @@ at service 43589 ($AA45), and Marathon with its companion volume at 43008
 1,972-byte game, returned to Waiting{ticks:10} at $0100C798, and produced a final
 PPM byte-identical to the preceding inspected color-port milestone. Evidence:
 /tmp/systemless-mines-layout-reload.txt and associated after.ppm.
+
+
+### EV passes color-window creation and reaches sound startup
+
+The original EV 1.0.5 CODE application successfully creates a real hidden color
+window from bounds (0,0,0,0), procID 2, behind -1 and Boolean padding $94. Shared
+window drawing/geometry/lifetime support is verified on both CPUs and with a
+public-header CWindowRecord fixture. EV then passes BitAnd ($A858), SetGDevice
+($AA31) and FreeMem ($A01C), using actual registered display identity and actual
+allocator free space. The final bounded trace stops at SoundDispatch $A800,
+D0=$000C0008, PC=$0001436C, SP=$0080FABE: SndSoundManagerVersion. Evidence:
+/tmp/systemless-ev-free-memory-next.txt and
+/tmp/systemless-ev-newcwindow-sound-trace.txt. No sound version is fabricated.
+This advances EV beyond its previous NewCWindow blocker; it is not gameplay.
+Marathon's observed sound boundary and both original PPC blockers remain.
+
+Super Mines' original Save/Open sequence was rebuilt and rerun after the window
+integration. It reopened its 1,972-byte game, returned to Waiting{ticks:10} at
+$0100C798 and produced a final PPM byte-identical to the preceding inspected
+milestone. Evidence: /tmp/systemless-mines-cwindow-reload.txt and associated
+after.ppm. Marathon with its companion volume still stops at $A800:
+/tmp/systemless-marathon-cwindow-next.txt. These remain bounded offscreen checks;
+original-game live desktop and gameplay acceptance are incomplete.

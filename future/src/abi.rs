@@ -20,6 +20,7 @@ pub enum Service {
     EmptyRect,
     GetMouse,
     Random,
+    Logical(crate::integer::Logic),
     TETextBox,
     FrameRect,
     EraseRect,
@@ -69,6 +70,7 @@ pub enum Service {
     Device(crate::devices::Op),
     ColorPort(crate::color_ports::Action),
     NextDevice,
+    SetDevice,
     DeviceAttribute,
     Index2Color,
     GetApplLimit,
@@ -125,6 +127,7 @@ pub enum Service {
     FontInfo,
     TextState(crate::text::Field),
     NewWindow,
+    NewColorWindow,
     Window(crate::windows::Op),
     PortColor(bool),
     RoundRect(bool),
@@ -198,6 +201,7 @@ pub enum Service {
     PBControlSync,
     StripAddress,
     MemError,
+    FreeMemory,
     ResError,
     CurResFile,
     GetNamedResource,
@@ -298,6 +302,7 @@ impl Abi {
             b"ShowHide" => Some(Service::ShowHide),
             b"GetNewWindow" => Some(Service::GetNewWindow),
             b"NewWindow" => Some(Service::NewWindow),
+            b"NewCWindow" => Some(Service::NewColorWindow),
             b"ShowWindow" => Some(Service::Window(crate::windows::Op::Show)),
             b"HideWindow" => Some(Service::Window(crate::windows::Op::Hide)),
             b"InitWindows" => Some(Service::Window(crate::windows::Op::Init)),
@@ -351,6 +356,7 @@ impl Abi {
             b"OpenCPort" => Some(Service::ColorPort(crate::color_ports::Action::Open)),
             b"InitCPort" => Some(Service::ColorPort(crate::color_ports::Action::Init)),
             b"CloseCPort" => Some(Service::ColorPort(crate::color_ports::Action::Close)),
+            b"SetGDevice" => Some(Service::SetDevice),
             b"GetGDevice" => Some(Service::Device(crate::devices::Op::Current)),
             b"GetMainDevice" => Some(Service::Device(crate::devices::Op::Main)),
             b"GetDeviceList" => Some(Service::Device(crate::devices::Op::First)),
@@ -406,6 +412,10 @@ impl Abi {
             b"TEGetStyleHandle" => Some(Service::TEGetStyleHandle),
             b"TEDispose" => Some(Service::TEDispose),
             b"Random" => Some(Service::Random),
+            b"BitAnd" => Some(Service::Logical(crate::integer::Logic::And)),
+            b"BitOr" => Some(Service::Logical(crate::integer::Logic::Or)),
+            b"BitXor" => Some(Service::Logical(crate::integer::Logic::Xor)),
+            b"BitNot" => Some(Service::Logical(crate::integer::Logic::Not)),
             b"FindSymbol" => Some(Service::FindSymbol),
             b"CountSymbols" => Some(Service::CountSymbols),
             b"GetIndSymbol" => Some(Service::GetIndSymbol),
@@ -513,6 +523,7 @@ impl Abi {
             b"CreateResFile" => Some(Service::CreateResFile),
             b"GetResInfo" => Some(Service::GetResInfo),
             b"GetResource" => Some(Service::GetResource),
+            b"FreeMem" => Some(Service::FreeMemory),
             b"MemError" => Some(Service::MemError),
             b"PBOpenSync" => Some(Service::FileIo(crate::files::Op::Open {
                 kind: crate::files::Fork::Data,
@@ -880,7 +891,44 @@ impl Abi {
                 c.dar[15] = result;
                 Ok((call, Reply::StackLong(GuestPtr(result))))
             }
-            0xa913 => {
+            0xa858..=0xa85b => {
+                use crate::integer::Logic;
+                let op = match opcode {
+                    0xa858 => Logic::And,
+                    0xa859 => Logic::Xor,
+                    0xa85a => Logic::Not,
+                    _ => Logic::Or,
+                };
+                let size = if op == Logic::Not { 4 } else { 8 };
+                let bytes = memory.read(GuestPtr(sp), size)?;
+                let first = u32::from_be_bytes(bytes[..4].try_into().unwrap());
+                let (left, right) = if size == 4 {
+                    (first, 0)
+                } else {
+                    (u32::from_be_bytes(bytes[4..8].try_into().unwrap()), first)
+                };
+                let result = sp
+                    .checked_add(size as u32)
+                    .ok_or_else(|| Error::Cpu("logical utility stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 4)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::Logical { op, left, right },
+                    Reply::StackLong(GuestPtr(result)),
+                ))
+            }
+            0xaa31 => {
+                let device = memory.u32(GuestPtr(sp))?;
+                let next = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("SetGDevice stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((
+                    Call::Device(crate::devices::Op::Select(device)),
+                    Reply::None,
+                ))
+            }
+            0xa913 | 0xaa45 => {
                 let bytes = memory.read(GuestPtr(sp), 26)?;
                 let long =
                     |offset| u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap());
@@ -899,7 +947,12 @@ impl Abi {
                     ref_con: long(0),
                 };
                 c.dar[15] = result;
-                Ok((Call::NewWindow(request), Reply::StackLong(GuestPtr(result))))
+                let call = if opcode == 0xaa45 {
+                    Call::NewColorWindow(request)
+                } else {
+                    Call::NewWindow(request)
+                };
+                Ok((call, Reply::StackLong(GuestPtr(result))))
             }
             0xa9ea => {
                 let selector = memory.u16(GuestPtr(sp))?;
@@ -2107,6 +2160,7 @@ impl Abi {
                 },
                 Reply::M68kHandle,
             )),
+            0xa01c => Ok((Call::FreeMemory, Reply::M68kD0)),
             0xa01f => Ok((Call::DisposePointer(c.dar[8]), Reply::M68kError)),
             0xa020 => Ok((
                 Call::SetPointerSize {
@@ -2416,16 +2470,23 @@ impl Abi {
                 background,
                 color: c.gpr[3],
             },
-            Service::NewWindow => Call::NewWindow(crate::windows::NewWindow {
-                storage: GuestPtr(c.gpr[3]),
-                bounds: GuestPtr(c.gpr[4]),
-                title: GuestPtr(c.gpr[5]),
-                visible: c.gpr[6] as u8 != 0,
-                proc_id: c.gpr[7] as i16,
-                behind: c.gpr[8],
-                go_away: c.gpr[9] as u8 != 0,
-                ref_con: c.gpr[10],
-            }),
+            Service::NewWindow | Service::NewColorWindow => {
+                let request = crate::windows::NewWindow {
+                    storage: GuestPtr(c.gpr[3]),
+                    bounds: GuestPtr(c.gpr[4]),
+                    title: GuestPtr(c.gpr[5]),
+                    visible: c.gpr[6] as u8 != 0,
+                    proc_id: c.gpr[7] as i16,
+                    behind: c.gpr[8],
+                    go_away: c.gpr[9] as u8 != 0,
+                    ref_con: c.gpr[10],
+                };
+                if matches!(service, Service::NewColorWindow) {
+                    Call::NewColorWindow(request)
+                } else {
+                    Call::NewWindow(request)
+                }
+            }
             Service::Window(op) => Call::Window {
                 op,
                 pointer: c.gpr[3],
@@ -2544,6 +2605,7 @@ impl Abi {
                 port: GuestPtr(c.gpr[3]),
             },
             Service::Device(op) => Call::Device(op),
+            Service::SetDevice => Call::Device(crate::devices::Op::Select(c.gpr[3])),
             Service::NextDevice => Call::Device(crate::devices::Op::Next(c.gpr[3])),
             Service::DeviceAttribute => Call::Device(crate::devices::Op::Attribute {
                 device: c.gpr[3],
@@ -2788,6 +2850,15 @@ impl Abi {
                 behind: c.gpr[5],
             },
             Service::Random => Call::Random,
+            Service::Logical(op) => Call::Logical {
+                op,
+                left: c.gpr[3],
+                right: if op == crate::integer::Logic::Not {
+                    0
+                } else {
+                    c.gpr[4]
+                },
+            },
             Service::GetMemFragment => Call::LoadFragment(crate::cfm::LoadRequest {
                 source: GuestPtr(c.gpr[3]),
                 length: c.gpr[4],
@@ -3030,6 +3101,7 @@ impl Abi {
             Service::GetSoundVol => Call::GetSoundVolume(GuestPtr(c.gpr[3])),
             Service::PBControlSync => Call::DeviceControl(GuestPtr(c.gpr[3])),
             Service::StripAddress => Call::StripAddress(c.gpr[3]),
+            Service::FreeMemory => Call::FreeMemory,
             Service::MemError => Call::MemError,
             Service::ResError => Call::ResError,
             Service::CurResFile => Call::CurResFile,
@@ -3073,7 +3145,8 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Intersects | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::GetDateTime
+                    Service::SetDevice
+                        | Service::GetDateTime
                         | Service::GetResInfo
                         | Service::CopyMask
                         | Service::NumToString
