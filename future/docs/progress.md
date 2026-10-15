@@ -2456,3 +2456,56 @@ Validation: all 257 tests pass (211 default, 46 optional GPU/MPW), with no skips
 Strict all-target Clippy, rebuilt menu/environment compiler guests, sequential
 changed-file formatting and whitespace checks pass. No native System 7 execution
 or native-presentation pass is claimed.
+
+
+### Resource-backed menu bars and shared GPU titles
+
+GetMenu and GetNewMBar now parse checked MENU/MBAR resources through the shared
+Resource Manager. Ordered MBAR entries hold the same live MENU handles returned
+by GetResource; menu IDs remain independent of resource IDs. Standard menu sizing
+uses the shared FONT service, including supported bold item strikes, separators,
+icon reservations and command-column space. Optional same-ID mctb resources merge
+into the manager's color table. Missing child menus return nil/resNotFound without
+installing a partial bar. Prepared menu dimensions, list storage and color changes
+publish together through the heap's checked handle replacement operation. Resource
+cache loads may remain cached on a failed preparation.
+
+SetMenuBar copies checked list storage into the stable current-list handle;
+disposing the supplied snapshot does not invalidate installed menu entries.
+ClearMenuBar preserves the bar's resource ID. DrawMenuBar renders live titles with
+wgpu, sharing bitmap glyph geometry with ordinary text rather than maintaining a
+second font rasterizer. It preserves the application GrafPort/current-port slot,
+including nil, clips to the bar and validates records/fonts/colors before painting.
+Disabled titles use the monochrome checker pattern. Monochrome foreground lookup
+uses per-menu RGB1 then global RGB1; nonmonochrome colors and distinct per-title
+backgrounds fail explicitly. Standard hosted definitions require a zero MDEF field;
+guest MDEF/MBDF callbacks, popup rendering/tracking and broader styles remain gaps.
+Popup size reservations are an initial legacy-based implementation, not native
+pixel-parity acceptance.
+
+Generated checks cover truncated resource fields, signed/ordered/duplicate MBAR
+IDs, both ABI adapters, live resource identity, missing-child failure, installed
+snapshot lifetime, exact title pixels, nil current ports and malformed-live-record
+rejection without partial screen updates. MPW menu guests now load resources,
+install/free the returned bar, draw a title and require missing-child ResError on
+both CPUs. Acceptance requires eight live-menu lookups and the final success event.
+
+The original bounded Super Mines click now passes GetNewMBar(1000), SetMenuBar
+and GetMHandle(1). Its next missing call is CountMItems ($A950), post-trap
+PC $0100C4FC. Next: shared menu-item queries and application-driven menu mutation, then
+continue this transition through actual menu drawing and interaction. The original
+has not yet exercised populated DrawMenuBar; GPU title acceptance comes from the
+focused/compiled fixtures. No gameplay, native System 7 or native-presentation
+acceptance is claimed. Full rebuild goal remains active.
+
+Continuation ABI: CountMItems ($A950) takes a MenuHandle long at SP, returns a
+word at SP+4 and pops only the four-byte argument. It must count the checked live
+record even when the menu is not installed; PPC CountMItems/CountMenuItems should
+reach that same operation. Preserve handle identity and caller-owned storage.
+
+Validation: all 260 tests pass (213 default, 47 optional GPU/MPW), with no skips.
+Strict all-target Clippy, changed-file sequential formatting and whitespace checks
+pass. The rebuilt MPW menu fixture succeeds on both CPUs. Earlier runs exposed the
+fixture's stale six-query expectation; the final suite includes the corrected
+eight-query acceptance and all final source changes. Native presentation and
+native System 7 execution are not claimed.

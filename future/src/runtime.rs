@@ -1179,8 +1179,11 @@ impl Runtime {
                     }
                     if matches!(
                         call,
-                        Call::Menu(crate::menus::Op::Init)
-                            | Call::FontInfo(_)
+                        Call::Menu(
+                            crate::menus::Op::Init
+                                | crate::menus::Op::Load(_)
+                                | crate::menus::Op::Bar(_)
+                        ) | Call::FontInfo(_)
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
                             | Call::DetachResource(_)

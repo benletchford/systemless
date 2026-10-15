@@ -484,3 +484,174 @@ fn menu_handle_lookup_follows_live_partitions_ids_and_relocated_handles_without_
         .unwrap();
     assert!(direct(&mut app, Op::Handle(-7)).is_err());
 }
+fn standard_menu(id: i16, title: u8) -> Vec<u8> {
+    let mut b = vec![0; 14];
+    b[..2].copy_from_slice(&id.to_be_bytes());
+    b[10..14].copy_from_slice(&u32::MAX.to_be_bytes());
+    b.extend([1, title, 1, 65, 0, 0, 0, 0, 0]);
+    b
+}
+#[test]
+fn resource_menu_records_bound_every_field_and_preserve_bar_order() {
+    use systemless_future::menus::record::{bar_ids, Record};
+    let bytes = standard_menu(-7, 65);
+    let r = Record::parse(&bytes).unwrap();
+    assert_eq!((r.id, r.title, r.items[0].text), (-7, &b"A"[..], &b"A"[..]));
+    for n in 0..bytes.len() {
+        assert!(Record::parse(&bytes[..n]).is_err(), "prefix {n}");
+    }
+    let mut custom = bytes.clone();
+    custom[7] = 1;
+    assert!(Record::parse(&custom).is_err());
+    assert_eq!(bar_ids(&[0, 3, 0, 2, 255, 249, 0, 2]).unwrap(), [2, -7, 2]);
+    for bytes in [&[255, 255][..], &[0, 1, 0][..], &[0, 0, 0][..]] {
+        assert!(bar_ids(bytes).is_err());
+    }
+}
+#[test]
+fn menu_resource_adapters_share_signed_ids_handles_and_void_installation() {
+    let mut m = Memory::default();
+    m.map(
+        GuestPtr(0x1000),
+        vec![255, 249, 0, 0, 0, 0],
+        Permissions::RW,
+    )
+    .unwrap();
+    for (trap, service, op) in [
+        (0xa9bf, Service::GetMenu, Op::Load(-7)),
+        (0xa9c0, Service::GetNewMBar, Op::Bar(-7)),
+    ] {
+        let mut c = m68k::CpuCore::default();
+        c.dar[15] = 0x1000;
+        assert_eq!(
+            Abi::trap(trap, &mut c, &m).unwrap(),
+            (Call::Menu(op), Reply::StackLong(GuestPtr(0x1002)))
+        );
+        assert_eq!(c.dar[15], 0x1002);
+        c.dar[15] = 0x1001;
+        assert!(Abi::trap(trap, &mut c, &m).is_err());
+        assert_eq!(c.dar[15], 0x1001);
+        let mut c = ppc::PpcCpu::default();
+        c.gpr[3] = 0xabcdfff9;
+        assert_eq!(
+            Abi::import(service, &c, &m).unwrap(),
+            (Call::Menu(op), Reply::PpcR3)
+        );
+    }
+    m.write(GuestPtr(0x1000), &0x12345678u32.to_be_bytes())
+        .unwrap();
+    let mut c = m68k::CpuCore::default();
+    c.dar[15] = 0x1000;
+    assert_eq!(
+        Abi::trap(0xa93c, &mut c, &m).unwrap(),
+        (Call::Menu(Op::Set(0x12345678)), Reply::None)
+    );
+    assert_eq!(c.dar[15], 0x1004);
+    let mut c = ppc::PpcCpu::default();
+    c.gpr[3] = 0x12345678;
+    let (call, reply) = Abi::import(Service::SetMenuBar, &c, &m).unwrap();
+    assert_eq!(call, Call::Menu(Op::Set(0x12345678)));
+    let mut cpu = Cpu::PowerPc(Box::new(c));
+    reply.apply(&mut cpu, &mut m, 99, 0).unwrap();
+    let Cpu::PowerPc(c) = cpu else { panic!() };
+    assert_eq!(c.gpr[3], 0x12345678);
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn resource_bars_keep_live_menu_identity_draw_titles_and_copy_installed_lists() {
+    let font: Vec<u8> = [
+        0x9000u16, 65, 66, 4, 0xfffe, 0xffff, 4, 3, 12, 2, 1, 0xffff, 1, 0xe400, 0xba00, 0x4600, 0,
+        3, 5, 7, 0x0104, 0xffff, 0x0203, 0xffff,
+    ]
+    .into_iter()
+    .flat_map(u16::to_be_bytes)
+    .collect();
+    let resource = support::resource(vec![
+        (*b"MENU", 7, None, standard_menu(70, 65)),
+        (*b"MENU", 8, None, standard_menu(-8, 66)),
+        (*b"MBAR", 42, None, vec![0, 2, 0, 7, 0, 8]),
+        (*b"MBAR", 43, None, vec![0, 2, 0, 7, 0, 99]),
+        (*b"FONT", 12, None, font),
+    ]);
+    let fixture = support::pef_program(&[0x4e800020], &[], 32);
+    let mut app = LoadedApplication::pef(&fixture.bytes, Some(&resource)).unwrap();
+    ports(&mut app.runtime.memory, &mut app.runtime.process);
+    systemless_future::font::initialize(&mut app.runtime.memory, &mut app.runtime.process).unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    app.runtime.graphics = Some(
+        pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
+    );
+    direct(&mut app, Op::Init).unwrap();
+    let list = app.runtime.memory.u32(GuestPtr(0xa1c)).unwrap();
+    let port = app
+        .runtime
+        .memory
+        .read(GuestPtr(0x1100), 108)
+        .unwrap()
+        .to_vec();
+    let bar = direct(&mut app, Op::Bar(42)).unwrap();
+    assert_ne!(bar, 0);
+    let b = payload(&app.runtime.memory, &mut app.runtime.process, bar);
+    assert_eq!(&b[..6], &[0, 12, 0, 44, 0, 42]);
+    let first = u32::from_be_bytes(b[6..10].try_into().unwrap());
+    assert_eq!(direct(&mut app, Op::Load(7)).unwrap(), first);
+    assert_eq!(
+        app.runtime
+            .process
+            .get_resource(&mut app.runtime.memory, *b"MENU", 7)
+            .unwrap(),
+        first
+    );
+    let menu = payload(&app.runtime.memory, &mut app.runtime.process, first);
+    assert_eq!(&menu[2..6], &[0, 36, 0, 16]);
+    assert_eq!(direct(&mut app, Op::Bar(43)).unwrap(), 0);
+    assert_eq!(app.runtime.process.res_error, -192);
+    assert_eq!(
+        payload(&app.runtime.memory, &mut app.runtime.process, list),
+        [0; 12]
+    );
+    direct(&mut app, Op::Set(bar)).unwrap();
+    app.runtime
+        .process
+        .dispose_handle(&mut app.runtime.memory, bar)
+        .unwrap();
+    assert_eq!(direct(&mut app, Op::Handle(70)).unwrap(), first);
+    direct(&mut app, Op::Draw).unwrap();
+    let pixels = app.runtime.memory.read(SCREEN, 64 * 342).unwrap();
+    for (y, row) in [0b111, 0b101, 0b010].into_iter().enumerate() {
+        for x in 0..3 {
+            assert_eq!(
+                (pixels[(8 + y) * 64 + (17 + x) / 8] >> (7 - (17 + x) % 8)) & 1,
+                (row >> (2 - x)) & 1
+            );
+        }
+    }
+    assert_eq!(
+        app.runtime.memory.read(GuestPtr(0x1100), 108).unwrap(),
+        port
+    );
+    assert_eq!(app.runtime.memory.u32(GuestPtr(0xa1c)).unwrap(), list);
+    app.runtime
+        .memory
+        .write(GuestPtr(0x1020), &0u32.to_be_bytes())
+        .unwrap();
+    direct(&mut app, Op::Draw).unwrap();
+    assert_eq!(app.runtime.memory.u32(GuestPtr(0x1020)).unwrap(), 0);
+    let screen = app.runtime.memory.read(SCREEN, 64 * 342).unwrap().to_vec();
+    let menu_ptr = ptr(&app.runtime.memory, first);
+    app.runtime
+        .memory
+        .write(GuestPtr(menu_ptr.0 + 7), &[1])
+        .unwrap();
+    assert!(direct(&mut app, Op::Draw).is_err());
+    assert_eq!(app.runtime.memory.read(SCREEN, 64 * 342).unwrap(), screen);
+    app.runtime
+        .memory
+        .write(GuestPtr(menu_ptr.0 + 7), &[0])
+        .unwrap();
+    direct(&mut app, Op::Clear).unwrap();
+    assert_eq!(
+        &payload(&app.runtime.memory, &mut app.runtime.process, list)[4..6],
+        &42i16.to_be_bytes()
+    );
+}

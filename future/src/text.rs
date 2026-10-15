@@ -253,6 +253,44 @@ pub(crate) fn draw_strike(
     }
     let v = memory.u16(GuestPtr(port.0 + 48))? as i16;
     let mut h = memory.u16(GuestPtr(port.0 + 50))? as i16;
+    let (plans, end) = plan_strike(font, bytes, h, v)?;
+    h = end;
+    let result = (|| {
+        memory.write(GuestPtr(port.0 + 56), &(8 + mode).to_be_bytes())?;
+        for (bounds, ink, paper) in plans {
+            for (pattern, coverage) in [(0u8, paper), (255u8, ink)] {
+                if coverage.is_empty() {
+                    continue;
+                }
+                memory.write(GuestPtr(port.0 + 58), &[pattern; 8])?;
+                ports.paint_coverage(gpu, memory, bounds, Some(&coverage))?;
+            }
+        }
+        Ok(())
+    })();
+    memory.write(port, &saved)?;
+    result?;
+    memory.write(GuestPtr(port.0 + 50), &h.to_be_bytes())
+}
+
+pub fn metrics(
+    memory: &mut Memory,
+    process: &mut crate::process::Process,
+    ports: Ports,
+) -> Result<crate::font::Metrics> {
+    let port = ports.current(memory)?;
+    let data = font_data(memory, process, port)?;
+    Ok(crate::font::Strike::parse(&data)?.metrics)
+}
+
+pub(crate) type GlyphCoverage = (Rect, Vec<Rect>, Vec<Rect>);
+/// Shared source glyph geometry; destination transfers stay in the GPU services.
+pub(crate) fn plan_strike(
+    font: &crate::font::Strike<'_>,
+    bytes: &[u8],
+    mut h: i16,
+    v: i16,
+) -> Result<(Vec<GlyphCoverage>, i16)> {
     let mut plans = Vec::new();
     let mut work = 0usize;
     for &c in bytes {
@@ -296,30 +334,5 @@ pub(crate) fn draw_strike(
         plans.push((Rect::new(left, top, right, bottom), ink, paper));
         h = h.wrapping_add(i16::from(g.advance));
     }
-    let result = (|| {
-        memory.write(GuestPtr(port.0 + 56), &(8 + mode).to_be_bytes())?;
-        for (bounds, ink, paper) in plans {
-            for (pattern, coverage) in [(0u8, paper), (255u8, ink)] {
-                if coverage.is_empty() {
-                    continue;
-                }
-                memory.write(GuestPtr(port.0 + 58), &[pattern; 8])?;
-                ports.paint_coverage(gpu, memory, bounds, Some(&coverage))?;
-            }
-        }
-        Ok(())
-    })();
-    memory.write(port, &saved)?;
-    result?;
-    memory.write(GuestPtr(port.0 + 50), &h.to_be_bytes())
-}
-
-pub fn metrics(
-    memory: &mut Memory,
-    process: &mut crate::process::Process,
-    ports: Ports,
-) -> Result<crate::font::Metrics> {
-    let port = ports.current(memory)?;
-    let data = font_data(memory, process, port)?;
-    Ok(crate::font::Strike::parse(&data)?.metrics)
+    Ok((plans, h))
 }

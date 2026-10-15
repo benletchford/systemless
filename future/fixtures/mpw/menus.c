@@ -5,6 +5,8 @@
 #include <Memory.h>
 #include <Events.h>
 #include <Processes.h>
+#include <Fonts.h>
+#include <Resources.h>
 QDGlobals qd;
 static void putLong(unsigned char *p,unsigned long value) {
     p[0]=value>>24; p[1]=value>>16; p[2]=value>>8; p[3]=value;
@@ -47,6 +49,19 @@ int main(void) {
         if (GetMenuHandle(-7)!=normal || GetMenuHandle(9)!=sub) return 14;
         ClearMenuBar(); if (GetMenuHandle(9)!=0 || GetHandleSize((Handle)normal)!=16 || GetHandleSize((Handle)sub)!=32) return 15;
         DisposeHandle((Handle)normal); DisposeHandle((Handle)sub);
+    }
+    {
+        Handle bar;
+        MenuHandle menu;
+        InitFonts();
+        bar=GetNewMBar(42); if (!bar || GetHandleSize(bar)!=24) return 16;
+        menu=GetMenu(7); if (!menu || menu!=(MenuHandle)GetResource('MENU',7) || (*menu)->menuID!=70) return 17;
+        if ((*menu)->menuWidth!=36 || (*menu)->menuHeight!=16) return 18;
+        SetMenuBar(bar); DisposeHandle(bar);
+        if (*(Handle *)0xa1c!=live || GetMenuHandle(70)!=menu) return 19;
+        DrawMenuBar();
+        if ((pixels[64*8+2]&0x70)!=0x70 || qd.thePort!=&port) return 20;
+        if (GetNewMBar(43)!=0 || ResError()!=-192 || GetMenuHandle(70)!=menu) return 21;
     }
     InitCursor(); HideCursor(); HideCursor(); ShowCursor();
     cursor=GetCursor(-123); if (!cursor || GetHandleSize((Handle)cursor)!=68) return 9;

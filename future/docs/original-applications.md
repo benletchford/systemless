@@ -39,8 +39,8 @@ fork path and a maximum instruction count, and prints register/opcode context.
   A 100,000-instruction trace completes without an unsupported service.
   A bounded press/release at global (256,171) passes FindWindow, FindControl
   and StillDown, hides/disposes the demonstration splash, restores its saved
-  nil port, creates/updates/reads its settings file and reaches unsupported
-  GetNewMBar ($A9C0).
+  nil port, creates/updates/reads its settings file, loads/installs its menu bar
+  and reaches unsupported CountMItems ($A950).
   SystemTask preserves the empty periodic service state, PenSize updates live
   GrafPort dimensions and RectInRgn checks content intersections.
   GetPicture loads PICT 202, PortSize sizes its offscreen GrafPort and MovePortTo
@@ -113,10 +113,12 @@ The current probe at (256,171) dismisses the splash, then opens
 `Super Mines Demo Settings` with read/write permission in its created preferences
 directory. The missing-file path creates both forks, sets Finder metadata, reopens
 the data fork and executes EOF/seek/write/read operations. It then queries GetMHandle(4), closes the file and probes Gestalt selectors
-ppc-space and evnt, both correctly unavailable. It reaches GetNewMBar ($A9C0),
-with post-trap PC $0100C4DE. This is one bounded 68K splash
+ppc-space and evnt, both correctly unavailable. It passes GetNewMBar(1000),
+SetMenuBar and GetMHandle(1), then reaches CountMItems ($A950),
+with post-trap PC $0100C4FC. This is one bounded 68K splash
 interaction plus settings I/O; menus, gameplay and a full lifecycle remain
 unverified. Files persist only within the process, with no host filesystem writes.
-Next: resource-backed menu-bar construction through MBAR/MENU resources,
-installation, dimensions and GPU title drawing; then continue this transition.
+Next: shared menu-item queries and application-driven mutation; then continue
+this transition through original menu drawing and interaction. Resource-backed
+title pixels are verified by focused and MPW fixtures, not yet by this original.
 The full rebuild goal remains active.

@@ -236,8 +236,8 @@ shared low-memory handles and the desktop's top boundary, assert exact menu-bar
 borders/corners and preserved pixels below the bar, copy/dispose GetMenuBar
 snapshots, clear/reinitialize without changing manager handle identities, and
 verify resource bytes and retained application port state. The optional test runs
-both compiled CPUs through a real GPU and compares final screen bytes. Populated
-menus, callbacks and tracking are not exercised.
+both compiled CPUs through a real GPU and compares final screen bytes. Resource-backed title drawing is also exercised; popup rendering, callbacks and
+tracking are not exercised.
 
 The menu fixture also initializes/hides/shows the cursor, loads its compiled
 CURS -123 resource, sets it while hidden, and balances the hide depth. The paired
@@ -357,5 +357,10 @@ menu handles, verifies duplicate-ID precedence, relocation/live ID changes, nil
 misses and clearing without disposing caller-owned menus. The environment guest
 checks Gestalt system/processor values against SysEnvirons and the undefined
 communications selector. Native Gestalt uses the SDK's A0 result plus A1 store;
-PPC uses a result pointer. Acceptance requires six menu lookups and three capability
+PPC uses a result pointer. Acceptance requires eight menu lookups and three capability
 queries on each compiler target. The SDK spelling is GetMenuHandle.
+
+The menu fixture now compiles MENU, MBAR and a tiny FONT strike. Both CPUs load
+and measure menus, preserve GetResource identity, copy/install/dispose a bar,
+check title pixels and handle a missing child resource without replacing the live
+bar. The original application comparison baseline remains legacy Systemless.

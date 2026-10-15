@@ -68,6 +68,9 @@ pub enum Service {
     Cursor(crate::cursor::Op),
     SetCursor,
     GetMenuHandle,
+    GetMenu,
+    GetNewMBar,
+    SetMenuBar,
     Menu(crate::menus::Op),
     TENew(bool),
     TEUpdate,
@@ -300,6 +303,9 @@ impl Abi {
             b"ObscureCursor" => Some(Service::Cursor(crate::cursor::Op::Obscure)),
             b"SetCursor" => Some(Service::SetCursor),
             b"GetMHandle" | b"GetMenuHandle" => Some(Service::GetMenuHandle),
+            b"GetMenu" => Some(Service::GetMenu),
+            b"GetNewMBar" => Some(Service::GetNewMBar),
+            b"SetMenuBar" => Some(Service::SetMenuBar),
             b"InitMenus" => Some(Service::Menu(crate::menus::Op::Init)),
             b"DrawMenuBar" => Some(Service::Menu(crate::menus::Op::Draw)),
             b"ClearMenuBar" => Some(Service::Menu(crate::menus::Op::Clear)),
@@ -1065,7 +1071,14 @@ impl Abi {
                 }),
                 Reply::None,
             )),
-            0xa949 => {
+            0xa93c => {
+                let handle = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("menu stack overflow".into()))?;
+                Ok((Call::Menu(crate::menus::Op::Set(handle)), Reply::None))
+            }
+            0xa949 | 0xa9bf | 0xa9c0 => {
                 let id = memory.u16(GuestPtr(sp))? as i16;
                 let result = sp
                     .checked_add(2)
@@ -1073,7 +1086,11 @@ impl Abi {
                 memory.validate_write(GuestPtr(result), 4)?;
                 c.dar[15] = result;
                 Ok((
-                    Call::Menu(crate::menus::Op::Handle(id)),
+                    Call::Menu(match opcode {
+                        0xa9bf => crate::menus::Op::Load(id),
+                        0xa9c0 => crate::menus::Op::Bar(id),
+                        _ => crate::menus::Op::Handle(id),
+                    }),
                     Reply::StackLong(GuestPtr(result)),
                 ))
             }
@@ -1830,6 +1847,9 @@ impl Abi {
             }
             Service::Cursor(op) => Call::Cursor(op),
             Service::SetCursor => Call::Cursor(crate::cursor::Op::Set(GuestPtr(c.gpr[3]))),
+            Service::GetMenu => Call::Menu(crate::menus::Op::Load(c.gpr[3] as i16)),
+            Service::GetNewMBar => Call::Menu(crate::menus::Op::Bar(c.gpr[3] as i16)),
+            Service::SetMenuBar => Call::Menu(crate::menus::Op::Set(c.gpr[3])),
             Service::GetMenuHandle => Call::Menu(crate::menus::Op::Handle(c.gpr[3] as i16)),
             Service::Menu(op) => Call::Menu(op),
             Service::TEKey => Call::TextEdit(crate::textedit::Op::Key {
@@ -2185,6 +2205,7 @@ impl Abi {
                         | Service::ErrorSound
                         | Service::Cursor(_)
                         | Service::SetCursor
+                        | Service::SetMenuBar
                         | Service::Menu(
                             crate::menus::Op::Init
                                 | crate::menus::Op::Draw

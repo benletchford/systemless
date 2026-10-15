@@ -109,7 +109,9 @@ verification and complete original application interaction remain pending.
 TETextBox/TextBox now share transient TextEdit wrapping, alignment and clipped
 GPU erasure/drawing on both CPU adapters. Bold source strikes are synthesized
 without changing guest font resources. Super Mines startup passes its text boxes
-and enters event/mouse polling. A bounded press/release now dismisses its splash, creates/reads settings and reaches GetNewMBar;
+and enters event/mouse polling. A bounded press/release dismisses its splash,
+creates/reads settings, loads and installs its resource menu bar, then reaches
+CountMItems;
 gameplay and complete application lifecycle acceptance remain pending.
 
 GetMouse shares checked current-port coordinates and live guest Mouse globals;
@@ -127,4 +129,7 @@ and full filesystem compatibility remain pending.
 
 GetMHandle/GetMenuHandle now searches live regular/hierarchical lists without
 loading resources. Gestalt shares the known virtual profile and reports missing
-capabilities explicitly. Resource-backed menu construction remains unfinished.
+capabilities explicitly. GetMenu/GetNewMBar load live resource-backed menus,
+SetMenuBar copies their list, and DrawMenuBar renders standard bitmap titles
+through wgpu. Insertion, popup tracking and guest definition callbacks remain
+unfinished.

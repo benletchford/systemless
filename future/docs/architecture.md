@@ -1287,3 +1287,22 @@ preserve the native A0 and PPC output; native caller glue can still store its
 undefined old A0 on error. Output errors preserve PPC return registers. This
 architecture distinction is tested instead of replacing both ABIs with pointer
 writes. NewGestalt/ReplaceGestalt registration paths remain unsupported.
+
+
+## Resource-backed menu construction
+
+Native GetMenu/GetNewMBar Pascal adapters and PPC imports marshal into the same
+Menus operations. Checked MENU parsing preserves signed logical IDs independently
+of Resource Manager keys; MBAR describes ordered resource IDs. The Resource Manager
+owns cached MENU handles while the caller owns a newly allocated DynamicMenuList.
+Preparation computes standard dimensions and color merges before publishing a
+single group of handle replacements. Missing child resources cannot install a
+partial list. SetMenuBar copies that list into the manager-owned stable handle.
+Shared source FONT geometry plans title ink; destination coverage and clipping run
+through wgpu on the canonical screen bitmap without changing the guest port.
+Hosted standard definitions use a zero definition field; this is not a substitute
+for a callable guest MDEF or a completed Mixed Mode callback implementation.
+Popup rendering, tracking and guest definitions remain executable milestones.
+Resource layouts follow Apple's [MENU](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-183.html)
+and [MBAR](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-184.html) descriptions;
+layout/sizing evidence is separately identified as legacy Systemless comparison.

@@ -1,4 +1,4 @@
-//! Shared Menu Manager initialization and empty-bar lifecycle. DynamicMenuList
+//! Shared Menu Manager resources, bar installation, and GPU title drawing. DynamicMenuList
 //! and MCEntry layouts follow the legacy Systemless Menu Manager reference.
 use crate::{
     bitmap::Bitmap,
@@ -8,12 +8,17 @@ use crate::{
     region_geometry::{self, Boolean},
     Error, Result,
 };
+pub mod record;
+mod resources;
 const LIST: GuestPtr = GuestPtr(0xa1c);
 const COLORS: GuestPtr = GuestPtr(0xd50);
 const HEIGHT: GuestPtr = GuestPtr(0xbaa);
 const EMPTY: [u8; 12] = [0; 12];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    Load(i16),
+    Bar(i16),
+    Set(u32),
     Handle(i16),
     Init,
     Draw,
@@ -81,28 +86,52 @@ fn background(colors: &[u8]) -> Result<u8> {
         _ => Err(bad("nonmonochrome menu bar background is unsupported")),
     }
 }
+fn title_foreground(colors: &[u8], id: i16, bar_background: u8) -> Result<u8> {
+    let entry = |id: i16| {
+        colors
+            .chunks_exact(30)
+            .find(|e| e[..2] == id.to_be_bytes() && e[2..4] == [0; 2])
+    };
+    let mono = |rgb: &[u8]| match rgb {
+        [0, 0, 0, 0, 0, 0] => Ok(1),
+        [255, 255, 255, 255, 255, 255] => Ok(0),
+        _ => Err(bad("nonmonochrome menu title colors are unsupported")),
+    };
+    if let Some(e) = entry(id) {
+        if mono(&e[10..16])? != bar_background {
+            return Err(bad("distinct menu title backgrounds are unsupported"));
+        }
+    }
+    entry(id)
+        .or_else(|| entry(0))
+        .map_or(Ok(1), |e| mono(&e[4..10]))
+}
+fn validate_list(list: &[u8]) -> Result<()> {
+    if list.len() < 12 {
+        return Err(bad("truncated DynamicMenuList"));
+    }
+    let regular = usize::from(u16::from_be_bytes(list[..2].try_into().unwrap()));
+    if !regular.is_multiple_of(6) || regular > 6144 || 12 + regular > list.len() {
+        return Err(bad("invalid regular menu list"));
+    }
+    let hierarchical = usize::from(u16::from_be_bytes(
+        list[6 + regular..8 + regular].try_into().unwrap(),
+    ));
+    if !hierarchical.is_multiple_of(6)
+        || hierarchical > 6144
+        || 12 + regular + hierarchical != list.len()
+    {
+        return Err(bad("invalid hierarchical menu list"));
+    }
+    Ok(())
+}
 impl Menus {
     fn read_list(&self, memory: &Memory, process: &mut Process) -> Result<Vec<u8>> {
         if self.list == 0 || memory.u32(LIST)? != self.list {
             return Err(bad("Menu Manager list was replaced or not initialized"));
         }
         let list = data(memory, process, self.list)?;
-        if list.len() < 12 {
-            return Err(bad("truncated DynamicMenuList"));
-        }
-        let regular = usize::from(u16::from_be_bytes(list[..2].try_into().unwrap()));
-        if !regular.is_multiple_of(6) || regular > 6144 || 12 + regular > list.len() {
-            return Err(bad("invalid regular menu list"));
-        }
-        let hierarchical = usize::from(u16::from_be_bytes(
-            list[6 + regular..8 + regular].try_into().unwrap(),
-        ));
-        if !hierarchical.is_multiple_of(6)
-            || hierarchical > 6144
-            || 12 + regular + hierarchical != list.len()
-        {
-            return Err(bad("invalid hierarchical menu list"));
-        }
+        validate_list(&list)?;
         Ok(list)
     }
     fn check(&self, memory: &Memory, process: &mut Process) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -120,6 +149,21 @@ impl Menus {
         gpu: Option<&Graphics>,
         op: Op,
     ) -> Result<u32> {
+        if let Op::Load(id) | Op::Bar(id) = op {
+            return self.load_resources(memory, process, id, matches!(op, Op::Bar(_)));
+        }
+        if let Op::Set(source) = op {
+            let bytes = data(memory, process, source)?;
+            validate_list(&bytes)?;
+            self.read_list(memory, process)?;
+            self.validate_menus(memory, process, &bytes)?;
+            memory.validate_write(GuestPtr(0xa26), 2)?;
+            process.replace_handles(memory, vec![(self.list, bytes)])?;
+            if process.mem_error == 0 {
+                memory.write(GuestPtr(0xa26), &0u16.to_be_bytes())?;
+            }
+            return Ok(0);
+        }
         if let Op::Handle(id) = op {
             let error = process.mem_error;
             let result = (|| {
@@ -254,7 +298,9 @@ impl Menus {
             }
             Op::Clear => {
                 memory.validate_write(GuestPtr(0xa26), 2)?;
-                process.replace_handles(memory, vec![(self.list, EMPTY.to_vec())])?;
+                let mut empty = EMPTY.to_vec();
+                empty[4..6].copy_from_slice(&list[4..6]);
+                process.replace_handles(memory, vec![(self.list, empty)])?;
                 if process.mem_error == 0 {
                     memory.write(GuestPtr(0xa26), &0u16.to_be_bytes())?;
                 }
@@ -268,15 +314,15 @@ impl Menus {
                 )?;
                 Ok(0)
             }
-            Op::Init | Op::Handle(_) => unreachable!(),
+            Op::Init | Op::Handle(_) | Op::Load(_) | Op::Bar(_) | Op::Set(_) => unreachable!(),
         }
     }
     fn draw(&self, memory: &mut Memory, process: &mut Process, gpu: &Graphics) -> Result<()> {
         let (list, colors) = self.check(memory, process)?;
-        if list[..2] != [0; 2] || list[4..6] != [0; 2] || list[6..] != [0; 6] {
-            return Err(bad(
-                "populated menu drawing or custom menu-bar definitions are not implemented",
-            ));
+        self.validate_menus(memory, process, &list)?;
+        let regular = usize::from(u16::from_be_bytes(list[..2].try_into().unwrap()));
+        if list[8 + regular..12 + regular] != [0; 4] {
+            return Err(bad("saved menu tracking state is unsupported"));
         }
         let background = background(&colors)?;
         let ports = process
@@ -296,6 +342,34 @@ impl Menus {
         );
         if bar.top >= bar.bottom {
             return Ok(());
+        }
+        let mut titles = Vec::new();
+        if regular != 0 {
+            let bytes = crate::text::font_bytes(memory, process, 0, 0, 0)?;
+            let font = crate::font::Strike::parse(&bytes)?;
+            let baseline = bar.top
+                + (height - i32::from(font.metrics.ascent) - i32::from(font.metrics.descent)) / 2
+                + i32::from(font.metrics.ascent);
+            for entry in list[6..6 + regular].chunks_exact(6) {
+                let bytes = data(
+                    memory,
+                    process,
+                    u32::from_be_bytes(entry[..4].try_into().unwrap()),
+                )?;
+                let menu = record::Record::parse(&bytes)?;
+                let left = i32::from(i16::from_be_bytes(entry[4..6].try_into().unwrap())) + 7;
+                let (plans, _) = crate::text::plan_strike(
+                    &font,
+                    menu.title,
+                    i16::try_from(left).map_err(|_| bad("menu title origin overflow"))?,
+                    i16::try_from(baseline).map_err(|_| bad("menu baseline overflow"))?,
+                )?;
+                titles.push((
+                    menu.enabled & 1 != 0,
+                    title_foreground(&colors, menu.id, background)?,
+                    plans,
+                ));
+            }
         }
         bitmap.execute(
             gpu,
@@ -340,6 +414,31 @@ impl Menus {
                 mode: Transfer::Copy,
             },
             Some(&shape),
-        )
+        )?;
+        for (enabled, foreground, plans) in titles {
+            for (rect, ink, _) in plans {
+                if ink.is_empty() {
+                    continue;
+                }
+                bitmap.execute_clipped(
+                    gpu,
+                    memory,
+                    Draw::Fill {
+                        rect,
+                        clip: Rect::new(bar.left, bar.top, bar.right, bar.bottom - 1),
+                        pattern: if enabled {
+                            [255; 8]
+                        } else {
+                            [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55]
+                        },
+                        foreground,
+                        background,
+                        mode: Transfer::Copy,
+                    },
+                    Some(&ink),
+                )?;
+            }
+        }
+        Ok(())
     }
 }
