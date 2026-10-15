@@ -4779,3 +4779,52 @@ zero failures/skips: /tmp/systemless-default-sdk-tests.txt. Combined with the
 25 focused checks, this extension has 55 passing checks. Strict all-target lint
 passes: /tmp/systemless-default-lint.txt; sequential formatting, shell syntax and
 whitespace checks pass. Build log: /tmp/systemless-default-sdk-build.txt.
+
+
+## 2026-10-16: actual dialog contents through shared drawing
+
+DrawDialog ($A981 / InterfaceLib) now reads the copied live DITL and draws static
+text through shared TextEdit layout, PICT handles through the existing picture
+renderer, 32x32 one-bit ICON handles through wgpu bitmap transfers, and controls
+and automatic default outlines through their existing managers. Static text
+expands the four live DAStrings without rewriting the source handle or recursively
+interpreting substituted characters. Layout is bounded by the TextEdit limit.
+The drawing port, record drawing fields and error authorities are preserved.
+Transient TextEdit and scratch allocations are released after use.
+
+The effective port/visible/clip intersection selects drawing work. Hidden dialogs
+need no GPU, clipped items do not dispatch rendering, and nonnil visible user-item
+draw callbacks fail explicitly. Edit-text items remain unsupported at construction;
+real callback execution and UpdateDialog/modal event handling remain unfinished.
+Missing image handles draw nothing; malformed visible image resources fail before
+earlier static items are painted. No original resource bytes are embedded.
+
+Synthetic public DLOG/DITL/PICT/ICON resources test scaled image pixels, wrapped
+static text and parameters, source retention, full GPU/guest bitmap agreement,
+68K/PPC byte-identical redraws, void return behavior, hidden drawing, no retained
+scratch/TextEdit allocations, and cleanup after malformed-picture faults. The
+heap check brackets DrawDialog itself: Hide/Show legitimately resizes window
+update regions. Runtime faults remain terminal; the fault test verifies manager
+restoration through shared-service cleanup rather than attempting CPU resumption.
+All 65 focused library/dialog/TextEdit/picture tests pass, no failures/skips:
+/tmp/systemless-draw-dialog-acceptance.txt. Broader compiler/trap and lint results
+follow below. The preceding full suite passed 467 tests; no new full-suite run is
+claimed for this extension.
+
+Original EV now executes DrawDialog, gets button/static-text items and draws an
+additional default border using its own native QuickDraw calls. It next stops at
+SetDialogItemText ($A98F), PC $00025816. The guest Pascal string reports failure
+opening the Monitor Tool. Thus this is an application error-reporting dialog,
+not title/menu or gameplay acceptance. Evidence:
+/tmp/systemless-ev-draw-dialog-next.txt. Implement real item text replacement and
+redraw, then investigate the actual Monitor Tool failure; do not fake success or
+change graphics capability reporting to bypass it. Original Marathon and the
+full rebuild requirements remain open.
+Source: [Apple DrawDialog](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-429.html).
+
+Final extension acceptance: 99 selected tests pass, zero failures/skips (65
+library/dialog/TextEdit/picture checks plus all 30 compiler/CLI fixtures and four
+trap-patching checks). Additional log: /tmp/systemless-draw-dialog-sdk-tests.txt.
+Strict all-target lint passes: /tmp/systemless-draw-dialog-final-lint.txt.
+Sequential changed-file formatting and whitespace checks pass. The prior full
+467-test run is historical, not a full-suite rerun for this extension.

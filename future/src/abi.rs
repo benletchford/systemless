@@ -80,6 +80,7 @@ pub enum Service {
     SetApplLimit,
     BlockMove,
     InitDialogs,
+    DrawDialog,
     SetDialogDefaultItem,
     GetNewDialog,
     GetDialogItem,
@@ -394,6 +395,7 @@ impl Abi {
             b"BlockMove" | b"BlockMoveData" => Some(Service::BlockMove),
             b"IsDialogEvent" => Some(Service::IsDialogEvent),
             b"InitDialogs" => Some(Service::InitDialogs),
+            b"DrawDialog" => Some(Service::DrawDialog),
             b"SetDialogDefaultItem" => Some(Service::SetDialogDefaultItem),
             b"GetNewDialog" => Some(Service::GetNewDialog),
             b"GetDialogItem" | b"GetDItem" => Some(Service::GetDialogItem),
@@ -2659,6 +2661,14 @@ impl Abi {
                 c.dar[15] = result;
                 Ok((call, Reply::StackWord(GuestPtr(result))))
             }
+            0xa981 => {
+                let dialog = memory.u32(GuestPtr(sp))?;
+                let next = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("DrawDialog stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((Call::Dialog(crate::dialogs::Op::Draw(dialog)), Reply::None))
+            }
             0xa97c => {
                 let b = memory.read(GuestPtr(sp), 14)?;
                 let result = sp
@@ -2929,6 +2939,7 @@ impl Abi {
             }),
             Service::GetDAString => Call::Dialog(crate::dialogs::Op::Slot(c.gpr[3] as i16)),
             Service::IsDialogEvent => Call::Dialog(crate::dialogs::Op::IsEvent(GuestPtr(c.gpr[3]))),
+            Service::DrawDialog => Call::Dialog(crate::dialogs::Op::Draw(c.gpr[3])),
             Service::SetDialogDefaultItem => Call::Dialog(crate::dialogs::Op::DefaultItem {
                 dialog: c.gpr[3],
                 number: c.gpr[4] as i16,
@@ -3508,6 +3519,7 @@ impl Abi {
                     service,
                     Service::SetDevice
                         | Service::GetDialogItem
+                        | Service::DrawDialog
                         | Service::DisposeDialog(_)
                         | Service::MakeITable
                         | Service::SetDeviceAttribute

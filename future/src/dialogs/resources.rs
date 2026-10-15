@@ -1,5 +1,6 @@
 //! Resource-backed classic dialog records and copied item lists.
 use super::*;
+mod drawing;
 use crate::{
     controls::{NewControl, Op as ControlOp},
     graphics::{Graphics, Rect},

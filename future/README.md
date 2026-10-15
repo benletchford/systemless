@@ -300,3 +300,13 @@ old border; hidden dialogs preserve the selection and ShowWindow redraws their
 controls and outline. Native selector/result and PPC import/error behavior are
 covered by real CPU tests. General dialog update drawing and modal keyboard
 activation remain unfinished. Original EV next reaches DrawDialog ($A981).
+
+
+DrawDialog now draws live static text with parameter substitution through
+TextEdit, real ICON/PICT resource handles through shared wgpu graphics, and shared
+controls/default outlines. Rendering respects effective clipping and hidden
+dialogs, preserves drawing state and frees transient allocations. Visible
+application-defined item callbacks, edit-text construction, updates and modal
+events remain unfinished. Original EV passes drawing, then reaches item-text
+replacement in a dialog reporting a Monitor Tool opening error. This establishes
+an error-reporting path, not title/menu or gameplay.

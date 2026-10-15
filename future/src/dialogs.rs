@@ -26,6 +26,7 @@ pub enum Op {
         dialog: u32,
         close: bool,
     },
+    Draw(u32),
     DefaultItem {
         dialog: u32,
         number: i16,
@@ -80,9 +81,11 @@ impl Dialogs {
     }
     pub fn call(&mut self, memory: &mut Memory, process: &mut Process, op: Op) -> Result<()> {
         match op {
-            Op::Resource { .. } | Op::Item { .. } | Op::Dispose { .. } | Op::DefaultItem { .. } => {
-                Err(bad("dialog operation requires its record/value route"))
-            }
+            Op::Resource { .. }
+            | Op::Item { .. }
+            | Op::Dispose { .. }
+            | Op::DefaultItem { .. }
+            | Op::Draw(_) => Err(bad("dialog operation requires its record/value route")),
             Op::IsEvent(_) => Err(bad("dialog event query requires a value route")),
             Op::Slot(_) => Err(bad("dialog parameter slot requires a value route")),
             Op::Init(resume) => {

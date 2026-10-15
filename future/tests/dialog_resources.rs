@@ -78,9 +78,49 @@ fn fixtures(kind: u8) -> Vec<u8> {
             ditl.push(0xa5);
         }
     }
+    let mut drawing_dlog = dlog.clone();
+    support::w16(&mut drawing_dlog, 18, 129);
+    let mut drawing_items = 3u16.to_be_bytes().to_vec();
+    for (kind, data, rect) in [
+        (4, b"OK".to_vec(), [80i16, 150, 100, 210]),
+        (0x88, b"^0 ^1\rsecond line".to_vec(), [5, 5, 40, 125]),
+        (0xc0, 500i16.to_be_bytes().to_vec(), [45, 10, 61, 26]),
+        (0xa0, 501i16.to_be_bytes().to_vec(), [45, 40, 77, 72]),
+    ] {
+        drawing_items.extend([0; 4]);
+        for v in rect {
+            drawing_items.extend(v.to_be_bytes());
+        }
+        drawing_items.push(kind);
+        drawing_items.push(data.len() as u8);
+        drawing_items.extend(data);
+        if !drawing_items.len().is_multiple_of(2) {
+            drawing_items.push(0);
+        }
+    }
+    let mut picture = vec![0, 0];
+    for v in [0i16, 0, 2, 2] {
+        picture.extend(v.to_be_bytes());
+    }
+    picture.extend([0x11, 1, 0x90, 0, 1]);
+    for _ in 0..3 {
+        for v in [0i16, 0, 2, 2] {
+            picture.extend(v.to_be_bytes());
+        }
+    }
+    picture.extend([0, 0, 0x80, 0x40, 0xff]);
+    let n = picture.len() as u16;
+    support::w16(&mut picture, 0, n);
+    let icon = (0..128)
+        .map(|i| if i % 4 == 0 { 0x80 } else { 0 })
+        .collect();
     support::resource(vec![
         (*b"DLOG", 128, None, dlog),
         (*b"DITL", 128, None, ditl),
+        (*b"DLOG", 129, None, drawing_dlog),
+        (*b"DITL", 129, None, drawing_items),
+        (*b"PICT", 500, None, picture),
+        (*b"ICON", 501, None, icon),
     ])
 }
 fn setup(kind: u8) -> LoadedApplication {
@@ -97,6 +137,8 @@ fn setup(kind: u8) -> LoadedApplication {
             b"SetDialogDefaultItem",
             b"ShowWindow",
             b"HideWindow",
+            b"DrawDialog",
+            b"ParamText",
         ],
         512,
     );
@@ -108,7 +150,9 @@ fn setup(kind: u8) -> LoadedApplication {
         .memory
         .map(
             GuestPtr(0x50000000),
-            vec![0xa9, 0x7c, 0xa9, 0x8d, 0xa9, 0x82, 0xa9, 0x83, 0xaa, 0x68],
+            vec![
+                0xa9, 0x7c, 0xa9, 0x8d, 0xa9, 0x82, 0xa9, 0x83, 0xaa, 0x68, 0xa9, 0x81,
+            ],
             Permissions::RX,
         )
         .unwrap();
@@ -435,4 +479,111 @@ fn changing_the_default_button_erases_the_previous_outline_without_erasing_the_b
     assert_eq!(native_default(&mut a, w, 0), 0);
     assert_eq!(screen(&a), baseline);
     invoke(&mut a, 5, &[w]);
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn draw_dialog_uses_live_text_parameters_icons_pictures_and_both_cpu_void_routes() {
+    let mut a = setup(0x88);
+    let w = invoke(&mut a, 2, &[129, 0, u32::MAX]);
+    a.runtime
+        .memory
+        .write(GuestPtr(0x51000000), b"\x01A")
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(0x51000008), b"\x01B")
+        .unwrap();
+    invoke(&mut a, 11, &[0x51000000, 0x51000008, 0, 0]);
+    let (_, h, _) = item(&mut a, w, 2, false);
+    let before = handle_data(&a, h, 17);
+    let slot = a.runtime.process.ports.unwrap().current_slot;
+    let previous = a.runtime.memory.u32(slot).unwrap();
+    let port = a.runtime.memory.read(GuestPtr(w), 108).unwrap().to_vec();
+    let baseline = screen(&a);
+    a.runtime.process.mem_error = -51;
+    a.runtime.process.res_error = -52;
+    assert_eq!(invoke(&mut a, 10, &[w]), w);
+    let drawn = screen(&a);
+    assert_ne!(drawn, baseline);
+    let rgba = a.runtime.graphics.as_ref().unwrap().read_rgba().unwrap();
+    for (i, pixel) in rgba.chunks_exact(4).enumerate() {
+        let x = i % 512;
+        let y = i / 512;
+        let black = drawn[y * 64 + x / 8] & (0x80 >> (x % 8)) != 0;
+        assert_eq!(
+            pixel,
+            if black { &[0, 0, 0, 255] } else { &[255; 4] },
+            "GPU pixel {x},{y}"
+        );
+    }
+    assert!(at(&a, w, 12, 47));
+    assert!(!at(&a, w, 22, 47));
+    assert!(at(&a, w, 22, 57));
+    assert!(at(&a, w, 40, 50));
+    assert!(!at(&a, w, 41, 50));
+    assert!((5..40).any(|y| (5..125).any(|x| at(&a, w, x, y))));
+    assert_eq!(a.runtime.memory.u32(slot).unwrap(), previous);
+    assert_eq!(a.runtime.memory.read(GuestPtr(w), 108).unwrap(), port);
+    assert_eq!(
+        (a.runtime.process.mem_error, a.runtime.process.res_error),
+        (-51, -52)
+    );
+    assert_eq!(handle_data(&a, h, 17), before);
+    invoke(&mut a, 9, &[w]);
+    invoke(&mut a, 8, &[w]);
+    // Window visibility resizes update regions; measure only DrawDialog's lifetime.
+    let free = a.runtime.process.free_memory();
+    m68(&mut a, 10, &w.to_be_bytes(), 4, false);
+    assert_eq!(screen(&a), drawn);
+    assert_eq!(a.runtime.process.free_memory(), free);
+    invoke(&mut a, 9, &[w]);
+    let hidden = screen(&a);
+    let gpu = a.runtime.graphics.take();
+    invoke(&mut a, 10, &[w]);
+    assert_eq!(screen(&a), hidden);
+    a.runtime.graphics = gpu;
+    invoke(&mut a, 8, &[w]);
+    // An invalid visible picture must fail before the earlier text item is painted.
+    let picture = a
+        .runtime
+        .process
+        .get_resource(&mut a.runtime.memory, *b"PICT", 500)
+        .unwrap();
+    let ptr = a.runtime.memory.u32(GuestPtr(picture)).unwrap();
+    a.runtime.memory.write(GuestPtr(ptr + 12), &[0xee]).unwrap();
+    let blank = screen(&a);
+    let free = a.runtime.process.free_memory();
+    let tv = a
+        .runtime
+        .memory
+        .u32(GuestPtr(a.info.toc_or_a5 + 8 + 10 * 4))
+        .unwrap();
+    let pc = a.runtime.memory.u32(GuestPtr(tv)).unwrap();
+    a.runtime.cpu = Cpu::new(Architecture::PowerPc, pc, STACK_BASE + 0x8000);
+    if let Cpu::PowerPc(c) = &mut a.runtime.cpu {
+        c.gpr[3] = w;
+    }
+    assert!(a
+        .runtime
+        .advance(1)
+        .unwrap_err()
+        .to_string()
+        .contains("PICT"));
+    assert_eq!(screen(&a), blank);
+    assert_eq!(a.runtime.process.free_memory(), free);
+    assert_eq!(a.runtime.memory.u32(slot).unwrap(), previous);
+    // Runtime faults are terminal. Verify manager restoration and ownership through
+    // the shared service directly rather than attempting to resume a stopped CPU.
+    let mut dialogs = std::mem::take(&mut a.runtime.process.dialogs);
+    dialogs
+        .dispose(
+            &mut a.runtime.memory,
+            &mut a.runtime.process,
+            a.runtime.graphics.as_ref().unwrap(),
+            w,
+            false,
+        )
+        .unwrap();
+    a.runtime.process.dialogs = dialogs;
 }

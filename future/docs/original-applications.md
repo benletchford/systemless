@@ -1666,3 +1666,16 @@ dialog 3000. /tmp/systemless-ev-default-next.txt. Shared default-button selectio
 and outline drawing are tested separately through both CPUs, including GPU
 readback, hidden/show and outline replacement. Full item drawing, modal events,
 title/menu and gameplay remain unverified. Marathon's requirements are unchanged.
+
+
+### Dialog contents refresh
+
+EV 1.0.5 68K passes DrawDialog ($A981), retrieves its button/static-text items and
+uses native QuickDraw to frame the button. It next requests SetDialogItemText
+($A98F), PC $00025816. The guest string reports an error opening the Monitor Tool;
+this dialog is an error path, not title/menu/gameplay. The cause is not yet
+verified. /tmp/systemless-ev-draw-dialog-next.txt. The shared rendering extension
+is separately tested with public text/parameter, ICON and scaled PICT fixtures
+through both actual CPUs and full GPU/bitmap comparison. Next replace/redraw item
+text and investigate the Monitor Tool failure without fabricating capability or
+operation success. Marathon's requirements remain unchanged.

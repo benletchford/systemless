@@ -716,6 +716,7 @@ impl Runtime {
                             let value = if matches!(
                                 op,
                                 crate::dialogs::Op::Resource { .. }
+                                    | crate::dialogs::Op::Draw(_)
                                     | crate::dialogs::Op::DefaultItem { .. }
                                     | crate::dialogs::Op::Item { .. }
                                     | crate::dialogs::Op::Dispose { .. }
@@ -723,6 +724,7 @@ impl Runtime {
                                 if !matches!(
                                     op,
                                     crate::dialogs::Op::Item { .. }
+                                        | crate::dialogs::Op::Draw(_)
                                         | crate::dialogs::Op::DefaultItem { .. }
                                 ) && self.graphics.is_none()
                                 {
@@ -732,6 +734,14 @@ impl Runtime {
                                 }
                                 let mut manager = std::mem::take(&mut self.process.dialogs);
                                 let result = match op {
+                                    crate::dialogs::Op::Draw(dialog) => manager
+                                        .draw(
+                                            &mut self.memory,
+                                            &mut self.process,
+                                            self.graphics.as_ref(),
+                                            dialog,
+                                        )
+                                        .map(|_| 0),
                                     crate::dialogs::Op::DefaultItem { dialog, number } => manager
                                         .default_item(
                                             &mut self.memory,
