@@ -94,9 +94,6 @@ impl Manager {
                     .ports
                     .ok_or_else(|| bad("OpenPoly requires InitGraf"))?;
                 let port = ports.current(memory)?;
-                if memory.u16(GuestPtr(port.0 + 6))? & 0xc000 != 0 {
-                    return Err(bad("color polygon ports are unsupported"));
-                }
                 for at in [92, 96, 100, 104] {
                     if memory.u32(GuestPtr(port.0 + at))? != 0 {
                         return Err(bad(

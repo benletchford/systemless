@@ -1926,11 +1926,18 @@ Reset/close require the owned handle identities to remain attached, while a
 custom pmTable remains caller-owned. Nil/short/read-only native output storage
 is rejected before popping the caller frame.
 
-This stage does not implement NewCWindow or CGrafPort rendering. Legacy paths
-that would write inline bitmap/pattern fields into a color record now reject
-the operation first; TextEdit rejects color-port redraw before temporary port
-mutation. Common selection/clip/pen-visibility fields retain their existing
-shared layout. No Color QuickDraw capability is newly advertised. The next
-integration needs shared port bitmap/pattern accessors and color rendering,
-then the existing Window Manager can use the color-port owner for creation,
-rollback, updates, painting and disposal without a second window manager.
+Color-port drawing now resolves the live portPixMap and old-style background,
+pen and fill PixPat handles through a shared checked layout module. Geometry,
+text, TextEdit and control painting use the common fields and restore attached
+pen pattern bytes separately from the port record. SetOrigin/MovePortTo update
+PixMap bounds without overwriting grafVars/chExtra. Coordinate conversion uses
+those same bounds. PenNormal and PenPat preserve attached handle identities.
+Black/white ForeColor/BackColor update requested RGB and pixel index fields.
+CopyBits/CopyMask accept one-bit PixMap destinations with the canonical palette.
+
+This is bounded one-bit drawing. The destination must be depth one with white
+index zero and black index one; other depths/palettes and expanded/color PixPat
+caches fail explicitly. NewCWindow, display modes and full Color QuickDraw
+remain unfinished. No new Color QuickDraw capability is advertised. The existing
+Window Manager still needs color-port ownership, rollback, updates, painting and
+disposal integration.

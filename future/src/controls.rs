@@ -219,6 +219,13 @@ impl Controls {
         }
         let old = memory.u32(ports.current_slot)?;
         let saved = memory.read(GuestPtr(owner), 108)?.to_vec();
+        let saved_pattern =
+            crate::port_layout::pattern(memory, GuestPtr(owner), crate::port_layout::Pattern::Pen)?;
+        let saved_background = crate::port_layout::pattern(
+            memory,
+            GuestPtr(owner),
+            crate::port_layout::Pattern::Background,
+        )?;
         let clip = memory.u32(GuestPtr(owner + 28))?;
         let old_clip = crate::regions::read(memory, process, clip)?;
         let mut clipped = crate::region_geometry::decode(&old_clip)?;
@@ -256,12 +263,13 @@ impl Controls {
             }
             memory.write(GuestPtr(owner + 52), &[0, 1, 0, 1])?;
             memory.write(GuestPtr(owner + 56), &8u16.to_be_bytes())?;
-            let background: [u8; 8] = if erase {
-                saved[32..40].try_into().unwrap()
-            } else {
-                [0; 8]
-            };
-            memory.write(GuestPtr(owner + 58), &background)?;
+            let background: [u8; 8] = if erase { saved_background } else { [0; 8] };
+            crate::port_layout::write_pattern(
+                memory,
+                GuestPtr(owner),
+                crate::port_layout::Pattern::Pen,
+                &background,
+            )?;
             ports.paint_coverage(gpu, memory, r, None)?;
             if erase {
                 return Ok(());
@@ -273,7 +281,12 @@ impl Controls {
             } else {
                 [255; 8]
             };
-            memory.write(GuestPtr(owner + 58), &pattern)?;
+            crate::port_layout::write_pattern(
+                memory,
+                GuestPtr(owner),
+                crate::port_layout::Pattern::Pen,
+                &pattern,
+            )?;
             let (indicator, label_left) = if kind == 0 {
                 (r, r.left + 4)
             } else {
@@ -342,7 +355,12 @@ impl Controls {
             }
             if pressed && kind != 0 {
                 memory.write(GuestPtr(owner + 56), &10u16.to_be_bytes())?;
-                memory.write(GuestPtr(owner + 58), &[255; 8])?;
+                crate::port_layout::write_pattern(
+                    memory,
+                    GuestPtr(owner),
+                    crate::port_layout::Pattern::Pen,
+                    &[255; 8],
+                )?;
                 if kind == 2 {
                     let size = (indicator.right - indicator.left) as i16;
                     ports.round_rect(gpu, memory, indicator, size, size, false)?;
@@ -379,8 +397,10 @@ impl Controls {
             }
             if inactive {
                 memory.write(GuestPtr(owner + 56), &11u16.to_be_bytes())?;
-                memory.write(
-                    GuestPtr(owner + 58),
+                crate::port_layout::write_pattern(
+                    memory,
+                    GuestPtr(owner),
+                    crate::port_layout::Pattern::Pen,
                     &[0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55],
                 )?;
                 let label_rect = Rect::new(label_left, r.top + 2, r.right - 4, r.bottom - 2);
@@ -394,6 +414,12 @@ impl Controls {
         }
         memory.write(GuestPtr(memory.u32(GuestPtr(clip))?), &old_clip)?;
         memory.write(GuestPtr(owner), &saved)?;
+        crate::port_layout::write_pattern(
+            memory,
+            GuestPtr(owner),
+            crate::port_layout::Pattern::Pen,
+            &saved_pattern,
+        )?;
         memory.write(ports.current_slot, &old.to_be_bytes())?;
         result
     }

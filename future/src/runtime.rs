@@ -982,11 +982,15 @@ impl Runtime {
                                     ports.clip_rect(&mut self.memory, r)?;
                                 }
                                 PortOp::PenPat => {
-                                    ports.require_basic(&self.memory)?;
                                     let pattern: [u8; 8] =
                                         self.memory.read(pointer, 8)?.try_into().unwrap();
                                     let p = ports.current(&self.memory)?;
-                                    self.memory.write(GuestPtr(p.0 + 58), &pattern)?;
+                                    crate::port_layout::write_pattern(
+                                        &mut self.memory,
+                                        p,
+                                        crate::port_layout::Pattern::Pen,
+                                        &pattern,
+                                    )?;
                                 }
                                 PortOp::PaintRect => {
                                     let r = read_rect(&self.memory, pointer)?;

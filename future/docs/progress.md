@@ -4122,3 +4122,32 @@ checks pass. Logs: /tmp/systemless-color-ports-acceptance-final.txt,
 /tmp/systemless-color-ports-mpw-final.txt. EV still requires NewCWindow; Marathon
 still requires sound-version support. Super Mines retains its save/open result
 and byte-identical final board. The complete rebuild remains active.
+
+
+## Color-port layout and one-bit drawing
+
+Shared checked accessors distinguish GrafPort inline bitmap/patterns from
+CGrafPort PixMap/PixPat handles. Pen, geometry and rectangle/polygon drawing,
+coordinate conversion, text, TextEdit and control painting use the appropriate
+storage. Temporary text/control patterns are restored in their attached records.
+Black/white ForeColor/BackColor update RGB and indices. CopyBits/CopyMask can
+target canonical one-bit PixMaps; other destination depths/palettes and expanded
+color patterns remain explicit errors.
+
+The GPU regression creates ports and invokes PaintRect through each actual CPU
+adapter, then verifies exact pixels, attached background/pen/fill storage, PenNormal, white foreground, GPU
+readback, SetOrigin preservation and unsupported-depth failure atomicity.
+NewCWindow remains EV's blocker; Marathon sound/Mixed Mode work is outstanding.
+Neither original has verified gameplay. The full rebuild goal remains active.
+
+Final validation covers 398 unique tests with no skips: the complete acceptance
+run passed 397 and exposed one incomplete-color-port setter rejection failure.
+The setter now validates its canonical one-bit bitmap before any color writes;
+all 19 affected ports/color-port/text tests pass after that correction. The
+initial malformed-marker regression was also corrected and the complete rerun
+passes GetMouse. Logs: /tmp/systemless-layout-acceptance-final.txt and
+/tmp/systemless-layout-final-rechecks.txt. The strengthened color-port fixture
+invokes PaintRect through both actual CPUs and checks text selection/drawing,
+tagged PixMap copying and pattern restoration. Strict lint and changed-source
+format checks are recorded separately. NewCWindow and original-game sound
+remain unfinished; no gameplay or full rebuild completion is claimed.

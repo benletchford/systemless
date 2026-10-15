@@ -205,9 +205,12 @@ impl Manager {
                 let port = ports.current(memory)?;
                 let attrs = memory.read(GuestPtr(port.0 + 68), 8)?.to_vec();
                 let color = memory.u32(GuestPtr(port.0 + 80))?;
+                let is_color = crate::port_layout::color(memory, port)?;
                 let component = match color {
                     33 => 0u16,
                     30 => u16::MAX,
+                    1 if is_color => 0u16,
+                    0 if is_color => u16::MAX,
                     _ => return Err(bad("TextEdit style color is unsupported")),
                 };
                 let metrics = crate::text::metrics(memory, process, ports)?;
@@ -717,9 +720,10 @@ impl Manager {
         let styled = owned.len() == 7;
         let port = GuestPtr(u32::from_be_bytes(record[82..86].try_into().unwrap()));
         let saved = memory.read(port, 108)?.to_vec();
-        if u16::from_be_bytes(saved[6..8].try_into().unwrap()) & 0xc000 != 0 {
-            return Err(bad("TextEdit rendering in color ports is not implemented"));
-        }
+        let saved_pattern =
+            crate::port_layout::pattern(memory, port, crate::port_layout::Pattern::Pen)?;
+        let background =
+            crate::port_layout::pattern(memory, port, crate::port_layout::Pattern::Background)?;
         memory.validate_write(port, 108)?;
         let ports = process
             .ports
@@ -950,7 +954,12 @@ impl Manager {
             memory.write(GuestPtr(port.0 + 28), &temporary.to_be_bytes())?;
             if erase {
                 memory.write(GuestPtr(port.0 + 56), &8u16.to_be_bytes())?;
-                memory.write(GuestPtr(port.0 + 58), &saved[32..40])?;
+                crate::port_layout::write_pattern(
+                    memory,
+                    port,
+                    crate::port_layout::Pattern::Pen,
+                    &background,
+                )?;
                 ports.paint_rect(gpu, memory, read_rect(memory, GuestPtr(data.0 + 8))?)?;
             }
             memory.write(GuestPtr(port.0 + 68), &font.to_be_bytes())?;
@@ -964,7 +973,12 @@ impl Manager {
             }
             if !overlays.is_empty() {
                 memory.write(GuestPtr(port.0 + 56), &10u16.to_be_bytes())?;
-                memory.write(GuestPtr(port.0 + 58), &[255; 8])?;
+                crate::port_layout::write_pattern(
+                    memory,
+                    port,
+                    crate::port_layout::Pattern::Pen,
+                    &[255; 8],
+                )?;
                 memory.write(GuestPtr(port.0 + 80), &33u32.to_be_bytes())?;
                 memory.write(GuestPtr(port.0 + 84), &30u32.to_be_bytes())?;
                 for rect in overlays {
@@ -974,6 +988,12 @@ impl Manager {
             Ok(())
         })();
         memory.write(port, &saved)?;
+        crate::port_layout::write_pattern(
+            memory,
+            port,
+            crate::port_layout::Pattern::Pen,
+            &saved_pattern,
+        )?;
         memory.write(ports.current_slot, &old.to_be_bytes())?;
         process.dispose_handle(memory, temporary)?;
         result

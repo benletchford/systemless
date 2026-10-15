@@ -42,7 +42,7 @@ fn text_fields_preserve_guest_padding_and_reject_invalid_ports_atomically() {
     assert!(text::set(&mut m, ports, Field::Font, 0).is_err());
     assert_eq!(m.u16(GuestPtr(0x1100 + 68)).unwrap(), 0xff85);
     m.write(GuestPtr(0x1100 + 92), &0u32.to_be_bytes()).unwrap();
-    m.write(GuestPtr(0x1100 + 6), &0xc000u16.to_be_bytes())
+    m.write(GuestPtr(0x1100 + 6), &0x8000u16.to_be_bytes())
         .unwrap();
     assert!(text::set(&mut m, ports, Field::Size, 12).is_err());
     assert_eq!(m.u16(GuestPtr(0x1100 + 74)).unwrap(), 18);

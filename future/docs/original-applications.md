@@ -1420,3 +1420,20 @@ not be treated as part of the visible value. Evidence:
 bytes on a 68K service fault, without changing guest state. The next window slice
 must support this standard hidden dialog and use color-port bitmap/pattern
 accessors rather than interpreting CGrafPort offsets 8/32 as inline bitmap data.
+
+
+### Color-port rendering prerequisite
+
+The rebuild draws through actual CGrafPort PixMap and old-style PixPat records
+on its existing one-bit display. Both CPU-created ports pass exact GPU pixel and
+handle-preservation checks. Text and control paths use the same checked layout.
+This removes the inline-layout hazard before NewCWindow integration; it does not
+yet advance EV past that trap or Marathon past sound startup.
+
+The original binaries were refreshed after the drawing changes. EV still faults
+at service 43589 ($AA45), and Marathon with its companion volume at 43008
+($A800). Evidence: /tmp/systemless-ev-layout-next.txt and
+/tmp/systemless-marathon-layout-next.txt. Super Mines Save/Open reopened its
+1,972-byte game, returned to Waiting{ticks:10} at $0100C798, and produced a final
+PPM byte-identical to the preceding inspected color-port milestone. Evidence:
+/tmp/systemless-mines-layout-reload.txt and associated after.ppm.

@@ -19,6 +19,7 @@ fn app() -> LoadedApplication {
             b"CloseCPort",
             b"GetGDevice",
             b"OpenPort",
+            b"PaintRect",
         ],
         64,
     );
@@ -31,7 +32,7 @@ fn app() -> LoadedApplication {
         .memory
         .map(
             GuestPtr(0x51000000),
-            vec![0xaa, 0, 0xaa, 1, 0xaa, 2],
+            vec![0xaa, 0, 0xaa, 1, 0xaa, 2, 0xa8, 0xa2],
             Permissions::RX,
         )
         .unwrap();
@@ -236,7 +237,7 @@ fn real_cpus_share_color_port_graph_reset_without_allocation_and_preserve_borrow
     );
 }
 #[test]
-fn basic_init_is_inert_and_unsupported_pattern_mutations_do_not_corrupt_color_handles() {
+fn basic_init_is_inert_and_pen_normal_preserves_color_handles() {
     let mut a = app();
     ppc(&mut a, 5, PORT);
     let before = a.runtime.memory.read(GuestPtr(PORT), 108).unwrap().to_vec();
@@ -262,7 +263,7 @@ fn basic_init_is_inert_and_unsupported_pattern_mutations_do_not_corrupt_color_ha
         .unwrap()
         .to_vec();
     let ports = a.runtime.process.ports.unwrap();
-    assert!(ports.pen_normal(&mut a.runtime.memory).is_err());
+    ports.pen_normal(&mut a.runtime.memory).unwrap();
     assert!(ports
         .set_bits(&mut a.runtime.memory, GuestPtr(PORT + 2))
         .is_err());
@@ -354,4 +355,195 @@ fn partial_oom_rolls_back_without_publishing_and_bad_frames_preserve_stack_and_g
         assert_eq!(c.dar[15], stack);
     }
     assert_eq!(a.runtime.memory.read(GuestPtr(0), 108).unwrap(), low_memory);
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn color_port_drawing_uses_pixmap_and_attached_patterns_without_corrupting_graph() {
+    use systemless_future::{
+        graphics::{Graphics, Rect},
+        quickdraw::{RectangleOp, SCREEN},
+    };
+    for use_native in [false, true] {
+        let mut a = app();
+        if use_native {
+            native(&mut a, 0, PORT);
+        } else {
+            ppc(&mut a, 1, PORT);
+        }
+        let ports = a.runtime.process.ports.unwrap();
+        let graph = handles(&a, PORT);
+        let map = a.runtime.memory.u32(GuestPtr(graph[0])).unwrap();
+        let pattern = a.runtime.memory.u32(GuestPtr(graph[3])).unwrap();
+        let pen = a.runtime.memory.u32(GuestPtr(graph[4])).unwrap();
+        let fill = a.runtime.memory.u32(GuestPtr(graph[5])).unwrap();
+        let vars = a
+            .runtime
+            .memory
+            .read(GuestPtr(PORT + 8), 8)
+            .unwrap()
+            .to_vec();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let mut gpu = pollster::block_on(Graphics::new(&instance, None, 512, 342, SCREEN)).unwrap();
+        gpu.palette[0] = [255; 4];
+        gpu.palette[1] = [0, 0, 0, 255];
+        a.runtime
+            .memory
+            .write(GuestPtr(0x300), &[0, 0, 0, 0, 0, 1, 0, 8])
+            .unwrap();
+        a.runtime.graphics = Some(gpu);
+        if use_native {
+            native(&mut a, 3, 0x300);
+        } else {
+            ppc(&mut a, 6, 0x300);
+        }
+        let gpu = a.runtime.graphics.take().unwrap();
+        assert_eq!(a.runtime.memory.read(SCREEN, 2).unwrap(), [255, 0]);
+        // Erase uses the attached background pattern, not the handle's bytes.
+        a.runtime
+            .memory
+            .write(GuestPtr(pattern + 20), &[0xaa; 8])
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(0x300), &[0, 0, 0, 0, 0, 1, 0, 8])
+            .unwrap();
+        ports
+            .draw_rectangle(
+                &mut a.runtime.memory,
+                &gpu,
+                GuestPtr(0x300),
+                RectangleOp::Erase,
+            )
+            .unwrap();
+        assert_eq!(a.runtime.memory.read(SCREEN, 2).unwrap(), [0xaa, 0]);
+        a.runtime
+            .memory
+            .write(GuestPtr(pen + 20), &[0x55; 8])
+            .unwrap();
+        ports
+            .paint_rect(&gpu, &mut a.runtime.memory, Rect::new(8, 0, 16, 1))
+            .unwrap();
+        assert_eq!(a.runtime.memory.read(SCREEN, 2).unwrap(), [0xaa, 0x55]);
+        a.runtime
+            .memory
+            .write(GuestPtr(0x300), &[0, 0, 0, 16, 0, 1, 0, 24])
+            .unwrap();
+        ports
+            .draw_rectangle(
+                &mut a.runtime.memory,
+                &gpu,
+                GuestPtr(0x300),
+                RectangleOp::Fill(GuestPtr(pen + 20)),
+            )
+            .unwrap();
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(fill + 20), 8).unwrap(),
+            [0x55; 8]
+        );
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(pen + 20), 8).unwrap(),
+            [0x55; 8]
+        );
+        ports.pen_normal(&mut a.runtime.memory).unwrap();
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(pen + 20), 8).unwrap(),
+            [255; 8]
+        );
+        ports.set_color(&mut a.runtime.memory, false, 30).unwrap();
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(PORT + 36), 6).unwrap(),
+            [255; 6]
+        );
+        assert_eq!(a.runtime.memory.u32(GuestPtr(PORT + 80)).unwrap(), 0);
+        ports
+            .paint_rect(&gpu, &mut a.runtime.memory, Rect::new(0, 0, 8, 1))
+            .unwrap();
+        assert_eq!(a.runtime.memory.read(SCREEN, 3).unwrap(), [0, 0x55, 0x55]);
+        let pixels = gpu.read_rgba().unwrap();
+        assert_eq!(&pixels[..4], &[255; 4]);
+        assert_eq!(&pixels[9 * 4..10 * 4], &[0, 0, 0, 255]);
+        ports.set_color(&mut a.runtime.memory, false, 33).unwrap();
+        // Snapshot overlap through a tagged destination PixMap, not a BitMap.
+        a.runtime
+            .memory
+            .write(GuestPtr(0x300), &[0, 0, 0, 16, 0, 1, 0, 24])
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(0x310), &[0, 0, 0, 24, 0, 1, 0, 32])
+            .unwrap();
+        ports
+            .copy_bits(
+                &mut a.runtime.memory,
+                &gpu,
+                systemless_future::quickdraw::CopyBits {
+                    source: GuestPtr(map),
+                    destination: GuestPtr(map),
+                    source_rect: GuestPtr(0x300),
+                    destination_rect: GuestPtr(0x310),
+                    mode: 0,
+                    mask: GuestPtr(0),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            a.runtime.memory.read(SCREEN, 4).unwrap(),
+            [0, 0x55, 0x55, 0x55]
+        );
+        ports.set_color(&mut a.runtime.memory, false, 33).unwrap();
+        systemless_future::font::initialize(&mut a.runtime.memory, &mut a.runtime.process).unwrap();
+        systemless_future::text::set(
+            &mut a.runtime.memory,
+            ports,
+            systemless_future::text::Field::Size,
+            12,
+        )
+        .unwrap();
+        systemless_future::text::move_to(&mut a.runtime.memory, ports, 0, 24).unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(pen + 20), &[0x69; 8])
+            .unwrap();
+        systemless_future::text::draw(
+            &mut a.runtime.memory,
+            &mut a.runtime.process,
+            ports,
+            &gpu,
+            systemless_future::text::Input::Character(b'A'),
+        )
+        .unwrap();
+        assert!(a
+            .runtime
+            .memory
+            .read(GuestPtr(SCREEN.0 + 64 * 8), 64 * 20)
+            .unwrap()
+            .iter()
+            .any(|byte| *byte != 0));
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(pen + 20), 8).unwrap(),
+            [0x69; 8]
+        );
+        assert!(a.runtime.memory.u16(GuestPtr(PORT + 50)).unwrap() > 0);
+        ports
+            .set_origin(&mut a.runtime.memory, &mut a.runtime.process, 4, 6)
+            .unwrap();
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(map + 6), 4).unwrap(),
+            [0, 6, 0, 4]
+        );
+        assert_eq!(a.runtime.memory.read(GuestPtr(PORT + 8), 8).unwrap(), vars);
+        assert_eq!(handles(&a, PORT), graph);
+        // Unsupported color destinations fail before touching pixels or handles.
+        let before = a.runtime.memory.read(SCREEN, 64).unwrap().to_vec();
+        a.runtime
+            .memory
+            .write(GuestPtr(map + 32), &8u16.to_be_bytes())
+            .unwrap();
+        assert!(ports
+            .paint_rect(&gpu, &mut a.runtime.memory, Rect::new(4, 6, 12, 7))
+            .is_err());
+        assert_eq!(a.runtime.memory.read(SCREEN, 64).unwrap(), before);
+        assert_eq!(handles(&a, PORT), graph);
+    }
 }

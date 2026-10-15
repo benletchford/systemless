@@ -14,11 +14,7 @@ pub enum Field {
 }
 pub fn set(memory: &mut Memory, ports: Ports, field: Field, value: u16) -> Result<()> {
     let port = ports.current(memory)?;
-    if memory.u16(GuestPtr(port.0 + 6))? & 0xc000 != 0 {
-        return Err(Error::Graphics(
-            "text selection in color ports is unsupported".into(),
-        ));
-    }
+    crate::port_layout::color(memory, port)?;
     if memory.u32(GuestPtr(port.0 + 92))? != 0 {
         return Err(Error::Graphics(
             "text selection during picture recording is unsupported".into(),
@@ -42,11 +38,6 @@ fn font_data(
     process: &mut crate::process::Process,
     port: GuestPtr,
 ) -> Result<Vec<u8>> {
-    if memory.u16(GuestPtr(port.0 + 6))? & 0xc000 != 0 {
-        return Err(Error::Graphics(
-            "font metrics in color ports are unsupported".into(),
-        ));
-    }
     font_bytes(
         memory,
         process,
@@ -183,11 +174,6 @@ pub fn width(
 }
 pub fn move_to(memory: &mut Memory, ports: Ports, h: i16, v: i16) -> Result<()> {
     let port = ports.current(memory)?;
-    if memory.u16(GuestPtr(port.0 + 6))? & 0xc000 != 0 {
-        return Err(Error::Graphics(
-            "MoveTo in color ports is unsupported".into(),
-        ));
-    }
     for offset in [92, 96, 100] {
         if memory.u32(GuestPtr(port.0 + offset))? != 0 {
             return Err(Error::Graphics(
@@ -227,13 +213,10 @@ pub(crate) fn draw_strike(
         return Ok(());
     }
     let port = ports.current(memory)?;
-    if memory.u16(GuestPtr(port.0 + 6))? & 0xc000 != 0 {
-        return Err(Error::Graphics(
-            "text drawing in color ports is unsupported".into(),
-        ));
-    }
     memory.validate_write(port, 108)?;
     let saved = memory.read(port, 108)?.to_vec();
+    let saved_pattern =
+        crate::port_layout::pattern(memory, port, crate::port_layout::Pattern::Pen)?;
     if [92usize, 96, 100, 104]
         .iter()
         .any(|offset| saved[*offset..*offset + 4] != [0; 4])
@@ -262,13 +245,24 @@ pub(crate) fn draw_strike(
                 if coverage.is_empty() {
                     continue;
                 }
-                memory.write(GuestPtr(port.0 + 58), &[pattern; 8])?;
+                crate::port_layout::write_pattern(
+                    memory,
+                    port,
+                    crate::port_layout::Pattern::Pen,
+                    &[pattern; 8],
+                )?;
                 ports.paint_coverage(gpu, memory, bounds, Some(&coverage))?;
             }
         }
         Ok(())
     })();
     memory.write(port, &saved)?;
+    crate::port_layout::write_pattern(
+        memory,
+        port,
+        crate::port_layout::Pattern::Pen,
+        &saved_pattern,
+    )?;
     result?;
     memory.write(GuestPtr(port.0 + 50), &h.to_be_bytes())
 }

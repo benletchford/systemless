@@ -3,6 +3,7 @@ use crate::{
     bitmap::Bitmap,
     graphics::{Draw, Graphics, Rect, Transfer},
     memory::{GuestPtr, Memory},
+    port_layout::{self, Pattern as PortPattern},
     process::Process,
     Error, Result,
 };
@@ -125,9 +126,6 @@ impl Ports {
         let result = (|| {
             let port = self.current(memory)?;
             let bytes = memory.read(port, PORT_SIZE)?;
-            if u16::from_be_bytes(bytes[6..8].try_into().unwrap()) & 0xc000 != 0 {
-                return Err(Error::Graphics("color GrafPorts are unsupported".into()));
-            }
             let word = |at| i16::from_be_bytes(bytes[at..at + 2].try_into().unwrap());
             let dh = i32::from(h.wrapping_sub(word(18)));
             let dv = i32::from(v.wrapping_sub(word(16)));
@@ -138,7 +136,9 @@ impl Ports {
                     "SetOrigin cannot alias visible and clip regions".into(),
                 ));
             }
-            let mut fields = bytes[8..24].to_vec();
+            let bounds = port_layout::bounds_pointer(memory, port)?;
+            let mut fields = memory.read(bounds, 8)?.to_vec();
+            fields.extend_from_slice(&bytes[16..24]);
             for at in (0..16).step_by(2) {
                 let delta = if (at / 2) % 2 == 0 { dv } else { dh };
                 let value = i16::try_from(
@@ -161,20 +161,21 @@ impl Ports {
                     "SetOrigin region overlaps its port record".into(),
                 ));
             }
-            memory.validate_write(offset(port, 8)?, 16)?;
+            memory.validate_write(bounds, 8)?;
+            memory.validate_write(offset(port, 16)?, 8)?;
             memory.validate_write(data, region.len())?;
             memory.write(data, &region)?;
-            memory.write(offset(port, 8)?, &fields)
+            memory.write(bounds, &fields[..8])?;
+            memory.write(offset(port, 16)?, &fields[8..])
         })();
         process.mem_error = old_error;
         result
     }
     pub fn move_port_to(&self, memory: &mut Memory, left: i16, top: i16) -> Result<()> {
         let port = self.current(memory)?;
-        if memory.u16(offset(port, 6)?)? & 0xc000 != 0 {
-            return Err(Error::Graphics("color GrafPorts are unsupported".into()));
-        }
-        let bytes = memory.read(offset(port, 8)?, 16)?;
+        let target = port_layout::bounds_pointer(memory, port)?;
+        let mut bytes = memory.read(target, 8)?.to_vec();
+        bytes.extend_from_slice(memory.read(offset(port, 16)?, 8)?);
         let word = |i| i16::from_be_bytes(bytes[i..i + 2].try_into().unwrap());
         let new_top = word(8).wrapping_sub(top);
         let new_left = word(10).wrapping_sub(left);
@@ -184,7 +185,7 @@ impl Ports {
         for (i, v) in [new_top, new_left, bottom, right].into_iter().enumerate() {
             bounds[i * 2..i * 2 + 2].copy_from_slice(&v.to_be_bytes());
         }
-        memory.write(offset(port, 8)?, &bounds)
+        memory.write(target, &bounds)
     }
     pub fn port_size(&self, memory: &mut Memory, width: i16, height: i16) -> Result<()> {
         let port = self.current(memory)?;
@@ -198,13 +199,22 @@ impl Ports {
     }
     pub fn set_color(&self, memory: &mut Memory, background: bool, color: u32) -> Result<()> {
         let port = self.current(memory)?;
-        if memory.u16(offset(port, 6)?)? & 0xc000 != 0 {
-            return Err(Error::Graphics("color GrafPorts are unsupported".into()));
+        let field = offset(port, if background { 84 } else { 80 })?;
+        if port_layout::color(memory, port)? {
+            port_layout::bitmap(memory, port)?;
+            let (rgb, index) = match color {
+                33 => ([0u8; 6], 1u32),
+                30 => ([255u8; 6], 0u32),
+                _ => return Err(Error::Graphics("unsupported color constant".into())),
+            };
+            let rgb_field = offset(port, if background { 42 } else { 36 })?;
+            memory.validate_write(field, 4)?;
+            memory.validate_write(rgb_field, 6)?;
+            memory.write(rgb_field, &rgb)?;
+            memory.write(field, &index.to_be_bytes())
+        } else {
+            memory.write(field, &color.to_be_bytes())
         }
-        memory.write(
-            offset(port, if background { 84 } else { 80 })?,
-            &color.to_be_bytes(),
-        )
     }
     pub fn current(&self, memory: &Memory) -> Result<GuestPtr> {
         let port = GuestPtr(memory.u32(self.current_slot)?);
@@ -248,12 +258,10 @@ impl Ports {
         to_global: bool,
     ) -> Result<[u8; 4]> {
         memory.read(port, PORT_SIZE)?;
-        if memory.u16(offset(port, 6)?)? & 0xc000 != 0 {
-            return Err(Error::Graphics(
-                "coordinate conversion for color ports is unsupported".into(),
-            ));
-        }
-        let origin: [u8; 4] = memory.read(offset(port, 8)?, 4)?.try_into().unwrap();
+        let origin: [u8; 4] = memory
+            .read(port_layout::bounds_pointer(memory, port)?, 4)?
+            .try_into()
+            .unwrap();
         for at in [0, 2] {
             let value = i16::from_be_bytes(result[at..at + 2].try_into().unwrap());
             let delta = i16::from_be_bytes(origin[at..at + 2].try_into().unwrap());
@@ -307,7 +315,6 @@ impl Ports {
         verb: crate::polygons::Verb,
     ) -> Result<()> {
         use crate::polygons::Verb;
-        self.require_basic(memory)?;
         let port = self.current(memory)?;
         let bytes = memory.read(port, PORT_SIZE)?.to_vec();
         let word = |at| i16::from_be_bytes(bytes[at..at + 2].try_into().unwrap());
@@ -331,7 +338,7 @@ impl Ports {
         let paint = match verb {
             Verb::Frame | Verb::Paint => None,
             Verb::Erase => Some(PatternPaint {
-                pattern: bytes[32..40].try_into().unwrap(),
+                pattern: port_layout::pattern(memory, port, PortPattern::Background)?,
                 mode: 8,
                 monochrome: false,
             }),
@@ -341,7 +348,10 @@ impl Ports {
                 monochrome: true,
             }),
             Verb::Fill(p) => {
-                memory.validate_write(GuestPtr(port.0 + 40), 8)?;
+                memory.validate_write(
+                    port_layout::pattern_pointer(memory, port, PortPattern::Fill)?,
+                    8,
+                )?;
                 Some(PatternPaint {
                     pattern: memory.read(p, 8)?.try_into().unwrap(),
                     mode: 8,
@@ -363,17 +373,17 @@ impl Ports {
             self.paint_geometry(gpu, memory, r, Coverage::Polygon { vertices, frame }, paint)?;
         }
         if matches!(verb, Verb::Fill(_)) {
-            memory.write(GuestPtr(port.0 + 40), &paint.unwrap().pattern)?;
+            port_layout::write_pattern(memory, port, PortPattern::Fill, &paint.unwrap().pattern)?;
         }
         Ok(())
     }
     pub fn pen_normal(&self, memory: &mut Memory) -> Result<()> {
-        self.require_basic(memory)?;
         let port = self.current(memory)?;
-        memory.write(
-            GuestPtr(port.0 + 52),
-            &[0, 1, 0, 1, 0, 8, 255, 255, 255, 255, 255, 255, 255, 255],
-        )
+        let pattern = port_layout::pattern_pointer(memory, port, PortPattern::Pen)?;
+        memory.validate_write(pattern, 8)?;
+        memory.validate_write(offset(port, 52)?, 6)?;
+        memory.write(pattern, &[255; 8])?;
+        memory.write(offset(port, 52)?, &[0, 1, 0, 1, 0, 8])
     }
     pub fn open(&self, memory: &mut Memory, process: &mut Process, port: GuestPtr) -> Result<()> {
         memory.validate_write(port, PORT_SIZE)?;
@@ -470,7 +480,7 @@ impl Ports {
         }
         let source_data = crate::pixmap::source(memory, request.source)?;
         let source = source_data.bitmap;
-        let destination = Bitmap::read(memory, request.destination)?;
+        let destination = crate::pixmap::destination(memory, request.destination)?;
         let mut source_rect = read_rect(memory, request.source_rect)?;
         let rect = read_rect(memory, request.destination_rect)?;
         if !(0..=7).contains(&request.mode) {
@@ -538,7 +548,7 @@ impl Ports {
     pub fn copy_mask(&self, memory: &mut Memory, gpu: &Graphics, request: CopyMask) -> Result<()> {
         let source = Bitmap::read(memory, request.source)?;
         let mask = Bitmap::read(memory, request.mask)?;
-        let destination = Bitmap::read(memory, request.destination)?;
+        let destination = crate::pixmap::destination(memory, request.destination)?;
         let src = read_rect(memory, request.source_rect)?;
         let mr = read_rect(memory, request.mask_rect)?;
         let rect = read_rect(memory, request.destination_rect)?;
@@ -601,14 +611,16 @@ impl Ports {
                 "bitmap copying recording or custom procedures are unsupported".into(),
             ));
         }
+        let is_color = port_layout::color(memory, port)?;
         let color = |value| match value {
             30 => Ok(0),
             33 => Ok(1),
+            0 | 1 if is_color => Ok(value as u8),
             _ => Err(Error::Graphics("unsupported monochrome port color".into())),
         };
         let foreground = color(word(80))?;
         let background = color(word(84))?;
-        let current = Bitmap::read(memory, offset(port, 2)?)?;
+        let current = port_layout::bitmap(memory, port)?;
         let clips = if current.base == destination.base {
             if current.row_bytes != destination.row_bytes {
                 return Err(Error::Graphics(
@@ -658,9 +670,6 @@ impl Ports {
     ) -> Result<()> {
         let port = self.current(memory)?;
         let bytes = memory.read(port, PORT_SIZE)?;
-        if u16::from_be_bytes(bytes[6..8].try_into().unwrap()) & 0xc000 != 0 {
-            return Err(Error::Graphics("color line ports are unsupported".into()));
-        }
         for i in [92, 96, 100, 104] {
             if u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()) != 0
                 && !(i == 100 && recording)
@@ -716,7 +725,6 @@ impl Ports {
         rectangle: GuestPtr,
         op: RectangleOp,
     ) -> Result<()> {
-        self.require_basic(memory)?;
         let r = read_rect(memory, rectangle)?;
         if op == RectangleOp::Frame {
             return self.round_rect(gpu, memory, r, 0, 0, true);
@@ -725,7 +733,7 @@ impl Ports {
         let (paint, fill) = match op {
             RectangleOp::Erase => (
                 PatternPaint {
-                    pattern: memory.read(offset(port, 32)?, 8)?.try_into().unwrap(),
+                    pattern: port_layout::pattern(memory, port, PortPattern::Background)?,
                     mode: 8,
                     monochrome: false,
                 },
@@ -741,7 +749,10 @@ impl Ports {
             ),
             RectangleOp::Fill(pattern) => {
                 let pattern = memory.read(pattern, 8)?.try_into().unwrap();
-                memory.validate_write(offset(port, 40)?, 8)?;
+                memory.validate_write(
+                    port_layout::pattern_pointer(memory, port, PortPattern::Fill)?,
+                    8,
+                )?;
                 (
                     PatternPaint {
                         pattern,
@@ -755,7 +766,7 @@ impl Ports {
         };
         self.paint_geometry(gpu, memory, r, Coverage::Shape(None), Some(paint))?;
         if fill {
-            memory.write(offset(port, 40)?, &paint.pattern)?;
+            port_layout::write_pattern(memory, port, PortPattern::Fill, &paint.pattern)?;
         }
         Ok(())
     }
@@ -796,7 +807,6 @@ impl Ports {
         force_visibility: bool,
         recording_polygon: bool,
     ) -> Result<(Bitmap, Vec<Rect>)> {
-        self.require_basic(memory)?;
         let p = self.current(memory)?;
         let bytes = memory.read(p, PORT_SIZE)?;
         let word = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
@@ -819,7 +829,7 @@ impl Ports {
                 a.bottom.min(b.bottom),
             )
         };
-        let bitmap = Bitmap::read(memory, offset(p, 2)?)?;
+        let bitmap = port_layout::bitmap(memory, p)?;
         let screen = Bitmap::read(memory, self.screen_bitmap)?;
         let visible = if force_visibility || bitmap.base == screen.base {
             region(memory, visible_handle)?
@@ -876,9 +886,11 @@ impl Ports {
         if !(8..=15).contains(&mode) {
             return Err(Error::Graphics("unsupported QuickDraw pen mode".into()));
         }
+        let is_color = port_layout::color(memory, p)?;
         let color = |v| match v {
             33 => Ok(1),
             30 => Ok(0),
+            0 | 1 if is_color => Ok(v as u8),
             _ => Err(Error::Graphics("unsupported monochrome port color".into())),
         };
         let (foreground, background) = if paint.is_some_and(|p| p.monochrome) {
@@ -886,8 +898,10 @@ impl Ports {
         } else {
             (color(word(80))?, color(word(84))?)
         };
-        let mut pattern: [u8; 8] =
-            paint.map_or_else(|| bytes[58..66].try_into().unwrap(), |p| p.pattern);
+        let mut pattern: [u8; 8] = match paint {
+            Some(p) => p.pattern,
+            None => port_layout::pattern(memory, p, PortPattern::Pen)?,
+        };
         if mode & 4 != 0 {
             for row in &mut pattern {
                 *row = !*row;

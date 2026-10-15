@@ -26,7 +26,45 @@ pub(crate) fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
             palette: None,
         });
     }
-    if row & 0x4000 != 0 {
+    let Indexed {
+        bitmap,
+        depth,
+        palette,
+        defined,
+    } = indexed(memory, address)?;
+    let (width, height) = bitmap.extent()?;
+    let count = width * height;
+    let data = memory.read(bitmap.base, bitmap.byte_len()?)?;
+    let mut indices = Vec::with_capacity(count);
+    let depth = usize::from(depth);
+    let mask = ((1u16 << depth) - 1) as u8;
+    for y in 0..height {
+        for x in 0..width {
+            let index = (data[y * bitmap.row_bytes + x * depth / 8]
+                >> (8 - depth - (x * depth % 8)))
+                & mask;
+            if !defined[index as usize] {
+                return Err(bad());
+            }
+            indices.push(index);
+        }
+    }
+    Ok(Source {
+        bitmap,
+        indices,
+        palette: Some(palette),
+    })
+}
+
+struct Indexed {
+    bitmap: Bitmap,
+    depth: u16,
+    palette: Box<[[u16; 3]; 256]>,
+    defined: [bool; 256],
+}
+fn indexed(memory: &Memory, address: GuestPtr) -> Result<Indexed> {
+    let row = memory.u16(GuestPtr(address.0.checked_add(4).ok_or_else(bad)?))?;
+    if row & 0xc000 != 0x8000 {
         return Err(bad());
     }
     let bytes = memory.read(address, 50)?;
@@ -55,7 +93,7 @@ pub(crate) fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
         ),
     };
     let (width, height) = bitmap.extent()?;
-    let count = width
+    let _count = width
         .checked_mul(height)
         .filter(|n| *n <= crate::load::IMAGE_LIMIT)
         .ok_or_else(bad)?;
@@ -63,7 +101,7 @@ pub(crate) fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
     if width * usize::from(depth) > bitmap.row_bytes * 8 || raw_len > crate::load::IMAGE_LIMIT {
         return Err(bad());
     }
-    let data = memory.read(bitmap.base, raw_len)?;
+    memory.read(bitmap.base, raw_len)?;
     let table_handle = long(42);
     if table_handle == 0 {
         return Err(bad());
@@ -93,25 +131,36 @@ pub(crate) fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
             u16::from_be_bytes([colors[at + 2 + i * 2], colors[at + 3 + i * 2]])
         });
     }
-    let mut indices = Vec::with_capacity(count);
-    let depth = usize::from(depth);
-    let mask = ((1u16 << depth) - 1) as u8;
-    for y in 0..height {
-        for x in 0..width {
-            let index = (data[y * bitmap.row_bytes + x * depth / 8]
-                >> (8 - depth - (x * depth % 8)))
-                & mask;
-            if !defined[index as usize] {
-                return Err(bad());
-            }
-            indices.push(index);
-        }
-    }
-    Ok(Source {
+    Ok(Indexed {
         bitmap,
-        indices,
-        palette: Some(palette),
+        depth,
+        palette,
+        defined,
     })
+}
+/// Destination packing remains one-bit; tagged PixMaps must use the actual
+/// white/black device palette rather than silently treating indices as RGB.
+pub(crate) fn destination(memory: &Memory, address: GuestPtr) -> Result<Bitmap> {
+    if memory.u16(GuestPtr(address.0.checked_add(4).ok_or_else(bad)?))? & 0x8000 != 0 {
+        monochrome(memory, address)
+    } else {
+        Bitmap::read(memory, address)
+    }
+}
+pub(crate) fn monochrome(memory: &Memory, address: GuestPtr) -> Result<Bitmap> {
+    let Indexed {
+        bitmap,
+        depth,
+        palette,
+        defined,
+    } = indexed(memory, address)?;
+    if depth != 1 || !defined[0] || !defined[1] || palette[0] != [65535; 3] || palette[1] != [0; 3]
+    {
+        return Err(Error::Graphics(
+            "color destinations currently require a one-bit white/black palette".into(),
+        ));
+    }
+    Ok(bitmap)
 }
 
 #[cfg(test)]
