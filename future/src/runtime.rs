@@ -1284,6 +1284,18 @@ impl Runtime {
                             let v = self.process.get_resource(&mut self.memory, kind, id)?;
                             reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
                         }
+                        Call::SoundChannel(op) => {
+                            let mut sound = std::mem::take(&mut self.process.sound);
+                            let result = sound.call(&mut self.memory, &mut self.process, op);
+                            self.process.sound = sound;
+                            let error = result?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::SoundVolume(level) => {
                             crate::sound::set_volume(&mut self.memory, level)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
@@ -1552,6 +1564,7 @@ impl Runtime {
                         | Call::SetHandleSize { .. }
                         | Call::ResourceInfo(_)
                         | Call::GetResource { .. }
+                        | Call::SoundChannel(_)
                         | Call::SoundVolume(_)
                         | Call::GetSoundVolume(_)
                         | Call::DeviceControl(_)

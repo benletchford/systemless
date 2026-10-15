@@ -79,3 +79,8 @@ SC -sym off persistence.c -o persistence.68k.o
 Link -d -t 'APPL' -c 'FUTR' persistence.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o persistence.68k
 MrC -sym off -opt off persistence.c -o persistence.ppc.o
 PPCLink persistence.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o persistence.ppc
+
+SC -sym off sound_channels.c -o sound_channels.68k.o
+Link -d -t 'APPL' -c 'FUTR' sound_channels.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o sound_channels.68k
+MrC -sym off -opt off sound_channels.c -o sound_channels.ppc.o
+PPCLink sound_channels.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o sound_channels.ppc

@@ -1191,3 +1191,46 @@ fn compiled_open_file_filters_both_cpus_and_reads_selected_file_or_cancels() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn compiled_sound_channels_preserve_caller_storage_and_release_owned_lifetimes_on_both_cpus() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code =
+        std::fs::read(root.join("sound_channels.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("sound_channels.ppc")).unwrap();
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, Some(&code)).unwrap(),
+    ] {
+        assert_eq!(app.runtime.advance(10_000).unwrap(), Stop::Exit(0));
+        assert!(app.runtime.services.calls.iter().any(|c| matches!(
+            c,
+            Call::PostEvent {
+                what: 7,
+                message: 0x50cd
+            }
+        )));
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|c| matches!(c, Call::SoundChannel(systemless_future::sound::Op::New(_))))
+                .count(),
+            2
+        );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|c| matches!(
+                    c,
+                    Call::SoundChannel(systemless_future::sound::Op::Dispose { .. })
+                ))
+                .count(),
+            4
+        );
+    }
+}

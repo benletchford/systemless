@@ -1129,3 +1129,24 @@ recorded data/resource SHA-256 values. It still fails before execution at the
 strong InterfaceLib SndDisposeChannel import. Evidence:
 /tmp/systemless-volume-centaurian-next.txt. This remains an actual loader gap;
 no original PPC application launch or sound-channel acceptance is claimed.
+
+
+## Sound-channel lifetime and refreshed Centaurian gaps
+
+SndNewChannel/SndDisposeChannel now resolve to real shared channel/queue lifetime
+services rather than a success alias. Centaurian's original PPC PEF loader moves
+past the previous SndDisposeChannel import and now rejects the strong InterfaceLib
+Index2Color import. It still does not reach guest execution or gameplay. Evidence:
+/tmp/systemless-channels-centaurian-next.txt. Its 68K path was separately rerun
+with a 200,000-boundary budget and offscreen graphics and still stops at GetGDevice
+($AA32, decimal 43570): /tmp/systemless-channels-centaurian-68k-next.txt. The private
+input hashes match the recorded originals. Shared device/Color QuickDraw state
+is the next concrete foundation needed by both paths; other sound commands,
+status, callback execution and actual audio remain unfinished.
+
+Super Mines retains the specific automated/offscreen gameplay and persistence
+coverage above. An interactive native-window check was attempted, but the desktop
+was locked and UI inspection/input was unavailable. The disposable test process
+was closed without attaching a persistent volume. This is not a native gameplay
+acceptance result. A full live desktop session and win/loss gameplay remain
+unverified; no broader playable-game claim follows from channel-lifetime tests.

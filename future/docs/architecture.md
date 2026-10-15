@@ -1808,3 +1808,34 @@ boundaries. No-volume behavior remains process-local. The codec, version-1 wire
 format, validation rules, platform evidence and incomplete per-service flush/error
 semantics are detailed in [volumes](volumes.md). This is persistence of Macintosh
 file state, not a snapshot of CPU/UI state or an HFS disk image.
+
+
+### Shared Sound Manager channel lifetime
+
+Process owns one Sound Manager channel registry for both CPU adapters. SndNewChannel
+($A807 / InterfaceLib) validates its pointer slot, records synthesizer/initialization
+configuration and creates an owned guest queue. A nil channel receives an owned
+1,060-byte SndChannel record and the default 128-command queue. A caller-supplied
+record keeps its userInfo, allocation and queue-size choice; positive signed
+16-bit qLength values determine the separately allocated queue. Guest fields are
+big-endian, nextChan links reflect the same process registry, and the reserved
+firstMod field holds the runtime's queue allocation identity. Callback addresses
+are retained as opaque guest values. Host diagnostics can query configuration.
+
+SndDisposeChannel ($A801 / InterfaceLib) validates registration, allocation
+ownership and idle queue fields before unlinking. It repairs a predecessor link,
+releases the manager queue and releases the channel record only if the manager
+allocated it. Caller storage, callback/userInfo and referenced handles remain
+owned by the caller. Unknown/nil/duplicate/corrupt channels return badChannel;
+allocation rollback and process Memory/Resource error preservation are checked.
+Native OSErr results occupy the Pascal word slot, while PPC returns a sign-extended
+OSErr in r3. Output bounds are checked before native stack consumption.
+
+This slice supports idle channels configured for unspecified or sampled sound,
+with known uncompressed initialization flags. Other synth/configuration requests
+return explicit errors. There is a documented 64-channel runtime bound; it does
+not describe native hardware capacity. Both quietNow values complete immediately
+for an idle channel. Busy/private-field corruption is rejected, never discarded
+as if played. Actual command execution, channel status, synthesis, sound callbacks,
+wait-for-playback disposal and host audio output remain unfinished. Creation and
+disposal do not establish audible playback compatibility.

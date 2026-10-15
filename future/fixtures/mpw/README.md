@@ -494,3 +494,13 @@ forks. The ignored compiled_guests_preserve_both_forks test writes with 68K,
 reopens with fresh PPC and 68K runtimes, then launches both real CLI targets
 against the same volume. Every read must reach Exit(0) and leave the image bytes
 unchanged. This test needs generated MPW binaries but no GPU.
+
+
+sound_channels.c uses the public Sound.h/Memory.h records and routines on both
+compiler targets. It creates a manager-owned channel and a caller-owned record
+with a custom queue length/userInfo, disposes the older channel and checks the
+surviving nextChan link. Disposal must leave referenced handle data and caller
+storage/userInfo alive; duplicate and nil disposal must return badChannel. The
+ignored compiled_sound_channels test requires the success marker and Exit(0)
+from both real CPU engines. It requires compiler artifacts but no audio device
+or GPU and makes no claim of sound playback.

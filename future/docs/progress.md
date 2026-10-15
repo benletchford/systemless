@@ -3903,3 +3903,64 @@ changed-file stdin formatting, fixture shell syntax and whitespace checks pass.
 The original game's two processes were separately run and visually inspected;
 the restored Centaurian PPC input was freshly checked for its next loader gap.
 No native System 7 comparison or completed-rebuild claim is made.
+
+
+### Shared Sound Manager channel creation/disposal and next graphics-device gap
+
+SndNewChannel and SndDisposeChannel now use one process registry, guest allocation
+model and state implementation from native $A807/$A801 and PPC InterfaceLib.
+Creation retains synth/init configuration, allocates a genuine command queue,
+initializes a big-endian channel record and publishes through the caller pointer.
+A nil input gets a manager-owned 1,060-byte SndChannel and 128-command queue;
+a supplied record preserves userInfo, storage and a positive custom qLength.
+All records link through the shared registered channel list. The reserved firstMod
+field carries queue allocation identity; callback addresses are stored opaquely.
+
+Disposal checks registration/allocation/private idle-state consistency, repairs
+nextChan, frees the internal queue and frees only a manager-owned channel record.
+Caller-owned records, userInfo/callback values and referenced data/handles survive.
+Nil, unknown, duplicate and corrupt records return badChannel. The supported
+idle slice makes both quiet modes immediately complete; unsupported playback is
+not marked played or silently discarded. Synths 0/5 and known uncompressed flags
+are supported for channel configuration; unknown synths and unsupported synth/
+configuration requests return explicit errors. The 64-channel runtime bound and
+allocation-failure rollback are tested. Queue execution, status, synthesis,
+callbacks, deferred busy disposal and host audio output remain unfinished.
+
+The native adapter validates exact 14-/6-byte argument frames plus the OSErr word
+before changing SP. It decodes signed synths, complete init/callback pointers and
+the high Boolean byte; PPC uses the public register arguments and signed r3 error.
+Runtime preserves process Memory/Resource errors and their guest globals. Tests
+exercise creation on one real CPU and disposal on the other, full live list
+links, owned/caller-owned storage, guards/user data, invalid requests/frames,
+corruption, heap exhaustion/rollback and channel capacity/reuse.
+
+Public-header sound_channels.c now compiles/runs on both MPW targets. It checks
+owned/custom channels, unlinking, actual caller Ptr/Handle survival, duplicate/nil
+errors, an explicit success marker and Exit(0). This is real channel lifetime
+acceptance, not sound playback or an original PPC application launch.
+
+Centaurian's original PPC load now gets past its prior sound import and stops at
+Index2Color. Its refreshed 68K startup still stops at GetGDevice ($AA32). Evidence:
+/tmp/systemless-channels-centaurian-next.txt and
+/tmp/systemless-channels-centaurian-68k-next.txt. Shared graphics-device/Color
+QuickDraw state is therefore the next executable milestone for both originals.
+Further sound commands and all broader rebuild requirements remain active.
+
+In response to the gameplay question: Super Mines has the bounded automated/
+offscreen board/menu/save/reload coverage already recorded. A native-window test
+was launched but could not be inspected or driven because the desktop was locked;
+the test process was closed. No live desktop or win/loss acceptance is claimed.
+
+Contracts: Apple's [Sound Manager](https://dev.os9.ca/techpubs/mac/pdf/Sound/Sound_Manager.pdf)
+allocation/disposal and [channel records](https://dev.os9.ca/techpubs/mac/Sound/Sound-73.html)
+(Inside Macintosh: Sound, pp. 2-20–2-25, 2-103, 2-128–2-130), plus the pinned MPW
+Sound.h/Memory.h public headers. Native System 7 comparison remains optional.
+The complete rebuild goal remains active and is not marked complete.
+
+Validation: all 377 tests pass (304 default and 73 optional GPU/MPW), zero failed
+or skipped across 62 result groups. Final focused channel/volume regressions also
+pass after retaining configuration and expanding signed/full-width ABI cases.
+Strict all-target Clippy, sequential changed-file stdin formatting, fixture shell
+syntax and whitespace checks pass. MPW outputs were rebuilt with the pinned image.
+The full rebuild remains active; the native GUI attempt is not counted as passed.

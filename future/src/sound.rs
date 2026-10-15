@@ -1,4 +1,4 @@
-//! Legacy Sound Driver volume state. Playback is not implemented.
+//! Shared Sound Driver volume and Sound Manager channel lifetime. Playback is not implemented.
 //! Inside Macintosh II, pp. 232–236; MPW LowMem.h identifies SdVolume at $0260.
 use crate::{
     memory::{GuestPtr, Memory},
@@ -44,3 +44,6 @@ pub fn control(memory: &mut Memory, pointer: GuestPtr) -> Result<i16> {
     memory.write(result, &0i16.to_be_bytes())?;
     Ok(0)
 }
+
+mod channels;
+pub use channels::{Manager, NewChannel, Op, CHANNEL_SIZE};

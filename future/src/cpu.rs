@@ -235,6 +235,7 @@ pub enum Call {
         id: i16,
     },
     SoundVolume(i16),
+    SoundChannel(crate::sound::Op),
     GetSoundVolume(GuestPtr),
     DeviceControl(GuestPtr),
     StripAddress(u32),

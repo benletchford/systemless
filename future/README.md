@@ -206,3 +206,12 @@ The original Super Mines save-and-Quit route now writes an explicit volume, and
 an independent fresh process reopens that game through its real filter and
 returns to the restored board/event wait. This is a bounded cross-launch check;
 full application and rebuild acceptance remain active.
+
+
+Sound Manager channel creation/disposal now shares real queue/record ownership
+between 68K and PPC, including caller-owned storage and signed errors. Both
+public-header compiler targets pass lifetime tests. Playback/command/callback
+execution remains unfinished. Centaurian's refreshed PPC load next requires
+Index2Color; its 68K startup still requires GetGDevice. Super Mines' recorded
+playability evidence remains automated/offscreen; live desktop and win/loss
+acceptance have not yet passed.

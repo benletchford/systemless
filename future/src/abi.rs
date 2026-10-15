@@ -185,6 +185,8 @@ pub enum Service {
     SFGetFile,
     DrawPicture,
     SetSoundVol,
+    SndNewChannel,
+    SndDisposeChannel,
     GetSoundVol,
     PBControlSync,
     StripAddress,
@@ -475,6 +477,8 @@ impl Abi {
             b"GetHandleSize" => Some(Service::GetHandleSize),
             b"ReleaseResource" => Some(Service::ReleaseResource),
             b"DetachResource" => Some(Service::DetachResource),
+            b"SndNewChannel" => Some(Service::SndNewChannel),
+            b"SndDisposeChannel" => Some(Service::SndDisposeChannel),
             b"SetSoundVol" => Some(Service::SetSoundVol),
             b"GetSoundVol" => Some(Service::GetSoundVol),
             b"PBControlSync" => Some(Service::PBControlSync),
@@ -1678,6 +1682,32 @@ impl Abi {
                     },
                 ))
             }
+            0xa807 | 0xa801 => {
+                let size = if opcode == 0xa807 { 14 } else { 6 };
+                let bytes = memory.read(GuestPtr(sp), size)?;
+                let long = |n| u32::from_be_bytes(bytes[n..n + 4].try_into().unwrap());
+                let op = if opcode == 0xa807 {
+                    let destination = GuestPtr(long(10));
+                    memory.validate_write(destination, 4)?;
+                    crate::sound::Op::New(crate::sound::NewChannel {
+                        destination,
+                        synth: i16::from_be_bytes(bytes[8..10].try_into().unwrap()),
+                        init: long(4),
+                        callback: long(0),
+                    })
+                } else {
+                    crate::sound::Op::Dispose {
+                        channel: long(2),
+                        quiet_now: bytes[0] != 0,
+                    }
+                };
+                let result = sp
+                    .checked_add(size as u32)
+                    .ok_or_else(|| Error::Cpu("sound channel stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                c.dar[15] = result;
+                Ok((Call::SoundChannel(op), Reply::StackWord(GuestPtr(result))))
+            }
             0xa861 => {
                 memory.validate_write(GuestPtr(sp), 2)?;
                 Ok((Call::Random, Reply::StackWord(GuestPtr(sp))))
@@ -2850,6 +2880,20 @@ impl Abi {
                 kind: c.gpr[3].to_be_bytes(),
                 id: c.gpr[4] as i16,
             },
+            Service::SndNewChannel => {
+                let destination = GuestPtr(c.gpr[3]);
+                memory.validate_write(destination, 4)?;
+                Call::SoundChannel(crate::sound::Op::New(crate::sound::NewChannel {
+                    destination,
+                    synth: c.gpr[4] as i16,
+                    init: c.gpr[5],
+                    callback: c.gpr[6],
+                }))
+            }
+            Service::SndDisposeChannel => Call::SoundChannel(crate::sound::Op::Dispose {
+                channel: c.gpr[3],
+                quiet_now: c.gpr[4] as u8 != 0,
+            }),
             Service::SetSoundVol => Call::SoundVolume(c.gpr[3] as i16),
             Service::GetSoundVol => Call::GetSoundVolume(GuestPtr(c.gpr[3])),
             Service::PBControlSync => Call::DeviceControl(GuestPtr(c.gpr[3])),
