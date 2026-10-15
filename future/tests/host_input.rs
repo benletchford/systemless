@@ -11,22 +11,54 @@ fn pointer_maps_letterboxing_edges_and_rejects_outside_presses() {
     let file = support::pef_program(&[0x4e800020], &[], 8);
     let mut rt = LoadedApplication::pef(&file.bytes, None).unwrap().runtime;
     let mut pointer = Pointer::default();
-    pointer.motion(&mut rt.process.input, 0.0, 0.0, (640, 360), (512, 342));
+    pointer
+        .motion(
+            &mut rt.process.input,
+            &mut rt.memory,
+            (0.0, 0.0),
+            (640, 360),
+            (512, 342),
+        )
+        .unwrap();
     pointer
         .button(&mut rt.memory, &mut rt.process.input, true)
         .unwrap();
     assert!(!events::available(&rt.memory, 2).unwrap());
-    pointer.motion(&mut rt.process.input, 320.0, 180.0, (640, 360), (512, 342));
+    pointer
+        .motion(
+            &mut rt.process.input,
+            &mut rt.memory,
+            (320.0, 180.0),
+            (640, 360),
+            (512, 342),
+        )
+        .unwrap();
     assert_eq!(
         (rt.process.input.horizontal, rt.process.input.vertical),
         (256, 171)
     );
-    pointer.motion(&mut rt.process.input, 1000.0, -1.0, (640, 360), (512, 342));
+    pointer
+        .motion(
+            &mut rt.process.input,
+            &mut rt.memory,
+            (1000.0, -1.0),
+            (640, 360),
+            (512, 342),
+        )
+        .unwrap();
     assert_eq!(
         (rt.process.input.horizontal, rt.process.input.vertical),
         (511, 0)
     );
-    pointer.motion(&mut rt.process.input, f64::NAN, 0.0, (640, 360), (512, 342));
+    pointer
+        .motion(
+            &mut rt.process.input,
+            &mut rt.memory,
+            (f64::NAN, 0.0),
+            (640, 360),
+            (512, 342),
+        )
+        .unwrap();
     pointer
         .button(&mut rt.memory, &mut rt.process.input, true)
         .unwrap();
@@ -49,7 +81,16 @@ fn host_mouse_wakes_guest_wait_and_records_button_position_modifiers_and_time() 
     assert_eq!(rt.advance(100).unwrap(), Stop::Waiting { ticks: 100 });
     rt.elapse_ticks(7).unwrap();
     let mut pointer = Pointer::default();
-    pointer.motion(&mut rt.process.input, 320.0, 180.0, (640, 360), (512, 342));
+    pointer
+        .motion(
+            &mut rt.process.input,
+            &mut rt.memory,
+            (320.0, 180.0),
+            (640, 360),
+            (512, 342),
+        )
+        .unwrap();
+    assert_eq!(rt.memory.read(events::MOUSE, 4).unwrap(), [0, 171, 1, 0]);
     rt.process.input.modifiers |= 0x300;
     pointer
         .button(&mut rt.memory, &mut rt.process.input, true)
@@ -87,7 +128,15 @@ fn masked_button_changes_state_and_focus_loss_releases_it() {
         .write(events::SYSTEM_MASK, &0u16.to_be_bytes())
         .unwrap();
     let mut pointer = Pointer::default();
-    pointer.motion(&mut rt.process.input, 1.0, 1.0, (512, 342), (512, 342));
+    pointer
+        .motion(
+            &mut rt.process.input,
+            &mut rt.memory,
+            (1.0, 1.0),
+            (512, 342),
+            (512, 342),
+        )
+        .unwrap();
     pointer
         .button(&mut rt.memory, &mut rt.process.input, true)
         .unwrap();

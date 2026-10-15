@@ -5,6 +5,7 @@ use crate::{
     memory::{GuestPtr, Memory, Permissions},
     Error, Result,
 };
+pub const MOUSE: GuestPtr = GuestPtr(0x830);
 pub const SYSTEM_MASK: GuestPtr = GuestPtr(0x144);
 pub const QUEUE_HEADER: GuestPtr = GuestPtr(0x14a);
 const BASE: u32 = 0x7300_0000;

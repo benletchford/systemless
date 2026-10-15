@@ -1186,3 +1186,20 @@ The temporary graph is disposed after success or failure, preserving allocation
 errors. Input length is bounded to 32767 bytes; unsupported alignment values fail
 before drawing. Allocation failure does not erase the existing display. GPU
 failure can retain completed pixels, as with other synchronous drawing services.
+
+## Mouse coordinates and rectangle hit testing
+
+GetMouse uses the same signed-word conversion as GlobalToLocal, reading the
+current guest port's bitmap origin and the live low-memory Mouse point ($0830).
+The 68K Pascal pointer and PPC r3 pointer reach one runtime implementation, with
+no GPU requirement. Source/origin bytes are frozen before the result write, and
+the host point cache is updated only after a successful write. Host pointer motion
+publishes the letterboxed/clamped guest point to Mouse before updating its cache;
+nonfinite/zero-size input remains inert. Color-port conversion remains explicit.
+
+PtInRect shares a read-only signed-edge predicate with top/left inclusion and
+bottom/right exclusion, including empty/inverted rectangles. The 68K adapter
+checks the Boolean result byte before popping eight argument bytes; PPC unpacks
+the by-value Point from r3 and reads its Rect pointer from r4. No current port or
+GPU is needed for this geometric query. Low-memory raw mouse mirrors, mouse
+acceleration and custom window tracking remain outside this slice.

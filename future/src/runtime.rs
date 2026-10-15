@@ -349,6 +349,28 @@ impl Runtime {
                                 self.receive_toolbox_event(mask, destination, remove, ticks)?;
                             reply.apply(&mut self.cpu, &mut self.memory, u32::from(found), 0)?;
                         }
+                        Call::PointInRect { point, rectangle } => {
+                            let inside =
+                                crate::rectangles::contains(&self.memory, point, rectangle)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, u32::from(inside), 0)?;
+                        }
+                        Call::GetMouse(destination) => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("GetMouse requires InitGraf".into())
+                            })?;
+                            let global: [u8; 4] = self
+                                .memory
+                                .read(crate::events::MOUSE, 4)?
+                                .try_into()
+                                .unwrap();
+                            let local = ports.point_coordinates(&self.memory, global, false)?;
+                            self.memory.write(destination, &local)?;
+                            self.process.input.vertical =
+                                i16::from_be_bytes(global[..2].try_into().unwrap());
+                            self.process.input.horizontal =
+                                i16::from_be_bytes(global[2..].try_into().unwrap());
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::SystemTask => {
                             // There are no registered desk accessories or periodic device
                             // drivers in this runtime. SystemTask has no work to dispatch;
@@ -1152,6 +1174,8 @@ impl Runtime {
                         | Call::TextState { .. }
                         | Call::Rectangle(_)
                         | Call::ToolboxEvent { .. }
+                        | Call::PointInRect { .. }
+                        | Call::GetMouse(_)
                         | Call::SystemTask
                         | Call::SysEnvirons { .. }
                         | Call::MaxApplZone

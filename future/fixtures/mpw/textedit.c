@@ -13,7 +13,7 @@ int main(void) {
     TEHandle plain,styled;
     TEStyleHandle style;
     Handle text;
-    Point savedPen;
+    Point savedPen,mouse;
     InitGraf(&qd.thePort); InitFonts(); OpenPort(&port);
     TextFont(3); TextSize(9); TextFace(0); TextMode(srcOr);
     TEInit(); TEInit();
@@ -53,6 +53,13 @@ int main(void) {
     if (port.pnLoc.h!=savedPen.h || port.pnLoc.v!=savedPen.v || port.txFace!=bold) return 20;
     TETextBox(0,0,&view,teFlushRight);
     if (port.pnLoc.h!=savedPen.h || port.pnLoc.v!=savedPen.v || MemError()) return 21;
+    (*(Point *)0x830).v=123; (*(Point *)0x830).h=234;
+    GetMouse(&mouse);
+    if (mouse.v!=123+port.portBits.bounds.top || mouse.h!=234+port.portBits.bounds.left) return 22;
+    dest.top=10;dest.left=20;dest.bottom=30;dest.right=40;
+    mouse.v=10;mouse.h=20;if (!PtInRect(mouse,&dest)) return 23;
+    mouse.v=30;if (PtInRect(mouse,&dest)) return 24;
+    mouse.v=29;mouse.h=40;if (PtInRect(mouse,&dest)) return 25;
     ClosePort(&port);
     PostEvent(diskEvt,0x600D); ExitToShell(); return 0;
 }

@@ -427,13 +427,16 @@ impl ApplicationHandler for App {
                 if state.execution.as_ref().is_some_and(|e| !e.finished) =>
             {
                 let gpu = state.rt.graphics.as_ref().unwrap();
-                state.pointer.motion(
+                let result = state.pointer.motion(
                     &mut state.rt.process.input,
-                    position.x,
-                    position.y,
+                    &mut state.rt.memory,
+                    (position.x, position.y),
                     (state.config.width, state.config.height),
                     (gpu.width, gpu.height),
                 );
+                if let Err(error) = result {
+                    eprintln!("pointer input: {error}");
+                }
                 state.rt.process.cursor.inside = state.pointer.inside();
             }
             WindowEvent::CursorLeft { .. } => {

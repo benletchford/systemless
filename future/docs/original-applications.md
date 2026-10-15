@@ -27,15 +27,18 @@ fork path and a maximum instruction count, and prints register/opcode context.
   eventually faulting at $1000. Its CODE 0 declares 6678 bytes below A5. Publishing
   the start of those globals ($003FE5EA) fixes this specific loader defect. The
   original startup now initializes through $00400000, then passes ReleaseResource,
-  InitFonts, InitWindows, FlushEvents and InitMenus with graphics enabled. It stops
-  after InitCursor, TEInit, InitDialogs, SysEnvirons and EventAvail at unsupported
-  GetMouse ($A972), PC $0100E4A8 (trace index 22664), after
+  InitFonts, InitWindows, FlushEvents and InitMenus with graphics enabled. It proceeds
+  through InitCursor, TEInit, InitDialogs, SysEnvirons and EventAvail, then enters
+  event/mouse polling through GetMouse and PtInRect after
   PBGetCatInfo reports a missing directory, PBDirCreate creates it and
   PBHGetFInfo completes a file lookup and GetNewWindow creates its first
   hidden dBoxProc resource window and DetachResource transfers loaded
   resource ownership, NewControl creates its button-family controls,
   SizeWindow resizes the hidden window, SetWRefCon stores application data,
   MoveWindow positions it, ShowWindow reveals it and InvalRect requests redraw.
+  A 100,000-instruction trace completes without an unsupported service.
+  A bounded click at global (256,171) then stops at FindWindow ($A92C);
+  the before screenshot shows the original demonstration splash.
   SystemTask preserves the empty periodic service state, PenSize updates live
   GrafPort dimensions and RectInRgn checks content intersections.
   GetPicture loads PICT 202, PortSize sizes its offscreen GrafPort and MovePortTo
@@ -79,7 +82,7 @@ InitCursor ($A850) now initializes shared cursor state for the GPU presentation
 overlay. InitDialogs ($A97B) now initializes shared dialog globals and parameter
 StringHandles. SysEnvirons now reports the shared compatibility profile; common
 loading maps/publishes the full fixed heap and MaxApplZone preserves its extent.
-Fresh traces pass EventAvail/SetRect and bold TETextBox in Super Mines, reaching GetMouse; Centaurian reaches GetGDevice. Actual
+Fresh traces pass EventAvail/SetRect, bold TETextBox, GetMouse and PtInRect in Super Mines; an injected click reaches FindWindow. Centaurian reaches GetGDevice. Actual
 onscreen cursor behavior, heap-zone resizing, menu/dialog construction, window
 custom definitions and original application interaction remain unfinished.
 Dynamic memory loading is verified with the MPW resource-plugin fixture;
@@ -88,6 +91,17 @@ still requires original application interactions on both architectures.
 
 Super Mines TextBox calls now complete with the selected family-3, size-9 bold
 strike. Layout and clipping use the shared TextEdit/GPU route, with a synthesized
-one-pixel bold source. This is bounded startup evidence; no original mouse-driven
-interaction or native styled-text pixel comparison has passed. Legacy Systemless
+one-pixel bold source. This is bounded startup evidence; an injected mouse-down is delivered but stops at FindWindow before handling
+the click. Native styled-text pixel comparison has not passed. Legacy Systemless
 comparison alone is permitted by the user; native System 7 execution is optional.
+
+A reproducible bounded click probe captures PPM images before and after dispatch:
+
+```sh
+cargo run --manifest-path future/Cargo.toml --example probe_mouse -- CODE_RESOURCE_FORK /tmp/mines-probe 256 171
+```
+
+This diagnostic loads a 68K CODE fork, runs 30,000 startup boundaries, injects
+mouse-down, then permits up to 30,000 more boundaries before mouse-up and another
+30,000. It propagates service faults; screenshots are evidence, not automatic
+acceptance. No original application/resource bytes are added to the repository.

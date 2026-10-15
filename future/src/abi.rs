@@ -9,6 +9,8 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    PtInRect,
+    GetMouse,
     Random,
     TETextBox,
     FrameRect,
@@ -266,6 +268,8 @@ impl Abi {
             b"EventAvail" => Some(Service::EventAvail),
             b"BeginUpdate" => Some(Service::Window(crate::windows::Op::Begin)),
             b"EndUpdate" => Some(Service::Window(crate::windows::Op::End)),
+            b"PtInRect" => Some(Service::PtInRect),
+            b"GetMouse" => Some(Service::GetMouse),
             b"SystemTask" => Some(Service::SystemTask),
             b"SysEnvirons" => Some(Service::SysEnvirons),
             b"MaxApplZone" => Some(Service::MaxApplZone),
@@ -872,6 +876,30 @@ impl Abi {
                     },
                     Reply::StackByte(GuestPtr(result)),
                 ))
+            }
+            0xa8ad => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let rectangle = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let point = [
+                    i16::from_be_bytes(args[4..6].try_into().unwrap()),
+                    i16::from_be_bytes(args[6..8].try_into().unwrap()),
+                ];
+                let result = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("PtInRect stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 1)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::PointInRect { point, rectangle },
+                    Reply::StackByte(GuestPtr(result)),
+                ))
+            }
+            0xa972 => {
+                let point = GuestPtr(memory.u32(GuestPtr(sp))?);
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("GetMouse stack overflow".into()))?;
+                Ok((Call::GetMouse(point), Reply::None))
             }
             0xa9b4 => Ok((Call::SystemTask, Reply::None)),
             0xa090 => Ok((
@@ -1610,6 +1638,11 @@ impl Abi {
                     }
                 })
             }
+            Service::PtInRect => Call::PointInRect {
+                point: [(c.gpr[3] >> 16) as i16, c.gpr[3] as i16],
+                rectangle: GuestPtr(c.gpr[4]),
+            },
+            Service::GetMouse => Call::GetMouse(GuestPtr(c.gpr[3])),
             Service::SystemTask => Call::SystemTask,
             Service::SysEnvirons => Call::SysEnvirons {
                 version: c.gpr[3] as i16,
@@ -1936,7 +1969,8 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Intersects | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::SystemTask
+                    Service::GetMouse
+                        | Service::SystemTask
                         | Service::InvalRect
                         | Service::ValidRect
                         | Service::MoveWindow

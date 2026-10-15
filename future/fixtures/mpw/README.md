@@ -332,3 +332,8 @@ The TextEdit fixture also calls TETextBox with bold centered text and an empty
 right-aligned erase on both compiler targets, checking preserved pen location,
 text face and MemError. Its acceptance now requires a real wgpu adapter and both
 TextBox service calls before the final success marker.
+
+The same TextEdit compiler guest now changes the live Mouse point, calls GetMouse,
+and checks its local coordinates against portBits.bounds. It also verifies
+PtInRect's inclusive upper-left and exclusive bottom/right edges. Rust acceptance
+requires one GetMouse and three PtInRect calls on each architecture.

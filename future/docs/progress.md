@@ -2295,3 +2295,38 @@ legacy Systemless comparison alone is authorized.
 Validation: all 238 tests pass (194 default, 44 optional GPU/MPW); no GPU tests
 were skipped. Strict all-target Clippy, rebuilt MPW fixtures, sequential changed-
 file formatting and diff whitespace checks pass. No native System 7 run was used.
+
+
+### Mouse coordinates and rectangle hit testing
+
+GetMouse now reads the live guest Mouse point ($0830), snapshots the current
+port's bitmap origin, converts with the same signed-word helper as GlobalToLocal
+and writes exactly one Point. Both real CPU adapters preserve void result state.
+Host pointer motion publishes the same letterboxed/clamped point to guest memory,
+so guest recentering and host motion have an explicit shared boundary. Output and
+color-port faults cannot publish a partial point or refresh the host cache.
+
+PtInRect follows immediately in Super Mines' polling path. Both adapters share a
+read-only signed-edge predicate: top/left included, bottom/right excluded; empty
+and inverted rectangles contain no pixels. Native Pascal Boolean result storage
+is checked before stack changes, while PPC uses a packed Point and r4 Rect pointer.
+Generated checks cover negative/extreme coordinates, live origins, output guards,
+readonly destinations, short/resultless stacks, exact Boolean bytes and edges.
+Rebuilt MPW 68K/PPC guests read changed Mouse globals and verify both services;
+acceptance requires their calls before the success marker.
+
+Super Mines now completes 100,000 instruction boundaries without a service fault:
+744 GetMouse/PtInRect checks and 750 ToolboxEvent calls. Its offscreen screenshot
+shows the original demonstration splash. The bounded probe_mouse example injects
+a mouse-down at global (256,171); the event is consumed and reaches unsupported
+FindWindow ($A92C), before the application handles the click. This is polling and
+input-delivery evidence, not successful original interaction acceptance. Next:
+shared FindWindow hit testing/window-part results, then continue the same click.
+Centaurian devices/sound, native presentation and production Mixed Mode remain
+unfinished. The full rebuild goal remains active.
+
+Validation: all 243 tests pass (199 default, 44 optional GPU/MPW); none skipped.
+Strict all-target Clippy, final MPW rebuilding, sequential changed-file formatting
+and whitespace checks pass. The original idle trace ends only at its explicit
+instruction budget; the click probe explicitly fails at FindWindow. No native
+System 7 execution or native presentation pass is claimed.

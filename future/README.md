@@ -109,4 +109,9 @@ verification and complete original application interaction remain pending.
 TETextBox/TextBox now share transient TextEdit wrapping, alignment and clipped
 GPU erasure/drawing on both CPU adapters. Bold source strikes are synthesized
 without changing guest font resources. Super Mines startup passes its text boxes
-and reaches GetMouse; complete original application interaction remains pending.
+and enters event/mouse polling. A bounded original click reaches FindWindow;
+complete original application interaction remains pending.
+
+GetMouse shares checked current-port coordinates and live guest Mouse globals;
+PtInRect shares signed, half-open rectangle containment. A bounded 68K mouse probe
+captures offscreen screens and propagates faults for original-app diagnostics.

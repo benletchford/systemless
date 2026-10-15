@@ -464,6 +464,24 @@ fn compiled_textedit_records_and_style_lifetime_complete_on_both_cpus() {
             2
         );
         assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|call| matches!(call, Call::GetMouse(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|call| matches!(call, Call::PointInRect { .. }))
+                .count(),
+            3
+        );
+        assert_eq!(
             &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],
             &[
                 Call::PostEvent {

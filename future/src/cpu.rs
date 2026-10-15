@@ -27,6 +27,11 @@ pub enum Call {
         handle: u32,
         destination: GuestPtr,
     },
+    PointInRect {
+        point: [i16; 2],
+        rectangle: GuestPtr,
+    },
+    GetMouse(GuestPtr),
     SystemTask,
     Rectangle(crate::rectangles::Op),
     ToolboxEvent {

@@ -14,11 +14,12 @@ impl Pointer {
     pub fn motion(
         &mut self,
         input: &mut Input,
-        x: f64,
-        y: f64,
+        memory: &mut Memory,
+        position: (f64, f64),
         window: (u32, u32),
         screen: (u32, u32),
-    ) {
+    ) -> Result<()> {
+        let (x, y) = position;
         self.inside = false;
         if window.0 == 0
             || window.1 == 0
@@ -27,7 +28,7 @@ impl Pointer {
             || !x.is_finite()
             || !y.is_finite()
         {
-            return;
+            return Ok(());
         }
         let scale = (f64::from(window.0) / f64::from(screen.0))
             .min(f64::from(window.1) / f64::from(screen.1));
@@ -35,12 +36,18 @@ impl Pointer {
         let gy = (y - (f64::from(window.1) - f64::from(screen.1) * scale) / 2.0) / scale;
         self.inside =
             gx >= 0.0 && gy >= 0.0 && gx < f64::from(screen.0) && gy < f64::from(screen.1);
-        input.horizontal =
+        let horizontal =
             gx.floor()
                 .clamp(0.0, f64::from(screen.0 - 1).min(f64::from(i16::MAX))) as i16;
-        input.vertical =
+        let vertical =
             gy.floor()
                 .clamp(0.0, f64::from(screen.1 - 1).min(f64::from(i16::MAX))) as i16;
+        let mut point = vertical.to_be_bytes().to_vec();
+        point.extend(horizontal.to_be_bytes());
+        memory.write(events::MOUSE, &point)?;
+        input.horizontal = horizontal;
+        input.vertical = vertical;
+        Ok(())
     }
     pub fn inside(&self) -> bool {
         self.inside

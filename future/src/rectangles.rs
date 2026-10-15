@@ -37,3 +37,12 @@ pub fn call(memory: &mut Memory, op: Op) -> Result<()> {
             .collect::<Vec<_>>(),
     )
 }
+
+/// Pixel below/right of the coordinate: top/left included, bottom/right excluded.
+pub fn contains(memory: &Memory, point: [i16; 2], rectangle: GuestPtr) -> Result<bool> {
+    let rect = crate::quickdraw::read_rect(memory, rectangle)?;
+    Ok(i32::from(point[0]) >= rect.top
+        && i32::from(point[0]) < rect.bottom
+        && i32::from(point[1]) >= rect.left
+        && i32::from(point[1]) < rect.right)
+}

@@ -145,6 +145,16 @@ impl Ports {
         point: GuestPtr,
         to_global: bool,
     ) -> Result<()> {
+        let point_bytes = memory.read(point, 4)?.try_into().unwrap();
+        let result = self.point_coordinates(memory, point_bytes, to_global)?;
+        memory.write(point, &result)
+    }
+    pub fn point_coordinates(
+        &self,
+        memory: &Memory,
+        mut result: [u8; 4],
+        to_global: bool,
+    ) -> Result<[u8; 4]> {
         let port = self.current(memory)?;
         if memory.u16(offset(port, 6)?)? & 0xc000 != 0 {
             return Err(Error::Graphics(
@@ -152,7 +162,6 @@ impl Ports {
             ));
         }
         let origin: [u8; 4] = memory.read(offset(port, 8)?, 4)?.try_into().unwrap();
-        let mut result: [u8; 4] = memory.read(point, 4)?.try_into().unwrap();
         for at in [0, 2] {
             let value = i16::from_be_bytes(result[at..at + 2].try_into().unwrap());
             let delta = i16::from_be_bytes(origin[at..at + 2].try_into().unwrap());
@@ -163,7 +172,7 @@ impl Ports {
             };
             result[at..at + 2].copy_from_slice(&value.to_be_bytes());
         }
-        memory.write(point, &result)
+        Ok(result)
     }
     pub fn close(&self, memory: &mut Memory, process: &mut Process, port: GuestPtr) -> Result<()> {
         let bytes = memory.read(port, PORT_SIZE)?;
