@@ -2003,12 +2003,13 @@ completion callbacks; quiet cancels the current voice while queued work continue
 
 Standard SoundHeader fields are checked before publication: inline/external
 sample pointers, bounded nonzero length, unsigned 16.16 rates (1 Hz through
-64 kHz), encoding, base frequency and loop-point bounds. Only unsigned eight-bit
+64 kHz) and encoding. Buffer playback does not interpret note-pitch/loop fields. Only unsigned eight-bit
 mono standard headers are accepted. Buffer playback does not use loop points
 for note-duration synthesis. Extended/compressed headers, installed voices and
 frequency/duration commands remain unfinished. Mono pan and no-interpolation
-initialization flags are applied; unsupported rate-conversion override flags
-are rejected for playback rather than silently ignored.
+initialization flags are applied. Legacy sample-rate attribute bits are retained
+while the host chooses the sink clock; the header rate controls source timing.
+Unsupported no-drop/stereo-source configurations still return errors.
 
 The shared renderer pulls at most 65,536 stereo frames at an output rate of
 8–192 kHz. It validates every channel, sample span and completion write before
@@ -2127,8 +2128,9 @@ raw 68K routines or prepared absolute version-7 same-ISA RoutineDescriptors;
 PPC uses the routine's transition vector/TOC. Runtime retains the whole caller
 CPU and suspended event/control/menu/file/sound waits. Event deadlines continue
 through host time advancement while suspended. Instruction-derived TickCount
-increments do not yet age suspended wait counters; those two clock paths need
-unification before claiming complete callback/timer parity. The running callback holds a mutable borrow of its command pointer; it can
+increments now use that same clock path. A compiled long callback verifies expiry
+of a suspended EventWait without host time advancement; this remains a virtual
+clock policy, not native hardware timing parity. The running callback holds a mutable borrow of its command pointer; it can
 reuse those bytes for another sound command without failing the channel's private
 state checks. Pending callbacks still validate the original command, and return
 clears the borrowed frame before pumping more work. Callback services use the same
@@ -2147,10 +2149,78 @@ remain unfinished.
 Both actual CPUs and public-header compiler fixtures verify copied commands/live
 samples, PCM boundaries and gains, full-queue failure/wait, callback budget/state
 restoration, nested Toolbox calls, event-wait resumption and disposal/address
-reuse inside a callback. CLI fixtures finish without host audio. This does not
-establish resource SndPlay, pause/wait/sync commands, Sound Manager version APIs,
+reuse inside a callback. CLI fixtures finish without host audio. The resource extension below adds SndPlay. This does not
+establish pause/wait/sync commands, Sound Manager version APIs,
 other formats or original EV/Marathon gameplay. Sources: Apple's
 [Sound Manager summary](https://leopard-adc.pepas.com/documentation/mac/Sound/Sound-136.html),
 [SndDoImmediate](https://dev.os9.ca/techpubs/mac/Sound/Sound-101.html),
 [callback contract](https://leopard-adc.pepas.com/documentation/mac/Sound/Sound-131.html)
 and pinned SDK Sound.h.
+
+
+## Loaded resource sound and scoped synchronous completion
+
+SndPlay ($A805 / InterfaceLib) resolves an owned, resident handle, preserving
+MemErr/ResErr and returning resProblem for nil/freed/empty handles. Resource
+Manager identity is not required, so application-created sound blocks work.
+Format 1 reads its six-byte data-type entries before the command count. Format 2
+ignores its application-owned reference-count word. Command counts are bounded
+by the format's u16 and the actual handle length. Resource-relative bufferCmd
+pointers are checked after the command table, against the complete 22-byte header
+and inline sample extent. Absolute headers and external sample pointers use
+normal checked guest-memory spans. Source command bytes are copied/resolved;
+the resource is not rewritten and sample memory remains live. Unsupported
+commands/formats fail explicitly before normal publication.
+
+A supplied channel retains its initialization; a nil channel is allocated from
+the same Process allocator, using zero/default or one sampledSynth initializer.
+Multiple/other internal synth chains return an error. Legacy rate attribute
+bits ($30, including original resources' $A0 configuration) are preserved;
+portable output remains host-clock selected with source timing from SoundHeader.
+This does not emulate a fixed classic hardware output clock or prove native
+filter parity. Buffer commands do not consume baseFrequency or loop points,
+so these unused fields no longer reject one-shot buffers. Note synthesis will
+need its own validation and remains unimplemented. Encoding, source rate,
+length and actual read spans are still validated; no private asset is normalized.
+
+Every queued resource command owns an optional reference to a per-call completion
+counter. Pending entries and active buffers/callbacks retain it; normal execution,
+quiet, flush, cancellation and disposal release exactly their own references.
+Zero-time commands finish immediately. These counters contain no guest CPU or
+host audio transport state. They let a synchronous call finish when its own
+commands finish, even if a callback has queued unrelated later audio. Neither
+whole-channel-idle polling nor an early success substitutes for that boundary.
+
+Runtime retains resource submission/completion and reply state while returning a
+cooperative one-tick wait. An async call can wait for queue space to copy its
+commands, then returns before playback finishes. A nil channel always plays
+synchronously regardless of the async argument. Its temporary pointer slot is
+released after creation, and its owned channel/internal storage is disposed after
+completion or an ordinary submission error. Allocation rollback is checked.
+Generation checks prevent a suspended call from targeting a replacement channel
+at the same address. A sync call inside its own running callback returns busy;
+an async reentrant call that cannot fit also returns busy, avoiding self-deadlock.
+Resource waits are suspended/restored by the same callback continuation as event,
+menu, control and file waits. Both host and instruction-derived virtual ticks now
+age suspended event counters. A host diagnostic counts successful sound callback
+returns without introducing guest-visible state.
+
+Source residency remains the caller's responsibility for asynchronous playback,
+including the documented lock requirement. SndPlay does not change source handle
+flags. The current allocator does not automatically move/purge blocks, so ordinary
+unlocked synchronous sources stay resident while their caller is suspended.
+Automatic compaction/purge will require an internal source-residency lease before
+it can be enabled; that ownership work is not established by these tests.
+Fault/exit retains heap snapshots but cancels sound as at the existing Runtime
+boundary. Resource command self-modification is not a fully transactional operation.
+
+Public SC/MrC fixtures prove both resource formats, unchanged source flags/commands,
+true nil-channel sync behavior, async return, scoped callback completion, malformed
+bounds, cleanup and guest-driven event deadlines. Both compiled applications also
+finish through the headless CLI without a device. The external probe uses synthetic
+68K/PPC callers against original sound forks; it renders only 32-frame prefixes,
+then silently advances remaining playback. Matching prefixes and cleanup are not
+full-waveform/native audio or original-application execution acceptance.
+References: [SndPlay](https://leopard-adc.pepas.com/documentation/mac/Sound/Sound-35.html),
+[resource formats](https://leopard-adc.pepas.com/documentation/mac/Sound/Sound-60.html)
+and [sound headers](https://dev.os9.ca/techpubs/mac/Sound/Sound-74.html).

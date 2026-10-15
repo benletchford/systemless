@@ -564,3 +564,18 @@ The callback reuses its mutable command argument for getAmpCmd. The recycling
 portion deliberately tests a cooperative-runtime extension: native interrupt-time
 callbacks must not allocate/dispose memory. It proves stale-continuation safety,
 not that such memory calls are safe on a Macintosh at interrupt time.
+
+
+`resource_sound.c/.r` exercises actual SndPlay on both compiler targets. Synthetic
+format-1/format-2 resources include resource-relative buffer headers, unused note
+metadata, an application-owned format-2 reference count and malformed offsets.
+The controller verifies nil-channel synchronous completion/cleanup, async return,
+a long callback expiring an EventWait through instruction-derived ticks, and
+scoped sync return while the callback's unrelated buffer is still active. The
+compiled guests also complete through the no-device headless CLI. All waveform
+bytes are synthetic; private original resources remain external inputs.
+
+`probe_resource_sound` accepts a public compiled CODE template plus an external
+raw sound fork. It executes synthetic guest calls, compares 32-frame prefixes
+across adapters, advances remaining sound silently and checks internal cleanup.
+It does not run the original application or prove complete/audible playback.

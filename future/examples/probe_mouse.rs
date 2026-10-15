@@ -55,6 +55,10 @@ fn pixels(app: &LoadedApplication, points: &[(u32, u32)]) -> Option<Vec<bool>> {
         })
         .collect()
 }
+fn elapse(app: &mut LoadedApplication, ticks: u32) -> systemless_future::Result<()> {
+    app.runtime.elapse_sound_silently(ticks)?;
+    app.runtime.elapse_ticks(ticks)
+}
 fn advance_guest(
     app: &mut LoadedApplication,
     budget: u64,
@@ -246,7 +250,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     gpu.palette[1] = [0, 0, 0, 255];
     app.runtime.graphics = Some(gpu);
     if ticks != 0 {
-        app.runtime.elapse_ticks(ticks)?;
+        elapse(&mut app, ticks)?;
     }
     println!(
         "startup {:?}",
@@ -258,7 +262,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut result = Ok(systemless_future::runtime::Stop::Budget);
     for (index, coordinates) in args[2..].chunks_exact(2).enumerate() {
         if ticks != 0 {
-            app.runtime.elapse_ticks(ticks)?;
+            elapse(&mut app, ticks)?;
         }
         pointer.motion(
             &mut app.runtime.process.input,
@@ -276,7 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("click {} mouse down {result:?}", index + 1);
         if matches!(result, Ok(Stop::Budget | Stop::Waiting { .. })) {
             if ticks != 0 {
-                app.runtime.elapse_ticks(ticks)?;
+                elapse(&mut app, ticks)?;
             }
             if let Some((step, x, y)) = drags
                 .iter()
@@ -312,7 +316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             && matches!(result, Ok(Stop::Budget | Stop::Waiting { .. }))
         {
             if ticks != 0 {
-                app.runtime.elapse_ticks(ticks)?;
+                elapse(&mut app, ticks)?;
             }
             result = advance(&mut app, tail, &mut trace, &mut volume);
             println!("settle after click {} budget {tail}: {result:?}", index + 1);
@@ -329,7 +333,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if matches!(result, Ok(Stop::Budget | Stop::Waiting { .. })) && tail != 0 {
         if ticks != 0 {
-            app.runtime.elapse_ticks(ticks)?;
+            elapse(&mut app, ticks)?;
         }
         result = advance(&mut app, tail, &mut trace, &mut volume);
         println!("tail budget {tail}: {result:?}");
@@ -384,6 +388,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.runtime.memory.u16(GuestPtr(c.pc))
         );
     }
+    println!(
+        "completed sound callbacks={}",
+        app.runtime.services.completed_sound_callbacks
+    );
     if std::env::var("SYSTEMLESS_PROBE_CATALOG").is_ok_and(|v| v == "1") {
         let mut folders = vec![2];
         let mut visited = std::collections::BTreeSet::new();

@@ -7,7 +7,9 @@ use crate::{
 use std::collections::BTreeMap;
 mod playback;
 mod queue;
+mod resource;
 use playback::Playback;
+pub(crate) use resource::Play;
 pub const CHANNEL_SIZE: u32 = 1060;
 const HEADER: u32 = 36;
 const BAD_CHANNEL: i16 = -205;
@@ -32,7 +34,8 @@ struct Channel {
     queue: u32,
     length: u16,
     playback: Playback,
-    commands: std::collections::VecDeque<[u8; 8]>,
+    commands: std::collections::VecDeque<resource::Pending>,
+    active: Option<resource::Pending>,
     head: u16,
     tail: u16,
     callback: Option<bool>,
@@ -161,6 +164,7 @@ impl Manager {
                 length,
                 playback: Playback::new(r.init),
                 commands: Default::default(),
+                active: None,
                 head: 0,
                 tail: 0,
                 callback: None,

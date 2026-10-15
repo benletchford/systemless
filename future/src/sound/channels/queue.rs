@@ -7,13 +7,13 @@ fn bad(message: &str) -> Error {
 pub(super) fn matches(m: &Memory, channel: u32, c: &Channel) -> Result<bool> {
     for (i, bytes) in c.commands.iter().enumerate() {
         let slot = (usize::from(c.head) + i) % usize::from(c.length);
-        if m.read(GuestPtr(channel + 36 + slot as u32 * 8), 8)? != bytes {
+        if m.read(GuestPtr(channel + 36 + slot as u32 * 8), 8)? != bytes.bytes {
             return Ok(false);
         }
     }
     Ok(true)
 }
-fn check(m: &Memory, c: &Channel, bytes: [u8; 8], queued: bool) -> Result<i16> {
+pub(super) fn check(m: &Memory, c: &Channel, bytes: [u8; 8], queued: bool) -> Result<i16> {
     let code = u16::from_be_bytes(bytes[..2].try_into().unwrap());
     let parameter = u16::from_be_bytes(bytes[2..4].try_into().unwrap());
     let value = u32::from_be_bytes(bytes[4..8].try_into().unwrap());
@@ -29,7 +29,7 @@ fn check(m: &Memory, c: &Channel, bytes: [u8; 8], queued: bool) -> Result<i16> {
             m.validate_write(GuestPtr(value), if code == 45 { 2 } else { 4 })?;
         }
         81 => {
-            if c.init & !0x87 != 0 {
+            if c.init & !0xb7 != 0 {
                 return Ok(-201);
             }
             if let Err(error) = super::playback::voice(m, value)? {
@@ -47,8 +47,8 @@ fn check(m: &Memory, c: &Channel, bytes: [u8; 8], queued: bool) -> Result<i16> {
 }
 pub(super) fn preflight(m: &Memory, channel: u32, c: &Channel) -> Result<()> {
     m.validate_write(GuestPtr(channel + 20), 16)?;
-    for &bytes in &c.commands {
-        let error = check(m, c, bytes, true)?;
+    for pending in &c.commands {
+        let error = check(m, c, pending.bytes, true)?;
         if error != 0 {
             return Err(bad(&format!(
                 "queued sound command became invalid ({error})"
@@ -61,6 +61,7 @@ fn clear(m: &mut Memory, channel: u32, c: &mut Channel) -> Result<()> {
     m.write(GuestPtr(channel + 20), &[0; 8])?;
     c.playback.command = [0; 8];
     c.playback.voice = None;
+    c.active = None;
     Ok(())
 }
 pub(super) fn execute(
@@ -126,7 +127,7 @@ pub(super) fn execute(
 }
 pub(super) fn pump(m: &mut Memory, channel: u32, c: &mut Channel) -> Result<()> {
     while c.playback.voice.is_none() && c.callback.is_none() {
-        let Some(bytes) = c.commands.front().copied() else {
+        let Some(bytes) = c.commands.front().map(|p| p.bytes) else {
             break;
         };
         let error = check(m, c, bytes, true)?;
@@ -134,12 +135,15 @@ pub(super) fn pump(m: &mut Memory, channel: u32, c: &mut Channel) -> Result<()> 
             return Err(bad(&format!("invalid pending sound command ({error})")));
         }
         m.validate_write(GuestPtr(channel + 20), 16)?;
-        c.commands.pop_front();
+        let pending = c.commands.pop_front().unwrap();
         c.head = (c.head + 1) % c.length;
         m.write(GuestPtr(channel + 32), &c.head.to_be_bytes())?;
         let error = execute(m, channel, c, bytes, true)?;
         if error != 0 {
             return Err(bad(&format!("pending sound command failed ({error})")));
+        }
+        if c.playback.voice.is_some() || c.callback.is_some() {
+            c.active = Some(pending);
         }
     }
     Ok(())
@@ -156,6 +160,16 @@ impl Manager {
         p: &mut Process,
         channel: u32,
         bytes: [u8; 8],
+    ) -> Result<Option<i16>> {
+        self.enqueue_for_play(m, p, channel, bytes, None)
+    }
+    pub(super) fn enqueue_for_play(
+        &mut self,
+        m: &mut Memory,
+        p: &mut Process,
+        channel: u32,
+        bytes: [u8; 8],
+        completion: Option<&resource::Completion>,
     ) -> Result<Option<i16>> {
         let errors = (p.mem_error, p.res_error);
         let result = (|| {
@@ -176,7 +190,8 @@ impl Manager {
             m.write(slot, &bytes)?;
             c.tail = (c.tail + 1) % c.length;
             m.write(GuestPtr(channel + 34), &c.tail.to_be_bytes())?;
-            c.commands.push_back(bytes);
+            c.commands
+                .push_back(resource::Pending::new(bytes, completion));
             pump(m, channel, c)?;
             Ok(Some(0))
         })();

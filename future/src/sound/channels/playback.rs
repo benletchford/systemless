@@ -50,16 +50,11 @@ pub(super) fn voice(m: &Memory, header: u32) -> Result<std::result::Result<Voice
     let long = |at| u32::from_be_bytes(data[at..at + 4].try_into().unwrap());
     let length = long(4) as usize;
     let rate = long(8);
-    let start = long(12);
-    let end = long(16);
     if data[20] != 0
-        || data[21] == 0
-        || data[21] > 127
         || length == 0
         || length > crate::load::IMAGE_LIMIT
         || rate < 65536
         || u64::from(rate) > 64000u64 << 16
-        || (start != 0 || end != 0) && (start >= end || end as usize > length)
     {
         return Ok(Err(-206));
     }
@@ -87,6 +82,7 @@ impl Manager {
         for c in self.channels.values_mut() {
             c.playback.voice = None;
             c.commands.clear();
+            c.active = None;
             c.callback = None;
         }
     }
@@ -162,6 +158,7 @@ impl Manager {
                         m.write(GuestPtr(channel + 20), &[0; 8])?;
                         c.playback.voice = None;
                         c.playback.command = [0; 8];
+                        c.active = None;
                     }
                 }
             }
@@ -207,6 +204,7 @@ impl Manager {
                     m.write(GuestPtr(channel + 20), &[0; 8])?;
                     c.playback.voice = None;
                     c.playback.command = [0; 8];
+                    c.active = None;
                 }
             }
             Ok(())
@@ -276,6 +274,7 @@ impl Manager {
                         m.write(GuestPtr(channel + 20), &[0; 8])?;
                         c.playback.voice = None;
                         c.playback.command = [0; 8];
+                        c.active = None;
                     } else {
                         break;
                     }

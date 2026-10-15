@@ -1508,11 +1508,23 @@ fn compiled_queued_sound_runs_callbacks_on_both_cpus_and_restores_the_event_wait
             Stop::Waiting { ticks: 1 }
         );
         assert_eq!(callback(&a), 1);
-        a.runtime.elapse_ticks(1).unwrap();
-        assert_eq!(
-            a.runtime.advance(50000).unwrap(),
-            Stop::Waiting { ticks: 1 }
-        );
+        // A callback crossing an instruction-derived tick may already have
+        // expired the first EventWait and entered the second phase.
+        if !a.runtime.services.calls.iter().any(|call| {
+            matches!(
+                call,
+                Call::PostEvent {
+                    what: 7,
+                    message: 0xa808
+                }
+            )
+        }) {
+            a.runtime.elapse_ticks(1).unwrap();
+            assert_eq!(
+                a.runtime.advance(50000).unwrap(),
+                Stop::Waiting { ticks: 1 }
+            );
+        }
         let source = [[-32768; 2], [0; 2], [32512; 2], [-16384; 2]];
         assert_eq!(a.runtime.render_sound(4, 8000).unwrap(), source);
         assert_eq!(
@@ -1563,6 +1575,103 @@ fn headless_cli_runs_queued_sound_callbacks_without_a_host_audio_device() {
             .args(["--budget", "50000"])
             .output()
             .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("Exit(0)"),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn compiled_resource_sound_uses_real_sync_waits_scoped_completion_and_callback_deadlines() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code =
+        std::fs::read(root.join("resource_sound.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("resource_sound.ppc")).unwrap();
+    let marker = |a: &LoadedApplication, value| {
+        a.runtime
+            .services
+            .calls
+            .iter()
+            .any(|call| matches!(call,Call::PostEvent{what:7,message} if *message==value))
+    };
+    for mut a in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, Some(&code)).unwrap(),
+    ] {
+        assert_eq!(
+            a.runtime.advance(50000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert!(!marker(&a, 0xa810));
+        let wave = [[-32768; 2], [0; 2], [32512; 2], [-16384; 2]];
+        assert_eq!(a.runtime.render_sound(4, 8000).unwrap(), wave);
+        assert_eq!(
+            a.runtime.advance(50000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert!(marker(&a, 0xa810));
+        assert!(marker(&a, 0xa811));
+        assert_eq!(
+            a.runtime.render_sound(2, 8000).unwrap(),
+            [[16384; 2], [24576; 2]]
+        );
+        let before = a.runtime.instructions;
+        let mut stop = Stop::Budget;
+        for _ in 0..4 {
+            stop = a.runtime.advance(50000).unwrap();
+            if stop != Stop::Budget {
+                break;
+            }
+        }
+        assert_eq!(stop, Stop::Waiting { ticks: 1 });
+        assert!(a.runtime.instructions - before >= 1000);
+        // No host elapse: the long guest callback's own virtual ticks must expire the
+        // suspended EventWait and let main reach the third resource's sync wait.
+        assert!(marker(&a, 0xa814));
+        assert!(!marker(&a, 0xa812));
+        assert_eq!(a.runtime.render_sound(4, 8000).unwrap(), wave);
+        assert_eq!(
+            a.runtime.advance(50000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert!(marker(&a, 0xa812));
+        assert!(a.runtime.process.sound.playing());
+        // SndPlay returned although the callback's unrelated tail is still active.
+        assert_eq!(
+            a.runtime.render_sound(2, 8000).unwrap(),
+            [[16384; 2], [24576; 2]]
+        );
+        a.runtime.elapse_ticks(1).unwrap();
+        assert_eq!(a.runtime.advance(50000).unwrap(), Stop::Exit(0));
+        assert!(marker(&a, 0xa813));
+        assert_eq!(a.runtime.services.completed_sound_callbacks, 2);
+        assert!(!a.runtime.process.sound.playing());
+    }
+}
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn headless_cli_finishes_resource_sound_and_callbacks_without_a_host_audio_device() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    for (flag, path) in [
+        ("--code", root.join("resource_sound.68k.rsrc")),
+        ("--pef", root.join("resource_sound.ppc")),
+    ] {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_systemless-future"));
+        command.arg(flag).arg(path);
+        if flag == "--pef" {
+            command
+                .arg("--resources")
+                .arg(root.join("resource_sound.68k.rsrc"));
+        }
+        let output = command.args(["--budget", "250000"]).output().unwrap();
         assert!(
             output.status.success(),
             "{}",

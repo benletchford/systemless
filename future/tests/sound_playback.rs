@@ -228,7 +228,6 @@ fn bad_headers_and_render_boundaries_do_not_advance_or_publish_partial_playback(
         (20, vec![0xff]),
         (8, vec![0; 4]),
         (4, u32::MAX.to_be_bytes().to_vec()),
-        (21, vec![0]),
     ] {
         let saved = a
             .runtime

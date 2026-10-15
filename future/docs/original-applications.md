@@ -1546,3 +1546,30 @@ Apple's header contract specifies baseFrequency 1..127 for pitch calculations;
 its role in buffer playback needs to stay distinct from note synthesis. Evidence:
 /tmp/systemless-original-game-sound-metadata.txt and
 https://dev.os9.ca/techpubs/mac/Sound/Sound-74.html.
+
+
+### Resource-sound execution evidence
+
+The new sound-resource probe accepted 59 EV Sounds, four EV Music and 104 Marathon
+Sounds entries through synthetic 68K and PPC callers. All 167 matching 32-frame
+PCM prefixes passed the cross-adapter assertion; each call then advanced silently
+to completion and released its internal channel. This includes EV's unused loop/
+pitch metadata cases. Resource formats/bytes are not changed. The probe does not
+execute original application startup, render complete waveforms, open an audio
+device or establish original EV/Marathon gameplay. Evidence:
+/tmp/systemless-ev-sounds-final-playback.txt,
+/tmp/systemless-ev-music-final-playback.txt and
+/tmp/systemless-marathon-sounds-final-playback.txt.
+
+Sound-enabled original Super Mines completes the bounded Save/Open script with
+volume seven and 120 virtual ticks per input step. Sound time now advances with
+that explicit probe clock. Its actual callback returns once, restores the source
+handle's saved state ($60) and quietly disposes its channel. Later channel reuse
+also completes; the 1,972-byte game is reopened and the program reaches its normal
+Waiting{ticks:10} at $0100C798. Its final board screenshot was visually inspected.
+Evidence: /tmp/systemless-mines-resource-sound-clocked.txt and after.ppm/png.
+This replaces the previous sound-enabled SndPlay stop for this script, not native
+audio/desktop/win-loss acceptance. The retained muted/zero-tick profile separately
+completes Save/Open with final pixels identical to the queue checkpoint:
+/tmp/systemless-mines-resource-muted-profile.txt and after.ppm. Do not compare
+random-board/timer pixels across the two different virtual-time profiles.

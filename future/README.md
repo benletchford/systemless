@@ -223,8 +223,9 @@ output uses a bounded CPAL transport; headless virtual waits advance completion
 without an audio device. Compiler-generated guests verify exact samples and
 completion. SndDoCommand now executes an inline guest-visible FIFO, waits on full
 queues without spinning, and runs same-ISA callbacks through the guest CPU.
-Resource playback, other header formats and Sound Manager version/capability
-queries remain unfinished. Both original
+SndPlay now parses loaded format-1/format-2 resources into this same queue,
+with real synchronous waits and resource-scoped completion. Other header formats
+and Sound Manager version/capability queries remain unfinished. Both original
 EV and Marathon still stop at sound startup. Super Mines' recorded interaction
 is automated/offscreen; live desktop and win/loss acceptance remain incomplete.
 
@@ -235,12 +236,24 @@ purgeable and resource flags without changing 32-bit master addresses. Resource
 loads initialize those flags; detaching clears the resource bit. MoveHHi can
 relocate into the immediately adjacent free interval without crossing other
 allocations. General compaction/purging remains unfinished. The sound-enabled
-Super Mines diagnostic now reaches SndPlay; resource sound is still pending.
+Super Mines now completes its resource-sound callback and Save/Open route in
+a bounded offscreen run with explicit volume and virtual time.
 
 Sound callbacks preserve interrupted CPU and cooperative wait state. A callback
 can call shared Toolbox services and quietly dispose/recreate its own channel;
 generation checks protect the replacement voice. Queued buffers render across
 command boundaries in one PCM pull. A silent 48 kHz clock advances queued work
 in time bounded by command count, including very large guest waits. Production
-Mixed Mode, resource SndPlay, pause/wait/sync commands and nonquiet active-disposal
+Mixed Mode, pause/wait/sync commands and nonquiet active-disposal
 waiting remain unfinished. Native audio quality/timing acceptance remains separate.
+
+Resource sound accepts owned loaded handles without requiring Resource Manager
+identity. Relative headers/inline samples are checked against handle bounds;
+absolute pointers retain normal guest-memory checks. Commands are copied, sample
+bytes stay live, and source flags are retained. A nil channel forces synchronous
+playback and its internal allocations are released after completion. Ordinary
+synchronous calls wait only for their own resource commands. Buffer playback
+ignores unused note-pitch/loop metadata, covering the original EV asset cases.
+Synthetic guest callers accepted 167 scanned EV/Marathon sounds through both
+adapters, with matching 32-frame PCM prefixes and silent completion/cleanup.
+This is asset-level evidence; original EV/Marathon gameplay remains unfinished.

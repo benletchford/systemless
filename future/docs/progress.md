@@ -4407,3 +4407,70 @@ Superseded broad runs were intentionally stopped for the lifetime/borrow fixes
 and are not final acceptance evidence. Native queued timing, virtual-clock
 integration, resource playback and full original-game/rebuild acceptance remain
 unfinished. Do not mark the goal complete at this checkpoint.
+
+
+## Loaded resource playback through the shared FIFO
+
+SndPlay now works through native $A805 and PPC imports, using the existing shared
+queue/renderer. Format-1/format-2 headers and relative sample spans are bounded
+by actual handle size. Source bytes/flags remain unchanged, ordinary loaded
+handles work without Resource Manager identity, and samples remain live. The
+one-shot buffer path no longer rejects unused pitch/loop metadata, including the
+previously observed EV cases. Unknown command families and unsupported encodings
+remain explicit errors; rate attribute hints retain metadata while the portable
+host clock/source-rate resampler controls output.
+
+Per-call reference-counted completion tags survive queued and active work, including
+guest callbacks, and are released by real completion/quiet/flush/disposal. This
+provides true scoped sync waits while unrelated later audio may keep playing.
+Nil-channel calls force sync and release internal allocations; async calls wait
+for submission capacity if necessary and then return early. Resource waits retain
+channel generations and survive guest callback suspension. Self-blocking callback
+reentrancy returns busy. A new compiled fixture and focused boundary tests cover
+these paths, OOM rollback, invalid/nil sources, relative versus absolute headers,
+source flags, copied commands, live samples and error-global preservation.
+
+The previous virtual-clock gap is fixed: instruction-derived ticks now use
+elapse_ticks, aging event waits held under sound callbacks. A long callback in
+both compiled CPU fixtures expires its saved EventWait without host elapse.
+The earlier queue SDK controller now accounts for this valid deadline expiry
+instead of assuming that only explicit host ticks can resume it.
+
+probe_resource_sound uses actual synthetic 68K/PPC call instructions and compares
+32-frame PCM prefixes per resource. It accepted all 59 EV Sounds, four EV Music
+and 104 Marathon Sounds resources (334 calls total), including the EV metadata
+cases; every internal channel was released after silent completion. It does not
+run original application code, capture full waveforms or establish native audio.
+The template is the public compiled resource_sound fixture, not a private game.
+Final corpus logs: /tmp/systemless-ev-sounds-final-playback.txt,
+/tmp/systemless-ev-music-final-playback.txt and
+/tmp/systemless-marathon-sounds-final-playback.txt.
+
+Original sound-enabled Mines now performs resource playback, returns from its real
+callback, restores saved resource flags, disposes/reuses its channel and completes
+Save/Open. With volume 7 and 120 virtual ticks per input step, it reopens the
+1,972-byte game and returns to Waiting{ticks:10} at $0100C798; one completed sound
+callback is recorded. The resulting board screenshot was inspected. Evidence:
+/tmp/systemless-mines-resource-sound-clocked.txt and associated after.ppm/png.
+probe_mouse now advances sound alongside explicitly requested virtual ticks;
+its default zero-tick profile remains unchanged. The retained muted-profile run
+also completes Save/Open and its final PPM is byte-identical to the queue milestone:
+/tmp/systemless-mines-resource-muted-profile.txt and associated after.ppm.
+These are different timing profiles, not a native sound/timing acceptance claim.
+
+The next executable slice is accurate sound status/capability/version contracts,
+then new original EV/Marathon startup traces and production routine-descriptor/
+Mixed Mode support for PPC. Additional sample formats, note synthesis, pause/wait/
+sync commands and active nonquiet disposal still remain. Full gameplay, native
+queued timing and the full independent rebuild remain unfinished.
+
+Final full acceptance succeeds with all 444 tests passing, zero failures and
+zero skips, including real GPU checks and all 28 compiled SDK/CLI fixtures.
+Terminal evidence: /tmp/systemless-resource-sound-acceptance-all.txt.
+Focused checks: /tmp/systemless-resource-sound-acceptance-focused.txt and
+/tmp/systemless-resource-sound-acceptance-sdk.txt. Strict all-target lint with
+-D warnings passes: /tmp/systemless-resource-sound-acceptance-lint.txt.
+Changed-source sequential stdin formatting, fixture shell syntax and whitespace
+checks pass. Original corpus/probe processes also exited successfully. Private
+assets/captures are excluded from Git. This is a resource-playback checkpoint;
+full original-game/native-timing and rebuild acceptance remain unfinished.

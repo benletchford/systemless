@@ -14,6 +14,8 @@ pub enum Stop {
 #[derive(Default, Debug)]
 pub struct Services {
     pub accumulator: u32,
+    /// Successful guest Sound Manager callback returns, for host diagnostics.
+    pub completed_sound_callbacks: u64,
     pub calls: Vec<Call>,
 }
 // The whole CPU is suspended, retaining even engine-private FPU/control state.
@@ -47,6 +49,10 @@ enum Resume {
         stop: Stop,
     },
 }
+struct ResourcePlayWait {
+    play: crate::sound::Play,
+    reply: crate::abi::Reply,
+}
 struct SoundWait {
     channel: u32,
     serial: u64,
@@ -59,6 +65,7 @@ struct SoundSuspendedWaits {
     menu: Option<MenuWait>,
     file: Option<StandardFileWait>,
     sound: Option<SoundWait>,
+    play: Option<ResourcePlayWait>,
 }
 struct StandardFileWait {
     dialog: crate::standard_file::Dialog,
@@ -90,6 +97,7 @@ pub struct Runtime {
     continuations: Vec<Continuation>,
     event_wait: Option<EventWait>,
     sound_wait: Option<SoundWait>,
+    play_wait: Option<ResourcePlayWait>,
     control_wait: Option<ControlWait>,
     menu_wait: Option<MenuWait>,
     standard_file_wait: Option<StandardFileWait>,
@@ -111,6 +119,7 @@ impl Runtime {
             continuations: Vec::new(),
             event_wait: None,
             sound_wait: None,
+            play_wait: None,
             control_wait: None,
             menu_wait: None,
             standard_file_wait: None,
@@ -214,7 +223,7 @@ impl Runtime {
                 .checked_add(1)
                 .ok_or_else(|| Error::Cpu("instruction clock overflow".into()))?;
             if !self.abi.fixture && self.instructions.is_multiple_of(1000) {
-                self.calendar.advance(&mut self.memory, 1)?;
+                self.elapse_ticks(1)?;
             }
             match self.cpu.step_with_abi(&mut self.memory, &self.abi)? {
                 Outcome::Continue => {}
@@ -1418,6 +1427,36 @@ impl Runtime {
                             let v = self.process.get_resource(&mut self.memory, kind, id)?;
                             reply.apply(&mut self.cpu, &mut self.memory, v, 0)?;
                         }
+                        Call::SoundPlay {
+                            channel,
+                            handle,
+                            asynchronous,
+                        } => {
+                            let mut sound = std::mem::take(&mut self.process.sound);
+                            let result = sound.begin_play(
+                                &mut self.memory,
+                                &mut self.process,
+                                channel,
+                                handle,
+                                asynchronous,
+                            );
+                            self.process.sound = sound;
+                            match result? {
+                                Err(error) => reply.apply(
+                                    &mut self.cpu,
+                                    &mut self.memory,
+                                    error as i32 as u32,
+                                    error,
+                                )?,
+                                Ok(play) => {
+                                    if let Some(stop) =
+                                        self.poll_resource_play(ResourcePlayWait { play, reply })?
+                                    {
+                                        return Ok(stop);
+                                    }
+                                }
+                            }
+                        }
                         Call::SoundQueue {
                             channel,
                             command,
@@ -1771,6 +1810,7 @@ impl Runtime {
                         | Call::SoundChannel(_)
                         | Call::SoundImmediate { .. }
                         | Call::SoundQueue { .. }
+                        | Call::SoundPlay { .. }
                         | Call::SoundVolume(_)
                         | Call::GetSoundVolume(_)
                         | Call::DeviceControl(_)
@@ -1862,10 +1902,32 @@ impl Runtime {
             }
         }
 
+        if let Some(wait) = self.play_wait.take() {
+            return self.poll_resource_play(wait);
+        }
         if let Some(wait) = self.sound_wait.take() {
             return self.poll_sound_wait(wait);
         }
         Ok(None)
+    }
+    fn poll_resource_play(&mut self, mut wait: ResourcePlayWait) -> Result<Option<Stop>> {
+        let mut sound = std::mem::take(&mut self.process.sound);
+        let result = sound.poll_play(&mut self.memory, &mut self.process, &mut wait.play);
+        let cleanup = if matches!(result,Ok(Some(e)) if e!=0) {
+            sound.abandon_play(&mut self.memory, &mut self.process, &mut wait.play)
+        } else {
+            Ok(())
+        };
+        self.process.sound = sound;
+        cleanup?;
+        if let Some(error) = result? {
+            wait.reply
+                .apply(&mut self.cpu, &mut self.memory, error as i32 as u32, error)?;
+            Ok(None)
+        } else {
+            self.play_wait = Some(wait);
+            Ok(Some(Stop::Waiting { ticks: 1 }))
+        }
     }
     fn poll_sound_wait(&mut self, wait: SoundWait) -> Result<Option<Stop>> {
         let mut sound = std::mem::take(&mut self.process.sound);
@@ -1907,6 +1969,7 @@ impl Runtime {
             menu: self.menu_wait.take(),
             file: self.standard_file_wait.take(),
             sound: self.sound_wait.take(),
+            play: self.play_wait.take(),
         });
         let caller = std::mem::replace(&mut self.cpu, callee);
         self.continuations.push(Continuation {
@@ -2210,11 +2273,17 @@ impl Runtime {
                     sound.finish_callback(&mut self.memory, &mut self.process, channel, serial);
                 self.process.sound = sound;
                 result?;
+                self.services.completed_sound_callbacks = self
+                    .services
+                    .completed_sound_callbacks
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Cpu("sound callback diagnostic count overflow".into()))?;
                 self.event_wait = waits.event;
                 self.control_wait = waits.control;
                 self.menu_wait = waits.menu;
                 self.standard_file_wait = waits.file;
                 self.sound_wait = waits.sound;
+                self.play_wait = waits.play;
             }
             Resume::StandardFile { mut wait, result } => {
                 wait.dialog.filtered(result.read(&self.memory, value)?)?;

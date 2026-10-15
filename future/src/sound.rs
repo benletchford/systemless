@@ -46,4 +46,5 @@ pub fn control(memory: &mut Memory, pointer: GuestPtr) -> Result<i16> {
 }
 
 mod channels;
+pub(crate) use channels::Play;
 pub use channels::{Manager, NewChannel, Op, CHANNEL_SIZE};
