@@ -1579,3 +1579,34 @@ reads precede the in-place write, and both CPU routes preserve caller error
 globals and void return values. The existing DrawMenuBar reads the live bit zero
 for title dimming. Standard MenuSelect tracking remains an explicit missing
 service rather than returning a fake no-selection result.
+
+
+MenuSelect is a shared cooperative service. A MenuWait retains only its checked
+return ABI and shared Menu Manager Tracking state while either real CPU is
+suspended. Polls read live menu records, enable bits, the screen bitmap, global
+Mouse and pending release coordinates; they do not execute guest instructions
+or dispatch the service again. Keyboard and unrelated OS events remain queued.
+Masked mouse-up posting still permits completion from physical input state.
+
+The tracker plans standard monochrome title/dropdown/text/mark/shortcut drawing
+through the existing shared strike geometry and wgpu bitmap operations. A host
+owned immutable snapshot of canonical screen indices provides the restoration
+source. Switching/redrawing/restoring uses bounded GPU blits over the damaged
+area; pixels outside it and bitmap padding retain live guest state. Presentation
+continues to use canonical guest screen bytes. A selected title stays highlighted
+through DrawMenuBar until HiliteMenu clears it; MenuChoice reads live MenuDisable.
+Both CPU boundaries retain their own Pascal/PPC result layouts. Error globals
+and caller port state are preserved.
+
+This is the standard non-scrolling monochrome application-menu slice. Custom
+MDEFs, hooks, desk-accessory/zero menu IDs, icons, hierarchical submenus, per-item
+color overrides, oversized/scrolling menus, unsupported text faces and nonzero
+MenuFlash counts remain explicit errors. Native menu pixel parity is unverified.
+Full hierarchy, callback, flash and scrolling work remains required by the
+rebuild, and is not replaced with fake no-selection results.
+
+HiWord/LoWord use a shared signed 16-bit extraction helper with native word
+results and signed PPC register results; adapters only decode arguments.
+Contracts: Apple's [MenuSelect](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-133.html),
+[MenuChoice](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-135.html), and
+[mathematical utilities](https://dev.os9.ca/techpubs/mac/pdf/Operating_System_Utilities/MLU.pdf).

@@ -11,6 +11,8 @@ use crate::{
 mod items;
 pub mod record;
 mod resources;
+mod tracking;
+pub use tracking::Tracking;
 const LIST: GuestPtr = GuestPtr(0xa1c);
 const COLORS: GuestPtr = GuestPtr(0xd50);
 const HEIGHT: GuestPtr = GuestPtr(0xbaa);
@@ -570,6 +572,6 @@ impl Menus {
                 )?;
             }
         }
-        Ok(())
+        self.draw_highlight(memory, process, gpu)
     }
 }

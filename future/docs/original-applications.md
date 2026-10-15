@@ -592,3 +592,76 @@ goal remains active.
 
 Primary contracts: Apple's [EnableItem](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-150.html)
 and [DisableItem](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-151.html).
+
+
+### Cooperative menu selection and command decoding (2026-10-15)
+
+Shared MenuSelect ($A93D / PPC import) now yields while the mouse is held, tracks
+real global motion across titles and rows, and returns packed menu/item words
+on release. Both CPU adapters retain their exact deferred result ABI. Live
+flags/text/geometry are revalidated on each poll. Enabled rows highlight; disabled
+items and separators do not select. MenuChoice ($AA66 / PPC) reads live
+MenuDisable, including attempts to select disabled rows. HiliteMenu ($A938 / PPC)
+controls the retained title; DrawMenuBar preserves that highlight. Current port,
+caller error globals, unrelated queued input and padding remain unchanged.
+
+Dropdowns, text/marks/shortcuts, highlights and restoration use shared wgpu
+operations. An immutable host snapshot of canonical guest screen indices is the
+restoration source; only the damaged area is restored. Idle polls do not execute
+guest instructions, redispatch calls or redraw unchanged menu state. A queued
+release uses its event coordinates even if the pointer subsequently moves; when
+mouseUp posting is masked, the physical release still completes tracking. Bad
+live storage faults before consuming a release or publishing a result.
+
+The supported slice is standard monochrome, non-scrolling application menus.
+Hooks, custom definitions, desk-accessory/zero menu IDs, hierarchy, icons,
+per-item color overrides, scrolling/oversized menus, unsupported text faces and
+nonzero flashing counts remain explicit unsupported cases. Native pixel parity
+is unverified. These remain rebuild requirements, not silently accepted stubs.
+
+Four new default tests cover menu ABIs, live MenuChoice, signed HiWord/LoWord
+extraction, guards, result widths and faults. Three GPU tests cover both real
+CPUs, waiting/no-spin, real motion/release, retained highlight, exact restoration
+of nonuniform pixels, outside edits, switching, disabled/separator/outside
+release, masked release, live edits, corrupt masters and unsupported callbacks.
+A new rebuilt MPW fixture requires the real host-driven selection on both CPUs
+before its success marker and exit.
+
+The private original Super Mines fork retains its recorded SHA-256. The sequence
+(256,171), (145,150), (402,231), settle, (30,65), settle, then a held File-menu
+press at (35,10) opens the actual dropdown. Moving to (60,35) highlights New Game;
+release returns $00020001. A separate run drags to (60,121) and returns $00020008
+for Quit. Visually inspected readbacks show the opened/highlighted menu, and
+both runs pass shared HiWord ($A86A) and LoWord ($A86B) command decoding.
+
+Both commands next begin constructing WIND 2000 and its four controls, then
+stop at MoveControl ($A959), post-trap PC $0100E118. The native frame requests
+h=236/v=36 on control $10014EC8 (New Game SP $0080FC78, Quit SP $0080FC86).
+The confirmation has not yet been displayed or accepted; Quit has not exited.
+Next: shared control repositioning with correct old/new-area drawing, complete
+this confirmation and verify the original New Game/Quit lifecycle. Full gameplay,
+original PPC compatibility, native presentation acceptance, hierarchy/callbacks
+and real Mixed Mode remain unfinished. The full rebuild goal stays active.
+
+The diagnostic now accepts multiple comma-separated settle clicks and a bounded
+host drag via SYSTEMLESS_PROBE_DRAG=CLICK:X:Y. It moves while still held, takes
+a drag readback and only releases/continues if the slice succeeds. No guest
+state is patched. Reproduction:
+
+```sh
+SYSTEMLESS_PROBE_TAIL_BUDGET=2000000 \
+SYSTEMLESS_PROBE_SETTLE_AFTER_CLICK=3,4 SYSTEMLESS_PROBE_DRAG=5:60:35 \
+cargo run --manifest-path future/Cargo.toml --example probe_mouse -- \
+  /path/to/Super-Mines.raw-rsrc /tmp/systemless-mines-menu \
+  256 171 145 150 402 231 30 65 35 10
+```
+
+Use drag target 5:60:121 for the separate Quit route. Private binaries/readbacks
+remain outside the repository. System 7 native comparison is not required under
+the user's authorization; this is not a native pixel parity claim.
+
+Final interaction coverage additionally uses a 511-pixel logical bitmap in
+64-byte rows to prove padding-bit preservation. Traversing the menu bar's bottom
+divider keeps the dropdown open; the complete bar is the hit area while its
+bottom divider is excluded from title inversion. The redraw cache also includes
+the live menu-bar height so a geometry change cannot retain stale pixels.

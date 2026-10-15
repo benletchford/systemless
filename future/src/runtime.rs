@@ -38,6 +38,10 @@ enum Resume {
         stop: Stop,
     },
 }
+struct MenuWait {
+    tracking: crate::menus::Tracking,
+    reply: crate::abi::Reply,
+}
 struct ControlWait {
     tracking: crate::controls::Tracking,
     reply: crate::abi::Reply,
@@ -60,6 +64,7 @@ pub struct Runtime {
     continuations: Vec<Continuation>,
     event_wait: Option<EventWait>,
     control_wait: Option<ControlWait>,
+    menu_wait: Option<MenuWait>,
     terminal: Option<Stop>,
     pub(crate) lifecycle: Option<crate::lifecycle::Lifecycle>,
     faulted: bool,
@@ -78,6 +83,7 @@ impl Runtime {
             continuations: Vec::new(),
             event_wait: None,
             control_wait: None,
+            menu_wait: None,
             terminal: None,
             lifecycle: None,
             faulted: false,
@@ -134,6 +140,11 @@ impl Runtime {
     fn advance_inner(&mut self, budget: u64) -> Result<Stop> {
         if budget == 0 {
             return Ok(Stop::Budget);
+        }
+        if let Some(wait) = self.menu_wait.take() {
+            if let Some(stop) = self.poll_menu_wait(wait)? {
+                return Ok(stop);
+            }
         }
         if let Some(wait) = self.control_wait.take() {
             if let Some(stop) = self.poll_control_wait(wait)? {
@@ -553,6 +564,47 @@ impl Runtime {
                         Call::Cursor(op) => {
                             crate::cursor::call(&self.memory, &mut self.process, op)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::Word { value, high } => {
+                            let value = crate::integer::word(value, high) as i32 as u32;
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
+                        Call::MenuChoice => {
+                            let value = self.memory.u32(GuestPtr(0xb54))?;
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
+                        Call::HiliteMenu(id) => {
+                            let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                Error::Graphics("HiliteMenu requires a GPU".into())
+                            })?;
+                            let manager = std::mem::take(&mut self.process.menus);
+                            let result =
+                                manager.hilite(&mut self.memory, &mut self.process, gpu, id);
+                            self.process.menus = manager;
+                            result?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::MenuSelect(point) => {
+                            let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                Error::Graphics("MenuSelect requires a GPU".into())
+                            })?;
+                            let manager = std::mem::take(&mut self.process.menus);
+                            let result = manager.begin_tracking(
+                                &mut self.memory,
+                                &mut self.process,
+                                gpu,
+                                point,
+                            );
+                            self.process.menus = manager;
+                            if let Some(tracking) = result? {
+                                if let Some(stop) =
+                                    self.poll_menu_wait(MenuWait { tracking, reply })?
+                                {
+                                    return Ok(stop);
+                                }
+                            } else {
+                                reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                            }
                         }
                         Call::Menu(op) => {
                             let mut manager = std::mem::take(&mut self.process.menus);
@@ -1374,6 +1426,10 @@ impl Runtime {
                         | Call::MoveBytes { .. }
                         | Call::Dialog(_)
                         | Call::Cursor(_)
+                        | Call::MenuSelect(_)
+                        | Call::HiliteMenu(_)
+                        | Call::Word { .. }
+                        | Call::MenuChoice
                         | Call::Menu(_)
                         | Call::TextEdit(_)
                         | Call::PenLine { .. }
@@ -1557,6 +1613,47 @@ impl Runtime {
             ticks,
             self.process.input,
         )
+    }
+    fn poll_menu_wait(&mut self, mut wait: MenuWait) -> Result<Option<Stop>> {
+        if let crate::abi::Reply::StackLong(p) = wait.reply {
+            self.memory.validate_write(p, 4)?;
+        }
+        let release = crate::events::prepare_remove(&self.memory, 1 << 2)?;
+        let released = release.is_some() || self.process.input.modifiers & 0x80 != 0;
+        let bytes = if let Some(e) = &release {
+            e.record[10..14].to_vec()
+        } else {
+            self.memory.read(crate::events::MOUSE, 4)?.to_vec()
+        };
+        let point = [
+            i16::from_be_bytes(bytes[..2].try_into().unwrap()),
+            i16::from_be_bytes(bytes[2..].try_into().unwrap()),
+        ];
+        let gpu = self
+            .graphics
+            .as_ref()
+            .ok_or_else(|| Error::Graphics("menu tracking requires a GPU".into()))?;
+        let manager = std::mem::take(&mut self.process.menus);
+        let result = manager.poll_tracking(
+            &mut self.memory,
+            &mut self.process,
+            gpu,
+            &mut wait.tracking,
+            point,
+            released,
+        );
+        self.process.menus = manager;
+        if let Some(value) = result? {
+            if let Some(e) = release {
+                e.commit(&mut self.memory)?;
+            }
+            wait.reply
+                .apply(&mut self.cpu, &mut self.memory, value, 0)?;
+            Ok(None)
+        } else {
+            self.menu_wait = Some(wait);
+            Ok(Some(Stop::Waiting { ticks: 1 }))
+        }
     }
     fn poll_control_wait(&mut self, wait: ControlWait) -> Result<Option<Stop>> {
         if let crate::abi::Reply::StackWord(p) = wait.reply {

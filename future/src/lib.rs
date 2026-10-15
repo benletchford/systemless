@@ -15,6 +15,7 @@ pub mod font;
 mod font_fallback;
 pub mod graphics;
 pub mod host_input;
+pub mod integer;
 mod jump;
 mod lifecycle;
 pub mod lines;

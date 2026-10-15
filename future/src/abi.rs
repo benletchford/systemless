@@ -84,6 +84,10 @@ pub enum Service {
     SetItemMark,
     CheckItem,
     EnableItem(bool),
+    MenuSelect,
+    HiliteMenu,
+    MenuChoice,
+    Word(bool),
     AppendResMenu,
     CountMenuItems,
     GetMenuHandle,
@@ -345,6 +349,11 @@ impl Abi {
             b"GetItem" | b"GetMenuItemText" => Some(Service::GetMenuItemText),
             b"SetItem" | b"SetMenuItemText" => Some(Service::SetMenuItemText),
             b"SetItemCmd" => Some(Service::SetItemCommand),
+            b"MenuSelect" => Some(Service::MenuSelect),
+            b"HiliteMenu" => Some(Service::HiliteMenu),
+            b"HiWord" => Some(Service::Word(true)),
+            b"LoWord" => Some(Service::Word(false)),
+            b"MenuChoice" => Some(Service::MenuChoice),
             b"EnableItem" => Some(Service::EnableItem(true)),
             b"DisableItem" => Some(Service::EnableItem(false)),
             b"SetItemMark" => Some(Service::SetItemMark),
@@ -1302,6 +1311,45 @@ impl Abi {
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("resource file stack overflow".into()))?;
                 Ok((Call::CreateResourceFile(name), Reply::None))
+            }
+            0xa86a | 0xa86b => {
+                let value = memory.u32(GuestPtr(sp))?;
+                let result = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("word extraction stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::Word {
+                        value,
+                        high: opcode == 0xa86a,
+                    },
+                    Reply::StackWord(GuestPtr(result)),
+                ))
+            }
+            0xa938 => {
+                let id = memory.u16(GuestPtr(sp))? as i16;
+                c.dar[15] = sp
+                    .checked_add(2)
+                    .ok_or_else(|| Error::Cpu("HiliteMenu stack overflow".into()))?;
+                Ok((Call::HiliteMenu(id), Reply::None))
+            }
+            0xa93d => {
+                let bytes = memory.read(GuestPtr(sp), 4)?;
+                let point = [
+                    i16::from_be_bytes(bytes[..2].try_into().unwrap()),
+                    i16::from_be_bytes(bytes[2..].try_into().unwrap()),
+                ];
+                let result = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("MenuSelect stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 4)?;
+                c.dar[15] = result;
+                Ok((Call::MenuSelect(point), Reply::StackLong(GuestPtr(result))))
+            }
+            0xaa66 => {
+                memory.validate_write(GuestPtr(sp), 4)?;
+                Ok((Call::MenuChoice, Reply::StackLong(GuestPtr(sp))))
             }
             0xa939 | 0xa93a => {
                 let args = memory.read(GuestPtr(sp), 6)?;
@@ -2288,6 +2336,13 @@ impl Abi {
                 handle: c.gpr[3],
                 kind: c.gpr[4].to_be_bytes(),
             }),
+            Service::MenuSelect => Call::MenuSelect([(c.gpr[3] >> 16) as i16, c.gpr[3] as i16]),
+            Service::HiliteMenu => Call::HiliteMenu(c.gpr[3] as i16),
+            Service::Word(high) => Call::Word {
+                value: c.gpr[3],
+                high,
+            },
+            Service::MenuChoice => Call::MenuChoice,
             Service::EnableItem(enabled) => Call::Menu(crate::menus::Op::Enable {
                 handle: c.gpr[3],
                 item: c.gpr[4] as i16,
@@ -2700,6 +2755,7 @@ impl Abi {
                         | Service::SetItemCommand
                         | Service::SetMenuItemText
                         | Service::GetMenuItemText
+                        | Service::HiliteMenu
                         | Service::EnableItem(_)
                         | Service::CheckItem
                         | Service::Menu(

@@ -168,6 +168,8 @@ returns to the event wait without a service fault. This verifies one basic board
 interaction; broader gameplay, menu-driven lifecycle and callbacks remain
 unfinished. Region/coordinate changes, mouse-region waits and dialog event
 classification share live guest state across both CPUs. A follow-up File-menu
-click now passes shared EnableItem/DisableItem state and stops at MenuSelect
-($A93D). Cooperative menu tracking and selection are the next milestone. The
-full rebuild stays active.
+click now opens/tracks the File dropdown through shared MenuSelect. Separate
+New Game and Quit drags return their real packed commands and decode through
+shared HiWord/LoWord. Both then stop at MoveControl ($A959) while constructing
+a confirmation window. Shared control repositioning and confirmation/lifecycle
+acceptance are next; neither command has completed. The full rebuild stays active.

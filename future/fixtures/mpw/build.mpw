@@ -55,3 +55,9 @@ SC -sym off tracking.c -o tracking.68k.o
 Link -d -t 'APPL' -c 'FUTR' tracking.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o tracking.68k
 MrC -sym off -opt off tracking.c -o tracking.ppc.o
 PPCLink tracking.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o tracking.ppc
+SC -sym off menu_tracking.c -o menu_tracking.68k.o
+Link -d -t 'APPL' -c 'FUTR' menu_tracking.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o menu_tracking.68k
+MrC -sym off -opt off menu_tracking.c -o menu_tracking.ppc.o
+PPCLink menu_tracking.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o menu_tracking.ppc
+Rez -append -o menu_tracking.68k menus.r
+Rez -append -o menu_tracking.ppc menus.r

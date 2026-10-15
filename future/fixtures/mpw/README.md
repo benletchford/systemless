@@ -434,3 +434,14 @@ menu disable/enable cycle, enabling it restores the original mask, and item 32
 and negative requests leave flags unchanged. Both compiler targets complete the
 existing title-rendering, resource and lifecycle acceptance afterward. MenuSelect
 interaction is not covered by this fixture yet.
+
+
+The new menu_tracking.c fixture builds with the public MenuSelect, MenuChoice
+and HiliteMenu headers/startup libraries for both targets, using menus.r. The
+acceptance host presses the button at global (15,10), runs until tracking yields,
+checks a second poll executes no guest instructions, moves to (25,25), and
+releases. The guest requires packed menu 70/item 1, live MenuChoice and TheMenu,
+then HiliteMenu(0), its success marker and successful ExitToShell. Use the
+ignored compiled_menu_tracking test with the real generated forks and a GPU.
+HiWord/LoWord adapters are separately exercised by focused real-CPU fixtures and
+the original app's command decoding. No private application data is committed.

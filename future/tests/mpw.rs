@@ -870,3 +870,97 @@ fn compiled_tracking_waits_for_real_host_release_and_completes_on_both_cpus() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW menu tracking fixture and real wgpu adapter"]
+fn compiled_menu_tracking_waits_for_host_motion_and_returns_selection_on_both_cpus() {
+    use systemless_future::{graphics::Graphics, host_input::Pointer, memory::GuestPtr};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("menu_tracking.68k.rsrc")).unwrap();
+    let pef = std::fs::read(root.join("menu_tracking.ppc")).unwrap();
+    let resources = std::fs::read(root.join("menu_tracking.ppc.rsrc")).unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    for mut a in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, Some(&resources)).unwrap(),
+    ] {
+        a.runtime.graphics = Some(
+            pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
+        );
+        let mut pointer = Pointer::default();
+        pointer
+            .motion(
+                &mut a.runtime.process.input,
+                &mut a.runtime.memory,
+                (15., 10.),
+                (512, 342),
+                (512, 342),
+            )
+            .unwrap();
+        pointer
+            .button(&mut a.runtime.memory, &mut a.runtime.process.input, true)
+            .unwrap();
+        systemless_future::events::flush(&mut a.runtime.memory, 1 << 1, 0).unwrap();
+        assert_eq!(
+            a.runtime.advance(20000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        let ins = a.runtime.instructions;
+        assert_eq!(
+            a.runtime.advance(20000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert_eq!(a.runtime.instructions, ins);
+        pointer
+            .motion(
+                &mut a.runtime.process.input,
+                &mut a.runtime.memory,
+                (25., 25.),
+                (512, 342),
+                (512, 342),
+            )
+            .unwrap();
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Waiting { ticks: 1 });
+        pointer
+            .button(&mut a.runtime.memory, &mut a.runtime.process.input, false)
+            .unwrap();
+        assert_eq!(a.runtime.advance(20000).unwrap(), Stop::Exit(0));
+        assert_eq!(
+            a.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|c| matches!(c, Call::MenuSelect(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            a.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|c| matches!(c, Call::MenuChoice))
+                .count(),
+            1
+        );
+        assert_eq!(
+            a.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|c| matches!(c, Call::HiliteMenu(0)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            &a.runtime.services.calls[a.runtime.services.calls.len() - 2..],
+            &[
+                Call::PostEvent {
+                    what: 7,
+                    message: 0x600d
+                },
+                Call::Exit(0)
+            ]
+        );
+    }
+}

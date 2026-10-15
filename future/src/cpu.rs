@@ -64,6 +64,13 @@ pub enum Call {
     Dialog(crate::dialogs::Op),
     Cursor(crate::cursor::Op),
     Menu(crate::menus::Op),
+    MenuSelect([i16; 2]),
+    HiliteMenu(i16),
+    MenuChoice,
+    Word {
+        value: u32,
+        high: bool,
+    },
     TextEdit(crate::textedit::Op),
     TextDraw(crate::text::Input),
     TextWidth(crate::text::Input),

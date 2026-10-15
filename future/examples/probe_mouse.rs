@@ -94,18 +94,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if tail > 10_000_000 {
         return Err("SYSTEMLESS_PROBE_TAIL_BUDGET must be 0..=10000000".into());
     }
-    let settle_after: Option<usize> = std::env::var("SYSTEMLESS_PROBE_SETTLE_AFTER_CLICK")
+    let settle_after: Vec<usize> = std::env::var("SYSTEMLESS_PROBE_SETTLE_AFTER_CLICK")
         .ok()
-        .map(|v| v.parse())
-        .transpose()?;
-    if settle_after.is_some_and(|n| n == 0 || n > (args.len() - 2) / 2)
-        || settle_after.is_some() && tail == 0
+        .map(|v| v.split(',').map(str::parse).collect())
+        .transpose()?
+        .unwrap_or_default();
+    if settle_after
+        .iter()
+        .any(|&n| n == 0 || n > (args.len() - 2) / 2)
+        || !settle_after.is_empty() && tail == 0
     {
         return Err(
-            "settle-after click must select an input step and requires a nonzero tail budget"
-                .into(),
+            "settle-after clicks must select input steps and require a nonzero tail budget".into(),
         );
     }
+    let drag: Option<(usize, f64, f64)> = std::env::var("SYSTEMLESS_PROBE_DRAG")
+        .ok()
+        .map(|v| -> Result<_, Box<dyn std::error::Error>> {
+            let fields: Vec<_> = v.split(':').collect();
+            if fields.len() != 3 {
+                return Err("drag must be CLICK:X:Y".into());
+            }
+            let step = fields[0].parse::<usize>()?;
+            let x = fields[1].parse::<f64>()?;
+            let y = fields[2].parse::<f64>()?;
+            if step == 0 || step > (args.len() - 2) / 2 || !x.is_finite() || !y.is_finite() {
+                return Err("invalid drag input step or coordinate".into());
+            }
+            Ok((step, x, y))
+        })
+        .transpose()?;
     let ticks: u32 = match std::env::var("SYSTEMLESS_PROBE_TICKS_PER_STEP") {
         Ok(value) => value.parse()?,
         Err(std::env::VarError::NotPresent) => 0,
@@ -158,6 +176,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if ticks != 0 {
                 app.runtime.elapse_ticks(ticks)?;
             }
+            if let Some((step, x, y)) = drag.filter(|(step, _, _)| *step == index + 1) {
+                pointer.motion(
+                    &mut app.runtime.process.input,
+                    &mut app.runtime.memory,
+                    (x, y),
+                    (512, 342),
+                    (512, 342),
+                )?;
+                result = advance(&mut app, budget, &mut trace);
+                println!("click {step} drag ({x},{y}) {result:?}");
+                screenshot(
+                    &mut app,
+                    Path::new(&format!("{}-drag-{}.ppm", args[1], step)),
+                )?;
+                if !matches!(result, Ok(Stop::Budget | Stop::Waiting { .. })) {
+                    break;
+                }
+            }
             pointer.button(
                 &mut app.runtime.memory,
                 &mut app.runtime.process.input,
@@ -166,7 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             result = advance(&mut app, budget, &mut trace);
             println!("click {} mouse up {result:?}", index + 1);
         }
-        if settle_after == Some(index + 1)
+        if settle_after.contains(&(index + 1))
             && matches!(result, Ok(Stop::Budget | Stop::Waiting { .. }))
         {
             if ticks != 0 {
