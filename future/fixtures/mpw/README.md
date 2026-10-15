@@ -380,3 +380,9 @@ The menu guest now requires live GetMenuItemText bytes and a full polygon cycle:
 OpenPoly/LineTo/ClosePoly, visible port state, bounding box, paint/invert/fill/frame/
 erase, offset, balanced pen visibility and disposal. Both compiled CPUs execute
 these through the common manager and GPU services before emitting success.
+
+The tracking fixture compiles for both CPUs with ControlDefinitions.h constants.
+It leaves the caller port nil, tracks a standard button while the host holds,
+drags out/reenters and releases, verifies the returned part and unchanged value,
+then disposes its control/window and exits. The menu fixture uses DisposeMenu for
+its NewMenu allocation.

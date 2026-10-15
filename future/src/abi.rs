@@ -32,6 +32,7 @@ pub enum Service {
     GetWindowReference,
     SetWindowReference,
     ShowHide,
+    TrackControl,
     NewControl,
     ControlDraw,
     ControlDrawAll,
@@ -68,6 +69,7 @@ pub enum Service {
     Cursor(crate::cursor::Op),
     SetCursor,
     AppendMenu,
+    DisposeMenu,
     NewMenu,
     GetMenuItemText,
     SetMenuItemText,
@@ -231,6 +233,7 @@ impl Abi {
             b"PaintRoundRect" => Some(Service::RoundRect(false)),
             b"ForeColor" => Some(Service::PortColor(false)),
             b"BackColor" => Some(Service::PortColor(true)),
+            b"TrackControl" => Some(Service::TrackControl),
             b"NewControl" => Some(Service::NewControl),
             b"Draw1Control" => Some(Service::ControlDraw),
             b"DrawControls" => Some(Service::ControlDrawAll),
@@ -321,6 +324,7 @@ impl Abi {
             b"SetCursor" => Some(Service::SetCursor),
             b"GetMHandle" | b"GetMenuHandle" => Some(Service::GetMenuHandle),
             b"AppendMenu" => Some(Service::AppendMenu),
+            b"DisposeMenu" => Some(Service::DisposeMenu),
             b"NewMenu" => Some(Service::NewMenu),
             b"GetItem" | b"GetMenuItemText" => Some(Service::GetMenuItemText),
             b"SetItem" | b"SetMenuItemText" => Some(Service::SetMenuItemText),
@@ -596,6 +600,28 @@ impl Abi {
                     .checked_add(size as u32)
                     .ok_or_else(|| Error::Cpu("window stack overflow".into()))?;
                 Ok((Call::WindowChange { pointer, change }, Reply::None))
+            }
+            0xa968 => {
+                let args = memory.read(GuestPtr(sp), 12)?;
+                let action = u32::from_be_bytes(args[..4].try_into().unwrap());
+                let point = [
+                    i16::from_be_bytes(args[4..6].try_into().unwrap()),
+                    i16::from_be_bytes(args[6..8].try_into().unwrap()),
+                ];
+                let handle = u32::from_be_bytes(args[8..12].try_into().unwrap());
+                let result = sp
+                    .checked_add(12)
+                    .ok_or_else(|| Error::Cpu("control tracking stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::TrackControl(crate::controls::TrackControl {
+                        handle,
+                        point,
+                        action,
+                    }),
+                    Reply::StackWord(GuestPtr(result)),
+                ))
             }
             0xa954 => {
                 let bytes = memory.read(GuestPtr(sp), 26)?;
@@ -1176,6 +1202,13 @@ impl Abi {
                     Call::Menu(crate::menus::Op::Append { handle, source }),
                     Reply::None,
                 ))
+            }
+            0xa932 => {
+                let handle = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("dispose menu stack overflow".into()))?;
+                Ok((Call::Menu(crate::menus::Op::Dispose(handle)), Reply::None))
             }
             0xa931 => {
                 let args = memory.read(GuestPtr(sp), 6)?;
@@ -2059,6 +2092,7 @@ impl Abi {
                 handle: c.gpr[3],
                 source: GuestPtr(c.gpr[4]),
             }),
+            Service::DisposeMenu => Call::Menu(crate::menus::Op::Dispose(c.gpr[3])),
             Service::NewMenu => Call::Menu(crate::menus::Op::New {
                 id: c.gpr[3] as i16,
                 title: GuestPtr(c.gpr[4]),
@@ -2116,6 +2150,11 @@ impl Abi {
             Service::TEGetText => Call::TextEdit(crate::textedit::Op::GetText(c.gpr[3])),
             Service::TEGetStyleHandle => Call::TextEdit(crate::textedit::Op::GetStyle(c.gpr[3])),
             Service::TEDispose => Call::TextEdit(crate::textedit::Op::Dispose(c.gpr[3])),
+            Service::TrackControl => Call::TrackControl(crate::controls::TrackControl {
+                handle: c.gpr[3],
+                point: [(c.gpr[4] >> 16) as i16, c.gpr[4] as i16],
+                action: c.gpr[5],
+            }),
             Service::NewControl => Call::NewControl(crate::controls::NewControl {
                 owner: GuestPtr(c.gpr[3]),
                 bounds: GuestPtr(c.gpr[4]),
@@ -2470,6 +2509,7 @@ impl Abi {
                         | Service::Cursor(_)
                         | Service::SetCursor
                         | Service::SetMenuBar
+                        | Service::DisposeMenu
                         | Service::CreateResFile
                         | Service::AppendMenu
                         | Service::AppendResMenu

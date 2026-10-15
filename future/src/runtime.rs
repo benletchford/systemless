@@ -38,6 +38,10 @@ enum Resume {
         stop: Stop,
     },
 }
+struct ControlWait {
+    tracking: crate::controls::Tracking,
+    reply: crate::abi::Reply,
+}
 struct EventWait {
     mask: u16,
     destination: GuestPtr,
@@ -54,6 +58,7 @@ pub struct Runtime {
     pub process: crate::process::Process,
     continuations: Vec<Continuation>,
     event_wait: Option<EventWait>,
+    control_wait: Option<ControlWait>,
     terminal: Option<Stop>,
     pub(crate) lifecycle: Option<crate::lifecycle::Lifecycle>,
     faulted: bool,
@@ -70,6 +75,7 @@ impl Runtime {
             process: crate::process::Process::default(),
             continuations: Vec::new(),
             event_wait: None,
+            control_wait: None,
             terminal: None,
             lifecycle: None,
             faulted: false,
@@ -119,6 +125,11 @@ impl Runtime {
     fn advance_inner(&mut self, budget: u64) -> Result<Stop> {
         if budget == 0 {
             return Ok(Stop::Budget);
+        }
+        if let Some(wait) = self.control_wait.take() {
+            if let Some(stop) = self.poll_control_wait(wait)? {
+                return Ok(stop);
+            }
         }
         if let Some(wait) = self.event_wait.take() {
             if let Some(stop) = self.poll_event_wait(wait)? {
@@ -198,6 +209,27 @@ impl Runtime {
                                     .windows
                                     .reference(&mut self.memory, pointer, value)?;
                             reply.apply(&mut self.cpu, &mut self.memory, result, 0)?;
+                        }
+                        Call::TrackControl(request) => {
+                            if let crate::abi::Reply::StackWord(p) = reply {
+                                self.memory.validate_write(p, 2)?;
+                            }
+                            let mut controls = std::mem::take(&mut self.process.controls);
+                            let result = controls.begin_tracking(
+                                &mut self.memory,
+                                &mut self.process,
+                                request,
+                            );
+                            self.process.controls = controls;
+                            if let Some(tracking) = result? {
+                                if let Some(stop) =
+                                    self.poll_control_wait(ControlWait { tracking, reply })?
+                                {
+                                    return Ok(stop);
+                                }
+                            } else {
+                                reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                            }
                         }
                         Call::NewControl(_) | Call::Control(_) => {
                             let mut controls = std::mem::take(&mut self.process.controls);
@@ -1210,6 +1242,7 @@ impl Runtime {
                             | Call::FontInfo(_)
                             | Call::ResourceWindow { .. }
                             | Call::NewControl(_)
+                            | Call::TrackControl(_)
                             | Call::Control(_)
                             | Call::WindowInvalidation { .. }
                             | Call::WindowChange { .. }
@@ -1267,6 +1300,7 @@ impl Runtime {
                         | Call::DisposePointer(_)
                         | Call::ResourceWindow { .. }
                         | Call::NewControl(_)
+                        | Call::TrackControl(_)
                         | Call::Control(_)
                         | Call::WindowInvalidation { .. }
                         | Call::WindowReference { .. }
@@ -1468,6 +1502,42 @@ impl Runtime {
             ticks,
             self.process.input,
         )
+    }
+    fn poll_control_wait(&mut self, wait: ControlWait) -> Result<Option<Stop>> {
+        if let crate::abi::Reply::StackWord(p) = wait.reply {
+            self.memory.validate_write(p, 2)?;
+        }
+        let release = crate::events::prepare_remove(&self.memory, 1 << 2)?;
+        let released = release.is_some() || self.process.input.modifiers & 0x80 != 0;
+        let point = if let Some(event) = &release {
+            event.record[10..14].try_into().unwrap()
+        } else {
+            self.memory
+                .read(crate::events::MOUSE, 4)?
+                .try_into()
+                .unwrap()
+        };
+        let mut controls = std::mem::take(&mut self.process.controls);
+        let result = controls.poll_tracking(
+            &mut self.memory,
+            &mut self.process,
+            self.graphics.as_ref(),
+            &wait.tracking,
+            point,
+            released,
+        );
+        self.process.controls = controls;
+        if let Some(part) = result? {
+            if let Some(event) = release {
+                event.commit(&mut self.memory)?;
+            }
+            wait.reply
+                .apply(&mut self.cpu, &mut self.memory, u32::from(part), 0)?;
+            Ok(None)
+        } else {
+            self.control_wait = Some(wait);
+            Ok(Some(Stop::Waiting { ticks: 1 }))
+        }
     }
     fn poll_event_wait(&mut self, wait: EventWait) -> Result<Option<Stop>> {
         let ready = self.toolbox_available(wait.mask)?;

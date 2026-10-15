@@ -81,7 +81,7 @@ int main(void) {
         AppendMenu(created,"\pOne/O;Two");
         if (CountMItems(created)!=2 || ((unsigned char *)*created)[29]!='O') return 31;
         GetMenuItemText(created,1,item); if (item[0]!=3 || item[1]!='O' || item[2]!='n' || item[3]!='e') return 34;
-        DisposeHandle((Handle)created);
+        DisposeMenu(created);
     }
     InitCursor(); HideCursor(); HideCursor(); ShowCursor();
     cursor=GetCursor(-123); if (!cursor || GetHandleSize((Handle)cursor)!=68) return 9;

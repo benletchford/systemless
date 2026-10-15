@@ -1341,3 +1341,25 @@ GPU validation error is retained so shader faults are not hidden by pipeline fal
 OpenPoly visibility semantics follow Apple's [OpenPoly reference](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-121.html).
 Legacy fill sampling is separately evidenced by `trap/shapes.rs::draw_poly` and
 `loader/ppc/regions.rs::ppc_fill_polygon_interior` in the preserved original runtime.
+
+
+## 2026-10-15: cooperative standard-control tracking
+
+TrackControl now suspends either real CPU with its ABI reply pending while the
+host button is held. Shared control state redraws push buttons, checkboxes and
+radio buttons on drag out/reentry and returns the released part or zero outside.
+Coordinates use the control owner even when the caller port is nil; checkbox and
+radio values remain caller-owned. A queued release uses its saved position and
+removes only that event; unrelated and later events retain order. Physical release
+also works when mouse-up events are masked. No guest instructions spin while held.
+Nil action procedures and the stored-action sentinel resolving to nil are accepted;
+nonzero action/custom definition callbacks remain explicit errors. Draw failures
+restore hilite and preserve MemErr. DisposeMenu releases caller-owned menu handles
+without implicitly deleting menu-list entries or replacing resource ownership rules.
+
+
+Tracking is a runtime continuation containing the shared control identity and the
+architecture-specific Reply. Polling precedes further CPU execution and returns
+Waiting { ticks: 1 } while held. Event removal is preflighted before drawing and
+committed only on a successful release. This is distinct from guest callbacks;
+real Mixed Mode action procedures remain unimplemented.

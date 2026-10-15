@@ -153,5 +153,7 @@ CreateResFile; resource-file creation is proven by fixtures, not this original r
 GetMenuItemText now reads live menu records through both adapters. Polygon recording,
 visibility, offsets and disposal share guest handles; polygon fills and edge unions
 run on wgpu with shared clipping/pattern rules. The bounded original splash now
-reaches the chooser event loop; a live-control press reaches TrackControl. Actual
-confirmation/gameplay and control callbacks remain unfinished.
+reaches the chooser event loop; a live-control press waits in TrackControl and
+its release opens the game window. Partial drawing then stops at Pack7 NumToString
+($A9EE). Gameplay and control callbacks remain unfinished. Next: shared integer
+decimal conversion through both ABI adapters. The full rebuild goal stays active.

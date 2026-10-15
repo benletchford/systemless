@@ -161,10 +161,19 @@ impl Ports {
     pub fn point_coordinates(
         &self,
         memory: &Memory,
+        result: [u8; 4],
+        to_global: bool,
+    ) -> Result<[u8; 4]> {
+        self.point_coordinates_for_port(memory, self.current(memory)?, result, to_global)
+    }
+    pub(crate) fn point_coordinates_for_port(
+        &self,
+        memory: &Memory,
+        port: GuestPtr,
         mut result: [u8; 4],
         to_global: bool,
     ) -> Result<[u8; 4]> {
-        let port = self.current(memory)?;
+        memory.read(port, PORT_SIZE)?;
         if memory.u16(offset(port, 6)?)? & 0xc000 != 0 {
             return Err(Error::Graphics(
                 "coordinate conversion for color ports is unsupported".into(),

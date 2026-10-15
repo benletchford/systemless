@@ -673,3 +673,138 @@ fn compiled_environment_and_maximum_heap_contracts_complete_on_both_cpus() {
         );
     }
 }
+
+#[test]
+#[ignore = "requires rebuilt MPW tracking applications and a real wgpu adapter"]
+fn compiled_tracking_waits_for_real_host_release_and_completes_on_both_cpus() {
+    use systemless_future::{
+        controls::TrackControl, graphics::Graphics, host_input::Pointer, memory::GuestPtr,
+    };
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("tracking.68k.rsrc")).unwrap();
+    let pef = std::fs::read(root.join("tracking.ppc")).unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, None).unwrap(),
+    ] {
+        app.runtime.graphics = Some(
+            pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
+        );
+        let mut pointer = Pointer::default();
+        pointer
+            .motion(
+                &mut app.runtime.process.input,
+                &mut app.runtime.memory,
+                (70., 70.),
+                (512, 342),
+                (512, 342),
+            )
+            .unwrap();
+        pointer
+            .button(
+                &mut app.runtime.memory,
+                &mut app.runtime.process.input,
+                true,
+            )
+            .unwrap();
+        assert_eq!(
+            app.runtime.advance(30000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert!(app.runtime.services.calls.contains(&Call::PostEvent {
+            what: 7,
+            message: 0xf1
+        }));
+        let handle = app
+            .runtime
+            .services
+            .calls
+            .iter()
+            .find_map(|call| {
+                if let Call::TrackControl(TrackControl {
+                    handle,
+                    point: [20, 20],
+                    action: 0,
+                }) = call
+                {
+                    Some(*handle)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        let record = app.runtime.memory.u32(GuestPtr(handle)).unwrap();
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(record + 17), 1).unwrap(),
+            [10]
+        );
+        let instructions = app.runtime.instructions;
+        assert_eq!(
+            app.runtime.advance(30000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert_eq!(app.runtime.instructions, instructions);
+        pointer
+            .motion(
+                &mut app.runtime.process.input,
+                &mut app.runtime.memory,
+                (300., 250.),
+                (512, 342),
+                (512, 342),
+            )
+            .unwrap();
+        assert_eq!(
+            app.runtime.advance(30000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(record + 17), 1).unwrap(),
+            [0]
+        );
+        pointer
+            .motion(
+                &mut app.runtime.process.input,
+                &mut app.runtime.memory,
+                (70., 70.),
+                (512, 342),
+                (512, 342),
+            )
+            .unwrap();
+        assert_eq!(
+            app.runtime.advance(30000).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(record + 17), 1).unwrap(),
+            [10]
+        );
+        pointer
+            .button(
+                &mut app.runtime.memory,
+                &mut app.runtime.process.input,
+                false,
+            )
+            .unwrap();
+        assert_eq!(app.runtime.advance(30000).unwrap(), Stop::Exit(0));
+        assert_eq!(
+            &app.runtime.services.calls[app.runtime.services.calls.len() - 2..],
+            &[
+                Call::PostEvent {
+                    what: 7,
+                    message: 0x600d
+                },
+                Call::Exit(0)
+            ]
+        );
+        assert_eq!(
+            app.runtime
+                .services
+                .calls
+                .iter()
+                .filter(|call| matches!(call, Call::TrackControl(_)))
+                .count(),
+            1
+        );
+    }
+}

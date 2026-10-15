@@ -86,6 +86,7 @@ pub enum Call {
         pointer: u32,
         change: crate::windows::Change,
     },
+    TrackControl(crate::controls::TrackControl),
     NewControl(crate::controls::NewControl),
     Control(crate::controls::Op),
     ResourceWindow {

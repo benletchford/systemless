@@ -1498,3 +1498,69 @@ fn menu_text_read_adapters_keep_void_results_and_unpack_signed_items() {
         );
     }
 }
+
+#[test]
+fn dispose_menu_releases_only_caller_owned_record_and_keeps_other_menu_state() {
+    let fixture = support::pef_program(&[0x4e800020], &[], 32);
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    let h = direct(
+        &mut app,
+        Op::New {
+            id: -17,
+            title: GuestPtr(0),
+        },
+    )
+    .unwrap();
+    let other = direct(
+        &mut app,
+        Op::New {
+            id: 42,
+            title: GuestPtr(0),
+        },
+    )
+    .unwrap();
+    let original = payload(&app.runtime.memory, &mut app.runtime.process, other);
+    app.runtime.process.res_error = -192;
+    direct(&mut app, Op::Dispose(h)).unwrap();
+    assert_eq!(app.runtime.memory.u32(GuestPtr(h)).unwrap(), 0);
+    assert_eq!(app.runtime.process.res_error, -192);
+    assert_eq!(
+        payload(&app.runtime.memory, &mut app.runtime.process, other),
+        original
+    );
+    assert_eq!(app.runtime.memory.u32(GuestPtr(0xa1c)).unwrap(), 0);
+    assert_eq!(app.runtime.memory.u32(GuestPtr(0xd50)).unwrap(), 0);
+    assert_eq!(
+        app.runtime
+            .process
+            .handle_size(&app.runtime.memory, h)
+            .unwrap(),
+        0
+    );
+    assert_eq!(app.runtime.process.mem_error, -111);
+}
+#[test]
+fn dispose_menu_adapters_pop_one_handle_without_writing_a_result() {
+    let mut m = Memory::default();
+    m.map(
+        GuestPtr(0x1000),
+        0x10002000u32.to_be_bytes().to_vec(),
+        Permissions::RX,
+    )
+    .unwrap();
+    let mut c = m68k::CpuCore::default();
+    c.dar[15] = 0x1000;
+    assert_eq!(
+        Abi::trap(0xa932, &mut c, &m).unwrap(),
+        (Call::Menu(Op::Dispose(0x10002000)), Reply::None)
+    );
+    assert_eq!(c.dar[15], 0x1004);
+    let mut c = ppc::PpcCpu::default();
+    c.gpr[3] = 0x10002000;
+    let (call, reply) = Abi::import(Service::DisposeMenu, &c, &m).unwrap();
+    assert_eq!(call, Call::Menu(Op::Dispose(0x10002000)));
+    let mut cpu = Cpu::PowerPc(Box::new(c));
+    reply.apply(&mut cpu, &mut m, 0, 0).unwrap();
+    let Cpu::PowerPc(c) = cpu else { panic!() };
+    assert_eq!(c.gpr[3], 0x10002000);
+}

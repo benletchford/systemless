@@ -8,6 +8,9 @@ use crate::{
     Error, Result,
 };
 use std::collections::BTreeMap;
+mod tracking;
+pub use tracking::TrackControl;
+pub(crate) use tracking::Tracking;
 pub const RECORD_SIZE: u32 = 296;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NewControl {

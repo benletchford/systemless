@@ -174,3 +174,37 @@ pub fn available(memory: &Memory, mask: u16) -> Result<bool> {
     }
     Ok(false)
 }
+
+/// Snapshot and preflight a single queue removal. Unrelated events retain order.
+pub(crate) struct Removal {
+    pub record: [u8; 16],
+    remaining: Vec<u32>,
+}
+impl Removal {
+    pub fn commit(self, memory: &mut Memory) -> Result<()> {
+        relink(memory, &self.remaining)
+    }
+}
+pub(crate) fn prepare_remove(memory: &Memory, mask: u16) -> Result<Option<Removal>> {
+    let mut items = links(memory)?;
+    let mut found = None;
+    for (i, &p) in items.iter().enumerate() {
+        if matches(memory.u16(GuestPtr(p + 6))?, mask) {
+            found = Some(i);
+            break;
+        }
+    }
+    let Some(i) = found else {
+        return Ok(None);
+    };
+    let record = memory.read(GuestPtr(items[i] + 6), 16)?.try_into().unwrap();
+    items.remove(i);
+    memory.validate_write(QUEUE_HEADER, 10)?;
+    for &p in &items {
+        memory.validate_write(GuestPtr(p), 4)?;
+    }
+    Ok(Some(Removal {
+        record,
+        remaining: items,
+    }))
+}

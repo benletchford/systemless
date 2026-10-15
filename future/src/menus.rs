@@ -30,6 +30,7 @@ pub enum Op {
         item: i16,
         destination: GuestPtr,
     },
+    Dispose(u32),
     Count(u32),
     Command {
         handle: u32,
@@ -183,6 +184,14 @@ impl Menus {
         gpu: Option<&Graphics>,
         op: Op,
     ) -> Result<u32> {
+        if let Op::Dispose(handle) = op {
+            if handle != 0 {
+                let bytes = data(memory, process, handle)?;
+                record::Record::parse(&bytes)?;
+                process.dispose_handle(memory, handle)?;
+            }
+            return Ok(0);
+        }
         if let Op::ReadText {
             handle,
             item,
@@ -409,7 +418,8 @@ impl Menus {
                 )?;
                 Ok(0)
             }
-            Op::ReadText { .. }
+            Op::Dispose(_)
+            | Op::ReadText { .. }
             | Op::Append { .. }
             | Op::New { .. }
             | Op::Command { .. }

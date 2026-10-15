@@ -139,3 +139,33 @@ tracking boundary, append `145 150 402 231` after the initial `256 171` click.
 Every press/release has a separate 30,000-boundary budget. A failed press is not
 followed by a release or later click. Multiple-click runs save per-step screens;
 error output includes the hexadecimal trap and native stack bytes for continuation.
+
+
+## 2026-10-15: cooperative standard-control tracking
+
+TrackControl now suspends either real CPU with its ABI reply pending while the
+host button is held. Shared control state redraws push buttons, checkboxes and
+radio buttons on drag out/reentry and returns the released part or zero outside.
+Coordinates use the control owner even when the caller port is nil; checkbox and
+radio values remain caller-owned. A queued release uses its saved position and
+removes only that event; unrelated and later events retain order. Physical release
+also works when mouse-up events are masked. No guest instructions spin while held.
+Nil action procedures and the stored-action sentinel resolving to nil are accepted;
+nonzero action/custom definition callbacks remain explicit errors. Draw failures
+restore hilite and preserve MemErr. DisposeMenu releases caller-owned menu handles
+without implicitly deleting menu-list entries or replacing resource ownership rules.
+
+Generated tests cover both ABI frames, delayed result guards, held/drag/release
+pixels, disabled/missed controls, cancellation, event ordering, nil caller ports,
+callback rejection and drawing rollback. An MPW-compiled fixture on both CPUs
+waits for host input, drags out and back, releases, then exits successfully.
+
+The original Super Mines sequence (256,171), (145,150), (402,231) now waits on the
+third press and completes its release. It hides/disposes the chooser, disposes its
+created menu and opens WIND 1001 titled Super Mines. The partial game window then
+stops at Pack7 ($A9EE), post-trap PC $0101264E. Selector word zero at SP $0080FA02,
+D0=5 and A0=$0080FA2E identify NumToString. Gameplay, popup interaction and complete
+lifecycle acceptance remain unverified. Next: shared signed integer decimal
+conversion with the Pack7/PPC ABI boundaries, then continue real game drawing.
+Native presentation, original PPC compatibility, production Mixed Mode and the
+other documented gaps remain required. The full rebuild goal stays active.
