@@ -22,6 +22,7 @@ fn app() -> LoadedApplication {
             b"SetPortBits",
             b"CopyBits",
             b"SetGDevice",
+            b"SetDeviceAttribute",
         ],
         64,
     );
@@ -31,7 +32,7 @@ fn app() -> LoadedApplication {
         .map(
             GuestPtr(0x50000000),
             [
-                0xaa32u16, 0xaa2a, 0xaa29, 0xaa2b, 0xaa2c, 0xaa34, 0xa8ec, 0xaa31,
+                0xaa32u16, 0xaa2a, 0xaa29, 0xaa2b, 0xaa2c, 0xaa34, 0xa8ec, 0xaa31, 0xaa2d,
             ]
             .into_iter()
             .flat_map(u16::to_be_bytes)
@@ -366,4 +367,95 @@ fn both_cpus_select_the_registered_device_restore_guest_selection_and_preserve_p
         assert!(call(&mut a, Op::Select(device + 4)).is_err());
         assert_eq!(a.runtime.memory.u32(devices::CURRENT).unwrap(), device);
     }
+}
+
+#[test]
+fn attribute_abis_update_owned_offscreen_records_without_allocating_or_selecting_displays() {
+    let mut a = app();
+    let h = a
+        .runtime
+        .process
+        .new_handle(&mut a.runtime.memory, 64, false)
+        .unwrap();
+    let data = a.runtime.memory.u32(GuestPtr(h)).unwrap();
+    a.runtime.memory.write(GuestPtr(data), &[0x5a; 64]).unwrap();
+    let free = a.runtime.process.free_memory();
+    let globals: Vec<_> = [devices::CURRENT, devices::MAIN, devices::FIRST]
+        .into_iter()
+        .map(|p| a.runtime.memory.u32(p).unwrap())
+        .collect();
+    a.runtime.process.mem_error = -108;
+    a.runtime
+        .memory
+        .write(GuestPtr(0x220), &(-42i16).to_be_bytes())
+        .unwrap();
+    // Only the high byte is Boolean; the low byte is deliberately dirty.
+    let mut frame = vec![1, 0xa5, 0, 14];
+    frame.extend(h.to_be_bytes());
+    assert!(native(&mut a, 8, &frame, 0).is_empty());
+    assert_eq!(
+        a.runtime.memory.u16(GuestPtr(data + 20)).unwrap(),
+        0x5a5a | 0x4000
+    );
+    let mut frame = vec![0, 0xff, 0, 14];
+    frame.extend(h.to_be_bytes());
+    native(&mut a, 8, &frame, 0);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(data + 20)).unwrap(), 0x1a5a);
+    assert_eq!(ppc(&mut a, 11, &[h, 0xabcd0000, 0xffffff01]), h);
+    assert_eq!(ppc(&mut a, 4, &[h, 0]), 1);
+    assert_eq!(ppc(&mut a, 11, &[h, 0, 0xffffff00]), h);
+    assert_eq!(ppc(&mut a, 4, &[h, 0]), 0);
+    let bytes = a.runtime.memory.read(GuestPtr(data), 64).unwrap();
+    assert_eq!(&bytes[..20], &[0x5a; 20]);
+    assert_eq!(&bytes[22..], &[0x5a; 42]);
+    assert_eq!(a.runtime.process.free_memory(), free);
+    assert_eq!(a.runtime.process.mem_error, -108);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0x220)).unwrap() as i16, -42);
+    assert_eq!(
+        [devices::CURRENT, devices::MAIN, devices::FIRST]
+            .into_iter()
+            .map(|p| a.runtime.memory.u32(p).unwrap())
+            .collect::<Vec<_>>(),
+        globals
+    );
+}
+#[test]
+fn invalid_attribute_records_and_bits_leave_flags_and_heap_unchanged() {
+    let mut a = app();
+    let h = a
+        .runtime
+        .process
+        .new_handle(&mut a.runtime.memory, 61, true)
+        .unwrap();
+    let free = a.runtime.process.free_memory();
+    for (device, bit) in [(0, 0), (h, 0), (h, -1), (h, 16)] {
+        assert!(call(
+            &mut a,
+            Op::SetAttribute {
+                device,
+                bit,
+                value: true
+            }
+        )
+        .is_err());
+        assert_eq!(a.runtime.process.free_memory(), free);
+    }
+    let h = a
+        .runtime
+        .process
+        .new_handle(&mut a.runtime.memory, 62, true)
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(h), &0xdeadbeefu32.to_be_bytes())
+        .unwrap();
+    assert!(call(
+        &mut a,
+        Op::SetAttribute {
+            device: h,
+            bit: 14,
+            value: true
+        }
+    )
+    .is_err());
 }

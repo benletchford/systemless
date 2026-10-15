@@ -1598,3 +1598,12 @@ cleanup results match the prior checkpoint exactly. Logs:
 /tmp/systemless-ev-music-stereo-check.txt and
 /tmp/systemless-marathon-sounds-stereo-check.txt. This does not establish complete
 waveform, host audio, or original-game playback acceptance.
+
+
+### Offscreen device attribute refresh
+
+EV 1.0.5 68K now passes SetDeviceAttribute on its application-owned offscreen
+GDevice. It next stops at MakeITable, AA39, PC $00014964. Trace:
+/tmp/systemless-ev-device-attributes-next.txt. This is further setup execution,
+not a rendered title screen or gameplay. Marathon's prior color-capability and
+PPC routine-descriptor requirements remain unresolved.

@@ -17,6 +17,7 @@ pub enum Op {
     First,
     Next(u32),
     Attribute { device: u32, bit: i16 },
+    SetAttribute { device: u32, bit: i16, value: bool },
     Index { index: i32, destination: GuestPtr },
 }
 #[derive(Default)]
@@ -117,6 +118,23 @@ impl Manager {
     pub fn call(&mut self, memory: &mut Memory, process: &mut Process, op: Op) -> Result<u32> {
         let saved = process.mem_error;
         let result = (|| {
+            // Applications also own offscreen GDevice records. Attribute access
+            // changes only that record; it must not initialize/select a screen.
+            if let Op::Attribute { device, bit } | Op::SetAttribute { device, bit, .. } = op {
+                if !(0..16).contains(&bit) {
+                    return Err(invalid("invalid graphics device attribute bit"));
+                }
+                let data = record(memory, process, device, 62)?;
+                let field = GuestPtr(data.0 + 20);
+                let flags = memory.u16(field)?;
+                let mask = 1u16 << bit;
+                if let Op::SetAttribute { value, .. } = op {
+                    let updated = if value { flags | mask } else { flags & !mask };
+                    memory.write(field, &updated.to_be_bytes())?;
+                    return Ok(0);
+                }
+                return Ok(u32::from(flags & mask != 0));
+            }
             // Output faults must not create hidden heap allocations.
             if let Op::Index { destination, .. } = op {
                 memory.validate_write(destination, 6)?;
@@ -156,17 +174,7 @@ impl Manager {
                     }
                     Ok(0)
                 }
-                Op::Attribute {
-                    device: requested,
-                    bit,
-                } => {
-                    if requested != device || !(0..16).contains(&bit) {
-                        return Err(invalid("invalid graphics device attribute query"));
-                    }
-                    Ok(u32::from(
-                        memory.u16(GuestPtr(data.0 + 20))? & (1 << bit) != 0,
-                    ))
-                }
+                Op::Attribute { .. } | Op::SetAttribute { .. } => unreachable!(),
                 Op::Index { index, destination } => {
                     if memory.u32(CURRENT)? != device {
                         return Err(invalid("unregistered current graphics device"));

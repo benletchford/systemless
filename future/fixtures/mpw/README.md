@@ -587,3 +587,7 @@ signed stereo samples, and synchronous extended resource playback/downmix.
 The headless CLI also completes these guests without opening an audio device.
 `handle_state.c` additionally duplicates a locked/purgeable resource through
 HandToHand, verifies independent payload and cleared flags, and checks nil errors.
+
+`devices.c` also verifies SetDeviceAttribute/TestDeviceAttribute on an owned
+offscreen GDevice before InitGraf, preserving a reference-value guard and then
+checking the unchanged initial screen, palette and low-memory device globals.

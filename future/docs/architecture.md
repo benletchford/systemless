@@ -2274,3 +2274,19 @@ variable, stores the new handle and returns the error in r3. Output storage is
 validated before allocation. The current process owns one application heap, so
 multiple source heap-zone selection remains a broader allocator requirement.
 Source: [HandToHand](https://dev.os9.ca/techpubs/mac/Memory/Memory-106.html).
+
+
+### Offscreen GDevice attribute ownership
+
+SetDeviceAttribute and TestDeviceAttribute share owned-record validation and
+read/write only the 16-bit gdFlags field at offset 20 of a live 62-byte GDevice
+handle. Application-created offscreen records need not belong to the initial
+screen registry. Attribute access does not initialize devices, append to the
+screen list or select the record. All other bytes and process error globals are
+preserved. Invalid bits/records fault explicitly; writes validate atomically.
+The Pascal Boolean occupies the high byte of its two-byte stack slot; PPC uses
+the low argument byte. Public-header compiled guests verify on/off updates on
+application records before InitGraf, then unchanged screen/device behavior.
+Source: [Apple SetDeviceAttribute](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-281.html).
+This extends state access; it does not implement inverse tables, arbitrary device
+selection, indexed drawing destinations or advertise full Color QuickDraw.

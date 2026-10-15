@@ -229,8 +229,9 @@ status and a virtual Sound Manager 3.0 ABI target now share both adapters. The
 capabilities report stereo, multichannel mixing and software 16-bit samples;
 recording, codecs, disk/double-buffer playback remain unfinished. The PowerPC
 NumVersion structure uses the actual caller-provided return buffer. Both original
-68K games pass the earlier sound-version call; EV next needs graphics-device
-attributes, while Marathon reports that Color QuickDraw is required. Super Mines' recorded interaction
+68K games pass the earlier sound-version call; EV passes offscreen graphics-device
+attribute updates and next needs inverse color tables, while Marathon reports
+that Color QuickDraw is required. Super Mines' recorded interaction
 is automated/offscreen; live desktop and win/loss acceptance remain incomplete.
 
 

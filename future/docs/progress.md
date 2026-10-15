@@ -4529,3 +4529,36 @@ PC $0100C798. Its board screenshot was visually inspected. Evidence:
 resource prefix/completion results match the preceding checkpoint exactly;
 see /tmp/systemless-{ev-sounds,ev-music,marathon-sounds}-stereo-check.txt.
 The full rebuild and original EV/Marathon gameplay acceptance remain unfinished.
+
+
+## 2026-10-16: application-owned offscreen device attributes
+
+SetDeviceAttribute (AA2D / InterfaceLib) now changes the actual gdFlags word
+through the shared device service. TestDeviceAttribute supports the same owned
+application-created offscreen records, not only the initial screen. Both validate
+live handle ownership, 62-byte record bounds and bit range before access, preserve
+unrelated bytes and MemErr, and neither initialize nor select a display. No
+Color QuickDraw capability reporting changed. 68K marshals the high byte of its
+Pascal Boolean slot; PowerPC marshals the low Boolean byte and preserves void
+return state.
+
+Original EV 1.0.5 68K executes the noDriver attribute update on its offscreen
+record and reaches MakeITable (AA39), PC $00014964. Evidence:
+/tmp/systemless-ev-device-attributes-next.txt. The next slice must build real
+inverse color tables and use them consistently with palette matching; a dummy
+allocation or successful no-op would not establish offscreen graphics support.
+[Apple inverse-table semantics](https://dev.os9.ca/techpubs/mac/ACI/ACI-103.html)
+include resolutions 3/4/5, RGB bit concatenation and additional hidden-color
+information. Legacy matching uses ROM-style propagation/tie-breaking, not a
+simple full-precision nearest-color scan. Treat legacy output as comparison
+material, keep authoritative documented behavior distinguishable, and test
+nontrivial tables before claiming conformance.
+
+Device/color-port/window regressions: 23 pass, including real GPU checks, zero
+failures or skips. Strict all-target lint and individual-file formatting pass.
+Logs: /tmp/systemless-device-attributes-focused-final.txt and
+/tmp/systemless-device-attributes-lint.txt. All 30 freshly rebuilt public-header compiler/CLI
+fixtures pass, including actual 68K/PPC offscreen attribute calls. Log:
+/tmp/systemless-device-attributes-sdk-test.txt. The preceding full suite remains the
+454-test checkpoint; no full-suite rerun is claimed for this device extension.
+The full rebuild and original-game acceptance remain active.

@@ -5,10 +5,18 @@
 #include <Processes.h>
 QDGlobals qd;
 int main(void) {
-    GDHandle device;
+    GDHandle device, offscreen;
     PixMapHandle pixels;
     CTabHandle colors;
     RGBColor rgb;
+    offscreen=(GDHandle)NewHandleClear(sizeof(GDevice));if (!offscreen) return 11;
+    (**offscreen).gdRefCon=0x12345678;
+    SetDeviceAttribute(offscreen,noDriver,true);
+    SetDeviceAttribute(offscreen,gdDevType,true);
+    if (!TestDeviceAttribute(offscreen,noDriver) || !TestDeviceAttribute(offscreen,gdDevType) || (**offscreen).gdFlags!=0x4001) return 12;
+    SetDeviceAttribute(offscreen,gdDevType,false);
+    if (TestDeviceAttribute(offscreen,gdDevType) || (**offscreen).gdFlags!=0x4000 || (**offscreen).gdRefCon!=0x12345678) return 13;
+    DisposeHandle((Handle)offscreen);
     InitGraf(&qd.thePort);
     device=GetGDevice();
     if (!device || GetMainDevice()!=device || GetDeviceList()!=device || GetNextDevice(device)) return 1;

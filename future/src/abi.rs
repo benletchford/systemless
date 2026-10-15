@@ -72,6 +72,7 @@ pub enum Service {
     NextDevice,
     SetDevice,
     DeviceAttribute,
+    SetDeviceAttribute,
     Index2Color,
     GetApplLimit,
     SetApplLimit,
@@ -375,6 +376,7 @@ impl Abi {
             b"GetDeviceList" => Some(Service::Device(crate::devices::Op::First)),
             b"GetNextDevice" => Some(Service::NextDevice),
             b"TestDeviceAttribute" => Some(Service::DeviceAttribute),
+            b"SetDeviceAttribute" => Some(Service::SetDeviceAttribute),
             b"Index2Color" => Some(Service::Index2Color),
             b"MoreMasters" => Some(Service::MoreMasters),
             b"MaxApplZone" => Some(Service::MaxApplZone),
@@ -1497,6 +1499,19 @@ impl Abi {
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("color port ABI stack overflow".into()))?;
                 Ok((Call::ColorPort { action, port }, Reply::None))
+            }
+            0xaa2d => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let next = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("device attribute stack overflow".into()))?;
+                let op = crate::devices::Op::SetAttribute {
+                    device: u32::from_be_bytes(args[4..8].try_into().unwrap()),
+                    bit: i16::from_be_bytes(args[2..4].try_into().unwrap()),
+                    value: args[0] != 0,
+                };
+                c.dar[15] = next;
+                Ok((Call::Device(op), Reply::None))
             }
             0xaa29 | 0xaa2a | 0xaa32 => {
                 memory.validate_write(GuestPtr(sp), 4)?;
@@ -2768,6 +2783,11 @@ impl Abi {
             Service::Device(op) => Call::Device(op),
             Service::SetDevice => Call::Device(crate::devices::Op::Select(c.gpr[3])),
             Service::NextDevice => Call::Device(crate::devices::Op::Next(c.gpr[3])),
+            Service::SetDeviceAttribute => Call::Device(crate::devices::Op::SetAttribute {
+                device: c.gpr[3],
+                bit: c.gpr[4] as i16,
+                value: c.gpr[5] as u8 != 0,
+            }),
             Service::DeviceAttribute => Call::Device(crate::devices::Op::Attribute {
                 device: c.gpr[3],
                 bit: c.gpr[4] as i16,
@@ -3358,6 +3378,7 @@ impl Abi {
                 || matches!(
                     service,
                     Service::SetDevice
+                        | Service::SetDeviceAttribute
                         | Service::GetDateTime
                         | Service::GetResInfo
                         | Service::CopyMask
