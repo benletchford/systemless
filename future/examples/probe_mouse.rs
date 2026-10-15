@@ -6,6 +6,7 @@ use systemless_future::{
     host_input::Pointer,
     load::{LoadedApplication, IMAGE_LIMIT},
     memory::GuestPtr,
+    runtime::Stop,
 };
 fn screenshot(app: &mut LoadedApplication, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     app.runtime.refresh_screen()?;
@@ -31,6 +32,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !(1..=10_000_000).contains(&budget) {
         return Err("SYSTEMLESS_PROBE_BUDGET must be 1..=10000000".into());
     }
+    let tail: u64 = match std::env::var("SYSTEMLESS_PROBE_TAIL_BUDGET") {
+        Ok(value) => value.parse()?,
+        Err(std::env::VarError::NotPresent) => 0,
+        Err(error) => return Err(error.into()),
+    };
+    if tail > 10_000_000 {
+        return Err("SYSTEMLESS_PROBE_TAIL_BUDGET must be 0..=10000000".into());
+    }
+    let ticks: u32 = match std::env::var("SYSTEMLESS_PROBE_TICKS_PER_STEP") {
+        Ok(value) => value.parse()?,
+        Err(std::env::VarError::NotPresent) => 0,
+        Err(error) => return Err(error.into()),
+    };
+    println!("virtual ticks per step {ticks}");
     println!("per-step budget {budget}");
     let mut fork = Vec::new();
     std::fs::File::open(&args[0])?
@@ -42,12 +57,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     gpu.palette[0] = [255; 4];
     gpu.palette[1] = [0, 0, 0, 255];
     app.runtime.graphics = Some(gpu);
+    if ticks != 0 {
+        app.runtime.elapse_ticks(ticks)?;
+    }
     println!("startup {:?}", app.runtime.advance(budget)?);
     screenshot(&mut app, Path::new(&format!("{}-before.ppm", args[1])))?;
     let mut pointer = Pointer::default();
     let first = app.runtime.services.calls.len();
     let mut result = Ok(systemless_future::runtime::Stop::Budget);
     for (index, coordinates) in args[2..].chunks_exact(2).enumerate() {
+        if ticks != 0 {
+            app.runtime.elapse_ticks(ticks)?;
+        }
         pointer.motion(
             &mut app.runtime.process.input,
             &mut app.runtime.memory,
@@ -62,7 +83,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         result = app.runtime.advance(budget);
         println!("click {} mouse down {result:?}", index + 1);
-        if result.is_ok() {
+        if matches!(result, Ok(Stop::Budget | Stop::Waiting { .. })) {
+            if ticks != 0 {
+                app.runtime.elapse_ticks(ticks)?;
+            }
             pointer.button(
                 &mut app.runtime.memory,
                 &mut app.runtime.process.input,
@@ -77,8 +101,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Path::new(&format!("{}-step-{}.ppm", args[1], index + 1)),
             )?;
         }
-        if result.is_err() {
+        if !matches!(result, Ok(Stop::Budget | Stop::Waiting { .. })) {
             break;
+        }
+    }
+    if matches!(result, Ok(Stop::Budget | Stop::Waiting { .. })) && tail != 0 {
+        if ticks != 0 {
+            app.runtime.elapse_ticks(ticks)?;
+        }
+        result = app.runtime.advance(tail);
+        println!("tail budget {tail}: {result:?}");
+    }
+    if let Some(ports) = app.runtime.process.ports {
+        if let Some(seed) = ports.current_slot.0.checked_sub(126) {
+            println!(
+                "clock={:?} QuickDraw seed={:?}",
+                app.runtime.memory.u32(GuestPtr(0x16a)),
+                app.runtime.memory.u32(GuestPtr(seed))
+            );
         }
     }
     for call in &app.runtime.services.calls[first..] {

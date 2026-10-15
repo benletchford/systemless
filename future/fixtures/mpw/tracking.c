@@ -10,6 +10,9 @@
 QDGlobals qd;
 int main(void) {
     CursHandle watch;
+    short cursorID;
+    ResType cursorType;
+    Str255 cursorName;
     WindowPtr window;
     ControlHandle button;
     GrafPtr current;
@@ -18,6 +21,8 @@ int main(void) {
     InitGraf(&qd.thePort); InitFonts(); InitWindows();
     watch=GetCursor(watchCursor);
     if (!watch || GetResource('CURS',watchCursor)!=(Handle)watch || GetHandleSize((Handle)watch)!=68) return 5;
+    GetResInfo((Handle)watch,&cursorID,&cursorType,cursorName);
+    if (ResError() || cursorID!=watchCursor || cursorType!='CURS' || cursorName[0]) return 7;
     SetCursor(*watch); ReleaseResource((Handle)watch);
     watch=GetCursor(watchCursor); if (!watch) return 6;
     ReleaseResource((Handle)watch);

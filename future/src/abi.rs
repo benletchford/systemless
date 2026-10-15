@@ -163,6 +163,7 @@ pub enum Service {
     SetHandleSize,
     CreateResFile,
     GetResource,
+    GetResInfo,
     GetPattern,
     GetCursor,
     GetPicture,
@@ -450,6 +451,7 @@ impl Abi {
             b"GetCursor" => Some(Service::GetCursor),
             b"GetPattern" => Some(Service::GetPattern),
             b"CreateResFile" => Some(Service::CreateResFile),
+            b"GetResInfo" => Some(Service::GetResInfo),
             b"GetResource" => Some(Service::GetResource),
             b"MemError" => Some(Service::MemError),
             b"PBOpenSync" => Some(Service::FileIo(crate::files::Op::Open {
@@ -1908,6 +1910,20 @@ impl Abi {
                     Reply::StackLong(GuestPtr(result)),
                 ))
             }
+            0xa9a8 => {
+                let args = memory.read(GuestPtr(sp), 16)?;
+                let pointer = |i| GuestPtr(u32::from_be_bytes(args[i..i + 4].try_into().unwrap()));
+                let request = crate::process::ResourceInfo {
+                    handle: pointer(12).0,
+                    id: pointer(8),
+                    kind: pointer(4),
+                    name: pointer(0),
+                };
+                c.dar[15] = sp
+                    .checked_add(16)
+                    .ok_or_else(|| Error::Cpu("resource metadata stack overflow".into()))?;
+                Ok((Call::ResourceInfo(request), Reply::None))
+            }
             0xa9a0 => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let id = i16::from_be_bytes(args[..2].try_into().unwrap());
@@ -2492,6 +2508,12 @@ impl Abi {
                 id: c.gpr[3] as i16,
             },
             Service::CreateResFile => Call::CreateResourceFile(GuestPtr(c.gpr[3])),
+            Service::GetResInfo => Call::ResourceInfo(crate::process::ResourceInfo {
+                handle: c.gpr[3],
+                id: GuestPtr(c.gpr[4]),
+                kind: GuestPtr(c.gpr[5]),
+                name: GuestPtr(c.gpr[6]),
+            }),
             Service::GetResource => Call::GetResource {
                 kind: c.gpr[3].to_be_bytes(),
                 id: c.gpr[4] as i16,
@@ -2539,7 +2561,8 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Intersects | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::CopyMask
+                    Service::GetResInfo
+                        | Service::CopyMask
                         | Service::NumToString
                         | Service::StringToNum
                         | Service::GetMouse

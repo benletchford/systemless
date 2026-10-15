@@ -399,3 +399,7 @@ same compiled call must execute through both CPU adapters before fixture success
 The tracking guest additionally obtains the standard watch cursor through both
 GetCursor and GetResource, verifies a shared 68-byte handle, sets/releases it,
 then reloads/releases it before exercising the existing host tracking sequence.
+
+The tracking guest also obtains the watch cursor's metadata with GetResInfo and
+checks ResError, signed ID, CURS type and empty Pascal name. These checks exercise
+the public compiler wrappers for both CPU ABIs before host-driven tracking.

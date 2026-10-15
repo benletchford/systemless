@@ -12,6 +12,13 @@ pub const HEAP_SIZE: u32 = 4 * 1024 * 1024;
 const MEM_FULL: i16 = -108;
 const NIL_HANDLE: i16 = -109;
 const MEM_BAD: i16 = -111;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceInfo {
+    pub handle: u32,
+    pub id: GuestPtr,
+    pub kind: GuestPtr,
+    pub name: GuestPtr,
+}
 #[derive(Default)]
 pub struct Process {
     pub resources: ResourceFork,
@@ -428,6 +435,50 @@ impl Process {
         self.mem_error = old_error;
         checked?;
         self.resource_handles.remove(&key);
+        Ok(())
+    }
+    /// Read metadata from resource identity, never from mutable payload bytes.
+    pub fn resource_info(&mut self, memory: &mut Memory, request: ResourceInfo) -> Result<()> {
+        let Some((&(kind, id), _)) = self
+            .resource_handles
+            .iter()
+            .find(|(_, h)| **h == request.handle)
+        else {
+            self.res_error = -192;
+            return Ok(());
+        };
+        let old_error = self.mem_error;
+        let checked = self.handle_size(memory, request.handle);
+        self.mem_error = old_error;
+        checked?;
+        let name = self
+            .resources
+            .get(kind, id)
+            .and_then(|r| r.name.as_deref())
+            .unwrap_or(&[]);
+        let mut pascal = Vec::with_capacity(name.len() + 1);
+        pascal.push(name.len() as u8);
+        pascal.extend_from_slice(name);
+        for (pointer, length) in [
+            (request.id, 2),
+            (request.kind, 4),
+            (request.name, pascal.len()),
+        ] {
+            if pointer.0 != 0 {
+                memory.validate_write(pointer, length)?;
+            }
+        }
+        // Snapshot all metadata before outputs can overlap each other or a handle.
+        if request.id.0 != 0 {
+            memory.write(request.id, &id.to_be_bytes())?;
+        }
+        if request.kind.0 != 0 {
+            memory.write(request.kind, &kind)?;
+        }
+        if request.name.0 != 0 {
+            memory.write(request.name, &pascal)?;
+        }
+        self.res_error = 0;
         Ok(())
     }
     pub fn get_named_resource(

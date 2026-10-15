@@ -1446,3 +1446,32 @@ ResErr reporting. Fallback cursors are unnamed; Get1NamedResource continues to
 search only the application map. This provider does not establish support for
 multiple open resource maps, general system resources, enumeration of a virtual
 System resource file or writable resource maps.
+
+
+## 2026-10-15: shared resource metadata queries
+
+GetResInfo now marshals one ResourceInfo request from the native 16-byte Pascal
+frame or PPC r3..r6 into the same Process service. The live resource-handle
+identity supplies the signed ID, raw four-byte type and Pascal name from the map;
+mutable resource payloads and handle relocation do not change that metadata.
+Standard cursor fallback handles report their CURS ID and an empty name. Apple’s
+[Resource Manager reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Resource_Manager/Reference/reference.html#//apple_ref/c/func/GetResInfo)
+defines this query and its invalid-resource behavior.
+
+Detached, released, ordinary and unknown handles leave output buffers untouched
+and set resNotFound. Valid owned master pointers are checked without changing
+MemErr. All nonnil outputs are preflighted before the ID/type/name writes, and
+metadata is snapshotted before overlapping outputs can modify storage. Nil output
+pointers are skipped, matching the permitted legacy reference. Successful queries
+set ResErr to zero without allocating guest memory. Runtime preflight protects the
+ResErr publication slot. Both ABI replies are void; the Trap Manager advertises
+a readable built-in GetResInfo entry. Writable resource metadata/maps, additional
+resource files and general system-resource enumeration remain unimplemented.
+
+Four new default tests cover maximum/raw Macintosh names, absent names, signed
+IDs, relocation/payload mutation, heap exhaustion without query allocation, locked
+resources, untouched guards, overlapping outputs, malformed masters, protected/
+truncated outputs, ownership loss, cursor fallback metadata, native frame bounds,
+void register/stack preservation, shared real CPU state and trap availability.
+Rebuilt MPW tracking guests verify GetResInfo's watch-cursor ID/type/empty name
+and ResError on both real CPUs before their existing host interaction acceptance.

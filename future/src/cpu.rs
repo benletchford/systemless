@@ -203,6 +203,7 @@ pub enum Call {
     },
     ReleaseResource(u32),
     DetachResource(u32),
+    ResourceInfo(crate::process::ResourceInfo),
     Region {
         op: crate::regions::Op,
         a: u32,

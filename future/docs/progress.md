@@ -2910,3 +2910,62 @@ Strict all-target Clippy, sequential changed-file formatting and whitespace chec
 pass. A test-only needless mutable borrow was corrected before strict acceptance.
 The original probe and screenshot establish watch-cursor initialization and the
 GetResInfo boundary above, without a board/gameplay acceptance claim.
+
+
+## 2026-10-15: shared resource metadata queries
+
+GetResInfo now marshals one ResourceInfo request from the native 16-byte Pascal
+frame or PPC r3..r6 into the same Process service. The live resource-handle
+identity supplies the signed ID, raw four-byte type and Pascal name from the map;
+mutable resource payloads and handle relocation do not change that metadata.
+Standard cursor fallback handles report their CURS ID and an empty name. Apple’s
+[Resource Manager reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Resource_Manager/Reference/reference.html#//apple_ref/c/func/GetResInfo)
+defines this query and its invalid-resource behavior.
+
+Detached, released, ordinary and unknown handles leave output buffers untouched
+and set resNotFound. Valid owned master pointers are checked without changing
+MemErr. All nonnil outputs are preflighted before the ID/type/name writes, and
+metadata is snapshotted before overlapping outputs can modify storage. Nil output
+pointers are skipped, matching the permitted legacy reference. Successful queries
+set ResErr to zero without allocating guest memory. Runtime preflight protects the
+ResErr publication slot. Both ABI replies are void; the Trap Manager advertises
+a readable built-in GetResInfo entry. Writable resource metadata/maps, additional
+resource files and general system-resource enumeration remain unimplemented.
+
+Four new default tests cover maximum/raw Macintosh names, absent names, signed
+IDs, relocation/payload mutation, heap exhaustion without query allocation, locked
+resources, untouched guards, overlapping outputs, malformed masters, protected/
+truncated outputs, ownership loss, cursor fallback metadata, native frame bounds,
+void register/stack preservation, shared real CPU state and trap availability.
+Rebuilt MPW tracking guests verify GetResInfo's watch-cursor ID/type/empty name
+and ResError on both real CPUs before their existing host interaction acceptance.
+
+
+The original Super Mines 300000-boundary-per-step sequence now passes GetResInfo
+for TILE 1101 and continues guest tile-byte decoding without a service fault.
+With default 30000-boundary click slices plus a 2000000-boundary tail, it reaches
+repeated Random calls instead of another missing service. The tail ends Budget
+at PC $01006696 (opcode $56C0, D0/D1 zero), and the board remains blank. A second
+run adding one explicit host tick per slice also ends at that PC with clock 2188
+and QuickDraw randSeed zero. Advancing the clock does not resolve this loop;
+there is no established root cause yet. Do not change Random's documented zero
+seed behavior merely to bypass the original application's initialization.
+
+Next: trace the first zero-seed write and the random caller's guest state, check
+initialization/ABI assumptions against the legacy reference and compiler fixtures,
+then continue tile/board initialization. Resource metadata is accepted separately
+from gameplay, which remains unverified. The full rebuild goal stays active.
+
+The bounded diagnostic supports SYSTEMLESS_PROBE_TAIL_BUDGET (0..=10000000,
+default zero) after the last successful input slice, and
+SYSTEMLESS_PROBE_TICKS_PER_STEP (u32, default zero) through the existing host clock
+API. It reports the ending clock/QuickDraw seed, skips continuation after a
+terminal result and propagates service faults. Guest seed storage is never patched.
+Per-step screenshots precede the tail; the final screenshot includes it.
+
+Validation: all 308 tests pass (252 default and 56 optional GPU/MPW), with zero
+failures or skips. Strict all-target Clippy, sequential changed-file formatting
+and whitespace checks pass. Rebuilt MPW metadata/tracking guests pass on both
+CPUs. Original tail runs are bounded Budget outcomes, not successful gameplay;
+the explicit-clock run records clock 2188 and seed zero at the repeated-random
+boundary. The full rebuild remains active.
