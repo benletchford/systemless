@@ -1337,3 +1337,45 @@ Both rebuilt applications reach Exit(0) and the existing success marker. Build
 and focused execution evidence: /tmp/systemless-appllimit-mpw-build.txt and
 /tmp/systemless-appllimit-mpw-tests.txt. The initial broad run exposed this old
 fixture's fixed-address expectation; it was corrected before the final gate.
+
+
+### Shared device state advances EV to its color-window call
+
+GetGDevice now returns a real owned display record with a PixMap/color table,
+referencing the current monochrome screen storage. Device identities and globals
+are shared by both CPUs; registered record fields and palette data are read live.
+The initial one-bit profile remains honest: this does not turn on Color QuickDraw
+capability flags, create color windows or claim a 256-color screen.
+
+The unchanged original EV 1.0.5 now passes GetGDevice and reaches unsupported
+NewCWindow ($AA45), using the recorded resource fork, graphics and a 2,000,000
+boundary budget: /tmp/systemless-ev-device-next.txt. This is a color-port/window
+foundation requirement, not a title/menu or gameplay result.
+
+Centaurian's original PPC load separately passes its former strong Index2Color
+import and now fails at InterfaceLib BackPixPat:
+/tmp/systemless-centaurian-device-next.txt. It still does not execute guest code.
+Marathon's previously verified sound-version requirement is unchanged by these
+services; neither original target game has reached gameplay.
+
+The public-header devices.c fixture checks GDevice/PixMap sizes, current/main/list
+identity, next-device termination, flags, low-memory globals, actual screen-memory
+aliasing, and live RGB lookup on both real CPU engines. Separate GPU acceptance
+copies the actual device PixMap and a read-only 8-bit source through both CopyBits
+ABIs and checks byte-exact output/padding plus GPU readback. Exact device/parser
+limits are in architecture.md; no full native color parity is implied.
+
+
+Final device-enabled refresh retains Marathon's 68K $A800 sound-version boundary
+and the PPC strong-import boundaries SndSoundManagerVersion (EV) and
+NewRoutineDescriptor (Marathon). Evidence:
+/tmp/systemless-marathon-device-refresh.txt,
+/tmp/systemless-ev-device-ppc-refresh.txt and
+/tmp/systemless-marathon-device-ppc-refresh.txt.
+
+Super Mines' original Save/Open sequence was rerun after device trap publication
+and indexed-source decoding. It reopened node 19's 1,972-byte data fork and
+returned to Waiting{ticks:10} at PC $0100C798; its final board image was visually
+inspected. Evidence: /tmp/systemless-mines-device-reload.txt and
+/tmp/systemless-mines-device-reload-after.png. This retains the prior bounded
+offscreen interaction result; live desktop and win/loss acceptance remain gaps.

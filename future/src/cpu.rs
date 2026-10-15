@@ -59,6 +59,7 @@ pub enum Call {
     },
     MaxApplZone,
     MoreMasters,
+    Device(crate::devices::Op),
     GetApplLimit,
     SetApplLimit(u32),
     MoveBytes {

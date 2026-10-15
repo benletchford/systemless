@@ -1850,3 +1850,47 @@ for an idle channel. Busy/private-field corruption is rejected, never discarded
 as if played. Actual command execution, channel status, synthesis, sound callbacks,
 wait-for-playback disposal and host audio output remain unfinished. Creation and
 disposal do not establish audible playback compatibility.
+
+
+## Shared display-device records and live indexed sources
+
+The process now owns an initial display-device manager. The first device query
+prepares owned GDevice (62-byte), PixMap (50-byte) and ColorTable handles, then
+publishes MainDevice ($08A4), DeviceList ($08A8) and TheGDevice ($0CC8). Those
+addresses and public layouts were verified against the pinned Macintosh SDK.
+Initialization validates global/output storage first and rolls back partial
+handle allocations. It is lazy and uses the current process heap; it is not yet
+an eager system-heap boot device or a complete Graphics Devices Manager.
+
+The initial device truthfully describes the existing 512x342, one-bit screen.
+Its PixMap references the exact packed guest pixel memory used by basic
+QuickDraw, with the current two-entry white/black palette. Flags report main,
+screen, active and no driver; gdDevType remains clear. SysEnvirons/Gestalt do not
+newly advertise Color QuickDraw. Multiple devices, mode/depth changes, device
+creation/disposal, SetGDevice and general device attribute setters remain
+unsupported. Unknown selections/links, disposed records and unsupported table
+layouts fail explicitly rather than inventing handles or colors.
+
+GetGDevice/GetMainDevice/GetDeviceList/GetNextDevice/TestDeviceAttribute and
+Index2Color are shared services with architecture-specific marshalling. Queries
+read live registered guest globals/records; Index2Color follows the current
+record's PixMap/table handles and returns full 16-bit RGB components. Process
+and guest MemErr/ResErr are preserved. Native result slots, Pascal argument
+widths and PPC void/Boolean/pointer behavior have real-CPU coverage.
+
+CopyBits now accepts checked live indexed PixMap sources at 1/2/4/8 bits, in
+addition to ordinary BitMaps. The source decoder honors row stride, packed bit
+order, signed bounds, component/depth fields and device-versus-value-indexed
+color tables. It rejects direct/compressed/planar layouts, invalid or duplicate
+palette entries, undefined pixel indices and out-of-bounds storage. Metadata,
+rows and palettes may be read-only. Both row storage and decoded pixel counts
+are bounded to the existing 64 MiB image limit. A complete source snapshot is
+prepared before destination writes, retaining overlap safety.
+
+The existing wgpu palette path converts indexed RGB through the already-tested
+monochrome destination policy used for PICT. This is not full native color
+quantization parity or a color destination implementation. CGrafPorts,
+NewCWindow, indexed destination memory/drawing, configurable screen modes and
+palette-to-presentation synchronization remain required next steps. Tests copy
+both the actual device PixMap and a read-only eight-bit RGB source through both
+CPU adapters and check destination bytes, padding and real GPU readback.

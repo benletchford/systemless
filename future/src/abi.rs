@@ -66,6 +66,10 @@ pub enum Service {
     SystemTask,
     MaxApplZone,
     MoreMasters,
+    Device(crate::devices::Op),
+    NextDevice,
+    DeviceAttribute,
+    Index2Color,
     GetApplLimit,
     SetApplLimit,
     BlockMove,
@@ -343,6 +347,12 @@ impl Abi {
             b"GetMouse" => Some(Service::GetMouse),
             b"SystemTask" => Some(Service::SystemTask),
             b"SysEnvirons" => Some(Service::SysEnvirons),
+            b"GetGDevice" => Some(Service::Device(crate::devices::Op::Current)),
+            b"GetMainDevice" => Some(Service::Device(crate::devices::Op::Main)),
+            b"GetDeviceList" => Some(Service::Device(crate::devices::Op::First)),
+            b"GetNextDevice" => Some(Service::NextDevice),
+            b"TestDeviceAttribute" => Some(Service::DeviceAttribute),
+            b"Index2Color" => Some(Service::Index2Color),
             b"MoreMasters" => Some(Service::MoreMasters),
             b"MaxApplZone" => Some(Service::MaxApplZone),
             b"SetApplLimit" => Some(Service::SetApplLimit),
@@ -1267,6 +1277,58 @@ impl Abi {
                 },
                 Reply::M68kD0,
             )),
+            0xaa29 | 0xaa2a | 0xaa32 => {
+                memory.validate_write(GuestPtr(sp), 4)?;
+                let op = match opcode {
+                    0xaa29 => crate::devices::Op::First,
+                    0xaa2a => crate::devices::Op::Main,
+                    _ => crate::devices::Op::Current,
+                };
+                Ok((Call::Device(op), Reply::StackLong(GuestPtr(sp))))
+            }
+            0xaa2b | 0xaa2c | 0xaa34 => {
+                let count = match opcode {
+                    0xaa2b => 4,
+                    0xaa2c => 6,
+                    _ => 8,
+                };
+                let args = memory.read(GuestPtr(sp), count)?;
+                let long = |at| u32::from_be_bytes(args[at..at + 4].try_into().unwrap());
+                let result = sp
+                    .checked_add(count as u32)
+                    .ok_or_else(|| Error::Cpu("device ABI stack overflow".into()))?;
+                let (op, reply) = match opcode {
+                    0xaa2b => {
+                        memory.validate_write(GuestPtr(result), 4)?;
+                        (
+                            crate::devices::Op::Next(long(0)),
+                            Reply::StackLong(GuestPtr(result)),
+                        )
+                    }
+                    0xaa2c => {
+                        memory.validate_write(GuestPtr(result), 1)?;
+                        (
+                            crate::devices::Op::Attribute {
+                                device: long(2),
+                                bit: i16::from_be_bytes(args[..2].try_into().unwrap()),
+                            },
+                            Reply::StackByte(GuestPtr(result)),
+                        )
+                    }
+                    _ => {
+                        memory.validate_write(GuestPtr(long(0)), 6)?;
+                        (
+                            crate::devices::Op::Index {
+                                index: long(4) as i32,
+                                destination: GuestPtr(long(0)),
+                            },
+                            Reply::None,
+                        )
+                    }
+                };
+                c.dar[15] = result;
+                Ok((Call::Device(op), reply))
+            }
             0xa02d => Ok((Call::SetApplLimit(c.dar[8]), Reply::M68kD0)),
             0xa036 => Ok((Call::MoreMasters, Reply::M68kD0)),
             0xa063 => Ok((Call::MaxApplZone, Reply::M68kD0)),
@@ -2446,6 +2508,16 @@ impl Abi {
                 version: c.gpr[3] as i16,
                 record: GuestPtr(c.gpr[4]),
             },
+            Service::Device(op) => Call::Device(op),
+            Service::NextDevice => Call::Device(crate::devices::Op::Next(c.gpr[3])),
+            Service::DeviceAttribute => Call::Device(crate::devices::Op::Attribute {
+                device: c.gpr[3],
+                bit: c.gpr[4] as i16,
+            }),
+            Service::Index2Color => Call::Device(crate::devices::Op::Index {
+                index: c.gpr[3] as i32,
+                destination: GuestPtr(c.gpr[4]),
+            }),
             Service::MoreMasters => Call::MoreMasters,
             Service::MaxApplZone => Call::MaxApplZone,
             Service::SetApplLimit => Call::SetApplLimit(c.gpr[3]),
@@ -2995,6 +3067,7 @@ impl Abi {
                         | Service::OffsetRect
                         | Service::InsetRect
                         | Service::MoreMasters
+                        | Service::Index2Color
                         | Service::SetApplLimit
                         | Service::MaxApplZone
                         | Service::BlockMove

@@ -4051,3 +4051,34 @@ shell syntax and whitespace checks pass. Logs:
 /tmp/systemless-appllimit-lint-final.txt. Original EV passes SetApplLimit and
 stops at GetGDevice; original Marathon retains its sound-version boundary;
 Super Mines Save/Open and the final board were reverified. Full rebuild active.
+
+
+## Shared graphics-device records and indexed CopyBits sources
+
+The process owns a real initial monochrome GDevice/PixMap/ColorTable graph,
+created lazily with allocation rollback and published SDK-verified device globals.
+Device queries and Index2Color share live guest records across both ABIs and
+preserve error state. The actual display remains 512x342/one bit. NewCWindow,
+color destination ports, mode changes, eager system-heap device initialization,
+multiple devices and general setters remain unfinished.
+
+A GPU check exposed that CopyBits rejected the returned PixMap. A checked live
+indexed-source decoder now supports 1/2/4/8-bit packed sources and color tables,
+reusing the existing palette-to-monochrome wgpu path and source snapshots. CPU,
+public-header compiled guest, decoder and GPU readback tests cover the new slice.
+Original EV now reaches NewCWindow ($AA45); original PPC Centaurian's next strong
+import is BackPixPat. No original-game playback/launch or native color parity is
+claimed. See original-applications.md and architecture.md for exact evidence,
+contracts and limitations. The full rebuild goal remains active.
+
+
+Final device/indexed-source validation: all 393 tests pass with zero failures or
+ignored tests under the complete locked acceptance command, including the new
+GPU copy/readback case and public-header device fixture. Strict all-target
+Clippy, sequential changed-source stdin formatting, MPW build-script syntax and
+whitespace checks pass. Logs: /tmp/systemless-device-acceptance-final.txt,
+/tmp/systemless-device-lint-acceptance.txt, /tmp/systemless-device-mpw-final.txt
+and /tmp/systemless-device-gpu-final.txt. Super Mines Save/Open was rerun and its
+final PPM is byte-identical to the preceding heap-layout milestone, with normal
+Waiting{ticks:10} after reopening its 1,972-byte game. Fresh original-game
+boundaries are recorded in original-applications.md. Full rebuild remains active.

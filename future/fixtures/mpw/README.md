@@ -507,3 +507,11 @@ storage/userInfo alive; duplicate and nil disposal must return badChannel. The
 ignored compiled_sound_channels test requires the success marker and Exit(0)
 from both real CPU engines. It requires compiler artifacts but no audio device
 or GPU and makes no claim of sound playback.
+
+
+`devices.c` uses the public Macintosh headers to inspect actual shared
+GDevice/PixMap/ColorTable handles, sizes, flags, list/current/main globals and
+screen-memory aliasing, then checks Index2Color before/after a table edit. Both
+real CPU engines must post marker $D311 and exit successfully without a GPU.
+This initial one-bit device fixture does not establish color-window or original
+gameplay support. The separate optional GPU regression copies its PixMap source.

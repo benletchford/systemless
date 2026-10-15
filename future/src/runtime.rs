@@ -581,6 +581,12 @@ impl Runtime {
                                 0,
                             )?;
                         }
+                        Call::Device(op) => {
+                            let mut devices = std::mem::take(&mut self.process.devices);
+                            let result = devices.call(&mut self.memory, &mut self.process, op);
+                            self.process.devices = devices;
+                            reply.apply(&mut self.cpu, &mut self.memory, result?, 0)?;
+                        }
                         Call::MoreMasters => {
                             self.process.more_masters(&mut self.memory)?;
                             let error = self.process.mem_error;
@@ -1531,6 +1537,7 @@ impl Runtime {
                         | Call::GetMouse(_)
                         | Call::SystemTask
                         | Call::SysEnvirons { .. }
+                        | Call::Device(_)
                         | Call::SetApplLimit(_)
                         | Call::MoreMasters
                         | Call::MaxApplZone

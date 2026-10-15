@@ -26,6 +26,7 @@ pub struct Process {
     pub files: crate::files::Files,
     pub dialogs: crate::dialogs::Dialogs,
     pub sound: crate::sound::Manager,
+    pub devices: crate::devices::Manager,
     pub cursor: crate::cursor::Cursor,
     pub input: crate::events::Input,
     pub menus: crate::menus::Menus,

@@ -455,7 +455,8 @@ impl Ports {
         if request.source.0 == 0 || request.destination.0 == 0 {
             return Ok(());
         }
-        let source = Bitmap::read(memory, request.source)?;
+        let source_data = crate::pixmap::source(memory, request.source)?;
+        let source = source_data.bitmap;
         let destination = Bitmap::read(memory, request.destination)?;
         let mut source_rect = read_rect(memory, request.source_rect)?;
         let rect = read_rect(memory, request.destination_rect)?;
@@ -496,8 +497,7 @@ impl Ports {
         source_rect.bottom -= source.bounds.top;
         let (width, height) = source.extent()?;
         // Decode before any destination write, including overlapping backing storage.
-        let indices = source.unpack(memory)?;
-        destination.execute_source(
+        destination.execute_source_palette(
             gpu,
             memory,
             Draw::Blit {
@@ -518,7 +518,8 @@ impl Ports {
                 },
             },
             Some(&clips),
-            Some(&indices),
+            Some(&source_data.indices),
+            source_data.palette.as_deref(),
         )
     }
     pub fn copy_mask(&self, memory: &mut Memory, gpu: &Graphics, request: CopyMask) -> Result<()> {

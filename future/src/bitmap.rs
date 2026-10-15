@@ -52,7 +52,7 @@ impl Bitmap {
         }
         Ok((width, height))
     }
-    fn byte_len(&self) -> Result<usize> {
+    pub(crate) fn byte_len(&self) -> Result<usize> {
         Ok(self.row_bytes * self.extent()?.1)
     }
     pub(crate) fn unpack(&self, memory: &Memory) -> Result<Vec<u8>> {
