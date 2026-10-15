@@ -8,6 +8,8 @@ use crate::{
     Error, Result,
 };
 use std::collections::BTreeMap;
+mod geometry;
+pub use geometry::Geometry;
 mod tracking;
 pub use tracking::TrackControl;
 pub(crate) use tracking::Tracking;
@@ -26,6 +28,10 @@ pub struct NewControl {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    Geometry {
+        handle: u32,
+        change: Geometry,
+    },
     Find {
         owner: u32,
         point: [i16; 2],
@@ -182,6 +188,19 @@ impl Controls {
         erase: bool,
     ) -> Result<()> {
         let p = self.record(memory, process, h)?;
+        let r = read_rect(memory, GuestPtr(p.0 + 8))?;
+        self.draw_at(memory, process, gpu, h, r, erase)
+    }
+    fn draw_at(
+        &self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: Option<&Graphics>,
+        h: u32,
+        r: Rect,
+        erase: bool,
+    ) -> Result<()> {
+        let p = self.record(memory, process, h)?;
         let (owner, kind) = self.records[&h];
         if memory.read(GuestPtr(p.0 + 16), 1)?[0] == 0 {
             return Ok(());
@@ -195,7 +214,6 @@ impl Controls {
             return Ok(());
         }
         let gpu = gpu.ok_or_else(|| fail("visible control drawing requires a GPU"))?;
-        let r = read_rect(memory, GuestPtr(p.0 + 8))?;
         if r.left >= r.right || r.top >= r.bottom {
             return Err(fail("invalid live control rectangle"));
         }
@@ -433,6 +451,9 @@ impl Controls {
         gpu: Option<&Graphics>,
         op: Op,
     ) -> Result<u32> {
+        if let Op::Geometry { handle, change } = op {
+            return self.change_geometry(memory, process, gpu, handle, change);
+        }
         if let Op::Find {
             owner,
             point,

@@ -3329,3 +3329,77 @@ pass. Rebuilt MPW menu tracking guests complete the real host-driven interaction
 on both CPUs. The private original fork's SHA-256 remains unchanged. Its New
 Game and Quit commands reach confirmation construction, then MoveControl;
 confirmation acceptance/shutdown and the full rebuild remain incomplete.
+
+
+### Shared control repositioning and resizing (2026-10-15)
+
+MoveControl ($A959) and SizeControl ($A95C), plus their PPC imports, now use one
+shared geometry operation for registered standard button/checkbox/radio controls.
+Move retains dimensions; size retains the upper-left corner. Hidden controls
+change only the live rectangle, without drawing or dirtying their owner. Visible
+controls erase the old rectangle with the owner's background pattern, union that
+old area into the owner's update region, then redraw at the new rectangle through
+the existing wgpu control renderer. Owner visibility/clipping still applies; a
+visible control in a hidden owner window changes geometry/dirty state without
+requiring a GPU. Current port (including nil), owner port fields, clip contents,
+control identity/attributes, visibility and caller error globals are preserved.
+
+The Window Manager exposes a staged invalidation payload so both ordinary window
+invalidation and control geometry use the same global content/update model. A
+read-only allocator simulation checks the exact update/clip-resize sequence before
+publishing changes or erasing pixels. Drawing targets, region geometry, supported
+port state and text positions are also checked first. Locked controls remain in
+place; moves needing no region growth work even with the guest heap exhausted.
+A disjoint dirty-region expansion that cannot allocate fails before geometry,
+region bytes or pixels change. GPU/device failures are still explicit faults,
+not a promise of transactional device recovery.
+
+Native frames contain v/height, h/width, then the long handle, pop eight bytes and
+return no result. PPC low signed words feed the same service and preserve r3.
+Nil requests are inert under the legacy reference. Signed coordinate overflow,
+nonpositive sizes, private update/clip/visibility aliases, custom/recording port
+contexts and unsupported control definitions remain errors. Full classic wrapping
+and zero/inverted-control behavior are not claimed. Standalone HideControl's
+complete update-region contract remains a separate compatibility gap; this
+geometry slice explicitly supplies the documented erasure invalidation.
+
+Two new default tests cover exact ABIs/nil requests and sequential allocator
+preflight invariants. Three GPU tests cover both CPUs and all supported control
+families, patterned erasure, an independent erase/draw pixel reference, dirty
+region geometry, restored nil ports/state/errors, hidden controls/owners without
+a GPU, locked identity, exhausted-heap success and failure, invalid geometry and
+unsupported port state. Rebuilt MPW window guests require four public move/size
+calls, inspect exact rectangles/visibility and preserve a nil current port before
+completing their existing lifecycle/pixel acceptance on both targets.
+
+The original Quit sequence now passes two MoveControl requests, including hiding
+a placeholder at (-1000,-1000), and continues constructing WIND 2000. It creates
+a plain TERecord and sets the 26-byte confirmation prompt, then stops at
+TEDispatch $A83D selector $0009 (TEGetHeight), post-trap PC $010090A0,
+SP $0080FC86. The prompt has not yet been displayed or accepted, and Quit has
+not exited. Unknown TextEdit selector diagnostics now include the exact selector.
+The application consumes a long result at that PC (MOVE.L (SP)+,D7). The actual
+MPW header at /root/MPW/Interfaces/CIncludes/TextEdit.h in the pinned toolchain
+also declares TEGetHeight with long arguments/result and selector 9; this is more
+precise ABI evidence than the older PDF's INTEGER return label.
+
+Next: shared TEGetHeight measurement from live monostyled/styled line metrics and
+line starts, with documented trailing-blank-line behavior and checked ranges,
+then complete the confirmation and verify New Game/Quit lifecycle. The original
+call also uses zero/large line bounds, so validate those range semantics carefully.
+Full gameplay, original PPC compatibility, native presentation acceptance, real
+Mixed Mode/callbacks and remaining menu/Toolbox contracts are unfinished. The
+full rebuild goal stays active.
+
+Primary contracts: Apple's [MoveControl](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-340.html),
+[SizeControl](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-341.html),
+[HideControl](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-339.html), and
+[TextEdit reference](https://dev.os9.ca/techpubs/mac/pdf/Text/TextEdit.pdf).
+
+Validation: all 343 tests pass (279 default and 64 optional GPU/MPW), with zero
+failures or skips. The final focused geometry run additionally covers hidden
+owner/no-GPU invalidation on both CPUs. Strict all-target Clippy, sequential
+changed-file formatting and whitespace checks pass. Rebuilt MPW window guests
+complete public move/size calls and their existing lifetime/pixel acceptance.
+The original Quit run reaches TEGetHeight before displaying its confirmation;
+shutdown and the full rebuild remain incomplete.

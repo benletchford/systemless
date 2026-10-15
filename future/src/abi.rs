@@ -50,6 +50,7 @@ pub enum Service {
     ControlMin,
     ControlMax,
     ControlSetValue,
+    ControlGeometry(bool),
     ControlReference,
     ControlSetReference,
     ControlTitle,
@@ -263,6 +264,8 @@ impl Abi {
             b"GetCtlValue" | b"GetControlValue" => Some(Service::ControlValue),
             b"GetCtlMin" | b"GetControlMinimum" => Some(Service::ControlMin),
             b"GetCtlMax" | b"GetControlMaximum" => Some(Service::ControlMax),
+            b"MoveControl" => Some(Service::ControlGeometry(false)),
+            b"SizeControl" => Some(Service::ControlGeometry(true)),
             b"SetCtlValue" | b"SetControlValue" => Some(Service::ControlSetValue),
             b"GetCRefCon" | b"GetControlReference" => Some(Service::ControlReference),
             b"SetCRefCon" | b"SetControlReference" => Some(Service::ControlSetReference),
@@ -725,6 +728,27 @@ impl Abi {
                         destination,
                     }),
                     Reply::StackWord(GuestPtr(result)),
+                ))
+            }
+            0xa959 | 0xa95c => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let v = i16::from_be_bytes(args[..2].try_into().unwrap());
+                let h = i16::from_be_bytes(args[2..4].try_into().unwrap());
+                let handle = u32::from_be_bytes(args[4..].try_into().unwrap());
+                let change = if opcode == 0xa959 {
+                    crate::controls::Geometry::Move { h, v }
+                } else {
+                    crate::controls::Geometry::Size {
+                        width: h,
+                        height: v,
+                    }
+                };
+                c.dar[15] = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("control geometry stack overflow".into()))?;
+                Ok((
+                    Call::Control(crate::controls::Op::Geometry { handle, change }),
+                    Reply::None,
                 ))
             }
             0xa955..=0xa958 | 0xa95a | 0xa960..=0xa962 | 0xa969 | 0xa96d => {
@@ -1521,8 +1545,11 @@ impl Abi {
             0xa9cc => Ok((Call::TextEdit(crate::textedit::Op::Init), Reply::None)),
             0xa9cb | 0xa9cd | 0xa83d => {
                 let extra = if opcode == 0xa83d {
-                    if memory.u16(GuestPtr(sp))? != 4 {
-                        return Err(Error::Cpu("unsupported TextEdit selector".into()));
+                    let selector = memory.u16(GuestPtr(sp))?;
+                    if selector != 4 {
+                        return Err(Error::Cpu(format!(
+                            "unsupported TextEdit selector {selector:#06x}"
+                        )));
                     }
                     2
                 } else {
@@ -2402,6 +2429,20 @@ impl Abi {
             Service::ControlValue => Call::Control(crate::controls::Op::Value(c.gpr[3])),
             Service::ControlMin => Call::Control(crate::controls::Op::Min(c.gpr[3])),
             Service::ControlMax => Call::Control(crate::controls::Op::Max(c.gpr[3])),
+            Service::ControlGeometry(resize) => Call::Control(crate::controls::Op::Geometry {
+                handle: c.gpr[3],
+                change: if resize {
+                    crate::controls::Geometry::Size {
+                        width: c.gpr[4] as i16,
+                        height: c.gpr[5] as i16,
+                    }
+                } else {
+                    crate::controls::Geometry::Move {
+                        h: c.gpr[4] as i16,
+                        v: c.gpr[5] as i16,
+                    }
+                },
+            }),
             Service::ControlSetValue => {
                 Call::Control(crate::controls::Op::SetValue(c.gpr[3], c.gpr[4] as i16))
             }
@@ -2730,6 +2771,7 @@ impl Abi {
                         | Service::ControlKill
                         | Service::ControlVisible(_)
                         | Service::ControlHilite
+                        | Service::ControlGeometry(_)
                         | Service::ControlSetValue
                         | Service::ControlSetReference
                         | Service::ControlTitle

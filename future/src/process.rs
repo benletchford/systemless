@@ -322,6 +322,53 @@ impl Process {
         heap.release(data);
         Ok(())
     }
+    /// Validate a sequence of handle resizes against a private allocator copy.
+    /// Callers can preflight compound graphics operations without publishing
+    /// heap metadata or changing their guest error authority.
+    pub(crate) fn can_resize_handles(
+        &mut self,
+        memory: &Memory,
+        sizes: &[(u32, u32)],
+    ) -> Result<bool> {
+        if sizes.is_empty() {
+            return Ok(true);
+        }
+        let saved = self.mem_error;
+        let result = (|| {
+            for &(h, _) in sizes {
+                self.handle_size(memory, h)?;
+                if self.mem_error != 0 {
+                    return Ok(false);
+                };
+                memory.validate_write(GuestPtr(h), 4)?;
+            }
+            memory.validate_write(GuestPtr(HEAP_BASE), HEAP_SIZE as usize)?;
+            let Some(mut heap) = self.heap.clone() else {
+                return Ok(sizes.is_empty());
+            };
+            let mut handles = self.handles.clone();
+            for &(h, size) in sizes {
+                if size > HEAP_SIZE {
+                    return Ok(false);
+                }
+                let block = handles.get_mut(&h).unwrap();
+                if !heap.resize_in_place(block.data, size) {
+                    if block.locked {
+                        return Ok(false);
+                    }
+                    let Some(data) = heap.allocate(size) else {
+                        return Ok(false);
+                    };
+                    heap.release(block.data);
+                    block.data = data;
+                }
+                block.size = size;
+            }
+            Ok(true)
+        })();
+        self.mem_error = saved;
+        result
+    }
     /// Stage a group of payload/size changes without changing live allocation
     /// metadata. Every master keeps its identity; locked blocks cannot move.
     pub(crate) fn replace_handles(
@@ -546,5 +593,40 @@ impl Process {
         self.handles.get_mut(&handle).unwrap().locked = locked;
         self.resource_handles.insert((kind, id), handle);
         Ok(handle)
+    }
+}
+
+#[cfg(test)]
+mod resize_preflight_tests {
+    use super::*;
+    #[test]
+    fn sequential_resize_preflight_preserves_bytes_errors_locks_and_allocator() {
+        fn setup() -> (Memory, Process, u32, u32) {
+            let mut m = Memory::default();
+            let mut p = Process::default();
+            let h = p.new_handle(&mut m, 10, true).unwrap();
+            let blocker = p.new_pointer(&mut m, 64, false).unwrap();
+            (m, p, h, blocker)
+        }
+        let (m, mut p, h, _) = setup();
+        let before = m
+            .read(GuestPtr(HEAP_BASE), HEAP_SIZE as usize)
+            .unwrap()
+            .to_vec();
+        p.set_handle_lock(&m, h, true).unwrap();
+        p.mem_error = -111;
+        assert!(!p.can_resize_handles(&m, &[(h, 100)]).unwrap());
+        assert_eq!(p.mem_error, -111);
+        assert!(p.can_resize_handles(&m, &[(h, 4), (h, 10)]).unwrap());
+        assert_eq!(p.mem_error, -111);
+        assert_eq!(
+            m.read(GuestPtr(HEAP_BASE), HEAP_SIZE as usize).unwrap(),
+            before
+        );
+        let (mut other_m, mut other_p, other_h, _) = setup();
+        other_p.set_handle_lock(&other_m, other_h, true).unwrap();
+        let next = other_p.new_pointer(&mut other_m, 32, false).unwrap();
+        let mut m = m;
+        assert_eq!(p.new_pointer(&mut m, 32, false).unwrap(), next);
     }
 }

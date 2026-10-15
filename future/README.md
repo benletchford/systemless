@@ -170,6 +170,9 @@ unfinished. Region/coordinate changes, mouse-region waits and dialog event
 classification share live guest state across both CPUs. A follow-up File-menu
 click now opens/tracks the File dropdown through shared MenuSelect. Separate
 New Game and Quit drags return their real packed commands and decode through
-shared HiWord/LoWord. Both then stop at MoveControl ($A959) while constructing
-a confirmation window. Shared control repositioning and confirmation/lifecycle
-acceptance are next; neither command has completed. The full rebuild stays active.
+shared HiWord/LoWord. Shared MoveControl/SizeControl now handle geometry,
+owner-background erasure and dirty regions. The original Quit route passes
+control movement and next stops at TEGetHeight (TEDispatch selector 9) while
+laying out its confirmation prompt. The prompt and shutdown are not yet accepted;
+TextEdit height measurement and confirmation/lifecycle are next. The full
+rebuild stays active.

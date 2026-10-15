@@ -1610,3 +1610,15 @@ results and signed PPC register results; adapters only decode arguments.
 Contracts: Apple's [MenuSelect](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-133.html),
 [MenuChoice](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-135.html), and
 [mathematical utilities](https://dev.os9.ca/techpubs/mac/pdf/Operating_System_Utilities/MLU.pdf).
+
+
+Control geometry shares the Window Manager's staged local-to-global content
+invalidation. Move/size validates registered ownership, bounds, supported owner
+drawing state, clip geometry and text positions before changing pixels. A cloned
+allocator/handle map simulates the exact update/clip-resize sequence without
+publishing guest state; successful rendering uses the existing shared control
+renderer, followed by the rectangle publication. Old visible areas use bkPat and
+become dirty, while hidden controls only update geometry. A hidden owner has no
+destination pixels and needs no GPU. Both adapters preserve void results and
+caller errors/port state. Coordinate wrapping/nonpositive sizes, custom controls
+and recording ports remain explicit gaps; device faults are not rolled back.

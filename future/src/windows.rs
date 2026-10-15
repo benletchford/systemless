@@ -1026,10 +1026,25 @@ impl Windows {
             .ports
             .ok_or_else(|| fail("window invalidation requires InitGraf"))?;
         let w = ports.current(memory)?.0;
-        if !self.list(memory)?.contains(&w) {
-            return Err(fail("current port is not a live window"));
-        }
         let r = read_rect(memory, rectangle)?;
+        let change = self.invalidation(memory, process, w, r, valid)?;
+        process.replace_handles(memory, vec![change])?;
+        if process.mem_error != 0 {
+            return Err(fail("window invalidation allocation failed"));
+        }
+        Ok(())
+    }
+    pub(crate) fn invalidation(
+        &self,
+        memory: &Memory,
+        process: &mut Process,
+        w: u32,
+        r: Rect,
+        valid: bool,
+    ) -> Result<(u32, Vec<u8>)> {
+        if !self.list(memory)?.contains(&w) {
+            return Err(fail("invalidation owner is not a live window"));
+        }
         let local = read_rect(memory, GuestPtr(w + 8))?;
         let global = rect_bytes(Rect::new(
             r.left - local.left,
@@ -1050,11 +1065,7 @@ impl Windows {
                 Boolean::Union
             },
         )?;
-        process.replace_handles(memory, vec![(update, new)])?;
-        if process.mem_error != 0 {
-            return Err(fail("window invalidation allocation failed"));
-        }
-        Ok(())
+        Ok((update, new))
     }
     pub fn reference(&self, memory: &mut Memory, w: u32, value: Option<u32>) -> Result<u32> {
         if !self.list(memory)?.contains(&w) {

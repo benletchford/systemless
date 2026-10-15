@@ -180,6 +180,18 @@ int main(void) {
     SetControlReference(button,9); if (GetControlReference(button)!=9) return 29;
     SetControlValue(check,5); if (GetControlValue(check)!=1 || GetControlMinimum(check)!=0 || GetControlMaximum(check)!=1) return 30;
     GetControlTitle(button,controlTitle); if (controlTitle[0]!=2 || controlTitle[1]!='O') return 31;
+    {
+        GrafPtr saved,actual;
+        GetPort(&saved); SetPort(0);
+        MoveControl(button,12,10);
+        if ((*button)->contrlRect.left!=12 || (*button)->contrlRect.top!=10 || (*button)->contrlRect.right!=72 || (*button)->contrlRect.bottom!=30) return 108;
+        SizeControl(button,70,22);
+        if ((*button)->contrlRect.left!=12 || (*button)->contrlRect.top!=10 || (*button)->contrlRect.right!=82 || (*button)->contrlRect.bottom!=32) return 109;
+        MoveControl(button,8,8); SizeControl(button,60,20);
+        GetPort(&actual); if (actual!=0 || (*button)->contrlRect.right!=68 || (*button)->contrlRect.bottom!=28 || (*button)->contrlVis!=255) return 110;
+        SetPort(saved);
+    }
+
     SetControlTitle(button,"\pGo"); GetControlTitle(button,controlTitle); if (controlTitle[1]!='G') return 32;
     HiliteControl(button,10); if ((*button)->contrlHilite!=10) return 33; HiliteControl(button,0);
     HideControl(check); if ((*check)->contrlVis) return 34; ShowControl(check);

@@ -1327,6 +1327,7 @@ impl Runtime {
                             op: crate::regions::Op::Clear | crate::regions::Op::Offset,
                             ..
                         } | Call::Menu(crate::menus::Op::Enable { .. })
+                            | Call::Control(crate::controls::Op::Geometry { .. })
                     ) && matches!(
                         call,
                         Call::MaxApplZone

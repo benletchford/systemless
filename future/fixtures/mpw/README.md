@@ -445,3 +445,9 @@ then HiliteMenu(0), its success marker and successful ExitToShell. Use the
 ignored compiled_menu_tracking test with the real generated forks and a GPU.
 HiWord/LoWord adapters are separately exercised by focused real-CPU fixtures and
 the original app's command decoding. No private application data is committed.
+
+
+The window guests require four MoveControl/SizeControl calls, inspect exact live
+rectangles and visibility, and verify the current port remains nil across visible
+control relocation/resizing. They restore the original geometry and complete
+the existing window/control lifetime and pixel-parity checks on both targets.
