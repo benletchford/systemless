@@ -602,3 +602,8 @@ GetGDevice versus main/list identity, reads its palette and restores the display
 `probe.c` verifies Get1Resource identity and missing-ID/type errors, plus exclusion
 of a cursor already loaded through the fallback search. The cursor allocation is
 last so it does not disturb the earlier pointer-layout assertions.
+
+The timers fixture uses the public Timer.h declarations: SC uses the documented Pascal inline reader for the 68K A1
+register callback, while MrC/PPC uses a static TimerUPP descriptor and transition
+vector. Both guests cancel a nil timer with real unused-time reporting, run three
+self-rescheduled callbacks across event waits, remove the task and exit.

@@ -16,6 +16,7 @@ pub struct Services {
     pub accumulator: u32,
     /// Successful guest Sound Manager callback returns, for host diagnostics.
     pub completed_sound_callbacks: u64,
+    pub completed_timer_callbacks: u64,
     pub calls: Vec<Call>,
 }
 // The whole CPU is suspended, retaining even engine-private FPU/control state.
@@ -25,10 +26,13 @@ struct Continuation {
 }
 enum Resume {
     Fixture,
+    Timer {
+        waits: Box<SuspendedWaits>,
+    },
     Sound {
         channel: u32,
         serial: u64,
-        waits: Box<SoundSuspendedWaits>,
+        waits: Box<SuspendedWaits>,
     },
     StandardFile {
         wait: Box<StandardFileWait>,
@@ -59,7 +63,7 @@ struct SoundWait {
     command: [u8; 8],
     reply: crate::abi::Reply,
 }
-struct SoundSuspendedWaits {
+struct SuspendedWaits {
     event: Option<EventWait>,
     control: Option<ControlWait>,
     menu: Option<MenuWait>,
@@ -153,12 +157,22 @@ impl Runtime {
         if let Some(stop) = self.terminal {
             return Ok(stop);
         }
-        let result = self.advance_inner(budget);
+        let result = self.advance_inner(budget).map(|stop| match stop {
+            Stop::Waiting { ticks } => Stop::Waiting {
+                ticks: self
+                    .process
+                    .timers
+                    .wait_ticks()
+                    .map_or(ticks, |timer| ticks.min(timer)),
+            },
+            other => other,
+        });
         if result.is_err() {
             self.faulted = true;
         }
         if self.faulted || self.terminal.is_some() {
             self.process.sound.cancel();
+            self.process.timers.cancel();
         }
         result
     }
@@ -196,12 +210,23 @@ impl Runtime {
     /// Host-controlled deterministic time, including periods with no guest CPU
     /// execution. A host can inject events before advancing this clock.
     pub fn elapse_ticks(&mut self, ticks: u32) -> Result<()> {
+        self.elapse_ticks_inner(ticks, true)
+    }
+    fn elapse_ticks_inner(&mut self, ticks: u32, advance_timers: bool) -> Result<()> {
         if self.faulted || self.terminal.is_some() {
             return Err(Error::Cpu("cannot advance a stopped process clock".into()));
         }
+        let units = u64::from(ticks) * 50_000;
+        if advance_timers {
+            self.process.timers.validate_advance(units)?;
+        }
         self.calendar.advance(&mut self.memory, ticks)?;
+        if advance_timers {
+            self.process.timers.advance(units)?;
+        }
         for continuation in &mut self.continuations {
-            if let Resume::Sound { waits, .. } = &mut continuation.resume {
+            if let Resume::Sound { waits, .. } | Resume::Timer { waits } = &mut continuation.resume
+            {
                 if let Some(wait) = &mut waits.event {
                     wait.remaining = wait.remaining.saturating_sub(ticks);
                 }
@@ -218,6 +243,7 @@ impl Runtime {
         }
         for _ in 0..budget {
             self.enter_pending_sound_callback()?;
+            self.enter_pending_timer_callback()?;
             if let Some(stop) = self.poll_waits()? {
                 return Ok(stop);
             }
@@ -225,8 +251,11 @@ impl Runtime {
                 .instructions
                 .checked_add(1)
                 .ok_or_else(|| Error::Cpu("instruction clock overflow".into()))?;
-            if !self.abi.fixture && self.instructions.is_multiple_of(1000) {
-                self.elapse_ticks(1)?;
+            if !self.abi.fixture {
+                self.process.timers.advance(50)?;
+                if self.instructions.is_multiple_of(1000) {
+                    self.elapse_ticks_inner(1, false)?;
+                }
             }
             match self.cpu.step_with_abi(&mut self.memory, &self.abi)? {
                 Outcome::Continue => {}
@@ -1794,6 +1823,10 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::Timer(op) => {
+                            self.process.timers.call(&mut self.memory, op)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::ResourceFile(op) => {
                             let value = self.process.resource_file(&mut self.memory, op)?;
                             reply.apply(&mut self.cpu, &mut self.memory, value as i32 as u32, 0)?;
@@ -2026,6 +2059,7 @@ impl Runtime {
                         | Call::CatalogInfo(_)
                         | Call::FileIo { .. }
                         | Call::WorkingDirectory { .. }
+                        | Call::Timer(_)
                         | Call::FcbInfo(_) => {
                             return Err(Error::Cpu("Macintosh service on fixture route".into()))
                         }
@@ -2149,6 +2183,61 @@ impl Runtime {
             Ok(Some(Stop::Waiting { ticks: 1 }))
         }
     }
+    fn suspend_waits(&mut self) -> Box<SuspendedWaits> {
+        Box::new(SuspendedWaits {
+            event: self.event_wait.take(),
+            control: self.control_wait.take(),
+            menu: self.menu_wait.take(),
+            file: self.standard_file_wait.take(),
+            sound: self.sound_wait.take(),
+            play: self.play_wait.take(),
+        })
+    }
+    fn restore_waits(&mut self, waits: SuspendedWaits) {
+        self.event_wait = waits.event;
+        self.control_wait = waits.control;
+        self.menu_wait = waits.menu;
+        self.standard_file_wait = waits.file;
+        self.sound_wait = waits.sound;
+        self.play_wait = waits.play;
+    }
+    fn enter_pending_timer_callback(&mut self) -> Result<()> {
+        if let Cpu::M68k(c) = &self.cpu {
+            // The classic Time Manager uses the level-one VIA interrupt.
+            if c.get_sr() & 0x0700 != 0 {
+                return Ok(());
+            }
+        }
+        // Timer callbacks are serialized; due tasks remain active until a safe
+        // instruction boundary outside an earlier timer callback.
+        if self
+            .continuations
+            .iter()
+            .any(|c| matches!(c.resume, Resume::Timer { .. }))
+        {
+            return Ok(());
+        }
+        while let Some(due) = self.process.timers.pending(&self.memory)? {
+            if due.routine == 0 {
+                self.process.timers.expire(&mut self.memory, due)?;
+                continue;
+            }
+            if self.continuations.len() >= 32 {
+                return Err(Error::Cpu("timer callback depth exceeded".into()));
+            }
+            let callee =
+                crate::callback::timer(&self.cpu, &mut self.memory, due.routine, due.task)?;
+            self.process.timers.expire(&mut self.memory, due)?;
+            let waits = self.suspend_waits();
+            let caller = std::mem::replace(&mut self.cpu, callee);
+            self.continuations.push(Continuation {
+                caller,
+                resume: Resume::Timer { waits },
+            });
+            break;
+        }
+        Ok(())
+    }
     fn enter_pending_sound_callback(&mut self) -> Result<()> {
         let sound = std::mem::take(&mut self.process.sound);
         let pending = sound.pending_callback(&self.memory, &mut self.process);
@@ -2161,14 +2250,7 @@ impl Runtime {
         }
         let callee = crate::callback::sound(&self.cpu, &mut self.memory, routine, channel)?;
         let serial = self.process.sound.begin_callback(channel);
-        let waits = Box::new(SoundSuspendedWaits {
-            event: self.event_wait.take(),
-            control: self.control_wait.take(),
-            menu: self.menu_wait.take(),
-            file: self.standard_file_wait.take(),
-            sound: self.sound_wait.take(),
-            play: self.play_wait.take(),
-        });
+        let waits = self.suspend_waits();
         let caller = std::mem::replace(&mut self.cpu, callee);
         self.continuations.push(Continuation {
             caller,
@@ -2461,6 +2543,14 @@ impl Runtime {
         self.cpu = frame.caller;
         match frame.resume {
             Resume::Fixture => self.cpu.set_result(value),
+            Resume::Timer { waits } => {
+                self.services.completed_timer_callbacks = self
+                    .services
+                    .completed_timer_callbacks
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Cpu("timer callback diagnostic overflow".into()))?;
+                self.restore_waits(*waits);
+            }
             Resume::Sound {
                 channel,
                 serial,
@@ -2476,12 +2566,7 @@ impl Runtime {
                     .completed_sound_callbacks
                     .checked_add(1)
                     .ok_or_else(|| Error::Cpu("sound callback diagnostic count overflow".into()))?;
-                self.event_wait = waits.event;
-                self.control_wait = waits.control;
-                self.menu_wait = waits.menu;
-                self.standard_file_wait = waits.file;
-                self.sound_wait = waits.sound;
-                self.play_wait = waits.play;
+                self.restore_waits(*waits);
             }
             Resume::StandardFile { mut wait, result } => {
                 wait.dialog.filtered(result.read(&self.memory, value)?)?;

@@ -2457,3 +2457,41 @@ Original Marathon now reaches sound-channel creation and next requests InsTime
 point is not gameplay.
 Escape Velocity retains its monitor setup boundary. Neither original game nor
 the whole rebuild is complete.
+
+
+## Shared Time Manager execution
+
+InsTime, PrimeTime and RmvTime now operate on one process-owned task queue through
+both CPU adapters. Task records retain real qLink order, qType active bits and
+live callback addresses. Deadlines use checked monotonic units of 1/3 microsecond:
+50 units per virtual instruction, 50,000 per elapsed host tick. This preserves the
+existing deterministic 1,000-instructions-per-tick policy without counting the
+same instruction tick twice. Positive delays are milliseconds; negative values
+are negated microseconds. Nil callbacks expire normally. RmvTime returns unused
+time in negated microseconds where representable, otherwise positive milliseconds.
+Guest calendar/TickCount writes do not rewrite monotonic timer deadlines.
+
+Runtime dispatches due tasks at instruction boundaries, in deadline/installation
+order, clears active state before entry, and retains installed tasks for rearming.
+Callbacks receive A1 on 68K or r3 through a validated same-ISA PPC TimerUPP
+(procInfo $B802). The entire interrupted CPU is suspended and restored, including
+engine-private/FPU state; waits are suspended and restored through the same shared
+continuation model as sound callbacks. Timer callbacks are serialized and may
+rearm themselves. Host event waits are shortened to the next timer tick; waiting
+time elapses even while callbacks run. 68K interrupt masking defers delivery.
+
+This is deterministic guest scheduling, not a native hard real-time guarantee.
+The queue is explicitly bounded at 256 records. Invalid/overlapping/duplicate
+records, changed managed linkage, unsupported descriptor transitions, invalid
+callback frames and unsafe record access fail explicitly. InsXTime/fixed-frequency
+extended timing, Microseconds, general hardware interrupts/PPC interrupt masking,
+interrupt-time service restrictions and production Mixed Mode remain unfinished.
+No extended Time Manager Gestalt capability is advertised.
+
+With the actual 640x480x8 profile and asset volume, original Marathon now installs
+and primes a real 33 ms task, then reaches PaletteDispatch HasDepth (selector
+$0A14, trap $AAA2), PC $010116CE. Evidence:
+/tmp/systemless-marathon-timers-first.txt. This does not establish title/menu,
+original timer callback execution, movement or combat acceptance. EV's monitor
+error and PPC loader gaps remain separate; neither original game is playable.
+The full rebuild goal remains active.

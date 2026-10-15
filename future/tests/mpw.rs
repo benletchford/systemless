@@ -1814,3 +1814,45 @@ fn headless_cli_finishes_sound_status_and_extended_samples_without_a_host_device
         );
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn compiled_timers_use_real_register_callbacks_rearm_and_resume_event_waits() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("timers.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("timers.ppc")).unwrap();
+    for mut a in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, Some(&code)).unwrap(),
+    ] {
+        let mut exited = false;
+        for _ in 0..32 {
+            let outcome = a.runtime.advance(100000).unwrap_or_else(|error| {
+                panic!(
+                    "{:?} timer guest at {:08x}: {error}; recent services: {:?}",
+                    a.info.architecture,
+                    a.runtime.cpu.pc(),
+                    &a.runtime.services.calls[a.runtime.services.calls.len().saturating_sub(12)..]
+                )
+            });
+            match outcome {
+                Stop::Waiting { ticks } => a.runtime.elapse_ticks(ticks).unwrap(),
+                Stop::Exit(status) => {
+                    assert_eq!(status, 0);
+                    exited = true;
+                    break;
+                }
+                other => panic!("unexpected compiled timer outcome {other:?}"),
+            }
+        }
+        assert!(exited);
+        assert_eq!(a.runtime.services.completed_timer_callbacks, 3);
+        assert!(a.runtime.services.calls.iter().any(|call| matches!(
+            call,
+            Call::PostEvent {
+                what: 7,
+                message: 0xa05a
+            }
+        )));
+    }
+}

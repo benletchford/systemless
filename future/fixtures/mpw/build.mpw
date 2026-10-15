@@ -120,3 +120,8 @@ Link -d -t 'APPL' -c 'FUTR' sound_info.68k.o "{Libraries}"MacRuntime.o "{Librari
 MrC -sym off -opt off sound_info.c -o sound_info.ppc.o
 PPCLink sound_info.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o sound_info.ppc
 Rez -append -o sound_info.68k sound_info.r
+
+SC -sym off timers.c -o timers.68k.o
+Link -d -t 'APPL' -c 'FUTR' timers.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o timers.68k
+MrC -sym off -opt off timers.c -o timers.ppc.o
+PPCLink timers.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o timers.ppc

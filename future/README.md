@@ -380,3 +380,12 @@ Original Marathon now reaches sound-channel creation and next requests InsTime
 point is not gameplay.
 Escape Velocity retains its monitor setup boundary. Neither original game nor
 the whole rebuild is complete.
+
+
+Shared InsTime/PrimeTime/RmvTime now schedule actual tasks, cancel with unused-time
+reporting and run same-ISA callbacks through the shared continuation model. Both
+CPU adapters use one process queue and deterministic instruction/host clock;
+callbacks restore interrupted CPU state and pending waits. Original Marathon now
+installs/primes a 33 ms task and next requests HasDepth ($AAA2 selector $0A14).
+Extended fixed-frequency timing, general interrupt/Mixed Mode support and original
+gameplay remain unfinished; no complete Time Manager or full-suite pass is implied.

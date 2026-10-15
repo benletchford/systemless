@@ -144,6 +144,53 @@ pub(crate) fn sound(caller: &Cpu, memory: &mut Memory, routine: u32, channel: u3
     }
 }
 
+/// TimerProc: A1 on 68K; one task pointer argument through a prepared PPC UPP.
+pub(crate) fn timer(
+    caller: &Cpu,
+    memory: &mut Memory,
+    routine: u32,
+    task: GuestPtr,
+) -> Result<Cpu> {
+    let routine = resolve(caller, memory, routine, 0xb802)?;
+    match caller {
+        Cpu::M68k(c) => {
+            memory.fetch(GuestPtr(routine), 2, 2)?;
+            let sp = c.dar[15]
+                .checked_sub(4)
+                .filter(|s| s.is_multiple_of(2))
+                .ok_or_else(|| Error::Cpu("invalid timer callback stack".into()))?;
+            memory.validate_write(GuestPtr(sp), 4)?;
+            let mut callee = Cpu::new(Architecture::M68k, routine, sp);
+            if let Cpu::M68k(next) = &mut callee {
+                next.dar = c.dar;
+                next.set_sr(c.get_sr());
+                next.dar[15] = sp;
+                next.dar[9] = task.0;
+            }
+            memory.write(GuestPtr(sp), &RETURN_GATE.to_be_bytes())?;
+            Ok(callee)
+        }
+        Cpu::PowerPc(c) => {
+            let descriptor = memory.read(GuestPtr(routine), 8)?;
+            let entry = u32::from_be_bytes(descriptor[..4].try_into().unwrap());
+            let toc = u32::from_be_bytes(descriptor[4..].try_into().unwrap());
+            memory.fetch(GuestPtr(entry), 4, 4)?;
+            let sp = crate::lifecycle::Lifecycle::validate_nested(caller, memory)?;
+            let mut frame = [0; 64];
+            frame[..4].copy_from_slice(&c.gpr[1].to_be_bytes());
+            let mut callee = Cpu::new(Architecture::PowerPc, entry, sp);
+            if let Cpu::PowerPc(next) = &mut callee {
+                next.gpr = c.gpr;
+                next.gpr[1] = sp;
+                next.gpr[2] = toc;
+                next.gpr[3] = task.0;
+            }
+            memory.write(GuestPtr(sp), &frame)?;
+            Ok(callee)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

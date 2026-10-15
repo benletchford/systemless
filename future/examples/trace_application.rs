@@ -3,10 +3,11 @@ use systemless_future::{cpu::Cpu, load::LoadedApplication, runtime::Stop};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only]".into());
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--elapse-waits]".into());
     }
     let mut graphics = false;
     let mut services_only = false;
+    let mut elapse_waits = false;
     let mut volume = None;
     let mut display = None;
     let mut index = 3;
@@ -14,6 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match args[index].as_str() {
             "--graphics" if !graphics => graphics = true,
             "--services-only" if !services_only => services_only = true,
+            "--elapse-waits" if !elapse_waits => elapse_waits = true,
             "--display" if display.is_none() => {
                 index += 1;
                 display = Some(
@@ -179,6 +181,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
+            }
+        }
+        if let Stop::Waiting { ticks } = stop {
+            if elapse_waits {
+                app.runtime.elapse_ticks(ticks)?;
+                println!("elapse {ticks} virtual ticks");
+                continue;
             }
         }
         if stop != Stop::Budget {

@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 pub enum Service {
     GetDateTime,
     ReadDateTime,
+    Timer(u8),
     NumToString,
     StringToNum,
     Gestalt,
@@ -288,6 +289,9 @@ impl Abi {
         }
         match symbol {
             b"GetDateTime" => Some(Service::GetDateTime),
+            b"InsTime" => Some(Service::Timer(0)),
+            b"PrimeTime" => Some(Service::Timer(1)),
+            b"RmvTime" => Some(Service::Timer(2)),
             b"ReadDateTime" => Some(Service::ReadDateTime),
             b"NumToString" => Some(Service::NumToString),
             b"StringToNum" => Some(Service::StringToNum),
@@ -679,6 +683,17 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa058..=0xa05a => Ok((
+                Call::Timer(crate::timers::Op {
+                    task: GuestPtr(c.dar[8]),
+                    action: match opcode {
+                        0xa058 => crate::timers::Action::Insert,
+                        0xa05a => crate::timers::Action::Prime(c.dar[0] as i32),
+                        _ => crate::timers::Action::Remove,
+                    },
+                }),
+                Reply::M68kError,
+            )),
             0xa039 => Ok((Call::ReadDateTime(GuestPtr(c.dar[8])), Reply::M68kError)),
             0xa9ee => {
                 let selector = memory.u16(GuestPtr(sp))?;
@@ -3072,6 +3087,14 @@ impl Abi {
                 mask_rect: GuestPtr(c.gpr[7]),
                 destination_rect: GuestPtr(c.gpr[8]),
             }),
+            Service::Timer(action) => Call::Timer(crate::timers::Op {
+                task: GuestPtr(c.gpr[3]),
+                action: match action {
+                    0 => crate::timers::Action::Insert,
+                    1 => crate::timers::Action::Prime(c.gpr[4] as i32),
+                    _ => crate::timers::Action::Remove,
+                },
+            }),
             Service::GetDateTime | Service::ReadDateTime => Call::ReadDateTime(GuestPtr(c.gpr[3])),
             Service::NumToString => Call::Decimal(crate::decimal::Op::Format {
                 number: c.gpr[3] as i32,
@@ -3807,6 +3830,7 @@ impl Abi {
                         | Service::ExitToShell
                         | Service::SetPointerSize
                         | Service::DisposePointer
+                        | Service::Timer(_)
                         | Service::SetHandleSize
                         | Service::DetachResource
                         | Service::ReleaseResource

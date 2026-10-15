@@ -12,6 +12,7 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    Timer(crate::timers::Op),
     CreateResourceFile(GuestPtr),
     Decimal(crate::decimal::Op),
     ReadDateTime(GuestPtr),

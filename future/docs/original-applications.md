@@ -1810,3 +1810,97 @@ modules without a failure so far. Record its final exit and totals before
 claiming broad acceptance. Next executable implementation: shared Time Manager
 task ownership, scheduling and state-preserving same-ISA callbacks for Marathon;
 continue EV's genuine SysMap/FCB/Monitor Tool diagnosis. Keep the rebuild active.
+
+
+## Shared Time Manager execution
+
+InsTime, PrimeTime and RmvTime now operate on one process-owned task queue through
+both CPU adapters. Task records retain real qLink order, qType active bits and
+live callback addresses. Deadlines use checked monotonic units of 1/3 microsecond:
+50 units per virtual instruction, 50,000 per elapsed host tick. This preserves the
+existing deterministic 1,000-instructions-per-tick policy without counting the
+same instruction tick twice. Positive delays are milliseconds; negative values
+are negated microseconds. Nil callbacks expire normally. RmvTime returns unused
+time in negated microseconds where representable, otherwise positive milliseconds.
+Guest calendar/TickCount writes do not rewrite monotonic timer deadlines.
+
+Runtime dispatches due tasks at instruction boundaries, in deadline/installation
+order, clears active state before entry, and retains installed tasks for rearming.
+Callbacks receive A1 on 68K or r3 through a validated same-ISA PPC TimerUPP
+(procInfo $B802). The entire interrupted CPU is suspended and restored, including
+engine-private/FPU state; waits are suspended and restored through the same shared
+continuation model as sound callbacks. Timer callbacks are serialized and may
+rearm themselves. Host event waits are shortened to the next timer tick; waiting
+time elapses even while callbacks run. 68K interrupt masking defers delivery.
+
+This is deterministic guest scheduling, not a native hard real-time guarantee.
+The queue is explicitly bounded at 256 records. Invalid/overlapping/duplicate
+records, changed managed linkage, unsupported descriptor transitions, invalid
+callback frames and unsafe record access fail explicitly. InsXTime/fixed-frequency
+extended timing, Microseconds, general hardware interrupts/PPC interrupt masking,
+interrupt-time service restrictions and production Mixed Mode remain unfinished.
+No extended Time Manager Gestalt capability is advertised.
+
+With the actual 640x480x8 profile and asset volume, original Marathon now installs
+and primes a real 33 ms task, then reaches PaletteDispatch HasDepth (selector
+$0A14, trap $AAA2), PC $010116CE. Evidence:
+/tmp/systemless-marathon-timers-first.txt. This does not establish title/menu,
+original timer callback execution, movement or combat acceptance. EV's monitor
+error and PPC loader gaps remain separate; neither original game is playable.
+The full rebuild goal remains active.
+
+
+Timer checkpoint verification: seven final integration tests and two internal
+ownership/clock tests pass with zero failures/skips. The focused calendar,
+sound-queue and waiting regressions pass 16 further tests; the earlier six-timer
+run is superseded by the final seven-case run. The compiled timer fixture passes
+on both SC68K and MrC/PPC, executing three real callbacks per guest, cancellation,
+rearming, idle resumption and ExitToShell. SC callback entry uses the Pascal A1
+reader from IM: Processes listing 3-3; a register-parameter declaration alone
+incorrectly generated a stack parameter and was corrected in the fixture. The
+runtime continues to supply the documented register ABI. The diagnostic trace
+now supports --elapse-waits for bounded virtual idle-time investigations.
+
+Evidence: /tmp/systemless-timers-seven-tests.txt,
+/tmp/systemless-timers-final-ownership.txt,
+/tmp/systemless-timers-focused-final.txt,
+/tmp/systemless-timers-sdk-final.txt and
+/tmp/systemless-timers-sdk-verified.txt. All original compiler artifacts rebuilt;
+final timer artifacts were regenerated from the corrected volatile-counter source.
+Strict all-target lint passes /tmp/systemless-timers-lint-final.txt (exit 0), and
+the final tracing/test diagnostics pass /tmp/systemless-timers-diagnostics-lint.txt
+(exit 0). Sequential changed-file formatting and whitespace checks pass.
+
+The older resource-map broad suite was deliberately stopped as SUPERSEDED because
+source and selected binaries changed during the timer milestone. Its exit is 143,
+not a pass; it cannot establish a single final-source checkpoint. Replacement
+complete acceptance covers all 79 integration targets in two normal Cargo batches,
+40/39 targets, with the library, binary and all five examples in batch 1 and all
+ignored tests enabled in both. Coverage is recorded in
+/tmp/systemless-timers-full-coverage.json. Both jobs remain running:
+command sessions 21627 and 76629; logs /tmp/systemless-timers-full-{1,2}.txt.
+Continue these exact jobs. Keep runtime/test/compiler source fixed until both
+finish; source fingerprint /tmp/systemless-timers-full-source.sha256 is
+c188ed76478efa9531be7c04002816f832488e4268061507aff6b9d68f289e43.
+Do not claim a full pass until both exits, totals, failures and skips are inspected.
+Documentation edits do not affect that code fingerprint.
+
+Final original traces /tmp/systemless-{marathon,ev}-timers-final.txt confirm
+Marathon's next HasDepth boundary and EV's unchanged Monitor Tool -4/ModalDialog
+boundary. Refresh original Super Mines after the current probe_mouse build
+(command session 37344, /tmp/systemless-timers-mouse-probe-build.txt), before
+claiming the shared callback/wait refactor preserves that interaction regression.
+Next implementation after full acceptance: actual display mode/capability
+semantics for HasDepth/SetDepth, with real device records and pixels, then further
+Marathon startup. EV's System-resource FCB/Monitor Tool path remains a separate
+actual missing-capability diagnosis. No original-gameplay or full-rebuild claim.
+
+
+Final timer-source Super Mines refresh passes, exit 0:
+/tmp/systemless-mines-timers-final.txt. It completes one sound callback, reopens
+its 1,972-byte game and returns to event waiting at $0100C798. The final screenshot
+was inspected and is byte-identical to the resource-map checkpoint. Evidence:
+/tmp/systemless-mines-timers-final-after.ppm and -after.png. This closes the
+interaction-refresh step above; native presentation/audio and win/loss acceptance
+remain open. Both exhaustive acceptance batches remain running and must be resumed
+before changing runtime/test/compiler source. The full rebuild stays active.

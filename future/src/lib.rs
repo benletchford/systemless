@@ -46,6 +46,7 @@ mod stdlib;
 mod surface;
 pub mod text;
 pub mod textedit;
+pub mod timers;
 pub mod traps;
 pub mod volume;
 pub mod windows;
