@@ -177,8 +177,8 @@ prompt. Shared GetIcon returns the real missing-resource result for ICON 0;
 the Quit confirmation displays and pressing No disposes its controls/TextEdit
 and windows. Shared GetWMgrPort now returns the existing monochrome manager
 port; the original No-save Quit path completes file/resource cleanup and reaches
-ExitToShell with code 0. No-save New Game also returns through its chooser to a fresh board and the
-normal event wait. Cancel also resumes the existing game, with a remaining dialog-edge restoration
-artifact. Exact exposure, save paths and broader gameplay remain separate
-acceptance work. The full
-rebuild stays active.
+ExitToShell with code 0. No-save New Game also returns through its chooser to a
+fresh board and the normal event wait. Cancel resumes the existing game with a
+remaining board-border redraw difference. The Yes-save branch next reaches unimplemented classic SFPutFile (Pack3
+selector 1). Exact board-redraw parity, save/reload and broader gameplay remain
+separate acceptance work. The full rebuild stays active.

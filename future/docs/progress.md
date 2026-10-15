@@ -3556,3 +3556,56 @@ resource fork; their repeated public GetWMgrPort queries and existing lifecycle
 pixel checks pass. Strict all-target Clippy, sequential changed-file formatting,
 fixture shell syntax and whitespace checks pass. Original No-save Quit, New Game
 restart and Cancel were exercised independently. The full rebuild remains active.
+
+
+### Cancel damage investigation and original save entry
+
+The prior 70-pixel Cancel difference is inside the game board border, not the
+modal window's outer edge. Read-only instruction tracing of (422,60)/(410,58)
+shows their initial black value comes from the application's PaintRect at
+PC $01006EF2. Showing the confirmation makes them white; the later update
+redraw does not restore their black value. The redraw executes with a normal
+one-pixel black pen and a visible/update region covering these points. Initial
+and redraw WindowRecords retain the same bitmap origin. This narrows the next
+investigation to the app's initial/background and later object/bitmap redraw
+paths; it does not yet prove a Window Manager defect or an application defect.
+No speculative clipping, port movement or snapshot-restoration change is made.
+
+The existing bounded probe now accepts SYSTEMLESS_PROBE_TRACE_PIXELS=422:60,410:58
+(or 1..16 X:Y points inside its 512x342 display). It samples canonical guest
+screen bits, excluding the presentation cursor, and reports the exact instruction
+PC and services when values change. It caps emitted changes at 256, uses the
+existing execution budgets, and never patches guest memory/registers. Pixel and
+seed traces are independently enabled. Invalid/outside coordinates fail before
+reading an application. Private traces remain outside Git.
+
+Legacy comparison uses the preserved baseline 634c0e9120a695224d71c621fbbe33709670d707,
+compiled with the ci-test profile, original archive, classic 68K preference and
+512x342/1-bit display. The first bounded scripts completed actions but never
+reached the confirmation (zero assertions); they are not compatibility passes.
+A longer settling run panicked in legacy quickdraw/raster/spans.rs:73 with an
+arithmetic overflow. Thus this comparison supplies no reliable confirmation
+pixel oracle. Evidence: /tmp/systemless-legacy-cancel-run{,2,3} and matching logs;
+/tmp/systemless-legacy-cancel3.json records the failed longer scenario. No native
+System 7 comparison is required, and the baseline source is unchanged.
+
+The original Yes-save branch is now independently exercised: after splash,
+chooser, changed board and File > Quit, press Yes at (175,86). The confirmation
+is disposed, then the guest stops at Pack3 $A9EA selector 1 (classic SFPutFile),
+post-trap PC $0100878A, SP $0080FBB8. The frame has reply pointer $0080FC3A,
+nil dialog hook, default-name pointer $003FE77C, prompt pointer $003FE7C8 and
+where=(100,100). Evidence: /tmp/systemless-mines-quit-save-probe.txt. No file
+selection, successful save or saved-game reload is claimed.
+
+Next executable milestones: shared cooperative Standard File save UI, checked
+classic reply/file identity and the actual save/reload path, while continuing
+focused board-redraw investigation. Neither a silent cancellation stub nor an
+unverified framebuffer workaround satisfies those requirements. The complete
+rebuild, original PPC compatibility and production Mixed Mode remain active.
+
+Validation: the reusable trace's original Cancel run has an identical service
+call history and all nine PPM readbacks match the untraced run byte for byte.
+Final strict all-target Clippy, changed-file stdin formatting and whitespace
+checks pass. Five malformed/outside/oversized trace inputs are rejected before
+application loading. Runtime semantics are unchanged; the preceding full
+347-test GPU/MPW run remains the runtime validation, not a newly rerun suite.

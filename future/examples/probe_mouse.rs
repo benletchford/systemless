@@ -19,24 +19,52 @@ fn screenshot(app: &mut LoadedApplication, path: &Path) -> Result<(), Box<dyn st
     std::fs::write(path, ppm)?;
     Ok(())
 }
-struct SeedTrace {
+struct ProbeTrace {
     enabled: bool,
     changes: u32,
     random: u32,
+    pixels: Vec<(u32, u32)>,
+    pixel_changes: u32,
 }
 fn seed(app: &LoadedApplication) -> Option<(u32, u32)> {
     let address = app.runtime.process.ports?.current_slot.0.checked_sub(126)?;
     Some((address, app.runtime.memory.u32(GuestPtr(address)).ok()?))
 }
+// Read canonical guest pixels, excluding the presentation-only cursor.
+fn pixels(app: &LoadedApplication, points: &[(u32, u32)]) -> Option<Vec<bool>> {
+    if points.is_empty() {
+        return None;
+    }
+    let bitmap = systemless_future::bitmap::Bitmap::read(
+        &app.runtime.memory,
+        app.runtime.process.ports?.screen_bitmap,
+    )
+    .ok()?;
+    points
+        .iter()
+        .map(|&(x, y)| {
+            let offset = y
+                .checked_mul(u32::try_from(bitmap.row_bytes).ok()?)?
+                .checked_add(x / 8)?;
+            let byte = app
+                .runtime
+                .memory
+                .read(GuestPtr(bitmap.base.0.checked_add(offset)?), 1)
+                .ok()?[0];
+            Some(byte & (0x80 >> (x % 8)) != 0)
+        })
+        .collect()
+}
 fn advance(
     app: &mut LoadedApplication,
     budget: u64,
-    trace: &mut SeedTrace,
+    trace: &mut ProbeTrace,
 ) -> systemless_future::Result<Stop> {
-    if !trace.enabled {
+    if !trace.enabled && trace.pixels.is_empty() {
         return app.runtime.advance(budget);
     }
     for _ in 0..budget {
+        let pixels_before = pixels(app, &trace.pixels);
         let before = seed(app);
         let pc = match &app.runtime.cpu {
             Cpu::M68k(c) => c.pc,
@@ -45,11 +73,22 @@ fn advance(
         let calls = app.runtime.services.calls.len();
         let result = app.runtime.advance(1);
         let after = seed(app);
+        let pixels_after = pixels(app, &trace.pixels);
+        if pixels_before != pixels_after {
+            if trace.pixel_changes < 256 {
+                println!("pixel trace pc={pc:08x} points={:?} before={pixels_before:?} after={pixels_after:?} calls={:?}", trace.pixels, &app.runtime.services.calls[calls..]);
+            } else if trace.pixel_changes == 256 {
+                println!("pixel trace change limit reached (256); execution remains bounded by the probe budget");
+            }
+            trace.pixel_changes = trace.pixel_changes.saturating_add(1);
+        }
         let random = app.runtime.services.calls[calls..]
             .iter()
             .any(|c| matches!(c, systemless_future::cpu::Call::Random));
-        if before != after && (trace.changes < 64 || after.is_some_and(|(_, value)| value == 0))
-            || random && trace.random < 4
+        if trace.enabled
+            && (before != after
+                && (trace.changes < 64 || after.is_some_and(|(_, value)| value == 0))
+                || random && trace.random < 4)
         {
             println!("seed trace pc={pc:08x} before={before:?} after={after:?} random={random} code={:02x?}",app.runtime.memory.read(GuestPtr(pc.saturating_sub(24)),64));
             if let Cpu::M68k(c) = &app.runtime.cpu {
@@ -131,8 +170,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     println!("virtual ticks per step {ticks}");
     println!("per-step budget {budget}");
-    let mut trace = SeedTrace {
+    let mut trace = ProbeTrace {
         enabled: std::env::var("SYSTEMLESS_PROBE_TRACE_SEED").is_ok_and(|v| v == "1"),
+        pixels: std::env::var("SYSTEMLESS_PROBE_TRACE_PIXELS")
+            .ok()
+            .map(
+                |value| -> Result<Vec<(u32, u32)>, Box<dyn std::error::Error>> {
+                    let points: Vec<_> = value
+                        .split(',')
+                        .map(|point| -> Result<_, Box<dyn std::error::Error>> {
+                            let (x, y) = point
+                                .split_once(':')
+                                .ok_or("trace pixels must be X:Y pairs")?;
+                            let point = (x.parse::<u32>()?, y.parse::<u32>()?);
+                            if point.0 >= 512 || point.1 >= 342 {
+                                return Err("trace pixels must fit the 512x342 display".into());
+                            }
+                            Ok(point)
+                        })
+                        .collect::<Result<_, _>>()?;
+                    if points.is_empty() || points.len() > 16 {
+                        return Err("trace pixels requires 1..=16 points".into());
+                    }
+                    Ok(points)
+                },
+            )
+            .transpose()?
+            .unwrap_or_default(),
+        pixel_changes: 0,
         changes: 0,
         random: 0,
     };
