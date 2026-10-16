@@ -11002,3 +11002,61 @@ through both adapters. Source support does not establish the full graphics profi
 AB03 stays unavailable. Full GPU text/library integration, native/browser and Mixed
 Mode acceptance, both priority games and the complete rebuild remain open. Keep
 the goal active, the baseline checkout unchanged and PR4802 draft.
+
+### Shared direct-colour destinations (2026-10-17)
+
+Direct PixMap destinations now use the same live layout validation and shared
+Surface/GPU path as other formats. Foreground/background and matched colour
+values are u32 throughout shared port/copy/picture/icon/window callers, preserving
+indexed checks and holding complete RGB555/xRGB8888 pixels. One DirectFormat
+storage implementation serves both the standalone GPU API and guest surfaces.
+No new CPU destination renderer or CPU-specific drawing service is introduced.
+Metadata-only default colours ignore pmTable; actual drawing still validates
+backing memory and write permissions. Direct-destination dithering rejects
+explicitly before mutation instead of indexing a fictitious palette.
+
+The first real-GPU guest fixture passes for both formats and both adapters:
+PaintRect, indexed-to-direct CopyBits, immediate guest pixel writes, exact FONT393
+ink/opaque spacing with negative bounds, four-pixel pen advance, readback and
+padding. Extended final assertions cover all eight transfers, text XOR restoration,
+read-only backing and unsupported direct-dither rejection with unchanged port,
+pixels and GPU texture. Decoder checks now also prove full-width colour values,
+format masks and metadata-only initialization without a palette or image storage.
+
+Final scoped acceptance passes77checks,0failed,0ignored:66integration checks
+(7CIcon,2direct pixels,25GWorld,12indexed/direct destinations,15picture,5text),
+8PixMap decoder/colour checks and3GPU backend checks. GPU cases were explicitly
+enabled. The final extended destination fixture also passes separately, including
+all eight transfers, both adapters/formats, exact glyph cells, double-XOR and
+atomic failure assertions. That duplicate execution is not counted twice.
+
+Commands:
+
+- cargo test --manifest-path future/Cargo.toml --test indexed_destinations --test direct_pixels --test text --test picture --test gworld --test cicon -- --include-ignored --nocapture --test-threads=1
+- cargo test --manifest-path future/Cargo.toml --test indexed_destinations direct_destinations_share -- --include-ignored --nocapture --test-threads=1
+- cargo test --manifest-path future/Cargo.toml --lib pixmap:: -- --nocapture
+- cargo test --manifest-path future/Cargo.toml --lib graphics:: -- --include-ignored --nocapture --test-threads=1
+- cargo clippy --manifest-path future/Cargo.toml --lib --test indexed_destinations --test direct_pixels --test text --test picture --test gworld --test cicon --example trace_application -- -D warnings
+
+Strict scoped lint, tracer build, sequential changed-file stdin formatting and
+whitespace checks pass. The first library check identified the remaining narrow
+icon-target tuple; the first lint identified redundant field names after removing
+old widening casts. Both were corrected. No test was weakened. Final logs and
+first-stage checks are retained under ignored future/target/validation/direct-destination/.
+These are scoped checks, not a whole-suite or native/browser acceptance claim;
+startup/compile/trace wall times are not performance measurements.
+
+Both unchanged original replays retain the exact preceding canonical screen and
+independently verified saved volume: Marathon CPU22,890,015/PC0102605C/readFFFCC1AF;
+EV24M/PC007E6830 with the same key pair. Directory/companion/fork/metadata and
+pilot/alias/script verification pass. Neither is verified playable. Private
+captures and exact hashes are recorded in original-applications.md.
+
+Next: route direct-device colour queries (including Index2Color) through the common
+format model; implement managed NewGWorld/UpdateGWorld16/32formats and direct
+component dithering; then verify the actual graphics capability/profile before
+advertising AB03. The existing Index2Color is still table-based and is not proven
+by the drawable-surface fixture. Direct screen mode creation, native edge/rounding
+conformance, complete GPU text/Glyphon integration, Mixed Mode and native/browser
+acceptance remain unfinished. Both priority games and the entire rebuild stay
+open. Preserve the baseline checkout and keep the goal active and PR4802 draft.

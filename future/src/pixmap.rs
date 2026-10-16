@@ -229,6 +229,10 @@ fn indexed_with_base(
 }
 /// Port initialization selects colors without interpreting or changing pixel bytes.
 pub(crate) fn default_colors(memory: &Memory, address: GuestPtr) -> Result<(u32, u32)> {
+    if memory.u16(GuestPtr(address.0.checked_add(30).ok_or_else(bad)?))? == 16 {
+        let (_, format) = direct::layout(memory, address)?;
+        return Ok((0, format.mask()));
+    }
     let Indexed {
         depth,
         palette,
@@ -251,6 +255,11 @@ pub(crate) fn default_colors(memory: &Memory, address: GuestPtr) -> Result<(u32,
 pub(crate) fn destination(memory: &Memory, address: GuestPtr) -> Result<crate::surface::Surface> {
     if memory.u16(GuestPtr(address.0.checked_add(4).ok_or_else(bad)?))? & 0x8000 == 0 {
         return Bitmap::read(memory, address)?.surface(memory);
+    }
+    if memory.u16(GuestPtr(address.0.checked_add(30).ok_or_else(bad)?))? == 16 {
+        let (bitmap, format) = direct::layout(memory, address)?;
+        memory.read(bitmap.base, bitmap.byte_len()?)?;
+        return crate::surface::Surface::direct(bitmap, format);
     }
     let Indexed {
         bitmap,

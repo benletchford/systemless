@@ -1,7 +1,10 @@
 //! Live direct PixMaps store unpacked pixels, unlike serialized DirectBits PICT rows.
 use super::*;
 
-pub(super) fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
+pub(super) fn layout(
+    memory: &Memory,
+    address: GuestPtr,
+) -> Result<(Bitmap, crate::graphics::DirectFormat)> {
     let data = memory.read(address, 50)?;
     let word = |at| u16::from_be_bytes(data[at..at + 2].try_into().unwrap());
     let long = |at| u32::from_be_bytes(data[at..at + 4].try_into().unwrap());
@@ -29,7 +32,7 @@ pub(super) fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
             word(10) as i16 as i32,
         ),
     };
-    let (width, height) = bitmap.extent()?;
+    let (width, _) = bitmap.extent()?;
     let stride = usize::from(depth / 8);
     let length = bitmap.byte_len()?;
     if width * stride > bitmap.row_bytes
@@ -38,7 +41,16 @@ pub(super) fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
     {
         return Err(Error::Graphics("invalid direct PixMap storage".into()));
     }
-    let bytes = memory.read(bitmap.base, length)?;
+    let format = crate::graphics::DirectFormat::from_depth(depth).unwrap();
+    Ok((bitmap, format))
+}
+
+pub(super) fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
+    let (bitmap, format) = layout(memory, address)?;
+    let (width, height) = bitmap.extent()?;
+    let depth = format.depth();
+    let stride = usize::from(depth / 8);
+    let bytes = memory.read(bitmap.base, bitmap.byte_len()?)?;
     let mut rgb = Vec::with_capacity(width * height);
     for y in 0..height {
         for x in 0..width {
@@ -154,6 +166,37 @@ mod tests {
                 }
                 assert_eq!(memory.read(GuestPtr(0x2001), before.len()).unwrap(), before);
             }
+        }
+    }
+
+    #[test]
+    fn direct_metadata_defaults_and_full_width_colors_do_not_depend_on_a_palette() {
+        for depth in [16, 32] {
+            let memory = fixture(depth);
+            let surface = crate::pixmap::destination(&memory, GuestPtr(0x1000)).unwrap();
+            let (pixel, mask, rgb) = if depth == 16 {
+                (0x0911, 0x7fff, [4228, 16912, 35939])
+            } else {
+                (0x124589, 0xffffff, [0x1212, 0x4545, 0x8989])
+            };
+            assert_eq!(surface.nearest([0x1234, 0x4567, 0x89ab]).unwrap(), pixel);
+            assert_eq!(surface.rgb(pixel).unwrap(), rgb);
+            assert_eq!(surface.index(mask).unwrap(), mask);
+            assert!(surface.index(mask + 1).is_err());
+            let mut metadata = Memory::default();
+            metadata
+                .map(
+                    GuestPtr(0x1000),
+                    memory.read(GuestPtr(0x1000), 50).unwrap().to_vec(),
+                    Permissions::RX,
+                )
+                .unwrap();
+            assert_eq!(
+                crate::pixmap::default_colors(&metadata, GuestPtr(0x1000)).unwrap(),
+                (0, mask)
+            );
+            assert!(crate::pixmap::destination(&metadata, GuestPtr(0x1000)).is_err());
+            assert!(crate::pixmap::copy_source(&metadata, GuestPtr(0x1000)).is_err());
         }
     }
 

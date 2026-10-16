@@ -5027,3 +5027,30 @@ contents remain native-unvalidated. The Marathon trace still makes zero GWorld
 and pixel-state calls; AB03 remains unavailable. No fresh PPC-original or native
 System7 execution is claimed. Private captures are retained under each game's
 future/target/private-originals/.../evidence/2026-10-17-live-direct.*.
+
+### Direct destination surface regression (2026-10-17)
+
+The shared service fixture now paints, copies indexed RGB and draws guest FONT
+text into16/32-bit destination PixMaps through both CPU adapters and wgpu. All
+eight CopyBits transfers, glyph opaque spacing/pen advance, double-XOR restoration,
+padding and atomic failure cases pass. Managed direct-colour GWorld creation/update,
+device colour queries, component dithering and complete graphics capability are
+still unfinished; AB03 remains unavailable. The fixture is not original-game use
+of a complete direct-device environment.
+
+Fresh unchanged-original replays again preserve the preceding bounds:
+Marathon CPU22,890,015/PC0102605C/readFFFCC1AF; EV24M/PC007E6830 with the same
+scheduled key pair. Their canonical SHA256 values remain:
+
+- Marathon screen: `7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e`.
+- Marathon volume: `e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+- EV screen: `11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48`.
+- EV volume: `e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`.
+
+Independent volume checks preserve directory and companion records, forks and
+metadata, the same Marathon1222-byte preferences addition, and EV's existing
+pilot/preferences/flagged alias/script invariants. Preference contents remain
+native-unvalidated. Marathon makes zero GWorld/pixel-state calls in this replay.
+Private captures are retained under each game's ignored evidence directory as
+2026-10-17-direct-destination.*. No fresh PPC-original, playable-game, performance
+or full-text/native/browser acceptance claim. The full rebuild goal stays active.

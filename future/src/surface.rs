@@ -2,7 +2,7 @@
 //! CPU work packs storage and validates metadata; rendering and transfers use wgpu.
 use crate::{
     bitmap::Bitmap,
-    graphics::{Draw, Graphics, IndexedTarget, Rect},
+    graphics::{DirectFormat, Draw, Graphics, IndexedTarget, Rect},
     memory::{Memory, Permissions},
     Error, Result,
 };
@@ -59,6 +59,25 @@ impl Surface {
             bitmap,
             depth: 1,
             colors: None,
+        }
+    }
+    pub fn direct(bitmap: Bitmap, format: DirectFormat) -> Result<Self> {
+        let (width, _) = bitmap.extent()?;
+        let bytes = usize::from(format.depth() / 8);
+        if width * bytes > bitmap.row_bytes || !bitmap.row_bytes.is_multiple_of(bytes) {
+            return Err(bad("invalid direct destination geometry"));
+        }
+        Ok(Self {
+            bitmap,
+            depth: format.depth(),
+            colors: None,
+        })
+    }
+    pub(crate) fn storage(&self, memory: &Memory) -> Result<Vec<u8>> {
+        if let Some(format) = DirectFormat::from_depth(self.depth) {
+            format.unpack(memory, self.bitmap)
+        } else {
+            self.unpack(memory)
         }
     }
     pub fn indexed(
@@ -122,16 +141,26 @@ impl Surface {
             _ => false,
         }
     }
-    pub fn index(&self, v: u32) -> Result<u8> {
+    pub fn index(&self, v: u32) -> Result<u32> {
+        if let Some(format) = DirectFormat::from_depth(self.depth) {
+            return if v & !format.mask() == 0 {
+                Ok(v)
+            } else {
+                Err(bad("invalid direct destination pixel"))
+            };
+        }
         if v >= (1u32 << self.depth) || self.colors.as_ref().is_some_and(|c| !c.defined[v as usize])
         {
             Err(bad("undefined destination pixel index"))
         } else {
-            Ok(v as u8)
+            Ok(v)
         }
     }
-    pub fn rgb(&self, v: u8) -> Result<[u16; 3]> {
-        self.index(u32::from(v))?;
+    pub fn rgb(&self, v: u32) -> Result<[u16; 3]> {
+        self.index(v)?;
+        if let Some(format) = DirectFormat::from_depth(self.depth) {
+            return Ok(format.rgb(v));
+        }
         Ok(self
             .colors
             .as_ref()
@@ -139,9 +168,12 @@ impl Surface {
                 c.rgb[v as usize]
             }))
     }
-    pub fn nearest(&self, rgb: [u16; 3]) -> Result<u8> {
+    pub fn nearest(&self, rgb: [u16; 3]) -> Result<u32> {
+        if let Some(format) = DirectFormat::from_depth(self.depth) {
+            return Ok(format.pixel(rgb));
+        }
         let Some(c) = &self.colors else {
-            return Ok(u8::from(
+            return Ok(u32::from(
                 rgb.iter().map(|v| u32::from(*v)).sum::<u32>() < 98303,
             ));
         };
@@ -151,6 +183,7 @@ impl Surface {
                 .filter(|i| c.matchable[*i])
                 .map(|i| (i as u8, c.rgb[i])),
         )
+        .map(u32::from)
         .ok_or_else(|| bad("no matchable destination colors"))
     }
     pub fn unpack(&self, memory: &Memory) -> Result<Vec<u8>> {
@@ -161,6 +194,9 @@ impl Surface {
         Ok(pixels)
     }
     fn pack(&self, memory: &mut Memory, indices: &[u8]) -> Result<()> {
+        if let Some(format) = DirectFormat::from_depth(self.depth) {
+            return format.pack(memory, self.bitmap, indices);
+        }
         let (width, height) = self.extent()?;
         if indices.len() != width * height {
             return Err(bad("destination index extent mismatch"));
@@ -182,6 +218,15 @@ impl Surface {
         memory.write(self.base, &bytes)
     }
     fn config(&self, direct_source: bool, neutral_copy: bool) -> Option<IndexedTarget<'_>> {
+        if self.depth > 8 {
+            return Some(IndexedTarget {
+                depth: self.depth,
+                rgb: &[[0; 3]; 256],
+                matchable: &[true; 256],
+                direct_source: false,
+                neutral_copy,
+            });
+        }
         self.colors.as_ref().map(|c| IndexedTarget {
             depth: self.depth,
             rgb: &c.rgb,
@@ -203,7 +248,7 @@ impl Surface {
             return Err(Error::Graphics("presentation extent mismatch".into()));
         }
         let mut staging = Memory::default();
-        staging.map(gpu.base, self.unpack(memory)?, Permissions::RW)?;
+        staging.map(gpu.base, self.storage(memory)?, Permissions::RW)?;
         gpu.execute_indexed(
             &mut staging,
             draw,
@@ -318,6 +363,9 @@ impl Surface {
     ) -> Result<()> {
         let (source, palette, rgb, flags) = cpu_source;
         let dither = flags & 1 != 0;
+        if dither && self.depth > 8 {
+            return Err(bad("direct destination dithering is not implemented"));
+        }
         let neutral_copy = flags & 2 != 0;
         if palette.is_none()
             && rgb.is_none()
@@ -497,7 +545,7 @@ impl Surface {
             },
         };
         let mut staging = Memory::default();
-        staging.map(gpu.base, self.unpack(memory)?, Permissions::RW)?;
+        staging.map(gpu.base, self.storage(memory)?, Permissions::RW)?;
         let translated = clips
             .map(|clips| clips.iter().copied().map(rect).collect::<Result<Vec<_>>>())
             .transpose()?;
@@ -541,6 +589,12 @@ impl Surface {
                 self.config(direct_source, neutral_copy),
             )?;
         }
-        self.pack(memory, staging.read(gpu.base, width * height)?)
+        self.pack(
+            memory,
+            staging.read(
+                gpu.base,
+                width * height * if self.depth > 8 { 4 } else { 1 },
+            )?,
+        )
     }
 }

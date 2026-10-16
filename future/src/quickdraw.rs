@@ -267,7 +267,7 @@ impl Ports {
             let wanted = GuestPtr(port.0 + if background { 42 } else { 36 });
             memory.validate_write(wanted, 6)?;
             memory.write(wanted, &bytes)?;
-            memory.write(field, &u32::from(index).to_be_bytes())
+            memory.write(field, &index.to_be_bytes())
         } else {
             memory.write(
                 field,
@@ -286,7 +286,7 @@ impl Ports {
                 _ => return Err(Error::Graphics("unsupported color constant".into())),
             };
             let wanted = std::array::from_fn(|i| u16::from_be_bytes([rgb[i * 2], rgb[i * 2 + 1]]));
-            let index = u32::from(target.nearest(wanted)?);
+            let index = target.nearest(wanted)?;
             let rgb_field = offset(port, if background { 42 } else { 36 })?;
             memory.validate_write(field, 4)?;
             memory.validate_write(rgb_field, 6)?;
@@ -614,8 +614,8 @@ impl Ports {
                 source,
                 width: texture.width(),
                 height: texture.height(),
-                foreground: u32::from(foreground),
-                background: u32::from(background),
+                foreground,
+                background,
                 invert: mode & 4 != 0,
                 mode: match mode & 3 {
                     0 => Transfer::Copy,
@@ -681,8 +681,8 @@ impl Ports {
             source: source_rect,
             width: width as u32,
             height: height as u32,
-            foreground: u32::from(foreground),
-            background: u32::from(background),
+            foreground,
+            background,
             invert: request.mode & 4 != 0,
             mode: match request.mode & 3 {
                 0 => Transfer::Copy,
@@ -755,8 +755,8 @@ impl Ports {
                 source: local(src, source),
                 width: width as u32,
                 height: height as u32,
-                foreground: u32::from(foreground),
-                background: u32::from(background),
+                foreground,
+                background,
                 invert: false,
                 mode: Transfer::Copy,
             },
@@ -768,7 +768,7 @@ impl Ports {
         &self,
         memory: &Memory,
         destination: &crate::surface::Surface,
-    ) -> Result<(Vec<Rect>, u8, u8)> {
+    ) -> Result<(Vec<Rect>, u32, u32)> {
         let port = self.current(memory)?;
         let bytes = memory.read(port, PORT_SIZE)?;
         let word = |i| u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap());
@@ -1061,7 +1061,7 @@ impl Ports {
     pub(crate) fn icon_target(
         &self,
         memory: &Memory,
-    ) -> Result<(crate::surface::Surface, Vec<Rect>, u8, u8)> {
+    ) -> Result<(crate::surface::Surface, Vec<Rect>, u32, u32)> {
         let (target, clips) = self.drawing_target_impl(memory, true, false, true)?;
         let (fg, bg) = port_layout::colors(memory, self.current(memory)?, &target)?;
         Ok((target, clips, fg, bg))
@@ -1245,8 +1245,8 @@ impl Ports {
                     origin_y: 0,
                     frame,
                     pattern,
-                    foreground: u32::from(foreground),
-                    background: u32::from(background),
+                    foreground,
+                    background,
                     mode: match mode & 3 {
                         0 => Transfer::Copy,
                         1 => Transfer::Or,
@@ -1260,8 +1260,8 @@ impl Ports {
                     clip: port_rect,
                     line,
                     pattern,
-                    foreground: u32::from(foreground),
-                    background: u32::from(background),
+                    foreground,
+                    background,
                     mode: match mode & 3 {
                         0 => Transfer::Copy,
                         1 => Transfer::Or,
@@ -1274,8 +1274,8 @@ impl Ports {
                     rect: r,
                     clip: port_rect,
                     pattern,
-                    foreground: u32::from(foreground),
-                    background: u32::from(background),
+                    foreground,
+                    background,
                     mode: match mode & 3 {
                         0 => Transfer::Copy,
                         1 => Transfer::Or,

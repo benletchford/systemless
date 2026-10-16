@@ -362,3 +362,20 @@ caret, erasure, complex clipping, fault restoration and real CPU adapter tests.
 The new indexed pixel fixture exercises the common service directly; it is not
 an independent indexed-pixel replay through both ABI adapters or native parity.
 Full text API/style/font/library and native/browser acceptance remain open.
+
+## Direct-colour guest text destinations (2026-10-17)
+
+The shared Surface/port path now carries full RGB555/xRGB8888 pixel values.
+The real-GPU direct-destination fixture passes through native DrawChar and PPC
+DrawChar imports using guest FONT393. Independently specified ink/paper pixels,
+negative bounds, bearing-1, advance4, requested foreground/background RGB,
+packed storage, padding and double-XOR restoration are checked for both formats.
+Read-only destination rejection preserves port/pixel/GPU state in the same fixture.
+The existing source/font planner and GPU coverage renderer remain shared; CPU work
+only prepares glyphs and encodes storage.
+
+Evidence: /tmp/systemless-direct-destination-extended.txt, terminal exit0.
+This extends supported destination-format acceptance, not all-text completion.
+Styles, the full API/UI audit, production Glyphon integration and direct-target
+library-mask fixtures, workload measurements and native/browser acceptance remain
+open. Keep the whole rebuild goal active.

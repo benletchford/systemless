@@ -145,7 +145,7 @@ pub(crate) fn colors(
     memory: &Memory,
     port: GuestPtr,
     target: &crate::surface::Surface,
-) -> Result<(u8, u8)> {
+) -> Result<(u32, u32)> {
     let resolve = |at| {
         let value = memory.u32(GuestPtr(port.0 + at))?;
         if color(memory, port)? {

@@ -95,8 +95,8 @@ fn pixels(
         source: Rect::new(0, 0, width as i32, height as i32),
         width,
         height,
-        foreground: u32::from(destination.nearest([0; 3])?),
-        background: u32::from(destination.nearest([65535; 3])?),
+        foreground: destination.nearest([0; 3])?,
+        background: destination.nearest([65535; 3])?,
         invert: false,
         mode: Transfer::Copy,
     };

@@ -155,6 +155,7 @@ fn setup(depth: u16) -> (LoadedApplication, u32, usize, Vec<[u16; 3]>) {
             b"RGBBackColor",
             b"PenMode",
             b"SetGDevice",
+            b"DrawChar",
         ],
         64,
     );
@@ -167,7 +168,7 @@ fn setup(depth: u16) -> (LoadedApplication, u32, usize, Vec<[u16; 3]>) {
         .memory
         .map(
             GuestPtr(0x51000000),
-            vec![0xaa, 0x14, 0xaa, 0x15, 0xa8, 0xa2, 0xa8, 0xec],
+            vec![0xaa, 0x14, 0xaa, 0x15, 0xa8, 0xa2, 0xa8, 0xec, 0xa8, 0x83],
             Permissions::RX,
         )
         .unwrap();
@@ -176,7 +177,11 @@ fn setup(depth: u16) -> (LoadedApplication, u32, usize, Vec<[u16; 3]>) {
     let h = a.runtime.memory.u32(GuestPtr(PORT + 2)).unwrap();
     let map = a.runtime.memory.u32(GuestPtr(h)).unwrap();
     let mut bytes = a.runtime.memory.read(GuestPtr(map), 50).unwrap().to_vec();
-    let stride = (7 * usize::from(depth)).div_ceil(8) + 2;
+    let stride = if depth > 8 {
+        7 * usize::from(depth / 8) + 4
+    } else {
+        (7 * usize::from(depth)).div_ceil(8) + 2
+    };
     support::w32(&mut bytes, 0, BITS);
     support::w16(&mut bytes, 4, 0x8000 | stride as u16);
     for (i, v) in [-2i16, -3, 1, 4].into_iter().enumerate() {
@@ -185,7 +190,16 @@ fn setup(depth: u16) -> (LoadedApplication, u32, usize, Vec<[u16; 3]>) {
     for (at, v) in [(32, depth), (34, 1), (36, depth)] {
         support::w16(&mut bytes, at, v);
     }
-    let colors = palette(depth);
+    if depth > 8 {
+        for (at, v) in [(30, 16), (34, 3), (36, if depth == 16 { 5 } else { 8 })] {
+            support::w16(&mut bytes, at, v);
+        }
+    }
+    let colors = if depth > 8 {
+        vec![[0; 3], [65535; 3]]
+    } else {
+        palette(depth)
+    };
     let mut table = vec![0; 8 + colors.len() * 8];
     support::w16(&mut table, 4, 0x8000);
     support::w16(&mut table, 6, colors.len() as u16 - 1);
@@ -212,10 +226,12 @@ fn setup(depth: u16) -> (LoadedApplication, u32, usize, Vec<[u16; 3]>) {
             Permissions::RW,
         )
         .unwrap();
-    a.runtime
-        .memory
-        .write(GuestPtr(BITS), &packed(&[0; 21], depth, stride))
-        .unwrap();
+    if depth <= 8 {
+        a.runtime
+            .memory
+            .write(GuestPtr(BITS), &packed(&[0; 21], depth, stride))
+            .unwrap();
+    }
     let bounds = Rect::new(-3, -2, 4, 1);
     rectangle(&mut a, PORT + 16, bounds);
     for at in [24, 28] {
@@ -1152,5 +1168,235 @@ fn live_direct_copybits_sources_share_rgb_modes_and_dither_across_cpu_adapters()
             copy(&mut a, map, 0, true);
             assert_eq!(unpack(&a, depth, stride)[0], nearest([0; 3], &colors));
         }
+    }
+}
+
+fn direct_word(depth: u16, rgb: [u16; 3]) -> Vec<u8> {
+    if depth == 16 {
+        (((rgb[0] >> 11) << 10) | ((rgb[1] >> 11) << 5) | (rgb[2] >> 11))
+            .to_be_bytes()
+            .to_vec()
+    } else {
+        vec![
+            0,
+            (rgb[0] >> 8) as u8,
+            (rgb[1] >> 8) as u8,
+            (rgb[2] >> 8) as u8,
+        ]
+    }
+}
+fn assert_direct(a: &LoadedApplication, depth: u16, stride: usize, expected: &[u8]) {
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(BITS), stride * 3).unwrap(),
+        expected
+    );
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(BITS - 1), 1).unwrap(),
+        [0xa5]
+    );
+    assert_eq!(
+        a.runtime
+            .memory
+            .read(GuestPtr(BITS + stride as u32 * 3), 1)
+            .unwrap(),
+        [0xa5]
+    );
+    let rgba = a.runtime.graphics.as_ref().unwrap().read_rgba().unwrap();
+    for i in 0..21 {
+        let at = (i / 7) * stride + (i % 7) * usize::from(depth / 8);
+        let rgb = if depth == 16 {
+            let v = u16::from_be_bytes(expected[at..at + 2].try_into().unwrap());
+            [10, 5, 0].map(|s| {
+                let v = (v >> s) & 31;
+                ((v << 3) | (v >> 2)) as u8
+            })
+        } else {
+            [expected[at + 1], expected[at + 2], expected[at + 3]]
+        };
+        assert_eq!(&rgba[i * 4..i * 4 + 4], &[rgb[0], rgb[1], rgb[2], 255]);
+    }
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn direct_destinations_share_paint_copybits_guest_writes_and_glyphs_on_both_cpus() {
+    use systemless_future::load::resource::ResourceFork;
+    for depth in [16u16, 32] {
+        let (mut a, map, stride, _) = setup(depth);
+        let bytes = usize::from(depth / 8);
+        let fg = [0x1234, 0x4567, 0x89ab];
+        rgb(&mut a, fg, false, true);
+        rgb(&mut a, [65535; 3], true, false);
+        let fg_bytes = direct_word(depth, fg);
+        let mut expected = vec![0xa5; stride * 3];
+        rectangle(&mut a, PORT + 128, Rect::new(-2, -1, 2, 1));
+        invoke(&mut a, 2, &[PORT + 128]);
+        for y in 1..3 {
+            for x in 1..5 {
+                let at = y * stride + x * bytes;
+                expected[at..at + bytes].copy_from_slice(&fg_bytes);
+            }
+        }
+        assert_direct(&a, depth, stride, &expected);
+        // Direct guest writes are authoritative before the next native draw.
+        a.runtime
+            .memory
+            .write(GuestPtr(BITS), &vec![0xa5; stride * 3])
+            .unwrap();
+        native(&mut a, 4, &(PORT + 128).to_be_bytes());
+        assert_direct(&a, depth, stride, &expected);
+        let samples = source(&mut a);
+        rgb(&mut a, [0; 3], false, false);
+        let initial = if depth == 16 {
+            [9u16, 13, 5].map(|v| (v << 11) | (v << 6) | (v << 1) | (v >> 4))
+        } else {
+            [0xa5a5; 3]
+        };
+        for mode in 0..8u16 {
+            for native_call in [false, true] {
+                a.runtime
+                    .memory
+                    .write(GuestPtr(BITS), &vec![0xa5; stride * 3])
+                    .unwrap();
+                copy(&mut a, map, mode, native_call);
+                let mut expected = vec![0xa5; stride * 3];
+                for (i, c) in samples.iter().enumerate() {
+                    let s = if mode & 4 != 0 {
+                        c.map(|v| 65535 - v)
+                    } else {
+                        *c
+                    };
+                    let out = match mode & 3 {
+                        0 => s,
+                        1 => mix(s, [0; 3], initial),
+                        2 => {
+                            if s == [0; 3] {
+                                initial.map(|v| 65535 - v)
+                            } else {
+                                initial
+                            }
+                        }
+                        _ => mix(s, [65535; 3], initial),
+                    };
+                    let at = (i / 7) * stride + (i % 7) * bytes;
+                    expected[at..at + bytes].copy_from_slice(&direct_word(depth, out));
+                }
+                assert_direct(&a, depth, stride, &expected);
+            }
+        }
+        // FONT393: bearing-1, advance4, three rows of three ink bits.
+        let words = [
+            0x9000u16, 65, 66, 4, 0xfffe, 0xffff, 4, 3, 12, 2, 1, 0xffff, 1, 0xe400, 0xba00,
+            0x4600, 0, 3, 5, 7, 0x0104, 0xffff, 0x0203, 0xffff,
+        ];
+        let font: Vec<_> = words.into_iter().flat_map(u16::to_be_bytes).collect();
+        let fork = support::resource(vec![(*b"FONT", 393, None, font)]);
+        a.runtime
+            .process
+            .install_application_resources(ResourceFork::parse(&fork).unwrap());
+        a.runtime
+            .memory
+            .write(GuestPtr(PORT + 68), &[0, 3, 0, 0, 0, 0, 0, 9])
+            .unwrap();
+        rgb(&mut a, fg, false, false);
+        for native_call in [false, true] {
+            a.runtime
+                .memory
+                .write(GuestPtr(PORT + 72), &0u16.to_be_bytes())
+                .unwrap();
+            a.runtime
+                .memory
+                .write(GuestPtr(BITS), &vec![0xa5; stride * 3])
+                .unwrap();
+            a.runtime
+                .memory
+                .write(GuestPtr(PORT + 48), &[0, 0, 255, 255])
+                .unwrap();
+            if native_call {
+                native(&mut a, 8, &65u16.to_be_bytes());
+            } else {
+                invoke(&mut a, 8, &[65]);
+            }
+            let mut expected = vec![0xa5; stride * 3];
+            for (y, row) in [
+                [true, true, true, false, false],
+                [true, false, true, false, false],
+                [false, true, false, false, false],
+            ]
+            .iter()
+            .enumerate()
+            {
+                for (x, ink) in row.iter().enumerate() {
+                    let at = y * stride + (x + 1) * bytes;
+                    expected[at..at + bytes]
+                        .copy_from_slice(&direct_word(depth, if *ink { fg } else { [65535; 3] }));
+                }
+            }
+            assert_direct(&a, depth, stride, &expected);
+            for _ in 0..2 {
+                a.runtime
+                    .memory
+                    .write(GuestPtr(PORT + 72), &2u16.to_be_bytes())
+                    .unwrap();
+                a.runtime
+                    .memory
+                    .write(GuestPtr(PORT + 48), &[0, 0, 255, 255])
+                    .unwrap();
+                if native_call {
+                    native(&mut a, 8, &65u16.to_be_bytes());
+                } else {
+                    invoke(&mut a, 8, &[65]);
+                }
+            }
+            assert_direct(&a, depth, stride, &expected);
+            assert_eq!(a.runtime.memory.u16(GuestPtr(PORT + 50)).unwrap(), 3);
+        }
+        let ports = a.runtime.process.ports.unwrap();
+        let before = a
+            .runtime
+            .memory
+            .read(GuestPtr(BITS), stride * 3)
+            .unwrap()
+            .to_vec();
+        let port_before = a.runtime.memory.read(GuestPtr(PORT), 108).unwrap().to_vec();
+        let gpu = a.runtime.graphics.as_ref().unwrap();
+        let presented = gpu.read_rgba().unwrap();
+        let error = ports
+            .copy_bits(
+                &mut a.runtime.memory,
+                gpu,
+                systemless_future::quickdraw::CopyBits {
+                    source: GuestPtr(PORT + 256),
+                    destination: GuestPtr(map),
+                    source_rect: GuestPtr(PORT + 128),
+                    destination_rect: GuestPtr(PORT + 128),
+                    mode: 0x40,
+                    mask: GuestPtr(0),
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("direct destination dithering"));
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(BITS), stride * 3).unwrap(),
+            before
+        );
+        let readonly = GuestPtr(0x55000001);
+        a.runtime
+            .memory
+            .map(readonly, before.clone(), Permissions::RX)
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(map), &readonly.0.to_be_bytes())
+            .unwrap();
+        assert!(ports
+            .paint_rect(gpu, &mut a.runtime.memory, Rect::new(-3, -2, 4, 1))
+            .is_err());
+        assert_eq!(a.runtime.memory.read(readonly, stride * 3).unwrap(), before);
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(PORT), 108).unwrap(),
+            port_before
+        );
+        assert_eq!(gpu.read_rgba().unwrap(), presented);
     }
 }

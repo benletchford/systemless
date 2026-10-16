@@ -126,8 +126,8 @@ fn basic_draw<'a>(surface: &crate::surface::Surface, mut draw: Draw<'a>) -> Resu
             background,
             ..
         } => {
-            *foreground = u32::from(color(*foreground)?);
-            *background = u32::from(color(*background)?);
+            *foreground = color(*foreground)?;
+            *background = color(*background)?;
         }
         _ => {}
     }

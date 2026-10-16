@@ -4083,7 +4083,8 @@ The direct wrapper publishes guest bytes only after successful validation and GP
 readback, preserving writable-memory checks and synchronous guest visibility.
 
 Live direct PixMap sources are now parsed as described below. Direct destination
-`Surface` records, screen profiles and NewGWorld/UpdateGWorld remain unfinished.
+`Surface` records are now implemented below; direct screen profiles and managed
+NewGWorld/UpdateGWorld remain unfinished.
 Those shared service changes,
 both ABI adapters, display presentation and original-game acceptance are next.
 Do not advertise AB03/complete 32-bit QuickDraw from this backend foundation.
@@ -4107,8 +4108,9 @@ accepts RGB samples without introducing a second drawing implementation. A
 borrowed RGB view avoids reallocation when dithering direct sources. RGB555 CPU
 expansion is shared with PICT decoding; the shader repeats the same five bits.
 This establishes one expansion contract, not verified native rounding parity.
-Direct destination PixMaps, direct CIcons and full graphics-profile capability
-remain unfinished; do not advertise AB03 from source support alone.
+Direct destination PixMaps now use the shared surface path described below.
+Direct CIcon source formats and full graphics-profile capability remain unfinished;
+do not advertise AB03 from source/destination storage support alone.
 
 Primary format/high-bit authority:
 [Apple QuickDraw Reference, PixMap](https://leopard-adc.pepas.com/documentation/Carbon/Reference/QuickDraw_Ref/QuickDraw_Ref.pdf),
@@ -4118,3 +4120,39 @@ The preceding backend milestone's preservation of high bits on written pixels
 was an explicit provisional contract; it is now corrected to the documented zero
 behavior. Only CPU storage encoding/decoding is used; destination rendering stays
 on the shared wgpu pipeline.
+
+
+### Direct destination surfaces and full-width port colours
+
+Live RGBDirect PixMap destinations share the same checked layout parser as source
+images. Surface colours/indices are u32 values: indexed formats retain their
+bounded palette indexes; RGB555/xRGB8888 formats use packed colour components.
+Matching and RGB extraction select the direct format before any palette/index
+arithmetic, avoiding truncation and depth32 shifts. Port foreground/background
+fields, copy context, picture colours, icon targets and window colour preservation
+carry the same full-width values. RGBFore/BackColor retains requested RGB values
+and the existing checked current-device/destination format agreement.
+
+Surface staging uses the existing one-byte indexed representation or big-endian
+u32 direct words as appropriate. DirectFormat owns packing/unpacking for both
+the standalone GPU API and shared guest surfaces. Readback preserves row padding
+and untouched pixels; shader writes clear unused high bits. Regions, negative
+bounds, pattern alignment, source RGB conversion, transfers and glyph coverage
+use the existing GPU pipeline. Direct foreground/background defaults require
+metadata only and never dereference pmTable or require attached pixel storage;
+actual source/destination drawing still requires valid backing memory.
+
+Read-only destinations reject before GPU/pixel mutation. Direct destination
+Floyd-Steinberg dithering is explicitly unsupported before any drawing; indexed
+dithering continues its existing shared service. Do not call the unfinished
+direct-dither path or advertise it through offscreen/profile flags. Direct screen
+mode creation, managed16/32-bit GWorld creation/update and complete native edge
+conformance remain open. Source storage support and a checked drawable manual
+PixMap do not establish a complete 32-bit QuickDraw capability.
+
+Before declaring a complete direct-device profile, audit device colour queries
+as well as drawing: the existing Index2Color implementation still uses indexed
+tables and needs direct-format routing, and Color2Index/native inverse-table
+conformance remains unfinished. The direct drawable-surface fixtures do not
+establish those adjacent APIs. Extend them through the common format model before
+advertising complete capability or claiming original-game acceptance.
