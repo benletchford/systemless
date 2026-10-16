@@ -4576,3 +4576,21 @@ playability. Next EV acceptance work should use explicit steering/thrust input
 and observable before/after state rather than merely increasing an idle budget.
 Marathon's next shared service remains CTabChanged; see primary Imaging With
 QuickDraw pp4-97–4-98 for unique seed and inverse-table invalidation requirements.
+
+
+CTabChanged replay outcome,2026-10-17: the unchanged original Marathon8M command
+now executes Color(Changed(68532)) and advances beyond the former palette stop.
+The next fault is unsupported FP68K selector100E at2,916,017/01008C20. Source
+inspection identifies the missing single-to-extended conversion route; verify
+primary numeric documentation before implementing it. The inspected screen
+remains the same arrow-over-black frame,PPM SHA256
+d5cee18abe289b1be11164e9eec2225db24784d65114d4b2239b2d46063079a3.
+Independent saved-volume verification passes: all original companions are intact,
+with only the same1222-byte Marathon Preferences file added; output SHA256
+e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42.
+Tracer build passes20.02s; strict affected lib/test lint passes1m15s. All28scoped
+tests pass,0ignored,including ten actual GPU cases. Private evidence is retained
+under marathon/evidence/2026-10-17-ctab*. No original menu/gameplay, native numeric
+parity or full application acceptance is inferred. Full GPU text and whole rebuild
+remain unfinished. A fresh EV24M replay additionally exercises right/up-arrow
+input after Enter Ship; its result is pending rather than assumed playable.

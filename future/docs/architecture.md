@@ -3833,3 +3833,25 @@ D0. PPC uses six registers and returns the offset in R3. The separate native D0
 error channel follows [Apple PT14's glue convention](https://leopard-adc.pepas.com/technotes/pt/pt_14.html);
 its native values are not independently remeasured. The canonicalA9E0 discovery
 entry is appended without changing existing veneer addresses.
+
+
+### Color-table change notification
+
+CTabChanged uses shared Color Manager state through InterfaceLib and native
+QDExtensions selector00040007. It validates a live managed ColorTable, including
+its declared entry extent (empty tables allowed), preflights the seed write, then
+assigns a fresh seed from the same monotonic namespace as GetCTSeed and entry
+mutations. The table handle, size, flags and color entries survive unchanged.
+Errors preserve the seed namespace and payload; Memory/Resource errors restore
+on all outcomes. Native consumes one long and preserves registers; PPC is void.
+Canonical QDExtensions discovery uses an appended veneer; unsupported selectors
+still fail explicitly.
+
+The [primary reference](https://www.vintageapple.org/inside_r/pdf/Imaging_With_QuickDraw_1994.pdf)
+pp4-97–4-98 requires a new seed and invalidation notification. Live rendering
+reads guest color tables each operation, so no hidden GPU palette cache survives
+this call. Existing inverse-table seeds remain stale until MakeITable rebuilds
+from current colors; their seed mismatch is the invalidation signal. This does
+not claim ROM-exact inverse matching, native invalid-input behavior or interrupt
+safety. The runtime's VBL allocation-safety guard continues to exclude Color
+Manager operations, as the documented call is not interrupt-safe.

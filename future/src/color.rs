@@ -18,6 +18,7 @@ pub enum Op {
         source: GuestPtr,
     },
     Seed,
+    Changed(u32),
     Make {
         source: u32,
         destination: u32,
@@ -214,6 +215,19 @@ impl Manager {
                 destination,
                 resolution,
             } => self.make(m, p, source, destination, resolution),
+            Op::Changed(handle) => (|| {
+                let data = owned(m, p, handle, 8)?;
+                let last = m.u16(GuestPtr(data.0 + 6))? as i16;
+                if !(-1..256).contains(&last) {
+                    return Err(bad("invalid changed color table count"));
+                }
+                owned(m, p, handle, 8 + (i32::from(last) + 1) as u32 * 8)?;
+                let seed = self.next_seed(m.u32(data)?)?;
+                m.validate_write(data, 4)?;
+                m.write(data, &seed.to_be_bytes())?;
+                self.serial = seed;
+                Ok(0)
+            })(),
             Op::Protect { index, protect } => self.protect(m, p, index, protect),
             Op::SetEntries {
                 start,

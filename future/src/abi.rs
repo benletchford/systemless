@@ -88,6 +88,7 @@ pub enum Service {
     RgbToHsl,
     SetEntries,
     GetCTSeed,
+    CTabChanged,
     ReserveEntry,
     ProtectEntry,
     SetClientID,
@@ -485,6 +486,7 @@ impl Abi {
             b"CloseCPort" => Some(Service::ColorPort(crate::color_ports::Action::Close)),
             b"RGB2HSL" => Some(Service::RgbToHsl),
             b"SetEntries" => Some(Service::SetEntries),
+            b"CTabChanged" => Some(Service::CTabChanged),
             b"GetCTSeed" => Some(Service::GetCTSeed),
             b"ReserveEntry" => Some(Service::ReserveEntry),
             b"ProtectEntry" => Some(Service::ProtectEntry),
@@ -2562,6 +2564,13 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("DisposePixPat stack overflow".into()))?;
                 Ok((Call::PixPat(crate::pixpat::Op::Dispose(h)), Reply::None))
             }
+            0xab1d if c.dar[0] == 0x00040007 => {
+                let handle = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("CTabChanged stack overflow".into()))?;
+                Ok((Call::Color(crate::color::Op::Changed(handle)), Reply::None))
+            }
             0xab1d if c.dar[0] == 0x0004000f => {
                 let pixmap = memory.u32(GuestPtr(sp))?;
                 let next = sp
@@ -4196,6 +4205,7 @@ impl Abi {
                 count: c.gpr[4] as i16,
                 source: GuestPtr(c.gpr[5]),
             }),
+            Service::CTabChanged => Call::Color(crate::color::Op::Changed(c.gpr[3])),
             Service::GetCTSeed => Call::Color(crate::color::Op::Seed),
             Service::ReserveEntry => Call::Color(crate::color::Op::Reserve {
                 index: c.gpr[3] as i16,
@@ -5066,6 +5076,7 @@ impl Abi {
                 || matches!(
                     service,
                     Service::RgbToHsl
+                        | Service::CTabChanged
                         | Service::SetEntries
                         | Service::ReserveEntry
                         | Service::ProtectEntry

@@ -10021,3 +10021,52 @@ playability. Next EV acceptance work should use explicit steering/thrust input
 and observable before/after state rather than merely increasing an idle budget.
 Marathon's next shared service remains CTabChanged; see primary Imaging With
 QuickDraw pp4-97–4-98 for unique seed and inverse-table invalidation requirements.
+
+
+### Shared CTabChanged for Marathon,2026-10-17
+
+Original Marathon's next boundary is QDExtensions/AB1D selector00040007.
+CTabChanged now validates the live ColorTable extent and replaces only ctSeed
+through the shared Color Manager namespace. Both CPU adapters invoke the same
+service; PPC preserves void argument registers and native preserves D0 while
+consuming the four-byte argument. A canonical AB1D discovery veneer is appended.
+Guest colors, handles, allocation flags and table payload remain intact. Live
+wgpu drawing reads current palettes; inverse-table seed mismatch identifies stale
+lookup data until MakeITable regeneration. Primary Imaging With QuickDraw
+pp4-97–4-98 documents the unique-seed requirement and interrupt-time prohibition.
+
+Four new tests cover actual CPU adapters, shared GetCTSeed ordering, errors and
+namespace exhaustion, short native frames/unknown selectors, empty tables, and
+changed-color inverse regeneration. The initial run has3passes and a discovery
+failure: the library compilation began before the final AB1D registration edit,
+while the newly compiled test asserted that entry. The finalized source is being
+rebuilt with the stronger discovery assertion retained. No passing result is
+inferred from the stale artifact; initial log /tmp/systemless-ctab-tests.txt stays
+available. Existing color/inverse suites, strict lint and original replay follow.
+
+
+The finalized rerun passes4CTabChanged+6color-table+8inverse-table tests,0ignored.
+The separate real GPU indexed-destination suite passes10/10,0ignored (78.17s),
+covering live palettes, recoloring, packed depth, transfers, clipping/padding,
+reservation matching and text masks. Total28scoped passes, not a whole-suite
+claim. The original discovery failure remains in the initial log; its retained
+assertion passes after rebuilding final source. Tracer build/lint and fresh
+original Marathon replay are the remaining milestone checks.
+
+
+CTabChanged replay outcome,2026-10-17: the unchanged original Marathon8M command
+now executes Color(Changed(68532)) and advances beyond the former palette stop.
+The next fault is unsupported FP68K selector100E at2,916,017/01008C20. Source
+inspection identifies the missing single-to-extended conversion route; verify
+primary numeric documentation before implementing it. The inspected screen
+remains the same arrow-over-black frame,PPM SHA256
+d5cee18abe289b1be11164e9eec2225db24784d65114d4b2239b2d46063079a3.
+Independent saved-volume verification passes: all original companions are intact,
+with only the same1222-byte Marathon Preferences file added; output SHA256
+e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42.
+Tracer build passes20.02s; strict affected lib/test lint passes1m15s. All28scoped
+tests pass,0ignored,including ten actual GPU cases. Private evidence is retained
+under marathon/evidence/2026-10-17-ctab*. No original menu/gameplay, native numeric
+parity or full application acceptance is inferred. Full GPU text and whole rebuild
+remain unfinished. A fresh EV24M replay additionally exercises right/up-arrow
+input after Enter Ship; its result is pending rather than assumed playable.
