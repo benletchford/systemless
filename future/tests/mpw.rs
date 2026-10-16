@@ -1883,3 +1883,44 @@ fn compiled_timers_use_real_register_callbacks_rearm_and_resume_event_waits() {
         )));
     }
 }
+
+#[test]
+#[ignore = "requires generated MPW compiler fixture"]
+fn compiled_retrace_tasks_run_real_callbacks_rearm_and_cancel_on_both_cpus() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/mpw-probe");
+    let code = std::fs::read(root.join("retrace.68k.rsrc")).expect("build MPW fixtures first");
+    let pef = std::fs::read(root.join("retrace.ppc")).unwrap();
+    for mut app in [
+        LoadedApplication::code(&code).unwrap(),
+        LoadedApplication::pef(&pef, Some(&code)).unwrap(),
+    ] {
+        let mut exited = false;
+        for _ in 0..100 {
+            match app.runtime.advance(20000).unwrap() {
+                Stop::Waiting { ticks } => app.runtime.elapse_ticks(ticks).unwrap(),
+                Stop::Budget => {}
+                Stop::Exit(code) => {
+                    assert_eq!(code, 0);
+                    exited = true;
+                    break;
+                }
+                other => panic!("unexpected retrace fixture stop: {other:?}"),
+            }
+        }
+        assert!(exited, "retrace fixture did not exit");
+        assert_eq!(app.runtime.services.completed_vbl_callbacks, 3);
+        assert!(app.runtime.services.calls.iter().any(|c| matches!(
+            c,
+            Call::PostEvent {
+                what: 7,
+                message: 0xb033
+            }
+        )));
+        for header in [
+            systemless_future::retrace::SYSTEM,
+            systemless_future::retrace::SCREEN_QUEUE,
+        ] {
+            assert_eq!(app.runtime.memory.read(header, 10).unwrap(), [0; 10]);
+        }
+    }
+}

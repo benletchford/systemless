@@ -2495,3 +2495,38 @@ $0A14, trap $AAA2), PC $010116CE. Evidence:
 original timer callback execution, movement or combat acceptance. EV's monitor
 error and PPC loader gaps remain separate; neither original game is playable.
 The full rebuild goal remains active.
+
+
+## Vertical retrace queues and interrupt continuations
+
+`retrace` owns separate system and virtual-main-display VBL queues. Guest QHdr
+and VBLTask linkage is real checked memory; VInstall/VRemove and SlotVInstall /
+SlotVRemove share this state through both CPU ABI adapters. The one backed host
+screen is slot 0 at a fixed virtual 60 Hz. Other slots return slotNumErr. The
+system header is at $0160; ScrnVBLPtr points to the owned main-display header.
+Queue records cannot alias one another, the headers/pointer, or managed timer
+records through Runtime's dispatch. Guest linkage/type corruption faults explicitly.
+
+Runtime advances one checked monotonic counter, currently held by `timers::Timers`,
+and supplies its units to both scheduler models; retrace has no second clock.
+One refresh consumes 50,000 units. A zero count remains dormant; an initial phase
+is added once using wrapping 16-bit word arithmetic. Foreground countdown edits are observed from live memory. The
+refresh scan decrements and calls tasks in queue order, allowing an earlier
+callback to change or disable a later task before its turn. Backlog processing
+skips intervals without callbacks and remains bounded by the guest instruction
+budget. A returned task must rearm its count or it is unlinked automatically.
+
+The existing task-callback adapter now marshals VBL A0 on 68K and a prepared
+same-ISA PPC VBLUPP ($9802) into r3, while timers retain A1 / TimerUPP ($B802).
+Runtime holds the whole interrupted CPU and suspended waits. Queue inVBL flags
+remain set through the callback; completion restores caller state and waits.
+Timer/VBL callbacks are serialized against one another, and 68K interrupt masks
+defer delivery. VBL entry models a level-one mask and a conservative service
+allowlist rejects allocation/blocking calls. Process exit/fault cancels ownership.
+
+This remains deterministic virtual scheduling. Full hardware exception/supervisor
+stack semantics, interrupt overrun/coalescing equivalence, PPC MSR interrupt
+masking, additional display rates/slots, direct foreign queue mutation,
+AttachVBL/DoVBLTask, general interrupt-safe Toolbox coverage and production Mixed
+Mode remain unfinished. No full Vertical Retrace Manager Gestalt capability is
+advertised. Only implemented trap entries/imports are exposed.

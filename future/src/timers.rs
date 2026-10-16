@@ -35,6 +35,15 @@ fn bad(message: &str) -> Error {
     Error::Cpu(format!("Time Manager: {message}"))
 }
 impl Timers {
+    pub(crate) fn now(&self) -> u64 {
+        self.now
+    }
+    pub(crate) fn overlaps(&self, pointer: GuestPtr) -> bool {
+        self.tasks.iter().any(|t| {
+            u64::from(t.pointer.0) < u64::from(pointer.0) + 14
+                && u64::from(pointer.0) < u64::from(t.pointer.0) + 14
+        })
+    }
     pub(crate) fn advance(&mut self, units: u64) -> Result<()> {
         self.now = self
             .now

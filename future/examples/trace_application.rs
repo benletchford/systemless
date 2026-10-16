@@ -124,6 +124,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .read(systemless_future::memory::GuestPtr(c.dar[8]), 64)
                     );
                 }
+                if let Some(systemless_future::cpu::Call::Retrace(op)) = app.runtime.services.calls.iter().rev()
+                    .find(|call| matches!(call, systemless_future::cpu::Call::Retrace(op) if !op.remove))
+                {
+                    println!("last installed VBL record at {:08x}: {:02x?}", op.task.0,
+                        app.runtime.memory.read(op.task,14));
+                }
+                println!(
+                    "completed callbacks: sound={} timer={} vbl={}",
+                    app.runtime.services.completed_sound_callbacks,
+                    app.runtime.services.completed_timer_callbacks,
+                    app.runtime.services.completed_vbl_callbacks
+                );
                 return Err(error.into());
             }
         };

@@ -151,21 +151,41 @@ pub(crate) fn timer(
     routine: u32,
     task: GuestPtr,
 ) -> Result<Cpu> {
-    let routine = resolve(caller, memory, routine, 0xb802)?;
+    task_callback(caller, memory, routine, task, false)
+}
+pub(crate) fn retrace(
+    caller: &Cpu,
+    memory: &mut Memory,
+    routine: u32,
+    task: GuestPtr,
+) -> Result<Cpu> {
+    task_callback(caller, memory, routine, task, true)
+}
+fn task_callback(
+    caller: &Cpu,
+    memory: &mut Memory,
+    routine: u32,
+    task: GuestPtr,
+    vbl: bool,
+) -> Result<Cpu> {
+    let routine = resolve(caller, memory, routine, if vbl { 0x9802 } else { 0xb802 })?;
     match caller {
         Cpu::M68k(c) => {
             memory.fetch(GuestPtr(routine), 2, 2)?;
             let sp = c.dar[15]
                 .checked_sub(4)
                 .filter(|s| s.is_multiple_of(2))
-                .ok_or_else(|| Error::Cpu("invalid timer callback stack".into()))?;
+                .ok_or_else(|| Error::Cpu("invalid task callback stack".into()))?;
             memory.validate_write(GuestPtr(sp), 4)?;
             let mut callee = Cpu::new(Architecture::M68k, routine, sp);
             if let Cpu::M68k(next) = &mut callee {
                 next.dar = c.dar;
                 next.set_sr(c.get_sr());
                 next.dar[15] = sp;
-                next.dar[9] = task.0;
+                next.dar[if vbl { 8 } else { 9 }] = task.0;
+                if vbl {
+                    next.set_sr((c.get_sr() & !0x0700) | 0x0100);
+                }
             }
             memory.write(GuestPtr(sp), &RETURN_GATE.to_be_bytes())?;
             Ok(callee)

@@ -38,6 +38,7 @@ pub mod quickdraw;
 pub mod rectangles;
 pub mod region_geometry;
 pub mod regions;
+pub mod retrace;
 pub mod rounded;
 pub mod runtime;
 pub mod sound;

@@ -5507,3 +5507,88 @@ claimed; earlier 505-test acceptance belongs to its recorded frozen checkpoint.
 Native window/audio and original title/menu/gameplay remain unverified. Keep the
 full rebuild active. Next executable work: real per-display VBL task ownership,
 queue/count/phase semantics and guarded callbacks for Marathon's SlotVInstall.
+
+
+## Shared vertical retrace scheduling
+
+The next Marathon requirement now has real VInstall/VRemove, SlotVInstall /
+SlotVRemove and GetVBLQHdr behavior shared by both CPU backends. Owned system and
+slot-0 queues publish actual headers/linkage and inVBL flags. They use the existing
+checked monotonic time counter at the host's virtual 60 Hz, with dormant zero
+counts, one-time phase offsets, live countdown edits, rearming and automatic
+unlinking. Earlier callbacks can edit or disable later tasks during the same
+ordered refresh scan. Runtime guards overlap with Time Manager records and with
+both VBL headers/the screen-queue pointer. Record bounds, type/linkage corruption,
+invalid slots and attempts to mutate a queue from its callback fail explicitly.
+
+Callbacks execute real guest instructions with A0 on 68K and a validated prepared
+PPC VBLUPP ($9802)/r3 on PPC. The shared callback adapter retains Timer Manager A1
+and TimerUPP ($B802). Whole CPU state and suspended event/control/menu/file/sound
+waits are retained; callback returns restore them. The modeled 68K mask defers
+callbacks and VBL entry sets a level-one mask. Timer and VBL callbacks serialize.
+A conservative VBL service allowlist rejects allocation/blocking calls. Exit/fault
+clears ownership and published queues. Full hardware interrupt/supervisor-stack,
+PPC MSR, overrun/coalescing and Mixed Mode behavior remain open; so do additional
+slots/rates and AttachVBL/DoVBLTask. No broad VBL Gestalt feature is fabricated.
+
+Original Marathon now installs its slot-0 task and proceeds to GetMaxDevice
+($AA27), PC $01034B98, with rectangle pointer $0080FEC8. Diagnostic exit 1 remains
+a missing service, not a gameplay pass. The captured task at $0001821C retains
+qType 1, callback $010093BE, count 0 and phase 0 at this boundary; completed VBL
+callbacks are 0. Fault cleanup changes linkage, not this countdown. Thus original
+VBL callback acceptance is still open even though real callback execution is
+verified separately by both compiler guests and synthetic CPU tests. Evidence:
+/tmp/systemless-marathon-vbl-final.txt; ABI reference:
+/tmp/systemless-marathon-getmaxdevice-sdk.txt. EV remains at ProtectEntry $AA3D,
+PC $0001ACFE: /tmp/systemless-ev-vbl-final.txt, explicit exit 1.
+
+The initial SDK generation succeeded in /tmp/systemless-vbl-sdk-build.txt. The
+final C fixture removed a race-prone exact countdown assertion, was regenerated
+alone through the same pinned MPW image, and its staged source was byte-compared
+to the repository file: /tmp/systemless-vbl-sdk-final-build.txt, exit 0. Both
+SC68K and MrC-PPC programs execute three rearmed slot callbacks, observe the active
+queue flag, auto-remove, then install/cancel a phased system task and exit 0.
+The older Time Manager compiler guests are also replayed to protect A1 marshalling.
+Earlier focused passes before the ordered-scan/header guard fixes are preliminary;
+final acceptance is recorded below.
+
+The Super Mines save/open/sound interaction regression completed one sound
+callback, reopened its 1,972-byte game and returned to waiting at $0100C798.
+Its after.ppm is byte-identical to the inspected timer checkpoint:
+/tmp/systemless-mines-vbl-final.txt and /tmp/systemless-mines-vbl-final-after.ppm.
+The final-source replay is recorded below. Native presentation/audio and win/loss remain open.
+
+Primary task/callback/queue references:
+https://dev.os9.ca/techpubs/mac/pdf/Processes/Vertical_Retrace_Mgr.pdf
+https://leopard-adc.pepas.com/technotes/tb/tb_35.html
+Pinned SDK evidence: /tmp/systemless-vbl-record-sdk.txt and
+/tmp/systemless-marathon-slot-vbl-sdk.txt. Legacy time_manager.rs independently
+adds the initial phase to the count; this is reference evidence, not a native
+conformance claim. Original raw-fork hashes were rechecked unchanged.
+
+
+Final VBL acceptance (2026-10-16): 108 distinct checks passed, zero failed and
+zero ignored. The 106 library/CPU/service checks are in
+/tmp/systemless-vbl-final-word-acceptance.txt; real compiler VBL and Timer guests
+are in /tmp/systemless-vbl-word-sdk.txt and
+/tmp/systemless-vbl-word-timer-sdk.txt. Both compiler tests exercise both CPUs;
+the VBL programs each complete three callbacks. Counts and initial phase use
+16-bit wrapping words, including the $7FFF + 1 boundary regression. Strict
+Rust 1.99 all-target Clippy passes (/tmp/systemless-vbl-word-acceptance-lint.txt),
+as does the Rust 1.93 library check (/tmp/systemless-vbl-msrv-check.txt).
+Sequential changed-file formatting and whitespace checks pass. This is focused
+acceptance, not a rerun of the earlier 505-test full-suite checkpoint.
+
+Final original replays: Marathon /tmp/systemless-marathon-vbl-word-acceptance.txt
+exits 1 at GetMaxDevice, with zero completed VBL callbacks and a dormant task;
+EV /tmp/systemless-ev-vbl-word-acceptance.txt exits 1 at ProtectEntry.
+Super Mines /tmp/systemless-mines-vbl-word-acceptance.txt exits 0, completes one
+sound callback, reopens the 1,972-byte game and waits at $0100C798. Its final
+/tmp/systemless-mines-vbl-word-acceptance-after.ppm is byte-identical to
+/tmp/systemless-mines-timers-final-after.ppm. These diagnostics do not establish
+native presentation, audible output, original-game gameplay or win/loss behavior.
+Final non-Markdown source fingerprint:
+77ce05705cc52b7e1deac7db7a9f06a6b21cb5a177ead9c1b4d790e16025c275.
+Next: implement shared GetMaxDevice with documented display selection semantics,
+continue Marathon startup, then implement EV palette ownership/protection. Keep
+the full rebuild goal active and the PR in draft.

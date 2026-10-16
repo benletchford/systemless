@@ -2045,3 +2045,24 @@ including actual GPU readback) and /tmp/systemless-color-window-sdk-test.txt
 formatting and whitespace checks pass. The preliminary run was superseded with
 exit 130 after correcting classic color-aware GetNewWindow; it is not a pass.
 Neither original game nor the full rebuild is complete.
+
+
+## VBL checkpoint (2026-10-16)
+
+Original Marathon 1 v1.2 now installs its slot-0 vertical retrace task and reaches
+GetMaxDevice ($AA27), PC $01034B98, rectangle $0080FEC8. The task at $0001821C
+has count/phase zero and no completed callback at this boundary. Installation
+is proven; original-game callback execution and gameplay remain unverified.
+Evidence: /tmp/systemless-marathon-vbl-word-acceptance.txt, explicit exit 1.
+Original Escape Velocity 1.0.5 remains at ProtectEntry ($AA3D), PC $0001ACFE:
+/tmp/systemless-ev-vbl-word-acceptance.txt, explicit exit 1. Neither is playable.
+
+Both CPU compiler fixtures execute/rearm three real VBL callbacks and cancel a
+phased system task. Final focused acceptance is 108 passed, zero failed/ignored;
+see progress.md for terminal logs and limitations. Super Mines save/open replay
+exits 0, reopens 1,972 bytes and completes one sound callback; its final image is
+byte-identical to the timer checkpoint. Evidence:
+/tmp/systemless-mines-vbl-word-acceptance.txt and corresponding -after.ppm.
+Native presentation/audio and win/loss acceptance remain open. Next executable
+work is shared GetMaxDevice, followed by further Marathon startup and real
+per-device palette protection for EV. The full rebuild remains active.

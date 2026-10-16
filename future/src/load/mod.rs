@@ -127,6 +127,7 @@ pub(super) fn finish(
 ) -> Result<LoadedApplication> {
     crate::traps::install(&mut memory)?;
     memory.map(GuestPtr(0), vec![0; 4096], Permissions::RW)?;
+    crate::retrace::install(&mut memory)?;
     memory.write(
         crate::calendar::TIME,
         &crate::calendar::DEFAULT_TIME.to_be_bytes(),

@@ -12,6 +12,7 @@ pub enum Service {
     GetDateTime,
     ReadDateTime,
     Timer(u8),
+    Retrace { remove: bool, slot: bool },
     NumToString,
     StringToNum,
     Gestalt,
@@ -75,6 +76,7 @@ pub enum Service {
     SetDevice,
     HasDepth,
     SetDepth,
+    VblHeader,
     DeviceAttribute,
     SetDeviceAttribute,
     MakeITable,
@@ -292,6 +294,23 @@ impl Abi {
         }
         match symbol {
             b"GetDateTime" => Some(Service::GetDateTime),
+            b"VInstall" => Some(Service::Retrace {
+                remove: false,
+                slot: false,
+            }),
+            b"VRemove" => Some(Service::Retrace {
+                remove: true,
+                slot: false,
+            }),
+            b"SlotVInstall" => Some(Service::Retrace {
+                remove: false,
+                slot: true,
+            }),
+            b"SlotVRemove" => Some(Service::Retrace {
+                remove: true,
+                slot: true,
+            }),
+            b"GetVBLQHdr" => Some(Service::VblHeader),
             b"InsTime" => Some(Service::Timer(0)),
             b"PrimeTime" => Some(Service::Timer(1)),
             b"RmvTime" => Some(Service::Timer(2)),
@@ -689,6 +708,18 @@ impl Abi {
     pub fn trap(opcode: u16, c: &mut m68k::CpuCore, memory: &Memory) -> Result<(Call, Reply)> {
         let sp = c.dar[15];
         match opcode {
+            0xa033 | 0xa034 | 0xa06f | 0xa070 => Ok((
+                Call::Retrace(crate::retrace::Op {
+                    task: GuestPtr(c.dar[8]),
+                    slot: if opcode >= 0xa06f {
+                        Some(c.dar[0] as i16)
+                    } else {
+                        None
+                    },
+                    remove: matches!(opcode, 0xa034 | 0xa070),
+                }),
+                Reply::M68kError,
+            )),
             0xa058..=0xa05a => Ok((
                 Call::Timer(crate::timers::Op {
                     task: GuestPtr(c.dar[8]),
@@ -3120,6 +3151,12 @@ impl Abi {
                 source_rect: GuestPtr(c.gpr[6]),
                 mask_rect: GuestPtr(c.gpr[7]),
                 destination_rect: GuestPtr(c.gpr[8]),
+            }),
+            Service::VblHeader => Call::RetraceHeader,
+            Service::Retrace { remove, slot } => Call::Retrace(crate::retrace::Op {
+                task: GuestPtr(c.gpr[3]),
+                slot: slot.then_some(c.gpr[4] as i16),
+                remove,
             }),
             Service::Timer(action) => Call::Timer(crate::timers::Op {
                 task: GuestPtr(c.gpr[3]),

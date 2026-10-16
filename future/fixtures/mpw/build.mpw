@@ -127,3 +127,8 @@ SC -sym off timers.c -o timers.68k.o
 Link -d -t 'APPL' -c 'FUTR' timers.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o timers.68k
 MrC -sym off -opt off timers.c -o timers.ppc.o
 PPCLink timers.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o timers.ppc
+
+SC -sym off retrace.c -o retrace.68k.o
+Link -d -t 'APPL' -c 'FUTR' retrace.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o retrace.68k
+MrC -sym off -opt off retrace.c -o retrace.ppc.o
+PPCLink retrace.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o retrace.ppc

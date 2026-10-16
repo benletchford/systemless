@@ -17,6 +17,7 @@ pub struct Services {
     /// Successful guest Sound Manager callback returns, for host diagnostics.
     pub completed_sound_callbacks: u64,
     pub completed_timer_callbacks: u64,
+    pub completed_vbl_callbacks: u64,
     pub calls: Vec<Call>,
 }
 // The whole CPU is suspended, retaining even engine-private FPU/control state.
@@ -26,6 +27,10 @@ struct Continuation {
 }
 enum Resume {
     Fixture,
+    Retrace {
+        task: GuestPtr,
+        waits: Box<SuspendedWaits>,
+    },
     Timer {
         waits: Box<SuspendedWaits>,
     },
@@ -163,7 +168,8 @@ impl Runtime {
                     .process
                     .timers
                     .wait_ticks()
-                    .map_or(ticks, |timer| ticks.min(timer)),
+                    .map_or(ticks, |timer| ticks.min(timer))
+                    .min(self.process.retrace.wait_ticks().unwrap_or(ticks)),
             },
             other => other,
         });
@@ -173,6 +179,7 @@ impl Runtime {
         if self.faulted || self.terminal.is_some() {
             self.process.sound.cancel();
             self.process.timers.cancel();
+            self.process.retrace.cancel(&mut self.memory);
         }
         result
     }
@@ -225,7 +232,9 @@ impl Runtime {
             self.process.timers.advance(units)?;
         }
         for continuation in &mut self.continuations {
-            if let Resume::Sound { waits, .. } | Resume::Timer { waits } = &mut continuation.resume
+            if let Resume::Sound { waits, .. }
+            | Resume::Timer { waits }
+            | Resume::Retrace { waits, .. } = &mut continuation.resume
             {
                 if let Some(wait) = &mut waits.event {
                     wait.remaining = wait.remaining.saturating_sub(ticks);
@@ -244,6 +253,7 @@ impl Runtime {
         for _ in 0..budget {
             self.enter_pending_sound_callback()?;
             self.enter_pending_timer_callback()?;
+            self.enter_pending_retrace_callback()?;
             if let Some(stop) = self.poll_waits()? {
                 return Ok(stop);
             }
@@ -280,6 +290,26 @@ impl Runtime {
                 }
                 Outcome::Macintosh(call, reply) => {
                     self.services.calls.push(call);
+                    if self
+                        .continuations
+                        .iter()
+                        .any(|c| matches!(c.resume, Resume::Retrace { .. }))
+                        && !matches!(
+                            call,
+                            Call::Ticks
+                                | Call::ReadDateTime(_)
+                                | Call::PostEvent { .. }
+                                | Call::Logical { .. }
+                                | Call::EmptyRect(_)
+                                | Call::PointInRect { .. }
+                                | Call::Gestalt(_)
+                                | Call::Timer(_)
+                                | Call::Retrace(_)
+                                | Call::RetraceHeader
+                        )
+                    {
+                        return Err(Error::Cpu("service is unsupported at VBL interrupt time (no allocation or blocking)".into()));
+                    }
                     match call {
                         Call::RoundRect {
                             pointer,
@@ -1817,7 +1847,40 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::RetraceHeader => {
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                crate::retrace::SYSTEM.0,
+                                0,
+                            )?;
+                        }
+                        Call::Retrace(op) => {
+                            if !op.remove && self.process.timers.overlaps(op.task) {
+                                return Err(Error::Cpu(
+                                    "VBL task overlaps a managed Time Manager record".into(),
+                                ));
+                            }
+                            let error = self.process.retrace.call(
+                                &mut self.memory,
+                                op,
+                                self.process.timers.now(),
+                            )?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::Timer(op) => {
+                            if op.action == crate::timers::Action::Insert
+                                && self.process.retrace.overlaps(op.task)
+                            {
+                                return Err(Error::Cpu(
+                                    "Time Manager task overlaps a managed VBL record".into(),
+                                ));
+                            }
                             self.process.timers.call(&mut self.memory, op)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
@@ -2053,6 +2116,8 @@ impl Runtime {
                         | Call::CatalogInfo(_)
                         | Call::FileIo { .. }
                         | Call::WorkingDirectory { .. }
+                        | Call::Retrace(_)
+                        | Call::RetraceHeader
                         | Call::Timer(_)
                         | Call::FcbInfo(_) => {
                             return Err(Error::Cpu("Macintosh service on fixture route".into()))
@@ -2195,6 +2260,43 @@ impl Runtime {
         self.sound_wait = waits.sound;
         self.play_wait = waits.play;
     }
+    fn enter_pending_retrace_callback(&mut self) -> Result<()> {
+        if let Cpu::M68k(c) = &self.cpu {
+            if c.get_sr() & 0x0700 != 0 {
+                return Ok(());
+            }
+        }
+        if self
+            .continuations
+            .iter()
+            .any(|c| matches!(c.resume, Resume::Timer { .. } | Resume::Retrace { .. }))
+        {
+            return Ok(());
+        }
+        let Some(due) = self
+            .process
+            .retrace
+            .pending(&mut self.memory, self.process.timers.now())?
+        else {
+            return Ok(());
+        };
+        if self.continuations.len() >= 32 {
+            return Err(Error::Cpu("VBL callback depth exceeded".into()));
+        }
+        let routine = self.memory.u32(GuestPtr(due.task.0 + 6))?;
+        let callee = crate::callback::retrace(&self.cpu, &mut self.memory, routine, due.task)?;
+        self.process.retrace.begin(&mut self.memory, due)?;
+        let waits = self.suspend_waits();
+        let caller = std::mem::replace(&mut self.cpu, callee);
+        self.continuations.push(Continuation {
+            caller,
+            resume: Resume::Retrace {
+                task: due.task,
+                waits,
+            },
+        });
+        Ok(())
+    }
     fn enter_pending_timer_callback(&mut self) -> Result<()> {
         if let Cpu::M68k(c) = &self.cpu {
             // The classic Time Manager uses the level-one VIA interrupt.
@@ -2207,7 +2309,7 @@ impl Runtime {
         if self
             .continuations
             .iter()
-            .any(|c| matches!(c.resume, Resume::Timer { .. }))
+            .any(|c| matches!(c.resume, Resume::Timer { .. } | Resume::Retrace { .. }))
         {
             return Ok(());
         }
@@ -2537,6 +2639,15 @@ impl Runtime {
         self.cpu = frame.caller;
         match frame.resume {
             Resume::Fixture => self.cpu.set_result(value),
+            Resume::Retrace { task, waits } => {
+                self.process.retrace.finish(&mut self.memory, task)?;
+                self.services.completed_vbl_callbacks = self
+                    .services
+                    .completed_vbl_callbacks
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Cpu("VBL callback count overflow".into()))?;
+                self.restore_waits(*waits);
+            }
             Resume::Timer { waits } => {
                 self.services.completed_timer_callbacks = self
                     .services
