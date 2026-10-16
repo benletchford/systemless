@@ -943,7 +943,9 @@ then synthesizes updates for Toolbox event receivers, including WaitNextEvent.
 Delivery does not dequeue dirty geometry. BeginUpdate saves the old visible
 region in an owned guest handle, narrows it to dirty local coordinates and clears
 updateRgn atomically through grouped handle replacement. EndUpdate restores it
-without clearing new invalidation. Host metadata retains allocation identities
+without clearing new invalidation. Neither operation selects a graphics port or
+graphics device: the caller may keep an offscreen port selected while bracketing
+updates to a window. Current-port storage is not an output of these operations. Host metadata retains allocation identities
 only. Nested brackets and window creation/close/dispose while updating are
 explicit faults. Activation events and menu-bar invalidation servicing remain
 unimplemented; this is a partial Toolbox event contract.

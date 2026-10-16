@@ -1578,7 +1578,7 @@ fn color_window_app() -> LoadedApplication {
         .memory
         .map(
             GuestPtr(0x50000000),
-            [0xaa45u16, 0xa914, 0xa92d, 0xa8a2, 0xa873]
+            [0xaa45u16, 0xa914, 0xa92d, 0xa8a2, 0xa873, 0xa922, 0xa923]
                 .into_iter()
                 .flat_map(u16::to_be_bytes)
                 .collect(),
@@ -2312,4 +2312,69 @@ fn repaint_update_allocation_failure_precedes_pixels_and_invalid_damage_preserve
         .is_err());
     assert_eq!(app.runtime.memory.read(SCREEN, 64 * 342).unwrap(), before);
     app.runtime.process.windows = windows;
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn both_update_adapters_keep_offscreen_drawing_selected_and_leave_screen_bytes_unchanged() {
+    for native in [true, false] {
+        let mut app = color_window_app();
+        let w = invoke(&mut app, 2, &[0, 0x300, 0x320, 1, 2, u32::MAX, 0, 0]);
+        assert_ne!(w, 0);
+        let ports = app.runtime.process.ports.unwrap();
+        let offscreen = GuestPtr(0x51000000);
+        ports
+            .open(&mut app.runtime.memory, &mut app.runtime.process, offscreen)
+            .unwrap();
+        let base = GuestPtr(0x52000000);
+        app.runtime
+            .memory
+            .map(base, vec![0; 64 * 342], Permissions::RW)
+            .unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(offscreen.0 + 2), &base.0.to_be_bytes())
+            .unwrap();
+        let visible = region(&app, w, 24);
+        let offscreen_visible = region(&app, offscreen.0, 24);
+        let screen = app.runtime.memory.read(SCREEN, 64 * 342).unwrap().to_vec();
+        let device = app
+            .runtime
+            .memory
+            .u32(systemless_future::devices::CURRENT)
+            .unwrap();
+        if native {
+            m68(&mut app, 10, &w.to_be_bytes(), 4, false);
+        } else {
+            invoke(&mut app, 9, &[w]);
+        }
+        assert_eq!(ports.current(&app.runtime.memory).unwrap(), offscreen);
+        assert_eq!(region(&app, offscreen.0, 24), offscreen_visible);
+        rect(&mut app, 0x340, 1, 0, 2, 8);
+        if native {
+            m68(&mut app, 6, &0x340u32.to_be_bytes(), 4, false);
+        } else {
+            invoke(&mut app, 6, &[0x340]);
+        }
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(base.0 + 64), 1).unwrap(),
+            [255]
+        );
+        assert_eq!(app.runtime.memory.read(SCREEN, 64 * 342).unwrap(), screen);
+        if native {
+            m68(&mut app, 12, &w.to_be_bytes(), 4, false);
+        } else {
+            invoke(&mut app, 10, &[w]);
+        }
+        assert_eq!(ports.current(&app.runtime.memory).unwrap(), offscreen);
+        assert_eq!(region(&app, w, 24), visible);
+        assert_eq!(region(&app, offscreen.0, 24), offscreen_visible);
+        assert_eq!(
+            app.runtime
+                .memory
+                .u32(systemless_future::devices::CURRENT)
+                .unwrap(),
+            device
+        );
+    }
 }

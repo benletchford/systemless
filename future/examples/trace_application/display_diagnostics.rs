@@ -17,6 +17,33 @@ pub fn report(app: &LoadedApplication) {
     if let Ok((_, _, p)) = main {
         describe(app, "main PixMap", GuestPtr(p), true);
     }
+    current_port(app);
+    if let Some(Call::CopyBits(copy)) = app
+        .runtime
+        .services
+        .calls
+        .iter()
+        .rev()
+        .find(|v| matches!(v, Call::CopyBits(_)))
+    {
+        println!(
+            "display diagnostic last CopyBits recorded pointers (live snapshot, not historical values)={copy:?} source rect={:?} destination rect={:?}",
+            systemless_future::quickdraw::read_rect(m, copy.source_rect),
+            systemless_future::quickdraw::read_rect(m, copy.destination_rect)
+        );
+        describe(app, "last copy source", copy.source, false);
+        describe(app, "last copy destination", copy.destination, false);
+    }
+}
+pub fn drawing(app: &LoadedApplication, call: &Call) {
+    println!(
+        "drawing diagnostic instruction={} after={call:?}",
+        app.runtime.instructions
+    );
+    current_port(app);
+}
+fn current_port(app: &LoadedApplication) {
+    let m = &app.runtime.memory;
     if let Some(ports) = app.runtime.process.ports {
         if let Ok(p) = ports.current(m) {
             println!(
@@ -35,22 +62,6 @@ pub fn report(app: &LoadedApplication) {
                 describe(app, "current port bitmap", bitmap, false);
             }
         }
-    }
-    if let Some(Call::CopyBits(copy)) = app
-        .runtime
-        .services
-        .calls
-        .iter()
-        .rev()
-        .find(|v| matches!(v, Call::CopyBits(_)))
-    {
-        println!(
-            "display diagnostic last CopyBits recorded pointers (live snapshot, not historical values)={copy:?} source rect={:?} destination rect={:?}",
-            systemless_future::quickdraw::read_rect(m, copy.source_rect),
-            systemless_future::quickdraw::read_rect(m, copy.destination_rect)
-        );
-        describe(app, "last copy source", copy.source, false);
-        describe(app, "last copy destination", copy.destination, false);
     }
 }
 fn describe(app: &LoadedApplication, label: &str, mut pointer: GuestPtr, known_pixmap: bool) {
@@ -143,9 +154,13 @@ fn palette(
     for ordinal in 0..size {
         let entry = &bytes[8 + ordinal * 8..16 + ordinal * 8];
         let value = u16::from_be_bytes(entry[..2].try_into().unwrap());
-        // Report both ordinal and explicit value without assuming device-table policy.
-        if histogram[ordinal] != 0 || usize::from(value) < 256 && histogram[usize::from(value)] != 0
-        {
+        let device_table = u16::from_be_bytes(bytes[4..6].try_into().unwrap()) & 0x8000 != 0;
+        let used = if device_table {
+            histogram[ordinal] != 0
+        } else {
+            usize::from(value) < 256 && histogram[usize::from(value)] != 0
+        };
+        if used {
             let rgb: Vec<_> = entry[2..]
                 .chunks_exact(2)
                 .map(|w| u16::from_be_bytes(w.try_into().unwrap()))

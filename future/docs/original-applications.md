@@ -4309,3 +4309,23 @@ successful observed alias load/refresh, not playable display/flight/audio eviden
 Next: diagnose canonical screen pixels/palette and offscreen/current port drawing,
 then exercise original interaction. Neither priority game is verified playable;
 complete text/library integration and the full rebuild remain open.
+
+
+## EV visible menu and Enter Ship (2026-10-17)
+
+The black game content was caused by BeginUpdate changing the caller's selected
+offscreen port to the window port. Original pictures/text drew correctly on main
+screen, then a black offscreen copy erased them. The shared fix preserves caller
+port/device while maintaining window update-region semantics.119core/window/
+dialog checks pass, with GPU cases executed and none ignored; strict all-target
+lint and tracer build pass. The original no-input saved-pilot replay now renders
+the visible menu with the actual pilot and ship panel. Saved volume/aliases and
+companions are unchanged; pixel/hash/port evidence is in progress.md.
+
+E-key host input activates Enter Ship and advances to font2020,size14 StringWidth,
+which stops at the old FONT ID arithmetic guard at CPU8,215,759,PC01022DE8.
+Original FOND2020/scalable sfnt9295 (17,000bytes) are present in the app fork.
+Next: correct FOND/outline font resolution and shared measurement/GPU drawing,
+then retry actual flight. Private2026-10-17-update-port-after and enter-ship-font-
+boundary evidence are preserved. This proves visible menu/action progress, not
+playable flight, original audio or native System7 parity. Marathon was not replayed.

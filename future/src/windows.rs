@@ -1105,10 +1105,8 @@ impl Windows {
         )?;
         let local = shifted(&region(memory, process, update)?, origin.left, origin.top)?;
         let clip = region_geometry::combine(&old, &local, Boolean::Intersection)?;
-        let ports = process
-            .ports
-            .ok_or_else(|| fail("BeginUpdate requires InitGraf"))?;
-        memory.validate_write(ports.current_slot, 4)?;
+        // BeginUpdate changes this window's regions, not the caller's selected
+        // GrafPort. Offscreen drawing may deliberately remain current here.
         let saved = process.new_handle(memory, old.len() as u32, false)?;
         if saved == 0 {
             return Err(fail("BeginUpdate region allocation failed"));
@@ -1128,7 +1126,6 @@ impl Windows {
             result?;
             return Err(fail("BeginUpdate region resize failed"));
         }
-        ports.set(memory, GuestPtr(w))?;
         self.update = Some((w, vis, saved));
         Ok(())
     }
@@ -2205,6 +2202,57 @@ mod visibility_tests {
         assert!(has(&full, 20, 10));
         assert!(!has(&clip, 20, 10));
         assert!(has(&full, 0, -5));
+    }
+    #[test]
+    fn begin_end_update_preserves_an_unrelated_or_nil_current_port_and_readonly_selection() {
+        for selected in [0u32, 0x1200, 0x3f00] {
+            for readonly in [false, true] {
+                let (mut m, mut p, mut windows) = setup();
+                windows
+                    .visibility(&mut m, &mut p, Visibility::Window(0x1100))
+                    .unwrap();
+                let before = get(&m, &mut p, 0x1100);
+                m.write(GuestPtr(0x3f00), &[0xa5; 108]).unwrap();
+                let old_ports = p.ports.unwrap();
+                let slot = if readonly {
+                    m.map(
+                        GuestPtr(0x5000),
+                        selected.to_be_bytes().to_vec(),
+                        crate::memory::Permissions::RX,
+                    )
+                    .unwrap();
+                    GuestPtr(0x5000)
+                } else {
+                    m.write(old_ports.current_slot, &selected.to_be_bytes())
+                        .unwrap();
+                    old_ports.current_slot
+                };
+                p.ports = Some(crate::quickdraw::Ports {
+                    current_slot: slot,
+                    ..old_ports
+                });
+                windows.begin(&mut m, &mut p, 0x1100).unwrap();
+                assert_eq!(
+                    m.u32(slot).unwrap(),
+                    selected,
+                    "BeginUpdate changed caller port"
+                );
+                let update = handle(&m, 0x1100, 122).unwrap();
+                assert!(
+                    region_geometry::decode(&region(&m, &mut p, update).unwrap())
+                        .unwrap()
+                        .is_empty()
+                );
+                windows.end(&mut m, &mut p, 0x1100).unwrap();
+                assert_eq!(
+                    m.u32(slot).unwrap(),
+                    selected,
+                    "EndUpdate changed caller port"
+                );
+                assert_eq!(get(&m, &mut p, 0x1100), before);
+                assert_eq!(m.read(GuestPtr(0x3f00), 108).unwrap(), [0xa5; 108]);
+            }
+        }
     }
     #[test]
     fn malformed_later_regions_and_failed_batch_growth_leave_earlier_outputs_unchanged() {

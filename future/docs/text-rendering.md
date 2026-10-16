@@ -244,3 +244,24 @@ fixtures also execute real guest modal filters and timer callbacks around a
 paused dialog. This extends event-driven GPU text coverage; editable-field mouse
 selection, full DialogSelect/edit commands, complete styles/APIs, library
 production integration and native/browser acceptance remain unfinished.
+
+
+## Original EV drawing context and next font boundary (2026-10-17)
+
+BeginUpdate now preserves the caller's selected port. Original EV's picture and
+text calls remain in its selected offscreen buffer, then CopyBits presents the
+visible main menu with saved pilot/ship details. Before the fix, BeginUpdate
+selected the window port and a later black-buffer copy erased the rendered text
+and picture. This was shared drawing-context ownership, not a final wgpu upload
+failure. Native/PPC real-GPU offscreen fixtures and window/dialog regressions pass.
+
+Real E-key Enter Ship input advances the original game to TextFont2020,size14,
+then StringWidth stops at the legacy FONT family*128+size ID overflow guard.
+The original application actually contains FOND2020 with one scalable association
+(size0,style0,sfntID9295), plus the17000-byte sfnt9295 resource. FOND offsets:
+width78,kern0,style598. The next text slice is correct FOND/outline-resource
+resolution and actual measurements, not forcing a small family ID or substituting
+an unrelated font to bypass overflow. Verify existing library APIs and reuse a
+suitable decoder/rasterizer while retaining shared metrics and wgpu destination
+composition. Private original assets remain uncommitted. Full styles, classic
+metrics, library production integration and native/browser acceptance stay open.

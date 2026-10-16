@@ -11,7 +11,7 @@ struct KeyAction {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display-diagnostics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--key-at INSTRUCTION:CODE:down|up[:TEXT]] [--trace-range START:END] [--key-at-poll POLL:CODE:down|up[:TEXT]]".into());
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display-diagnostics] [--draw-diagnostics START:END] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--key-at INSTRUCTION:CODE:down|up[:TEXT]] [--trace-range START:END] [--key-at-poll POLL:CODE:down|up[:TEXT]]".into());
     }
     let mut graphics = false;
     let mut display_diagnostics = false;
@@ -25,6 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut keys = Vec::new();
     let mut poll_keys = Vec::new();
     let mut trace_range = None;
+    let mut draw_diagnostics = None;
     let budget: u64 = args[2].parse()?;
     let mut display = None;
     let mut index = 3;
@@ -70,6 +71,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 trace_range = Some(start..end);
             }
+            "--draw-diagnostics" if draw_diagnostics.is_none() => {
+                index += 1;
+                let (start, end) = args
+                    .get(index)
+                    .ok_or("missing trace range")?
+                    .split_once(':')
+                    .ok_or("trace range requires START:END")?;
+                let start = start.parse::<u64>()?;
+                let end = end.parse::<u64>()?;
+                if start >= end || end > budget {
+                    return Err("trace range must be nonempty and within the budget".into());
+                }
+                draw_diagnostics = Some(start..end);
+            }
             "--key-at" | "--key-at-poll" if keys.len() + poll_keys.len() < 64 => {
                 let poll = args[index] == "--key-at-poll";
                 index += 1;
@@ -109,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         index += 1;
     }
-    if (save_screen.is_some() || display_diagnostics) && !graphics {
+    if (save_screen.is_some() || display_diagnostics || draw_diagnostics.is_some()) && !graphics {
         return Err("screen capture/diagnostics require --graphics".into());
     }
     keys.sort_by_key(|action| action.instruction);
@@ -152,6 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut next_poll_key = 0;
     let mut watched = None;
     let mut previous_pc = None;
+    let mut draw_diagnostic_count = 0u16;
     for poll in 0..budget {
         for (actions, next, clock) in [
             (&keys, &mut next_key, app.runtime.instructions),
@@ -373,6 +389,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         for call in &app.runtime.services.calls[calls..] {
             println!("service {call:?}");
+            if draw_diagnostics
+                .as_ref()
+                .is_some_and(|r| r.contains(&app.runtime.instructions))
+                && matches!(
+                    call,
+                    systemless_future::cpu::Call::DrawPicture { .. }
+                        | systemless_future::cpu::Call::TextDraw(_)
+                        | systemless_future::cpu::Call::CopyBits(_)
+                        | systemless_future::cpu::Call::Port {
+                            op: systemless_future::quickdraw::PortOp::PaintRect,
+                            ..
+                        }
+                )
+            {
+                if draw_diagnostic_count < 512 {
+                    display_diagnostics::drawing(&app, call);
+                } else if draw_diagnostic_count == 512 {
+                    println!("drawing diagnostic limit reached: further samples omitted");
+                }
+                draw_diagnostic_count = draw_diagnostic_count.saturating_add(1);
+            }
+
             use systemless_future::{cpu::Call, dialogs::Op, memory::GuestPtr};
             if let Call::Dialog(Op::Text { pointer, set, .. }) = call {
                 let m = &app.runtime.memory;

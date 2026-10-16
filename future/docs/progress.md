@@ -9271,3 +9271,74 @@ Private extracted diagnostic output:
 future/target/private-originals/ev/evidence/2026-10-17-display-diagnostics.txt.
 Full trace /tmp/systemless-ev-display-diagnostics.txt. Neither game is playable;
 full rebuild and complete wgpu text/library integration remain active.
+
+
+## EV visible menu and caller port preservation (2026-10-17)
+
+Bounded --draw-diagnostics START:END captures current port, live vis/clip and
+pixel histograms after PaintRect, DrawPicture, TextDraw and CopyBits, with a
+512-sample run limit. Device-table CLUT diagnostics select used ordinal entries.
+The original pre-fix capture /tmp/systemless-ev-window-draw-before.txt proves:
+- Guest selects offscreen220244/00035C54 then BeginUpdate(window212052/00033C54).
+- The rebuild unexpectedly selected the window port. PaintRect at6,738,892
+  cleared main screen to index255. DrawPicture at6,738,906 produced110indices /
+  159,210non-255pixels on main screen; text at6,739,824 produced111indices /
+  160,241non-255pixels there.
+- CopyBits at6,739,865 overwrote that image with the still-black offscreen buffer.
+Earlier startup animation pictures/copies rendered color correctly. This locates
+the loss at wrong drawing-context selection, not final wgpu presentation.
+
+Apple's [BeginUpdate reference](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-260.html)
+describes vis/update-region changes; port selection is a separate SetPort in
+Apple's update examples. Preserved Systemless begin_update_window also leaves
+port selection alone. That is reference comparison, not native System7 parity.
+The focused regression fails before the fix because a nil caller selection is
+changed to window0x1100 (/tmp/systemless-update-port-before.txt, exit101).
+
+The shared fix removes implicit SetPort and current-slot write validation from
+BeginUpdate. Region intersection, atomic replacement, saved visibility and
+EndUpdate restoration remain. Both operations preserve caller-selected port and
+graphics device, including nil/unrelated selections or a read-only selection slot.
+No game-specific branch, pixel overwrite or CPU result override is introduced.
+
+Validation:119passes (85core,18dialog_resources,16windows), zero ignored in
+/tmp/systemless-update-port-tests.txt, terminal exit0, --include-ignored. Actual
+GPU core/window/dialog cases execute. The new native/PPC fixture brackets a real
+GPU offscreen PaintRect with Begin/End, checks offscreen bytes change, main bytes
+do not, port/device stay selected and the window's visibility restores. Strict
+all-target lint and fixed tracer build pass (/tmp/systemless-update-port-lint.txt,
+/tmp/systemless-update-port-tracer-build.txt, terminal exit0). Changed-file
+sequential formatting and whitespace checks pass.
+
+Original EV no-input replay from flagged v1 setfinfo-first with the fix renders
+the actual main menu and saved pilot/ship panel. At6,738,906 the current port is
+now offscreen00035C54 with110indices /159,210non-255pixels; CopyBits at6,739,865
+presents111indices /160,241non-255pixels on main. The10M replay ends at normal
+budget, PC00032FDE. /tmp/systemless-ev-update-port-after.txt. The saved catalog
+is byte-identical to the preceding script-aware run, and the standalone v1/v2
+alias/script/companion verifier passes. Volume SHA256 remains
+09166806147fef3f40ba7edbdf41efc67d46f51d7d369b4b987961817173c476.
+Colored final PPM SHA256
+c5fd0e3c2ba4146d50433f70a9cef5b2aeeded8e186cecb3d5494c4738af5a49.
+Private2026-10-17-update-port-after.{slv,ppm,png}, after-diagnostics.txt,
+after-trace-tail.txt and update-port-before.txt are under the ignored evidence
+folder. The image is a menu frame, not flight.
+
+Real E-key input (code14 down8,000,000/up8,005,000) from the durable v2
+script-reopen volume activates Enter Ship and leaves the menu. The16M-budget run
+stops earlier at CPU8,215,759, PC01022DE8: TextFont2020,size14 then StringWidth
+fails the legacy FONT family*128+size ID overflow guard. This is a real next text
+boundary, not completed flight or tested game audio. Trace:
+/tmp/systemless-ev-enter-ship.txt; private2026-10-17-enter-ship-font-boundary
+.{slv,ppm,png} and -trace-tail.txt. The independent snapshot verifier confirms ben
+and companions intact, prefs57,alias58,next59; volume SHA256
+e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80.
+
+The original app contains FOND2020 (676bytes) with one scalable association at
+52: count0,size0,style0,sfntID9295, and sfnt9295 (17,000bytes, TrueType header).
+FOND width/kern/style offsets are78/0/598. Next: shared FOND/scalable-font
+resolution using the real embedded font and appropriate library-backed glyph
+preparation, preserving metrics and existing wgpu text composition. Do not force
+a smaller family ID or substitute an unrelated font to bypass the overflow.
+Neither priority game is verified playable. Full text/library integration,
+Marathon and every remaining full-rebuild requirement stay active.
