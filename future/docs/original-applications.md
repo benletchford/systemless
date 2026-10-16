@@ -3728,3 +3728,18 @@ SHA25677d11063a93cdc53e4b2dc4f4c5733241cca51f47c9908d69a97cca127b532c3.
 Independent CRC/catalog/fork checks pass: preferences identity32->33, all other
 metadata, forks, companions and directories unchanged. Tracer flushes remain
 explicitly memory-only acknowledgments.
+
+### EV MaxMem replay (2026-10-16)
+
+/tmp/systemless-ev-maxmem.txt passes two MaxMem operations and continues to
+allocation/picture/cleanup activity. It stops at unsupported SndPauseFilePlay,
+SoundDispatch02040008, PC00112CDC (expected exit1). Original audio, native frame,
+UI and gameplay remain unverified; earlier snd30000 is absent from the supplied
+forks. Completed sound/timer/VBL callbacks remain0.
+
+Output /tmp/systemless-ev-maxmem-saved.slv is7,239,400bytes,
+SHA256a2ee46609579718aa78954219082c96a8f0d3f82ccfeed14c7bf1cb359cbd6d4.
+Independent CRC/catalog/fork verification against fileplay-saved passes:
+preferences identity33->34, all metadata/forks, companions and directories
+unchanged. Input is unchanged, and tracer flush acknowledgments remain explicitly
+memory-only. Use this snapshot with a fresh save filename for further replay.

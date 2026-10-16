@@ -2076,6 +2076,17 @@ impl Runtime {
                             // Utilities specifies an unchanged address in that mode.
                             reply.apply(&mut self.cpu, &mut self.memory, address, 0)?;
                         }
+                        Call::MaxMemory(grow) => {
+                            self.memory.validate_write(GuestPtr(0x220), 2)?;
+                            if let Some(output) = grow {
+                                self.memory.validate_write(output, 4)?;
+                            }
+                            let value = self.process.max_memory(&mut self.memory)?;
+                            if let Some(output) = grow {
+                                self.memory.write(output, &0u32.to_be_bytes())?;
+                            }
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
                         Call::FreeMemory => {
                             reply.apply(
                                 &mut self.cpu,
@@ -2284,6 +2295,7 @@ impl Runtime {
                             | Call::SetApplLimit(_)
                             | Call::MoreMasters
                             | Call::MaxApplZone
+                            | Call::MaxMemory(_)
                             | Call::Dialog(
                                 crate::dialogs::Op::Resource { .. }
                                     | crate::dialogs::Op::Text { set: true, .. }
@@ -2492,6 +2504,7 @@ impl Runtime {
                         | Call::StripAddress(_)
                         | Call::MemError
                         | Call::FreeMemory
+                        | Call::MaxMemory(_)
                         | Call::ResError
                         | Call::DetachResource(_)
                         | Call::ReleaseResource(_)

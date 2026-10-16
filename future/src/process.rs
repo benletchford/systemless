@@ -7,6 +7,7 @@ use crate::{
     Error, Result,
 };
 use std::collections::{BTreeMap, BTreeSet};
+mod compaction;
 pub mod resources;
 pub const HEAP_BASE: u32 = 0x1000_0000;
 pub const HEAP_SIZE: u32 = 4 * 1024 * 1024;

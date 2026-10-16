@@ -270,8 +270,16 @@ impl Process {
         id: i16,
     ) -> Result<u32> {
         self.res_error = 0;
-        if let Some(h) = self.resource_handles.get(&(owner, kind, id)) {
-            return Ok(*h);
+        let existing = self.resource_handles.get(&(owner, kind, id)).copied();
+        if let Some(h) = existing {
+            self.handle_size(memory, h)?;
+            if self.mem_error != 0 {
+                self.res_error = self.mem_error;
+                return Ok(0);
+            }
+            if self.handles[&h].data != 0 {
+                return Ok(h);
+            }
         }
         let (contents, attributes) = if let Some(r) = self.resource_metadata(owner, kind, id) {
             if r.attributes & 1 != 0 {
@@ -295,6 +303,25 @@ impl Process {
         } else {
             return Err(Error::Load("resource identity has no map entry".into()));
         };
+        if let Some(h) = existing {
+            memory.validate_write(GuestPtr(h), 4)?;
+            let size = contents.len() as u32;
+            let mut staged = self.heap.as_ref().unwrap().clone();
+            let Some(data) = staged.allocate(size) else {
+                self.mem_error = -108;
+                self.res_error = -108;
+                return Ok(0);
+            };
+            memory.validate_write(GuestPtr(data), contents.len())?;
+            memory.write(GuestPtr(data), &contents)?;
+            memory.write(GuestPtr(h), &data.to_be_bytes())?;
+            let block = self.handles.get_mut(&h).unwrap();
+            block.data = data;
+            block.size = size;
+            self.heap = Some(staged);
+            self.mem_error = 0;
+            return Ok(h);
+        }
         let h = self.new_handle(memory, contents.len() as u32, false)?;
         if h == 0 {
             self.res_error = self.mem_error;

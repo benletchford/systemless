@@ -7681,3 +7681,122 @@ integration/all-target/native/browser/CI or original music acceptance is claimed
 Next: shared allocator-backed MaxMem; do not copy the baseline free-total
 approximation as largest contiguous memory, or mistake it for completed
 compaction/purging/zones. Full rebuild and GPU text integration remain active.
+
+## MaxMem prerequisite: staged compaction (2026-10-16)
+
+New process/compaction.rs implements real relocation of unlocked handle payloads
+within fixed-allocation intervals. Master cells, pointer blocks and locked payloads
+remain fixed. All live master identities, source bytes and write ranges are
+validated before committing guest writes or staged allocator metadata. Source
+snapshots preserve overlapping moves. It returns the largest actual free extent,
+not total free bytes. No MaxMem ABI/trap is installed yet: MaxMem also requires
+purging, correct empty-handle/resource reloading and growth/error replies.
+
+Initial global first-fit planning was replaced before final validation with
+address-ordered interval sliding: global first-fit could strand a larger later
+allocation despite a valid original heap. Final tests verify actual payload
+movement, fixed/locked storage, preserved free totals, ability to allocate the
+reported largest extent, and atomic rejection of a corrupt master. Both tests
+pass in /tmp/systemless-compaction-final-tests.txt (session16209 exit0), strict
+library lint passes /tmp/systemless-compaction-lint.txt (52328 exit0). Earlier
+session81799 tests also passed but precede the final placement rule. Formatting
+and whitespace pass. No original replay, CPU ABI or complete MaxMem acceptance is
+claimed by these checks. Current work remains uncommitted after sound milestone
+57109a5e1. All current validation handles are terminal.
+
+Primary next-service semantics:
+https://leopard-adc.pepas.com/documentation/mac/Memory/Memory-122.html and
+https://dev.os9.ca/techpubs/mac/pdf/Memory/Memory_Manager.pdf.
+MaxMem compacts/purges, returns largest free block, sets grow to actual remaining
+zone growth (the current reservation is eagerly grown), and clears MemError.
+Native returns D0=size/A0=grow; PPC uses a checked grow output pointer. Both
+A01D/A11D must dispatch consistently; do not confuse A11D with a separate heap
+without primary selector evidence. Next: implement safe purging and empty-handle
+resource reload retaining master identity, then connect both ABI paths, test
+fragmentation/purge/locking/faults and replay original EV from fileplay-saved.
+The full rebuild, games and complete GPU text integration remain active.
+
+## Purging and resource reload prerequisite (2026-10-16)
+
+Compaction can now stage purging of unlocked purgeable payloads. Master cells
+and resource identities remain allocated; payload pointer/size become0. Locked
+blocks remain fixed. All masters/ranges and relocation placements are checked
+before purge or relocation is committed. Resource lookup reloads an empty owned
+handle from its source map into the same master, preserving live handle flags.
+A failed allocation leaves the handle empty and allocator unchanged so a later
+lookup can retry. Current runtime has no SetResLoad(false) mode or purge hook;
+those APIs and explicit LoadResource remain unfinished. Guest changes to a
+purgeable resource may be lost if not persisted before purge; no automatic
+writeback-on-purge is claimed. Source: Inside Macintosh resource loading reference
+https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-49.html and original
+Resource Manager description of LoadResource/purge behavior.
+
+Three focused tests pass /tmp/systemless-purge-final-tests.txt (43039 exit0),
+including same-master reload, locked protection, out-of-memory atomicity/retry and
+corrupt-master rejection before purging. All71 shared core tests pass0ignored in
+/tmp/systemless-purge-core-tests.txt (49617 exit0); strict library Clippy passes
+/tmp/systemless-purge-lint.txt (85463 exit0). Formatting/whitespace pass. Earlier
+75828 tests passed but precede the final OOM/atomicity assertions. All handles
+are terminal. Changes remain uncommitted together with staged compaction.
+
+MaxMem trap/import remains unsupported pending ABI and growth/error integration.
+In particular, verify the OS trap A0-preservation flag distinction between A01D
+and A11D against primary trap dispatch/glue evidence instead of blindly aliasing
+both register results as the baseline does. Current application reservation is
+eagerly grown, so growth output should be0; allocator free total must not replace
+largest contiguous extent. Before pushing, run resource integration regressions
+as cached-resource lookup now checks empty/corrupt masters and can reload data.
+Next: finish those ABI/error checks, resource regressions, original EV replay,
+then commit/push a reviewable MaxMem slice. Full rebuild and GPU text integration
+remain active requirements.
+
+## MaxMem ABI integration in progress (2026-10-16)
+
+Primary Trap Manager p8-13 confirms OS trap bit8: clear preserves A0, set returns
+its output. Source https://dev.os9.ca/techpubs/mac/pdf/Operating_System_Utilities/Trap_Manager.pdf.
+A01D now preserves A0 and A11D returns0 growth in the current eagerly grown owned
+application zone. Both call the same staged purge/compaction implementation.
+PPC MaxMem validates a nonnil4-byte growth output before heap mutation. Runtime
+preflights MemErr publication, clears MemErr on success and preserves ResErr.
+Native reply applies the documented TST.W condition codes while preserving X.
+Custom/modified zone bounds are rejected explicitly; system/multiple zones and
+purge/grow hooks remain unfinished. Largest result is actual allocator extent,
+not total free memory; output allocation is tested.
+
+Current tests (real both CPU adapters, both native trap flags, purge/lock/guard
+and PPC output faults) plus resource integration regressions are running in
+session54437, /tmp/systemless-maxmem-tests.txt. Tracer build session85805 writes
+/tmp/systemless-maxmem-tracer-build.txt. Strict scoped lint50632 writes
+/tmp/systemless-maxmem-lint.txt. Keep and poll these handles. Initial check65566
+failed due to a local opcode variable typo, corrected before these builds; its
+/tmp/systemless-maxmem-check.txt is not passing validation evidence. Changes
+remain uncommitted. No new original replay has yet established MaxMem behavior.
+
+Original replay15564 completed expected next-service exit1 in
+/tmp/systemless-ev-maxmem.txt. EV invokes shared MaxMem twice, continues allocations,
+picture/cleanup activity, then stops at unsupported SndPauseFilePlay selector02040008,
+PC00112CDC. This does not establish original audio or gameplay. Independent volume
+verification passes: preferences identity33->34, all metadata/fork bytes and
+companions/directories identical. Snapshot /tmp/systemless-ev-maxmem-saved.slv is
+7,239,400bytes SHA256a2ee46609579718aa78954219082c96a8f0d3f82ccfeed14c7bf1cb359cbd6d4.
+Input fileplay-saved remains unchanged. Tracer flushes remain memory-only barriers.
+Native/CPU/resource test session54437 and scoped lint50632 are still live;
+tracer build85805 completed exit0. Keep the same handles before committing.
+
+Integration session54437 completed exit0:25tests pass across current_resource3,
+max_memory2, resource_files6, resource_info4, resource_lifetime7, resource_update3;
+0ignored. Scoped strict lint50632 and tracer build85805 completed exit0. Final
+whole-core rerun88160 is live in /tmp/systemless-maxmem-core-final.txt so the
+complete unit suite also checks the final ABI/runtime code before commit.
+Earlier71core checks predate that integration and are not the final unit result.
+
+Follow-up consistency note: primary Memory Manager documentation says FreeMem
+also clears MemError. Existing free_memory.rs asserts preservation of prior
+MemError instead. That earlier query implementation/test contract needs a focused
+correction; do not infer full Memory Manager correctness from this MaxMem slice.
+
+Final core session88160 completed exit0:71passed,0ignored. Together with the25
+integration checks,96distinct tests pass against this milestone. Strict scoped
+lint, formatting, whitespace, original replay and independent volume verification
+are complete as recorded. No full integration/all-target/native/browser/CI or
+original gameplay/audio acceptance is claimed. Full rebuild remains active.

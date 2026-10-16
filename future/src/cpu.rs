@@ -377,6 +377,7 @@ pub enum Call {
     StripAddress(u32),
     MemError,
     FreeMemory,
+    MaxMemory(Option<GuestPtr>),
     ResError,
     CurResFile,
     ResourceFile(crate::process::resources::Op),

@@ -249,6 +249,7 @@ pub enum Service {
     StripAddress,
     MemError,
     FreeMemory,
+    MaxMemory,
     ResError,
     CurResFile,
     OpenSpecResource,
@@ -288,6 +289,7 @@ pub enum Reply {
     M68kFileError,
     M68kOSEvent,
     M68kD0,
+    M68kMaxMemory(bool),
     M68kByte,
     M68kError,
 }
@@ -670,6 +672,7 @@ impl Abi {
             b"GetResource" => Some(Service::GetResource),
             b"Get1Resource" => Some(Service::Get1Resource),
             b"FreeMem" => Some(Service::FreeMemory),
+            b"MaxMem" => Some(Service::MaxMemory),
             b"MemError" => Some(Service::MemError),
             b"PBOpenSync" | b"PBOpenDFSync" => Some(Service::FileIo(crate::files::Op::Open {
                 kind: crate::files::Fork::Data,
@@ -3085,6 +3088,10 @@ impl Abi {
                 Reply::M68kHandle,
             )),
             0xa01c => Ok((Call::FreeMemory, Reply::M68kD0)),
+            0xa01d | 0xa11d => Ok((
+                Call::MaxMemory(None),
+                Reply::M68kMaxMemory(opcode & 0x100 != 0),
+            )),
             0xa01f => Ok((Call::DisposePointer(c.dar[8]), Reply::M68kError)),
             0xa020 => Ok((
                 Call::SetPointerSize {
@@ -4432,6 +4439,14 @@ impl Abi {
             Service::PBControlSync => Call::DeviceControl(GuestPtr(c.gpr[3])),
             Service::StripAddress => Call::StripAddress(c.gpr[3]),
             Service::FreeMemory => Call::FreeMemory,
+            Service::MaxMemory => {
+                let grow = GuestPtr(c.gpr[3]);
+                if grow.0 == 0 {
+                    return Err(Error::Cpu("nil MaxMem growth output".into()));
+                }
+                memory.validate_write(grow, 4)?;
+                Call::MaxMemory(Some(grow))
+            }
             Service::MemError => Call::MemError,
             Service::ResError => Call::ResError,
             Service::CurResFile => Call::CurResFile,
@@ -4728,6 +4743,23 @@ impl Reply {
                     ));
                 };
                 c.set_sr((c.get_sr() & !0x1f) | bits);
+            }
+            Self::M68kMaxMemory(grow) => {
+                let Cpu::M68k(c) = cpu else {
+                    return Err(Error::Cpu("native MaxMem reply on PPC".into()));
+                };
+                c.dar[0] = value;
+                if grow {
+                    c.dar[8] = 0;
+                }
+                let flags = if value as u16 == 0 {
+                    4
+                } else if value & 0x8000 != 0 {
+                    8
+                } else {
+                    0
+                };
+                c.set_sr((c.get_sr() & !0xf) | flags);
             }
             Self::None => {}
             Self::StackByte(p) => memory.write(p, &[value as u8])?,

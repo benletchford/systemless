@@ -3273,3 +3273,26 @@ playback currently shares SndPlay buffering/lifetime behavior; file-specific
 status, pause/stop, buffering and callbacks remain unfinished. Full file-play
 compatibility and original EV audio acceptance must not be inferred from the
 resource fixture or the game advancing past a missing resource.
+
+### Owned-zone MaxMem and purged resource identities (2026-10-16)
+
+The current application zone is eagerly grown to its owned reservation. MaxMem
+stages unlocked purgeable payload release and address-ordered handle compaction
+inside fixed-allocation intervals, then returns the largest actual free extent
+with0 remaining growth. Pointer blocks, master cells and locked payloads stay
+fixed. Every live master/range and all source snapshots/placements are checked
+before publishing heap metadata or writing relocated bytes. Custom/modified zone
+bounds fail explicitly; multiple/system zones and grow/purge hooks remain open.
+
+Purging preserves master identity and flags, clears payload pointer/size and
+releases only payload storage. GetResource reloads an empty resource into that
+same handle from its source map. Failed allocation preserves empty identity for
+retry. Automatic writeback on purge and SetResLoad(false)/explicit LoadResource
+are unfinished; unpersisted edits to purgeable source data may be lost.
+
+Both CPU adapters use this same service. Native A01D preserves A0; A11D returns
+current growth0 there, with the documented TST.W condition codes. Trap Manager
+p8-13 specifies this bit8 distinction. PPC validates its nonnil4-byte grow output
+before any purge/relocation; runtime preflights MemErr publication and clears it
+on success, preserving ResErr. This is owned application-zone behavior, not an
+assertion that all Memory Manager zone/compaction/purge APIs are complete.
