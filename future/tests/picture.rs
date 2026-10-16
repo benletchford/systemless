@@ -572,3 +572,80 @@ fn packed_indexed_depths_preserve_pixel_order_and_ignore_row_padding() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn inherited_screen_bounds_in_a_basic_offscreen_port_use_only_the_checked_drawing_prefix() {
+    let mut app = app(fixture(false, true, 2));
+    let h = app
+        .runtime
+        .process
+        .get_resource(&mut app.runtime.memory, *b"PICT", 128)
+        .unwrap();
+    let pixels = GuestPtr(0x55000000);
+    app.runtime
+        .memory
+        .map(pixels, vec![0; 8], Permissions::RW)
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0x1002), &pixels.0.to_be_bytes())
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(0x1008), &[0, 0, 0, 0, 1, 0xe0, 2, 0x80])
+        .unwrap();
+    let ports = app.runtime.process.ports.unwrap();
+    ports
+        .clip_rect(&mut app.runtime.memory, Rect::new(2, 1, 6, 3))
+        .unwrap();
+    let original = app
+        .runtime
+        .memory
+        .read(GuestPtr(0x1000), 108)
+        .unwrap()
+        .to_vec();
+    assert!(
+        systemless_future::bitmap::Bitmap::read(&app.runtime.memory, GuestPtr(0x1002)).is_err()
+    );
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa8, 0xf6], Permissions::RX)
+        .unwrap();
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        app.runtime
+            .memory
+            .write(pixels, &[0x0f, 0x5a, 0x0f, 0x5a, 0x0f, 0x5a, 0x0f, 0x5a])
+            .unwrap();
+        for repeat in 0..2 {
+            if arch == Architecture::PowerPc {
+                invoke(&mut app, 4, &[h, 0x300]);
+            } else {
+                let stack = STACK_BASE + 0x8000;
+                let mut frame = 0x300u32.to_be_bytes().to_vec();
+                frame.extend(h.to_be_bytes());
+                frame.extend([0xa5; 4]);
+                app.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+                app.runtime.cpu = Cpu::new(arch, 0x50000000, stack);
+                assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+                let Cpu::M68k(c) = &app.runtime.cpu else {
+                    panic!()
+                };
+                assert_eq!(c.dar[15], stack + 8);
+            }
+            let expected = if repeat == 0 {
+                [0x0f, 0x5a, 0x3f, 0x5a, 0x03, 0x5a, 0x0f, 0x5a]
+            } else {
+                [0xa5, 0x5a, 0x0f, 0x5a, 0x0f, 0x5a, 0x0f, 0x5a]
+            };
+            assert_eq!(app.runtime.memory.read(pixels, 8).unwrap(), expected);
+            assert_eq!(
+                app.runtime.memory.read(GuestPtr(0x1000), 108).unwrap(),
+                original
+            );
+            if repeat == 0 {
+                app.runtime.memory.write(pixels, &[0xa5]).unwrap();
+            }
+        }
+    }
+}

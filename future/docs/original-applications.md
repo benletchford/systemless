@@ -3856,3 +3856,19 @@ Output /tmp/systemless-ev-pixel-base-saved.slv (7,239,400bytes), SHA256
 da98ddbeca4a66372b1e9cf2681f182801cfddf22ae027c083b543e0beede452,
 passes independent CRC/catalog/fork validation: preferences41->42 only identity
 change, metadata/fork bytes and all companions identical.
+
+
+### EV: inherited-bounds basic offscreen drawing
+
+Read-only inspection shows the application retains640x480 bitmap bounds while
+replacing base/stride with an owned750-byte image, row10, and portRect80x75.
+This is outside the strict standalone bitmap contract. A checked basic offscreen
+port-prefix compatibility path preserves standalone/screen validation and guest
+metadata. The original passes that failure and later stops decoding direct-pixel
+PICT$009A (DirectBitsRect) in a48x48 destination, PC0002F748. Next work is RGB PICT
+decoding and GPU transfer. No callback/frame/UI/audio/gameplay claim.
+/tmp/systemless-ev-offscreen.txt exits1. Saved volume
+/tmp/systemless-ev-offscreen-saved.slv (7,239,400bytes), SHA256
+10900d727e914c63915ad77956a45c10423c6673d29409ffce025a667622290b,
+passes independent CRC/catalog/fork checks: preferences42->43 only identity
+change, metadata/forks and companions identical to ev-pixel-base-saved.

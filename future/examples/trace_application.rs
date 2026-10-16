@@ -196,6 +196,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         systemless_future::quickdraw::read_rect(&app.runtime.memory, *pointer)
                     );
                 }
+                if let Some(ports) = app.runtime.process.ports {
+                    if let Ok(port) = ports.current(&app.runtime.memory) {
+                        println!(
+                            "fault current port={:08x} bytes={:02x?}",
+                            port.0,
+                            app.runtime.memory.read(port, 108)
+                        );
+                        if let Ok(handle) = app
+                            .runtime
+                            .memory
+                            .u32(systemless_future::memory::GuestPtr(port.0 + 2))
+                        {
+                            if let Ok(data) = app
+                                .runtime
+                                .memory
+                                .u32(systemless_future::memory::GuestPtr(handle))
+                            {
+                                println!("fault port possible PixMap handle={handle:08x} data={data:08x} bytes={:02x?}", app.runtime.memory.read(systemless_future::memory::GuestPtr(data), 50));
+                            }
+                        }
+                    }
+                    println!(
+                        "fault screen bitmap={:08x} bytes={:02x?}",
+                        ports.screen_bitmap.0,
+                        app.runtime.memory.read(ports.screen_bitmap, 14)
+                    );
+                }
                 if let Cpu::M68k(c) = &app.runtime.cpu {
                     println!(
                         "fault pc={:08x} d0={:08x} sp={:08x} regs={:08x?}",

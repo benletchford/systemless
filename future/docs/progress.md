@@ -8217,3 +8217,61 @@ Final original93627 and independent saved-volume verification are terminal. No
 live process handles remain. Full-suite/native/browser/CI and original-game
 frame/UI/audio/gameplay acceptance are not claimed. Full rebuild, both games and
 complete wgpu text rendering/library integration remain active.
+
+
+## Bounded basic offscreen port drawing with inherited screen bounds
+
+Read-only current-port/screen diagnostics were added to the tracer. Original EV
+inspection26972 exits1 at the known DrawPicture failure, log
+/tmp/systemless-ev-offscreen-inspect.txt. The basic port001B3FDC has base001B4060,
+rowBytes10 and inherited bitmap bounds640x480, but portRect80x75, with a preceding
+NewPtr(750). The 300-byte NewPtr is a different allocation. The strict validator
+correctly rejects the standalone descriptor's oversized bounds.
+
+Primary BitMap documentation requires bounds width/height to fit image storage:
+https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-26.html.
+Therefore this is explicitly an application compatibility case, not a newly
+claimed valid standalone bitmap format or native-System7 parity. Drawing still
+uses portRect/clip/visibility and the original base/stride coordinate origin.
+The basic port path may derive a checked prefix ending at the intersection of
+bitmap and portRect right/bottom when strict full-bitmap reading fails. It retains
+the original left/top, independently checks flags/stride/dimensions and the
+entire prefix memory span, and never rewrites guest metadata. Main-screen address
+space is excluded so indexed display validation remains strict. Color ports and
+standalone Bitmap::read/SetPortBits/CopyBits descriptor validation are unchanged.
+
+Two new core tests check strict standalone rejection versus checked port-prefix
+acceptance and reject invalid stride/flags/geometry, short storage and screen
+aliases without changing pixels. A new real-GPU fixture draws PICT through both
+CPU adapters into exactly8mapped bytes despite inherited640x480 bounds, checking
+clip, XOR cancellation, row padding, direct guest edits and untouched108-byte
+port metadata. It uses ordinary shared wgpu picture rendering and no app-specific
+address or image data. This is a prefix-based compatibility slice, not a complete
+operation-specific sparse-span memory model.
+
+Original replay1446 exits1 in /tmp/systemless-ev-offscreen.txt after passing the
+previous80x75 basic offscreen DrawPicture boundary. It continues to a later48x48
+basic offscreen destination and stops decoding PICT opcode$009A, PC0002F748.
+$009A is DirectBitsRect, documented in Imaging With QuickDraw appendixA:
+https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-461.html.
+Direct-pixel PICT decoding/rendering is the next executable graphics slice; it
+must preserve RGB rather than silently skip or reduce the image to a tiny palette.
+Callbacks remain0 and no original frame/UI/audio/gameplay acceptance is claimed.
+Independent saved-volume checks pass preferences42->43 only identity change,
+metadata/fork bytes and all companions unchanged. Output
+/tmp/systemless-ev-offscreen-saved.slv7,239,400bytes, SHA256
+10900d727e914c63915ad77956a45c10423c6673d29409ffce025a667622290b.
+Core3010 passed75tests, tracer55746 exit0; pending focused tests32373, realGPU44568
+and scoped lint55791 retain their live handles. Logs /tmp/systemless-offscreen-
+core-tests.txt, -tracer-build.txt, -tests.txt, -gpu.txt and -lint.txt respectively.
+Full rebuild and complete GPU text/library integration remain active.
+
+Final acceptance is terminal:core3010 exit0,75passed; focused32373 exit0,
+1bitmap+4color-port+6picture+8basic-port=19passed. New GPU44568 exit0,1passed,
+0ignored, both CPU adapters exercised. Total95distinct tests passed. Eleven
+other ignored GPU cases in those suites remain unverified; the new case was
+explicitly executed. Lint55791 exit0, tracer55746 exit0, sequential changed-file
+formatting and whitespace checks pass. Original replay1446 and independent
+snapshot verification are terminal. All tracked handles are closed. No full-suite,
+native/browser/CI, original frame/UI/audio or gameplay acceptance is claimed.
+Full rebuild and complete wgpu text rendering/library integration remain active.
