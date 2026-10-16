@@ -128,6 +128,32 @@ fn parse(m: &Memory, base: u32, size: usize) -> Result<std::result::Result<Resou
     }))
 }
 impl Manager {
+    pub(crate) fn begin_file_play(
+        &mut self,
+        m: &mut Memory,
+        p: &mut Process,
+        r: crate::sound::StartFilePlay,
+    ) -> Result<std::result::Result<Play, i16>> {
+        if r.channel == 0 && r.asynchronous {
+            return Ok(Err(-205));
+        }
+        if r.file != 0 || r.selection.0 != 0 || r.completion != 0 || r.buffer.0 != 0 {
+            return Err(bad("SndStartFilePlay disk/selection/completion/caller-buffer paths are not implemented"));
+        }
+        if r.buffer_size < 0 {
+            return Ok(Err(-210));
+        }
+        let errors = (p.mem_error, p.res_error);
+        let result = (|| {
+            let handle = p.get_resource(m, *b"snd ", r.resource)?;
+            if handle == 0 {
+                return Ok(Err(-192));
+            }
+            self.begin_play(m, p, r.channel, handle, r.asynchronous)
+        })();
+        (p.mem_error, p.res_error) = errors;
+        result
+    }
     pub(crate) fn begin_play(
         &mut self,
         m: &mut Memory,

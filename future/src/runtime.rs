@@ -1945,6 +1945,27 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::SoundStartFile(request) => {
+                            let mut sound = std::mem::take(&mut self.process.sound);
+                            let result =
+                                sound.begin_file_play(&mut self.memory, &mut self.process, request);
+                            self.process.sound = sound;
+                            match result? {
+                                Err(error) => reply.apply(
+                                    &mut self.cpu,
+                                    &mut self.memory,
+                                    error as i32 as u32,
+                                    error,
+                                )?,
+                                Ok(play) => {
+                                    if let Some(stop) =
+                                        self.poll_resource_play(ResourcePlayWait { play, reply })?
+                                    {
+                                        return Ok(stop);
+                                    }
+                                }
+                            }
+                        }
                         Call::SoundPlay {
                             channel,
                             handle,
@@ -2461,6 +2482,7 @@ impl Runtime {
                         | Call::SoundChannel(_)
                         | Call::SoundImmediate { .. }
                         | Call::SoundQueue { .. }
+                        | Call::SoundStartFile(_)
                         | Call::SoundPlay { .. }
                         | Call::SoundVersion
                         | Call::SoundStatus(_)

@@ -7625,3 +7625,59 @@ at metadata commit3b599c6e0; this change ran scoped decoder/test lint, not a fre
 all-target/full integration suite. Next: identify SoundDispatch0D000008 against
 primary ABI evidence, then implement the actual shared sound service and test both
 CPU adapters. Neither priority game is playable; full rebuild remains active.
+
+## Resource-backed SndStartFilePlay in progress (2026-10-16)
+
+Primary Sound Manager reference identifies selector0D000008 as SndStartFilePlay:
+https://dev.os9.ca/techpubs/mac/Sound/Sound-93.html. Actual EV stack decodes to
+asyncTRUE, completion0, selection0, callerBuffer0, bufferSize65534, resource30000,
+fileRef0, channel00113340. This requests a sound resource, not AIFF streaming.
+
+Both native26-byte Pascal request decoding and the PPC eight-argument import
+now reach one request shape. The shared sound manager resolves the resource
+through current Resource Manager search state and uses its existing FIFO/mixer
+and synchronous wait/asynchronous playback path. MemErr/ResErr are preserved.
+Nil-channel async returns badChannel; disk, selection, completion and caller-buffer
+paths remain explicit unsupported faults, not success stubs. AIFF/AIFF-C streaming,
+file-specific status/pause/stop and callbacks remain open and this is not complete
+SndStartFilePlay support. Buffering policy for resource playback needs further
+review against documented disk buffering semantics before claiming compatibility.
+
+Library check passed /tmp/systemless-fileplay-check.txt session10651 exit0.
+Real both-CPU resource playback fixture is running session84102 with output
+/tmp/systemless-fileplay-adapters.txt. Preserve this handle. No tracer replay,
+broader sound regressions or lint has yet validated this new change. Current
+work is uncommitted; previous packed-picture milestone1b14b5498 was pushed.
+
+Focused adapter session84102 completed exit0: both real CPUs submit resource30000
+through SndStartFilePlay and produce exact mixed samples [0,16384,-16384] in each
+stereo channel; native stack/result guards and shared cached errors are preserved.
+Broader six-suite sound regression job is now live session (see tool handle),
+/tmp/systemless-fileplay-sound-regressions.txt; tracer build is live with output
+/tmp/systemless-fileplay-tracer-build.txt. Poll their returned handles before replay.
+
+Follow-up validation: session78182 completed exit0; all12 resource-sound tests
+pass, including both-CPU file-play samples and missing-resource/nil-async errors,
+with exact low-memory error-word preservation. Tracer build19990 completed exit0.
+Original replay16278 completed expected unsupported-service exit1 in
+/tmp/systemless-ev-fileplay.txt, reaching trapA11D at PC00011356 after file-play
+and another DrawPicture. This is not evidence that original EV music played:
+resource-map scans find no snd30000 in the application fork or companion volume,
+and the implemented lookup returns resNotFound for that request. Synthetic
+both-CPU audio acceptance is separate from original-game sound acceptance.
+
+Independent snapshot verification passed: preferences identity32->33, identical
+metadata/forks and all companions; /tmp/systemless-ev-fileplay-saved.slv is
+7,239,400bytes SHA25677d11063a93cdc53e4b2dc4f4c5733241cca51f47c9908d69a97cca127b532c3.
+Broader regression session31755 and lint20032 remain live. No jobs were restarted.
+
+Final sound validation session31755 completed exit0: six regression suites pass
+(11resource,3volume,5channel,6info,8playback,8queue =41tests). The final resource
+suite session78182 has12tests including one additional error-state test:42distinct
+sound tests pass across these runs,0ignored. Scoped strict lint20032 completed
+exit0; sequential formatting and whitespace pass. Tracer build and original
+replay/snapshot verification are terminal as recorded above. No fresh full
+integration/all-target/native/browser/CI or original music acceptance is claimed.
+Next: shared allocator-backed MaxMem; do not copy the baseline free-total
+approximation as largest contiguous memory, or mistake it for completed
+compaction/purging/zones. Full rebuild and GPU text integration remain active.

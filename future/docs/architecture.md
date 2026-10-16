@@ -3257,3 +3257,19 @@ are excluded from image indices and referenced palette entries must be defined.
 CPU work decodes source storage; existing shared GPU palette conversion,
 clipping, scaling and transfer operations still own destination drawing. This
 adds no direct-color picture path or unsupported-opcode fallback.
+
+### Resource-backed SndStartFilePlay request (2026-10-16)
+
+Native selector0D000008 and the PPC import marshal all eight arguments into
+sound::StartFilePlay. The supported resource-backed path resolves snd resources
+through the shared Resource Manager and uses the existing command FIFO, mixer,
+completion accounting and synchronous runtime wait. It preserves caller MemErr
+and ResErr; nil-channel asynchronous calls return badChannel and missing resources
+return resNotFound. This is not a second CPU-specific sound implementation.
+
+AIFF/AIFF-C disk streaming, caller-provided input buffers, audio selections and
+file-play completion routines fail explicitly until implemented. Resource source
+playback currently shares SndPlay buffering/lifetime behavior; file-specific
+status, pause/stop, buffering and callbacks remain unfinished. Full file-play
+compatibility and original EV audio acceptance must not be inferred from the
+resource fixture or the game advancing past a missing resource.

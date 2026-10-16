@@ -11,7 +11,12 @@ const STACK: u32 = STACK_BASE + 0x8000;
 fn app() -> LoadedApplication {
     let f = support::pef_program(
         &[0x4e800020],
-        &[b"SndPlay", b"SndDoCommand", b"SndDoImmediate"],
+        &[
+            b"SndPlay",
+            b"SndDoCommand",
+            b"SndDoImmediate",
+            b"SndStartFilePlay",
+        ],
         32,
     );
     let mut a = LoadedApplication::pef(&f.bytes, None).unwrap();
@@ -519,4 +524,193 @@ fn disposal_during_resource_wait_reports_bad_channel_instead_of_targeting_a_repl
     assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
     assert_eq!(result(&a), -205);
     assert_eq!(a.runtime.process.sound.busy(ch), Some(false));
+}
+
+#[test]
+fn file_play_resource_uses_shared_mixer_through_both_cpu_adapters() {
+    use systemless_future::{
+        files::CreateSpecResource,
+        process::resources::{AddResource, Op as ResourceOp},
+    };
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        let ch = channel(&mut a, 128);
+        let spec = GuestPtr(BASE + 512);
+        let mut b = [0; 70];
+        b[..2].copy_from_slice(&(-1i16).to_be_bytes());
+        b[2..6].copy_from_slice(&2u32.to_be_bytes());
+        b[6] = 5;
+        b[7..12].copy_from_slice(b"Sound");
+        a.runtime.memory.write(spec, &b).unwrap();
+        assert_eq!(
+            a.runtime
+                .process
+                .files
+                .create_spec_resource(
+                    &a.runtime.memory,
+                    CreateSpecResource {
+                        spec,
+                        creator: *b"TEST",
+                        kind: *b"rsrc",
+                        script: 0
+                    }
+                )
+                .unwrap(),
+            0
+        );
+        assert!(
+            a.runtime
+                .process
+                .resource_file(
+                    &mut a.runtime.memory,
+                    ResourceOp::OpenSpec {
+                        spec,
+                        permission: 3
+                    }
+                )
+                .unwrap()
+                > 0
+        );
+        let h = handle(&mut a, &payload(1, &[128, 192, 64], 1));
+        a.runtime.memory.write(GuestPtr(BASE + 600), &[0]).unwrap();
+        a.runtime
+            .process
+            .add_resource(
+                &a.runtime.memory,
+                AddResource {
+                    handle: h,
+                    kind: *b"snd ",
+                    id: 30000,
+                    name: GuestPtr(BASE + 600),
+                },
+            )
+            .unwrap();
+        assert_eq!(a.runtime.process.res_error, 0);
+        a.runtime.process.mem_error = -108;
+        a.runtime.process.res_error = -192;
+        if arch == Architecture::M68k {
+            a.runtime
+                .memory
+                .map(GuestPtr(0x52000000), vec![0xa8, 0], Permissions::RX)
+                .unwrap();
+            let mut frame = vec![1, 0];
+            frame.extend([0; 12]);
+            frame.extend(65534u32.to_be_bytes());
+            frame.extend(30000i16.to_be_bytes());
+            frame.extend(0i16.to_be_bytes());
+            frame.extend(ch.to_be_bytes());
+            frame.extend([0x5a; 4]);
+            a.runtime.memory.write(GuestPtr(STACK), &frame).unwrap();
+            a.runtime.cpu = Cpu::new(arch, 0x52000000, STACK);
+            if let Cpu::M68k(c) = &mut a.runtime.cpu {
+                c.dar[0] = 0x0d000008;
+            }
+        } else {
+            let vector = a
+                .runtime
+                .memory
+                .u32(GuestPtr(a.info.toc_or_a5 + 8 + 3 * 4))
+                .unwrap();
+            let pc = a.runtime.memory.u32(GuestPtr(vector)).unwrap();
+            a.runtime.cpu = Cpu::new(arch, pc, STACK);
+            if let Cpu::PowerPc(c) = &mut a.runtime.cpu {
+                c.gpr[3] = ch;
+                c.gpr[4] = 0;
+                c.gpr[5] = 30000;
+                c.gpr[6] = 65534;
+                c.gpr[7] = 0;
+                c.gpr[8] = 0;
+                c.gpr[9] = 0;
+                c.gpr[10] = 1;
+            }
+        }
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+        match &a.runtime.cpu {
+            Cpu::M68k(c) => {
+                assert_eq!((c.dar[0], c.dar[15]), (0x0d000008, STACK + 26));
+                assert_eq!(
+                    a.runtime.memory.read(GuestPtr(STACK + 26), 4).unwrap(),
+                    [0, 0, 0x5a, 0x5a]
+                );
+            }
+            Cpu::PowerPc(c) => assert_eq!(c.gpr[3], 0),
+        }
+        assert_eq!(
+            (a.runtime.process.mem_error, a.runtime.process.res_error),
+            (-108, -192)
+        );
+        assert_eq!(
+            a.runtime.render_sound(3, 8000).unwrap(),
+            [[0; 2], [16384; 2], [-16384; 2]]
+        );
+    }
+}
+
+#[test]
+fn file_play_missing_resource_and_nil_async_channel_return_signed_errors() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        for (asynchronous, expected) in [(false, -192i16), (true, -205)] {
+            let mut a = app();
+            a.runtime.process.mem_error = -108;
+            a.runtime.process.res_error = -199;
+            a.runtime
+                .memory
+                .write(GuestPtr(0x220), &0xbeefu16.to_be_bytes())
+                .unwrap();
+            a.runtime
+                .memory
+                .write(GuestPtr(0xa60), &0xcafeu16.to_be_bytes())
+                .unwrap();
+            if arch == Architecture::M68k {
+                a.runtime
+                    .memory
+                    .map(GuestPtr(0x52000000), vec![0xa8, 0], Permissions::RX)
+                    .unwrap();
+                let mut frame = vec![0; 30];
+                frame[0] = u8::from(asynchronous);
+                frame[18..20].copy_from_slice(&30000i16.to_be_bytes());
+                frame[26..].fill(0x5a);
+                a.runtime.memory.write(GuestPtr(STACK), &frame).unwrap();
+                a.runtime.cpu = Cpu::new(arch, 0x52000000, STACK);
+                if let Cpu::M68k(c) = &mut a.runtime.cpu {
+                    c.dar[0] = 0x0d000008;
+                }
+            } else {
+                let vector = a
+                    .runtime
+                    .memory
+                    .u32(GuestPtr(a.info.toc_or_a5 + 20))
+                    .unwrap();
+                let pc = a.runtime.memory.u32(GuestPtr(vector)).unwrap();
+                a.runtime.cpu = Cpu::new(arch, pc, STACK);
+                if let Cpu::PowerPc(c) = &mut a.runtime.cpu {
+                    c.gpr[3..11].fill(0);
+                    c.gpr[5] = 30000;
+                    c.gpr[10] = u32::from(asynchronous);
+                }
+            }
+            assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+            match &a.runtime.cpu {
+                Cpu::M68k(c) => {
+                    assert_eq!(c.dar[15], STACK + 26);
+                    assert_eq!(
+                        a.runtime.memory.u16(GuestPtr(STACK + 26)).unwrap() as i16,
+                        expected
+                    );
+                    assert_eq!(
+                        a.runtime.memory.read(GuestPtr(STACK + 28), 2).unwrap(),
+                        [0x5a; 2]
+                    );
+                }
+                Cpu::PowerPc(c) => assert_eq!(c.gpr[3] as i32, i32::from(expected)),
+            }
+            assert_eq!(
+                (a.runtime.process.mem_error, a.runtime.process.res_error),
+                (-108, -199)
+            );
+            assert_eq!(a.runtime.memory.u16(GuestPtr(0x220)).unwrap(), 0xbeef);
+            assert_eq!(a.runtime.memory.u16(GuestPtr(0xa60)).unwrap(), 0xcafe);
+            assert_eq!(a.runtime.render_sound(1, 8000).unwrap(), [[0; 2]]);
+        }
+    }
 }

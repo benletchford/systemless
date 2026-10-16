@@ -59,3 +59,16 @@ pub struct Status {
     pub length: i16,
     pub destination: GuestPtr,
 }
+
+/// Complete request shape; unsupported disk/selection/completion paths fail explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartFilePlay {
+    pub channel: u32,
+    pub file: i16,
+    pub resource: i16,
+    pub buffer_size: i32,
+    pub buffer: GuestPtr,
+    pub selection: GuestPtr,
+    pub completion: u32,
+    pub asynchronous: bool,
+}

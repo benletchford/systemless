@@ -3709,3 +3709,22 @@ Input finfo-saved is unchanged. Output /tmp/systemless-ev-packed-saved.slv is
 Independent CRC/catalog/fork verification passes: preferences node31->32, same
 metadata and fork bytes, all companion entries/directories identical. Use this
 snapshot and a fresh output filename for the next replay.
+
+### EV resource file-play request (2026-10-16)
+
+Original EV's SoundDispatch0D000008 is SndStartFilePlay with fileRef0,
+resource30000, asyncTRUE, channel00113340, bufferSize65534 and nil caller buffer,
+selection and completion. The shared resource-backed service now handles this
+request shape. Resource-map scans of the supplied application and companion
+forks find no snd30000, so this replay follows the missing-resource result path;
+it does not establish original music playback. Exact synthetic samples are
+verified separately through both CPUs.
+
+/tmp/systemless-ev-fileplay.txt advances to another DrawPicture and then stops
+at unsupported trapA11D (MaxMem), PC00011356. Completed sound/timer/VBL callbacks
+remain0. No gameplay/UI/audio acceptance is claimed. Snapshot
+/tmp/systemless-ev-fileplay-saved.slv is7,239,400bytes,
+SHA25677d11063a93cdc53e4b2dc4f4c5733241cca51f47c9908d69a97cca127b532c3.
+Independent CRC/catalog/fork checks pass: preferences identity32->33, all other
+metadata, forks, companions and directories unchanged. Tracer flushes remain
+explicitly memory-only acknowledgments.

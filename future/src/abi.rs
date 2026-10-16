@@ -239,6 +239,7 @@ pub enum Service {
     SndDoImmediate,
     SndDoCommand,
     SndPlay,
+    SndStartFilePlay,
     SndSoundManagerVersion,
     SndChannelStatus,
     SndManagerStatus,
@@ -626,6 +627,7 @@ impl Abi {
             b"SndDoImmediate" => Some(Service::SndDoImmediate),
             b"SndDoCommand" => Some(Service::SndDoCommand),
             b"SndPlay" => Some(Service::SndPlay),
+            b"SndStartFilePlay" => Some(Service::SndStartFilePlay),
             b"SndSoundManagerVersion" => Some(Service::SndSoundManagerVersion),
             b"SndChannelStatus" => Some(Service::SndChannelStatus),
             b"SndManagerStatus" => Some(Service::SndManagerStatus),
@@ -1302,6 +1304,32 @@ impl Abi {
             0xa800 => {
                 let selector = c.dar[0];
                 match selector & 0x00ff_ffff {
+                    0x00000008 if selector >> 24 == 13 => {
+                        let b = memory.read(GuestPtr(sp), 26)?;
+                        let long =
+                            |at: usize| u32::from_be_bytes(b[at..at + 4].try_into().unwrap());
+                        let word =
+                            |at: usize| i16::from_be_bytes(b[at..at + 2].try_into().unwrap());
+                        let request = crate::sound::StartFilePlay {
+                            channel: long(22),
+                            file: word(20),
+                            resource: word(18),
+                            buffer_size: long(14) as i32,
+                            buffer: GuestPtr(long(10)),
+                            selection: GuestPtr(long(6)),
+                            completion: long(2),
+                            asynchronous: b[0] != 0,
+                        };
+                        let result = sp
+                            .checked_add(26)
+                            .ok_or_else(|| Error::Cpu("SndStartFilePlay stack overflow".into()))?;
+                        memory.validate_write(GuestPtr(result), 2)?;
+                        c.dar[15] = result;
+                        Ok((
+                            Call::SoundStartFile(request),
+                            Reply::StackWord(GuestPtr(result)),
+                        ))
+                    }
                     0x000c0008 if selector >> 24 == 0 => {
                         memory.validate_write(GuestPtr(sp), 4)?;
                         Ok((Call::SoundVersion, Reply::StackLong(GuestPtr(sp))))
@@ -4360,6 +4388,16 @@ impl Abi {
                 channel: None,
                 length: c.gpr[3] as i16,
                 destination: GuestPtr(c.gpr[4]),
+            }),
+            Service::SndStartFilePlay => Call::SoundStartFile(crate::sound::StartFilePlay {
+                channel: c.gpr[3],
+                file: c.gpr[4] as i16,
+                resource: c.gpr[5] as i16,
+                buffer_size: c.gpr[6] as i32,
+                buffer: GuestPtr(c.gpr[7]),
+                selection: GuestPtr(c.gpr[8]),
+                completion: c.gpr[9],
+                asynchronous: c.gpr[10] as u8 != 0,
             }),
             Service::SndPlay => Call::SoundPlay {
                 channel: c.gpr[3],

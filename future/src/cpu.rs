@@ -355,6 +355,7 @@ pub enum Call {
     },
     SoundVolume(i16),
     SoundChannel(crate::sound::Op),
+    SoundStartFile(crate::sound::StartFilePlay),
     SoundVersion,
     SoundStatus(crate::sound::Status),
     SoundPlay {
