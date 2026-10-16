@@ -27,7 +27,32 @@ pub enum Relation {
     Greater,
     Unordered,
 }
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceFormat {
+    Extended,
+    Double,
+    Single,
+    Integer,
+    Long,
+}
+impl SourceFormat {
+    pub fn bytes(self) -> usize {
+        match self {
+            Self::Extended => 10,
+            Self::Double => 8,
+            Self::Single | Self::Long => 4,
+            Self::Integer => 2,
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Binary {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+}
+#[derive(Default, Clone)]
 pub struct Numerics {
     /// Sticky mathematical exceptions, retained for future SANE environment APIs.
     pub inexact: bool,
@@ -37,6 +62,140 @@ pub struct Numerics {
     pub divide_by_zero: bool,
 }
 impl Numerics {
+    pub fn round_integral_extended(
+        &mut self,
+        memory: &mut Memory,
+        pointer: GuestPtr,
+        truncate: bool,
+    ) -> Result<()> {
+        let input = memory.read(pointer, 10)?.try_into().unwrap();
+        memory.validate_write(pointer, 10)?;
+        let result = self.round_integral(input, truncate)?;
+        memory.write(pointer, &result)
+    }
+    fn round_integral(&mut self, input: [u8; 10], truncate: bool) -> Result<[u8; 10]> {
+        let se = u16::from_be_bytes(input[..2].try_into().unwrap());
+        let e = se & 0x7fff;
+        let m = u64::from_be_bytes(input[2..].try_into().unwrap());
+        if (e != 0 && m >> 63 == 0) || (e == 0 && m >> 63 != 0) {
+            return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
+        }
+        if e == 0x7fff {
+            if m == 1 << 63 {
+                return Ok(input);
+            }
+            self.invalid |= m & (1 << 62) == 0;
+            let mut bytes = input;
+            bytes[2] |= 0x40;
+            return Ok(bytes);
+        }
+        if m == 0 {
+            return Ok(input);
+        }
+        let exponent = i32::from(e.max(1)) - 16383;
+        if exponent >= 63 {
+            return Ok(input);
+        }
+        let encode = |e: u16, m: u64| {
+            let mut bytes = [0; 10];
+            bytes[..2].copy_from_slice(&((se & 0x8000) | e).to_be_bytes());
+            bytes[2..].copy_from_slice(&m.to_be_bytes());
+            bytes
+        };
+        if exponent < 0 {
+            self.inexact = true;
+            return Ok(if !truncate && exponent == -1 && m > 1 << 63 {
+                encode(0x3fff, 1 << 63)
+            } else {
+                encode(0, 0)
+            });
+        }
+        let shift = (63 - exponent) as u32;
+        let remainder = m & ((1u64 << shift) - 1);
+        if remainder == 0 {
+            return Ok(input);
+        }
+        self.inexact = true;
+        let mut integer = u128::from(m >> shift);
+        let half = 1u64 << (shift - 1);
+        if !truncate && (remainder > half || (remainder == half && integer & 1 != 0)) {
+            integer += 1;
+        }
+        let mut significand = integer << shift;
+        let mut biased = e;
+        if significand == 1u128 << 64 {
+            significand >>= 1;
+            biased += 1;
+        }
+        Ok(encode(biased, significand as u64))
+    }
+    pub fn binary(
+        &mut self,
+        memory: &mut Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+        format: SourceFormat,
+        op: Binary,
+    ) -> Result<()> {
+        let a: [u8; 10] = memory.read(destination, 10)?.try_into().unwrap();
+        let source = memory.read(source, format.bytes())?.to_vec();
+        memory.validate_write(destination, 10)?;
+        let mut next = self.clone();
+        let b = match format {
+            SourceFormat::Extended => source.as_slice().try_into().unwrap(),
+            SourceFormat::Double => {
+                next.expand_double(u64::from_be_bytes(source.as_slice().try_into().unwrap()))
+            }
+            SourceFormat::Single => {
+                next.expand_single(u32::from_be_bytes(source.as_slice().try_into().unwrap()))
+            }
+            SourceFormat::Integer => Self::expand_integer(i32::from(i16::from_be_bytes(
+                source.as_slice().try_into().unwrap(),
+            ))),
+            SourceFormat::Long => {
+                Self::expand_integer(i32::from_be_bytes(source.as_slice().try_into().unwrap()))
+            }
+        };
+        let result = match op {
+            Binary::Add => next.add(a, b, false)?,
+            Binary::Subtract => next.add(a, b, true)?,
+            Binary::Multiply => next.multiply(a, b)?,
+            Binary::Divide => next.divide(a, b)?,
+        };
+        memory.write(destination, &result)?;
+        *self = next;
+        Ok(())
+    }
+    fn expand_single(&mut self, input: u32) -> [u8; 10] {
+        let sign = ((input >> 16) as u16) & 0x8000;
+        let exponent = (input >> 23) & 0xff;
+        let fraction = input & 0x007f_ffff;
+        let (e, m) = if exponent == 0xff {
+            if fraction == 0 {
+                (0x7fff, 1u64 << 63)
+            } else {
+                self.invalid |= fraction & (1 << 22) == 0;
+                (
+                    0x7fff,
+                    (1u64 << 63) | (1u64 << 62) | (u64::from(fraction) << 40),
+                )
+            }
+        } else if exponent != 0 {
+            (
+                (exponent + 16256) as u16,
+                (u64::from(fraction) | (1 << 23)) << 40,
+            )
+        } else if fraction == 0 {
+            (0, 0)
+        } else {
+            let top = 31 - fraction.leading_zeros();
+            ((top + 16234) as u16, u64::from(fraction) << (63 - top))
+        };
+        let mut bytes = [0; 10];
+        bytes[..2].copy_from_slice(&(sign | e).to_be_bytes());
+        bytes[2..].copy_from_slice(&m.to_be_bytes());
+        bytes
+    }
     pub fn square_root_extended(&mut self, memory: &mut Memory, pointer: GuestPtr) -> Result<()> {
         let bytes = memory.read(pointer, 10)?.try_into().unwrap();
         memory.validate_write(pointer, 10)?;
@@ -802,6 +961,42 @@ mod tests {
         b[..2].copy_from_slice(&se.to_be_bytes());
         b[2..].copy_from_slice(&m.to_be_bytes());
         b
+    }
+    #[test]
+    fn integral_rounding_uses_even_ties_and_truncation_preserves_signed_zero() {
+        let mut n = Numerics::default();
+        assert_eq!(
+            n.round_integral(value(0xbfff, 0xe000_0000_0000_0000), true)
+                .unwrap(),
+            value(0xbfff, 1 << 63)
+        );
+        assert_eq!(
+            n.round_integral(value(0xbfff, 0xe000_0000_0000_0000), false)
+                .unwrap(),
+            value(0xc000, 1 << 63)
+        );
+        assert_eq!(
+            n.round_integral(value(0xbffe, 1 << 63), false).unwrap(),
+            value(0x8000, 0)
+        );
+        assert_eq!(
+            n.round_integral(value(0x4000, 0xa000_0000_0000_0000), false)
+                .unwrap(),
+            value(0x4000, 1 << 63)
+        );
+        assert_eq!(
+            n.round_integral(value(0x4000, 0xe000_0000_0000_0000), false)
+                .unwrap(),
+            value(0x4001, 1 << 63)
+        );
+        let mut n = Numerics::default();
+        assert_eq!(
+            n.round_integral(value(0x403e, u64::MAX), true).unwrap(),
+            value(0x403e, u64::MAX)
+        );
+        assert!(!n.inexact);
+        assert_eq!(n.round_integral(value(0, 1), true).unwrap(), value(0, 0));
+        assert!(n.inexact && !n.underflow);
     }
     #[test]
     fn square_root_retains_extended_range_exactness_signed_zero_and_invalid_status() {

@@ -789,6 +789,29 @@ impl Runtime {
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::RoundIntegralExtended { pointer, truncate } => {
+                            self.process.numerics.round_integral_extended(
+                                &mut self.memory,
+                                pointer,
+                                truncate,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::NumericBinary {
+                            source,
+                            destination,
+                            format,
+                            op,
+                        } => {
+                            self.process.numerics.binary(
+                                &mut self.memory,
+                                source,
+                                destination,
+                                format,
+                                op,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::SquareRootExtended(pointer) => {
                             self.process
                                 .numerics
@@ -2252,6 +2275,8 @@ impl Runtime {
                         | Call::DoubleToExtended { .. }
                         | Call::ExtendedToDouble { .. }
                         | Call::MultiplyExtended { .. }
+                        | Call::RoundIntegralExtended { .. }
+                        | Call::NumericBinary { .. }
                         | Call::SquareRootExtended(_)
                         | Call::AddExtended { .. }
                         | Call::CompareExtended { .. }

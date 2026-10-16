@@ -12,6 +12,16 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    RoundIntegralExtended {
+        pointer: GuestPtr,
+        truncate: bool,
+    },
+    NumericBinary {
+        source: GuestPtr,
+        destination: GuestPtr,
+        format: crate::numerics::SourceFormat,
+        op: crate::numerics::Binary,
+    },
     IntegerToExtended {
         source: GuestPtr,
         destination: GuestPtr,

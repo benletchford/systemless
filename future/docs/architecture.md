@@ -2739,3 +2739,27 @@ exact, NaN payloads quiet as required, and negative finite/infinite input produc
 SANE NANSQRT code 1 with invalid status. The native adapter checks ten writable
 operand bytes before popping its six-byte selector/address frame. Alternate
 rounding/precision and noncanonical representations remain unsupported explicitly.
+
+
+### Typed SANE arithmetic sources
+
+The native FP68K adapter now decodes operation and source format separately for
+add/subtract/multiply/divide: canonical extended, binary64, binary32, signed 16-bit
+integer and signed 32-bit integer. A typed shared NumericBinary call snapshots the
+actual source extent and extended destination, expands the source exactly into
+canonical extended bytes, and invokes the existing arithmetic engines. It does not
+perform a host floating-point operation or round to the source format first.
+Source operands remain borrowed/unchanged. Status is staged and committed only
+with successful output, including signaling-NaN quieting during source expansion.
+Comp and 96-bit formats, mixed-format comparisons, alternate environment controls
+and PPC numeric imports remain explicitly unfinished. Legacy public extended-only
+entry points retain the same underlying arithmetic helpers; redundant native
+arithmetic decoding was removed.
+
+
+FRTIX/FTTIX ($0014/$0016) round the canonical extended operand to an integral
+extended value. Nearest-even is the implemented default for FRTIX; FTTIX always
+truncates toward zero. Discarded fractions set inexact without introducing
+underflow for a zero result. Signed zero, large exact integers, infinities and
+NaN quieting are explicit. Both use checked ten-byte operands and six-byte native
+frames. Alternate environment rounding remains rejected rather than ignored.

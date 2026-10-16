@@ -14,7 +14,11 @@ fn app(selector: u16, pointer: u32) -> LoadedApplication {
             GuestPtr(0x50000000),
             vec![
                 0xa9,
-                if [0, 2, 4, 6, 8, 10, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
+                if ([0, 2, 4, 6].contains(&(selector & 0xff))
+                    && [0, 0x0800, 0x1000, 0x2000, 0x2800].contains(&(selector & 0xff00)))
+                    || [0, 2, 4, 6, 8, 10, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e]
+                        .contains(&selector)
+                {
                     0xeb
                 } else {
                     0xec
@@ -618,5 +622,195 @@ fn native_extended_square_root_uses_six_byte_frame_and_preserves_registers() {
     assert_eq!(c.dar[15], STACK_BASE + 0x7006);
     for i in 0..15 {
         assert_eq!(c.dar[i], 0x12340000 + i as u32);
+    }
+}
+
+#[test]
+fn native_binary_source_formats_share_arithmetic_and_read_exact_source_extents() {
+    for (format, bytes) in [
+        (0u16, vec![0x40, 0, 0x80, 0, 0, 0, 0, 0, 0, 0]),
+        (0x0800, 2f64.to_bits().to_be_bytes().to_vec()),
+        (0x1000, 2f32.to_bits().to_be_bytes().to_vec()),
+        (0x2000, 2i16.to_be_bytes().to_vec()),
+        (0x2800, 2i32.to_be_bytes().to_vec()),
+    ] {
+        for (op, exponent, mantissa) in [
+            (0, 0x4001u16, 0xa000_0000_0000_0000u64),
+            (2, 0x3fff, 1 << 63),
+            (4, 0x4001, 0xc000_0000_0000_0000),
+            (6, 0x3fff, 0xc000_0000_0000_0000),
+        ] {
+            let source = 0x52000000u32;
+            let destination = STACK_BASE + 0x6000;
+            let mut a = app(format | op, destination);
+            a.runtime
+                .memory
+                .map(GuestPtr(source), bytes.clone(), Permissions::RX)
+                .unwrap();
+            a.runtime
+                .memory
+                .write(
+                    GuestPtr(destination),
+                    &[0x40, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0, 0xcc, 0xcc],
+                )
+                .unwrap();
+            a.runtime
+                .memory
+                .write(GuestPtr(STACK_BASE + 0x7006), &source.to_be_bytes())
+                .unwrap();
+            assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+            let mut expected = exponent.to_be_bytes().to_vec();
+            expected.extend(mantissa.to_be_bytes());
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(destination), 10).unwrap(),
+                expected
+            );
+            assert_eq!(
+                a.runtime
+                    .memory
+                    .read(GuestPtr(destination + 10), 2)
+                    .unwrap(),
+                [0xcc; 2]
+            );
+            assert_eq!(
+                a.runtime
+                    .memory
+                    .read(GuestPtr(source), bytes.len())
+                    .unwrap(),
+                bytes
+            );
+            assert!(!a.runtime.process.numerics.inexact);
+            let Cpu::M68k(c) = &a.runtime.cpu else {
+                panic!()
+            };
+            assert_eq!(c.dar[15], STACK_BASE + 0x700a);
+        }
+    }
+}
+
+#[test]
+fn mixed_subnormals_are_exact_and_failed_operations_do_not_commit_exception_state() {
+    use systemless_future::numerics::{Binary, SourceFormat};
+    for (format, source_bytes, e) in [
+        (SourceFormat::Double, 1u64.to_be_bytes().to_vec(), 0x3bcdu16),
+        (SourceFormat::Single, 1u32.to_be_bytes().to_vec(), 0x3f6a),
+    ] {
+        let source = 0x52000000;
+        let destination = STACK_BASE + 0x6000;
+        let mut a = app(0, destination);
+        a.runtime
+            .memory
+            .map(GuestPtr(source), source_bytes, Permissions::RX)
+            .unwrap();
+        a.runtime
+            .memory
+            .write(
+                GuestPtr(destination),
+                &[0x3f, 0xff, 0x80, 0, 0, 0, 0, 0, 0, 0],
+            )
+            .unwrap();
+        a.runtime
+            .process
+            .numerics
+            .binary(
+                &mut a.runtime.memory,
+                GuestPtr(source),
+                GuestPtr(destination),
+                format,
+                Binary::Multiply,
+            )
+            .unwrap();
+        assert_eq!(a.runtime.memory.u16(GuestPtr(destination)).unwrap(), e);
+        assert!(!a.runtime.process.numerics.inexact && !a.runtime.process.numerics.underflow);
+    }
+    let source = 0x52000000;
+    let destination = STACK_BASE + 0x6000;
+    let mut a = app(0, destination);
+    a.runtime
+        .memory
+        .map(
+            GuestPtr(source),
+            0x7f800001u32.to_be_bytes().to_vec(),
+            Permissions::RX,
+        )
+        .unwrap();
+    let bad = [0x3f, 0xff, 0, 0, 0, 0, 0, 0, 0, 1];
+    a.runtime.memory.write(GuestPtr(destination), &bad).unwrap();
+    assert!(a
+        .runtime
+        .process
+        .numerics
+        .binary(
+            &mut a.runtime.memory,
+            GuestPtr(source),
+            GuestPtr(destination),
+            SourceFormat::Single,
+            Binary::Multiply
+        )
+        .is_err());
+    assert!(!a.runtime.process.numerics.invalid);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(destination), 10).unwrap(),
+        bad
+    );
+
+    a.runtime
+        .memory
+        .write(
+            GuestPtr(destination),
+            &[0x3f, 0xff, 0x80, 0, 0, 0, 0, 0, 0, 0],
+        )
+        .unwrap();
+    a.runtime
+        .process
+        .numerics
+        .binary(
+            &mut a.runtime.memory,
+            GuestPtr(source),
+            GuestPtr(destination),
+            SourceFormat::Single,
+            Binary::Multiply,
+        )
+        .unwrap();
+    assert!(a.runtime.process.numerics.invalid);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(destination), 10).unwrap(),
+        [0x7f, 0xff, 0xc0, 0, 1, 0, 0, 0, 0, 0]
+    );
+}
+
+#[test]
+fn native_integral_rounding_has_real_values_flags_and_six_byte_frames() {
+    for (selector, expected) in [
+        (0x14, [0xc0, 0, 0x80, 0, 0, 0, 0, 0, 0, 0]),
+        (0x16, [0xbf, 0xff, 0x80, 0, 0, 0, 0, 0, 0, 0]),
+    ] {
+        let pointer = STACK_BASE + 0x6000;
+        let mut a = app(selector, pointer);
+        a.runtime
+            .memory
+            .map(GuestPtr(0x54000000), vec![0xa9, 0xeb], Permissions::RX)
+            .unwrap();
+        let Cpu::M68k(c) = &mut a.runtime.cpu else {
+            panic!()
+        };
+        c.pc = 0x54000000;
+        a.runtime
+            .memory
+            .write(GuestPtr(pointer), &[0xbf, 0xff, 0xe0, 0, 0, 0, 0, 0, 0, 0])
+            .unwrap();
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(pointer), 10).unwrap(),
+            expected
+        );
+        assert!(a.runtime.process.numerics.inexact);
+        let Cpu::M68k(c) = &a.runtime.cpu else {
+            panic!()
+        };
+        assert_eq!(c.dar[15], STACK_BASE + 0x7006);
+        for i in 0..15 {
+            assert_eq!(c.dar[i], 0x12340000 + i as u32);
+        }
     }
 }

@@ -5957,3 +5957,39 @@ audio remain unverified. EV was not replayed and retains its prior ProtectEntry
 boundary. Neither game is playable. Next: typed mixed-source SANE arithmetic,
 starting with binary64 multiplication through the existing shared engine, then
 continue Marathon startup. Full rebuild stays active and PR remains draft.
+
+
+## Typed arithmetic and integral rounding checkpoint (2026-10-16)
+
+Native arithmetic now decodes typed Extended/Double/Single/Integer/Long sources
+and one Add/Subtract/Multiply/Divide operation. Exact source expansion feeds the
+existing shared extended engines; redundant native arithmetic branches were
+removed. Source extents remain 10/8/4/2/4 bytes and operands are snapshotted.
+Exception changes commit only with successful output, including source NaN
+quieting. Comp/96-bit formats, mixed comparisons, alternate controls and PPC math
+imports remain unsupported explicitly. FRTIX/FTTIX now produce integral extended
+values using default nearest-even or explicit truncation, preserving signed zero
+and recording discarded fractions without spurious underflow.
+
+Final acceptance: 81 checks pass, zero failed/ignored: 51 library, nineteen numeric
+integration, seven timer and four trap patch tests. Evidence:
+/tmp/systemless-sane-formats-round-acceptance.txt, terminal exit 0. The native matrix
+runs all twenty source-format/operation combinations with readonly exact-size
+source mappings and output guards. Additional tests cover binary32/64 subnormals,
+signaling-NaN payload/status, rollback on failed operations, rounding ties,
+negative truncation, tiny-to-zero behavior and native frame/register preservation.
+Earlier format-only runs and the focused NaN replay are preliminary/overlapping,
+not added to this count. Strict Rust 1.99 all-target lint and Rust 1.93 library
+checks pass: /tmp/systemless-sane-formats-round-lint.txt and
+/tmp/systemless-sane-formats-round-msrv.txt. Sequential formatting and whitespace
+checks pass. No new full/GPU/wasm suite is claimed.
+
+Original Marathon passes FMULD, FDIVD, further arithmetic and FTTIX. It next
+requests FX2I ($A9EB/$2010), PC $0103741A, signed 16-bit destination $0080FDB8,
+extended source $0080FE06. Evidence:
+/tmp/systemless-marathon-sane-formats-round.txt, unsupported-selector exit 1.
+Completed timer=1, sound=0, VBL=0. Title/menu/gameplay and native audio remain
+unverified. EV was not replayed and retains its prior ProtectEntry boundary.
+Neither game is playable. Next: real extended-to-integer conversion with proper
+rounding/range/invalid behavior, then continue Marathon startup. Full rebuild
+stays active and PR remains draft.

@@ -1672,7 +1672,45 @@ impl Abi {
             }
             0xa9eb => {
                 let selector = memory.u16(GuestPtr(sp))?;
-                if selector == 0x12 {
+                if [0, 2, 4, 6].contains(&(selector & 0xff)) {
+                    let format = match selector & 0xff00 {
+                        0 => crate::numerics::SourceFormat::Extended,
+                        0x0800 => crate::numerics::SourceFormat::Double,
+                        0x1000 => crate::numerics::SourceFormat::Single,
+                        0x2000 => crate::numerics::SourceFormat::Integer,
+                        0x2800 => crate::numerics::SourceFormat::Long,
+                        _ => {
+                            return Err(Error::Cpu(format!(
+                                "unsupported SANE arithmetic format {selector:04x}"
+                            )))
+                        }
+                    };
+                    let args = memory.read(GuestPtr(sp), 10)?;
+                    let destination = GuestPtr(u32::from_be_bytes(args[2..6].try_into().unwrap()));
+                    let source = GuestPtr(u32::from_be_bytes(args[6..10].try_into().unwrap()));
+                    memory.read(source, format.bytes())?;
+                    memory.read(destination, 10)?;
+                    memory.validate_write(destination, 10)?;
+                    c.dar[15] = sp
+                        .checked_add(10)
+                        .ok_or_else(|| Error::Cpu("SANE binary stack overflow".into()))?;
+                    let op = match selector & 0xff {
+                        0 => crate::numerics::Binary::Add,
+                        2 => crate::numerics::Binary::Subtract,
+                        4 => crate::numerics::Binary::Multiply,
+                        _ => crate::numerics::Binary::Divide,
+                    };
+                    return Ok((
+                        Call::NumericBinary {
+                            source,
+                            destination,
+                            format,
+                            op,
+                        },
+                        Reply::None,
+                    ));
+                }
+                if [0x12, 0x14, 0x16].contains(&selector) {
                     let pointer =
                         GuestPtr(memory.u32(GuestPtr(sp.checked_add(2).ok_or_else(|| {
                             Error::Cpu("SANE square root stack overflow".into())
@@ -1682,7 +1720,17 @@ impl Abi {
                     c.dar[15] = sp
                         .checked_add(6)
                         .ok_or_else(|| Error::Cpu("SANE square root stack overflow".into()))?;
-                    return Ok((Call::SquareRootExtended(pointer), Reply::None));
+                    return Ok((
+                        if selector == 0x12 {
+                            Call::SquareRootExtended(pointer)
+                        } else {
+                            Call::RoundIntegralExtended {
+                                pointer,
+                                truncate: selector == 0x16,
+                            }
+                        },
+                        Reply::None,
+                    ));
                 }
                 if [1, 3, 0x17, 0x19].contains(&selector) {
                     let pointer =
@@ -1707,11 +1755,7 @@ impl Abi {
                 }
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let selector = u16::from_be_bytes(args[..2].try_into().unwrap());
-                if ![
-                    0, 2, 4, 6, 8, 10, 0x001c, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e,
-                ]
-                .contains(&selector)
-                {
+                if ![8, 10, 0x001c, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
                     return Err(Error::Cpu(format!(
                         "unsupported FP68K selector {selector:04x}"
                     )));
@@ -1727,7 +1771,7 @@ impl Abi {
                         _ => 10,
                     },
                 )?;
-                if [0, 2, 4, 6, 8, 10].contains(&selector) {
+                if [8, 10].contains(&selector) {
                     memory.read(destination, 10)?;
                 }
                 if ![8, 10].contains(&selector) {
@@ -1744,22 +1788,11 @@ impl Abi {
                     .checked_add(10)
                     .ok_or_else(|| Error::Cpu("FP68K stack overflow".into()))?;
                 Ok((
-                    if [0, 2].contains(&selector) {
-                        Call::AddExtended {
-                            source,
-                            destination,
-                            subtract: selector == 2,
-                        }
-                    } else if [8, 10].contains(&selector) {
+                    if [8, 10].contains(&selector) {
                         Call::CompareExtended {
                             source,
                             destination,
                             signaling: selector == 10,
-                        }
-                    } else if selector == 4 {
-                        Call::MultiplyExtended {
-                            source,
-                            destination,
                         }
                     } else if selector == 0x001c {
                         Call::ClassifyExtended {
@@ -1768,11 +1801,6 @@ impl Abi {
                         }
                     } else if selector == 0x000e {
                         Call::CopyExtended {
-                            source,
-                            destination,
-                        }
-                    } else if selector == 6 {
-                        Call::DivideExtended {
                             source,
                             destination,
                         }
