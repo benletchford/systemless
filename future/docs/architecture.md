@@ -3355,3 +3355,15 @@ behavior instead of clearing that memory. Opt-in trace_application operand and
 single-address watch diagnostics expose guest frames/bytes/environment/code
 without changing production services. Unnormalized extended operands are a
 separate remaining compatibility boundary requiring their own format evidence.
+
+
+### Pixel image ownership
+
+The process owns independent per-PixMap pins for movable pixel-image handles.
+LockPixels exposes a stable payload pointer; UnlockPixels restores the image
+handle. Compaction, purge, MoveHHi and resizing respect these pins independently
+of HLock/HPurge flags. Fixed owned NewPtr images and main-screen storage require
+no relocation pin. GetPixBaseAddr reads current ownership without acquiring a pin
+and returns nil for purged images. Both CPU adapters use these same services;
+existing wgpu operations continue using canonical guest pixels. Full GWorld
+lifecycle, pixel-state/purge APIs and external/interior image ownership remain open.

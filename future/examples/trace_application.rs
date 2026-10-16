@@ -207,6 +207,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .memory
                             .read(systemless_future::memory::GuestPtr(c.dar[15]), 64)
                     );
+                    if let Ok(argument) = app
+                        .runtime
+                        .memory
+                        .u32(systemless_future::memory::GuestPtr(c.dar[15]))
+                    {
+                        let pointer = systemless_future::memory::GuestPtr(argument);
+                        println!(
+                            "fault first argument={argument:08x} bytes={:02x?}",
+                            app.runtime.memory.read(pointer, 64)
+                        );
+                        if let Ok(data) = app.runtime.memory.u32(pointer) {
+                            println!(
+                                "fault first argument indirect={data:08x} bytes={:02x?}",
+                                app.runtime
+                                    .memory
+                                    .read(systemless_future::memory::GuestPtr(data), 64)
+                            );
+                        }
+                    }
                     println!(
                         "fault A0 memory={:02x?}",
                         app.runtime

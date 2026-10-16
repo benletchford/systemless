@@ -8135,3 +8135,85 @@ Final tracer build84814, scoped lint88285, sequential changed-file formatting,
 whitespace and original EV snapshot verification all pass. All tracked validation
 and replay handles are terminal. Full rebuild, both games, native/browser
 acceptance and complete GPU text/library integration remain active.
+
+
+## Owned pixel-image LockPixels/UnlockPixels
+
+Primary contracts (Imaging With QuickDraw, pp.6-26–6-27):
+https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-323.html and
+https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-324.html.
+LockPixels dereferences movable image storage, prevents relocation and returns
+false for purged image data; UnlockPixels recovers the handle. They operate on
+the pixel image, not merely on the PixMap allocation. Native complete selectors
+$00040001/$00040002 use $AB1D; the Boolean is one byte in the aligned caller slot.
+
+A read-only tracer diagnostic now prints the first stack argument and one indirect
+pointee on fault. EV inspection19821 exits1 without guest semantic changes:
+/tmp/systemless-ev-pixels-inspect.txt. Its owned PixMap is at001B0E34,
+master00013DB8, base001B16F8, rowBytes8050, bounds80x75, depth8, version0.
+The source trace shows NewPtr(6000), so this particular image is fixed storage,
+not a handle to dereference. No fallback address guessing was used.
+
+Process::pixels now shares LockPixels/UnlockPixels across native selectors and
+PPC imports. Owned NewPtr images and the fixed main display retain their address.
+Owned handle images acquire independent per-PixMap pins, expose the data pointer
+while locked and recover the master handle on unlock. Repeated locking is state,
+not a recursive counter; different PixMaps independently retain shared images.
+Pins protect payloads against MaxMem purge/compaction, MoveHHi and relocation
+through individual/group resize paths, without altering guest HLock/HPurge flags.
+Live locked PixMap descriptors cannot be purged, though they may be compacted.
+Disposing the descriptor releases its pin. Disposing an image during a live lock
+explicitly faults as unsupported, rather than leaving stale reusable ownership.
+Malformed, foreign, undersized, modified-master and invalid-selector cases fault.
+Purged images return false, and unlocking purged storage is harmless. These
+operations do not load GPU data, allocate guest storage or change error globals.
+
+Full GWorld construction/update/disposal, pixel-state APIs, purge policy APIs,
+arbitrary external/interior buffers and direct-color drawing remain open. The
+lock implementation does not claim those services. It reuses canonical guest
+pixels and existing wgpu drawing rather than adding a second rendering path.
+
+
+### GetPixBaseAddr completes the immediate pixel-access slice
+
+The first lock-enabled original replay32988 exits1 at the adjacent GetPixBaseAddr,
+$AB1D selector0004000F, PC0002FA4A. Its snapshot ev-pixels-saved advances only
+preferences40->41 and passes independent CRC/catalog/fork checks. The primary
+GetPixBaseAddr contract is https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-329.html:
+resolve the current image pointer, return NIL for purged data, do not implicitly
+lock. Added shared Process::pixel_base with the same descriptor/ownership checks,
+native four-byte stack result and PPC r3 result. Tests check address changes after
+compaction, unchanged handle-form baseAddr before locking, locked pointer and nil
+after purge, plus fixed NewPtr images through both CPU routes.
+
+Final original replay93627 exits1 at DrawPicture, PC0002F748, with
+Graphics(unsupported bitmap stride, flags or extent). LockPixels and
+GetPixBaseAddr both succeed for the original owned NewPtr-backed image. The next
+step is to inspect the offscreen drawing destination and bitmap validation, not
+relax validation blindly. No original frame/UI/audio/gameplay claim; callbacks0.
+Log /tmp/systemless-ev-pixel-base.txt. Independent saved-volume verification passes:
+preferences41->42 only identity change, metadata/fork bytes and companions intact.
+/tmp/systemless-ev-pixel-base-saved.slv7,239,400bytes, SHA256
+da98ddbeca4a66372b1e9cf2681f182801cfddf22ae027c083b543e0beede452.
+
+Final source validation uses /tmp/systemless-pixels-base-final-tests.txt (16743),
+/tmp/systemless-pixels-base-gpu-final.txt (88712, include-ignored real GPU),
+/tmp/systemless-pixels-core-tests.txt (40338), /tmp/systemless-pixels-base-lint.txt
+(29351, exit0) and /tmp/systemless-pixels-base-tracer-build.txt (19472, exit0).
+Earlier lock-only suites and the earlier real GPU case passed but precede the
+base-address API. Poll all remaining current handles before recording acceptance.
+The relocation fixture primes the handle master pool before creating a hole so
+its intended movement is not prevented by the fixed master pool allocation.
+Full rebuild, both original games and complete GPU text remain active.
+
+Final validation is terminal:16743 exit0,17ordinary tests across color-ports,
+CopyBits, handle-state, MaxMem and pixel locks;40338 exit0,73core+3resource-update.
+88712 exit0 verifies all6pixel cases including the real wgpu CopyBits case, with
+0ignored. Deduplicating its5ordinary pixel cases gives94distinct passing tests.
+Five preexisting ignored color-port/CopyBits GPU cases were not run and remain
+unverified; the new pixel GPU case was explicitly executed. Strict scoped lint
+29351, tracer19472, sequential changed-file formatting and git whitespace pass.
+Final original93627 and independent saved-volume verification are terminal. No
+live process handles remain. Full-suite/native/browser/CI and original-game
+frame/UI/audio/gameplay acceptance are not claimed. Full rebuild, both games and
+complete wgpu text rendering/library integration remain active.

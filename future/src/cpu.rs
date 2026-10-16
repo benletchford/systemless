@@ -153,6 +153,11 @@ pub enum Call {
     MoreMasters,
     Device(crate::devices::Op),
     Color(crate::color::Op),
+    PixelBase(u32),
+    Pixels {
+        pixmap: u32,
+        lock: bool,
+    },
     ColorPort {
         action: crate::color_ports::Action,
         port: GuestPtr,

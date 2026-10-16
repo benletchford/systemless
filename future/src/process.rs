@@ -8,6 +8,7 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 mod compaction;
+mod pixels;
 pub mod resources;
 pub const HEAP_BASE: u32 = 0x1000_0000;
 pub const HEAP_SIZE: u32 = 4 * 1024 * 1024;
@@ -52,6 +53,7 @@ pub struct Process {
     heap: Option<Heap>,
     reservation: Option<(u32, u32)>,
     handles: BTreeMap<u32, HandleBlock>,
+    pixel_locks: BTreeMap<u32, pixels::Lock>,
     free_masters: Vec<u32>,
     pooled_masters: BTreeSet<u32>,
     pointers: BTreeMap<u32, u32>,
@@ -478,7 +480,7 @@ impl Process {
             return Ok(());
         }
         let block = self.handles[&handle];
-        if block.locked {
+        if block.locked || self.pixel_pinned(handle) {
             self.mem_error = -117;
             return Ok(());
         }
@@ -540,12 +542,13 @@ impl Process {
         // The heap is one checked writable mapping. Validate it before changing
         // allocator metadata or master pointers, including the relocation case.
         memory.validate_write(GuestPtr(self.heap_base()), self.heap_capacity() as usize)?;
+        let pinned = self.pixel_pinned(handle);
         let heap = self.heap.as_mut().unwrap();
         if heap.resize_in_place(data, size) {
             self.handles.get_mut(&handle).unwrap().size = size;
             return Ok(());
         }
-        if locked {
+        if locked || pinned {
             self.mem_error = MEM_FULL;
             return Ok(());
         }
@@ -601,7 +604,7 @@ impl Process {
                 }
                 let block = handles.get_mut(&h).unwrap();
                 if !heap.resize_in_place(block.data, size) {
-                    if block.locked {
+                    if block.locked || self.pixel_pinned(h) {
                         return Ok(false);
                     }
                     let Some(data) = heap.allocate(size) else {
@@ -652,7 +655,7 @@ impl Process {
             let data = if staged.resize_in_place(block.data, size) {
                 block.data
             } else {
-                if block.locked {
+                if block.locked || self.pixel_pinned(handle) {
                     self.mem_error = MEM_FULL;
                     return Ok(());
                 }
@@ -681,7 +684,13 @@ impl Process {
             self.mem_error = if handle == 0 { NIL_HANDLE } else { MEM_BAD };
             return Ok(());
         }
+        if self.pixel_pinned(handle) {
+            return Err(Error::Graphics(
+                "disposing an image during a pixel lock is unsupported".into(),
+            ));
+        }
         self.handle_size(memory, handle)?;
+        self.pixel_locks.remove(&handle);
         let HandleBlock { data, .. } = self.handles.remove(&handle).unwrap();
         let heap = self.heap.as_mut().unwrap();
         heap.release(data);

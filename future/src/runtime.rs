@@ -1959,6 +1959,14 @@ impl Runtime {
                             self.process.resource_info(&mut self.memory, request)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::PixelBase(pixmap) => {
+                            let base = self.process.pixel_base(&self.memory, pixmap)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, base, 0)?;
+                        }
+                        Call::Pixels { pixmap, lock } => {
+                            let result = self.process.pixels(&mut self.memory, pixmap, lock)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, u32::from(result), 0)?;
+                        }
                         Call::CountResources { kind, current_only } => {
                             self.memory.validate_write(GuestPtr(0xa60), 2)?;
                             let count = self.process.count_resources(kind, current_only)?;
@@ -2550,6 +2558,8 @@ impl Runtime {
                         | Call::HandleSize(_)
                         | Call::SetHandleSize { .. }
                         | Call::ResourceInfo(_)
+                        | Call::PixelBase(_)
+                        | Call::Pixels { .. }
                         | Call::CountResources { .. }
                         | Call::GetCurrentResource { .. }
                         | Call::GetResource { .. }

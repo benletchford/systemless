@@ -3841,3 +3841,18 @@ Input ev-count-saved remains intact. Output /tmp/systemless-ev-delay-saved.slv,
 7cac08cecd3714a4d628cb3cb895ad4b594db28dfe1908ffba8ca876f9500e6e,
 passes independent CRC/catalog/fork verification: preferences39->40 is the only
 identity change, all metadata/fork bytes and companions remain identical.
+
+
+### EV: shared pixel access checkpoint
+
+A read-only fault inspection established an owned 80x75/depth8/version0 PixMap
+with a 6000-byte NewPtr pixel image. Shared LockPixels now accepts fixed owned
+images and pins movable handle images correctly; GetPixBaseAddr resolves both.
+The final original passes both calls and stops during DrawPicture, PC0002F748:
+unsupported bitmap stride, flags or extent. Inspect the destination before
+changing validators. No visible frame/UI/audio/gameplay acceptance; callbacks0.
+/tmp/systemless-ev-pixel-base.txt exits1. Input ev-pixels-saved remains intact.
+Output /tmp/systemless-ev-pixel-base-saved.slv (7,239,400bytes), SHA256
+da98ddbeca4a66372b1e9cf2681f182801cfddf22ae027c083b543e0beede452,
+passes independent CRC/catalog/fork validation: preferences41->42 only identity
+change, metadata/fork bytes and all companions identical.

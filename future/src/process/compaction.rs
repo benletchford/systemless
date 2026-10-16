@@ -28,9 +28,10 @@ impl Process {
                     "compaction found a guest-modified master pointer".into(),
                 ));
             }
-            if block.data != 0 && !block.locked {
+            if block.data != 0 && !block.locked && !self.pixel_pinned(handle) {
                 memory.validate_write(GuestPtr(handle), 4)?;
-                if purge && block.attributes & 0x40 != 0 {
+                if purge && block.attributes & 0x40 != 0 && !self.pixel_locks.contains_key(&handle)
+                {
                     purged.push((handle, block.data));
                     continue;
                 }

@@ -226,6 +226,9 @@ pub enum Service {
     CreateResFile,
     GetResource,
     Get1Resource,
+    GetPixBaseAddr,
+    LockPixels,
+    UnlockPixels,
     CountResources,
     Count1Resources,
     GetResInfo,
@@ -677,6 +680,9 @@ impl Abi {
             b"GetResInfo" => Some(Service::GetResInfo),
             b"GetResource" => Some(Service::GetResource),
             b"Get1Resource" => Some(Service::Get1Resource),
+            b"GetPixBaseAddr" => Some(Service::GetPixBaseAddr),
+            b"LockPixels" => Some(Service::LockPixels),
+            b"UnlockPixels" => Some(Service::UnlockPixels),
             b"CountResources" => Some(Service::CountResources),
             b"Count1Resources" => Some(Service::Count1Resources),
             b"FreeMem" => Some(Service::FreeMemory),
@@ -2346,6 +2352,34 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("client ABI stack overflow".into()))?;
                 c.dar[15] = next;
                 Ok((Call::Device(crate::devices::Op::Client(id)), Reply::None))
+            }
+            0xab1d if c.dar[0] == 0x0004000f => {
+                let pixmap = memory.u32(GuestPtr(sp))?;
+                let next = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("pixel address stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 4)?;
+                c.dar[15] = next;
+                Ok((Call::PixelBase(pixmap), Reply::StackLong(GuestPtr(next))))
+            }
+            0xab1d if matches!(c.dar[0], 0x00040001 | 0x00040002) => {
+                let pixmap = memory.u32(GuestPtr(sp))?;
+                let next = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("pixel lock stack overflow".into()))?;
+                let lock = c.dar[0] == 0x00040001;
+                if lock {
+                    memory.validate_write(GuestPtr(next), 1)?;
+                }
+                c.dar[15] = next;
+                Ok((
+                    Call::Pixels { pixmap, lock },
+                    if lock {
+                        Reply::StackByte(GuestPtr(next))
+                    } else {
+                        Reply::None
+                    },
+                ))
             }
             0xa03b => Ok((
                 Call::Delay {
@@ -4424,6 +4458,11 @@ impl Abi {
                 kind: GuestPtr(c.gpr[5]),
                 name: GuestPtr(c.gpr[6]),
             }),
+            Service::GetPixBaseAddr => Call::PixelBase(c.gpr[3]),
+            Service::LockPixels | Service::UnlockPixels => Call::Pixels {
+                pixmap: c.gpr[3],
+                lock: service == Service::LockPixels,
+            },
             Service::CountResources | Service::Count1Resources => Call::CountResources {
                 kind: c.gpr[3].to_be_bytes(),
                 current_only: service == Service::Count1Resources,
@@ -4768,6 +4807,7 @@ impl Abi {
                         | Service::DisposeHandle
                         | Service::FlushEvents
                         | Service::SetToolboxTrapAddress
+                        | Service::UnlockPixels
                         | Service::Delay
                         | Service::SetEventMask
                 )
