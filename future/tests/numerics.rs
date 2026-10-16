@@ -874,6 +874,7 @@ fn native_integer_storage_conversion_rounds_ties_and_checks_range() {
                 &[0xcc; 2]
             );
             assert_eq!(a.runtime.memory.read(GuestPtr(source), 10).unwrap(), input);
+            assert!(!a.runtime.process.numerics.invalid);
             let Cpu::M68k(c) = &a.runtime.cpu else {
                 panic!()
             };
@@ -886,13 +887,17 @@ fn native_integer_storage_conversion_rounds_ties_and_checks_range() {
 }
 
 #[test]
-fn exceptional_integer_conversions_preserve_output_and_status() {
+fn exceptional_integer_conversions_return_software_sane_indefinite_and_invalid() {
     for (selector, se, m) in [
         (0x2010, 0x400eu16, 1u64 << 63),
         (0x2810, 0x401e, 1 << 63),
         (0x2010, 0x7fff, 1 << 63),
         (0x2010, 0x7fff, 0xc000_0000_0000_0001),
         (0x2810, 0x7fff, 0x8000_0000_0000_0001),
+        (0x2010, 0xc00f, 1 << 63),
+        (0x2810, 0x401f, 1 << 63),
+        (0x2810, 0xd9fb, 0xb806_837a_b8b8_3a8d),
+        (0x2810, 0xffff, 1 << 63),
     ] {
         let destination = STACK_BASE + 0x6000;
         let source = STACK_BASE + 0x6100;
@@ -909,19 +914,35 @@ fn exceptional_integer_conversions_preserve_output_and_status() {
             .write(GuestPtr(destination), &[0xcc; 4])
             .unwrap();
         a.runtime.process.numerics.divide_by_zero = true;
-        assert!(a
-            .runtime
-            .advance(1)
-            .unwrap_err()
-            .to_string()
-            .contains("exceptional SANE integer"));
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+        let width = if selector == 0x2010 { 2 } else { 4 };
+        let expected = if width == 2 {
+            i16::MIN.to_be_bytes().to_vec()
+        } else {
+            i32::MIN.to_be_bytes().to_vec()
+        };
         assert_eq!(
-            a.runtime.memory.read(GuestPtr(destination), 4).unwrap(),
-            &[0xcc; 4]
+            a.runtime.memory.read(GuestPtr(destination), width).unwrap(),
+            expected
         );
+        if width == 2 {
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(destination + 2), 2).unwrap(),
+                [0xcc; 2]
+            );
+        }
         assert!(a.runtime.process.numerics.divide_by_zero);
-        assert!(!a.runtime.process.numerics.invalid);
+        assert!(a.runtime.process.numerics.invalid);
         assert!(!a.runtime.process.numerics.inexact);
+        assert!(!a.runtime.process.numerics.overflow);
+        assert_eq!(a.runtime.memory.read(GuestPtr(source), 10).unwrap(), input);
+        let Cpu::M68k(c) = &a.runtime.cpu else {
+            panic!()
+        };
+        assert_eq!(c.dar[15], STACK_BASE + 0x700a);
+        for i in 0..15 {
+            assert_eq!(c.dar[i], 0x12340000 + i as u32);
+        }
     }
 }
 
@@ -1073,6 +1094,54 @@ fn typed_comparison_nan_status_is_transactional_without_operand_changes() {
                 )
                 .is_err());
             assert!(!a.runtime.process.numerics.invalid);
+        }
+    }
+}
+
+#[test]
+fn integer_range_is_checked_after_rounding_and_invalid_preserves_sticky_state() {
+    use systemless_future::{memory::Memory, numerics::Numerics};
+    for (bits, se, m, invalid, inexact) in [
+        (16, 0x400du16, 0xffff_0000_0000_0000u64, true, false), // 32767.5 -> out of range
+        (16, 0xc00e, 0x8000_8000_0000_0000, false, true),       // -32768.5 -> even -32768
+        (16, 0xc00e, 0x8001_0000_0000_0000, true, false),       // -32769
+        (32, 0x401d, 0xffff_ffff_0000_0000, true, false),       // 2147483647.5
+    ] {
+        for sticky in [false, true] {
+            let mut memory = Memory::default();
+            memory
+                .map(GuestPtr(0x1000), vec![0x5a; 32], Permissions::RW)
+                .unwrap();
+            let mut bytes = se.to_be_bytes().to_vec();
+            bytes.extend(m.to_be_bytes());
+            memory.write(GuestPtr(0x1002), &bytes).unwrap();
+            let mut n = Numerics {
+                inexact: sticky,
+                divide_by_zero: true,
+                ..Numerics::default()
+            };
+            n.extended_to_integer(&mut memory, GuestPtr(0x1002), GuestPtr(0x1002), bits)
+                .unwrap();
+            let width = usize::from(bits / 8);
+            assert_eq!(
+                memory.read(GuestPtr(0x1002), width).unwrap(),
+                if bits == 16 {
+                    i16::MIN.to_be_bytes().to_vec()
+                } else {
+                    i32::MIN.to_be_bytes().to_vec()
+                }
+            );
+            assert_eq!(
+                (n.invalid, n.inexact, n.overflow, n.divide_by_zero),
+                (invalid, inexact || sticky, false, true)
+            );
+            assert_eq!(memory.read(GuestPtr(0x1000), 2).unwrap(), [0x5a; 2]);
+            assert_eq!(
+                memory
+                    .read(GuestPtr(0x1002 + width as u32), 10 - width)
+                    .unwrap(),
+                &bytes[width..]
+            );
         }
     }
 }

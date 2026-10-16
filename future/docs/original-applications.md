@@ -3778,3 +3778,26 @@ Independent CRC/catalog/fork checks pass against pause-saved: preferences identi
 35->36, all metadata/forks, companions and directories unchanged. Input is
 unchanged; tracer flushes remain memory-only acknowledgments. Use this snapshot
 with a fresh output filename for the next original replay.
+
+### EV software-SANE integer result and Marathon refresh (2026-10-16)
+
+/tmp/systemless-ev-integer.txt passes the previously failing ExtendedToInteger
+using the software-SANE most-negative result plus invalid status. Its source
+came from NewPtr(clearFALSE) reusing PICT8100 storage, confirmed by raw operand
+and global/allocation watches. No allocator clearing/reuse semantics were changed.
+The next stop is subtracting the next10bytes of that allocation: unsupported
+unnormal SANE operand, source001153CA, PC0001209C, expected exit1. Numeric format
+normalization remains separate work; no original frame/UI/audio/gameplay
+acceptance is established. Callback counts remain0.
+
+Snapshot /tmp/systemless-ev-integer-saved.slv is7,239,400bytes,
+SHA256cb30e2b9a0cc89a0dbd27859765ac5e1640071857aaf8b7a3e56dd06553860a3.
+Independent CRC/catalog/fork verification passes: preferences36->37, identical
+metadata/forks, companions and directories. Input size-saved is unchanged; tracer
+flushes remain memory-only acknowledgments.
+
+Fresh original Marathon1v1.2 replay /tmp/systemless-marathon-integer.txt still
+stops at TextFont family4, PC01010E86, with no current QuickDraw port. It runs
+with its declared SIZE layout and completes62timer,0sound/0VBL callbacks. Dormant
+VBL record remains0001821C. This verifies the current boundary after loader/math
+changes; it does not establish interactive play or justify inventing a port.

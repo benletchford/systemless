@@ -7904,3 +7904,101 @@ verification are terminal and complete as recorded. This is declared-SIZE loadin
 not complete Process Manager launch/accounting/native fallback acceptance. No
 original gameplay/audio, full integration/all-target/native/browser/CI acceptance
 is claimed. Full rebuild and complete GPU text integration remain active.
+
+## Original EV numeric provenance investigation (2026-10-16)
+
+No numeric behavior has been changed. New opt-in trace_application switches
+--numeric-operands and --watch-address HEX inspect FP68K frames, raw operands,
+environment, registers and preceding instruction bytes; the watch samples16bytes
+and reports only changes. They read guest state without changing production
+services or numeric results. Build3963 passed /tmp/systemless-sane-code-build.txt;
+strict example lint75291 passed /tmp/systemless-sane-code-lint.txt. Earlier
+operand/watch builds and replays are terminal. One initial watch-edit script
+failed to find the loop before writing; the subsequent successful build/replay
+is authoritative, not that aborted edit attempt.
+
+/tmp/systemless-ev-sane-code.txt (18002 exit1) confirms ordinary248 conversion,
+then finite244 minus an enormous positive extended value produces the failing
+negative magnitude. Environment1000 (sticky state) is captured. The source at
+001153C0 contains59FBB806837AB8B83A8D, which independently matches EV Titles
+PICT8100 offset7260 (resource size42366). /tmp/systemless-ev-sane-watch.txt
+(88750 exit1) observes that address initially zero; GetResource PICT8100 at
+PC001123BA writes the picture bytes there. No earlier numeric initialization of
+that location was observed. Do not implement clipped conversion merely to pass
+this failure: the source is picture storage and upstream provenance matters.
+
+Actual pre-subtraction code at PC0001205C includes MOVEA.L $008056D6,A0
+(2079008056D6), then passes that address as the source. A separate global-pointer
+watch is now running (see returned handle), /tmp/systemless-ev-sane-global-watch.txt,
+using --watch-address8056d6. Poll before further changes. Determine where that
+global pointer is initialized and what source it is meant to name. The current
+CODE image has guest-patched/runtime-loaded instruction sequences, so assuming
+CODE1 raw resource offset equals PC-10000 was not valid evidence. New preceding-
+instruction capture is actual guest memory evidence. Original frames/audio/UI
+and gameplay remain unverified; full rebuild and GPU text integration stay active.
+
+Global watch61876 completed exit1, /tmp/systemless-ev-sane-global-watch.txt.
+It resolves the provenance: guest PC00010B38 stores the result of a new93096-byte
+NewPtr(clearFALSE) at global008056D6. That valid nonrelocatable allocation starts
+at001153C0, reusing old PICT8100 bytes without clearing them. No numeric initializer
+was observed before the subtraction. Thus there is no evidence here of a moved
+invalid pointer or an allocator overwrite: the earlier picture-storage inference
+was incomplete until this allocation trace. Do not change NewPtr to clear bytes
+or suppress legitimate reuse to hide the exceptional numeric input.
+
+The next numeric milestone should implement documented MC68000 integer results
+and invalid/inexact state for finite out-of-range/NaN/Infinity inputs. Apple
+Numerics Manual partI ch3 says invalid is signaled for exceptional integer
+conversions and explicitly defers result patterns to each processor's chapter.
+Consult the MC68000-specific conversion section before selecting saturation or an
+indefinite integer encoding; modern host casts are not authoritative. Source:
+https://manuals.plus/m/1f06cc272b1e59ae58f6379edca5b7829815540f233f0679c0f5f26cb9dbcbde.
+Production numeric semantics remain unchanged this turn. Final diagnostic source
+build3963/example lint75291 passed; all replay/build/lint handles are terminal.
+Only diagnostic example and progress notes are currently uncommitted. Full goal
+remains active, including GPU text rendering and real original-game acceptance.
+
+## Software-SANE exceptional integer conversions (2026-10-16)
+
+Primary Apple Numerics Manual p22 specifies invalid for exceptional integer
+conversions; p197 distinguishes software packages' largest negative result from
+the MC68881 sign-preserving result. Source
+https://manuals.plus/m/1f06cc272b1e59ae58f6379edca5b7829815540f233f0679c0f5f26cb9dbcbde.
+The shared service now writes INT16_MIN/INT32_MIN and sets invalid for NaNs,
+Infinities and finite out-of-range values, after supported nearest-even rounding.
+Valid negative minima remain valid, despite sharing the result bit pattern.
+Invalid conversion suppresses newly generated intermediate inexact, preserves
+prior sticky inexact/other flags and does not substitute floating overflow.
+Independent IEEE reference ordering corroborates invalid-before-new-inexact:
+https://github.com/ucb-bar/berkeley-softfloat-3/blob/master/source/s_roundToI32.c.
+That reference is not claimed as native Macintosh behavior or a new dependency.
+No new PPC integer-conversion/FPU ABI route is claimed by native FP68K tests.
+
+Final regression46089 completed exit0:71core,3numeric-sign,24numeric integration
+=98distinct tests,0ignored, /tmp/systemless-sane-invalid-final-tests.txt. Cases
+include both signed widths, exact minima/maxima, NaNs/Infinities, both finite
+signs, captured EV value, nearest-even range-crossing/tie cases, sticky flags,
+read-only sources, in-place trailing bytes and native registers/stack guards.
+Initial23-test run82362 passed but precedes the extra rounding-edge fixture.
+Tracer build5502 passed /tmp/systemless-sane-invalid-tracer-build.txt; final
+scoped lint15221 is still live /tmp/systemless-sane-invalid-lint.txt. Poll it.
+
+Original EV replay65616 exits1 in /tmp/systemless-ev-integer.txt after passing
+its prior conversion. It now stops subtracting the next10bytes of the same
+non-cleared allocation: unsupported unnormal SANE operand, PC0001209C,
+source001153CA. Consult the extended-format value table before handling this;
+it is separate from integer conversion. Independent volume checks pass:
+preferences36->37, all metadata/forks and companions unchanged. Snapshot
+/tmp/systemless-ev-integer-saved.slv7,239,400bytes,
+SHA256cb30e2b9a0cc89a0dbd27859765ac5e1640071857aaf8b7a3e56dd06553860a3.
+No original frame/UI/audio/gameplay acceptance is established. Marathon was also
+launched for a fresh boundary check (session83176), output
+/tmp/systemless-marathon-integer.txt; poll that handle before documenting results.
+Full rebuild and GPU text/library integration remain active.
+
+Final scoped lint15221 completed exit0. Fresh Marathon83176 completed next-boundary
+exit1: TextFont family4/PC01010E86, no current port,62timer/0sound/0VBL callbacks,
+/tmp/systemless-marathon-integer.txt. Final98tests, scoped lint, tracer build,
+formatting/whitespace, original replays and EV volume verification are terminal.
+No fresh all-target/full integration/native/browser/CI or gameplay/audio/frame/UI
+acceptance is claimed. Full rebuild and complete GPU text rendering stay active.

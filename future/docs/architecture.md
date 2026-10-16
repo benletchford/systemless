@@ -3336,3 +3336,22 @@ Unspecified-SIZE host defaults remain the existing runtime policy, not System7's
 outside the heap/stack reservation, native absent-SIZE launch policy, user minimum
 fallback and all SIZE operating flags remain unfinished. No free-memory query is
 inflated to compensate for a loader layout; it reads actual allocator extents.
+
+### Software-SANE integer exceptional results (2026-10-16)
+
+Native FP68K extended-to-integer storage conversions now use the software-SANE
+profile described by Apple Numerics Manual pp22/197: NaN, Infinity and rounded
+out-of-range values deliver the destination's most negative integer and set
+invalid. Exact negative minima remain valid. Newly generated intermediate inexact
+is suppressed on invalid conversion while prior sticky state remains; integer
+range failure does not raise floating overflow. Source/destination preflight,
+alias snapshots, native stack/register preservation and supported nearest-even
+rounding remain shared. Alternate rounding/precision and halt handlers are still
+unfinished; this does not add native PPC integer/FPU conversion ABI support.
+
+The original EV input was traced to a valid NewPtr(clearFALSE) allocation reusing
+old PICT bytes. Allocation semantics were preserved; the fix implements numeric
+behavior instead of clearing that memory. Opt-in trace_application operand and
+single-address watch diagnostics expose guest frames/bytes/environment/code
+without changing production services. Unnormalized extended operands are a
+separate remaining compatibility boundary requiring their own format evidence.

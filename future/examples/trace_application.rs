@@ -3,11 +3,13 @@ use systemless_future::{cpu::Cpu, load::LoadedApplication, runtime::Stop};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--elapse-waits] [--save-volume NEW_IMAGE]".into());
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE]".into());
     }
     let mut graphics = false;
     let mut services_only = false;
     let mut elapse_waits = false;
+    let mut numeric_operands = false;
+    let mut watch_address = None;
     let mut volume = None;
     let mut save_volume = None;
     let mut display = None;
@@ -17,6 +19,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--graphics" if !graphics => graphics = true,
             "--services-only" if !services_only => services_only = true,
             "--elapse-waits" if !elapse_waits => elapse_waits = true,
+            "--numeric-operands" if !numeric_operands => numeric_operands = true,
+            "--watch-address" if watch_address.is_none() => {
+                index += 1;
+                let value = args.get(index).ok_or("missing watch address")?;
+                watch_address = Some(u32::from_str_radix(value.trim_start_matches("0x"), 16)?);
+            }
             "--display" if display.is_none() => {
                 index += 1;
                 display = Some(
@@ -71,7 +79,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?);
     }
     let budget: u64 = args[2].parse()?;
+    let mut watched = None;
+    let mut previous_pc = None;
     for _ in 0..budget {
+        if let Some(address) = watch_address {
+            let current = app
+                .runtime
+                .memory
+                .read(systemless_future::memory::GuestPtr(address), 16)
+                .ok()
+                .map(|bytes| bytes.to_vec());
+            if current != watched {
+                println!(
+                    "watch {address:08x} after pc={previous_pc:08x?} service={:?}: {current:02x?}",
+                    app.runtime.services.calls.last()
+                );
+                watched = current;
+            }
+        }
+        previous_pc = Some(match &app.runtime.cpu {
+            Cpu::M68k(c) => c.pc,
+            Cpu::PowerPc(c) => c.pc,
+        });
+
         if !services_only {
             match &app.runtime.cpu {
                 Cpu::M68k(c) => println!(
@@ -91,6 +121,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "{} pc={:08x} sp={:08x} toc={:08x} lr={:08x} r3={:08x}",
                     app.runtime.instructions, c.pc, c.gpr[1], c.gpr[2], c.lr, c.gpr[3]
                 ),
+            }
+        }
+        if numeric_operands {
+            if let Cpu::M68k(c) = &app.runtime.cpu {
+                use systemless_future::memory::GuestPtr;
+                if matches!(app.runtime.memory.u16(GuestPtr(c.pc)), Ok(0xa9eb)) {
+                    let sp = GuestPtr(c.dar[15]);
+                    println!(
+                        "numeric registers={:08x?} code-before={:02x?}",
+                        c.dar,
+                        app.runtime
+                            .memory
+                            .read(GuestPtr(c.pc.saturating_sub(32)), 34)
+                    );
+                    println!(
+                        "numeric before pc={:08x} sp={:08x} environment={:04x} frame={:02x?}",
+                        c.pc,
+                        sp.0,
+                        app.runtime.process.numerics.environment_word(),
+                        app.runtime.memory.read(sp, 10)
+                    );
+                    for (name, offset) in [("destination", 2), ("source", 6)] {
+                        if let Some(address) = sp.0.checked_add(offset) {
+                            if let Ok(pointer) = app.runtime.memory.u32(GuestPtr(address)) {
+                                println!(
+                                    "numeric {name} at {pointer:08x}: {:02x?}",
+                                    app.runtime.memory.read(GuestPtr(pointer), 10)
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
         let calls = app.runtime.services.calls.len();

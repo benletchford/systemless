@@ -639,8 +639,9 @@ impl Numerics {
         bytes[2..].copy_from_slice(&m.to_be_bytes());
         bytes
     }
-    /// Convert finite extended values using the supported nearest-even environment.
-    /// Exceptional integer result encodings remain explicit compatibility gaps.
+    /// Convert using nearest-even and the MC68000 software-SANE integer profile.
+    /// Apple Numerics Manual pp.22,197: invalid conversions return the most
+    /// negative destination integer, unlike sign-preserving 68881 results.
     pub fn extended_to_integer(
         &mut self,
         memory: &mut Memory,
@@ -658,27 +659,30 @@ impl Numerics {
         let se = u16::from_be_bytes(rounded[..2].try_into().unwrap());
         let m = u64::from_be_bytes(rounded[2..].try_into().unwrap());
         let exponent = i32::from(se & 0x7fff) - 16383;
-        if exponent >= i32::from(bits) {
-            return Err(Error::Cpu(
-                "unsupported exceptional SANE integer conversion".into(),
-            ));
-        }
-        let magnitude = if m == 0 {
-            0
-        } else {
-            m >> (63 - exponent) as u32
-        };
         let limit = 1u64 << (bits - 1);
         let negative = se & 0x8000 != 0;
-        if magnitude > limit || (magnitude == limit && !negative) {
-            return Err(Error::Cpu(
-                "unsupported exceptional SANE integer conversion".into(),
-            ));
-        }
-        let result = if negative {
-            -(magnitude as i64)
+        let magnitude = if m == 0 {
+            Some(0)
+        } else if exponent >= i32::from(bits) {
+            None
         } else {
-            magnitude as i64
+            m.checked_shr((63 - exponent) as u32)
+        };
+        let invalid = se & 0x7fff == 0x7fff
+            || magnitude.is_none_or(|n| n > limit || (n == limit && !negative));
+        let result = if invalid {
+            next.invalid = true;
+            // Invalid takes precedence over an intermediate rounding's inexact;
+            // already-sticky caller state remains set.
+            next.inexact = self.inexact;
+            -(limit as i64)
+        } else {
+            let magnitude = magnitude.unwrap();
+            if negative {
+                -(magnitude as i64)
+            } else {
+                magnitude as i64
+            }
         };
         let bytes = (result as i32).to_be_bytes();
         memory.write(destination, &bytes[4 - usize::from(bits / 8)..])?;
