@@ -2288,3 +2288,38 @@ replayed and retains its previously recorded ProtectEntry boundary. Neither game
 is playable. Next: shared extended sine with proper range reduction and special
 cases, then continue original Marathon startup. Full rebuild stays active and
 PR remains draft.
+
+
+## Extended trig and copy checkpoint (2026-10-16)
+
+Shared numerics now handles FSINX/FCOSX/FTANX ($A9EC selectors $18/$1A/$1C), with
+64-bit significands and high-precision argument reduction. Result signs come from
+the evaluation; signed zeros/tiny values/NaNs/infinities have explicit status and
+SANE NANTRIG code $21 handling. FX2X ($A9EB/$000E) is a checked ten-byte conversion
+that quiets signaling NaNs and retains invalid status rather than a blind copy.
+Alternate environment/rounding/precision/halt APIs, other operations and PPC math
+imports remain unfinished; no complete SANE compatibility is claimed.
+
+Final acceptance: 69 checks passed, zero failed/ignored: 48 library, ten numeric
+integration, seven timer and four trap patch tests. Evidence:
+/tmp/systemless-sane-trig-copy-acceptance.txt, terminal exit 0. Fifteen independent
+Decimal Machin/Taylor reference vectors match exactly, including 2^64, 2^1000,
+negative inputs and a one-bit input difference; generator results agree at two
+working precisions. Reproduce with tests/reference/trig_decimal.py. Tiny and
+special values, native frame/register behavior and signaling-NaN copies are tested.
+Strict Rust 1.99 all-target lint and Rust 1.93 library checks pass:
+/tmp/systemless-sane-trig-copy-lint.txt and /tmp/systemless-sane-trig-copy-msrv.txt.
+Sequential changed-file formatting and whitespace checks pass. Earlier trig-only
+runs are preliminary, not added to this count. These are mathematical reference
+checks, not proof of ROM-identical approximations; no new full/GPU/wasm run.
+
+Original Marathon passes sine, additional arithmetic and extended copy, then
+requests FP68K Classify ($A9EB selector $001C), PC $0103CE36. Stack records pointers
+$0080FD94 and $0080FD9A; confirm the classification output ABI before implementing.
+Evidence: /tmp/systemless-marathon-sane-trig-copy.txt, explicit unsupported-selector
+exit 1. Pinned SANEMacs.a identifies FOCLASS:
+/tmp/systemless-sane-sdk-001c.txt. Completed timer=1, sound=0, VBL=0. Original
+cosine/tangent execution, title/menu/gameplay and native audio remain unverified.
+EV was not replayed and retains its recorded ProtectEntry boundary. Neither game
+is playable. Next: shared number classification and its real native result ABI,
+then continue Marathon startup. Full rebuild stays active and PR remains draft.

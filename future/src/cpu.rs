@@ -29,6 +29,14 @@ pub enum Call {
         source: GuestPtr,
         destination: GuestPtr,
     },
+    CopyExtended {
+        source: GuestPtr,
+        destination: GuestPtr,
+    },
+    Elementary {
+        pointer: GuestPtr,
+        op: crate::numerics::Unary,
+    },
     AtanExtended(GuestPtr),
     MultiplyExtended {
         source: GuestPtr,

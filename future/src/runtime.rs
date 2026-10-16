@@ -789,6 +789,23 @@ impl Runtime {
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::CopyExtended {
+                            source,
+                            destination,
+                        } => {
+                            self.process.numerics.copy_extended(
+                                &mut self.memory,
+                                source,
+                                destination,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::Elementary { pointer, op } => {
+                            self.process
+                                .numerics
+                                .elementary(&mut self.memory, pointer, op)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::AtanExtended(pointer) => {
                             self.process
                                 .numerics
@@ -2186,6 +2203,8 @@ impl Runtime {
                         | Call::DoubleToExtended { .. }
                         | Call::ExtendedToDouble { .. }
                         | Call::MultiplyExtended { .. }
+                        | Call::CopyExtended { .. }
+                        | Call::Elementary { .. }
                         | Call::AtanExtended(_)
                         | Call::Timer(_)
                         | Call::FcbInfo(_) => {

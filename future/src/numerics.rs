@@ -5,6 +5,13 @@ use crate::{
     Error, Result,
 };
 use astro_float_num::{BigFloat, Consts, RoundingMode, Sign};
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unary {
+    Atan,
+    Sin,
+    Cos,
+    Tan,
+}
 #[derive(Default)]
 pub struct Numerics {
     /// Sticky mathematical exceptions, retained for future SANE environment APIs.
@@ -15,6 +22,25 @@ pub struct Numerics {
     pub divide_by_zero: bool,
 }
 impl Numerics {
+    pub fn copy_extended(
+        &mut self,
+        memory: &mut Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+    ) -> Result<()> {
+        let mut bytes: [u8; 10] = memory.read(source, 10)?.try_into().unwrap();
+        memory.validate_write(destination, 10)?;
+        let e = u16::from_be_bytes(bytes[..2].try_into().unwrap()) & 0x7fff;
+        let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
+        if (e != 0 && m >> 63 == 0) || (e == 0 && m >> 63 != 0) {
+            return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
+        }
+        if e == 0x7fff && m != 1 << 63 {
+            self.invalid |= m & (1 << 62) == 0;
+            bytes[2] |= 0x40;
+        }
+        memory.write(destination, &bytes)
+    }
     pub fn integer_to_extended(
         &mut self,
         memory: &mut Memory,
@@ -339,12 +365,15 @@ impl Numerics {
         Ok(encode(sign | biased, mantissa as u64))
     }
     pub fn atan_extended(&mut self, memory: &mut Memory, pointer: GuestPtr) -> Result<()> {
+        self.elementary(memory, pointer, Unary::Atan)
+    }
+    pub fn elementary(&mut self, memory: &mut Memory, pointer: GuestPtr, op: Unary) -> Result<()> {
         let input: [u8; 10] = memory.read(pointer, 10)?.try_into().unwrap();
         memory.validate_write(pointer, 10)?;
-        let result = self.atan(input)?;
+        let result = self.elementary_value(op, input)?;
         memory.write(pointer, &result)
     }
-    fn atan(&mut self, input: [u8; 10]) -> Result<[u8; 10]> {
+    fn elementary_value(&mut self, op: Unary, input: [u8; 10]) -> Result<[u8; 10]> {
         let se = u16::from_be_bytes(input[..2].try_into().unwrap());
         let mantissa = u64::from_be_bytes(input[2..].try_into().unwrap());
         let exponent = se & 0x7fff;
@@ -360,7 +389,14 @@ impl Numerics {
             bytes
         };
         if exponent == 0 && mantissa == 0 {
-            return Ok(input);
+            return Ok(if op == Unary::Cos {
+                let mut one = [0; 10];
+                one[..2].copy_from_slice(&0x3fffu16.to_be_bytes());
+                one[2] = 0x80;
+                one
+            } else {
+                input
+            });
         }
         if (exponent != 0 && mantissa >> 63 == 0) || (exponent == 0 && mantissa >> 63 != 0) {
             return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
@@ -370,14 +406,27 @@ impl Numerics {
                 self.invalid |= mantissa & 0x4000_0000_0000_0000 == 0;
                 return Ok(encode(exponent, mantissa | 0x4000_0000_0000_0000));
             }
+            if op != Unary::Atan {
+                self.invalid = true;
+                let mut nan = [0; 10];
+                nan[..2].copy_from_slice(&0x7fffu16.to_be_bytes());
+                nan[2..].copy_from_slice(&0xc021_0000_0000_0000u64.to_be_bytes());
+                return Ok(nan);
+            }
             self.inexact = true;
             return Ok(encode(0x3fff, 0xc90f_daa2_2168_c235));
         }
-        // atan(x) differs from x by less than half an extended ULP here.
+        // The odd functions round to x here; cos rounds to one.
         // Preserve even the smallest subnormal without narrowing its exponent.
         if exponent < 0x3fde {
             self.inexact = true;
-            self.underflow |= exponent == 0;
+            self.underflow |= exponent == 0 && op != Unary::Cos;
+            if op == Unary::Cos {
+                let mut one = [0; 10];
+                one[..2].copy_from_slice(&0x3fffu16.to_be_bytes());
+                one[2] = 0x80;
+                return Ok(one);
+            }
             return Ok(input);
         }
         #[cfg(target_pointer_width = "64")]
@@ -387,13 +436,18 @@ impl Numerics {
         let x = BigFloat::from_words(&words, sign, i32::from(exponent) - 16382);
         let mut constants =
             Consts::new().map_err(|e| Error::Cpu(format!("numeric constants: {e:?}")))?;
-        let result = x.atan(64, RoundingMode::ToEven, &mut constants);
-        let Some((words, bits, _, exp, _)) = result.as_raw_parts() else {
-            return Err(Error::Cpu("software arctangent evaluation failed".into()));
+        let result = match op {
+            Unary::Atan => x.atan(64, RoundingMode::ToEven, &mut constants),
+            Unary::Sin => x.sin(64, RoundingMode::ToEven, &mut constants),
+            Unary::Cos => x.cos(64, RoundingMode::ToEven, &mut constants),
+            Unary::Tan => x.tan(64, RoundingMode::ToEven, &mut constants),
         };
-        if bits != 64 || !(-16381..=1).contains(&exp) {
+        let Some((words, bits, result_sign, exp, _)) = result.as_raw_parts() else {
+            return Err(Error::Cpu("software elementary evaluation failed".into()));
+        };
+        if bits != 64 || !(-16381..=16384).contains(&exp) {
             return Err(Error::Cpu(
-                "unexpected software arctangent representation".into(),
+                "unexpected software elementary representation".into(),
             ));
         }
         #[cfg(target_pointer_width = "64")]
@@ -401,7 +455,11 @@ impl Numerics {
         #[cfg(target_pointer_width = "32")]
         let mantissa = u64::from(words[0]) | (u64::from(words[1]) << 32);
         self.inexact = true;
-        Ok(encode((exp + 16382) as u16, mantissa))
+        let mut bytes = [0; 10];
+        let sign = if result_sign == Sign::Neg { 0x8000 } else { 0 };
+        bytes[..2].copy_from_slice(&(sign | (exp + 16382) as u16).to_be_bytes());
+        bytes[2..].copy_from_slice(&mantissa.to_be_bytes());
+        Ok(bytes)
     }
 }
 #[cfg(test)]
@@ -412,6 +470,152 @@ mod tests {
         b[..2].copy_from_slice(&se.to_be_bytes());
         b[2..].copy_from_slice(&m.to_be_bytes());
         b
+    }
+    #[test]
+    fn trig_matches_independent_decimal_series_with_large_arguments_and_low_bits() {
+        // Generated by tests/reference/trig_decimal.py at two precisions.
+        for (op, e, m, re, rm) in [
+            (
+                Unary::Sin,
+                0x3fff,
+                0x8000000000000000,
+                0x3ffe,
+                0xd76aa47848677021,
+            ),
+            (
+                Unary::Cos,
+                0x3fff,
+                0x8000000000000000,
+                0x3ffe,
+                0x8a51407da8345c92,
+            ),
+            (
+                Unary::Tan,
+                0x3fff,
+                0x8000000000000000,
+                0x3fff,
+                0xc75922e5f71d2dc5,
+            ),
+            (
+                Unary::Sin,
+                0xc000,
+                0x8000000000000000,
+                0xbffe,
+                0xe8c7b7568da22efd,
+            ),
+            (
+                Unary::Cos,
+                0xc000,
+                0x8000000000000000,
+                0xbffd,
+                0xd51132ba9b902522,
+            ),
+            (
+                Unary::Tan,
+                0xc000,
+                0x8000000000000000,
+                0x4000,
+                0x8bd7b1704a87c1db,
+            ),
+            (
+                Unary::Sin,
+                0x403f,
+                0x8000000000000000,
+                0x3ff9,
+                0xc151a988c3c9e92f,
+            ),
+            (
+                Unary::Cos,
+                0x403f,
+                0x8000000000000000,
+                0xbffe,
+                0xffedbfd1ff1a6a7a,
+            ),
+            (
+                Unary::Tan,
+                0x403f,
+                0x8000000000000000,
+                0xbff9,
+                0xc15f72b97156463b,
+            ),
+            (
+                Unary::Sin,
+                0x43e7,
+                0x8000000000000000,
+                0xbffc,
+                0xa305c570e443726d,
+            ),
+            (
+                Unary::Cos,
+                0x43e7,
+                0x8000000000000000,
+                0x3ffe,
+                0xfcbc28b06440a8bc,
+            ),
+            (
+                Unary::Tan,
+                0x43e7,
+                0x8000000000000000,
+                0xbffc,
+                0xa520eab060465f30,
+            ),
+            (
+                Unary::Sin,
+                0x3fff,
+                0x8000000000000001,
+                0x3ffe,
+                0xd76aa47848677022,
+            ),
+            (
+                Unary::Cos,
+                0x3fff,
+                0x8000000000000001,
+                0x3ffe,
+                0x8a51407da8345c90,
+            ),
+            (
+                Unary::Tan,
+                0x3fff,
+                0x8000000000000001,
+                0x3fff,
+                0xc75922e5f71d2dc9,
+            ),
+        ] {
+            assert_eq!(
+                Numerics::default()
+                    .elementary_value(op, value(e, m))
+                    .unwrap(),
+                value(re, rm),
+                "{op:?} input {e:04x}:{m:016x}"
+            );
+        }
+    }
+    #[test]
+    fn trig_zero_tiny_infinity_and_nan_cases_retain_real_status() {
+        for op in [Unary::Sin, Unary::Cos, Unary::Tan] {
+            let mut n = Numerics::default();
+            let one = value(0x3fff, 1 << 63);
+            assert_eq!(
+                n.elementary_value(op, value(0x8000, 0)).unwrap(),
+                if op == Unary::Cos {
+                    one
+                } else {
+                    value(0x8000, 0)
+                }
+            );
+            assert!(!n.inexact);
+            assert_eq!(
+                n.elementary_value(op, value(0, 1)).unwrap(),
+                if op == Unary::Cos { one } else { value(0, 1) }
+            );
+            assert!(n.inexact);
+            assert_eq!(n.underflow, op != Unary::Cos);
+            assert_eq!(
+                n.elementary_value(op, value(0x7fff, 1 << 63)).unwrap(),
+                value(0x7fff, 0xc021_0000_0000_0000)
+            );
+            assert!(n.invalid);
+        }
     }
     #[test]
     fn signed_integer_expansion_is_exact_at_both_width_boundaries() {
@@ -611,28 +815,39 @@ mod tests {
     fn extended_arctangent_retains_low_significand_bits_and_special_values() {
         let mut n = Numerics::default();
         assert_eq!(
-            n.atan(value(0x3fff, 0x8000_0000_0000_0000)).unwrap(),
+            n.elementary_value(Unary::Atan, value(0x3fff, 0x8000_0000_0000_0000))
+                .unwrap(),
             value(0x3ffe, 0xc90f_daa2_2168_c235)
         );
         assert_eq!(
-            n.atan(value(0x3fff, 0x8000_0000_0000_0001)).unwrap(),
+            n.elementary_value(Unary::Atan, value(0x3fff, 0x8000_0000_0000_0001))
+                .unwrap(),
             value(0x3ffe, 0xc90f_daa2_2168_c236)
         );
         assert_eq!(
-            n.atan(value(0xbfff, 0x8000_0000_0000_0000)).unwrap(),
+            n.elementary_value(Unary::Atan, value(0xbfff, 0x8000_0000_0000_0000))
+                .unwrap(),
             value(0xbffe, 0xc90f_daa2_2168_c235)
         );
         for sign in [0, 0x8000] {
-            assert_eq!(n.atan(value(sign, 0)).unwrap(), value(sign, 0));
-            assert_eq!(n.atan(value(sign, 1)).unwrap(), value(sign, 1));
             assert_eq!(
-                n.atan(value(sign | 0x7fff, 0x8000_0000_0000_0000)).unwrap(),
+                n.elementary_value(Unary::Atan, value(sign, 0)).unwrap(),
+                value(sign, 0)
+            );
+            assert_eq!(
+                n.elementary_value(Unary::Atan, value(sign, 1)).unwrap(),
+                value(sign, 1)
+            );
+            assert_eq!(
+                n.elementary_value(Unary::Atan, value(sign | 0x7fff, 0x8000_0000_0000_0000))
+                    .unwrap(),
                 value(sign | 0x3fff, 0xc90f_daa2_2168_c235)
             );
         }
         assert!(n.underflow && n.inexact);
         assert_eq!(
-            n.atan(value(0x7fff, 0x8000_0000_0000_0001)).unwrap(),
+            n.elementary_value(Unary::Atan, value(0x7fff, 0x8000_0000_0000_0001))
+                .unwrap(),
             value(0x7fff, 0xc000_0000_0000_0001)
         );
         assert!(n.invalid);

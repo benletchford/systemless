@@ -1672,7 +1672,7 @@ impl Abi {
             0xa9eb => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let selector = u16::from_be_bytes(args[..2].try_into().unwrap());
-                if ![4, 6, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
+                if ![4, 6, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
                     return Err(Error::Cpu(format!(
                         "unsupported FP68K selector {selector:04x}"
                     )));
@@ -1698,6 +1698,11 @@ impl Abi {
                 Ok((
                     if selector == 4 {
                         Call::MultiplyExtended {
+                            source,
+                            destination,
+                        }
+                    } else if selector == 0x000e {
+                        Call::CopyExtended {
                             source,
                             destination,
                         }
@@ -1728,7 +1733,7 @@ impl Abi {
             }
             0xa9ec => {
                 let selector = memory.u16(GuestPtr(sp))?;
-                if selector != 0x001e {
+                if ![0x18, 0x1a, 0x1c, 0x1e].contains(&selector) {
                     return Err(Error::Cpu(format!(
                         "unsupported Elems68K selector {selector:04x}"
                     )));
@@ -1744,7 +1749,21 @@ impl Abi {
                 c.dar[15] = sp
                     .checked_add(6)
                     .ok_or_else(|| Error::Cpu("Elems68K stack overflow".into()))?;
-                Ok((Call::AtanExtended(pointer), Reply::None))
+                Ok((
+                    if selector == 0x1e {
+                        Call::AtanExtended(pointer)
+                    } else {
+                        Call::Elementary {
+                            pointer,
+                            op: match selector {
+                                0x18 => crate::numerics::Unary::Sin,
+                                0x1a => crate::numerics::Unary::Cos,
+                                _ => crate::numerics::Unary::Tan,
+                            },
+                        }
+                    },
+                    Reply::None,
+                ))
             }
             0xaa24 | 0xaa30 => {
                 let device = memory.u32(GuestPtr(sp))?;

@@ -2654,3 +2654,23 @@ Integer-to-extended format selectors $200E/$280E expand signed 16/32-bit integer
 bytes, validate ten output bytes and retain the common ten-byte frame. Public
 SANE environment/alternate rounding/precision/halt APIs, other source formats and
 PPC math imports remain unfinished. No complete SANE compatibility is advertised.
+
+
+### Extended trig and copy conversion
+
+Elems68K FSINX/FCOSX/FTANX ($0018/$001A/$001C) now share process numerics and
+astro-float's 64-bit nearest-even evaluation with FATANX. Large-argument reduction
+retains the original extended input, and result sign comes from the computation
+rather than the input (cosine and tangent can change sign). Signed zeros and tiny
+inputs have explicit handling; cosine of zero is exactly one. Infinite trig
+arguments produce SANE NANTRIG code $21 and invalid status; NaN payloads quiet as
+required. The minimum tiny-input branches retain subnormals without narrowing.
+Independent Python Decimal Machin/Taylor calculations generate checked vectors
+at two working precisions, including 2^64, 2^1000 and one-bit changes near one.
+They are mathematical references, not proof of ROM-identical approximations.
+
+FP68K FX2X ($000E) snapshots and copies ten bytes while detecting and quieting a
+signaling NaN; it is not an unchecked BlockMove alias. Actual 10-byte bounds and
+frame/register preservation are exercised through the native adapter. Public SANE
+environment/alternate modes/halt APIs, noncanonical encodings, other operations
+and PPC math imports remain unfinished; no complete SANE capability is advertised.
