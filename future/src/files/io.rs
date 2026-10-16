@@ -172,25 +172,7 @@ impl Files {
                 Ok(node) => node,
                 Err(error) => return Ok(error),
             };
-            if node == 16 {
-                return Ok(-45);
-            }
-            if node == 2
-                || node == self.default_directory()
-                || self.open.values().any(|f| f.node == node)
-                || self.directories.contains_key(&node)
-                    && (!self.children(node, false).is_empty()
-                        || self
-                            .working
-                            .values()
-                            .any(|&(directory, _)| directory == node))
-            {
-                return Ok(-47);
-            }
-            if self.files.remove(&node).is_none() {
-                self.directories.remove(&node);
-            }
-            return Ok(0);
+            return Ok(self.delete_node(node));
         }
         if let Op::Open { kind, hierarchical } = op {
             let selected = self.target(memory, pb, hierarchical)?;

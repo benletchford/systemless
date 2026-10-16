@@ -1,4 +1,5 @@
-//! FSMakeFSSpec: IM Files, Introduction to File Management, p. 1-54.
+//! Shared FSSpec construction and deletion. IM Files, pp. 1-54 and 2-120.
+//! FSpDelete: https://dev.os9.ca/techpubs/mac/Files/Files-193.html
 use super::Files;
 use crate::{
     memory::{GuestPtr, Memory},
@@ -21,6 +22,58 @@ impl MakeSpec {
     }
 }
 impl Files {
+    pub fn delete_spec(&mut self, memory: &Memory, spec: GuestPtr) -> Result<i16> {
+        if spec.0 == 0 {
+            return Err(Error::Cpu("nil deletion FSSpec".into()));
+        }
+        let bytes = memory.read(spec, 70)?;
+        let length = usize::from(bytes[6]);
+        if length > 63 {
+            return Ok(-50);
+        }
+        let name = &bytes[7..7 + length];
+        if name.is_empty() || name.len() > 31 || name.contains(&0) || name.contains(&b':') {
+            return Ok(-37);
+        }
+        let volume = i16::from_be_bytes(bytes[..2].try_into().unwrap());
+        let directory = u32::from_be_bytes(bytes[2..6].try_into().unwrap());
+        let node = if directory == 1 && name.eq_ignore_ascii_case(b"Application Volume") {
+            self.parent(volume, 2).map(|_| 2)
+        } else {
+            self.parent(volume, directory)
+                .and_then(|parent| self.path(name, parent))
+        };
+        let error = match node {
+            Ok(node) => self.delete_node(node),
+            Err(error) => error,
+        };
+        if error == 0 {
+            self.changed();
+        }
+        Ok(error)
+    }
+    pub(super) fn delete_node(&mut self, node: u32) -> i16 {
+        if node == 16 {
+            return -45;
+        }
+        if node == 2
+            || node == self.default_directory()
+            || self.open.values().any(|f| f.node == node)
+            || self.directories.contains_key(&node)
+                && (!self.children(node, false).is_empty()
+                    || self
+                        .working
+                        .values()
+                        .any(|&(directory, _)| directory == node))
+        {
+            return -47;
+        }
+        if self.files.remove(&node).is_none() {
+            self.directories.remove(&node);
+        }
+        self.resource_growth.remove(&node);
+        0
+    }
     fn spec_identity(&self, node: u32) -> (u32, Vec<u8>) {
         if node == 2 {
             (1, b"Application Volume".to_vec())
@@ -98,6 +151,55 @@ impl Files {
 mod tests {
     use super::*;
     use crate::{files::Directory, memory::Permissions};
+    #[test]
+    fn deletion_removes_both_forks_and_reservations_but_preserves_busy_objects() {
+        let mut files = Files::application(&[], None);
+        let mut memory = Memory::default();
+        memory
+            .map(GuestPtr(0x1000), vec![0; 70], Permissions::RW)
+            .unwrap();
+        let spec = GuestPtr(0x1000);
+        let mut bytes = [0; 70];
+        bytes[..2].copy_from_slice(&(-1i16).to_be_bytes());
+        bytes[2..6].copy_from_slice(&2u32.to_be_bytes());
+        bytes[6] = 4;
+        bytes[7..11].copy_from_slice(b"Test");
+        memory.write(spec, &bytes).unwrap();
+        files.create_file(b"Test", -1, 2, 0, [0; 16]).unwrap();
+        let node = files.path(b"Test", 2).unwrap();
+        files.files.get_mut(&node).unwrap().data = vec![1, 2];
+        files.files.get_mut(&node).unwrap().resource = vec![3, 4];
+        files.resource_growth.insert(node, 100);
+        let reference = files
+            .open_access(node, super::super::Fork::Resource, 3)
+            .unwrap();
+        assert_eq!(files.delete_spec(&memory, spec).unwrap(), -47);
+        assert_eq!(files.files[&node].data, [1, 2]);
+        files.open.remove(&reference);
+        assert_eq!(files.delete_spec(&memory, spec).unwrap(), 0);
+        assert!(!files.files.contains_key(&node));
+        assert!(!files.resource_growth.contains_key(&node));
+        assert_eq!(files.delete_spec(&memory, spec).unwrap(), -43);
+        assert_eq!(memory.read(spec, 70).unwrap(), bytes);
+        files.directories.insert(
+            node,
+            Directory {
+                name: b"Test".to_vec(),
+                parent: 2,
+                created: 0,
+            },
+        );
+        let wd = files.open_working_directory(-1, node, 42).unwrap();
+        assert_eq!(files.delete_spec(&memory, spec).unwrap(), -47);
+        files.close_working_directory(wd).unwrap();
+        files.create_file(b"Child", -1, node, 0, [0; 16]).unwrap();
+        assert_eq!(files.delete_spec(&memory, spec).unwrap(), -47);
+        let child = files.path(b"Child", node).unwrap();
+        assert_eq!(files.delete_node(child), 0);
+        assert_eq!(files.delete_spec(&memory, spec).unwrap(), 0);
+        assert!(files.delete_spec(&memory, GuestPtr(0)).is_err());
+        assert!(files.delete_spec(&memory, GuestPtr(0x1040)).is_err());
+    }
     #[test]
     fn canonical_paths_directory_identity_missing_leaf_hints_and_working_references_share_catalog()
     {

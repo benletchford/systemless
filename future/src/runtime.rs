@@ -2055,6 +2055,15 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::DeleteSpec(spec) => {
+                            let error = self.process.files.delete_spec(&self.memory, spec)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::MakeSpec(request) => {
                             let error = self.process.files.make_spec(&mut self.memory, request)?;
                             reply.apply(
@@ -2387,6 +2396,7 @@ impl Runtime {
                         | Call::Elementary { .. }
                         | Call::AtanExtended(_)
                         | Call::Timer(_)
+                        | Call::DeleteSpec(_)
                         | Call::MakeSpec(_)
                         | Call::ResolveAliasFile(_)
                         | Call::FcbInfo(_) => {

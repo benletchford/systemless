@@ -7114,3 +7114,51 @@ No title/menu/gameplay/audio acceptance; Marathon not replayed. Next: shared
 FSpDelete and PBFlushVol semantics, then complete the existing-preferences rewrite
 path and continue original EV startup. Full rebuild and complete wgpu text remain
 active requirements.
+
+
+## Shared FSpDelete and catalog deletion (2026-10-16)
+
+FSpDelete now resolves an input FSSpec through shared catalog state for both
+HighLevelFSDispatch selector 6 and the PPC InterfaceLib import. The native adapter
+consumes one pointer and writes the Pascal result word; PPC returns a signed
+OSErr. Neither mutates the input spec. Both use the same node deletion helper as
+PBDelete/PBHDelete, preserving existing open-file, root/default-directory,
+nonempty-directory and working-directory checks. Successful deletion removes both
+forks, catalog identity and pending resource-growth reservation, and advances the
+volume revision. Loaded application deletion remains locked (-45). Invalid names,
+volumes, parents and missing objects use existing catalog errors; nil/unmapped
+FSSpec pointers fault explicitly. This does not implement new lock/permission APIs.
+
+Primary semantics: https://dev.os9.ca/techpubs/mac/Files/Files-193.html and
+https://dev.os9.ca/techpubs/new/File_Manager/Functions/Deleting_Fil__Directories.html.
+The latter documents closed files, both forks, empty folders and WD busy errors.
+
+Validation: 60 library tests, 2 existing FSSpec adapter tests and 1 new real
+68K/PPC deletion adapter test pass (63 total; no failures/skips). New lifecycle
+coverage exercises both forks, growth reservations, busy open resource access,
+working directories, nonempty/empty folders, repeat deletion and guest-memory
+faults. Evidence: /tmp/systemless-delete-spec-tests.txt and
+/tmp/systemless-delete-adapters.txt, terminal exit 0. Remaining milestone results
+follow below. Full rebuild and complete wgpu text rendering remain active.
+
+
+Original EV saved-preferences replay now passes FSpDelete, creates a replacement
+preferences resource file, opens ref 3, attaches the existing live preferences
+handle, updates and closes it. It stops at PBFlushVol A013, PC 0001B644, with
+sound/timer/VBL callbacks zero. Evidence: /tmp/systemless-ev-delete.txt, terminal
+exit 1 (expected unsupported service), following successful tracer build in
+/tmp/systemless-delete-build.txt. The run uses 10 million instructions and
+640x480x8. Output /tmp/systemless-ev-delete-saved.slv is 7,239,400 bytes, SHA256
+5f48f2c6f79516349bc38561596539017aa1831f8041d8901ee3851ea0400dab.
+The saved input hash remains
+1e321b69965601116735786e4dbd1df07ac5cedb5a3eeb081d792ada039bb9b5.
+Independent CRC/catalog parsing confirms old prefs node 24 replaced by node 25,
+next-node 25 -> 26, empty data fork and identical 417-byte resource fork (SHA256
+9b69b19ff3501c0f35f25b25d5a6d567e4c9b798957822d18a93968ee860b057).
+Evidence: /tmp/systemless-delete-volume-verification.txt. This is a bounded
+preferences read/delete/recreate/save cycle, not completed volume flush, settings
+UI or gameplay acceptance. Strict scoped lint passes in
+/tmp/systemless-delete-lint.txt; sequential formatting and diff whitespace pass.
+No new native/browser/GPU-pixel or full-suite acceptance. Marathon/PPC originals
+not rerun. Next: PBFlushVol with explicit host checkpoint/error semantics, then
+continue EV startup. Full rebuild and complete wgpu text remain active.

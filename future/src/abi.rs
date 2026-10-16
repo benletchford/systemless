@@ -257,6 +257,7 @@ pub enum Service {
     AddResource,
     CreateSpecResource,
     MakeSpec,
+    DeleteSpec,
     ResolveAliasFile,
     FcbInfo,
     WorkingDirectory(crate::files::WorkingOp),
@@ -724,6 +725,7 @@ impl Abi {
             b"AddResource" => Some(Service::AddResource),
             b"FSpCreateResFile" => Some(Service::CreateSpecResource),
             b"FSMakeFSSpec" => Some(Service::MakeSpec),
+            b"FSpDelete" => Some(Service::DeleteSpec),
             b"ResolveAliasFile" => Some(Service::ResolveAliasFile),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
             b"PBGetCatInfoSync" => Some(Service::CatalogInfo),
@@ -1144,6 +1146,19 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("FSpCreateResFile stack overflow".into()))?;
                 c.dar[15] = next;
                 Ok((Call::CreateSpecResource(request), Reply::None))
+            }
+            0xaa52 if c.dar[0] as u16 == 6 => {
+                let spec = GuestPtr(memory.u32(GuestPtr(sp))?);
+                if spec.0 == 0 {
+                    return Err(Error::Cpu("nil deletion FSSpec".into()));
+                }
+                memory.read(spec, 70)?;
+                let next = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("FSpDelete stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 2)?;
+                c.dar[15] = next;
+                Ok((Call::DeleteSpec(spec), Reply::StackWord(GuestPtr(next))))
             }
             0xaa52 => {
                 if c.dar[0] as u16 != 1 {
@@ -4356,6 +4371,7 @@ impl Abi {
                     script: c.gpr[6] as i16,
                 })
             }
+            Service::DeleteSpec => Call::DeleteSpec(GuestPtr(c.gpr[3])),
             Service::MakeSpec => Call::MakeSpec(crate::files::MakeSpec {
                 volume: c.gpr[3] as i16,
                 directory: c.gpr[4],
