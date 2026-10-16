@@ -3436,3 +3436,39 @@ mutations outside the supported owned graph are not silently repaired. Disposal
 preflights all owned members and expected pointer/handle links before freeing any.
 Raw DisposeHandle invalidates root metadata but is not a deep destructor; proper
 callers must use DisposeCIcon. PlotCIcon rendering remains a separate open service.
+
+### Shared wgpu PlotCIcon
+
+PlotCIcon ($AA1F/PPC import) uses one service to prepare a live CIcon or a compiled
+resource and submit a masked indexed blit to the existing wgpu transfer pipeline.
+Source/mask bytes and palette metadata are decoded on the CPU before any target
+write; scaling, binary mask rejection, palette conversion, recoloring and every
+destination pixel operation run on the GPU. No CPU renderer is added.
+
+The primary [PlotCIcon reference](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-284.html)
+was retrieved directly after the web-reader cache failed. It specifies local
+coordinates, mask-one coverage, scaling from iconPMap bounds, matching source/mask
+sizes, and iconBMap selection for 1/2-bit screens unless its rowBytes is zero.
+Selection reads the current GDevice PixMap depth, falling back to the configured
+main display before a device exists; it does not confuse a packed offscreen
+format with the selected screen depth. A missing monochrome strike uses the color
+image. Differing bitmap origins are supported when their dimensions match.
+
+[Apple TN QD18](https://leopard-adc.pepas.com/technotes/qd/qd_18.html) explicitly
+states that PlotCIcon honors foreground/background colors, unlike PlotCIconHandle.
+This later contract supersedes the contrary older SpInside text for this slice;
+shared GPU CopyMask/CopyBits recoloring implements it. Native parity is unproven.
+The icon target intersects portRect, visRgn, clipRgn and destination bounds even
+for offscreen ports. Per the primary reference, PlotCIcon bypasses bottleneck
+procedures and is not recorded in pictures; its target route ignores recording
+and custom-procedure pointers without patching port state or invoking them.
+
+Live icons resolve pixels through iconData, with a scoped PixMap base override
+that never modifies the guest descriptor. Compiled resources use their inline
+mask, optional monochrome image, ColorTable and pixel image; placeholder guest
+pointers are ignored. Input is snapshotted before uploads and writes, allowing
+shared backing storage without incremental source corruption. Drawing preserves
+MemErr/ResErr and does not allocate guest objects. Nil arguments and empty
+rectangles are inert; malformed supported inputs fail before pixel writes.
+Direct-color source/destination formats, full picture recording elsewhere,
+PlotCIconHandle transforms and broader Icon Utilities remain open.

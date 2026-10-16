@@ -8585,3 +8585,75 @@ and both ABI frames, then retry EV. Marathon was not replayed this milestone;
 its last verified indexed-display stop remains TextFont/no-current-port. Neither
 priority game is playable. Full rebuild and complete wgpu text rendering remain
 active requirements.
+
+## Shared wgpu color-icon drawing (2026-10-16)
+
+Implemented native PlotCIcon ($AA1F) and the PPC procedure through one service.
+The native frame consumes handle+rectangle pointer (8bytes); PPC uses rectangle
+in r3 and handle in r4, preserving procedure registers/results. Installed readable
+GetCIcon/PlotCIcon/DisposeCIcon veneers for Trap Manager availability/address calls.
+
+The primary PlotCIcon page was fetched directly after web-reader failure:
+https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-284.html.
+It explicitly supports both live records and compiled resources, mask-one drawing,
+local-coordinate scaling and monochrome bitmap selection on 1/2-bit screens unless
+that bitmap's rowBytes is zero. Source selection now reads the current GDevice
+PixMap depth; target storage depth remains independent. Raw resource pointers are
+never followed. Live color data uses iconData rather than treating iconPMap.baseAddr
+as its owner; all input bytes/palette/mask are snapshotted before writes. Matching
+bitmap dimensions with differing origins are supported in loading and drawing.
+
+Apple TN QD18 states PlotCIcon honors foreground/background colors, contradicting
+older SpInside wording. This later contract uses the existing GPU recoloring path.
+Per the primary routine description, plotting bypasses QuickDraw bottlenecks and
+picture recording; it ignores those procedure/save pointers without changing the
+port and still intersects visRgn, clipRgn, portRect and destination bounds, including
+offscreen targets. CPU code only validates and prepares source storage. GPU
+transfers perform scaling, mask coverage, palette matching and destination writes.
+
+Final-source regression log /tmp/systemless-plotcicon-regressions.txt exits0:
+76core+7CIcon+2CopyBits+1CopyMask+2PlotCIcon CPU cases pass. Three new GPU cases pass
+explicitly on a real wgpu adapter (/tmp/systemless-plotcicon-gpu.txt,exit0): the
+396-draw matrix covers both CPU adapters, raw/live sources, packed1/2/4/8-bit
+targets, current-device1/2/8-bit source selection, mask holes, disjoint clips,
+visibility, negative/different origins, scaling and foreground/background colors.
+Eight further draws cover nil-monochrome fallback and next-draw pixel/palette edits.
+Malformed live sources fail without destination/allocation changes; empty rectangles
+and nil arguments are inert. Port state and MemErr/ResErr remain unchanged.
+Synthetic guest GDevice2-bit metadata tests source choice, not a real2-bit host
+frontend or native parity. A fresh existing CopyBits GPU regression also passes
+(/tmp/systemless-plotcicon-copybits-gpu.txt,exit0). The companion CopyMask GPU
+regression is being checked before publishing the final aggregate below.
+
+Strict scoped lint (/tmp/systemless-plotcicon-lint.txt) and exact-source tracer build
+(/tmp/systemless-plotcicon-tracer-build.txt) exit0. Rust files were formatted one at
+a time through stdin with child discovery disabled; whitespace checks pass.
+
+Original EV replay /tmp/systemless-ev-plotcicon.txt exits1 at a new unsupported
+boundary: Button ($A974), PC000330E2. Before that, it completes27PlotCIcon calls
+and continues into DrawPicture. Completed callbacks remain sound0,timer0,VBL0.
+The tracer's "latest service before fault" is DrawPicture because the unknown
+Button trap cannot be decoded into a service; do not misdiagnose this as a PICT
+failure. The next executable slice is shared current mouse-button querying and
+bounded real input/lifecycle interaction. There is no exported original screenshot,
+visible UI/audio or gameplay acceptance from this replay.
+
+Input app remains d739c1d5bd0d5c7efddc55f34bfadd8f66a25c819a00bbed9523c7c56e3f716b.
+Input volume /tmp/systemless-ev-cicon-final-saved.slv:
+b2d0862f9286b6f61aff477109cf822962995538e10889a4a9bd3057dd53ab9c.
+Fresh output /tmp/systemless-ev-plotcicon-saved.slv is7,239,400bytes,SHA256
+07c0ea3d74c3cfcc18ed79ed07ec7c4e1b05aeb5fa18fe751811f5db6eded5e1.
+Independent volume verification passes CRC/catalog/forks, preferences49->50 with
+identical metadata/fork bytes and all companions unchanged. Flushes remain
+explicitly memory-only. Marathon was not replayed in this milestone. Neither
+priority game is playable; the full rebuild and complete wgpu text rendering
+remain active requirements. Direct color, PlotCIconHandle transforms, full Icon
+Utilities, native/browser/CI/full-suite and original-gameplay acceptance stay open.
+
+Final aggregate: the existing CopyMask real-adapter regression also passes
+(/tmp/systemless-plotcicon-copymask-gpu.txt,terminal exit0). Thus93distinct scoped
+tests pass:88CPU cases from the regression log,3new PlotCIcon GPU cases and the
+2fresh existing CopyBits/CopyMask GPU cases. The default run's13ignored entries
+include these5subsequently executed cases; the other8GPU cases remain unverified.
+No full-suite, native/browser, CI, priority-game interaction/audio/persistence or
+complete text-library integration acceptance is claimed.

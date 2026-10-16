@@ -953,13 +953,35 @@ impl Ports {
         force_visibility: bool,
         recording_polygon: bool,
     ) -> Result<(crate::surface::Surface, Vec<Rect>)> {
+        self.drawing_target_impl(memory, force_visibility, recording_polygon, false)
+    }
+    /// PlotCIcon bypasses bottleneck procedures and picture/region recording.
+    pub(crate) fn icon_target(
+        &self,
+        memory: &Memory,
+    ) -> Result<(crate::surface::Surface, Vec<Rect>, u8, u8)> {
+        let (target, clips) = self.drawing_target_impl(memory, true, false, true)?;
+        let (fg, bg) = port_layout::colors(memory, self.current(memory)?, &target)?;
+        Ok((target, clips, fg, bg))
+    }
+    fn drawing_target_impl(
+        &self,
+        memory: &Memory,
+        force_visibility: bool,
+        recording_polygon: bool,
+        bypass: bool,
+    ) -> Result<(crate::surface::Surface, Vec<Rect>)> {
         let p = self.current(memory)?;
         let bytes = memory.read(p, PORT_SIZE)?;
         let word = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
-        let region_recording = crate::region_recording::active(memory, p)?;
-        if [92, 96, 100, 104].iter().any(|o| {
-            word(*o) != 0 && !(*o == 96 && region_recording) && !(*o == 100 && recording_polygon)
-        }) {
+        let region_recording = !bypass && crate::region_recording::active(memory, p)?;
+        if !bypass
+            && [92, 96, 100, 104].iter().any(|o| {
+                word(*o) != 0
+                    && !(*o == 96 && region_recording)
+                    && !(*o == 100 && recording_polygon)
+            })
+        {
             return Err(Error::Graphics(
                 "QuickDraw recording or custom procedures are unsupported".into(),
             ));

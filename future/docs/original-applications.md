@@ -3967,3 +3967,36 @@ original frame/UI/audio/gameplay acceptance remains unverified. Marathon retains
 its last verified indexed TextFont/no-current-port stop and was not replayed here.
 Neither priority game is playable. Full rebuild and complete wgpu text rendering
 remain active.
+
+## Original Escape Velocity: wgpu PlotCIcon (2026-10-16)
+
+The shared PlotCIcon service completes27original icon calls and proceeds to
+DrawPicture. Its next missing service is Button ($A974), PC000330E2; the trace
+still names DrawPicture as the latest *decoded* service because Button is not yet
+implemented. No CIcon/PICT failure is inferred from that diagnostic.
+
+Replay command (the output volume filename must be fresh):
+
+```sh
+future/target/debug/examples/trace_application code \
+  future/target/private-originals/ev/application.raw-rsrc 10000000 \
+  --graphics --display 640x480x8 \
+  --volume /tmp/systemless-ev-cicon-final-saved.slv \
+  --save-volume /tmp/systemless-ev-plotcicon-saved.slv \
+  --services-only --elapse-waits
+```
+
+Terminal exit1, log /tmp/systemless-ev-plotcicon.txt. Sound/timer/VBL callbacks all0.
+The independent volume verifier passes CRC/catalog/forks, preferences49->50 with
+identical metadata/fork bytes and companions. Output7,239,400bytes,SHA256
+07c0ea3d74c3cfcc18ed79ed07ec7c4e1b05aeb5fa18fe751811f5db6eded5e1.
+The unchanged app/input hashes and detailed GPU/CPU evidence are in progress.md.
+Fresh real-adapter tests verify both CPU adapters, compiled/live icons, packed
+indexed formats, shallow-screen fallback, masks, scaling, exact region clipping,
+recoloring, source edits and malformed-input atomicity. They do not prove native
+Macintosh pixel parity or a real2-bit host display. Original icons ran through wgpu,
+but no original screen export, interaction, audio or gameplay is accepted yet.
+Tracer flushes remain memory-only. Next: mouse-button service and bounded input
+interaction. Marathon retains its last verified indexed TextFont/no-current-port
+boundary; it was not replayed here. Neither priority game is playable. Full rebuild
+and complete wgpu text rendering remain active.

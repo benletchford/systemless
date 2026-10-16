@@ -121,6 +121,10 @@ pub enum Call {
     },
     CopyBits(crate::quickdraw::CopyBits),
     CopyMask(crate::quickdraw::CopyMask),
+    PlotCIcon {
+        handle: u32,
+        destination: GuestPtr,
+    },
     DrawPicture {
         handle: u32,
         destination: GuestPtr,

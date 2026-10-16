@@ -226,6 +226,7 @@ pub enum Service {
     CreateResFile,
     GetResource,
     Get1Resource,
+    PlotCIcon,
     GetCIcon,
     DisposeCIcon,
     GetPixPat,
@@ -684,6 +685,7 @@ impl Abi {
             b"GetResInfo" => Some(Service::GetResInfo),
             b"GetResource" => Some(Service::GetResource),
             b"Get1Resource" => Some(Service::Get1Resource),
+            b"PlotCIcon" => Some(Service::PlotCIcon),
             b"GetCIcon" => Some(Service::GetCIcon),
             b"DisposeCIcon" | b"DisposCIcon" => Some(Service::DisposeCIcon),
             b"GetPixPat" => Some(Service::GetPixPat),
@@ -2360,6 +2362,21 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("client ABI stack overflow".into()))?;
                 c.dar[15] = next;
                 Ok((Call::Device(crate::devices::Op::Client(id)), Reply::None))
+            }
+            0xaa1f => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let handle = u32::from_be_bytes(args[..4].try_into().unwrap());
+                let destination = GuestPtr(u32::from_be_bytes(args[4..].try_into().unwrap()));
+                c.dar[15] = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("PlotCIcon stack overflow".into()))?;
+                Ok((
+                    Call::PlotCIcon {
+                        handle,
+                        destination,
+                    },
+                    Reply::None,
+                ))
             }
             0xaa1e => {
                 let id = memory.u16(GuestPtr(sp))? as i16;
@@ -4504,6 +4521,10 @@ impl Abi {
                 kind: GuestPtr(c.gpr[5]),
                 name: GuestPtr(c.gpr[6]),
             }),
+            Service::PlotCIcon => Call::PlotCIcon {
+                handle: c.gpr[4],
+                destination: GuestPtr(c.gpr[3]),
+            },
             Service::GetCIcon => Call::CIcon(crate::cicon::Op::Get(c.gpr[3] as i16)),
             Service::DisposeCIcon => Call::CIcon(crate::cicon::Op::Dispose(c.gpr[3])),
             Service::GetPixPat => Call::PixPat(crate::pixpat::Op::Get(c.gpr[3] as i16)),
@@ -4819,6 +4840,7 @@ impl Abi {
                         | Service::InvertRect
                         | Service::FillRect
                         | Service::CopyBits
+                        | Service::PlotCIcon
                         | Service::DrawPicture
                         | Service::SetOrigin
                         | Service::MovePortTo

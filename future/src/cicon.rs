@@ -1,10 +1,12 @@
 //! Owned color-icon records: IM More Macintosh Toolbox, Color Icon Record;
 //! IM Imaging With QuickDraw, compiled cicn resource (figure 4-18).
+mod plot;
 use crate::{
     memory::{GuestPtr, Memory},
     process::Process,
     Error, Result,
 };
+pub use plot::plot;
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -76,7 +78,8 @@ impl Icon {
             if stride == 0
                 || stride >= 0x4000
                 || width as usize > stride * 8
-                || record[at + 6..at + 14] != record[6..14]
+                || i32::from(w(at + 12) as i16) - i32::from(w(at + 8) as i16) != width
+                || i32::from(w(at + 10) as i16) - i32::from(w(at + 6) as i16) != height
             {
                 return Err(bad());
             }

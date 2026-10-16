@@ -1580,6 +1580,27 @@ impl Runtime {
                                 ports.copy_bits(&mut self.memory, gpu, request)?;
                             }
                         }
+                        Call::PlotCIcon {
+                            handle,
+                            destination,
+                        } => {
+                            if handle != 0 && destination.0 != 0 {
+                                let ports = self.process.ports.ok_or_else(|| {
+                                    Error::Graphics("PlotCIcon requires InitGraf".into())
+                                })?;
+                                let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                    Error::Graphics("PlotCIcon requires a GPU".into())
+                                })?;
+                                crate::cicon::plot(
+                                    &mut self.memory,
+                                    &mut self.process,
+                                    ports,
+                                    gpu,
+                                    handle,
+                                    destination,
+                                )?;
+                            }
+                        }
                         Call::DrawPicture {
                             handle,
                             destination,
@@ -2545,6 +2566,7 @@ impl Runtime {
                         | Call::DrawRectangle { .. }
                         | Call::CopyMask(_)
                         | Call::CopyBits(_)
+                        | Call::PlotCIcon { .. }
                         | Call::DrawPicture { .. }
                         | Call::SetOrigin { .. }
                         | Call::MovePortTo { .. }

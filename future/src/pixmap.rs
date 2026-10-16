@@ -64,13 +64,20 @@ fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
             palette: surface.colors.map(|c| c.rgb),
         });
     }
+    indexed_source(memory, indexed(memory, address)?)
+}
+/// CIcon images are owned by iconData; iconPMap.baseAddr is not the image owner.
+pub(crate) fn icon_source(memory: &Memory, address: GuestPtr, image: GuestPtr) -> Result<Source> {
+    indexed_source(memory, indexed_with_base(memory, address, Some(image))?)
+}
+fn indexed_source(memory: &Memory, map: Indexed) -> Result<Source> {
     let Indexed {
         bitmap,
         depth,
         palette,
         defined,
         ..
-    } = indexed(memory, address)?;
+    } = map;
     let indices = crate::surface::unpack_pixels(memory, bitmap, depth)?;
     if indices.iter().any(|v| !defined[*v as usize]) {
         return Err(bad());
@@ -90,6 +97,13 @@ struct Indexed {
     matchable: [bool; 256],
 }
 fn indexed(memory: &Memory, address: GuestPtr) -> Result<Indexed> {
+    indexed_with_base(memory, address, None)
+}
+fn indexed_with_base(
+    memory: &Memory,
+    address: GuestPtr,
+    base: Option<GuestPtr>,
+) -> Result<Indexed> {
     let row = memory.u16(GuestPtr(address.0.checked_add(4).ok_or_else(bad)?))?;
     if row & 0xc000 != 0x8000 {
         return Err(bad());
@@ -110,7 +124,7 @@ fn indexed(memory: &Memory, address: GuestPtr) -> Result<Indexed> {
         return Err(bad());
     }
     let bitmap = Bitmap {
-        base: GuestPtr(long(0)),
+        base: base.unwrap_or(GuestPtr(long(0))),
         row_bytes: usize::from(row & 0x3fff),
         bounds: Rect::new(
             word(8) as i16 as i32,
