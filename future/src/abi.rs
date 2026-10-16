@@ -1672,15 +1672,23 @@ impl Abi {
             0xa9eb => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let selector = u16::from_be_bytes(args[..2].try_into().unwrap());
-                if ![4, 0x0810, 0x080e].contains(&selector) {
+                if ![4, 6, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
                     return Err(Error::Cpu(format!(
                         "unsupported FP68K selector {selector:04x}"
                     )));
                 }
                 let destination = GuestPtr(u32::from_be_bytes(args[2..6].try_into().unwrap()));
                 let source = GuestPtr(u32::from_be_bytes(args[6..10].try_into().unwrap()));
-                memory.read(source, if selector == 0x080e { 8 } else { 10 })?;
-                if selector == 4 {
+                memory.read(
+                    source,
+                    match selector {
+                        0x080e => 8,
+                        0x200e => 2,
+                        0x280e => 4,
+                        _ => 10,
+                    },
+                )?;
+                if [4, 6].contains(&selector) {
                     memory.read(destination, 10)?;
                 }
                 memory.validate_write(destination, if selector == 0x0810 { 8 } else { 10 })?;
@@ -1692,6 +1700,17 @@ impl Abi {
                         Call::MultiplyExtended {
                             source,
                             destination,
+                        }
+                    } else if selector == 6 {
+                        Call::DivideExtended {
+                            source,
+                            destination,
+                        }
+                    } else if [0x200e, 0x280e].contains(&selector) {
+                        Call::IntegerToExtended {
+                            source,
+                            destination,
+                            bits: if selector == 0x200e { 16 } else { 32 },
                         }
                     } else if selector == 0x080e {
                         Call::DoubleToExtended {

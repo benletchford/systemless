@@ -2636,3 +2636,21 @@ subnormal. Source snapshots permit in-place use; the adapters validate actual
 8/10-byte extents and only write the destination's format size. No host float
 arithmetic computes the conversions. Current rounding remains nearest-even;
 public environment controls and PPC math imports remain unfinished.
+
+
+### Extended division and integer expansion
+
+FDIVX ($A9EB/$0006) shares process numerics with other SANE slices. Canonical
+significands normalize using integer shifts; a u128 numerator yields an exact
+quotient/remainder for nearest-even rounding. Tiny results round directly at the
+extended minimum quantum. Signed zeros, infinities and propagated NaNs are
+explicit; 0/0 and infinity/infinity produce NAN division code 4, while finite
+nonzero/zero sets a distinct sticky divide-by-zero status. Overflow and inexact
+after-rounding tininess retain the existing policy. Independent astro-float
+normal-range division vectors verify the implementation without a host f64 path.
+
+Integer-to-extended format selectors $200E/$280E expand signed 16/32-bit integers exactly
+(the pinned macros combine FOZ2X with FFINT/FFLNG). Adapters read exactly two/four
+bytes, validate ten output bytes and retain the common ten-byte frame. Public
+SANE environment/alternate rounding/precision/halt APIs, other source formats and
+PPC math imports remain unfinished. No complete SANE compatibility is advertised.

@@ -12,6 +12,15 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    IntegerToExtended {
+        source: GuestPtr,
+        destination: GuestPtr,
+        bits: u8,
+    },
+    DivideExtended {
+        source: GuestPtr,
+        destination: GuestPtr,
+    },
     DoubleToExtended {
         source: GuestPtr,
         destination: GuestPtr,

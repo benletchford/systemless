@@ -12,8 +12,36 @@ pub struct Numerics {
     pub underflow: bool,
     pub invalid: bool,
     pub overflow: bool,
+    pub divide_by_zero: bool,
 }
 impl Numerics {
+    pub fn integer_to_extended(
+        &mut self,
+        memory: &mut Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+        bits: u8,
+    ) -> Result<()> {
+        let value = match bits {
+            16 => i32::from(memory.u16(source)? as i16),
+            32 => memory.u32(source)? as i32,
+            _ => return Err(Error::Cpu("unsupported SANE integer width".into())),
+        };
+        memory.validate_write(destination, 10)?;
+        memory.write(destination, &Self::expand_integer(value))
+    }
+    fn expand_integer(value: i32) -> [u8; 10] {
+        let mut bytes = [0; 10];
+        if value == 0 {
+            return bytes;
+        }
+        let magnitude = value.unsigned_abs();
+        let top = 31 - magnitude.leading_zeros();
+        let exponent = (16383 + top) as u16 | if value < 0 { 0x8000 } else { 0 };
+        bytes[..2].copy_from_slice(&exponent.to_be_bytes());
+        bytes[2..].copy_from_slice(&(u64::from(magnitude) << (63 - top)).to_be_bytes());
+        bytes
+    }
     pub fn double_to_extended(
         &mut self,
         memory: &mut Memory,
@@ -117,6 +145,108 @@ impl Numerics {
         };
         self.underflow |= biased == 0 && lost;
         Ok(sign | (biased << 52) | (result & 0x000f_ffff_ffff_ffff))
+    }
+    pub fn divide_extended(
+        &mut self,
+        memory: &mut Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+    ) -> Result<()> {
+        let a = memory.read(destination, 10)?.try_into().unwrap();
+        let b = memory.read(source, 10)?.try_into().unwrap();
+        memory.validate_write(destination, 10)?;
+        let bytes = self.divide(a, b)?;
+        memory.write(destination, &bytes)
+    }
+    fn divide(&mut self, a: [u8; 10], b: [u8; 10]) -> Result<[u8; 10]> {
+        let decode = |v: [u8; 10]| -> Result<(u16, u64)> {
+            let e = u16::from_be_bytes(v[..2].try_into().unwrap());
+            let m = u64::from_be_bytes(v[2..].try_into().unwrap());
+            if (e & 0x7fff != 0 && m >> 63 == 0) || (e & 0x7fff == 0 && m >> 63 != 0) {
+                return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
+            }
+            Ok((e, m))
+        };
+        let (ae, am) = decode(a)?;
+        let (be, bm) = decode(b)?;
+        let sign = (ae ^ be) & 0x8000;
+        let encode = |e: u16, m: u64| {
+            let mut bytes = [0; 10];
+            bytes[..2].copy_from_slice(&e.to_be_bytes());
+            bytes[2..].copy_from_slice(&m.to_be_bytes());
+            bytes
+        };
+        let an = ae & 0x7fff == 0x7fff && am != 1 << 63;
+        let bn = be & 0x7fff == 0x7fff && bm != 1 << 63;
+        if an || bn {
+            self.invalid |= (an && am & (1 << 62) == 0) || (bn && bm & (1 << 62) == 0);
+            let (e, m) = if an { (ae, am) } else { (be, bm) };
+            return Ok(encode(e, m | 1 << 62));
+        }
+        let ai = ae & 0x7fff == 0x7fff;
+        let bi = be & 0x7fff == 0x7fff;
+        if (ai && bi) || (am == 0 && bm == 0) {
+            self.invalid = true;
+            return Ok(encode(0x7fff, 0xc004_0000_0000_0000));
+        }
+        if ai {
+            return Ok(encode(sign | 0x7fff, 1 << 63));
+        }
+        if bi || am == 0 {
+            return Ok(encode(sign, 0));
+        }
+        if bm == 0 {
+            self.divide_by_zero = true;
+            return Ok(encode(sign | 0x7fff, 1 << 63));
+        }
+        let ashift = am.leading_zeros();
+        let bshift = bm.leading_zeros();
+        let am = am << ashift;
+        let bm = bm << bshift;
+        let delta =
+            i32::from((ae & 0x7fff).max(1)) - ashift as i32 - i32::from((be & 0x7fff).max(1))
+                + bshift as i32;
+        let mut exponent = delta - i32::from(am < bm);
+        let tiny = exponent < -16382;
+        let shift = if tiny {
+            delta + 16445
+        } else if am < bm {
+            64
+        } else {
+            63
+        };
+        let (numerator, denominator) = if shift >= 0 {
+            (u128::from(am) << shift, u128::from(bm))
+        } else if shift == -1 {
+            (u128::from(am), u128::from(bm) << 1)
+        } else {
+            self.inexact = true;
+            self.underflow = true;
+            return Ok(encode(sign, 0));
+        };
+        let quotient = numerator / denominator;
+        let remainder = numerator % denominator;
+        let mut result = quotient
+            + u128::from(
+                remainder * 2 > denominator || (remainder * 2 == denominator && quotient & 1 != 0),
+            );
+        self.inexact |= remainder != 0;
+        if !tiny && result == 1u128 << 64 {
+            result >>= 1;
+            exponent += 1;
+        }
+        if exponent > 16383 {
+            self.overflow = true;
+            self.inexact = true;
+            return Ok(encode(sign | 0x7fff, 1 << 63));
+        }
+        let biased = if tiny {
+            u16::from(result >= 1u128 << 63)
+        } else {
+            (exponent + 16383) as u16
+        };
+        self.underflow |= biased == 0 && remainder != 0;
+        Ok(encode(sign | biased, result as u64))
     }
     pub fn multiply_extended(
         &mut self,
@@ -282,6 +412,95 @@ mod tests {
         b[..2].copy_from_slice(&se.to_be_bytes());
         b[2..].copy_from_slice(&m.to_be_bytes());
         b
+    }
+    #[test]
+    fn signed_integer_expansion_is_exact_at_both_width_boundaries() {
+        assert_eq!(Numerics::expand_integer(0), value(0, 0));
+        assert_eq!(Numerics::expand_integer(1), value(0x3fff, 1 << 63));
+        assert_eq!(Numerics::expand_integer(-32768), value(0xc00e, 1 << 63));
+        assert_eq!(Numerics::expand_integer(i32::MIN), value(0xc01e, 1 << 63));
+        assert_eq!(
+            Numerics::expand_integer(i32::MAX),
+            value(0x401d, 0xffff_fffe_0000_0000)
+        );
+    }
+    #[test]
+    fn normal_division_agrees_with_independent_arbitrary_precision_rounding() {
+        let mut seed = 0x9172_3aef_8124_5bcdu64;
+        for i in 0..256 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let am = seed | (1 << 63);
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let bm = seed | (1 << 63);
+            let ae = 0x3000 + (i % 3) * 0x1000;
+            let be = 0x3000 + (i % 5) * 0x0800;
+            let result = Numerics::default()
+                .divide(value(ae, am), value(be, bm))
+                .unwrap();
+            #[cfg(target_pointer_width = "64")]
+            let (aw, bw) = ([am], [bm]);
+            #[cfg(target_pointer_width = "32")]
+            let (aw, bw) = (
+                [am as u32, (am >> 32) as u32],
+                [bm as u32, (bm >> 32) as u32],
+            );
+            let a = BigFloat::from_words(&aw, Sign::Pos, i32::from(ae) - 16382);
+            let b = BigFloat::from_words(&bw, Sign::Pos, i32::from(be) - 16382);
+            let oracle = a.div(&b, 64, RoundingMode::ToEven);
+            let (words, _, _, exponent, _) = oracle.as_raw_parts().unwrap();
+            #[cfg(target_pointer_width = "64")]
+            let mantissa = words[0];
+            #[cfg(target_pointer_width = "32")]
+            let mantissa = u64::from(words[0]) | (u64::from(words[1]) << 32);
+            assert_eq!(result, value((exponent + 16382) as u16, mantissa));
+        }
+    }
+    #[test]
+    fn division_uses_exact_remainders_and_gradual_underflow() {
+        let mut n = Numerics::default();
+        let one = value(0x3fff, 1 << 63);
+        let two = value(0x4000, 1 << 63);
+        let three = value(0x4000, 0xc000_0000_0000_0000);
+        assert_eq!(n.divide(one, two).unwrap(), value(0x3ffe, 1 << 63));
+        assert!(!n.inexact);
+        assert_eq!(
+            n.divide(one, three).unwrap(),
+            value(0x3ffd, 0xaaaa_aaaa_aaaa_aaab)
+        );
+        assert!(n.inexact);
+        let mut n = Numerics::default();
+        assert_eq!(n.divide(value(1, 1 << 63), two).unwrap(), value(0, 1 << 62));
+        assert!(!n.underflow && !n.inexact);
+        assert_eq!(n.divide(value(0, 1), two).unwrap(), value(0, 0));
+        assert!(n.underflow && n.inexact);
+        assert_eq!(n.divide(value(0, 3), two).unwrap(), value(0, 2));
+        assert_eq!(n.divide(value(0, 1), value(0, 1)).unwrap(), one);
+        assert_eq!(
+            n.divide(value(0x7ffe, u64::MAX), value(0x3ffe, 1 << 63))
+                .unwrap(),
+            value(0x7fff, 1 << 63)
+        );
+        assert!(n.overflow);
+    }
+    #[test]
+    fn division_special_values_keep_distinct_invalid_and_zero_divisor_status() {
+        let mut n = Numerics::default();
+        let one = value(0x3fff, 1 << 63);
+        let zero = value(0x8000, 0);
+        let infinity = value(0x7fff, 1 << 63);
+        assert_eq!(n.divide(one, zero).unwrap(), value(0xffff, 1 << 63));
+        assert!(n.divide_by_zero && !n.invalid && !n.inexact);
+        assert_eq!(
+            n.divide(infinity, infinity).unwrap(),
+            value(0x7fff, 0xc004_0000_0000_0000)
+        );
+        assert!(n.invalid);
+        assert_eq!(n.divide(zero, one).unwrap(), zero);
+        assert_eq!(n.divide(one, infinity).unwrap(), value(0, 0));
     }
     #[test]
     fn expanding_binary64_is_exact_including_smallest_subnormal_and_signed_zero() {

@@ -732,6 +732,30 @@ impl Runtime {
                             result?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::IntegerToExtended {
+                            source,
+                            destination,
+                            bits,
+                        } => {
+                            self.process.numerics.integer_to_extended(
+                                &mut self.memory,
+                                source,
+                                destination,
+                                bits,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::DivideExtended {
+                            source,
+                            destination,
+                        } => {
+                            self.process.numerics.divide_extended(
+                                &mut self.memory,
+                                source,
+                                destination,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::DoubleToExtended {
                             source,
                             destination,
@@ -2157,6 +2181,8 @@ impl Runtime {
                         | Call::WorkingDirectory { .. }
                         | Call::Retrace(_)
                         | Call::RetraceHeader
+                        | Call::IntegerToExtended { .. }
+                        | Call::DivideExtended { .. }
                         | Call::DoubleToExtended { .. }
                         | Call::ExtendedToDouble { .. }
                         | Call::MultiplyExtended { .. }

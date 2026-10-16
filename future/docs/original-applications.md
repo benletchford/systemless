@@ -2252,3 +2252,39 @@ original title/menu/gameplay and native audio remain unverified. EV was not
 replayed and retains its previously recorded ProtectEntry boundary. Neither game
 is playable. Next: exact shared extended division, then continue Marathon startup.
 Keep the full rebuild active and PR in draft.
+
+
+## Extended division and integer checkpoint (2026-10-16)
+
+Shared numerics now handles FDIVX ($0006), signed 16-bit-to-extended ($200E) and
+signed 32-bit-to-extended ($280E). Division uses normalized integer significands
+and an exact u128 quotient/remainder, with one nearest-even rounding step and
+direct subnormal rounding. Distinct sticky divide-by-zero/invalid/overflow/
+inexact-underflow behavior includes SANE NaN division code 4. Integer expansion
+is exact, including both minimum signed values. Native adapters read only the
+actual two/four/ten source bytes and preflight output before popping ten bytes.
+Public SANE environment/alternate precision/rounding/halt APIs, other selectors,
+noncanonical values and PPC math imports remain unfinished.
+
+Final acceptance: 65 checks passed, zero failed/ignored: 46 library, eight numeric
+integration, seven timer and four trap patch checks. The independent arbitrary-
+precision oracle matches 256 normal-range division vectors. Known vectors cover
+one-third, subnormal operands/results, exact versus inexact underflow, overflow,
+signed zeros, infinities and invalid division; ABI tests cover operand order,
+register/frame preservation and exact source widths. Evidence:
+/tmp/systemless-sane-division-integer-acceptance.txt, terminal exit 0. Earlier
+division-only passes are preliminary, not added to this count. Strict Rust 1.99
+all-target lint and Rust 1.93 library checks pass:
+/tmp/systemless-sane-division-integer-lint.txt and
+/tmp/systemless-sane-division-integer-msrv.txt. Sequential formatting and whitespace
+checks pass. No new full-suite/GPU/wasm result is claimed.
+
+Original Marathon now executes division, integer expansion and additional multiply/
+divide/binary64 conversions before requesting FATANX's sibling FSINX: Elems68K
+$A9EC selector $0018, PC $0103CDFA, destination $0080FDB0. Evidence:
+/tmp/systemless-marathon-sane-division-integer.txt, unsupported-selector exit 1.
+Completed timer=1, sound=0, VBL=0; no title/menu/gameplay acceptance. EV was not
+replayed and retains its previously recorded ProtectEntry boundary. Neither game
+is playable. Next: shared extended sine with proper range reduction and special
+cases, then continue original Marathon startup. Full rebuild stays active and
+PR remains draft.
