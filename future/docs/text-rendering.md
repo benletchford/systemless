@@ -259,9 +259,56 @@ Real E-key Enter Ship input advances the original game to TextFont2020,size14,
 then StringWidth stops at the legacy FONT family*128+size ID overflow guard.
 The original application actually contains FOND2020 with one scalable association
 (size0,style0,sfntID9295), plus the17000-byte sfnt9295 resource. FOND offsets:
-width78,kern0,style598. The next text slice is correct FOND/outline-resource
+width78,kern0,style598. At that checkpoint the next text slice was correct FOND/outline-resource
 resolution and actual measurements, not forcing a small family ID or substituting
 an unrelated font to bypass overflow. Verify existing library APIs and reuse a
 suitable decoder/rasterizer while retaining shared metrics and wgpu destination
 composition. Private original assets remain uncommitted. Full styles, classic
 metrics, library production integration and native/browser acceptance stay open.
+
+
+## Guest FOND and sfnt source preparation (2026-10-17)
+
+Shared selection now resolves FOND associations before legacy FONT IDs, including
+high family IDs, arbitrary signed resource IDs, scalable sfnt entries and
+exact-size monochrome NFNT/FONT entries. Font initialization uses the same lookup.
+Malformed or unsupported selected families return errors instead of substituting
+an unrelated font. Intrinsic plain/bold faces precede synthesis from plain.
+
+The existing Apache-2.0 ab_glyph0.2.32 dependency supplies FontRef, em conversion,
+MacRoman-to-Unicode glyph lookup and outline coverage. Its pinned implementation
+and manifest were inspected locally. No new production dependency or library
+version is added. This extends source decoding; it is separate from the unfinished
+Glyphon production integration and keeps all destination operations in wgpu.
+
+Family width-table layout is checked against
+[Apple's family-width documentation](https://leopard-adc.pepas.com/documentation/mac/Text/Text-274.html)
+and [Adobe technical note0091, section5](https://adobe-type-tools.github.io/font-tech-notes/pdfs/0091.Mac_Fond.pdf):
+style word, per-character 4.12 widths, missing-character width and unused zero
+word. Active tables provide rounded integer advances; absent/disabled tables use
+sfnt horizontal metrics. Counts, character ranges, offsets and overlap with the
+kerning/style tables are checked. Derived strikes use sfnt vertical metrics and
+source bounds. Full FOND global-metric parity and fractional width/style policies
+remain open rather than being claimed from integer-width tests.
+
+Prepared outline strikes are cached by exact live FOND+sfnt bytes, size and
+intrinsic style, bounded to eight entries/8MiB including keys. Subsequent resource
+edits are observed before reuse. Fallback strikes keep their existing editable
+guest handles. Glyph/metric/storage limits apply to guest font input. Current
+outline source preparation covers printable MacRoman mappings and the missing
+glyph, sizes1..96, unhinted binary coverage. Classic hinting, non-Unicode cmap
+fonts, bitmap scaling, full styles and native glyph parity remain acceptance work.
+
+
+Application evidence: original EV1.0.5 now completes TextFont2020,size14,
+StringWidth and DrawString for its ship HUD's 'No Target' label, through shared
+wgpu composition. Real E-key EnterShip input stops next at FrameOval/A8B7,
+CPU8,218,226,PC0101FBB6; flight remains unverified. Scoped regression result:
+104 passes (88 core,11 fonts,5 text),0 ignored, real GPU cases enabled, including
+embedded-font DrawString pixel equivalence through both CPU adapters. See the
+2026-10-17 embedded-font milestone in progress.md for exact private evidence and
+unchanged saved-volume verification. This does not complete the library/text
+acceptance checklist above.
+
+Cross-map font-suitcase association priority remains unverified; the original EV
+font evidence uses FOND and sfnt resources from the same application fork.

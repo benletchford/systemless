@@ -22,6 +22,7 @@ pub mod files;
 pub mod fixtures;
 pub mod font;
 mod font_fallback;
+mod font_family;
 pub mod graphics;
 pub mod host_input;
 pub mod integer;

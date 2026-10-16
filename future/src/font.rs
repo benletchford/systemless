@@ -234,12 +234,13 @@ impl<'a> Strike<'a> {
     }
 }
 
-/// Font Manager owns only guest handles and initialization state. Fallback
-/// strikes remain editable guest bytes, not cached host metrics or glyphs.
+/// Fallback strikes remain editable guest bytes. Derived outline strikes are
+/// bounded host source data, keyed by exact live resource bytes, size and style.
 #[derive(Default)]
 pub struct Manager {
     pub initialized: bool,
     pub(crate) fallback: std::collections::BTreeMap<i16, u32>,
+    pub(crate) outlines: Vec<crate::font_family::CachedOutline>,
 }
 pub fn initialize(
     memory: &mut crate::memory::Memory,
@@ -251,9 +252,10 @@ pub fn initialize(
     let size = memory.u16(crate::memory::GuestPtr(0xba8))? as i16;
     let size = if size == 0 { 12 } else { size };
     let family = memory.u16(crate::memory::GuestPtr(0xba6))? as i16;
-    let id = i16::try_from(i32::from(family) * 128 + i32::from(size))
-        .map_err(|_| bad("system FONT resource ID overflow"))?;
-    if process.find_resource(*b"FONT", id).is_some() {
+    let id = i16::try_from(i32::from(family) * 128 + i32::from(size)).ok();
+    if let Some(bytes) = crate::font_family::resolve(memory, process, family, size, 0)? {
+        Strike::parse(&bytes)?;
+    } else if let Some(id) = id.filter(|id| process.find_resource(*b"FONT", *id).is_some()) {
         let handle = process.get_resource(memory, *b"FONT", id)?;
         let length = process.handle_size(memory, handle)? as usize;
         let data = crate::memory::GuestPtr(memory.u32(crate::memory::GuestPtr(handle))?);

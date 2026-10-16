@@ -9342,3 +9342,84 @@ preparation, preserving metrics and existing wgpu text composition. Do not force
 a smaller family ID or substitute an unrelated font to bypass the overflow.
 Neither priority game is verified playable. Full text/library integration,
 Marathon and every remaining full-rebuild requirement stay active.
+
+
+## Embedded font-family milestone (2026-10-17)
+
+The shared Font Manager now resolves live FOND associations before attempting
+legacy FONT family*128+size arithmetic. High family2020 resolves its actual
+scalable sfnt9295 instead of overflowing or substituting another font. The same
+lookup supports exact-size monochrome NFNT/FONT associations with arbitrary signed
+resource IDs, intrinsic plain/bold styles and existing checked bold synthesis.
+Initialization also uses this family lookup. Malformed selected families fail
+explicitly; unsupported bitmap sizes are not silently scaled.
+
+The existing pinned ab_glyph0.2.32 decoder/source-rasterizer is reused, with no new
+production dependencies. Active FOND4.12 character/missing widths provide rounded
+integer advances (Apple Inside Macintosh: Text and Adobe0091 section5); absent or
+disabled family tables use sfnt horizontal advances. Counts/ranges/offsets and
+width-table overlap are checked. Source preparation and its exact-byte cache are
+bounded. Guest FOND/sfnt edits are checked before cache reuse; fallback guest
+handles remain editable. Destination pixels still use the shared wgpu path.
+Classic hinting, FOND global-metric parity, fractional/style policy, non-Unicode
+cmaps, bitmap scaling and full text/platform acceptance remain open.
+
+Validation:104 passes (88 core,11 fonts,5 text), zero ignored, actual GPU cases
+enabled. /tmp/systemless-fond-reviewed-tests.txt. The new native/PPC DrawString case
+uses a licensed public embedded sfnt fixture with family2020, verifies equal GPU
+pixels, nonempty glyphs, clipping, family advance, pen position, face padding and
+unchanged bitmap row padding. Both CPU GetFontInfo adapters use exact NFNT/FONT
+associations and observe live edits. Additional checks cover FOND truncation,
+offsets/overlap, 4.12 rounding/missing widths, unsupported bitmap sizes, changed
+family widths and corrupt sfnt data after a cached preparation. Tracer build
+passes (/tmp/systemless-fond-reviewed-build.txt). Strict all-target lint passes
+(/tmp/systemless-fond-reviewed-lint.txt, terminal exit0). Sequential changed-file
+format checks and whitespace checks pass; no recursive formatter is run.
+
+Original EV1.0.5 replay:16M budget,640x480x8 graphics, input durable v2
+2026-10-17-script-reopen.slv, real E/code14 down8,000,000/up8,005,000,
+--services-only --elapse-waits --display-diagnostics. Fresh outputs:
+/tmp/systemless-ev-fond-enter-ship.{txt,slv,ppm,png}.
+TextFont2020,size14 now passes StringWidth, moves to(539,310), draws the actual
+string, then CopyBits presents the ship HUD's green 'No Target' label. It stops
+at CPU8,218,226,PC0101FBB6,unsupported trapA8B7 (FrameOval), after real numeric
+HUD calculations. This advances beyond the old font overflow at8,215,759; it is
+not completed flight/gameplay or tested game audio. The frame has the right HUD
+panel and an otherwise black playfield at this stop.
+
+The independent v2 CRC/catalog/alias/script verifier passes. Pilot/companions
+remain intact; prefs57,pilot53,alias58,next59. Saved volume7,259,094bytes SHA256
+e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80,
+identical to the previous failed EnterShip snapshot. PPM921,615bytes SHA256
+8dee81856dc9f0324d58814d131be8de41c1faf3d139d81111bd4ceceee39dbc.
+Private evidence2026-10-17-fond-enter-ship.{slv,ppm,png}, -trace-tail.txt,
+2026-10-17-fond-reviewed-tests.txt and -volume-verification.txt are under
+future/target/private-originals/ev/evidence (ignored). No original font/game assets
+are committed. EV sfnt9295 has1000units/em,hhea800/-203/0; its FOND width table at78
+ends with missing width500 and zero terminator before style mapping598.
+
+Next: shared FrameOval service/68K+PPC adapters, exact GPU/pen/clip regression,
+then repeat EnterShip to identify the next actual flight boundary. Existing
+rounded/ellipse coverage is implementation reference, not native Macintosh proof.
+Original Marathon1 v1.2 is not replayed here and remains at the earlier
+TextFont4/no-current-port boundary. Neither priority game is verified playable.
+Glyphon production integration, complete text, Mixed Mode, remaining shared
+runtime behavior and every full-rebuild acceptance criterion stay active.
+
+Continuation reference for FrameOval: Apple's
+[QuickDraw drawing description](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-59.html)
+defines ovals by their bounding rectangles and framing by the current pen size,
+pattern and pattern mode, leaving the interior unaffected. Preserve visibility,
+clipping, recording, transfer semantics and pen location in the shared service.
+Avoid narrowing a bounding-rectangle extent to i16: signed guest endpoints can
+span65535 pixels. Existing rounded coverage uses i32 spans but its public oval
+parameters are i16; address that distinction deliberately when adding ovals.
+
+The reviewed parser accepts arbitrary ordering among styled faces while preserving
+ascending point sizes, plain-before-styled order and duplicate rejection. The new
+ordering regression raises the scoped result to104 passes. A second original EV
+replay with this reviewed build (/tmp/systemless-ev-fond-reviewed.{txt,slv,ppm,png})
+is byte-identical to the preceding full service trace, volume and PPM, including
+CPU8,218,226/PC0101FBB6 and FrameOval. Durable private2026-10-17-fond-reviewed
+.{slv,ppm,png}, -trace-tail.txt, -tests.txt and -volume-verification.txt preserve
+that reviewed result. The independent snapshot verifier passes again.

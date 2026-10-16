@@ -746,27 +746,45 @@ belong to the Mixed Mode/callback work, and other styles fail explicitly.
 
 ## Font strike boundary
 
-`font` parses a borrowed immutable snapshot of guest FONT/NFNT bytes and exposes
-metrics, glyph geometry and one-bit glyph masks. `text` resolves the selected
-old-style FONT through the same resource handles used by both CPUs, so guest
-writes affect subsequent metrics. No mutable global font registry or duplicated
-architecture font state exists. Mask extraction only decodes source storage;
-wgpu glyph composition remains the next drawing boundary. Default font
-initialization, NFNT/FOND association selection, optional tables, color fonts,
-styles/scaling and outline fallbacks are explicit outstanding work.
+`font` parses immutable snapshots of guest FONT/NFNT bytes and exposes metrics,
+glyph geometry and one-bit source masks. `font_family` resolves FOND associations
+through live Resource Manager handles, preferring intrinsic plain/bold styles and
+sfnt outlines, then exact-size NFNT/FONT strikes. Arbitrary association IDs do not
+use legacy family*128+size arithmetic. Only families without FOND use that old
+lookup (when representable), then the existing explicit substitute policy.
 
+The checked FOND reader validates family IDs, character ranges, association
+ordering/counts and optional table offsets. It reads family width subtables using
+Apple Inside Macintosh: Text and
+[Adobe technical note 0091](https://adobe-type-tools.github.io/font-tech-notes/pdfs/0091.Mac_Fond.pdf).
+The width table includes each character, a missing-character width and an unused
+zero word. Active family widths are scaled from 4.12 fixed point and rounded to
+integer advances; disabled/absent tables use outline horizontal metrics. Existing
+fractional-spacing restrictions remain explicit.
 
-## Font initialization and fallback ownership
+## Font initialization and source ownership
 
-The shared Font Manager initializes a guest system strike from an application
-FONT resource or a licensed outline substitute. Fallback generation on the CPU
-produces canonical packed source-font data; it does not render destination pixels.
-The process stores only fallback handle identities and initialization metadata.
-Default family/size selection reads guest low-memory globals on every metrics call,
-and the current strike is reparsed from live handle bytes. Cached generated strikes
-are bounded by count and supported point sizes. Resource priority, fallback
-approximation, thresholding, licenses and rasterization costs are explicit.
-Application text composition through wgpu remains the next shared drawing service.
+Font Manager initialization and text selection share family resolution. The pinned
+ab_glyph 0.2.32 library decodes guest sfnt outlines as well as the licensed bundled
+Nimbus Sans substitute. It prepares binary source masks at 72 dpi; wgpu performs
+destination drawing. The current converter covers MacRoman printable characters
+through Unicode mappings and a real missing glyph, sizes1..96, with bounded
+metrics/glyph extents/strike storage. Outline vertical metrics come from the sfnt
+and enclosing glyph bounds. Classic TrueType hinting, FOND global-metric parity,
+non-Unicode cmap fonts, bitmap scaling, color/auxiliary strikes and full styles
+remain compatibility work; no native pixel-parity claim is made.
+
+Fallback strikes remain editable guest handles. Prepared outline strikes are
+bounded host source data: at most eight entries and8MiB including keys/payloads.
+Each key contains exact live FOND and sfnt bytes, size and intrinsic style. Thus
+resource edits, purges/reloads and changed resource owners cannot reuse stale
+coverage merely because a family/resource/handle ID is unchanged. There is no
+second architecture-specific font state. Default family/size globals are read on
+each selection. Bold synthesis only applies when an intrinsic bold association
+was unavailable, and does not modify source resources.
+
+Cross-map font-suitcase association priority remains unverified; the original EV
+font evidence uses FOND and sfnt resources from the same application fork.
 
 
 ## Shared text drawing

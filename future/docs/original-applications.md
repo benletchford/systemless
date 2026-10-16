@@ -4329,3 +4329,34 @@ Next: correct FOND/outline font resolution and shared measurement/GPU drawing,
 then retry actual flight. Private2026-10-17-update-port-after and enter-ship-font-
 boundary evidence are preserved. This proves visible menu/action progress, not
 playable flight, original audio or native System7 parity. Marathon was not replayed.
+
+
+## Embedded font-family milestone (2026-10-17)
+
+EV1.0.5 now resolves FOND2020's real sfnt9295, completes StringWidth and draws
+'No Target' into the ship HUD through wgpu. It stops next at FrameOval/A8B7,
+CPU8,218,226,PC0101FBB6. The right HUD panel is visible; the playfield is black
+at this stop. This is not verified flight, game audio or complete playability.
+Marathon is not replayed in this milestone and remains at its earlier boundary.
+
+Reproduction from the future worktree root (choose fresh output names):
+
+```sh
+future/target/debug/examples/trace_application code \
+  future/target/private-originals/ev/application.raw-rsrc 16000000 \
+  --graphics --display-diagnostics --display 640x480x8 \
+  --volume future/target/private-originals/ev/evidence/2026-10-17-script-reopen.slv \
+  --key-at 8000000:14:down --key-at 8005000:14:up \
+  --save-screen /tmp/systemless-ev-fond-reviewed.ppm \
+  --save-volume /tmp/systemless-ev-fond-reviewed.slv \
+  --services-only --elapse-waits
+```
+
+Private evidence2026-10-17-fond-reviewed.{slv,ppm,png}, -trace-tail.txt and the
+independent2026-10-17-fond-reviewed-volume-verification.txt are in the ignored EV evidence folder. The
+saved volume SHA256 remains
+e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80;
+pilot/companions and flagged alias/script metadata pass the standalone verifier.
+See progress.md's embedded-font milestone for full hashes and104 scoped passes,
+and text-rendering.md for library use, cache ownership and remaining font fidelity.
+Next: implement shared FrameOval with both adapters and GPU checks, then retry.

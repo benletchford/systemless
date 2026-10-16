@@ -417,3 +417,284 @@ fn synthetic_bold_dilates_glyphs_and_preserves_source_and_missing_mapping() {
         assert!(systemless_future::font::embolden(&source[..end]).is_err());
     }
 }
+
+fn family_resource(size: u16, style: u16, id: i16, widths: bool) -> Vec<u8> {
+    let mut bytes = vec![0; if widths { 580 } else { 60 }];
+    for (offset, value) in [
+        (2, 2020u16),
+        (4, 0),
+        (6, 255),
+        (54, size),
+        (56, style),
+        (58, id as u16),
+    ] {
+        w16(&mut bytes, offset, value);
+    }
+    if widths {
+        w32(&mut bytes, 16, 60);
+        for code in 0..257 {
+            w16(&mut bytes, 64 + code * 2, 2048);
+        }
+    }
+    bytes
+}
+#[test]
+fn fond_bitmap_association_uses_arbitrary_resource_ids_and_live_guest_data_on_both_cpus() {
+    for kind in [*b"NFNT", *b"FONT"] {
+        let fork = resource(vec![
+            (*b"FOND", 2020, None, family_resource(9, 0, -123, false)),
+            (kind, -123, None, strike()),
+        ]);
+        let f = pef_program(&[0x4e800020], &[b"GetFontInfo"], 64);
+        let mut app = LoadedApplication::pef(&f.bytes, Some(&fork)).unwrap();
+        let ports = systemless_future::quickdraw::Ports {
+            current_slot: GuestPtr(0x51000000),
+            screen_bitmap: GuestPtr(0),
+        };
+        app.runtime
+            .memory
+            .map(ports.current_slot, vec![0; 512], Permissions::RW)
+            .unwrap();
+        app.runtime
+            .memory
+            .write(ports.current_slot, &0x51000100u32.to_be_bytes())
+            .unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(0x51000100 + 68), &[7, 228, 0, 0xa5, 0, 1, 0, 9])
+            .unwrap();
+        app.runtime.process.ports = Some(ports);
+        let vector = app
+            .runtime
+            .memory
+            .u32(GuestPtr(app.info.toc_or_a5 + 8))
+            .unwrap();
+        let gate = app.runtime.memory.u32(GuestPtr(vector)).unwrap();
+        let stack = STACK_BASE + 0x8000;
+        let out = app.info.toc_or_a5 + 32;
+        app.runtime
+            .memory
+            .map(GuestPtr(0x50000000), vec![0xa8, 0x8b], Permissions::RX)
+            .unwrap();
+        for (architecture, expected) in [(Architecture::PowerPc, 4), (Architecture::M68k, 99)] {
+            if architecture == Architecture::M68k {
+                let handle = app
+                    .runtime
+                    .process
+                    .get_resource(&mut app.runtime.memory, kind, -123)
+                    .unwrap();
+                let data = app.runtime.memory.u32(GuestPtr(handle)).unwrap();
+                app.runtime
+                    .memory
+                    .write(GuestPtr(data + 6), &99u16.to_be_bytes())
+                    .unwrap();
+                app.runtime
+                    .memory
+                    .write(GuestPtr(stack), &out.to_be_bytes())
+                    .unwrap();
+            }
+            app.runtime.cpu = Cpu::new(
+                architecture,
+                if architecture == Architecture::PowerPc {
+                    gate
+                } else {
+                    0x50000000
+                },
+                stack,
+            );
+            if let Cpu::PowerPc(c) = &mut app.runtime.cpu {
+                c.gpr[3] = out;
+            }
+            assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+            assert_eq!(app.runtime.memory.u16(GuestPtr(out + 4)).unwrap(), expected);
+        }
+        // A family with only a different-size bitmap must not silently scale or substitute.
+        app.runtime
+            .memory
+            .write(GuestPtr(0x51000100 + 74), &10u16.to_be_bytes())
+            .unwrap();
+        assert!(systemless_future::text::font_info(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            ports,
+            GuestPtr(out)
+        )
+        .is_err());
+    }
+}
+#[test]
+fn embedded_outline_uses_family_widths_and_invalidates_cached_live_resource_edits() {
+    use systemless_future::{
+        load::resource::ResourceFork,
+        memory::Memory,
+        process::Process,
+        quickdraw::Ports,
+        text::{self, Input},
+    };
+    let source = include_bytes!("../assets/fonts/NimbusSans-Regular.ttf").to_vec();
+    let fork = resource(vec![
+        (*b"FOND", 2020, None, family_resource(0, 0, 9295, true)),
+        (*b"sfnt", 9295, None, source),
+    ]);
+    let mut process = Process::default();
+    process.install_application_resources(ResourceFork::parse(&fork).unwrap());
+    let mut memory = Memory::default();
+    memory
+        .map(GuestPtr(0x5000), vec![0; 512], Permissions::RW)
+        .unwrap();
+    let ports = Ports {
+        current_slot: GuestPtr(0x5000),
+        screen_bitmap: GuestPtr(0),
+    };
+    memory
+        .write(ports.current_slot, &0x5100u32.to_be_bytes())
+        .unwrap();
+    memory
+        .write(GuestPtr(0x5100 + 68), &[7, 228, 0, 0xa5, 0, 1, 0, 14])
+        .unwrap();
+    assert_eq!(
+        text::width(&mut memory, &mut process, ports, Input::Character(b'A')).unwrap(),
+        7
+    );
+    let handle = process.get_resource(&mut memory, *b"FOND", 2020).unwrap();
+    let data = memory.u32(GuestPtr(handle)).unwrap();
+    memory
+        .write(
+            GuestPtr(data + 64 + u32::from(b'A') * 2),
+            &4096u16.to_be_bytes(),
+        )
+        .unwrap();
+    assert_eq!(
+        text::width(&mut memory, &mut process, ports, Input::Character(b'A')).unwrap(),
+        14
+    );
+    // Source corruption must not return a previously prepared strike.
+    let handle = process.get_resource(&mut memory, *b"sfnt", 9295).unwrap();
+    let data = memory.u32(GuestPtr(handle)).unwrap();
+    memory.write(GuestPtr(data), &[0xff; 4]).unwrap();
+    assert!(text::width(&mut memory, &mut process, ports, Input::Character(b'A')).is_err());
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn embedded_outline_draw_string_on_both_cpus_uses_gpu_clip_and_family_advances() {
+    use systemless_future::{
+        graphics::{Graphics, Rect},
+        quickdraw::Ports,
+        text,
+    };
+    let fork = resource(vec![
+        (*b"FOND", 2020, None, family_resource(0, 0, 9295, true)),
+        (
+            *b"sfnt",
+            9295,
+            None,
+            include_bytes!("../assets/fonts/NimbusSans-Regular.ttf").to_vec(),
+        ),
+    ]);
+    let f = pef_program(&[0x4e800020], &[b"DrawString"], 128);
+    let mut app = LoadedApplication::pef(&f.bytes, Some(&fork)).unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), vec![0; 512], Permissions::RW)
+        .unwrap();
+    let mut before = vec![0; 320];
+    for row in 0..32 {
+        before[row * 10 + 8..row * 10 + 10].fill(0xa5);
+    }
+    app.runtime
+        .memory
+        .map(GuestPtr(0x52000000), before.clone(), Permissions::RW)
+        .unwrap();
+    let ports = Ports {
+        current_slot: GuestPtr(0x51000020),
+        screen_bitmap: GuestPtr(0x51000000),
+    };
+    let mut bitmap = vec![0; 14];
+    w32(&mut bitmap, 0, 0x52000000);
+    w16(&mut bitmap, 4, 10);
+    w16(&mut bitmap, 10, 32);
+    w16(&mut bitmap, 12, 64);
+    app.runtime
+        .memory
+        .write(ports.screen_bitmap, &bitmap)
+        .unwrap();
+    let port = GuestPtr(0x51000080);
+    ports
+        .open(&mut app.runtime.memory, &mut app.runtime.process, port)
+        .unwrap();
+    ports
+        .clip_rect(&mut app.runtime.memory, Rect::new(8, 0, 40, 32))
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(port.0 + 68), &[7, 228, 0, 0xa5, 0, 0, 0, 14])
+        .unwrap();
+    app.runtime.process.ports = Some(ports);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    app.runtime.graphics =
+        Some(pollster::block_on(Graphics::new(&instance, None, 64, 32, GuestPtr(0x4000))).unwrap());
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa8, 0x84], Permissions::RX)
+        .unwrap();
+    let string = app.info.toc_or_a5 + 64;
+    app.runtime
+        .memory
+        .write(GuestPtr(string), &[3, b'A', 0x80, b' '])
+        .unwrap();
+    let vector = app
+        .runtime
+        .memory
+        .u32(GuestPtr(app.info.toc_or_a5 + 8))
+        .unwrap();
+    let gate = app.runtime.memory.u32(GuestPtr(vector)).unwrap();
+    let stack = STACK_BASE + 0x8000;
+    let mut outputs = Vec::new();
+    for architecture in [Architecture::PowerPc, Architecture::M68k] {
+        app.runtime
+            .memory
+            .write(GuestPtr(0x52000000), &before)
+            .unwrap();
+        text::move_to(&mut app.runtime.memory, ports, 8, 22).unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(stack), &string.to_be_bytes())
+            .unwrap();
+        app.runtime.cpu = Cpu::new(
+            architecture,
+            if architecture == Architecture::PowerPc {
+                gate
+            } else {
+                0x50000000
+            },
+            stack,
+        );
+        if let Cpu::PowerPc(c) = &mut app.runtime.cpu {
+            c.gpr[3] = string;
+        }
+        assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+        let output = app
+            .runtime
+            .memory
+            .read(GuestPtr(0x52000000), 320)
+            .unwrap()
+            .to_vec();
+        assert!(output
+            .chunks_exact(10)
+            .any(|row| row[1..5].iter().any(|pixel| *pixel != 0)));
+        for row in output.chunks_exact(10) {
+            assert_eq!(row[0], 0);
+            assert_eq!(&row[5..8], &[0; 3]);
+            assert_eq!(&row[8..], &[0xa5; 2]);
+        }
+        assert_eq!(app.runtime.memory.u16(GuestPtr(port.0 + 50)).unwrap(), 29);
+        assert_eq!(app.runtime.memory.u16(GuestPtr(port.0 + 48)).unwrap(), 22);
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(port.0 + 71), 1).unwrap(),
+            [0xa5]
+        );
+        outputs.push(output);
+    }
+    assert_eq!(outputs[0], outputs[1]);
+}

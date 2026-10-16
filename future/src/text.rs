@@ -69,9 +69,11 @@ pub(crate) fn font_bytes(
     if family < 0 || size <= 0 || size >= 128 {
         return Err(Error::Graphics("invalid font family or size".into()));
     }
-    let id = i16::try_from(i32::from(family) * 128 + i32::from(size))
-        .map_err(|_| Error::Graphics("FONT family/size resource ID overflow".into()))?;
-    let handle = if process.find_resource(*b"FONT", id).is_some() {
+    if let Some(bytes) = crate::font_family::resolve(memory, process, family, size, face)? {
+        return Ok(bytes);
+    }
+    let id = i16::try_from(i32::from(family) * 128 + i32::from(size)).ok();
+    let handle = if let Some(id) = id.filter(|id| process.find_resource(*b"FONT", *id).is_some()) {
         process.get_resource(memory, *b"FONT", id)?
     } else {
         if !process.fonts.initialized {

@@ -1,4 +1,4 @@
-//! Generate a monochrome source strike from the licensed Nimbus Sans outline.
+//! Generate monochrome source strikes from bundled or guest TrueType outlines.
 //! CPU rasterization creates source font data; guest drawing remains a GPU task.
 use crate::{font::Strike, Error, Result};
 use ab_glyph::{Font, FontRef, ScaleFont};
@@ -8,13 +8,33 @@ pub(crate) fn strike(size: i16) -> Result<Vec<u8>> {
     }
     let font = FontRef::try_from_slice(include_bytes!("../assets/fonts/NimbusSans-Regular.ttf"))
         .map_err(|_| Error::Load("invalid bundled fallback font".into()))?;
+    outline(font, size, None)
+}
+/// Prepare source glyphs only: destination drawing remains in shared wgpu services.
+pub(crate) fn outline(font: FontRef<'_>, size: i16, widths: Option<&[u8; 257]>) -> Result<Vec<u8>> {
+    if !(1..=96).contains(&size) {
+        return Err(Error::Graphics("outline font size outside 1..96".into()));
+    }
     // Macintosh screen points at 72 dpi equal pixels per em. ab_glyph's
     // scale is ascent-minus-descent, so explicitly convert from em units.
     let scale = f32::from(size) * font.height_unscaled()
         / font
             .units_per_em()
             .ok_or_else(|| Error::Load("fallback font has no em size".into()))?;
+    if !scale.is_finite() || scale <= 0. {
+        return Err(Error::Load("invalid outline scale".into()));
+    }
     let scaled = font.as_scaled(scale);
+    if ![scaled.ascent(), -scaled.descent()]
+        .into_iter()
+        .all(|value| value.is_finite() && (0. ..=512.).contains(&value))
+        || !scaled.line_gap().is_finite()
+        || scaled.line_gap().abs() > 512.
+    {
+        return Err(Error::Load(
+            "outline font metrics exceed source limits".into(),
+        ));
+    }
     let mut ascent = scaled.ascent().ceil() as i16;
     let mut descent = (-scaled.descent()).ceil() as i16;
     let leading = scaled.line_gap().round() as i16;
@@ -34,11 +54,25 @@ pub(crate) fn strike(size: i16) -> Result<Vec<u8>> {
         } else {
             font.glyph_id(character)
         };
-        let advance = scaled.h_advance(id).round().clamp(0., 255.) as u8;
+        let advance = if let Some(widths) = widths {
+            widths[usize::from(code)]
+        } else {
+            scaled.h_advance(id).round().clamp(0., 255.) as u8
+        };
         maximum = maximum.max(advance);
         let outlined = font.outline_glyph(id.with_scale(scale));
         let (left, top, width, height, mask) = if let Some(glyph) = outlined {
             let bounds = glyph.px_bounds();
+            if ![bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y]
+                .into_iter()
+                .all(|value| value.is_finite() && value.abs() <= 512.)
+                || bounds.max.x < bounds.min.x
+                || bounds.max.y < bounds.min.y
+            {
+                return Err(Error::Load(
+                    "outline glyph bounds exceed source limits".into(),
+                ));
+            }
             let width = (bounds.max.x - bounds.min.x) as usize;
             let height = (bounds.max.y - bounds.min.y) as usize;
             if width > 512 || height > 512 {
@@ -70,7 +104,10 @@ pub(crate) fn strike(size: i16) -> Result<Vec<u8>> {
     }
     let height = (ascent + descent) as usize;
     let width = glyphs.iter().map(|g| g.2).sum::<usize>();
-    let row_words = width.div_ceil(16);
+    if width > usize::from(u16::MAX) || width.div_ceil(16) * 2 * height > 16 * 1024 * 1024 {
+        return Err(Error::Load("outline strike storage limit exceeded".into()));
+    }
+    let row_words = width.div_ceil(16).max(1);
     let row_bytes = row_words * 2;
     let mut bitmap = vec![0u8; row_bytes * height];
     let mut locations = Vec::new();
