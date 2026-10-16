@@ -3855,3 +3855,24 @@ from current colors; their seed mismatch is the invalidation signal. This does
 not claim ROM-exact inverse matching, native invalid-input behavior or interrupt
 safety. The runtime's VBL allocation-safety guard continues to exclude Color
 Manager operations, as the documented call is not interrupt-safe.
+
+
+### FP68K single-to-extended conversion
+
+FS2X selector100E snapshots exactly four big-endian source bytes, preflights a
+ten-byte destination and invokes the existing shared single expansion. Finite
+values, signed zeros, infinities and NaN sign/payload follow the same numeric
+state as single-format arithmetic. Signaling NaNs quiet and accrue invalid;
+conversion failure leaves flags and destination unchanged. Overlap is supported.
+The adapter validates input/output and checked ten-byte frame removal before
+changing SP; this void native call preserves registers. No fabricated InterfaceLib
+single-conversion symbol or duplicate numeric engine is added. PPC numeric ABI
+and full SANE exception/halt/native-profile coverage remain separate work.
+
+Primary source: Apple Numerics Manual,2ndedition,chapter21,p156 and appendixE
+binary-conversion table (FS2X100E), available in the
+[Apple manual mirror](https://manuals.plus/m/1f06cc272b1e59ae58f6379edca5b7829815540f233f0679c0f5f26cb9dbcbde).
+The service reuses the already implemented exact integer-bit expansion rather
+than routing through host float arithmetic. New fixed bit-vector tests and
+existing numeric regressions are evidence for the supported profile, not a new
+native SANE parity claim.

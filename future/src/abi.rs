@@ -2292,7 +2292,7 @@ impl Abi {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let selector = u16::from_be_bytes(args[..2].try_into().unwrap());
                 if ![
-                    0x001c, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e, 0x2010, 0x2810,
+                    0x001c, 0x000e, 0x0810, 0x080e, 0x100e, 0x200e, 0x280e, 0x2010, 0x2810,
                 ]
                 .contains(&selector)
                 {
@@ -2305,6 +2305,7 @@ impl Abi {
                 memory.read(
                     source,
                     match selector {
+                        0x100e => 4,
                         0x080e => 8,
                         0x200e => 2,
                         0x280e => 4,
@@ -2345,6 +2346,11 @@ impl Abi {
                             source,
                             destination,
                             bits: if selector == 0x2010 { 16 } else { 32 },
+                        }
+                    } else if selector == 0x100e {
+                        Call::SingleToExtended {
+                            source,
+                            destination,
                         }
                     } else if selector == 0x080e {
                         Call::DoubleToExtended {

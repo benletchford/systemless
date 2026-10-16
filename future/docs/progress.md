@@ -10088,3 +10088,47 @@ contain399white pixels in the ship-caption crop(20,400)–(230,425),correcting t
 earlier visual-only caption-absence note. Do not infer gameplay or real-time
 performance from this instruction-budget probe. Next: controlled input/state
 acceptance for EV and shared single-to-extended numeric routing for Marathon.
+
+
+EV same-build control,2026-10-17: launched the exact CTabChanged tracer binary
+used by the arrow probe before rebuilding numeric code. Same24M input/media/
+display, with only Enter Ship and no arrows, ends at007E6830 with budget exhaustion.
+Its inspected canonical PPM is byte-identical to the prior idle24M frame,
+SHA25611ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48.
+Compared with the same-build arrow frame,171pixels differ only at(6,1)–(18,24).
+The controlled visual response is established; it does not yet identify precise
+ship heading/velocity/position, separate rotation from thrust, or prove movement,
+audio or playability. Independent saved-volume verification passes with unchanged
+pilot/preferences/alias/companions and e524aeff... output. Next EV acceptance should
+separate right-only/up-only inputs and inspect guest state/positions. Private
+2026-10-17-ctab-control.* captures retain this control.
+
+
+### Shared single-to-extended conversion,2026-10-17
+
+Original Marathon stops atFP68K100E. Primary Apple Numerics Manual2ndedition
+chapter21,p156 and appendixE confirm FS2X and its single-source/extended-target
+memory convention. The native adapter now validates exactly4source/10destination
+bytes and invokes a shared SingleToExtended call using existing expand_single.
+No host-float round trip or second numeric engine is introduced. Fixed expected
+vectors cover signed zeros,1,min/max subnormal,min normal,max finite,infinities,
+quiet/signaling NaNs with payload; overlaps and readonly destination failures
+verify preflight before numeric flags/stack mutation. Native preserves registers
+and consumes ten frame bytes. This is a native FP68K entry into shared numeric
+state, not an invented PPC import or new native numeric-parity proof.
+
+The first validation shell loop accidentally used zsh's special `path` variable,
+which hid command lookup for that invocation; no tests ran. The corrected loop
+uses a task-specific variable and sequential stdin rustfmt,skip_children=true.
+Its real test run passes30scoped tests,0ignored (3sign,25numeric,2new conversion).
+Tracer build/lint and fresh original Marathon replay follow; the full rebuild,
+GPU text integration and both original-game acceptances remain unfinished.
+
+
+FS2X milestone checks pass: tracer build18.60s and strict affected lib/test lint
+24.27s. The unchanged original Marathon8M replay executes SingleToExtended,
+then stops four instructions later at2,916,021/01008C2E onFP68K1010 (extended to
+single). Same inspected-arrow-frame hash and independent saved-volume checks
+pass. This exposes the reverse conversion; complete the shared narrowing path
+rather than substituting a host double round trip. The paired conversion work
+continues without claiming application acceptance.

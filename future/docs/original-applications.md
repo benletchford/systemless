@@ -4612,3 +4612,17 @@ contain399white pixels in the ship-caption crop(20,400)–(230,425),correcting t
 earlier visual-only caption-absence note. Do not infer gameplay or real-time
 performance from this instruction-budget probe. Next: controlled input/state
 acceptance for EV and shared single-to-extended numeric routing for Marathon.
+
+
+EV same-build control,2026-10-17: launched the exact CTabChanged tracer binary
+used by the arrow probe before rebuilding numeric code. Same24M input/media/
+display, with only Enter Ship and no arrows, ends at007E6830 with budget exhaustion.
+Its inspected canonical PPM is byte-identical to the prior idle24M frame,
+SHA25611ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48.
+Compared with the same-build arrow frame,171pixels differ only at(6,1)–(18,24).
+The controlled visual response is established; it does not yet identify precise
+ship heading/velocity/position, separate rotation from thrust, or prove movement,
+audio or playability. Independent saved-volume verification passes with unchanged
+pilot/preferences/alias/companions and e524aeff... output. Next EV acceptance should
+separate right-only/up-only inputs and inspect guest state/positions. Private
+2026-10-17-ctab-control.* captures retain this control.

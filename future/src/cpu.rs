@@ -44,6 +44,10 @@ pub enum Call {
         source: GuestPtr,
         destination: GuestPtr,
     },
+    SingleToExtended {
+        source: GuestPtr,
+        destination: GuestPtr,
+    },
     DoubleToExtended {
         source: GuestPtr,
         destination: GuestPtr,

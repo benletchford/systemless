@@ -602,6 +602,17 @@ impl Numerics {
         bytes[2..].copy_from_slice(&(u64::from(magnitude) << (63 - top)).to_be_bytes());
         bytes
     }
+    pub fn single_to_extended(
+        &mut self,
+        memory: &mut Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+    ) -> Result<()> {
+        let input = u32::from_be_bytes(memory.read(source, 4)?.try_into().unwrap());
+        memory.validate_write(destination, 10)?;
+        let bytes = self.expand_single(input);
+        memory.write(destination, &bytes)
+    }
     pub fn double_to_extended(
         &mut self,
         memory: &mut Memory,
