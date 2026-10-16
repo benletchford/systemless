@@ -221,3 +221,15 @@ is not representative application performance: target is 16x12 monochrome, font
 is synthetic, and there is no native/browser presentation. Wider real fonts,
 indexed formats, editing/scrolling/UI workloads, atlas memory growth, cold uploads
 and dispatch/synchronization profiling remain before production selection.
+
+
+## Editable dialog integration (2026-10-17)
+
+DITL editText items now bind their canonical text handles to one shared TextEdit
+record per dialog. Native/PPC selection, active SetDialogItemText, selection/caret
+and DrawDialog use existing wgpu destination operations. Real GPU dialog tests
+cover field switching and selection; original EV visibly draws its New Pilot
+dialog with the pilot name selected before stopping at missing ModalDialog.
+This extends shared UI text coverage; it does not complete modal editing events,
+all text APIs/styles, Glyphon production integration or native/browser acceptance.
+Full scope and library evaluation above remain required.

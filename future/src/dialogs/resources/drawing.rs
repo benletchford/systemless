@@ -6,6 +6,7 @@ use crate::{
 };
 enum Content {
     Text(Rect, Vec<u8>),
+    Editor(Rect, u32),
     Picture(Rect, u32),
     Icon(Rect, Vec<u8>),
 }
@@ -84,6 +85,16 @@ impl Dialogs {
                         capacity = capacity.max(16 + text.len());
                         prepared.push(Content::Text(r, text));
                     }
+                    16 if record.editor != 0
+                        && m.u32(GuestPtr(m.u32(GuestPtr(record.editor))? + 62))? == h =>
+                    {
+                        prepared.push(Content::Editor(r, record.editor));
+                    }
+                    16 => {
+                        let text = payload(m, p, h)?;
+                        capacity = capacity.max(16 + text.len());
+                        prepared.push(Content::Text(r, text));
+                    }
                     64 if h != 0 => {
                         let bytes = payload(m, p, h)?;
                         crate::picture::decode(&bytes)?;
@@ -113,7 +124,10 @@ impl Dialogs {
                 ports.set(m, GuestPtr(dialog))?;
                 for item in prepared {
                     let r = match &item {
-                        Content::Text(r, _) | Content::Picture(r, _) | Content::Icon(r, _) => *r,
+                        Content::Text(r, _)
+                        | Content::Editor(r, _)
+                        | Content::Picture(r, _)
+                        | Content::Icon(r, _) => *r,
                     };
                     m.write(GuestPtr(scratch), &rect_bytes(r)?)?;
                     match item {
@@ -132,6 +146,12 @@ impl Dialogs {
                                 },
                                 0,
                             );
+                            p.textedit = te;
+                            result?;
+                        }
+                        Content::Editor(_, h) => {
+                            let mut te = std::mem::take(&mut p.textedit);
+                            let result = te.update(m, p, g, GuestPtr(scratch), h);
                             p.textedit = te;
                             result?;
                         }
@@ -178,8 +198,9 @@ impl Dialogs {
         g: Option<&Graphics>,
         dialog: u32,
         rect: Rect,
-        bytes: &[u8],
+        text: (&[u8], bool),
     ) -> Result<()> {
+        let (bytes, substitute) = text;
         if m.read(GuestPtr(dialog + 110), 1)?[0] == 0 {
             return Ok(());
         }
@@ -200,7 +221,11 @@ impl Dialogs {
             return Ok(());
         }
         let g = g.ok_or_else(|| bad("visible dialog text requires a GPU"))?;
-        let text = expanded(bytes, &self.check(m, p)?)?;
+        let text = if substitute {
+            expanded(bytes, &self.check(m, p)?)?
+        } else {
+            bytes.to_vec()
+        };
         let scratch = p.new_pointer(m, 16 + text.len() as u32, false)?;
         if scratch == 0 {
             return Err(bad("dialog text scratch allocation failed"));

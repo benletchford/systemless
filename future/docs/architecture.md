@@ -3546,3 +3546,38 @@ macOS flags_changed path forwards only Shift/Control/Option/Command, so actual
 macOS Caps Lock delivery/resynchronization needs additional integration; the
 latch is currently verified through the shared driver fixtures. Native window
 input, browser behavior and original-game interaction remain unverified.
+
+
+### Editable dialog text and shared TextEdit
+
+Resource-backed DITL editText16 creates an independent raw text handle per item
+and one unstyled TERec per dialog. DialogRecord.textH points to that shared TERec;
+editField is the zero-based active item index. The TERec borrows the selected
+item's canonical hText, so TEKey and Get/SetDialogItemText observe the same bytes.
+Switching fields rebinds that one TERec; it never copies edited text into a
+separate host string. TextEdit tracks borrowed ownership, releases its initial
+private empty handle when first bound, and leaves borrowed item text alive on TE
+disposal. Dialog Manager frees item text once during close/disposal.
+
+SelectDialogItemText/SelIText share native$A97E and PPC import routes, signed
+selection inputs clamped at zero and by TextEdit's live text length, per-field
+selection and GPU highlights/caret. DITL's disabled bit suppresses item reports;
+it does not prohibit editing. Hidden inactive selection uses shared layout without GPU
+drawing; switching a previously active hidden field retains the available GPU
+for TextEdit cleanup. Custom TE layout/selection callbacks remain explicit errors. Binding
+failure restores the old TERec and handle identity, re-resolving movable storage.
+Copied DITL data is likewise re-resolved after allocations.
+
+DrawDialog uses TextEdit GPU update for the active editable field and shared GPU
+text-box drawing for other fields; editable text is literal while static text
+retains ParamText substitutions. Active SetDialogItemText relayouts canonical
+TextEdit storage and erases/redraws through wgpu. Destination text pixels,
+selection and caret are GPU operations; CPU font decoding/layout remain allowed.
+The reserved editOpen word is implementation state, not claimed native parity.
+ModalDialog/DialogSelect event handling, click/drag/tab navigation, dialog edit
+commands, noneditable selection targets and complete text/UI coverage remain open.
+
+Primary contracts: [DialogRecord](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-388.html),
+[SelectDialogItemText](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-420.html),
+[text access](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-416.html), and
+[disabled item meaning](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-381.html).

@@ -4123,3 +4123,53 @@ slice: shared dialog edit-text ownership/TextEdit integration and GPU drawing,
 then actual pilot-name interaction and modal event handling; do not treat editText
 as static text or suppress this failure. Marathon's port issue remains separate.
 Full rebuild/complete wgpu text integration stay active. Neither game is playable.
+
+
+## New Pilot dialog editText and selection (2026-10-17)
+
+Both CPU adapters now share DITL editText ownership and SelectDialogItemText/
+SelIText. TextEdit's active hText is the actual item handle, not a host-side copy.
+Shared TEKey fixture edits and Get/SetDialogItemText observe the same bytes; field
+switching, GPU selection and cleanup are covered by the scoped checks in progress.md.
+Dialog event dispatch and actual original typing/confirmation remain incomplete.
+
+```sh
+future/target/debug/examples/trace_application code \
+  future/target/private-originals/ev/application.raw-rsrc 8100000 \
+  --graphics --display 640x480x8 \
+  --volume /tmp/systemless-ev-button-tracking-saved.slv \
+  --key-at 8000000:45:down --key-at 8005000:45:up \
+  --save-screen /tmp/systemless-ev-edit-dialog-verified.ppm \
+  --save-volume /tmp/systemless-ev-edit-dialog-verified.slv \
+  --services-only --elapse-waits
+```
+
+Use fresh output names. Log:/tmp/systemless-ev-edit-dialog-verified.txt,terminal
+exit1, missing ModalDialog$A991 at instruction8,036,025,PC00032A44. N down and up
+are both delivered. The game loads DLOG3100, draws it, sets item5 text and calls
+SelectDialogItemText(5,0,254), followed by FlushEvents before the missing trap.
+Latest decoded FlushEvents is not the failing service. The actual GPU capture
+shows the pilot-name dialog with the name selected, explanatory text, checkbox
+and Cancel/OK buttons. This verifies drawing and programmatic selection in the
+original, not modal editing, pilot creation, audio or gameplay. The surrounding
+game area remains largely black except for the previously activated New Pilot
+button. No forced PCs or fake results.
+
+The first replay (/tmp/systemless-ev-edit-dialog-1.txt) and the repeat capture are
+byte-identical:PPM SHA256
+9c9ea9bf3239fdf262f78668a08d635646183d6ca161d40c565afddee2771e56.
+Input volume SHA256
+aa7b09d1b3ab4660f83616315fe9ddfaf0f07b2d232441cfca75fa215ccba32c.
+Independent output verification passes CRC/catalog/companion forks,preferences
+51->52 with identical metadata/fork bytes. Output7,239,400bytes,SHA256
+d1f1d500e1a44112766eb4e6fcecaef9d79c18001c1eca5fed8a209129db572b.
+Original application hash remains unchanged. Flushes remain memory-only.
+
+Next:shared ModalDialog polling, real guest filter callbacks and TextEdit/control
+event routing, then actual pilot-name entry/confirmation. Marathon has not been
+replayed here; its TextFont4/no-current-port boundary remains. Neither game is
+playable. The full rebuild and complete wgpu text/library integration stay active.
+
+The verified capture and90-line trace tail are also preserved privately under
+future/target/private-originals/ev/evidence/2026-10-17-new-pilot.{png,ppm}
+and2026-10-17-new-pilot-trace-tail.txt, all Git-ignored.

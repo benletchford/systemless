@@ -1073,6 +1073,7 @@ impl Runtime {
                                 crate::dialogs::Op::Resource { .. }
                                     | crate::dialogs::Op::Text { .. }
                                     | crate::dialogs::Op::Draw(_)
+                                    | crate::dialogs::Op::SelectText { .. }
                                     | crate::dialogs::Op::DefaultItem { .. }
                                     | crate::dialogs::Op::Item { .. }
                                     | crate::dialogs::Op::Dispose { .. }
@@ -1082,6 +1083,7 @@ impl Runtime {
                                     crate::dialogs::Op::Item { .. }
                                         | crate::dialogs::Op::Text { .. }
                                         | crate::dialogs::Op::Draw(_)
+                                        | crate::dialogs::Op::SelectText { .. }
                                         | crate::dialogs::Op::DefaultItem { .. }
                                 ) && self.graphics.is_none()
                                 {
@@ -1103,6 +1105,21 @@ impl Runtime {
                                             handle,
                                             pointer,
                                             set,
+                                        )
+                                        .map(|_| 0),
+                                    crate::dialogs::Op::SelectText {
+                                        dialog,
+                                        number,
+                                        start,
+                                        end,
+                                    } => manager
+                                        .select_text(
+                                            &mut self.memory,
+                                            &mut self.process,
+                                            self.graphics.as_ref(),
+                                            dialog,
+                                            number,
+                                            (start, end),
                                         )
                                         .map(|_| 0),
                                     crate::dialogs::Op::Draw(dialog) => manager
@@ -2415,6 +2432,7 @@ impl Runtime {
                             | Call::MaxMemory(_)
                             | Call::Dialog(
                                 crate::dialogs::Op::Resource { .. }
+                                    | crate::dialogs::Op::SelectText { .. }
                                     | crate::dialogs::Op::Text { set: true, .. }
                                     | crate::dialogs::Op::Dispose { .. }
                             )

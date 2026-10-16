@@ -32,6 +32,12 @@ pub enum Op {
         set: bool,
     },
     Draw(u32),
+    SelectText {
+        dialog: u32,
+        number: i16,
+        start: i16,
+        end: i16,
+    },
     DefaultItem {
         dialog: u32,
         number: i16,
@@ -90,6 +96,7 @@ impl Dialogs {
             | Op::Item { .. }
             | Op::Dispose { .. }
             | Op::DefaultItem { .. }
+            | Op::SelectText { .. }
             | Op::Draw(_)
             | Op::Text { .. } => Err(bad("dialog operation requires its record/value route")),
             Op::IsEvent(_) => Err(bad("dialog event query requires a value route")),

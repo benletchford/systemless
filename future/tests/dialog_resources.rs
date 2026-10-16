@@ -78,6 +78,18 @@ fn fixtures(kind: u8) -> Vec<u8> {
             ditl.push(0xa5);
         }
     }
+    if kind & 0x7f == 16 {
+        ditl[..2].copy_from_slice(&2u16.to_be_bytes());
+        ditl.extend([0; 4]);
+        for v in [45i16, 10, 65, 220] {
+            ditl.extend(v.to_be_bytes());
+        }
+        ditl.extend([0x90, 5]);
+        ditl.extend(b"Other");
+        if !ditl.len().is_multiple_of(2) {
+            ditl.push(0xa5);
+        }
+    }
     let mut drawing_dlog = dlog.clone();
     support::w16(&mut drawing_dlog, 18, 129);
     let mut drawing_items = 3u16.to_be_bytes().to_vec();
@@ -141,6 +153,9 @@ fn setup(kind: u8) -> LoadedApplication {
             b"ParamText",
             b"SetDialogItemText",
             b"GetDialogItemText",
+            b"SelectDialogItemText",
+            b"SelIText",
+            b"TEKey",
         ],
         512,
     );
@@ -154,7 +169,7 @@ fn setup(kind: u8) -> LoadedApplication {
             GuestPtr(0x50000000),
             vec![
                 0xa9, 0x7c, 0xa9, 0x8d, 0xa9, 0x82, 0xa9, 0x83, 0xaa, 0x68, 0xa9, 0x81, 0xa9, 0x8f,
-                0xa9, 0x90,
+                0xa9, 0x90, 0xa9, 0x7e,
             ],
             Permissions::RX,
         )
@@ -285,7 +300,7 @@ fn both_cpus_share_real_dialog_records_independent_items_and_cleanup() {
 #[test]
 #[ignore = "requires a real wgpu adapter"]
 fn unsupported_items_fail_before_publishing_a_window() {
-    let mut a = setup(16);
+    let mut a = setup(7);
     let before = a.runtime.memory.u32(GuestPtr(0x9d6)).unwrap();
     let slot = a.runtime.process.ports.unwrap().current_slot;
     let port = a.runtime.memory.u32(slot).unwrap();
@@ -691,4 +706,177 @@ fn item_text_native_frames_validate_initial_output_and_input_before_popping() {
         assert!(Abi::trap(opcode, c, &m).is_err());
         assert_eq!(c.dar[15], 0x1000);
     }
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn editable_items_share_one_textedit_record_with_canonical_text_and_gpu_selection() {
+    let mut a = setup(16);
+    let slot = a.runtime.process.ports.unwrap().current_slot;
+    let previous = a.runtime.memory.u32(slot).unwrap();
+    let first = invoke(&mut a, 2, &[128, 0, u32::MAX]);
+    let mut frame = u32::MAX.to_be_bytes().to_vec();
+    frame.extend(0u32.to_be_bytes());
+    frame.extend(128i16.to_be_bytes());
+    let second = m68(&mut a, 0, &frame, 10, true);
+    assert_ne!(first, 0);
+    assert_ne!(second, 0);
+    let (_, text, _) = item(&mut a, first, 2, false);
+    let (_, other, _) = item(&mut a, first, 3, true);
+    let (_, independent, _) = item(&mut a, second, 2, true);
+    let editor = a.runtime.memory.u32(GuestPtr(first + 160)).unwrap();
+    let second_editor = a.runtime.memory.u32(GuestPtr(second + 160)).unwrap();
+    assert_ne!(editor, second_editor);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(first + 164)).unwrap(), 1);
+    assert_eq!(handle_data(&a, editor, 66)[62..66], text.to_be_bytes());
+    assert_eq!(handle_data(&a, independent, 13), b"Shared dialog");
+    invoke(&mut a, 9, &[second]); // expose first dialog
+    let before = screen(&a);
+    invoke(&mut a, 14, &[first, 2, 0, 32767]);
+    let selected = screen(&a);
+    assert_ne!(selected, before);
+    assert_eq!(&handle_data(&a, editor, 38)[32..38], &[0, 0, 0, 13, 0, 1]);
+    assert_eq!(a.runtime.memory.u32(slot).unwrap(), previous);
+    // Both TEKey and Dialog Manager access the exact same guest text handle.
+    invoke(&mut a, 16, &[u32::from(b'Z'), editor]);
+    assert_eq!(handle_data(&a, text, 1), b"Z");
+    invoke(&mut a, 13, &[text, 0x51000080]);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(0x51000080), 2).unwrap(),
+        b"\x01Z"
+    );
+    // Select another disabled editText: disabled suppresses item reports, not editing.
+    let mut f = 32767i16.to_be_bytes().to_vec();
+    f.extend(0i16.to_be_bytes());
+    f.extend(3i16.to_be_bytes());
+    f.extend(first.to_be_bytes());
+    m68(&mut a, 16, &f, 10, false);
+    assert_eq!(a.runtime.memory.u32(GuestPtr(first + 160)).unwrap(), editor);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(first + 164)).unwrap(), 2);
+    assert_eq!(&handle_data(&a, editor, 66)[62..66], &other.to_be_bytes());
+    assert_eq!(&handle_data(&a, editor, 32)[28..32], &[0, 45, 0, 10]);
+    assert_eq!(handle_data(&a, text, 1), b"Z");
+    a.runtime
+        .memory
+        .write(GuestPtr(0x51000080), b"\x03New")
+        .unwrap();
+    invoke(&mut a, 12, &[other, 0x51000080]);
+    assert_eq!(handle_data(&a, other, 3), b"New");
+    assert_eq!(&handle_data(&a, editor, 62)[60..62], &[0, 3]);
+    invoke(&mut a, 15, &[first, 2, 0, 1]);
+    assert_eq!(&handle_data(&a, editor, 66)[62..66], &text.to_be_bytes());
+    // Hiding an active field must still permit switching with the available GPU.
+    invoke(&mut a, 9, &[first]);
+    invoke(&mut a, 14, &[first, 3, 0, 3]);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(first + 164)).unwrap(), 2);
+    // Edits and selection are per-dialog; borrowed item text is not double-freed.
+    assert_eq!(handle_data(&a, independent, 13), b"Shared dialog");
+    invoke(&mut a, 4, &[first]);
+    for h in [editor, text, other] {
+        a.runtime.process.handle_size(&a.runtime.memory, h).unwrap();
+        assert_ne!(a.runtime.process.mem_error, 0);
+    }
+    assert_eq!(handle_data(&a, independent, 13), b"Shared dialog");
+    invoke(&mut a, 5, &[first]);
+    invoke(&mut a, 5, &[second]);
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn failed_edit_field_rebind_restores_textedit_and_dialog_ownership() {
+    let mut a = setup(0x90);
+    let w = invoke(&mut a, 2, &[128, 0, u32::MAX]);
+    invoke(&mut a, 9, &[w]);
+    let editor = a.runtime.memory.u32(GuestPtr(w + 160)).unwrap();
+    let te = a.runtime.memory.u32(GuestPtr(editor)).unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(te + 38), &1u32.to_be_bytes())
+        .unwrap();
+    let before = handle_data(&a, editor, 128);
+    let state = a
+        .runtime
+        .memory
+        .read(GuestPtr(w + 160), 8)
+        .unwrap()
+        .to_vec();
+    let (_, old, _) = item(&mut a, w, 2, false);
+    let (_, next, _) = item(&mut a, w, 3, true);
+    let old_bytes = handle_data(&a, old, 13);
+    let next_bytes = handle_data(&a, next, 5);
+    let mut manager = std::mem::take(&mut a.runtime.process.dialogs);
+    let err = manager
+        .select_text(
+            &mut a.runtime.memory,
+            &mut a.runtime.process,
+            None,
+            w,
+            3,
+            (0, 32767),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("layout callbacks"));
+    assert_eq!(handle_data(&a, editor, 128), before);
+    assert_eq!(a.runtime.memory.read(GuestPtr(w + 160), 8).unwrap(), state);
+    assert_eq!(handle_data(&a, old, 13), old_bytes);
+    assert_eq!(handle_data(&a, next, 5), next_bytes);
+    let te = a.runtime.memory.u32(GuestPtr(editor)).unwrap();
+    a.runtime.memory.write(GuestPtr(te + 38), &[0; 4]).unwrap();
+    manager
+        .select_text(
+            &mut a.runtime.memory,
+            &mut a.runtime.process,
+            None,
+            w,
+            3,
+            (0, 32767),
+        )
+        .unwrap();
+    assert_eq!(&handle_data(&a, editor, 66)[62..66], &next.to_be_bytes());
+    manager
+        .dispose(
+            &mut a.runtime.memory,
+            &mut a.runtime.process,
+            a.runtime.graphics.as_ref().unwrap(),
+            w,
+            false,
+        )
+        .unwrap();
+    a.runtime.process.dialogs = manager;
+}
+
+#[test]
+fn native_edit_selection_frame_is_read_before_pop_and_keeps_void_registers() {
+    use systemless_future::{abi::Abi, cpu::Call, dialogs::Op, memory::Memory};
+    let mut m = Memory::default();
+    m.map(GuestPtr(0x1000), vec![0; 9], Permissions::RW)
+        .unwrap();
+    let mut cpu = Cpu::new(Architecture::M68k, 0, 0x1000);
+    let Cpu::M68k(c) = &mut cpu else {
+        unreachable!()
+    };
+    c.dar[0] = 0xaabbccdd;
+    assert!(Abi::trap(0xa97e, c, &m).is_err());
+    assert_eq!(c.dar[15], 0x1000);
+    assert_eq!(c.dar[0], 0xaabbccdd);
+    let mut m = Memory::default();
+    let mut f = 32767i16.to_be_bytes().to_vec();
+    f.extend((-1i16).to_be_bytes());
+    f.extend(5i16.to_be_bytes());
+    f.extend(0x11223344u32.to_be_bytes());
+    m.map(GuestPtr(0x1000), f, Permissions::RX).unwrap();
+    let (call, reply) = Abi::trap(0xa97e, c, &m).unwrap();
+    assert_eq!(
+        call,
+        Call::Dialog(Op::SelectText {
+            dialog: 0x11223344,
+            number: 5,
+            start: -1,
+            end: 32767
+        })
+    );
+    reply.apply(&mut cpu, &mut m, 0, 0).unwrap();
+    let Cpu::M68k(c) = &cpu else { unreachable!() };
+    assert_eq!(c.dar[15], 0x100a);
+    assert_eq!(c.dar[0], 0xaabbccdd);
 }

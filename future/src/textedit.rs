@@ -6,7 +6,7 @@ use crate::{
     quickdraw::Ports,
     Error, Result,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextBox {
     pub text: GuestPtr,
@@ -61,6 +61,7 @@ pub enum Op {
 pub struct Manager {
     scrap: u32,
     records: BTreeMap<u32, Vec<u32>>,
+    borrowed_text: BTreeSet<u32>,
 }
 fn bad(message: &str) -> Error {
     Error::Graphics(message.into())
@@ -377,13 +378,77 @@ impl Manager {
                     memory.validate_write(GuestPtr(nested), 4)?;
                 }
                 let owned = self.records.remove(&handle).unwrap();
-                for nested in owned.into_iter().rev() {
-                    process.dispose_handle(memory, nested)?;
+                let borrowed = self.borrowed_text.remove(&handle);
+                for (index, nested) in owned.into_iter().enumerate().rev() {
+                    if index != 1 || !borrowed {
+                        process.dispose_handle(memory, nested)?;
+                    }
                 }
                 process.mem_error = 0;
                 Ok(0)
             }
         }
+    }
+    /// Dialog Manager owns item text; one unstyled TERec borrows the selected
+    /// item's canonical handle. TE disposal must not release that item handle.
+    pub(crate) fn bind_dialog_text(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        handle: u32,
+        text: u32,
+        bounds: GuestPtr,
+    ) -> Result<()> {
+        self.call(memory, process, Op::GetText(handle), 0)?;
+        if self.records[&handle].len() != 2 {
+            return Err(bad("dialog editing requires unstyled TextEdit"));
+        }
+        let length = process.handle_size(memory, text)?;
+        if process.mem_error != 0 || length > 32767 || text == handle {
+            return Err(bad("invalid dialog editable text handle"));
+        }
+        let bytes = memory
+            .read(pointer(memory, process, text, length)?, length as usize)?
+            .to_vec();
+        let bounds = memory.read(bounds, 8)?.to_vec();
+        let size = process.handle_size(memory, handle)?;
+        let data = pointer(memory, process, handle, size)?;
+        let saved = memory.read(data, size as usize)?.to_vec();
+        memory.validate_write(data, size as usize)?;
+        let old = self.records[&handle][1];
+        let borrowed = self.borrowed_text.contains(&handle);
+        if !borrowed {
+            memory.validate_write(GuestPtr(old), 4)?;
+        }
+        let mut record = saved.clone();
+        for offset in [0, 8, 16] {
+            record[offset..offset + 8].copy_from_slice(&bounds);
+        }
+        record[28..32].copy_from_slice(&bounds[..4]);
+        record[32..38].fill(0);
+        record[60..62].copy_from_slice(&(length as u16).to_be_bytes());
+        record[62..66].copy_from_slice(&text.to_be_bytes());
+        memory.write(data, &record)?;
+        self.records.get_mut(&handle).unwrap()[1] = text;
+        self.borrowed_text.insert(handle);
+        let result = self.layout(memory, process, handle, bytes, false, None);
+        if result.is_err() || process.mem_error != 0 {
+            // Layout publishes all replacement handles atomically. On failure
+            // the original allocation still holds the staged record.
+            let error = process.mem_error;
+            let current = GuestPtr(memory.u32(GuestPtr(handle))?);
+            memory.write(current, &saved)?;
+            process.mem_error = error;
+            self.records.get_mut(&handle).unwrap()[1] = old;
+            if !borrowed {
+                self.borrowed_text.remove(&handle);
+            }
+            return result.map(|_| ());
+        }
+        if !borrowed && old != text {
+            process.dispose_handle(memory, old)?;
+        }
+        Ok(())
     }
     fn select_storage(
         &mut self,
@@ -660,6 +725,17 @@ impl Manager {
             process.mem_error = allocation_error;
         }
         result.and(cleanup)
+    }
+    pub(crate) fn redraw_dialog(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &crate::graphics::Graphics,
+        handle: u32,
+    ) -> Result<()> {
+        self.call(memory, process, Op::GetText(handle), 0)?;
+        let data = pointer(memory, process, handle, 128)?;
+        self.redraw(memory, process, gpu, GuestPtr(data.0 + 8), handle, true)
     }
     pub fn update(
         &mut self,

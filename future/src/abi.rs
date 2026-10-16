@@ -105,6 +105,7 @@ pub enum Service {
     InitDialogs,
     DialogItemText(bool),
     DrawDialog,
+    SelectDialogItemText,
     SetDialogDefaultItem,
     GetNewDialog,
     GetDialogItem,
@@ -491,6 +492,7 @@ impl Abi {
             b"InitDialogs" => Some(Service::InitDialogs),
             b"SetDialogItemText" | b"SetIText" => Some(Service::DialogItemText(true)),
             b"GetDialogItemText" | b"GetIText" => Some(Service::DialogItemText(false)),
+            b"SelIText" | b"SelectDialogItemText" => Some(Service::SelectDialogItemText),
             b"DrawDialog" => Some(Service::DrawDialog),
             b"SetDialogDefaultItem" => Some(Service::SetDialogDefaultItem),
             b"GetNewDialog" => Some(Service::GetNewDialog),
@@ -3624,6 +3626,20 @@ impl Abi {
                 c.dar[15] = next;
                 Ok((Call::Dialog(crate::dialogs::Op::Draw(dialog)), Reply::None))
             }
+            0xa97e => {
+                let args = memory.read(GuestPtr(sp), 10)?;
+                let word = |i| i16::from_be_bytes(args[i..i + 2].try_into().unwrap());
+                let op = crate::dialogs::Op::SelectText {
+                    dialog: u32::from_be_bytes(args[6..10].try_into().unwrap()),
+                    number: word(4),
+                    start: word(2),
+                    end: word(0),
+                };
+                c.dar[15] = sp
+                    .checked_add(10)
+                    .ok_or_else(|| Error::Cpu("SelIText stack overflow".into()))?;
+                Ok((Call::Dialog(op), Reply::None))
+            }
             0xa97c => {
                 let b = memory.read(GuestPtr(sp), 14)?;
                 let result = sp
@@ -4050,6 +4066,12 @@ impl Abi {
                 handle: c.gpr[3],
                 pointer: GuestPtr(c.gpr[4]),
                 set,
+            }),
+            Service::SelectDialogItemText => Call::Dialog(crate::dialogs::Op::SelectText {
+                dialog: c.gpr[3],
+                number: c.gpr[4] as i16,
+                start: c.gpr[5] as i16,
+                end: c.gpr[6] as i16,
             }),
             Service::DrawDialog => Call::Dialog(crate::dialogs::Op::Draw(c.gpr[3])),
             Service::SetDialogDefaultItem => Call::Dialog(crate::dialogs::Op::DefaultItem {
@@ -4760,6 +4782,7 @@ impl Abi {
                         | Service::SetClientID
                         | Service::SetDevice
                         | Service::GetDialogItem
+                        | Service::SelectDialogItemText
                         | Service::DrawDialog
                         | Service::DialogItemText(_)
                         | Service::DisposeDialog(_)

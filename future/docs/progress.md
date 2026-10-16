@@ -8849,3 +8849,72 @@ slice: shared dialog edit-text ownership/TextEdit integration and GPU drawing,
 then actual pilot-name interaction and modal event handling; do not treat editText
 as static text or suppress this failure. Marathon's port issue remains separate.
 Full rebuild/complete wgpu text integration stay active. Neither game is playable.
+
+
+## Dialog editText through shared TextEdit and wgpu (2026-10-17)
+
+DITL editText16/disabled$90 now owns ordinary item text handles and a single
+shared unstyled TextEdit record per dialog. The active TERec borrows the actual
+item hText, preserving identity across TEKey, Get/SetDialogItemText and field
+switches. TE disposal leaves borrowed item text to the Dialog Manager; dialog
+close/disposal releases it once. Layout failure restores the prior binding and
+TERec. Movable TERec/DITL pointers are re-resolved after allocations.
+
+Native SelIText$A97E and PPC SelectDialogItemText/SelIText marshal into one service.
+Selection highlights/caret, active text replacement and DrawDialog edit fields
+use existing shared TextEdit GPU drawing. Other edit fields use literal GPU text
+boxes; static text retains ParamText expansion. Disabled editable items remain
+editable, as Apple's disabled bit controls item reports rather than editing.
+See architecture.md for primary references and explicit compatibility boundaries.
+
+Validation:113distinct scoped passes:80core,12dialog_resources,5dialogs,16textedit.
+All16GPU cases in those scopes run on a real adapter; none are skipped. The broad
+run /tmp/systemless-dialog-edit-final-tests.txt exits0. A final12case dialog replay
+(/tmp/systemless-dialog-edit-verified-tests.txt,exit0) also covers moved selection
+points and the last text redraw call-shape cleanup; it is not counted twice.
+Tests include both CPU adapters, independent dialogs/handles, actual TEKey edits,
+Get/Set text, disabled field switching, GPU selection, close/dispose, short native
+frames/void registers, corrupt-layout failure recovery and retry. Strict final
+lib/bins/selected-tests/tracer lint and tracer build exit0:
+/tmp/systemless-dialog-edit-verified-lint.txt,
+/tmp/systemless-dialog-edit-verified-tracer-build.txt. Initial strict lint found
+an overlong argument list; the final helper groups text and substitution policy.
+Earlier exploratory test runs are superseded, not cumulative. Full-suite/CI and
+native window/browser input acceptance remain unverified.
+
+Original EV replay now loads DLOG3100, draws it, calls SetDialogItemText on item5
+and SelectDialogItemText(5,0,254), and releases the scheduled N key. Actual GPU
+capture shows the pilot-name dialog with the name selected, explanatory text,
+checkbox and Cancel/OK buttons. It stops at missing ModalDialog($A991),PC00032A44,
+instruction8,036,025; latest decoded service FlushEvents is not the failing call.
+No pilot-name typing, confirmation, gameplay or audio acceptance is claimed.
+Next executable slice: a real modal event loop, guest filter callbacks and text/
+control event dispatch through shared services, followed by actual pilot-name
+interaction. Marathon's missing current port remains separate and has not been
+replayed in this milestone. Full rebuild and complete GPU text integration remain
+active; neither priority game is playable.
+
+Repeated original screen and volume evidence is recorded in original-applications.md:
+/tmp/systemless-ev-edit-dialog-verified.txt exits1 at the same ModalDialog boundary,
+with identical capture bytes and independently verified output volume. The repeat
+uses the final selection-point/rollback code; the later hidden-active-field fix
+does not affect this visible single-field original path. Hidden field switching
+is covered separately by the final dialog fixture.
+
+Final hidden-active-field fixture coverage passes in all12dialog cases:
+/tmp/systemless-dialog-edit-hidden-final-tests.txt,exit0. This supersedes the
+earlier dialog-only run and is not added to the113distinct total. All-target
+check /tmp/systemless-dialog-edit-all-targets.txt exits0; the later correction
+only retains an available GPU in the hidden selection branch and is checked by
+the final targeted lint/build and dialog run. No ABI shape changed after that
+all-target check. The16GPU cases in the broad scopes were executed, not skipped.
+Durable private capture and trace tail are Git-ignored under
+future/target/private-originals/ev/evidence/2026-10-17-new-pilot.{png,ppm},
+with the corresponding -trace-tail.txt. No private evidence enters the commit.
+
+Final strict lint and runnable tracer build both exit0 after the hidden-field
+correction: /tmp/systemless-dialog-edit-hidden-final-lint.txt and
+/tmp/systemless-dialog-edit-hidden-final-build.txt. Final formatting/whitespace
+checks pass. The original pending ModalDialog frame contains itemHit$0082A9F6
+and filterProc0: the next original slice needs the standard modal filter, while
+general guest-filter callbacks must retain their real continuation/ABI route.

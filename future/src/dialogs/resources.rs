@@ -1,6 +1,7 @@
 //! Resource-backed classic dialog records and copied item lists.
 use super::*;
 mod drawing;
+mod editing;
 mod text;
 use crate::{
     controls::{NewControl, Op as ControlOp},
@@ -11,6 +12,7 @@ pub const RECORD_SIZE: u32 = 170;
 pub(super) struct Record {
     items: u32,
     text: Vec<u32>,
+    editor: u32,
     closed: bool,
     outline: Option<Rect>,
     automatic_default: bool,
@@ -101,7 +103,7 @@ fn items(b: &[u8]) -> Result<Vec<Item>> {
         let r = rect(&head[4..12]);
         match kind & 0x7f {
             0 | 8 => {}
-            4..=6 => {
+            4..=6 | 16 => {
                 if r.left >= r.right || r.top >= r.bottom {
                     return Err(bad("empty dialog control"));
                 }
@@ -180,6 +182,7 @@ impl Dialogs {
         let mut w = storage.0;
         let mut copied = 0;
         let mut text = Vec::new();
+        let mut editor = 0;
         let mut opened = false;
         let result = (|| {
             scratch = p.new_pointer(m, 288, true)?;
@@ -287,7 +290,7 @@ impl Dialogs {
                         }
                         h
                     }
-                    8 => {
+                    8 | 16 => {
                         let h = p.new_handle(m, item.data.len() as u32, false)?;
                         if h == 0 {
                             return Ok(0);
@@ -316,7 +319,42 @@ impl Dialogs {
                     0 => 0,
                     _ => unreachable!(),
                 };
-                m.write(GuestPtr(copy.0 + item.offset as u32), &h.to_be_bytes())?;
+                let copy = m.u32(GuestPtr(copied))?;
+                m.write(GuestPtr(copy + item.offset as u32), &h.to_be_bytes())?;
+            }
+            if let Some((index, item)) = parsed
+                .iter()
+                .enumerate()
+                .find(|(_, item)| item.kind & 0x7f == 16)
+            {
+                m.write(GuestPtr(scratch), &rect_bytes(item.rect)?)?;
+                ports.set(m, GuestPtr(w))?;
+                let mut te = std::mem::take(&mut p.textedit);
+                let result = (|| {
+                    editor = te.call(
+                        m,
+                        p,
+                        crate::textedit::Op::New {
+                            dest: GuestPtr(scratch),
+                            view: GuestPtr(scratch),
+                            styled: false,
+                        },
+                        0,
+                    )?;
+                    if editor == 0 {
+                        return Ok(());
+                    }
+                    let copy = m.u32(GuestPtr(copied))?;
+                    let h = m.u32(GuestPtr(copy + item.offset as u32))?;
+                    te.bind_dialog_text(m, p, editor, h, GuestPtr(scratch))
+                })();
+                p.textedit = te;
+                result?;
+                if editor == 0 || p.mem_error != 0 {
+                    return Ok(0);
+                }
+                m.write(GuestPtr(w + 160), &editor.to_be_bytes())?;
+                m.write(GuestPtr(w + 164), &(index as i16).to_be_bytes())?;
             }
             if t.visible {
                 window(m, p, g, WindowOp::Show, w)?;
@@ -345,6 +383,7 @@ impl Dialogs {
                 Record {
                     items: copied,
                     text,
+                    editor,
                     closed: false,
                     outline: None,
                     automatic_default: false,
@@ -356,6 +395,12 @@ impl Dialogs {
             p.mem_error = 0;
             p.res_error = 0;
             return result;
+        }
+        if editor != 0 {
+            let mut te = std::mem::take(&mut p.textedit);
+            let cleanup = te.call(m, p, crate::textedit::Op::Dispose(editor), 0);
+            p.textedit = te;
+            cleanup?;
         }
         if opened {
             window(
@@ -453,6 +498,15 @@ impl Dialogs {
         if !record.closed {
             if m.u32(GuestPtr(dialog + 156))? != record.items {
                 return Err(bad("dialog item ownership changed"));
+            }
+            if m.u32(GuestPtr(dialog + 160))? != record.editor {
+                return Err(bad("dialog TextEdit ownership changed"));
+            }
+            if record.editor != 0 {
+                let mut te = std::mem::take(&mut p.textedit);
+                let result = te.call(m, p, crate::textedit::Op::Dispose(record.editor), 0);
+                p.textedit = te;
+                result?;
             }
             window(
                 m,
