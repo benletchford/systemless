@@ -440,3 +440,56 @@ fn current_port_clip_translates_to_alias_bounds_and_readonly_destinations_fault(
         [0x55; 8]
     );
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn both_cpu_copybits_adapters_preserve_dither_flag_and_diffuse_indexed_gray() {
+    let mut app = setup();
+    let address = 0x53000000u32;
+    let mut source = vec![0; 108];
+    source[..4].copy_from_slice(&(address + 100).to_be_bytes());
+    for (at, value) in [(4, 0x8002u16), (10, 4), (12, 8), (32, 1), (34, 1), (36, 1)] {
+        source[at..at + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    source[42..46].copy_from_slice(&(address + 64).to_be_bytes());
+    source[64..68].copy_from_slice(&(address + 68).to_be_bytes());
+    for at in [78, 80, 82] {
+        source[at..at + 2].copy_from_slice(&32896u16.to_be_bytes());
+    }
+    app.runtime
+        .memory
+        .map(GuestPtr(address), source.clone(), Permissions::RX)
+        .unwrap();
+    let mut request = request();
+    request.source = GuestPtr(address);
+    request.mode = 0x40;
+    let before = app
+        .runtime
+        .memory
+        .read(GuestPtr(0x1000), 108)
+        .unwrap()
+        .to_vec();
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        app.runtime
+            .memory
+            .write(GuestPtr(0x1200), &[0, 0x5a, 0, 0x5a, 0, 0x5a, 0, 0x5a])
+            .unwrap();
+        if arch == Architecture::M68k {
+            native(&mut app, request);
+        } else {
+            ppc(&mut app, request);
+        }
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(0x1200), 8).unwrap(),
+            [0x14, 0x5a, 0x28, 0x5a, 0x14, 0x5a, 0x28, 0x5a]
+        );
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(0x1000), 108).unwrap(),
+            before
+        );
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(address), 108).unwrap(),
+            source
+        );
+    }
+}

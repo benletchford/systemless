@@ -8357,3 +8357,87 @@ PC01010E86,62timer/0sound/0VBL callbacks. Logs
 gameplay acceptance follows. Both original games remain unplayable; full rebuild,
 complete GPU text/library integration and native/browser/CI acceptance stay open.
 All tracked build/test/replay/search handles are terminal.
+
+
+## Shared on-device ditherCopy
+
+Primary flag contract: Imaging With QuickDraw/CopyBits allows$40 to accompany
+any source mode, https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-166.html.
+For an executable algorithm reference, the preserved Systemless GWorld conversion
+in src/systems/macintosh/loader/ppc/gworlds.rs uses left-to-right Floyd–Steinberg
+error diffusion with clamped sixteen-bit components, per-contribution signed
+integer division and weights7/3/5/1. That is comparison evidence permitted by the
+user, not proof of native QuickDraw pixel parity or its exact dithering algorithm.
+
+The rebuild now retains$40 through indexed/direct PICT decoding and shared
+CopyBits mode validation. Source colors reach a dedicated wgpu diffusion pass,
+resampled to destination dimensions first. The pass carries two GPU error rows,
+uses destination match eligibility and exact squared color distances, and emits
+RGB directly into a GPU storage buffer. The ordinary transfer pass consumes that
+buffer without CPU intermediate readback, preserving foreground/background and
+transfer/inversion behavior. Source coordinates outside the source image are
+marked invalid and leave corresponding guest pixels untouched. Region clipping
+is applied after full-rectangle diffusion, preserving its phase across holes.
+
+The initial diffusion kernel serializes its dependency order on one GPU lane,
+matching the deterministic reference rather than introducing races or approximate
+parallel diffusion. It shares the existing128million color-comparison budget;
+destination/source dimensions remain at most4096. Large-workload throughput and
+native/System7 pattern parity remain unverified. Pixel masks represented by source
+BlitMask are explicitly unsupported by the private diffusion entry; public PICT
+and CopyBits region masks use the supported clip path. Direct-color guest output
+surfaces, other transfer families and broader GWorld behavior remain open.
+
+New GPU tests compare mono output after resampling and translated clipping against
+an independent CPU reference, including all8transfer/inversion combinations;
+check2/4/8-bit palettes and eligibility; and prove dithering differs from nearest
+copy. A dual-CPU PICT test expects a mixed-tone pattern from gray rather than a
+thresholded flat fill, with row guards and unchanged port bytes. Decoder tests
+retain$40 on both source formats and reject unrelated flags. GPU picture90011
+has completed exit0; GPU reference23219, ordinary17505, lint8241 and originalEV
+21513 remain live at this record. Tracer64597 and check38859 exit0. Keep handles.
+Full rebuild and GPU text rendering/library integration remain active.
+
+Both new GPU reference cases23219 exit0, and the explicit dual-CPU CopyBits case
+96814 exits0: indexed gray is diffused with the same mixed-tone result through
+native and PPC adapters, with readonly source and destination guards preserved.
+Ordinary17505 exits0:76core+2CopyBits+9picture tests. Three new GPU cases were
+initially verified, then the additional CopyBits case brings the distinct total
+to91passed when final GPU/service checks below complete. Nine other ignored GPU
+cases remain unverified. Scoped lint8241 and final fixture lint98376 exit0.
+
+Original EV21513 exits1 in /tmp/systemless-ev-dither.txt after passing the prior
+PICT2027/ditherCopy boundary and continuing through more offscreen/picture loads.
+The next missing service is GetPixPat ($AA0C), resourceID128, PC0002F256. No
+sound/timer/VBL callbacks, visible frame/UI/audio or gameplay acceptance is claimed.
+Saved /tmp/systemless-ev-dither-saved.slv7,239,400bytes, SHA256
+e714144be242f0760639204b05639fedca0e234918bffc0bc20014f3b338d56d,
+passes independent CRC/catalog/fork checks: preferences44->45 only identity
+change, metadata/fork bytes and companions unchanged.
+
+Final preflight also checks actual device storage-binding limits before creating
+RGB buffers, independently of geometry/comparison budgets. The first strict lint
+attempt after that check rejected redundant u64::from conversions because wgpu30
+already exposes the limit as u64. Those identity conversions were removed; verified
+lint71585 exits0, /tmp/systemless-dither-verified-lint.txt. Diffusion GPU76936 exits0
+against the binding preflight. Public service52336 and exact-source tracer rebuild
+remain live; poll them. No algorithm or guest-visible workaround was introduced
+by the lint correction. Full rebuild and complete GPU text remain active.
+
+Final validation is terminal. Diffusion76936 exits0,2GPU reference tests; final
+public service52336 exits0, both CPU PICT and CopyBits GPU cases plus the repeated
+flag-decoder case. Ordinary17505 has87distinct passes;4explicit GPU cases bring
+the deduplicated total to91. Nine other ignored GPU cases remain unverified.
+Verified strict lint71585 exits0; exact-source tracer30467 exits0; sequential
+changed-file formatting and whitespace pass. Logs /tmp/systemless-dither-final-
+gpu.txt, -final-services.txt, -verified-lint.txt, -verified-tracer-build.txt.
+
+Exact-source EV replay5725 exits1 at the same GetPixPat$AA0C/resource128/
+PC0002F256 boundary. /tmp/systemless-ev-dither-final.txt. Independent volume
+checks pass preferences45->46, identical metadata/fork bytes and all companions.
+/tmp/systemless-ev-dither-final-saved.slv7,239,400bytes, SHA256
+2ba13890c96592ee8112132a416ad7d6f83392996f3be37741e3827d9ee9b9dd.
+Use this saved volume and the ignored original fork for the next resource slice.
+All tracked validation/replay handles are terminal. No full-suite/native/browser/
+CI, original frame/UI/audio/gameplay or large-workload throughput claim. The full
+rebuild, both original games and complete GPU text rendering remain active.

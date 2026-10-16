@@ -855,3 +855,69 @@ fn both_cpu_adapters_draw_direct_rgb_pictures_with_clipping_and_unchanged_port_s
         }
     }
 }
+
+#[test]
+fn dither_flag_survives_both_indexed_and_direct_picture_decoding() {
+    let (mut bytes, _) = direct_fixture(32, 4, 4, 3, false);
+    bytes[82..84].copy_from_slice(&0x40u16.to_be_bytes());
+    assert_eq!(decode(&bytes).unwrap().commands[0].mode, 0x40);
+    for mode in 0..8 {
+        assert_eq!(
+            decode(&fixture(false, true, mode | 0x40)).unwrap().commands[0].mode,
+            mode | 0x40
+        );
+    }
+    bytes[82..84].copy_from_slice(&0x20u16.to_be_bytes());
+    assert!(decode(&bytes).is_err());
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn both_cpu_adapters_honor_direct_picture_dither_copy_instead_of_thresholding() {
+    let (mut bytes, _) = direct_fixture(32, 1, 4, 3, false);
+    bytes[82..84].copy_from_slice(&0x40u16.to_be_bytes());
+    for pixel in bytes[84..116].chunks_exact_mut(4) {
+        pixel.copy_from_slice(&[0, 128, 128, 128]);
+    }
+    let mut app = app(bytes);
+    let h = app
+        .runtime
+        .process
+        .get_resource(&mut app.runtime.memory, *b"PICT", 128)
+        .unwrap();
+    let port = app
+        .runtime
+        .memory
+        .read(GuestPtr(0x1000), 108)
+        .unwrap()
+        .to_vec();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa8, 0xf6], Permissions::RX)
+        .unwrap();
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        app.runtime
+            .memory
+            .write(GuestPtr(0x1200), &[0, 0x5a, 0, 0x5a, 0, 0x5a, 0, 0x5a])
+            .unwrap();
+        if arch == Architecture::PowerPc {
+            invoke(&mut app, 4, &[h, 0x300]);
+        } else {
+            let stack = STACK_BASE + 0x8000;
+            let mut frame = 0x300u32.to_be_bytes().to_vec();
+            frame.extend(h.to_be_bytes());
+            frame.extend([0xa5; 4]);
+            app.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+            app.runtime.cpu = Cpu::new(arch, 0x50000000, stack);
+            assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+        }
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(0x1200), 8).unwrap(),
+            [0x14, 0x5a, 0x28, 0x5a, 0x14, 0x5a, 0x28, 0x5a]
+        );
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(0x1000), 108).unwrap(),
+            port
+        );
+    }
+}

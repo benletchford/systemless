@@ -593,7 +593,7 @@ impl Ports {
         let destination = crate::pixmap::copy_destination(memory, request.destination)?;
         let mut source_rect = read_rect(memory, request.source_rect)?;
         let rect = read_rect(memory, request.destination_rect)?;
-        if !(0..=7).contains(&request.mode) {
+        if request.mode & !0x47 != 0 {
             return Err(Error::Graphics("unsupported CopyBits transfer mode".into()));
         }
         if source_rect.left >= source_rect.right
@@ -630,30 +630,45 @@ impl Ports {
         source_rect.bottom -= source.bounds.top;
         let (width, height) = source.extent()?;
         // Decode before any destination write, including overlapping backing storage.
-        destination.execute_source_palette(
-            gpu,
-            memory,
-            Draw::Blit {
-                mask: None,
-                rect,
-                clip: destination.bounds,
-                source: source_rect,
-                width: width as u32,
-                height: height as u32,
-                foreground,
-                background,
-                invert: request.mode & 4 != 0,
-                mode: match request.mode & 3 {
-                    0 => Transfer::Copy,
-                    1 => Transfer::Or,
-                    2 => Transfer::Xor,
-                    _ => Transfer::Bic,
-                },
+        let draw = Draw::Blit {
+            mask: None,
+            rect,
+            clip: destination.bounds,
+            source: source_rect,
+            width: width as u32,
+            height: height as u32,
+            foreground,
+            background,
+            invert: request.mode & 4 != 0,
+            mode: match request.mode & 3 {
+                0 => Transfer::Copy,
+                1 => Transfer::Or,
+                2 => Transfer::Xor,
+                _ => Transfer::Bic,
             },
-            Some(&clips),
-            Some(&source_data.indices),
-            source_data.palette.as_deref(),
-        )
+        };
+        if request.mode & 0x40 != 0 {
+            let rgb = source_data
+                .indices
+                .iter()
+                .map(|&i| {
+                    source_data
+                        .palette
+                        .as_ref()
+                        .map_or(if i == 0 { [65535; 3] } else { [0; 3] }, |p| p[i as usize])
+                })
+                .collect::<Vec<_>>();
+            destination.execute_dithered_rgb(gpu, memory, draw, Some(&clips), &rgb)
+        } else {
+            destination.execute_source_palette(
+                gpu,
+                memory,
+                draw,
+                Some(&clips),
+                Some(&source_data.indices),
+                source_data.palette.as_deref(),
+            )
+        }
     }
     pub fn copy_mask(&self, memory: &mut Memory, gpu: &Graphics, request: CopyMask) -> Result<()> {
         let source = Bitmap::read(memory, request.source)?;

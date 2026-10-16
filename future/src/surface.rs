@@ -10,6 +10,7 @@ type CpuSource<'a> = (
     Option<&'a [u8]>,
     Option<&'a [[u16; 3]; 256]>,
     Option<&'a [[u16; 3]]>,
+    bool,
 );
 #[derive(Clone)]
 pub(crate) struct Palette {
@@ -216,7 +217,14 @@ impl Surface {
         source: Option<&[u8]>,
         palette: Option<&[[u16; 3]; 256]>,
     ) -> Result<()> {
-        self.execute_inputs(gpu, memory, draw, clips, (source, palette, None), None)
+        self.execute_inputs(
+            gpu,
+            memory,
+            draw,
+            clips,
+            (source, palette, None, false),
+            None,
+        )
     }
     pub(crate) fn execute_rgb(
         &self,
@@ -226,7 +234,31 @@ impl Surface {
         clips: Option<&[Rect]>,
         rgb: &[[u16; 3]],
     ) -> Result<()> {
-        self.execute_inputs(gpu, memory, draw, clips, (None, None, Some(rgb)), None)
+        self.execute_inputs(
+            gpu,
+            memory,
+            draw,
+            clips,
+            (None, None, Some(rgb), false),
+            None,
+        )
+    }
+    pub(crate) fn execute_dithered_rgb(
+        &self,
+        gpu: &Graphics,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+        rgb: &[[u16; 3]],
+    ) -> Result<()> {
+        self.execute_inputs(
+            gpu,
+            memory,
+            draw,
+            clips,
+            (None, None, Some(rgb), true),
+            None,
+        )
     }
     pub(crate) fn execute_mask_texture(
         &self,
@@ -236,7 +268,14 @@ impl Surface {
         clips: Option<&[Rect]>,
         texture: &wgpu::Texture,
     ) -> Result<()> {
-        self.execute_inputs(gpu, memory, draw, clips, (None, None, None), Some(texture))
+        self.execute_inputs(
+            gpu,
+            memory,
+            draw,
+            clips,
+            (None, None, None, false),
+            Some(texture),
+        )
     }
     fn execute_inputs(
         &self,
@@ -247,7 +286,7 @@ impl Surface {
         cpu_source: CpuSource<'_>,
         texture: Option<&wgpu::Texture>,
     ) -> Result<()> {
-        let (source, palette, rgb) = cpu_source;
+        let (source, palette, rgb, dither) = cpu_source;
         if palette.is_none()
             && rgb.is_none()
             && !matches!(draw, Draw::Copy { .. })
@@ -435,13 +474,23 @@ impl Surface {
                 && source.is_some_and(|s| s.iter().all(|v| self.index(u32::from(*v)).is_ok()))
         });
         if let Some(rgb) = rgb {
-            gpu.execute_rgb(
-                &mut staging,
-                draw,
-                translated.as_deref(),
-                rgb,
-                self.config(false),
-            )?;
+            if dither {
+                gpu.execute_dither_rgb(
+                    &mut staging,
+                    draw,
+                    translated.as_deref(),
+                    rgb,
+                    self.config(false),
+                )?;
+            } else {
+                gpu.execute_rgb(
+                    &mut staging,
+                    draw,
+                    translated.as_deref(),
+                    rgb,
+                    self.config(false),
+                )?;
+            }
         } else if let Some(texture) = texture {
             gpu.execute_gpu_mask(
                 &mut staging,

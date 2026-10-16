@@ -11,6 +11,7 @@ fn source_index(x:i32,y:i32)->u32 {
     if p[21]==2 {return u32(y*p[16]+x);}
     return source[u32(y*p[16]+x)];
 }
+fn source_valid(index:u32)->bool {if p[21]!=2{return true;}return source[3u*index]<=65535u;}
 fn source_rgb(index:u32)->vec3<u32> {
     if p[21]==2 {let at=3u*index;return vec3<u32>(source[at],source[at+1u],source[at+2u]);}
     let at=25+4*max(p[24],0)+3*i32(index);
@@ -127,7 +128,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                     }
                 }
             } else if sx>=0 && sy>=0 && sx<p[16] && sy<p[17] {
-                let sample=source_index(sx,sy);bit=select(blit_bit(sample),sample,color_target()!=0);
+                let sample=source_index(sx,sy);valid=source_valid(sample);bit=select(blit_bit(sample),sample,color_target()!=0);
             } else { valid=false; }
             if p[22]!=0 {
                 // Masked copies use the legacy reference's nearest-neighbor

@@ -4,6 +4,7 @@ use crate::{
 };
 use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
+mod dither;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
     pub left: i32,
@@ -113,6 +114,7 @@ pub(crate) struct IndexedTarget<'a> {
 enum CopySource<'a> {
     Cpu(&'a [u8]),
     Rgb(&'a [[u16; 3]]),
+    GpuRgb(&'a wgpu::Buffer),
     GpuMask(&'a wgpu::Texture),
 }
 pub struct Graphics {
@@ -125,6 +127,7 @@ pub struct Graphics {
     pub base: GuestPtr,
     pub palette: [[u8; 4]; 256],
     pipeline: wgpu::ComputePipeline,
+    dither_pipeline: wgpu::ComputePipeline,
     empty_source: wgpu::Texture,
     error: Arc<Mutex<Option<String>>>,
 }
@@ -177,6 +180,7 @@ impl Graphics {
             compilation_options: Default::default(),
             cache: None,
         });
+        let dither_pipeline = dither::pipeline(&device);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("guest display"),
             size: wgpu::Extent3d {
@@ -218,6 +222,7 @@ impl Graphics {
             base,
             palette,
             pipeline,
+            dither_pipeline,
             empty_source,
             error,
         })
@@ -255,6 +260,7 @@ impl Graphics {
             base: self.base,
             palette: self.palette,
             pipeline: self.pipeline.clone(),
+            dither_pipeline: self.dither_pipeline.clone(),
             empty_source: self.empty_source.clone(),
             error: self.error.clone(),
         })
@@ -357,12 +363,14 @@ impl Graphics {
         source_palette: Option<&[[u16; 3]; 256]>,
         target: Option<IndexedTarget<'_>>,
     ) -> Result<()> {
-        let (copy_source, gpu_mask, rgb_source) = match input {
-            Some(CopySource::Cpu(bytes)) => (Some(bytes), None, None),
-            Some(CopySource::GpuMask(texture)) => (None, Some(texture), None),
-            Some(CopySource::Rgb(rgb)) => (None, None, Some(rgb)),
-            None => (None, None, None),
+        let (copy_source, gpu_mask, rgb_source, gpu_rgb) = match input {
+            Some(CopySource::Cpu(bytes)) => (Some(bytes), None, None, None),
+            Some(CopySource::GpuMask(texture)) => (None, Some(texture), None, None),
+            Some(CopySource::Rgb(rgb)) => (None, None, Some(rgb), None),
+            Some(CopySource::GpuRgb(buffer)) => (None, None, None, Some(buffer)),
+            None => (None, None, None, None),
         };
+        let has_rgb = rgb_source.is_some() || gpu_rgb.is_some();
         if let Some(texture) = gpu_mask {
             let valid = matches!(draw, Draw::Blit { mask: None, width, height, .. }
                 if width == texture.width() && height == texture.height());
@@ -379,8 +387,7 @@ impl Graphics {
                 return Err(Error::Graphics("invalid GPU text mask texture".into()));
             }
         }
-        if (source_palette.is_some() || rgb_source.is_some()) && !matches!(draw, Draw::Blit { .. })
-        {
+        if (source_palette.is_some() || has_rgb) && !matches!(draw, Draw::Blit { .. }) {
             return Err(Error::Graphics(
                 "indexed source requires a bitmap blit".into(),
             ));
@@ -408,7 +415,7 @@ impl Graphics {
                 || source.bottom <= source.top
                 || source.right - source.left > 4096
                 || source.bottom - source.top > 4096
-                || (copy_source.is_none() && gpu_mask.is_none() && rgb_source.is_none())
+                || (copy_source.is_none() && gpu_mask.is_none() && !has_rgb)
             {
                 return Err(Error::Graphics("invalid scaled bitmap source".into()));
             }
@@ -418,8 +425,16 @@ impl Graphics {
         };
         if copy_source.is_some_and(|s| s.len() != source_extent as usize)
             || rgb_source.is_some_and(|s| s.len() != source_extent as usize)
+            || gpu_rgb.is_some_and(|b| b.size() != u64::from(source_extent) * 12)
         {
             return Err(Error::Graphics("copy source extent mismatch".into()));
+        }
+        if has_rgb
+            && u64::from(source_extent) * 12 > self.device.limits().max_storage_buffer_binding_size
+        {
+            return Err(Error::Graphics(
+                "RGB source exceeds device binding limit".into(),
+            ));
         }
         if let Draw::Blit {
             mask: Some(mask),
@@ -642,7 +657,7 @@ impl Graphics {
                 p.extend(coordinates);
             }
         }
-        if rgb_source.is_some() {
+        if has_rgb {
             p[21] = 2;
         }
         if let Some(palette) = source_palette {
@@ -727,7 +742,7 @@ impl Graphics {
                         && matches!(mode, Transfer::Copy);
                     !identity
                         && (matches!(mode, Transfer::Xor)
-                            || rgb_source.is_some()
+                            || has_rgb
                             || source_palette.is_some_and(|p| {
                                 p.iter().any(|rgb| *rgb != [0; 3] && *rgb != [65535; 3])
                             }))
@@ -831,7 +846,7 @@ impl Graphics {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: source.as_entire_binding(),
+                    resource: gpu_rgb.unwrap_or(&source).as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,

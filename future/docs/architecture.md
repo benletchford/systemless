@@ -3379,3 +3379,16 @@ packing the destination's guest indices. No256-color source approximation or CPU
 destination renderer is introduced. This supports direct-color sources into the
 current mono/indexed destinations; direct-color guest destinations and dithering
 remain separate requirements.
+
+
+### Dithered source transfer
+
+Dithered PICT/CopyBits sources are resampled and error-diffused on the same wgpu
+device. Two GPU scratch rows carry deterministic Floyd–Steinberg errors; the
+resulting RGB storage buffer feeds the existing transfer pass without CPU readback.
+That pass applies guest clipping and transfer/inversion. A full-rectangle phase
+precedes region clipping. The first implementation serializes diffusion ordering;
+large-image throughput and native pattern parity remain open. Existing geometry/
+color-work budgets and device storage-binding limits are checked before dispatch.
+The preserved Systemless GWorld algorithm is a comparison reference, not a second
+production backend or proof of native QuickDraw equivalence.

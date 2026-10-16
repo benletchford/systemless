@@ -269,7 +269,7 @@ pub fn decode(bytes: &[u8]) -> Result<Picture> {
                 let mut source = r.rect()?;
                 let destination = r.rect()?;
                 let mode = r.word()?;
-                if mode > 7 || !positive(source) || !positive(destination) {
+                if mode & !0x47 != 0 || !positive(source) || !positive(destination) {
                     return Err(bad("bitmap rectangles or transfer mode"));
                 }
                 source.left -= bounds.left;
@@ -478,7 +478,25 @@ pub fn draw(
                 _ => Transfer::Bic,
             },
         };
-        if let Some(rgb) = &command.rgb {
+        if command.mode & 0x40 != 0 {
+            let decoded;
+            let rgb = if let Some(rgb) = &command.rgb {
+                rgb.as_slice()
+            } else {
+                decoded = command
+                    .indices
+                    .iter()
+                    .map(|&i| {
+                        command
+                            .palette
+                            .as_ref()
+                            .map_or(if i == 0 { [65535; 3] } else { [0; 3] }, |p| p[i as usize])
+                    })
+                    .collect::<Vec<_>>();
+                &decoded
+            };
+            bitmap.execute_dithered_rgb(gpu, memory, draw, Some(&clips), rgb)?;
+        } else if let Some(rgb) = &command.rgb {
             bitmap.execute_rgb(gpu, memory, draw, Some(&clips), rgb)?;
         } else {
             bitmap.execute_source_palette(

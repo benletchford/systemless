@@ -83,7 +83,7 @@ pub(super) fn decode(
     let mut source = reader.rect()?;
     let destination = reader.rect()?;
     let mode = reader.word()?;
-    if mode > 7 || !positive(source) || !positive(destination) {
+    if mode & !0x47 != 0 || !positive(source) || !positive(destination) {
         return Err(bad("direct rectangles or transfer mode"));
     }
     source.left -= bounds.left;

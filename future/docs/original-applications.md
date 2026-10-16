@@ -3896,3 +3896,21 @@ future/target/private-originals/marathon/application.raw-rsrc. Fresh indexed
 TextFont/no-current-port error, PC01010E86,62timer callbacks. Default monochrome
 instead takes an error dialog and stops at missing Alert, PC010108B2,
 /tmp/systemless-marathon-direct.txt. Neither run proves gameplay or visible/audio UI.
+
+
+### EV: real on-device ditherCopy
+
+The original now passes its direct-color PICT2027/ditherCopy boundary using real
+GPU error diffusion, continues through additional offscreen/picture loads and
+stops at missing GetPixPat ($AA0C), resource128, PC0002F256. Exact-source replay
+/tmp/systemless-ev-dither-final.txt exits1, callbacks0. No visible frame/UI/audio/
+gameplay acceptance follows. The diffusion algorithm is compared with preserved
+Systemless GWorld behavior, not claimed native QuickDraw pattern parity.
+Input ev-dither-saved remains unchanged. Final saved volume
+/tmp/systemless-ev-dither-final-saved.slv (7,239,400bytes), SHA256
+2ba13890c96592ee8112132a416ad7d6f83392996f3be37741e3827d9ee9b9dd,
+passes independent CRC/catalog/fork checks: preferences45->46 only identity
+change, metadata/fork bytes and companions identical. Continue using the ignored
+future/target/private-originals/ev/application.raw-rsrc fixture. Next work is
+GetPixPat resource loading and owned pixel-pattern state, with real drawing
+semantics rather than an empty success stub. Both original games remain unplayable.
