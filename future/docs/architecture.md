@@ -3367,3 +3367,15 @@ no relocation pin. GetPixBaseAddr reads current ownership without acquiring a pi
 and returns nil for purged images. Both CPU adapters use these same services;
 existing wgpu operations continue using canonical guest pixels. Full GWorld
 lifecycle, pixel-state/purge APIs and external/interior image ownership remain open.
+
+
+### Full RGB picture sources
+
+Decoded direct-color PICT commands retain sixteen-bit RGB components per pixel.
+The GPU source buffer carries three components per pixel and uses a distinct
+source-kind flag; existing mono/indexed source and glyph-mask paths keep their
+representations. GPU palette matching and transfer modes operate on RGB before
+packing the destination's guest indices. No256-color source approximation or CPU
+destination renderer is introduced. This supports direct-color sources into the
+current mono/indexed destinations; direct-color guest destinations and dithering
+remain separate requirements.

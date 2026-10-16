@@ -649,3 +649,209 @@ fn inherited_screen_bounds_in_a_basic_offscreen_port_use_only_the_checked_drawin
         }
     }
 }
+
+fn direct_fixture(
+    depth: u16,
+    pack: u16,
+    width: usize,
+    components: u16,
+    mask: bool,
+) -> (Vec<u8>, Vec<[u16; 3]>) {
+    let stride = (width * usize::from(depth / 8)).div_ceil(4) * 4;
+    let mut bytes = vec![0, 0];
+    rect(&mut bytes, [0, 0, 2, width as i16]);
+    bytes.extend([0, 0x11, 2, 0xff]);
+    opcode(&mut bytes, true, if mask { 0x9b } else { 0x9a });
+    bytes.extend(0xffu32.to_be_bytes());
+    bytes.extend((0x8000 | stride as u16).to_be_bytes());
+    rect(&mut bytes, [-2, 3, 0, 3 + width as i16]);
+    for word in [0, pack] {
+        bytes.extend(word.to_be_bytes());
+    }
+    bytes.extend([0; 12]);
+    for word in [16, depth, components, if depth == 16 { 5 } else { 8 }] {
+        bytes.extend(word.to_be_bytes());
+    }
+    bytes.extend([0; 12]);
+    rect(&mut bytes, [-2, 3, 0, 3 + width as i16]);
+    rect(&mut bytes, [0, 0, 2, width as i16]);
+    bytes.extend(0u16.to_be_bytes());
+    if mask {
+        bytes.extend(10u16.to_be_bytes());
+        rect(&mut bytes, [0, 0, 1, width as i16]);
+    }
+    let packing = if pack == 0 {
+        if depth == 16 {
+            3
+        } else {
+            4
+        }
+    } else {
+        pack
+    };
+    let mut expected = Vec::new();
+    for y in 0..2 {
+        let colors: Vec<[u8; 3]> = (0..width)
+            .map(|x| match (x + y) % 4 {
+                0 => [255, 0, 0],
+                1 => [0, 255, 0],
+                2 => [0, 0, 255],
+                _ => [255; 3],
+            })
+            .collect();
+        expected.extend(colors.iter().map(|c| c.map(|v| u16::from(v) * 257)));
+        let raw = stride < 8 || packing == 1;
+        let mut row = Vec::new();
+        if depth == 16 {
+            for c in &colors {
+                let v = ((u16::from(c[0]) >> 3) << 10)
+                    | ((u16::from(c[1]) >> 3) << 5)
+                    | (u16::from(c[2]) >> 3);
+                row.extend(v.to_be_bytes());
+            }
+            row.resize(stride, 0x5a);
+        } else if raw {
+            for c in &colors {
+                row.push(0x7e);
+                row.extend(c);
+            }
+        } else if packing == 2 {
+            for c in &colors {
+                row.extend(c);
+            }
+        } else {
+            if components == 4 {
+                row.extend(vec![0x7e; width]);
+            }
+            for channel in 0..3 {
+                row.extend(colors.iter().map(|c| c[channel]));
+            }
+        }
+        if raw || packing == 2 {
+            bytes.extend(row);
+        } else {
+            let unit = if depth == 16 { 2 } else { 1 };
+            let mut packed = vec![128];
+            for block in row.chunks(128 * unit) {
+                packed.push((block.len() / unit - 1) as u8);
+                packed.extend(block);
+            }
+            if stride > 250 {
+                bytes.extend((packed.len() as u16).to_be_bytes());
+            } else {
+                bytes.push(packed.len() as u8);
+            }
+            bytes.extend(packed);
+        }
+    }
+    opcode(&mut bytes, true, 0xff);
+    (bytes, expected)
+}
+#[test]
+fn direct_16_and_32_bit_rows_preserve_rgb_for_raw_word_runs_dropped_padding_and_component_planes() {
+    for (depth, pack, width, components) in [
+        (16, 1, 3, 3),
+        (16, 3, 3, 3),
+        (16, 0, 128, 3),
+        (32, 1, 3, 3),
+        (32, 2, 3, 3),
+        (32, 4, 3, 3),
+        (32, 4, 3, 4),
+        (32, 0, 64, 3),
+        (32, 4, 1, 3),
+    ] {
+        for mask in [false, true] {
+            let (bytes, expected) = direct_fixture(depth, pack, width, components, mask);
+            let picture = decode(&bytes).unwrap();
+            let command = &picture.commands[0];
+            assert_eq!(
+                command.rgb.as_ref().unwrap(),
+                &expected,
+                "{depth}/{pack}/{width}/{components}"
+            );
+            assert!(command.indices.is_empty());
+            assert!(command.palette.is_none());
+            assert_eq!(command.source, Rect::new(0, 0, width as i32, 2));
+            assert_eq!(command.clips.is_some(), mask);
+        }
+    }
+}
+#[test]
+fn direct_truncations_bad_layouts_and_word_run_overflow_are_rejected() {
+    for (depth, pack) in [(16, 3), (32, 4), (32, 2)] {
+        let (bytes, _) = direct_fixture(depth, pack, 3, 3, false);
+        for n in 0..bytes.len() {
+            assert!(decode(&bytes[..n]).is_err(), "{depth}/{pack} prefix{n}");
+        }
+        // Opcode at14, base placeholder16, rowBytes20, version30, pack32,
+        // pixelType46, pixelSize48, cmpCount50, cmpSize52, planeBytes54.
+        for (at, value) in [
+            (20, 0xc008u16),
+            (30, 1),
+            (32, 7),
+            (46, 0),
+            (48, 8),
+            (50, 2),
+            (52, 1),
+            (54, 1),
+        ] {
+            let mut bad = bytes.clone();
+            bad[at..at + 2].copy_from_slice(&value.to_be_bytes());
+            assert!(decode(&bad).is_err(), "field{at}");
+        }
+    }
+    let (mut bytes, _) = direct_fixture(16, 3, 4, 3, false);
+    // First row at84: packed byte count, NOP, literal control, pixel words.
+    bytes[86] = 127;
+    assert!(decode(&bytes).is_err());
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn both_cpu_adapters_draw_direct_rgb_pictures_with_clipping_and_unchanged_port_storage() {
+    for (depth, pack) in [(16, 3), (32, 2), (32, 4)] {
+        let (bytes, _) = direct_fixture(depth, pack, 4, 3, true);
+        let mut app = app(bytes);
+        let h = app
+            .runtime
+            .process
+            .get_resource(&mut app.runtime.memory, *b"PICT", 128)
+            .unwrap();
+        let before = app
+            .runtime
+            .memory
+            .read(GuestPtr(0x1000), 108)
+            .unwrap()
+            .to_vec();
+        app.runtime
+            .memory
+            .map(GuestPtr(0x50000000), vec![0xa8, 0xf6], Permissions::RX)
+            .unwrap();
+        for arch in [Architecture::M68k, Architecture::PowerPc] {
+            app.runtime
+                .memory
+                .write(GuestPtr(0x1200), &[0, 0x5a, 0, 0x5a, 0, 0x5a, 0, 0x5a])
+                .unwrap();
+            if arch == Architecture::PowerPc {
+                invoke(&mut app, 4, &[h, 0x300]);
+            } else {
+                let stack = STACK_BASE + 0x8000;
+                let mut args = 0x300u32.to_be_bytes().to_vec();
+                args.extend(h.to_be_bytes());
+                args.extend([0xa5; 4]);
+                app.runtime.memory.write(GuestPtr(stack), &args).unwrap();
+                app.runtime.cpu = Cpu::new(arch, 0x50000000, stack);
+                assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+            }
+            // Primary red/green/blue are dark under the existing white/black policy;
+            // mask leaves the lower half of the scaled picture untouched.
+            assert_eq!(
+                app.runtime.memory.read(GuestPtr(0x1200), 8).unwrap(),
+                [0x38, 0x5a, 0x38, 0x5a, 0, 0x5a, 0, 0x5a]
+            );
+            assert_eq!(
+                app.runtime.memory.read(GuestPtr(0x1000), 108).unwrap(),
+                before
+            );
+        }
+    }
+}

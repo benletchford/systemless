@@ -8275,3 +8275,85 @@ formatting and whitespace checks pass. Original replay1446 and independent
 snapshot verification are terminal. All tracked handles are closed. No full-suite,
 native/browser/CI, original frame/UI/audio or gameplay acceptance is claimed.
 Full rebuild and complete wgpu text rendering/library integration remain active.
+
+
+## Direct-color PICT source decoding and RGB GPU transfer
+
+Primary source: Imaging With QuickDraw appendixA, DirectBitsRect/Rgn and PixData:
+https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-461.html.
+The decoder now accepts version2 $009A/$009B with 16-bit RGB555 and 32-bit
+RGB components. It handles uncompressed scan lines, 16-bit word-unit PackBits,
+32-bit dropped pad bytes and packed component planes, including three/four
+components, documented default packing and the short-row unpacked rule. Packed
+byte-count width follows declared rowBytes (>250 uses a word). Stored padding
+and the unused high component are not alpha blending. RGB555 is expanded by bit
+replication and eight-bit components by257 into sixteen-bit RGB components.
+
+Bounds, component layout, flags, packing combinations, row lengths, source/dest
+rectangles, masks, truncation and aggregate decoded memory remain bounded and
+checked. Unknown future packing/transfer formats still explicitly fault; there
+is no silent skip or unsupported-format success. The decoder retains complete
+RGB vectors, not a256-color approximation. Existing indexed/mono commands retain
+their original representation. New source RGB does not imply16/32-bit guest
+framebuffer/destination support; those surfaces remain separate rebuild work.
+
+The wgpu pipeline accepts full RGB source component buffers and performs the
+existing palette matching, monochrome policy and exact transfer semantics in
+compute. Source coordinates, clipping, scaling, masking, foreground/background
+mapping and canonical guest storage use the same Surface/Draw path as indexed
+PICT commands. No modern blending, new backend or production dependency was
+added. RGB matching uses existing destination eligibility/work limits. Text and
+GPU glyph masks retain their existing source paths.
+
+Decoder regression93855 exits0:8ordinary picture tests,5GPU cases ignored in
+that ordinary run. New coverage includes raw/packed16/32-bit layouts, default
+packing, short rows, long byte-count rows, three/four-component planes, masked
+opcodes, all input prefixes and malformed fields. Core61774 exits0:76ordinary
+core tests,1GPU case ignored there; includes word repeat/overflow/short-run cases.
+New GPU96797 exits0:512distinct RGB sources, including a16-bit rounding boundary,
+match an independent distance reference; all8transfer/inversion combinations
+match the existing indexed source route, with clipping and invalid-size atomicity.
+It was explicitly run with0ignored. Logs /tmp/systemless-direct-picture-tests.txt,
+/tmp/systemless-direct-core-tests.txt and /tmp/systemless-direct-rgb-gpu.txt.
+Dual-CPU direct-picture GPU18343, tracer6139 and scoped lint78335 remain live at
+this record; retain and poll those handles. Full rebuild and GPU text stay active.
+
+Final direct-picture GPU18343 exits0, both CPU adapters draw masked16/32-bit
+sources with clipping, padding and unchanged port storage. Strict scoped lint
+78335 exit0; tracer6139 exit0; sequential changed-file formatting and whitespace
+pass. Total86distinct passing tests:76ordinary core+8ordinary picture+2explicit
+GPU cases. Four preexisting picture GPU cases were not run and remain unverified.
+
+The first original replay failed before launch because /tmp/systemless-original-ev
+had been removed. Flat saved volumes survived but contain only companion forks,
+not the application fork. Existing private archives were located at
+/Users/ben/repos/systemless-mono/systemless-games. unar visible AppleDouble entry2
+restored the exact500,871-byte EV fork, matching the established SHA256d739c1d5...
+full hash above. The restored fork is now in Git-ignored
+future/target/private-originals/ev/application.raw-rsrc; a matching /tmp copy was
+also restored. Private original bytes remain outside version control. Marathon's
+exact625,479-byte fork was restored similarly to
+future/target/private-originals/marathon/application.raw-rsrc, matching the prior
+SHA256afa4e77d... full hash above. No download or different application was used.
+
+Restored EV replay27767 exits1, /tmp/systemless-ev-direct-restored.txt. It now
+recognizes the direct opcode but correctly stops on unsupported transfer mode:
+EV Graphics/PICT2027 has positive48x48 source/destination rectangles and mode$40
+(ditherCopy), established independently from the saved companion resource map.
+This does not prove rendering of that original picture. Dithering is not silently
+stripped. Primary CopyBits source-mode flag reference:
+https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-166.html.
+Next executable slice is real ditherCopy behavior in the shared GPU path.
+Independent saved-volume checks pass preferences43->44, metadata/fork bytes and
+companions unchanged. /tmp/systemless-ev-direct-saved.slv7,239,400bytes,
+SHA256989a2de094265c4b9fd1239e4af57c9b5c493dd5145287bffd3c746be2b02f2e.
+
+Marathon was freshly replayed from its exact restored fork. Default monochrome
+run14785 exits1 at missing Alert ($A985), PC010108B2, after its error dialog
+parameters; that is not the previous display configuration. Matching640x480x8
+run31270 exits1 at the established TextFont family4/no-current-port boundary,
+PC01010E86,62timer/0sound/0VBL callbacks. Logs
+/tmp/systemless-marathon-direct.txt and -direct-indexed.txt. No frame/UI/audio/
+gameplay acceptance follows. Both original games remain unplayable; full rebuild,
+complete GPU text/library integration and native/browser/CI acceptance stay open.
+All tracked build/test/replay/search handles are terminal.

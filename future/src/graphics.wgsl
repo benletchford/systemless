@@ -8,13 +8,19 @@
 @group(0) @binding(5) var glyph_mask: texture_2d<f32>;
 fn source_index(x:i32,y:i32)->u32 {
     if (p[2]&512)!=0 {return select(0u,1u,textureLoad(glyph_mask,vec2<i32>(x,y),0).r!=0.0);}
+    if p[21]==2 {return u32(y*p[16]+x);}
     return source[u32(y*p[16]+x)];
+}
+fn source_rgb(index:u32)->vec3<u32> {
+    if p[21]==2 {let at=3u*index;return vec3<u32>(source[at],source[at+1u],source[at+2u]);}
+    let at=25+4*max(p[24],0)+3*i32(index);
+    return vec3<u32>(u32(p[at]),u32(p[at+1]),u32(p[at+2]));
 }
 // Match indexed source RGB against the current white/black destination policy.
 fn blit_bit(index:u32)->u32 {
     if p[21]==0 {return index;}
-    let at=25+4*max(p[24],0)+3*i32(index);
-    let sum=p[at]+p[at+1]+p[at+2];
+    let rgb=source_rgb(index);
+    let sum=rgb.x+rgb.y+rgb.z;
     return select(0u,1u,sum<98303);
 }
 // Color configuration is an optional fixed-size tail. Draw-kind flags leave
@@ -47,7 +53,7 @@ fn color_result(src:u32,dst:u32,pattern_on:bool)->u32 {
     if draw_kind()==2 && mode==0{return src;}
     var rgb=select(vec3<u32>(65535u),vec3<u32>(0u),src!=0u);
     if draw_kind()==2{rgb=destination_rgb(src);}
-    else if p[21]!=0{let at=25+4*max(p[24],0)+3*i32(src);rgb=vec3<u32>(u32(p[at]),u32(p[at+1]),u32(p[at+2]));}
+    else if p[21]!=0{rgb=source_rgb(src);}
     if draw_kind()==4 && p[20]!=0{rgb=vec3<u32>(65535u)-rgb;}
     var fg=u32(p[11]);var bg=u32(p[12]);
     if draw_kind()==2{fg=closest(vec3<u32>(0u));bg=closest(vec3<u32>(65535u));}

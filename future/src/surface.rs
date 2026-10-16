@@ -6,6 +6,11 @@ use crate::{
     memory::{Memory, Permissions},
     Error, Result,
 };
+type CpuSource<'a> = (
+    Option<&'a [u8]>,
+    Option<&'a [[u16; 3]; 256]>,
+    Option<&'a [[u16; 3]]>,
+);
 #[derive(Clone)]
 pub(crate) struct Palette {
     pub rgb: Box<[[u16; 3]; 256]>,
@@ -211,7 +216,17 @@ impl Surface {
         source: Option<&[u8]>,
         palette: Option<&[[u16; 3]; 256]>,
     ) -> Result<()> {
-        self.execute_inputs(gpu, memory, draw, clips, (source, palette), None)
+        self.execute_inputs(gpu, memory, draw, clips, (source, palette, None), None)
+    }
+    pub(crate) fn execute_rgb(
+        &self,
+        gpu: &Graphics,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+        rgb: &[[u16; 3]],
+    ) -> Result<()> {
+        self.execute_inputs(gpu, memory, draw, clips, (None, None, Some(rgb)), None)
     }
     pub(crate) fn execute_mask_texture(
         &self,
@@ -221,7 +236,7 @@ impl Surface {
         clips: Option<&[Rect]>,
         texture: &wgpu::Texture,
     ) -> Result<()> {
-        self.execute_inputs(gpu, memory, draw, clips, (None, None), Some(texture))
+        self.execute_inputs(gpu, memory, draw, clips, (None, None, None), Some(texture))
     }
     fn execute_inputs(
         &self,
@@ -229,11 +244,12 @@ impl Surface {
         memory: &mut Memory,
         draw: Draw,
         clips: Option<&[Rect]>,
-        cpu_source: (Option<&[u8]>, Option<&[[u16; 3]; 256]>),
+        cpu_source: CpuSource<'_>,
         texture: Option<&wgpu::Texture>,
     ) -> Result<()> {
-        let (source, palette) = cpu_source;
+        let (source, palette, rgb) = cpu_source;
         if palette.is_none()
+            && rgb.is_none()
             && !matches!(draw, Draw::Copy { .. })
             && source.is_some_and(|s| s.iter().any(|v| *v > 1))
         {
@@ -418,7 +434,15 @@ impl Surface {
             a == b.rgb.as_ref()
                 && source.is_some_and(|s| s.iter().all(|v| self.index(u32::from(*v)).is_ok()))
         });
-        if let Some(texture) = texture {
+        if let Some(rgb) = rgb {
+            gpu.execute_rgb(
+                &mut staging,
+                draw,
+                translated.as_deref(),
+                rgb,
+                self.config(false),
+            )?;
+        } else if let Some(texture) = texture {
             gpu.execute_gpu_mask(
                 &mut staging,
                 draw,

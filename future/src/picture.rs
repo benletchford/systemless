@@ -6,6 +6,7 @@ use crate::{
     quickdraw::{read_rect, Ports},
     Error, Result,
 };
+mod direct;
 const LIMIT: usize = 16 * 1024 * 1024;
 fn bad(message: &str) -> Error {
     Error::Graphics(format!("PICT: {message}"))
@@ -53,6 +54,7 @@ pub struct BitmapCommand {
     pub width: u32,
     pub height: u32,
     pub indices: Vec<u8>,
+    pub rgb: Option<Vec<[u16; 3]>>,
     pub palette: Option<Box<[[u16; 3]; 256]>>,
     pub source: Rect,
     pub destination: Rect,
@@ -180,6 +182,18 @@ pub fn decode(bytes: &[u8]) -> Result<Picture> {
             }
             0x0c00 if v2 => {
                 r.take(24)?;
+            }
+            0x9a | 0x9b if v2 => {
+                let command = direct::decode(&mut r, opcode, &clips)?;
+                let count = command.rgb.as_ref().unwrap().len() * 6
+                    + command.clips.as_ref().map_or(0, |c| c.len() * 16);
+                expanded = expanded
+                    .checked_add(count)
+                    .ok_or_else(|| bad("decoded size overflow"))?;
+                if expanded > LIMIT {
+                    return Err(bad("decoded command limit"));
+                }
+                commands.push(command);
             }
             0x90 | 0x91 | 0x98 | 0x99 => {
                 let row_word = r.word()?;
@@ -332,6 +346,7 @@ pub fn decode(bytes: &[u8]) -> Result<Picture> {
                     width: width as u32,
                     height: height as u32,
                     indices,
+                    rgb: None,
                     palette,
                     source,
                     destination,
@@ -442,34 +457,39 @@ pub fn draw(
         prepared.push((rect, clips));
     }
     for (command, (rect, clips)) in picture.commands.iter().zip(prepared) {
-        bitmap.execute_source_palette(
-            gpu,
-            memory,
-            Draw::Blit {
-                mask: None,
-                rect,
-                clip: bitmap.bounds,
-                source: command.source,
-                width: command.width,
-                height: command.height,
-                foreground: command.foreground.map_or(Ok(foreground), |v| {
-                    bitmap.nearest(if v == 0 { [65535; 3] } else { [0; 3] })
-                })?,
-                background: command.background.map_or(Ok(background), |v| {
-                    bitmap.nearest(if v == 0 { [65535; 3] } else { [0; 3] })
-                })?,
-                invert: command.mode & 4 != 0,
-                mode: match command.mode & 3 {
-                    0 => Transfer::Copy,
-                    1 => Transfer::Or,
-                    2 => Transfer::Xor,
-                    _ => Transfer::Bic,
-                },
+        let draw = Draw::Blit {
+            mask: None,
+            rect,
+            clip: bitmap.bounds,
+            source: command.source,
+            width: command.width,
+            height: command.height,
+            foreground: command.foreground.map_or(Ok(foreground), |v| {
+                bitmap.nearest(if v == 0 { [65535; 3] } else { [0; 3] })
+            })?,
+            background: command.background.map_or(Ok(background), |v| {
+                bitmap.nearest(if v == 0 { [65535; 3] } else { [0; 3] })
+            })?,
+            invert: command.mode & 4 != 0,
+            mode: match command.mode & 3 {
+                0 => Transfer::Copy,
+                1 => Transfer::Or,
+                2 => Transfer::Xor,
+                _ => Transfer::Bic,
             },
-            Some(&clips),
-            Some(&command.indices),
-            command.palette.as_deref(),
-        )?;
+        };
+        if let Some(rgb) = &command.rgb {
+            bitmap.execute_rgb(gpu, memory, draw, Some(&clips), rgb)?;
+        } else {
+            bitmap.execute_source_palette(
+                gpu,
+                memory,
+                draw,
+                Some(&clips),
+                Some(&command.indices),
+                command.palette.as_deref(),
+            )?;
+        }
     }
     Ok(())
 }

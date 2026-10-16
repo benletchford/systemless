@@ -3872,3 +3872,27 @@ decoding and GPU transfer. No callback/frame/UI/audio/gameplay claim.
 10900d727e914c63915ad77956a45c10423c6673d29409ffce025a667622290b,
 passes independent CRC/catalog/fork checks: preferences42->43 only identity
 change, metadata/forks and companions identical to ev-pixel-base-saved.
+
+
+### EV: direct RGB PICT source checkpoint
+
+Direct16/32-bit PICT decoding and lossless RGB GPU source transfer are implemented
+and verified with synthetic fixtures through both CPUs. The exact original EV
+application fork was restored from the existing local archive after temporary
+folder cleanup; its established SHA256 matches. Durable ignored fixture:
+future/target/private-originals/ev/application.raw-rsrc. Restored original replay
+/tmp/systemless-ev-direct-restored.txt exits1 on PICT2027's mode$40 (ditherCopy),
+with valid48x48 rectangles. The direct opcode is recognized, but rendering that
+original picture remains unverified until real dithering is implemented. No flag
+stripping or unsupported-success substitution was used. Private assets stay ignored.
+Saved /tmp/systemless-ev-direct-saved.slv (7,239,400bytes), SHA256
+989a2de094265c4b9fd1239e4af57c9b5c493dd5145287bffd3c746be2b02f2e,
+passes independent CRC/catalog/fork checks: preferences43->44 only identity
+change, metadata/fork bytes and companions unchanged.
+
+Marathon's matching original fork is also restored in ignored
+future/target/private-originals/marathon/application.raw-rsrc. Fresh indexed
+640x480x8 replay /tmp/systemless-marathon-direct-indexed.txt reaches its known
+TextFont/no-current-port error, PC01010E86,62timer callbacks. Default monochrome
+instead takes an error dialog and stops at missing Alert, PC010108B2,
+/tmp/systemless-marathon-direct.txt. Neither run proves gameplay or visible/audio UI.

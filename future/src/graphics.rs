@@ -112,6 +112,7 @@ pub(crate) struct IndexedTarget<'a> {
 }
 enum CopySource<'a> {
     Cpu(&'a [u8]),
+    Rgb(&'a [[u16; 3]]),
     GpuMask(&'a wgpu::Texture),
 }
 pub struct Graphics {
@@ -330,6 +331,23 @@ impl Graphics {
             target,
         )
     }
+    pub(crate) fn execute_rgb(
+        &self,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+        rgb: &[[u16; 3]],
+        target: Option<IndexedTarget<'_>>,
+    ) -> Result<()> {
+        self.execute_source_input(
+            memory,
+            draw,
+            clips,
+            Some(CopySource::Rgb(rgb)),
+            None,
+            target,
+        )
+    }
     fn execute_source_input(
         &self,
         memory: &mut Memory,
@@ -339,10 +357,11 @@ impl Graphics {
         source_palette: Option<&[[u16; 3]; 256]>,
         target: Option<IndexedTarget<'_>>,
     ) -> Result<()> {
-        let (copy_source, gpu_mask) = match input {
-            Some(CopySource::Cpu(bytes)) => (Some(bytes), None),
-            Some(CopySource::GpuMask(texture)) => (None, Some(texture)),
-            None => (None, None),
+        let (copy_source, gpu_mask, rgb_source) = match input {
+            Some(CopySource::Cpu(bytes)) => (Some(bytes), None, None),
+            Some(CopySource::GpuMask(texture)) => (None, Some(texture), None),
+            Some(CopySource::Rgb(rgb)) => (None, None, Some(rgb)),
+            None => (None, None, None),
         };
         if let Some(texture) = gpu_mask {
             let valid = matches!(draw, Draw::Blit { mask: None, width, height, .. }
@@ -360,7 +379,8 @@ impl Graphics {
                 return Err(Error::Graphics("invalid GPU text mask texture".into()));
             }
         }
-        if source_palette.is_some() && !matches!(draw, Draw::Blit { .. }) {
+        if (source_palette.is_some() || rgb_source.is_some()) && !matches!(draw, Draw::Blit { .. })
+        {
             return Err(Error::Graphics(
                 "indexed source requires a bitmap blit".into(),
             ));
@@ -388,7 +408,7 @@ impl Graphics {
                 || source.bottom <= source.top
                 || source.right - source.left > 4096
                 || source.bottom - source.top > 4096
-                || (copy_source.is_none() && gpu_mask.is_none())
+                || (copy_source.is_none() && gpu_mask.is_none() && rgb_source.is_none())
             {
                 return Err(Error::Graphics("invalid scaled bitmap source".into()));
             }
@@ -396,7 +416,9 @@ impl Graphics {
         } else {
             self.width * self.height
         };
-        if copy_source.is_some_and(|s| s.len() != source_extent as usize) {
+        if copy_source.is_some_and(|s| s.len() != source_extent as usize)
+            || rgb_source.is_some_and(|s| s.len() != source_extent as usize)
+        {
             return Err(Error::Graphics("copy source extent mismatch".into()));
         }
         if let Draw::Blit {
@@ -620,6 +642,9 @@ impl Graphics {
                 p.extend(coordinates);
             }
         }
+        if rgb_source.is_some() {
+            p[21] = 2;
+        }
         if let Some(palette) = source_palette {
             p[21] = 1;
             p.extend(palette.iter().flatten().map(|&v| i32::from(v)));
@@ -702,6 +727,7 @@ impl Graphics {
                         && matches!(mode, Transfer::Copy);
                     !identity
                         && (matches!(mode, Transfer::Xor)
+                            || rgb_source.is_some()
                             || source_palette.is_some_and(|p| {
                                 p.iter().any(|rgb| *rgb != [0; 3] && *rgb != [65535; 3])
                             }))
@@ -756,7 +782,11 @@ impl Graphics {
             &indices,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         );
-        let source_indices = copy_source.map(|s| words_bytes(s.iter().map(|&b| u32::from(b))));
+        let source_indices = if let Some(rgb) = rgb_source {
+            Some(words_bytes(rgb.iter().flatten().map(|&v| u32::from(v))))
+        } else {
+            copy_source.map(|s| words_bytes(s.iter().map(|&b| u32::from(b))))
+        };
         let source = buffer(
             "immutable copy source",
             source_indices.as_deref().unwrap_or(&indices),
@@ -902,5 +932,115 @@ impl Graphics {
             .chunks_exact(stride as usize)
             .flat_map(|row| row[..self.width as usize * 4].iter().copied())
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod direct_rgb_tests {
+    use super::*;
+    #[test]
+    #[ignore = "requires a real wgpu adapter"]
+    fn rgb_sources_keep_more_than_256_colors_and_match_palette_transfers() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let gpu =
+            pollster::block_on(Graphics::new(&instance, None, 512, 1, GuestPtr(0x1000))).unwrap();
+        let mut memory = Memory::default();
+        memory
+            .map(gpu.base, vec![0; 512], crate::memory::Permissions::RW)
+            .unwrap();
+        let mut colors = [[0u16; 3]; 256];
+        colors[1] = [65535; 3];
+        colors[2] = [65535, 0, 0];
+        colors[3] = [0, 65535, 0];
+        let mut eligible = [false; 256];
+        eligible[..4].fill(true);
+        let config = || {
+            Some(IndexedTarget {
+                depth: 2,
+                rgb: &colors,
+                matchable: &eligible,
+                direct_source: false,
+            })
+        };
+        let bounds = Rect::new(0, 0, 512, 1);
+        let draw = |mode, invert| Draw::Blit {
+            rect: bounds,
+            clip: bounds,
+            source: bounds,
+            width: 512,
+            height: 1,
+            foreground: 0,
+            background: 1,
+            mode,
+            invert,
+            mask: None,
+        };
+        let mut rgb: Vec<[u16; 3]> = (0..512u16)
+            .map(|i| [i * 127, 65535 - i * 101, i * 67])
+            .collect();
+        rgb[0] = [32767; 3];
+        rgb[1] = [32768; 3];
+        assert!(rgb.iter().collect::<std::collections::BTreeSet<_>>().len() > 256);
+        gpu.execute_rgb(
+            &mut memory,
+            draw(Transfer::Copy, false),
+            None,
+            &rgb,
+            config(),
+        )
+        .unwrap();
+        let expected: Vec<u8> = rgb
+            .iter()
+            .map(|source| {
+                (0..4usize)
+                    .min_by_key(|&i| {
+                        source
+                            .iter()
+                            .zip(colors[i])
+                            .map(|(&a, b)| u64::from(a.abs_diff(b)).pow(2))
+                            .sum::<u64>()
+                    })
+                    .unwrap() as u8
+            })
+            .collect();
+        assert_eq!(memory.read(gpu.base, 512).unwrap(), expected);
+        let indices: Vec<u8> = (0..512).map(|i| (i % 4) as u8).collect();
+        let rgb: Vec<_> = indices.iter().map(|&v| colors[v as usize]).collect();
+        for mode in [Transfer::Copy, Transfer::Or, Transfer::Xor, Transfer::Bic] {
+            for invert in [false, true] {
+                memory.write(gpu.base, &indices).unwrap();
+                gpu.execute_indexed(
+                    &mut memory,
+                    draw(mode, invert),
+                    Some(&[Rect::new(17, 0, 493, 1)]),
+                    Some(&indices),
+                    Some(&colors),
+                    config(),
+                )
+                .unwrap();
+                let expected = memory.read(gpu.base, 512).unwrap().to_vec();
+                memory.write(gpu.base, &indices).unwrap();
+                gpu.execute_rgb(
+                    &mut memory,
+                    draw(mode, invert),
+                    Some(&[Rect::new(17, 0, 493, 1)]),
+                    &rgb,
+                    config(),
+                )
+                .unwrap();
+                assert_eq!(memory.read(gpu.base, 512).unwrap(), expected);
+            }
+        }
+        let before = memory.read(gpu.base, 512).unwrap().to_vec();
+        assert!(gpu
+            .execute_rgb(
+                &mut memory,
+                draw(Transfer::Copy, false),
+                None,
+                &rgb[..511],
+                config()
+            )
+            .is_err());
+        assert_eq!(memory.read(gpu.base, 512).unwrap(), before);
     }
 }
