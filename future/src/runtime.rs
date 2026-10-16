@@ -2009,6 +2009,10 @@ impl Runtime {
                             self.process.release_resource(&mut self.memory, handle)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::WriteResource(handle) => {
+                            self.process.write_resource(&self.memory, handle)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::AddResource(request) => {
                             self.process.add_resource(&self.memory, request)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
@@ -2369,6 +2373,32 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::NewAlias(request) => {
+                            let error = crate::files::new_alias(
+                                &mut self.memory,
+                                &mut self.process,
+                                request,
+                            )?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
+                        Call::ResolveAlias(request) => {
+                            let error = crate::files::resolve_alias(
+                                &mut self.memory,
+                                &mut self.process,
+                                request,
+                            )?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::ResolveAliasFile(request) => {
                             let error = self
                                 .process
@@ -2510,6 +2540,8 @@ impl Runtime {
                             | Call::Region { .. }
                             | Call::HandleSize(_)
                             | Call::SetHandleSize { .. }
+                            | Call::NewAlias(_)
+                            | Call::ResolveAlias(_)
                             | Call::ResourceFile(
                                 crate::process::resources::Op::Open { .. }
                                     | crate::process::resources::Op::OpenSpec { .. }
@@ -2542,6 +2574,7 @@ impl Runtime {
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
                             | Call::Device(crate::devices::Op::GetTable(_))
+                            | Call::WriteResource(_)
                             | Call::DetachResource(_)
                             | Call::ReleaseResource(_)
                     ) {
@@ -2684,6 +2717,7 @@ impl Runtime {
                         | Call::FreeMemory
                         | Call::MaxMemory(_)
                         | Call::ResError
+                        | Call::WriteResource(_)
                         | Call::DetachResource(_)
                         | Call::ReleaseResource(_)
                         | Call::CurResFile
@@ -2721,6 +2755,8 @@ impl Runtime {
                         | Call::GetSpecInfo(_)
                         | Call::DeleteSpec(_)
                         | Call::MakeSpec(_)
+                        | Call::NewAlias(_)
+                        | Call::ResolveAlias(_)
                         | Call::ResolveAliasFile(_)
                         | Call::FcbInfo(_) => {
                             return Err(Error::Cpu("Macintosh service on fixture route".into()))

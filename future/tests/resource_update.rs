@@ -8,7 +8,7 @@ use systemless_future::{
     runtime::Stop,
 };
 fn app() -> (LoadedApplication, u32, i16) {
-    let fixture = support::pef_program(&[0x4e800020], &[b"UpdateResFile"], 16);
+    let fixture = support::pef_program(&[0x4e800020], &[b"UpdateResFile", b"WriteResource"], 16);
     let mut a = LoadedApplication::pef(&fixture.bytes, None).unwrap();
     a.runtime
         .memory
@@ -343,4 +343,117 @@ fn disk_full_update_preserves_fork_dirty_flags_and_reservation_until_retry() {
         .unwrap();
     assert_eq!(a.runtime.process.res_error, 0);
     assert_eq!(disk(&a).get(*b"DATA", 128).unwrap().data, [7, 8, 9]);
+}
+
+#[test]
+fn both_cpus_write_only_selected_data_before_committing_the_resource_map() {
+    for native in [true, false] {
+        let (mut a, h, reference) = app();
+        let other = a
+            .runtime
+            .process
+            .new_handle(&mut a.runtime.memory, 4, true)
+            .unwrap();
+        a.runtime
+            .process
+            .add_resource(
+                &a.runtime.memory,
+                AddResource {
+                    handle: other,
+                    kind: *b"DATA",
+                    id: 129,
+                    name: GuestPtr(0),
+                },
+            )
+            .unwrap();
+        let data = a.runtime.memory.u32(GuestPtr(h)).unwrap();
+        a.runtime.memory.write(GuestPtr(data), &[7, 8, 9]).unwrap();
+        // Select a different map: handle ownership determines the destination.
+        a.runtime
+            .process
+            .resource_file(&mut a.runtime.memory, Op::Use(0))
+            .unwrap();
+        let current = a.runtime.process.current_resource_file();
+        let stack = STACK_BASE + 0x7000;
+        a.runtime
+            .memory
+            .write(GuestPtr(stack), &h.to_be_bytes())
+            .unwrap();
+        a.runtime
+            .memory
+            .map(GuestPtr(0x50000010), vec![0xa9, 0xb0], Permissions::RX)
+            .unwrap();
+        let vector = a
+            .runtime
+            .memory
+            .u32(GuestPtr(a.info.toc_or_a5 + 12))
+            .unwrap();
+        let gate = a.runtime.memory.u32(GuestPtr(vector)).unwrap();
+        a.runtime.cpu = Cpu::new(
+            if native {
+                Architecture::M68k
+            } else {
+                Architecture::PowerPc
+            },
+            if native { 0x50000010 } else { gate },
+            stack,
+        );
+        match &mut a.runtime.cpu {
+            Cpu::M68k(c) => {
+                c.dar[0] = 0xabcdef01;
+            }
+            Cpu::PowerPc(c) => {
+                c.gpr[3] = h;
+            }
+        }
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+        match &a.runtime.cpu {
+            Cpu::M68k(c) => {
+                assert_eq!(c.dar[0], 0xabcdef01);
+                assert_eq!(c.dar[15], stack + 4);
+            }
+            Cpu::PowerPc(c) => {
+                assert_eq!(c.gpr[3], h);
+                assert_eq!(c.gpr[1], stack);
+            }
+        }
+        assert_eq!(a.runtime.process.res_error, 0);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(0xa60)).unwrap(), 0);
+        assert_eq!(a.runtime.process.current_resource_file(), current);
+        // WriteResource must not publish either new resource's map entry.
+        assert!(disk(&a).get(*b"DATA", 128).is_none());
+        assert!(disk(&a).get(*b"DATA", 129).is_none());
+        let saved_volume = a.runtime.process.files.export_volume().unwrap();
+        for invalid in [0, 0xdeadbeef] {
+            a.runtime
+                .process
+                .write_resource(&a.runtime.memory, invalid)
+                .unwrap();
+            assert_eq!(a.runtime.process.res_error, -192);
+            assert_eq!(
+                a.runtime.process.files.export_volume().unwrap(),
+                saved_volume
+            );
+        }
+        // A resource without resChanged is a successful no-op.
+        a.runtime
+            .process
+            .write_resource(&a.runtime.memory, h)
+            .unwrap();
+        assert_eq!(a.runtime.process.res_error, 0);
+        assert_eq!(
+            a.runtime.process.files.export_volume().unwrap(),
+            saved_volume
+        );
+        // A later edit without ChangedResource must not overwrite the data
+        // already written, while the other dirty resource still flushes.
+        a.runtime.memory.write(GuestPtr(data), &[1, 2, 3]).unwrap();
+        a.runtime
+            .process
+            .resource_file(&mut a.runtime.memory, Op::Update(reference))
+            .unwrap();
+        assert_eq!(a.runtime.process.res_error, 0);
+        assert_eq!(disk(&a).get(*b"DATA", 128).unwrap().data, [7, 8, 9]);
+        assert_eq!(disk(&a).get(*b"DATA", 129).unwrap().data, [0; 4]);
+    }
 }

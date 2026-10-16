@@ -4249,3 +4249,20 @@ pilot re-open and flight interaction. The snapshot proves resource-backed file
 creation, not semantic pilot validity, re-open, host persistence, audio or gameplay.
 Flush acknowledgments are memory-only. Marathon has not been replayed here.
 Neither priority game is playable; full rebuild and complete GPU text remain active.
+
+
+## EV alias resource save (2026-10-17)
+
+The same clean modal input and real keyboard sequence now pass NewAlias,
+AddResource(alis,0), WriteResource and CloseResFile. The exact next stop is
+FSpSetFInfo (HighLevelFSDispatch selector0008), PC0002E82E, instruction9,158,012.
+The supplied FInfo has Finder alias flag0x8000; it has not yet been applied.
+Fresh volume/trace and independent verifier are preserved under the private
+2026-10-17-write prefix described in progress.md. The519-byte Last Pilot fork
+contains a committed198-byte alis/0 record pointing to actual ben node53, with
+matching creation date/type/creator and full HFS path. CRC, catalog framing and
+unchanged original companions are independently checked. This establishes alias
+record/resource saving, not Finder recognition, pilot reopening or gameplay.
+Final scoped suite:93passes,3GPUchecks explicitly ignored; strict all-target lint
+and tracer build pass. Full details and hashes are in progress.md. No ROM/System7
+comparison is claimed. Neither original priority game is playable yet.

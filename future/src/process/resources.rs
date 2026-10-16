@@ -6,6 +6,7 @@ use crate::{
     Error, Result,
 };
 use std::collections::BTreeMap;
+mod write;
 pub(super) const APPLICATION: i16 = i16::MIN;
 pub(super) struct FileMap {
     node: u32,

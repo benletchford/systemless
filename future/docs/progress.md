@@ -8993,3 +8993,95 @@ through shared catalog/resource services, then actual re-open/flight interaction
 Marathon's TextFont4/no-current-port boundary has not been replayed here. Neither
 priority game is playable. Full rebuild and complete wgpu text/library integration
 remain active, including modal mouse editing and all other unfinished acceptance.
+
+
+## Alias records and catalog resolution (2026-10-17)
+
+NewAlias and ResolveAlias now share real version-2 alias records and the mounted
+catalog through native AliasDispatch selectors 2/3 and PowerPC imports. Records
+carry volume identity, file/directory identity and creation date, full HFS path,
+parent name and optional relative search levels. Resolution prefers the relative
+copied tree, then stable identity, parent/name and path. Updates preserve handle
+identity, private fields, unknown extensions and trailing handle storage.
+ResolveAliasFile follows Finder alias files through committed alis/0 resources,
+honors one-link versus chained lookup and detects cycles before publishing output.
+
+The first regression run passed 78 core checks (three GPU checks explicitly
+ignored), two existing alias-file tests and seven new alias-record tests:
+/tmp/systemless-alias-catalog-tests.txt, terminal exit 0. The expanded alias-record
+suite passes eight tests, including nil-argument guest paramErr and missing-target
+FSSpec publication, in /tmp/systemless-alias-errors-tests.txt, terminal exit 0.
+Both CPU adapters exercise shared records, moves/renames, relative lookup, root
+directories, alias chains, malformed pointers and allocation failure. These are
+fixture results; original EV save/re-open remains under verification.
+
+Boundaries remain explicit: one mounted virtual volume, no volume-mount/search UI,
+no exhaustive search, no general minimal-alias creation, and no resolution against
+an alias file with a live open resource map. Minimal records are never rewritten.
+Original game replay and all-target lint results follow below. The full rebuild
+and complete wgpu text requirement remain active.
+
+
+Original EV replay now passes NewAlias and AddResource(alis, 0), creating
+Pilots/Last Pilot node54 alongside real pilot ben node53. The next exact stop is
+unimplemented WriteResource (A9B0), PC0002E816, instruction9,158,004. Snapshot
+/tmp/systemless-ev-alias-first.slv is 7,258,733 bytes with SHA256
+88eaf31699c5fa21faef1094040bd458bfbd6babf3ac65582140ea35444f9238;
+independent CRC/catalog parsing confirms unchanged directories and the new Last
+Pilot resource fork (286 bytes). Its Finder alias flag is not yet set. This does
+not establish finished resource persistence, successful alias re-open or gameplay.
+Trace: /tmp/systemless-ev-alias-first.txt, terminal exit1 at the explicit service
+boundary. Next: shared WriteResource semantics and both-CPU fixtures, then finish
+the original Last Pilot sequence and replay from its saved volume.
+
+
+## Targeted WriteResource implementation (2026-10-17)
+
+A shared Process::write_resource path backs native A9B0 and the PowerPC
+WriteResource import. It resolves the owning map from the handle rather than the
+current selection, skips protected/unchanged resources, stages one length-prefixed
+payload in the data area, clears only that live resource's resChanged flag and
+retains map-dirty state for UpdateResFile/CloseResFile. Existing disk resource
+references and metadata remain unchanged until map commit; the structural header
+and map location track data-area growth. Pending space reservations for other map
+edits survive a successful single-payload write. Invalid handles return
+resNotFound without changing the volume; unchanged handles are successful no-ops.
+
+This follows the data/map distinction in Apple's Resource Manager documentation:
+[ChangedResource](https://leopard-adc.pepas.com/documentation/mac/MoreToolbox/MoreToolbox-63.html)
+and Inside Macintosh Volume I, Resource Manager, WriteResource, p. I-125.
+Data is staged physically before the live reference is serialized by a map update;
+this is not a complete classic Resource Manager allocation/compaction policy.
+
+Final scoped verification: 93 passes (79 core, two alias-file, eight alias-record,
+four resource-update), with three GPU checks explicitly ignored, in
+/tmp/systemless-write-final-tests.txt. This includes exact staged payload bytes,
+unchanged disk reference/name/attribute bytes, both CPU adapters, owning-map
+selection, deferred map publication, retaining written data against later unmarked
+edits, no-op/error volume preservation and existing disk-full/corrupt-master
+rollback checks. Earlier /tmp/systemless-write-tests.txt is superseded by this
+final run. Initial library check passed in /tmp/systemless-write-check.txt.
+
+The tracer build and strict all-target lint both passed in
+/tmp/systemless-write-tracer-build.txt and /tmp/systemless-write-final-lint.txt,
+terminal exit0 for the sequential workflow. Sequential changed-file formatting
+and diff whitespace checks pass.
+
+Original EV now executes NewAlias, AddResource(alis,0), WriteResource and
+CloseResFile for Last Pilot. It stops at HighLevelFSDispatch selector0008
+(FSpSetFInfo), PC0002E82E, instruction9,158,012, before setting the Finder alias
+flag. The committed snapshot is7,258,966bytes, SHA256
+53208d0ee6e6f8d9092db11d512649653ec9862b33ab9fb49dd0e5c5fa6257f9.
+Independent CRC/catalog/fork verification confirms original companions unchanged,
+preferences51->52 otherwise unchanged, pilot ben node53 and Last Pilot node54.
+Its alis/0 record is198bytes, with target node/date/type/creator matching ben and
+full path Application Volume:Pilots:ben. Last Pilot resource fork is519bytes,
+SHA256 e30d61cd453ae0e6cc68181a1000239e356f5018d622d78fdac59fe4d2ca3e6a.
+The extra unreferenced staged payload remains as non-compacted fork storage.
+
+Durable private evidence in future/target/private-originals/ev/evidence/:
+2026-10-17-write-first.{slv,ppm}, 2026-10-17-write-first-trace-tail.txt and
+2026-10-17-write-volume-verify.py (takes clean modal input and new output paths).
+All are Git-ignored. Next: shared FSpSetFInfo, then finish the alias flag and
+replay the saved volume to verify real pilot reopening. Neither priority game is
+playable. Complete text/library integration and the full rebuild remain active.

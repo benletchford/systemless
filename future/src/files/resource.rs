@@ -69,6 +69,17 @@ impl Files {
         bytes: Vec<u8>,
         modified: u32,
     ) -> Result<i16> {
+        self.replace_resource_file_reserved(reference, bytes, modified, 0)
+    }
+    /// Retain space promised to other live resource-map changes when a single
+    /// payload is written before the map is committed.
+    pub(crate) fn replace_resource_file_reserved(
+        &mut self,
+        reference: i16,
+        bytes: Vec<u8>,
+        modified: u32,
+        pending_size: usize,
+    ) -> Result<i16> {
         self.validate_resource_access(reference)?;
         let access = self.open[&reference];
         if !access.writable {
@@ -86,7 +97,7 @@ impl Files {
             .saturating_sub(old);
         let base = self.space_used() - old - reserved;
         if base
-            .checked_add(bytes.len())
+            .checked_add(bytes.len().max(pending_size))
             .is_none_or(|n| n > super::io::LIMIT)
         {
             return Ok(-34);
@@ -95,6 +106,9 @@ impl Files {
         file.resource = bytes;
         file.modified = modified;
         self.resource_growth.remove(&access.node);
+        if pending_size > file.resource.len() {
+            self.resource_growth.insert(access.node, pending_size);
+        }
         self.changed();
         Ok(0)
     }

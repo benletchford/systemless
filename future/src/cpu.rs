@@ -350,6 +350,7 @@ pub enum Call {
         locked: bool,
     },
     ReleaseResource(u32),
+    WriteResource(u32),
     DetachResource(u32),
     ResourceInfo(crate::process::ResourceInfo),
     Region {
@@ -416,6 +417,8 @@ pub enum Call {
     DeleteSpec(GuestPtr),
     GetSpecInfo(crate::files::GetSpecInfo),
     FlushVolume(GuestPtr),
+    NewAlias(crate::files::NewAlias),
+    ResolveAlias(crate::files::ResolveAlias),
     ResolveAliasFile(crate::files::ResolveAliasFile),
     FcbInfo(GuestPtr),
     WorkingDirectory {

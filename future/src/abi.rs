@@ -225,6 +225,7 @@ pub enum Service {
     HUnlock,
     ReleaseResource,
     DetachResource,
+    WriteResource,
     GetHandleSize,
     SetHandleSize,
     CreateResFile,
@@ -282,6 +283,8 @@ pub enum Service {
     GetSpecInfo,
     FlushVolume,
     FlushVolumeWithAsync,
+    NewAlias,
+    ResolveAlias,
     ResolveAliasFile,
     FcbInfo,
     WorkingDirectory(crate::files::WorkingOp),
@@ -647,6 +650,7 @@ impl Abi {
             b"GetHandleSize" => Some(Service::GetHandleSize),
             b"ReleaseResource" => Some(Service::ReleaseResource),
             b"DetachResource" => Some(Service::DetachResource),
+            b"WriteResource" => Some(Service::WriteResource),
             b"SndDoImmediate" => Some(Service::SndDoImmediate),
             b"SndDoCommand" => Some(Service::SndDoCommand),
             b"SndPlay" => Some(Service::SndPlay),
@@ -778,6 +782,8 @@ impl Abi {
             b"FSpGetFInfo" => Some(Service::GetSpecInfo),
             b"PBFlushVolSync" => Some(Service::FlushVolume),
             b"PBFlushVol" => Some(Service::FlushVolumeWithAsync),
+            b"NewAlias" => Some(Service::NewAlias),
+            b"ResolveAlias" => Some(Service::ResolveAlias),
             b"ResolveAliasFile" => Some(Service::ResolveAliasFile),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
             b"PBGetCatInfoSync" => Some(Service::CatalogInfo),
@@ -1249,6 +1255,42 @@ impl Abi {
                 Ok((Call::MakeSpec(request), Reply::StackWord(GuestPtr(next))))
             }
             0xa823 => {
+                if c.dar[0] as u16 == 2 {
+                    let args = memory.read(GuestPtr(sp), 14)?;
+                    let long = |i| u32::from_be_bytes(args[i..i + 4].try_into().unwrap());
+                    let request = crate::files::NewAlias {
+                        destination: GuestPtr(long(0)),
+                        target: GuestPtr(long(4)),
+                        from: GuestPtr(long(8)),
+                    };
+                    request.validate(memory)?;
+                    let next = sp
+                        .checked_add(12)
+                        .ok_or_else(|| Error::Cpu("NewAlias stack overflow".into()))?;
+                    memory.validate_write(GuestPtr(next), 2)?;
+                    c.dar[15] = next;
+                    return Ok((Call::NewAlias(request), Reply::StackWord(GuestPtr(next))));
+                }
+                if c.dar[0] as u16 == 3 {
+                    let args = memory.read(GuestPtr(sp), 18)?;
+                    let long = |i| u32::from_be_bytes(args[i..i + 4].try_into().unwrap());
+                    let request = crate::files::ResolveAlias {
+                        changed: GuestPtr(long(0)),
+                        target: GuestPtr(long(4)),
+                        alias: long(8),
+                        from: GuestPtr(long(12)),
+                    };
+                    request.validate(memory)?;
+                    let next = sp
+                        .checked_add(16)
+                        .ok_or_else(|| Error::Cpu("ResolveAlias stack overflow".into()))?;
+                    memory.validate_write(GuestPtr(next), 2)?;
+                    c.dar[15] = next;
+                    return Ok((
+                        Call::ResolveAlias(request),
+                        Reply::StackWord(GuestPtr(next)),
+                    ));
+                }
                 if c.dar[0] as u16 != 12 {
                     return Err(Error::Cpu(format!(
                         "unsupported AliasDispatch selector {:04x}",
@@ -3341,13 +3383,18 @@ impl Abi {
                 Reply::M68kError,
             )),
             0xa025 => Ok((Call::HandleSize(c.dar[8]), Reply::M68kD0)),
-            0xa9a3 | 0xa992 => {
+            0xa9a3 | 0xa992 | 0xa9b0 => {
                 let handle = memory.u32(GuestPtr(sp))?;
+                if opcode == 0xa9b0 {
+                    memory.validate_write(GuestPtr(0xa60), 2)?;
+                }
                 c.dar[15] = sp
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("resource ABI stack overflow".into()))?;
                 Ok((
-                    if opcode == 0xa992 {
+                    if opcode == 0xa9b0 {
+                        Call::WriteResource(handle)
+                    } else if opcode == 0xa992 {
                         Call::DetachResource(handle)
                     } else {
                         Call::ReleaseResource(handle)
@@ -4504,6 +4551,7 @@ impl Abi {
             },
             Service::ReleaseResource => Call::ReleaseResource(c.gpr[3]),
             Service::DetachResource => Call::DetachResource(c.gpr[3]),
+            Service::WriteResource => Call::WriteResource(c.gpr[3]),
             Service::MoveHHi => Call::MoveHandleHigh(c.gpr[3]),
             Service::HGetState => Call::HandleState {
                 handle: c.gpr[3],
@@ -4776,6 +4824,25 @@ impl Abi {
                 name: GuestPtr(c.gpr[5]),
                 destination: GuestPtr(c.gpr[6]),
             }),
+            Service::NewAlias => {
+                let request = crate::files::NewAlias {
+                    from: GuestPtr(c.gpr[3]),
+                    target: GuestPtr(c.gpr[4]),
+                    destination: GuestPtr(c.gpr[5]),
+                };
+                request.validate(memory)?;
+                Call::NewAlias(request)
+            }
+            Service::ResolveAlias => {
+                let request = crate::files::ResolveAlias {
+                    from: GuestPtr(c.gpr[3]),
+                    alias: c.gpr[4],
+                    target: GuestPtr(c.gpr[5]),
+                    changed: GuestPtr(c.gpr[6]),
+                };
+                request.validate(memory)?;
+                Call::ResolveAlias(request)
+            }
             Service::ResolveAliasFile => Call::ResolveAliasFile(crate::files::ResolveAliasFile {
                 spec: GuestPtr(c.gpr[3]),
                 chains: c.gpr[4] as u8 != 0,
@@ -4944,6 +5011,7 @@ impl Abi {
                         | Service::DisposePointer
                         | Service::Timer(_)
                         | Service::SetHandleSize
+                        | Service::WriteResource
                         | Service::DetachResource
                         | Service::ReleaseResource
                         | Service::ResourceFile(

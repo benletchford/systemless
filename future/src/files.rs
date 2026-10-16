@@ -7,7 +7,8 @@ use crate::{
 use std::collections::BTreeMap;
 mod aliases;
 mod browse;
-pub use aliases::ResolveAliasFile;
+pub(crate) use aliases::{new_alias, resolve_alias};
+pub use aliases::{NewAlias, ResolveAlias, ResolveAliasFile};
 mod io;
 mod resource;
 pub use resource::CreateSpecResource;

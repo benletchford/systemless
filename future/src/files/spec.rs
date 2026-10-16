@@ -58,7 +58,7 @@ impl Files {
         }
         Ok(error)
     }
-    fn spec_target(
+    pub(super) fn spec_target(
         &self,
         memory: &Memory,
         spec: GuestPtr,
@@ -110,7 +110,7 @@ impl Files {
         self.resource_growth.remove(&node);
         0
     }
-    fn spec_identity(&self, node: u32) -> (u32, Vec<u8>) {
+    pub(super) fn spec_identity(&self, node: u32) -> (u32, Vec<u8>) {
         if node == 2 {
             (1, b"Application Volume".to_vec())
         } else if let Some(directory) = self.directories.get(&node) {
