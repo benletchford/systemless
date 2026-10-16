@@ -236,6 +236,7 @@ pub enum Call {
     },
     Polygon(crate::polygons::Op),
     RegionRecording(crate::region_recording::Op),
+    WindowVisibility(crate::windows::Visibility),
     PenVisibility(i16),
     PenNormal,
     PenMode(i16),

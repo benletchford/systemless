@@ -1880,3 +1880,137 @@ fn hidden_empty_color_windows_resize_at_their_saved_origin_and_partial_oom_rolls
         app.runtime.process.dispose_pointer(fill);
     }
 }
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn calcvis_visibility_services_share_both_cpu_abis_and_leave_pixels_and_other_windows_unchanged() {
+    let f = pef_program(
+        &[0x4e800020],
+        &[
+            b"InitGraf",
+            b"InitWindows",
+            b"NewWindow",
+            b"CalcVis",
+            b"CalcVisBehind",
+        ],
+        512,
+    );
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let data = app.info.toc_or_a5;
+    app.runtime
+        .memory
+        .map(
+            GuestPtr(0x50000000),
+            vec![0xa9, 0x09, 0xa9, 0x0a],
+            Permissions::RX,
+        )
+        .unwrap();
+    invoke(&mut app, 0, &[data + 128 + 202]);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    app.runtime.graphics = Some(
+        pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
+    );
+    invoke(&mut app, 1, &[]);
+    app.runtime
+        .memory
+        .write(GuestPtr(data + 80), b"\x04test")
+        .unwrap();
+    rect(&mut app, data + 64, 40, 40, 100, 100);
+    let back = invoke(
+        &mut app,
+        2,
+        &[0, data + 64, data + 80, 1, 2, u32::MAX, 0, 0],
+    );
+    rect(&mut app, data + 64, 60, 60, 120, 120);
+    let front = invoke(
+        &mut app,
+        2,
+        &[0, data + 64, data + 80, 1, 2, u32::MAX, 0, 0],
+    );
+    let original = region(&app, back, 24);
+    assert!(!original.is_empty());
+    let front_vis = region(&app, front, 24);
+    let before = app.runtime.memory.read(SCREEN, 64 * 342).unwrap().to_vec();
+    let slot = app.runtime.process.ports.unwrap().current_slot;
+    let current = app.runtime.memory.u32(slot).unwrap();
+    let damage = systemless_future::regions::call(
+        &mut app.runtime.memory,
+        &mut app.runtime.process,
+        systemless_future::regions::Op::New,
+        0,
+        0,
+    )
+    .unwrap();
+    rect(&mut app, data + 64, 0, 0, 342, 512);
+    systemless_future::regions::call(
+        &mut app.runtime.memory,
+        &mut app.runtime.process,
+        systemless_future::regions::Op::Rect,
+        damage,
+        data + 64,
+    )
+    .unwrap();
+    // Geometry-only imports and traps must work after the drawing adapter is removed.
+    app.runtime.graphics = None;
+    for architecture in [Architecture::M68k, Architecture::PowerPc] {
+        for behind in [false, true] {
+            let vis = app.runtime.memory.u32(GuestPtr(back + 24)).unwrap();
+            systemless_future::regions::call(
+                &mut app.runtime.memory,
+                &mut app.runtime.process,
+                systemless_future::regions::Op::Clear,
+                vis,
+                0,
+            )
+            .unwrap();
+            let stack = STACK_BASE + 0x8000;
+            let mut frame = if behind {
+                [damage.to_be_bytes(), back.to_be_bytes()].concat()
+            } else {
+                back.to_be_bytes().to_vec()
+            };
+            frame.extend([0x5a; 4]);
+            app.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+            let index = if behind { 4 } else { 3 };
+            let vector = app
+                .runtime
+                .memory
+                .u32(GuestPtr(data + 8 + 4 * index))
+                .unwrap();
+            let gate = app.runtime.memory.u32(GuestPtr(vector)).unwrap();
+            app.runtime.cpu = Cpu::new(
+                architecture,
+                if architecture == Architecture::M68k {
+                    0x50000000 + u32::from(behind) * 2
+                } else {
+                    gate
+                },
+                stack,
+            );
+            match &mut app.runtime.cpu {
+                Cpu::M68k(c) => {
+                    c.dar[0] = 0x12345678;
+                    c.dar[1] = 0xfeedface;
+                }
+                Cpu::PowerPc(c) => {
+                    c.gpr[3] = back;
+                    c.gpr[4] = damage;
+                    c.gpr[5] = 0xfeedface;
+                }
+            }
+            assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+            match &app.runtime.cpu {
+                Cpu::M68k(c) => assert_eq!(
+                    (c.dar[0], c.dar[1], c.dar[15]),
+                    (0x12345678, 0xfeedface, stack + if behind { 8 } else { 4 })
+                ),
+                Cpu::PowerPc(c) => {
+                    assert_eq!((c.gpr[3], c.gpr[4], c.gpr[5]), (back, damage, 0xfeedface))
+                }
+            }
+            assert_eq!(region(&app, back, 24), original);
+            assert_eq!(region(&app, front, 24), front_vis);
+            assert_eq!(app.runtime.memory.read(SCREEN, 64 * 342).unwrap(), before);
+            assert_eq!(app.runtime.memory.u32(slot).unwrap(), current);
+        }
+    }
+}

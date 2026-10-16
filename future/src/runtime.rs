@@ -599,6 +599,19 @@ impl Runtime {
                                 )?;
                             }
                         }
+                        Call::WindowVisibility(request) => {
+                            let windows = std::mem::take(&mut self.process.windows);
+                            let result =
+                                windows.visibility(&mut self.memory, &mut self.process, request);
+                            self.process.windows = windows;
+                            result?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                0,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::RegionRecording(op) => {
                             let mut manager = std::mem::take(&mut self.process.region_recording);
                             let result = manager.call(&mut self.memory, &mut self.process, op);
@@ -2231,6 +2244,7 @@ impl Runtime {
                                 crate::dialogs::Op::Init(_) | crate::dialogs::Op::Param(_)
                             )
                             | Call::Menu(_)
+                            | Call::WindowVisibility(_)
                             | Call::RegionRecording(_)
                             | Call::Polygon(_)
                             | Call::TextEdit(_)
@@ -2385,6 +2399,7 @@ impl Runtime {
                         | Call::PenMode(_)
                         | Call::PenNormal
                         | Call::PenVisibility(_)
+                        | Call::WindowVisibility(_)
                         | Call::RegionRecording(_)
                         | Call::Polygon(_)
                         | Call::WaitEvent { .. }

@@ -3556,3 +3556,44 @@ windows before replaying EV. The legacy helper that recalculates every tracked
 window is reference evidence, not sufficient implementation of that contract.
 Primary: https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-288.html. Full rebuild and
 complete wgpu text rendering remain active requirements.
+
+
+## EV visibility and refreshed Marathon boundary (2026-10-16)
+
+
+Final strict all-target lint passes in /tmp/systemless-calcvis-final-lint.txt;
+tracer build passes in /tmp/systemless-calcvis-build.txt. Sequential formatting
+and whitespace checks pass. Core/selected-window runs are focused acceptance,
+not a fresh full integration suite or GitHub CI acceptance.
+
+Original EV passes WindowVisibility(Behind { start: 0, clobbered: 81784 }) with
+its empty window list and reaches PaintBehind A90D, PC 01026A9C. Evidence:
+/tmp/systemless-ev-calcvis.txt, terminal exit 1 (unsupported next service), using
+10 million instructions, 640x480x8 and the tracer's explicit memory-only flush
+policy. Sound/timer/VBL callbacks remain zero. This empty-list application call
+is supplemented by real overlapping-window/both-CPU fixtures; it alone does not
+prove nonempty-list visibility behavior or playable gameplay.
+
+Independent CRC/catalog comparison in /tmp/systemless-calcvis-volume-check.txt
+verifies output /tmp/systemless-ev-calcvis-saved.slv is 7,239,400 bytes, SHA256
+ff1d7b960c7787f0016992809979eee85257cba2daf2488e00134c1a11d168f7,
+with preferences node 27 -> 28, unchanged metadata/fork bytes and all companions
+preserved. Input /tmp/systemless-ev-region-final-saved.slv remains SHA256
+ad05777204b2f60ec2c352b1f0c3a62e91567fad1311ff788b0a1b542eabf540.
+An initial verification script used an older baseline and correctly failed its
+node-counter assertion; the generalized verifier compares the actual input above.
+
+Marathon 1 v1.2 was replayed on the same build: TextFont family 4 still faults at
+PC 01010E86 with no current QuickDraw port, after 62 timer callbacks and zero
+sound/VBL callbacks. Evidence: /tmp/systemless-marathon-calcvis.txt, terminal
+exit 1, 10 million instructions, 640x480x8 and the existing companion volume.
+No default port was fabricated to bypass it. Neither priority game is playable.
+PPC originals, native-window and writable-backed game runs were not repeated;
+no new audio, browser or native-interaction acceptance is claimed.
+
+Next: shared PaintBehind/PaintOne drawing, exact clobbered-region clipping and
+PaintWhite/update semantics through wgpu, before continuing EV startup. Primary:
+https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-286.html. The baseline implementation
+invalidates bounding boxes and is reference evidence, not proof of the documented
+PaintOne drawing contract. Keep Marathon's port initialization issue open. Full
+rebuild, complete wgpu text and library integration remain active requirements.

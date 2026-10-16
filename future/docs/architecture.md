@@ -3144,3 +3144,32 @@ recording bytes are private runtime metadata, not a ROM-layout parity claim.
 
 References: [OpenRgn](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-133.html)
 and [QuickDraw Drawing, CloseRgn p. 3-89](https://woofle.net/impdf/QD-03-Drawing.pdf).
+
+
+### Selective Window Manager visibility calculations
+
+CalcVis A909 and CalcVisBehind A90A / matching PPC imports use one typed
+WindowVisibility request and the same geometry planner as internal window
+recalculation. The planner walks the live WindowList front to back, subtracts
+visible structure coverage from content intersected with the desktop, and converts
+the result to each port's local coordinates. Single-window calculation stops at
+its target. Behind calculation starts at the specified list entry and selects
+windows whose actual structure region intersects the supplied global damage
+region; holes in damage are respected. NIL start denotes an empty suffix, and
+unknown non-NIL windows or corrupt region/list storage fail explicitly.
+
+All input geometry and owned output handles are validated and staged before one
+transactional replace_handles commit. A later malformed record or allocation
+failure leaves earlier visibility outputs unchanged. Nonselected windows, pixels,
+current port, update regions and window ordering are not rewritten. Geometry-only
+calls do not require a GPU. Both CPU adapters decode void ABIs into this planner.
+
+During BeginUpdate, recalculation intersects the narrowed active visibility with
+new full visibility and updates the saved full region used by EndUpdate. It does
+not broaden the active update drawing area. This is the rebuild's explicit update
+preservation policy; it is not a claim of every undocumented System 7 interaction.
+Custom WDEF/layering behavior, broad Window Manager expansion and native/browser
+interaction acceptance remain incomplete.
+
+Primary references: [CalcVis](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-287.html)
+and [CalcVisBehind](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-288.html).

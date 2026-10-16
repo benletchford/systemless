@@ -82,6 +82,11 @@ pub enum Op {
     Hide,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Window(u32),
+    Behind { start: u32, clobbered: u32 },
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
     Size {
         width: i16,
@@ -819,34 +824,109 @@ impl Windows {
         Ok(())
     }
     fn recalculate(&self, memory: &mut Memory, process: &mut Process) -> Result<()> {
+        self.calculate_visibility(memory, process, None)
+    }
+    /// IM Toolbox Essentials: Window Manager, CalcVis/CalcVisBehind reference.
+    pub fn visibility(
+        &self,
+        memory: &mut Memory,
+        process: &mut Process,
+        request: Visibility,
+    ) -> Result<()> {
+        self.calculate_visibility(memory, process, Some(request))
+    }
+    fn calculate_visibility(
+        &self,
+        memory: &mut Memory,
+        process: &mut Process,
+        request: Option<Visibility>,
+    ) -> Result<()> {
         let list = self.list(memory)?;
+        let (start, damage) = match request {
+            Some(Visibility::Window(window)) => (
+                list.iter()
+                    .position(|&w| w == window)
+                    .ok_or_else(|| fail("unknown CalcVis window"))?,
+                None,
+            ),
+            Some(Visibility::Behind { start, clobbered }) => {
+                let damage = region(memory, process, clobbered)?;
+                let start = if start == 0 {
+                    list.len()
+                } else {
+                    list.iter()
+                        .position(|&w| w == start)
+                        .ok_or_else(|| fail("unknown CalcVisBehind start window"))?
+                };
+                (start, Some(damage))
+            }
+            None => (0, None),
+        };
+        if start >= list.len() {
+            return Ok(());
+        }
         let desktop = region(memory, process, self.gray)?;
         let mut covered = rect_bytes(Rect::new(0, 0, 0, 0))?;
-        for w in list {
+        let mut changes = Vec::new();
+        for (index, w) in list.into_iter().enumerate() {
+            if matches!(request, Some(Visibility::Window(_))) && index > start {
+                break;
+            }
             let visible = memory.read(GuestPtr(w + 110), 1)?[0] != 0;
-            let content = region(memory, process, handle(memory, w, 118)?)?;
-            let available = if visible {
-                region_geometry::combine(&content, &desktop, Boolean::Intersection)?
-            } else {
-                rect_bytes(Rect::new(0, 0, 0, 0))?
-            };
-            let vis = region_geometry::combine(&available, &covered, Boolean::Difference)?;
-            let local = read_rect(
-                memory,
-                crate::port_layout::bounds_pointer(memory, GuestPtr(w))?,
-            )?;
-            put_region(
-                memory,
-                process,
-                handle(memory, w, 24)?,
-                &shifted(&vis, local.left, local.top)?,
-            )?;
-            if visible {
-                covered = region_geometry::combine(
-                    &covered,
-                    &region(memory, process, handle(memory, w, 114)?)?,
-                    Boolean::Union,
+            let structure = region(memory, process, handle(memory, w, 114)?)?;
+            let selected = index >= start
+                && match request {
+                    Some(Visibility::Window(target)) => w == target,
+                    _ => match &damage {
+                        Some(damage) => !region_geometry::decode(&region_geometry::combine(
+                            &structure,
+                            damage,
+                            Boolean::Intersection,
+                        )?)?
+                        .is_empty(),
+                        None => true,
+                    },
+                };
+            if selected {
+                let content = region(memory, process, handle(memory, w, 118)?)?;
+                let available = if visible {
+                    region_geometry::combine(&content, &desktop, Boolean::Intersection)?
+                } else {
+                    rect_bytes(Rect::new(0, 0, 0, 0))?
+                };
+                let vis = region_geometry::combine(&available, &covered, Boolean::Difference)?;
+                let local = read_rect(
+                    memory,
+                    crate::port_layout::bounds_pointer(memory, GuestPtr(w))?,
                 )?;
+                let local_vis = shifted(&vis, local.left, local.top)?;
+                let destination = handle(memory, w, 24)?;
+                region(memory, process, destination)?;
+                if let Some((_, active_vis, saved)) =
+                    self.update.filter(|&(active, _, _)| active == w)
+                {
+                    if active_vis != destination {
+                        return Err(fail("update visibility handle changed"));
+                    }
+                    let restricted = region(memory, process, active_vis)?;
+                    region(memory, process, saved)?;
+                    changes.push((
+                        active_vis,
+                        region_geometry::combine(&restricted, &local_vis, Boolean::Intersection)?,
+                    ));
+                    changes.push((saved, local_vis));
+                } else {
+                    changes.push((destination, local_vis));
+                }
+            }
+            if visible {
+                covered = region_geometry::combine(&covered, &structure, Boolean::Union)?;
+            }
+        }
+        if !changes.is_empty() {
+            process.replace_handles(memory, changes)?;
+            if process.mem_error != 0 {
+                return Err(fail("window visibility allocation failed"));
             }
         }
         Ok(())
@@ -1839,5 +1919,190 @@ mod dialog_event_tests {
         assert!(windows.is_dialog_event(&m, GuestPtr(0x2000)).is_err());
         m.write(LIST, &0x1200u32.to_be_bytes()).unwrap();
         assert!(windows.is_dialog_event(&m, GuestPtr(0x2000)).is_err());
+    }
+}
+#[cfg(test)]
+mod visibility_tests {
+    use super::*;
+    fn owned(m: &mut Memory, p: &mut Process, bytes: Vec<u8>) -> u32 {
+        let h = p.new_handle(m, bytes.len() as u32, false).unwrap();
+        m.write(GuestPtr(m.u32(GuestPtr(h)).unwrap()), &bytes)
+            .unwrap();
+        h
+    }
+    fn setup() -> (Memory, Process, Windows) {
+        let mut m = Memory::default();
+        m.map(GuestPtr(0), vec![0; 0x4000], crate::memory::Permissions::RW)
+            .unwrap();
+        let mut p = Process::default();
+        let mut windows = Windows {
+            gray: owned(
+                &mut m,
+                &mut p,
+                rect_bytes(Rect::new(0, 10, 200, 200)).unwrap(),
+            ),
+            ..Windows::default()
+        };
+        for (index, (w, r)) in [
+            (0x1000u32, Rect::new(20, 20, 60, 60)),
+            (0x1100, Rect::new(0, 0, 100, 100)),
+            (0x1200, Rect::new(120, 10, 150, 30)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            windows.records.insert(w, false);
+            m.write(GuestPtr(w + 110), &[1]).unwrap();
+            m.write(
+                GuestPtr(w + 144),
+                &if index < 2 { w + 0x100 } else { 0 }.to_be_bytes(),
+            )
+            .unwrap();
+            // Negative bitmap bounds express a nonzero local coordinate origin.
+            m.write(GuestPtr(w + 6), &[0, 2]).unwrap();
+            let origin: Vec<_> = [-20i16, -10, 180, 190]
+                .into_iter()
+                .flat_map(i16::to_be_bytes)
+                .collect();
+            m.write(GuestPtr(w + 8), &origin).unwrap();
+            for (offset, bytes) in [
+                (24, rect_bytes(Rect::new(180, 180, 181, 181)).unwrap()),
+                (28, rect_bytes(Rect::new(-100, -100, 200, 200)).unwrap()),
+                (114, rect_bytes(r).unwrap()),
+                (118, rect_bytes(r).unwrap()),
+                (122, rect_bytes(Rect::new(5, 12, 15, 18)).unwrap()),
+            ] {
+                let h = owned(&mut m, &mut p, bytes);
+                m.write(GuestPtr(w + offset), &h.to_be_bytes()).unwrap();
+            }
+        }
+        m.write(LIST, &0x1000u32.to_be_bytes()).unwrap();
+        p.ports = Some(crate::quickdraw::Ports {
+            current_slot: GuestPtr(0x3000),
+            screen_bitmap: GuestPtr(0x3100),
+        });
+        (m, p, windows)
+    }
+    fn get(m: &Memory, p: &mut Process, w: u32) -> Vec<u8> {
+        region(m, p, handle(m, w, 24).unwrap()).unwrap()
+    }
+    fn has(bytes: &[u8], x: i32, y: i32) -> bool {
+        region_geometry::decode(bytes)
+            .unwrap()
+            .iter()
+            .any(|r| r.left <= x && x < r.right && r.top <= y && y < r.bottom)
+    }
+    #[test]
+    fn selective_visibility_uses_live_occlusion_desktop_origin_and_exact_damage() {
+        let (mut m, mut p, windows) = setup();
+        let front = get(&m, &mut p, 0x1000);
+        let far = get(&m, &mut p, 0x1200);
+        let damage = owned(
+            &mut m,
+            &mut p,
+            rect_bytes(Rect::new(0, 0, 100, 100)).unwrap(),
+        );
+        windows
+            .visibility(
+                &mut m,
+                &mut p,
+                Visibility::Behind {
+                    start: 0x1100,
+                    clobbered: damage,
+                },
+            )
+            .unwrap();
+        let back = get(&m, &mut p, 0x1100);
+        assert!(has(&back, 0, -5));
+        assert!(!has(&back, 20, 10));
+        assert!(!has(&back, 0, -15));
+        assert_eq!(get(&m, &mut p, 0x1000), front);
+        assert_eq!(get(&m, &mut p, 0x1200), far);
+        m.write(GuestPtr(0x1000 + 110), &[0]).unwrap();
+        windows
+            .visibility(&mut m, &mut p, Visibility::Window(0x1100))
+            .unwrap();
+        assert!(has(&get(&m, &mut p, 0x1100), 20, 10));
+        let before = get(&m, &mut p, 0x1100);
+        let hole = region_geometry::combine(
+            &rect_bytes(Rect::new(-10, -10, 200, 200)).unwrap(),
+            &rect_bytes(Rect::new(-5, -5, 110, 110)).unwrap(),
+            Boolean::Difference,
+        )
+        .unwrap();
+        let damage = owned(&mut m, &mut p, hole);
+        windows
+            .visibility(
+                &mut m,
+                &mut p,
+                Visibility::Behind {
+                    start: 0x1100,
+                    clobbered: damage,
+                },
+            )
+            .unwrap();
+        assert_eq!(get(&m, &mut p, 0x1100), before);
+        assert_ne!(get(&m, &mut p, 0x1200), far);
+        let before = get(&m, &mut p, 0x1200);
+        windows
+            .visibility(
+                &mut m,
+                &mut p,
+                Visibility::Behind {
+                    start: 0,
+                    clobbered: damage,
+                },
+            )
+            .unwrap();
+        assert_eq!(get(&m, &mut p, 0x1200), before);
+    }
+    #[test]
+    fn recalculation_during_update_keeps_the_draw_clip_and_refreshes_saved_visibility() {
+        let (mut m, mut p, mut windows) = setup();
+        windows
+            .visibility(&mut m, &mut p, Visibility::Window(0x1100))
+            .unwrap();
+        windows.begin(&mut m, &mut p, 0x1100).unwrap();
+        let clip = get(&m, &mut p, 0x1100);
+        m.write(GuestPtr(0x1000 + 110), &[0]).unwrap();
+        windows
+            .visibility(&mut m, &mut p, Visibility::Window(0x1100))
+            .unwrap();
+        assert_eq!(get(&m, &mut p, 0x1100), clip);
+        windows.end(&mut m, &mut p, 0x1100).unwrap();
+        let full = get(&m, &mut p, 0x1100);
+        assert!(has(&full, 20, 10));
+        assert!(!has(&clip, 20, 10));
+        assert!(has(&full, 0, -5));
+    }
+    #[test]
+    fn malformed_later_regions_and_failed_batch_growth_leave_earlier_outputs_unchanged() {
+        let (mut m, mut p, windows) = setup();
+        let first = get(&m, &mut p, 0x1000);
+        let second = get(&m, &mut p, 0x1100);
+        let h = handle(&m, 0x1200, 118).unwrap();
+        let data = GuestPtr(m.u32(GuestPtr(h)).unwrap());
+        m.write(data, &9u16.to_be_bytes()).unwrap();
+        assert!(windows.recalculate(&mut m, &mut p).is_err());
+        assert_eq!(get(&m, &mut p, 0x1000), first);
+        assert_eq!(get(&m, &mut p, 0x1100), second);
+        // CalcVis must not inspect irrelevant geometry behind its target.
+        let structure = handle(&m, 0x1200, 114).unwrap();
+        let data = GuestPtr(m.u32(GuestPtr(structure)).unwrap());
+        m.write(data, &9u16.to_be_bytes()).unwrap();
+        windows
+            .visibility(&mut m, &mut p, Visibility::Window(0x1000))
+            .unwrap();
+        assert!(has(&get(&m, &mut p, 0x1000), 20, 10));
+        let (mut m, mut p, windows) = setup();
+        let first = get(&m, &mut p, 0x1000);
+        let second = get(&m, &mut p, 0x1100);
+        // Back visibility needs a complex record; lock its small allocation behind other live blocks.
+        p.set_handle_lock(&m, handle(&m, 0x1100, 24).unwrap(), true)
+            .unwrap();
+        assert!(windows.recalculate(&mut m, &mut p).is_err());
+        assert_eq!(p.mem_error, -108);
+        assert_eq!(get(&m, &mut p, 0x1000), first);
+        assert_eq!(get(&m, &mut p, 0x1100), second);
     }
 }
