@@ -14,7 +14,7 @@ fn app(selector: u16, pointer: u32) -> LoadedApplication {
             GuestPtr(0x50000000),
             vec![
                 0xa9,
-                if [4, 6, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
+                if [4, 6, 8, 10, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
                     0xeb
                 } else {
                     0xec
@@ -378,5 +378,173 @@ fn native_extended_classification_returns_signed_word_and_never_quiets_nan() {
             };
             assert_eq!(c.dar[15], STACK_BASE + 0x700a);
         }
+    }
+}
+
+fn environment_call(a: &mut LoadedApplication, selector: u16, pointer: u32) {
+    let stack = STACK_BASE + 0x7000;
+    a.runtime
+        .memory
+        .write(GuestPtr(stack), &selector.to_be_bytes())
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(stack + 2), &pointer.to_be_bytes())
+        .unwrap();
+    a.runtime.cpu = Cpu::new(Architecture::M68k, 0x54000000, stack);
+    let Cpu::M68k(c) = &mut a.runtime.cpu else {
+        panic!()
+    };
+    c.dar[0] = 0x12345678;
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::M68k(c) = &a.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(c.dar[15], stack + 6);
+    assert_eq!(c.dar[0], 0x12345678);
+}
+#[test]
+fn native_environment_entry_saves_real_flags_exit_merges_and_set_replaces() {
+    let pointer = STACK_BASE + 0x6000;
+    let mut a = app(0, pointer);
+    a.runtime
+        .memory
+        .map(GuestPtr(0x54000000), vec![0xa9, 0xeb], Permissions::RX)
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(pointer), &0x1f00u16.to_be_bytes())
+        .unwrap();
+    environment_call(&mut a, 1, pointer);
+    environment_call(&mut a, 0x17, pointer + 2);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(pointer + 2)).unwrap(), 0x1f00);
+    assert_eq!(a.runtime.process.numerics.environment_word(), 0);
+    // A real zero divisor inside the procedure must survive restoration.
+    let source = pointer + 32;
+    let destination = pointer + 48;
+    a.runtime.memory.write(GuestPtr(source), &[0; 10]).unwrap();
+    a.runtime
+        .memory
+        .write(
+            GuestPtr(destination),
+            &[0x3f, 0xff, 0x80, 0, 0, 0, 0, 0, 0, 0],
+        )
+        .unwrap();
+    a.runtime
+        .process
+        .numerics
+        .divide_extended(
+            &mut a.runtime.memory,
+            GuestPtr(source),
+            GuestPtr(destination),
+        )
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(pointer + 4), &0x0100u16.to_be_bytes())
+        .unwrap();
+    environment_call(&mut a, 0x19, pointer + 4);
+    assert_eq!(a.runtime.process.numerics.environment_word(), 0x0900);
+    a.runtime
+        .memory
+        .write(GuestPtr(pointer + 6), &0u16.to_be_bytes())
+        .unwrap();
+    environment_call(&mut a, 1, pointer + 6);
+    assert_eq!(a.runtime.process.numerics.environment_word(), 0);
+    environment_call(&mut a, 0x19, pointer + 2);
+    environment_call(&mut a, 3, pointer + 8);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(pointer + 8)).unwrap(), 0x1f00);
+}
+#[test]
+fn environment_faults_preserve_live_status_and_readonly_entry_does_not_pop() {
+    use systemless_future::numerics::Environment;
+    let pointer = 0x52000000;
+    let mut a = app(0, pointer);
+    a.runtime
+        .memory
+        .map(
+            GuestPtr(pointer),
+            0x2000u16.to_be_bytes().to_vec(),
+            Permissions::RX,
+        )
+        .unwrap();
+    a.runtime.process.numerics.invalid = true;
+    for op in [Environment::Set, Environment::Exit, Environment::Entry] {
+        assert!(a
+            .runtime
+            .process
+            .numerics
+            .environment(&mut a.runtime.memory, GuestPtr(pointer), op)
+            .is_err());
+        assert_eq!(a.runtime.process.numerics.environment_word(), 0x0100);
+    }
+    a.runtime
+        .memory
+        .map(GuestPtr(0x54000000), vec![0xa9, 0xeb], Permissions::RX)
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(STACK_BASE + 0x7000), &0x17u16.to_be_bytes())
+        .unwrap();
+    a.runtime.cpu = Cpu::new(Architecture::M68k, 0x54000000, STACK_BASE + 0x7000);
+    assert!(a.runtime.advance(1).is_err());
+    let Cpu::M68k(c) = &a.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(c.dar[15], STACK_BASE + 0x7000);
+    assert_eq!(a.runtime.process.numerics.environment_word(), 0x0100);
+}
+
+#[test]
+fn native_comparison_returns_sane_condition_codes_without_writing_readonly_operands() {
+    for (ae, am, be, bm, selector, cc, invalid) in [
+        (0x3fff, 1u64 << 63, 0x4000, 1u64 << 63, 8, 0x19, false),
+        (0x4000, 1 << 63, 0x3fff, 1 << 63, 8, 0, false),
+        (0, 0, 0x8000, 0, 8, 4, false),
+        (0xbfff, 1 << 63, 0xc000, 1 << 63, 8, 0, false),
+        (0x7fff, 0xc000_0000_0000_0001, 0x3fff, 1 << 63, 8, 2, false),
+        (0x7fff, 0xc000_0000_0000_0001, 0x3fff, 1 << 63, 10, 2, true),
+        (0x7fff, 0x8000_0000_0000_0001, 0x3fff, 1 << 63, 8, 2, true),
+    ] {
+        let source = 0x52000000u32;
+        let destination = 0x53000000;
+        let mut a = app(selector, destination);
+        let mut first = (ae as u16).to_be_bytes().to_vec();
+        first.extend(am.to_be_bytes());
+        let mut second = (be as u16).to_be_bytes().to_vec();
+        second.extend(bm.to_be_bytes());
+        a.runtime
+            .memory
+            .map(GuestPtr(destination), first.clone(), Permissions::RX)
+            .unwrap();
+        a.runtime
+            .memory
+            .map(GuestPtr(source), second.clone(), Permissions::RX)
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(STACK_BASE + 0x7006), &source.to_be_bytes())
+            .unwrap();
+        let Cpu::M68k(c) = &mut a.runtime.cpu else {
+            panic!()
+        };
+        let preserved = (c.get_sr() & !0x1f) | 0x0300;
+        c.set_sr(preserved | 0x1f);
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+        let Cpu::M68k(c) = &a.runtime.cpu else {
+            panic!()
+        };
+        assert_eq!(c.get_sr(), preserved | cc);
+        assert_eq!(c.dar[15], STACK_BASE + 0x700a);
+        for i in 0..15 {
+            assert_eq!(c.dar[i], 0x12340000 + i as u32);
+        }
+        assert_eq!(a.runtime.process.numerics.invalid, invalid);
+        assert!(!a.runtime.process.numerics.inexact);
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(destination), 10).unwrap(),
+            first
+        );
+        assert_eq!(a.runtime.memory.read(GuestPtr(source), 10).unwrap(), second);
     }
 }

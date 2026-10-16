@@ -789,6 +789,25 @@ impl Runtime {
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::CompareExtended {
+                            source,
+                            destination,
+                            signaling,
+                        } => {
+                            let relation = self.process.numerics.compare_extended(
+                                &self.memory,
+                                source,
+                                destination,
+                                signaling,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, relation as u32, 0)?;
+                        }
+                        Call::NumericEnvironment { pointer, op } => {
+                            self.process
+                                .numerics
+                                .environment(&mut self.memory, pointer, op)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::ClassifyExtended {
                             source,
                             destination,
@@ -2214,6 +2233,8 @@ impl Runtime {
                         | Call::DoubleToExtended { .. }
                         | Call::ExtendedToDouble { .. }
                         | Call::MultiplyExtended { .. }
+                        | Call::CompareExtended { .. }
+                        | Call::NumericEnvironment { .. }
                         | Call::ClassifyExtended { .. }
                         | Call::CopyExtended { .. }
                         | Call::Elementary { .. }

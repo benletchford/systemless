@@ -2687,3 +2687,32 @@ Both pointers are checked before the native ten-byte frame is popped. Other
 source formats and noncanonical encodings remain unsupported explicitly.
 Primary reference: Apple Numerics Manual, chapter 20, p. 153/table 20-2;
 pinned SANEMacs.a FCLASSX and C SANE.h (the latter for the enum distinction).
+
+
+### SANE environment state, default arithmetic mode
+
+FGETENV/FSETENV/FPROCENTRY/FPROCEXIT ($0003/$0001/$0017/$0019) now share process
+numeric state. All take one address of a 16-bit word on MC68000 (six-byte native
+selector/address frame). Get serializes real sticky flags into bits $0100–$1000;
+Set replaces them; Entry writes the actual saved state before clearing flags;
+Exit restores the saved flags and unions exceptions raised by the procedure.
+An unwritable save destination cannot clear live state. Tests include real
+zero-divisor arithmetic between Entry and Exit and exact native frame cleanup.
+
+Only the implemented default nearest/extended/no-halt controls can currently be
+installed. Alternate rounding/precision, halt enables and reserved bits are
+rejected before changing state; they are not accepted as ignored controls. Low-
+memory environment storage, exception-test/set APIs, halt vectors, full mode
+support and PPC numeric imports remain unfinished. Primary specification:
+Apple Numerics Manual, chapter 22, pp. 162–165, including the MC68000 address
+operand convention (different from the 65C816 by-value exit convention).
+
+
+FCMPX/FCPXX ($0008/$000A) compare canonical extended operands in shared numerics,
+returning a logical Less/Equal/Greater/Unordered relation. The native reply adapter
+owns XNZVC encoding: $19/$04/$00/$02 respectively, retaining upper SR bits and
+integer registers. Both operand addresses may be readonly; signed zeros compare
+equal and negative magnitude order reverses. Quiet comparisons raise invalid only
+for signaling NaNs; signaling comparisons raise it for any unordered NaN pair.
+Neither input is quieted or rewritten. Primary: Apple Numerics Manual, chapter 20,
+pp. 151–152/table 20-1. Other operand-format variants remain unfinished.

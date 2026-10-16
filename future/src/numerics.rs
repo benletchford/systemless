@@ -12,6 +12,21 @@ pub enum Unary {
     Cos,
     Tan,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Environment {
+    Get,
+    Set,
+    Entry,
+    Exit,
+}
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relation {
+    Less,
+    Equal,
+    Greater,
+    Unordered,
+}
 #[derive(Default)]
 pub struct Numerics {
     /// Sticky mathematical exceptions, retained for future SANE environment APIs.
@@ -22,6 +37,98 @@ pub struct Numerics {
     pub divide_by_zero: bool,
 }
 impl Numerics {
+    pub fn compare_extended(
+        &mut self,
+        memory: &Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+        signaling: bool,
+    ) -> Result<Relation> {
+        let decode = |p: GuestPtr| -> Result<(u16, u64)> {
+            let bytes = memory.read(p, 10)?;
+            let e = u16::from_be_bytes(bytes[..2].try_into().unwrap());
+            let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
+            if (e & 0x7fff != 0 && m >> 63 == 0) || (e & 0x7fff == 0 && m >> 63 != 0) {
+                return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
+            }
+            Ok((e, m))
+        };
+        let (ae, am) = decode(destination)?;
+        let (be, bm) = decode(source)?;
+        let an = ae & 0x7fff == 0x7fff && am != 1 << 63;
+        let bn = be & 0x7fff == 0x7fff && bm != 1 << 63;
+        if an || bn {
+            self.invalid |= signaling || (an && am & (1 << 62) == 0) || (bn && bm & (1 << 62) == 0);
+            return Ok(Relation::Unordered);
+        }
+        if am == 0 && bm == 0 {
+            return Ok(Relation::Equal);
+        }
+        let order = if (ae ^ be) & 0x8000 != 0 {
+            if ae & 0x8000 != 0 {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        } else {
+            let order = (ae & 0x7fff, am).cmp(&(be & 0x7fff, bm));
+            if ae & 0x8000 != 0 {
+                order.reverse()
+            } else {
+                order
+            }
+        };
+        Ok(match order {
+            std::cmp::Ordering::Less => Relation::Less,
+            std::cmp::Ordering::Equal => Relation::Equal,
+            std::cmp::Ordering::Greater => Relation::Greater,
+        })
+    }
+    pub fn environment_word(&self) -> u16 {
+        (u16::from(self.invalid) << 8)
+            | (u16::from(self.underflow) << 9)
+            | (u16::from(self.overflow) << 10)
+            | (u16::from(self.divide_by_zero) << 11)
+            | (u16::from(self.inexact) << 12)
+    }
+    fn restore_flags(&mut self, word: u16) {
+        self.invalid = word & 0x0100 != 0;
+        self.underflow = word & 0x0200 != 0;
+        self.overflow = word & 0x0400 != 0;
+        self.divide_by_zero = word & 0x0800 != 0;
+        self.inexact = word & 0x1000 != 0;
+    }
+    pub fn environment(
+        &mut self,
+        memory: &mut Memory,
+        pointer: GuestPtr,
+        op: Environment,
+    ) -> Result<()> {
+        match op {
+            Environment::Get | Environment::Entry => {
+                memory.validate_write(pointer, 2)?;
+                let saved = self.environment_word();
+                memory.write(pointer, &saved.to_be_bytes())?;
+                if op == Environment::Entry {
+                    self.restore_flags(0);
+                }
+            }
+            Environment::Set | Environment::Exit => {
+                let saved = memory.u16(pointer)?;
+                if saved & !0x1f00 != 0 {
+                    return Err(Error::Cpu("SANE alternate rounding/precision, halts or reserved environment bits are unsupported".into()));
+                }
+                let word = if op == Environment::Exit {
+                    saved | self.environment_word()
+                } else {
+                    saved
+                };
+                self.restore_flags(word);
+            }
+        }
+        Ok(())
+    }
+
     pub fn classify_extended(
         &mut self,
         memory: &mut Memory,

@@ -29,6 +29,15 @@ pub enum Call {
         source: GuestPtr,
         destination: GuestPtr,
     },
+    CompareExtended {
+        source: GuestPtr,
+        destination: GuestPtr,
+        signaling: bool,
+    },
+    NumericEnvironment {
+        pointer: GuestPtr,
+        op: crate::numerics::Environment,
+    },
     ClassifyExtended {
         source: GuestPtr,
         destination: GuestPtr,

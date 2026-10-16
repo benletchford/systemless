@@ -5880,3 +5880,45 @@ save/reset/restore and exception-state serialization, not a hardcoded success.
 Title/menu/gameplay and native audio remain unverified. EV was not replayed and
 retains its previously recorded ProtectEntry boundary. Neither game is playable.
 Full rebuild stays active; PR remains draft.
+
+
+## Environment and comparison checkpoint (2026-10-16)
+
+FGETENV/FSETENV/FPROCENTRY/FPROCEXIT now serialize actual shared exception flags,
+replace them, save/reset them and restore/merge procedure exceptions respectively.
+All use the MC68000 address operand convention and six-byte native frame. Only
+implemented default nearest/extended/no-halt controls are accepted; other controls
+and reserved bits fault before state changes. Low-memory environment storage,
+exception test/set, alternate modes/halts and PPC math imports remain unfinished.
+
+FCMPX/FCPXX compare canonical extended operands in shared numerics; the native
+reply adapter marshals logical relation to XNZVC ($19 less, $04 equal, $00 greater,
+$02 unordered), preserving upper SR and integer registers. Both operands can be
+readonly; signed zeros compare equal. Ordinary comparison signals invalid for
+signaling NaNs; the signaling variant does so for any NaN. Inputs are not quieted.
+
+Final acceptance: 73 checks passed, zero failed/ignored: 48 library, fourteen
+numeric integration, seven timer and four trap patch cases. Evidence:
+/tmp/systemless-sane-env-compare-final-acceptance.txt, terminal exit 0. Real
+zero-divisor arithmetic inside a saved procedure verifies exception merging;
+failed/readonly saves preserve status, and unsupported controls preserve state.
+Comparison tests cover native condition bits, operand order, readonly unchanged
+NaNs, signed zero, negative ordering and variant exception differences. An initial
+comparison fixture switched supervisor stacks; the fixture was corrected to retain
+its stack while testing SR bits. That failed run and earlier environment-only
+passes are superseded, not added to the final count. Strict Rust 1.99 all-target
+lint and Rust 1.93 library checks pass:
+/tmp/systemless-sane-env-compare-final-lint.txt and
+/tmp/systemless-sane-env-compare-msrv.txt. Sequential formatting and whitespace
+checks pass; no new full/GPU/wasm suite is claimed. Primary references: Apple
+Numerics Manual chapters 20/22 and /tmp/systemless-sane-env-sdk.txt.
+
+Original Marathon saves its real $1000 inexact environment and executes two
+comparisons. Its next observed requirement is FSUBX ($A9EB/$0002), PC $01002E32,
+destination $0080FDA6, source $0080FDB0. Evidence:
+/tmp/systemless-marathon-sane-env-compare.txt, explicit unsupported-selector exit 1.
+Completed timer=1, sound=0, VBL=0; original ProcExit and title/menu/gameplay remain
+unverified. EV was not replayed and retains its previously recorded ProtectEntry
+boundary. Neither game is playable. Next: shared extended subtraction/addition
+with exact cancellation and correct rounding, then continue Marathon startup.
+Full rebuild stays active and PR remains draft.

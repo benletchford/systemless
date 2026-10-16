@@ -250,6 +250,7 @@ pub enum Service {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reply {
+    SaneCompare,
     None,
     StackLong(GuestPtr),
     StackByte(GuestPtr),
@@ -1670,9 +1671,33 @@ impl Abi {
                 Ok((Call::Device(op), Reply::StackLong(GuestPtr(next))))
             }
             0xa9eb => {
+                let selector = memory.u16(GuestPtr(sp))?;
+                if [1, 3, 0x17, 0x19].contains(&selector) {
+                    let pointer =
+                        GuestPtr(memory.u32(GuestPtr(sp.checked_add(2).ok_or_else(|| {
+                            Error::Cpu("SANE environment stack overflow".into())
+                        })?))?);
+                    let op = match selector {
+                        1 => crate::numerics::Environment::Set,
+                        3 => crate::numerics::Environment::Get,
+                        0x17 => crate::numerics::Environment::Entry,
+                        _ => crate::numerics::Environment::Exit,
+                    };
+                    if [3, 0x17].contains(&selector) {
+                        memory.validate_write(pointer, 2)?;
+                    } else {
+                        memory.read(pointer, 2)?;
+                    }
+                    c.dar[15] = sp
+                        .checked_add(6)
+                        .ok_or_else(|| Error::Cpu("SANE environment stack overflow".into()))?;
+                    return Ok((Call::NumericEnvironment { pointer, op }, Reply::None));
+                }
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let selector = u16::from_be_bytes(args[..2].try_into().unwrap());
-                if ![4, 6, 0x001c, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
+                if ![4, 6, 8, 10, 0x001c, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e]
+                    .contains(&selector)
+                {
                     return Err(Error::Cpu(format!(
                         "unsupported FP68K selector {selector:04x}"
                     )));
@@ -1688,22 +1713,30 @@ impl Abi {
                         _ => 10,
                     },
                 )?;
-                if [4, 6].contains(&selector) {
+                if [4, 6, 8, 10].contains(&selector) {
                     memory.read(destination, 10)?;
                 }
-                memory.validate_write(
-                    destination,
-                    match selector {
-                        0x001c => 2,
-                        0x0810 => 8,
-                        _ => 10,
-                    },
-                )?;
+                if ![8, 10].contains(&selector) {
+                    memory.validate_write(
+                        destination,
+                        match selector {
+                            0x001c => 2,
+                            0x0810 => 8,
+                            _ => 10,
+                        },
+                    )?;
+                }
                 c.dar[15] = sp
                     .checked_add(10)
                     .ok_or_else(|| Error::Cpu("FP68K stack overflow".into()))?;
                 Ok((
-                    if selector == 4 {
+                    if [8, 10].contains(&selector) {
+                        Call::CompareExtended {
+                            source,
+                            destination,
+                            signaling: selector == 10,
+                        }
+                    } else if selector == 4 {
                         Call::MultiplyExtended {
                             source,
                             destination,
@@ -1740,7 +1773,11 @@ impl Abi {
                             destination,
                         }
                     },
-                    Reply::None,
+                    if [8, 10].contains(&selector) {
+                        Reply::SaneCompare
+                    } else {
+                        Reply::None
+                    },
                 ))
             }
             0xa9ec => {
@@ -4097,6 +4134,21 @@ impl Abi {
 impl Reply {
     pub fn apply(self, cpu: &mut Cpu, memory: &mut Memory, value: u32, error: i16) -> Result<()> {
         match self {
+            Self::SaneCompare => {
+                let bits = match value {
+                    0 => 0x19,
+                    1 => 4,
+                    2 => 0,
+                    3 => 2,
+                    _ => return Err(Error::Cpu("invalid SANE relation result".into())),
+                };
+                let Cpu::M68k(c) = cpu else {
+                    return Err(Error::Cpu(
+                        "native SANE comparison reply on another CPU".into(),
+                    ));
+                };
+                c.set_sr((c.get_sr() & !0x1f) | bits);
+            }
             Self::None => {}
             Self::StackByte(p) => memory.write(p, &[value as u8])?,
             Self::StackLong(p) => memory.write(p, &value.to_be_bytes())?,
