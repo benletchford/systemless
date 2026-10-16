@@ -7162,3 +7162,76 @@ UI or gameplay acceptance. Strict scoped lint passes in
 No new native/browser/GPU-pixel or full-suite acceptance. Marathon/PPC originals
 not rerun. Next: PBFlushVol with explicit host checkpoint/error semantics, then
 continue EV startup. Full rebuild and complete wgpu text remain active.
+
+
+## Synchronous PBFlushVol host persistence boundary (2026-10-16)
+
+Shared FlushVolume calls now support native A013, PPC PBFlushVolSync and the
+synchronous PBFlushVol import. Name/reference selection and guest-memory output
+preflight happen before mutation. Invalid selections return guest errors; valid
+requests clear ioCompletion, publish a pending ioResult and suspend at the typed
+Stop::FlushVolume boundary. Repeated advance, including zero budget, cannot run
+guest instructions or callbacks until host acknowledgment. Complete acknowledgment
+publishes ioResult and the original CPU ABI result before execution resumes.
+
+The shared host adapter checkpoints mounted writable volumes using synchronized
+atomic image replacement, then returns noErr or ioErr (-36) to the guest. Failed
+saves retain canonical changed state for retry. Native window and normal headless
+launch paths use it; automatic checkpoint errors outside a guest flush retain
+host-error behavior. Unbacked hosts explicitly acknowledge an in-memory volume
+barrier. The diagnostic tracer prints that policy; its optional final snapshot
+is a separate export, not a mounted writable backing. Resource Manager dirty
+handles still require update/close before their bytes are file contents. This
+implements synchronous volume flushing, not asynchronous callbacks, physical
+multiple-drive/HFS behavior or complete per-file flush durability.
+
+Primary reference: Inside Macintosh Files, p. 2-143,
+https://leopard-adc.pepas.com/documentation/mac/pdf/Files/File_Manager.pdf.
+Flush writes committed volume/access-path state; it does not set modification
+timestamps. Existing PBFlushFile behavior is not upgraded by this milestone.
+
+Final core/flush acceptance passes: 61 library tests and 3 flush integration tests
+in /tmp/systemless-flush-final-tests.txt. Earlier /tmp/systemless-flush-tests.txt
+also passes the 3 window scheduling tests and 1 shared deletion test, for 68
+distinct focused tests total. Actual both-CPU tests verify pending execution,
+real host snapshot bytes, -36 publication on forced replacement failure, retained
+changed files/retry, immediate invalid-volume errors, explicit memory-only
+completion, invalid guest memory and unsupported async requests. The final
+integration test also resumes the next 68K instruction after acknowledgment.
+Sequential formatting and diff whitespace checks pass. Remaining build/lint and
+application evidence follows below; full rebuild and wgpu text remain active.
+
+
+Original EV now passes the volume flush in two distinct host policies. The
+one-instruction tracer explicitly acknowledges a memory-only barrier, then reaches
+OpenRgn A8DA at PC 01026B6A after palette work, CODE 4 loading, menu-bar installation,
+WMgr port selection and NewRgn. Evidence: /tmp/systemless-ev-flush.txt, terminal
+exit 1 (expected unsupported OpenRgn). The normal headless executable uses a real
+writable Volume copy and reaches the same unsupported service A8DA; evidence
+/tmp/systemless-ev-flush-host.txt, terminal exit 1. Both use 10 million instructions
+and 640x480x8. No title/menu interaction, gameplay, sound or native-window acceptance
+is claimed; tracer sound/timer/VBL callbacks remain zero. Marathon/PPC not rerun.
+
+Input /tmp/systemless-ev-delete-saved.slv remains 7,239,400 bytes, SHA256
+5f48f2c6f79516349bc38561596539017aa1831f8041d8901ee3851ea0400dab.
+Tracer output /tmp/systemless-ev-flush-saved.slv has SHA256
+a34a4f72439d271464812ac5d768454b0ce767f132282ac0ff64bf5236d8eb7d;
+writable host /tmp/systemless-ev-flush-host.slv has SHA256
+f956ff4c359fe18d78dc2abd210e7b4dab61279a6197e6d899e6550639ca9800.
+Independent CRC/catalog parsing verifies both outputs contain preferences node 26
+(replacing 25), next node 27, empty data fork and identical 417-byte resource fork,
+SHA256 9b69b19ff3501c0f35f25b25d5a6d567e4c9b798957822d18a93968ee860b057.
+Host versus tracer whole-volume differences include dates: the normal launcher
+seeds wall time while the tracer retains its deterministic epoch. Evidence:
+/tmp/systemless-flush-volume-verification.txt. Both outputs are separate from the
+input; no private original/snapshot files enter Git.
+
+Strict all-target lint passes in /tmp/systemless-flush-lint-acceptance.txt;
+tracer and normal host builds pass in /tmp/systemless-flush-build.txt and
+/tmp/systemless-flush-host-build.txt. Earlier lint attempts exposed an invalid
+read-only test constant (corrected) and an existing Resource Manager test initializer
+warning (rewritten equivalently); they are superseded by acceptance output.
+No fresh complete test-suite, browser, native presentation, GPU-pixel or GitHub
+CI acceptance. Next: shared OpenRgn/CloseRgn recording with exact region geometry
+and QuickDraw drawing semantics, then continue original EV UI startup. Complete
+wgpu text and the full rebuild remain active requirements.

@@ -97,3 +97,17 @@ The bounded original-app probe accepts `SYSTEMLESS_PROBE_VOLUME=PATH` and uses
 the same backing at advance boundaries. Original Super Mines cross-process
 save/reload evidence is recorded in [original applications](original-applications.md).
 No application binary, volume image or screenshot is committed.
+
+
+## Synchronous guest volume flush
+
+PBFlushVol now yields an explicit host checkpoint boundary. Guest execution stays
+suspended until the host acknowledges persistence or delivers ioErr; the runtime
+then publishes ioResult and the original ABI result. The shared native/headless
+adapter calls the same synchronized atomic checkpoint used by automatic saves.
+An unsuccessful checkpoint retains canonical files and the unsaved revision for
+retry. No-volume hosts explicitly acknowledge an in-memory barrier. The diagnostic
+tracer prints that distinction and never treats its final snapshot option as a
+mounted writable backing volume. Dirty Resource Manager handles require their
+own update/close; PBFlushVol only flushes committed file and catalog state.
+Asynchronous flush callbacks and complete per-service durability remain unfinished.

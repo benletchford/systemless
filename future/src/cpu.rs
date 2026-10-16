@@ -387,6 +387,7 @@ pub enum Call {
     },
     MakeSpec(crate::files::MakeSpec),
     DeleteSpec(GuestPtr),
+    FlushVolume(GuestPtr),
     ResolveAliasFile(crate::files::ResolveAliasFile),
     FcbInfo(GuestPtr),
     WorkingDirectory {

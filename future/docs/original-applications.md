@@ -3473,3 +3473,41 @@ UI or gameplay acceptance. Strict scoped lint passes in
 No new native/browser/GPU-pixel or full-suite acceptance. Marathon/PPC originals
 not rerun. Next: PBFlushVol with explicit host checkpoint/error semantics, then
 continue EV startup. Full rebuild and complete wgpu text remain active.
+
+
+## EV synchronous volume flush and later UI setup (2026-10-16)
+
+
+Original EV now passes the volume flush in two distinct host policies. The
+one-instruction tracer explicitly acknowledges a memory-only barrier, then reaches
+OpenRgn A8DA at PC 01026B6A after palette work, CODE 4 loading, menu-bar installation,
+WMgr port selection and NewRgn. Evidence: /tmp/systemless-ev-flush.txt, terminal
+exit 1 (expected unsupported OpenRgn). The normal headless executable uses a real
+writable Volume copy and reaches the same unsupported service A8DA; evidence
+/tmp/systemless-ev-flush-host.txt, terminal exit 1. Both use 10 million instructions
+and 640x480x8. No title/menu interaction, gameplay, sound or native-window acceptance
+is claimed; tracer sound/timer/VBL callbacks remain zero. Marathon/PPC not rerun.
+
+Input /tmp/systemless-ev-delete-saved.slv remains 7,239,400 bytes, SHA256
+5f48f2c6f79516349bc38561596539017aa1831f8041d8901ee3851ea0400dab.
+Tracer output /tmp/systemless-ev-flush-saved.slv has SHA256
+a34a4f72439d271464812ac5d768454b0ce767f132282ac0ff64bf5236d8eb7d;
+writable host /tmp/systemless-ev-flush-host.slv has SHA256
+f956ff4c359fe18d78dc2abd210e7b4dab61279a6197e6d899e6550639ca9800.
+Independent CRC/catalog parsing verifies both outputs contain preferences node 26
+(replacing 25), next node 27, empty data fork and identical 417-byte resource fork,
+SHA256 9b69b19ff3501c0f35f25b25d5a6d567e4c9b798957822d18a93968ee860b057.
+Host versus tracer whole-volume differences include dates: the normal launcher
+seeds wall time while the tracer retains its deterministic epoch. Evidence:
+/tmp/systemless-flush-volume-verification.txt. Both outputs are separate from the
+input; no private original/snapshot files enter Git.
+
+Strict all-target lint passes in /tmp/systemless-flush-lint-acceptance.txt;
+tracer and normal host builds pass in /tmp/systemless-flush-build.txt and
+/tmp/systemless-flush-host-build.txt. Earlier lint attempts exposed an invalid
+read-only test constant (corrected) and an existing Resource Manager test initializer
+warning (rewritten equivalently); they are superseded by acceptance output.
+No fresh complete test-suite, browser, native presentation, GPU-pixel or GitHub
+CI acceptance. Next: shared OpenRgn/CloseRgn recording with exact region geometry
+and QuickDraw drawing semantics, then continue original EV UI startup. Complete
+wgpu text and the full rebuild remain active requirements.

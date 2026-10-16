@@ -201,6 +201,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        if stop == Stop::FlushVolume {
+            systemless_future::volume::checkpoint_runtime(None, &mut app.runtime)?;
+            println!("acknowledged memory-only volume flush (no host backing)");
+            continue;
+        }
         if let Stop::Waiting { ticks } = stop {
             if elapse_waits {
                 app.runtime.elapse_ticks(ticks)?;

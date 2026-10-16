@@ -258,6 +258,8 @@ pub enum Service {
     CreateSpecResource,
     MakeSpec,
     DeleteSpec,
+    FlushVolume,
+    FlushVolumeWithAsync,
     ResolveAliasFile,
     FcbInfo,
     WorkingDirectory(crate::files::WorkingOp),
@@ -726,6 +728,8 @@ impl Abi {
             b"FSpCreateResFile" => Some(Service::CreateSpecResource),
             b"FSMakeFSSpec" => Some(Service::MakeSpec),
             b"FSpDelete" => Some(Service::DeleteSpec),
+            b"PBFlushVolSync" => Some(Service::FlushVolume),
+            b"PBFlushVol" => Some(Service::FlushVolumeWithAsync),
             b"ResolveAliasFile" => Some(Service::ResolveAliasFile),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
             b"PBGetCatInfoSync" => Some(Service::CatalogInfo),
@@ -3001,6 +3005,7 @@ impl Abi {
                 },
                 Reply::M68kHandle,
             )),
+            0xa013 => Ok((Call::FlushVolume(GuestPtr(c.dar[8])), Reply::M68kFileError)),
             0xa00d | 0xa20d | 0xa000 | 0xa200 | 0xa00a | 0xa20a | 0xa008 | 0xa208 | 0xa009
             | 0xa209 | 0xa001 | 0xa002 | 0xa003 | 0xa011 | 0xa012 | 0xa018 | 0xa044 | 0xa045 => {
                 use crate::files::{Fork, Op};
@@ -4338,6 +4343,15 @@ impl Abi {
                 name: GuestPtr(c.gpr[4]),
                 current_only: service == Service::Get1NamedResource,
             },
+            Service::FlushVolume => Call::FlushVolume(GuestPtr(c.gpr[3])),
+            Service::FlushVolumeWithAsync => {
+                if c.gpr[4] as u8 != 0 {
+                    return Err(Error::Cpu(
+                        "asynchronous volume flush is unsupported".into(),
+                    ));
+                }
+                Call::FlushVolume(GuestPtr(c.gpr[3]))
+            }
             Service::FileIoWithAsync(op) => {
                 if c.gpr[4] as u8 != 0 {
                     return Err(Error::Cpu(

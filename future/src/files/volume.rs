@@ -61,6 +61,51 @@ impl<'a> Reader<'a> {
     }
 }
 impl Files {
+    /// Synchronous PBFlushVol selection/preflight, IM Files p. 2-143.
+    /// The host must checkpoint before the runtime publishes a successful result.
+    pub(crate) fn prepare_flush(
+        &self,
+        memory: &crate::memory::Memory,
+        pointer: crate::memory::GuestPtr,
+    ) -> Result<i16> {
+        use crate::memory::GuestPtr;
+        if pointer.0 == 0 {
+            return Err(Error::Cpu("nil volume flush parameter block".into()));
+        }
+        let pb = memory.read(pointer, 24)?;
+        memory.validate_write(GuestPtr(pointer.0 + 12), 6)?;
+        let name = Self::name_input(
+            memory,
+            GuestPtr(u32::from_be_bytes(pb[18..22].try_into().unwrap())),
+        )?;
+        let reference = i16::from_be_bytes(pb[22..24].try_into().unwrap());
+        if self.name.is_empty() {
+            return Ok(if reference == 0 { -50 } else { -35 });
+        }
+        if name.contains(&0) {
+            return Ok(-37);
+        }
+        if !name.is_empty() && !name.starts_with(b":") {
+            let volume = name.split(|&b| b == b':').next().unwrap();
+            if volume.len() > 27 {
+                return Ok(-37);
+            }
+            return Ok(if volume.eq_ignore_ascii_case(b"Application Volume") {
+                0
+            } else {
+                -35
+            });
+        }
+        Ok(
+            if matches!(reference, -1..=1) || self.working.contains_key(&reference) {
+                0
+            } else if reference > 1 {
+                -56
+            } else {
+                -35
+            },
+        )
+    }
     /// Stable, big-endian writable volume image; the loaded application is excluded.
     pub fn export_volume(&self) -> Result<Vec<u8>> {
         if self.name.is_empty() {
@@ -241,6 +286,52 @@ impl Files {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn flush_selection_validates_names_references_and_guest_outputs_without_catalog_changes() {
+        use crate::memory::{GuestPtr, Memory, Permissions};
+        let mut files = catalog();
+        let wd = files.open_working_directory(-1, 17, 42).unwrap();
+        let mut memory = Memory::default();
+        memory
+            .map(GuestPtr(0x1000), vec![0; 512], Permissions::RW)
+            .unwrap();
+        let pb = GuestPtr(0x1000);
+        let before = files.export_volume().unwrap();
+        let revision = files.revision();
+        for (reference, name, expected) in [
+            (0, b"".as_slice(), 0),
+            (-1, b"".as_slice(), 0),
+            (1, b"".as_slice(), 0),
+            (wd, b"".as_slice(), 0),
+            (-10, b"".as_slice(), -35),
+            (2, b"".as_slice(), -56),
+            (2, b"Application Volume:File".as_slice(), 0),
+            (0, b"Missing".as_slice(), -35),
+            (0, b"Bad\0Name".as_slice(), -37),
+            (0, b"abcdefghijklmnopqrstuvwxyz12".as_slice(), -37),
+        ] {
+            memory
+                .write(GuestPtr(0x1012), &0x1100u32.to_be_bytes())
+                .unwrap();
+            memory
+                .write(GuestPtr(0x1016), &i16::to_be_bytes(reference))
+                .unwrap();
+            let mut string = vec![name.len() as u8];
+            string.extend(name);
+            memory.write(GuestPtr(0x1100), &string).unwrap();
+            let bytes = memory.read(pb, 24).unwrap().to_vec();
+            assert_eq!(files.prepare_flush(&memory, pb).unwrap(), expected);
+            assert_eq!(memory.read(pb, 24).unwrap(), bytes);
+            assert_eq!(files.revision(), revision);
+            assert_eq!(files.export_volume().unwrap(), before);
+        }
+        memory
+            .map(GuestPtr(0x2000), vec![0; 24], Permissions::RX)
+            .unwrap();
+        assert!(files.prepare_flush(&memory, GuestPtr(0x2000)).is_err());
+        assert!(files.prepare_flush(&memory, GuestPtr(0x11f0)).is_err());
+        assert!(files.prepare_flush(&memory, GuestPtr(0)).is_err());
+    }
     fn catalog() -> Files {
         let mut f = Files::application(b"original data", Some(b"original resources"));
         f.directories.insert(

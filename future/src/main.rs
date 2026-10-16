@@ -403,11 +403,12 @@ impl ApplicationHandler for App {
         };
         match event {
             WindowEvent::CloseRequested => {
-                if let Some(volume) = &mut self.volume {
-                    if let Err(error) = volume.checkpoint(&state.rt.process.files) {
-                        self.fail(event_loop, error);
-                        return;
-                    }
+                if let Err(error) = systemless_future::volume::checkpoint_runtime(
+                    self.volume.as_mut(),
+                    &mut state.rt,
+                ) {
+                    self.fail(event_loop, error);
+                    return;
                 }
                 event_loop.exit();
             }
@@ -428,11 +429,12 @@ impl ApplicationHandler for App {
                     return;
                 }
                 let drawn = state.draw(window.clone());
-                if let Some(volume) = &mut self.volume {
-                    if let Err(error) = volume.checkpoint(&state.rt.process.files) {
-                        self.fail(event_loop, error);
-                        return;
-                    }
+                if let Err(error) = systemless_future::volume::checkpoint_runtime(
+                    self.volume.as_mut(),
+                    &mut state.rt,
+                ) {
+                    self.fail(event_loop, error);
+                    return;
                 }
                 match drawn {
                     Ok(true) => self.frames += 1,
@@ -693,10 +695,9 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let stop = loop {
         let remaining = budget.saturating_sub(app.runtime.instructions - started);
         let advanced = app.runtime.advance(remaining);
-        if let Some(volume) = &mut volume {
-            volume.checkpoint(&app.runtime.process.files)?;
-        }
+        systemless_future::volume::checkpoint_runtime(volume.as_mut(), &mut app.runtime)?;
         match advanced? {
+            Stop::FlushVolume => continue,
             Stop::Waiting { ticks } => {
                 app.runtime.elapse_sound_silently(ticks)?;
                 app.runtime.elapse_ticks(ticks)?;
@@ -763,7 +764,7 @@ impl Execution {
                     "guest execution budget exhausted".into(),
                 ));
             }
-            Stop::Budget | Stop::Waiting { .. } => {}
+            Stop::Budget | Stop::Waiting { .. } | Stop::FlushVolume => {}
         }
         Ok(())
     }

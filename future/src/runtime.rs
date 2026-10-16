@@ -7,7 +7,11 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stop {
     Budget,
-    Waiting { ticks: u32 },
+    /// Host must checkpoint the mounted volume and acknowledge before guest execution resumes.
+    FlushVolume,
+    Waiting {
+        ticks: u32,
+    },
     Exit(u32),
     Returned(u32),
 }
@@ -111,6 +115,7 @@ pub struct Runtime {
     menu_wait: Option<MenuWait>,
     standard_file_wait: Option<StandardFileWait>,
     terminal: Option<Stop>,
+    volume_flush: Option<(GuestPtr, crate::abi::Reply)>,
     pub(crate) lifecycle: Option<crate::lifecycle::Lifecycle>,
     faulted: bool,
     calendar: crate::calendar::Clock,
@@ -136,6 +141,7 @@ impl Runtime {
             menu_wait: None,
             standard_file_wait: None,
             terminal: None,
+            volume_flush: None,
             lifecycle: None,
             faulted: false,
             calendar: crate::calendar::Clock::default(),
@@ -155,12 +161,37 @@ impl Runtime {
             self.process.cursor.draw(self.process.input),
         )
     }
+    pub fn volume_flush_pending(&self) -> bool {
+        self.volume_flush.is_some()
+    }
+    /// Acknowledge host persistence (0) or a Macintosh I/O error. Memory-only hosts
+    /// explicitly acknowledge their canonical in-memory catalog, not disk durability.
+    pub fn complete_volume_flush(&mut self, error: i16) -> Result<()> {
+        if self.faulted || self.terminal.is_some() || error > 0 {
+            return Err(Error::Cpu("invalid volume flush completion".into()));
+        }
+        let (pointer, reply) = self
+            .volume_flush
+            .as_ref()
+            .ok_or_else(|| Error::Cpu("no pending volume flush".into()))?;
+        let pointer = *pointer;
+        let reply = *reply;
+        self.memory.validate_write(GuestPtr(pointer.0 + 16), 2)?;
+        self.memory
+            .write(GuestPtr(pointer.0 + 16), &error.to_be_bytes())?;
+        reply.apply(&mut self.cpu, &mut self.memory, error as i32 as u32, error)?;
+        self.volume_flush = None;
+        Ok(())
+    }
     pub fn advance(&mut self, budget: u64) -> Result<Stop> {
         if self.faulted {
             return Err(Error::Cpu("runtime stopped after earlier fault".into()));
         }
         if let Some(stop) = self.terminal {
             return Ok(stop);
+        }
+        if self.volume_flush.is_some() {
+            return Ok(Stop::FlushVolume);
         }
         let result = self.advance_inner(budget).map(|stop| match stop {
             Stop::Waiting { ticks } => Stop::Waiting {
@@ -2055,6 +2086,24 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::FlushVolume(pointer) => {
+                            let error = self.process.files.prepare_flush(&self.memory, pointer)?;
+                            self.memory.write(GuestPtr(pointer.0 + 12), &[0; 4])?;
+                            self.memory.write(
+                                GuestPtr(pointer.0 + 16),
+                                &if error == 0 { 1i16 } else { error }.to_be_bytes(),
+                            )?;
+                            if error == 0 {
+                                self.volume_flush = Some((pointer, reply));
+                                return Ok(Stop::FlushVolume);
+                            }
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::DeleteSpec(spec) => {
                             let error = self.process.files.delete_spec(&self.memory, spec)?;
                             reply.apply(
@@ -2396,6 +2445,7 @@ impl Runtime {
                         | Call::Elementary { .. }
                         | Call::AtanExtended(_)
                         | Call::Timer(_)
+                        | Call::FlushVolume(_)
                         | Call::DeleteSpec(_)
                         | Call::MakeSpec(_)
                         | Call::ResolveAliasFile(_)

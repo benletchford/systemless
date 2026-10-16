@@ -241,10 +241,13 @@ extent, read-only/resource flags, mark, name, volume and parent. Indexed and dir
 reference queries share the same table. Parameter/name destinations are validated
 before either is written. Directory operations and guest open/read/write/close
 now share the same catalog. Optional host backing persists writable files;
-asynchronous I/O and per-service host flush/error semantics remain pending.
+synchronous PBFlushVol now suspends guest execution until the host checkpoint
+acknowledges success or a Macintosh I/O error. Asynchronous I/O and complete
+per-service flush/error semantics remain pending.
 This is a virtual volume model, not an
 HFS disk-image implementation. Source fork bytes remain separate from mutable
-resource handles until an explicit save/flush model exists.
+resource handles until Resource Manager update/close commits them. PBFlushVol
+flushes committed file/catalog state; it does not replace UpdateResFile.
 
 GetNamedResource/Get1NamedResource compare exact raw names, retain absent-type vs
 absent-name error behavior, and resolve to the same cached handle as ID lookup.
@@ -3084,3 +3087,29 @@ zero; playable title/menu/gameplay/audio acceptance remains open. Marathon was
 not replayed. Next: shared signed LongInt-to-Fixed conversion with documented
 saturation and both ABI adapters, then replay. Full rebuild and complete text
 rendering remain active requirements.
+
+
+### Synchronous volume flush handshake
+
+PBFlushVol (A013), PBFlushVolSync and synchronous PBFlushVol imports share one
+volume-selection/preflight service (IM Files p. 2-143). A valid request clears
+ioCompletion and publishes an internal pending ioResult, saves its typed reply,
+and yields Stop::FlushVolume. Repeated advance calls return the same stop without
+executing instructions or dispatching callbacks until complete_volume_flush is
+called. Invalid volumes return their catalog error without a host request; invalid
+guest pointers/output permissions fault before mutation.
+
+The host volume adapter checkpoints canonical files using its synchronized atomic
+replacement, then publishes noErr or ioErr (-36) to ioResult and the original CPU
+ABI. Windowed and headless launch paths use this adapter. Failed checkpoints leave
+canonical changed data available for retry. Automatic checkpoint errors outside a
+guest flush retain their host-error behavior. No host paths enter guest services.
+Without a backing volume, hosts explicitly acknowledge the canonical in-memory
+volume barrier; this does not claim disk durability. The diagnostic tracer prints
+that policy and its optional final snapshot remains a separate export operation.
+
+This boundary flushes committed catalog/fork bytes, including open access paths,
+without changing timestamps, marks, reference identities or dirty Resource Manager
+handles. Resource Manager maps still require UpdateResFile/CloseResFile before
+those changes are file contents. Asynchronous completion, additional volumes,
+physical-drive details and full per-service File Manager durability remain open.

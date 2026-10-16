@@ -723,8 +723,10 @@ mod update_eof_tests {
     };
     #[test]
     fn update_preserves_existing_eof_until_map_compaction_is_requested() {
-        let mut p = Process::default();
-        p.files = Files::application(&[], None);
+        let mut p = Process {
+            files: Files::application(&[], None),
+            ..Process::default()
+        };
         let mut m = Memory::default();
         m.map(GuestPtr(0), vec![0; 4096], Permissions::RW).unwrap();
         let spec = GuestPtr(0x100);

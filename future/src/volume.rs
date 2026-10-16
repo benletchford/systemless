@@ -13,6 +13,25 @@ pub struct Volume {
     _lock: File,
     saved_revision: Option<u64>,
 }
+/// Persist at execution boundaries. Pending synchronous guest flush errors are
+/// delivered to the guest; ordinary automatic checkpoint errors remain host errors.
+/// With no backing, explicitly acknowledge the canonical memory-volume barrier.
+pub fn checkpoint_runtime(
+    volume: Option<&mut Volume>,
+    runtime: &mut crate::runtime::Runtime,
+) -> io::Result<()> {
+    let result = volume.map_or(Ok(false), |volume| {
+        volume.checkpoint(&runtime.process.files)
+    });
+    if runtime.volume_flush_pending() {
+        runtime
+            .complete_volume_flush(if result.is_ok() { 0 } else { -36 })
+            .map_err(codec)?;
+        Ok(())
+    } else {
+        result.map(|_| ())
+    }
+}
 fn codec(error: crate::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
