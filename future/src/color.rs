@@ -8,6 +8,7 @@ use crate::{
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    Seed,
     Make {
         source: u32,
         destination: u32,
@@ -26,6 +27,7 @@ pub enum Op {
 #[derive(Default)]
 pub struct Manager {
     error: i16,
+    serial: u32,
 }
 // The device ColorSpec high byte is reserved to the Color/Palette Managers.
 // This runtime stores protection in bit 15; public pixel indices use ordinals.
@@ -141,6 +143,11 @@ fn table(palette: &Palette, resolution: u16) -> Vec<u8> {
 }
 impl Manager {
     pub fn call(&mut self, m: &mut Memory, p: &mut Process, op: Op) -> Result<u32> {
+        if op == Op::Seed {
+            let seed = self.next_seed(0)?;
+            self.serial = seed;
+            return Ok(seed);
+        }
         if op == Op::Error {
             return Ok(self.error as i32 as u32);
         }
@@ -153,12 +160,19 @@ impl Manager {
             } => self.make(m, p, source, destination, resolution),
             Op::Protect { index, protect } => self.protect(m, p, index, protect),
             Op::Reserve { index, reserve } => self.entry(m, p, index, reserve, RESERVED),
-            Op::Error => unreachable!(),
+            Op::Error | Op::Seed => unreachable!(),
         };
         (p.mem_error, p.res_error) = saved;
         let error = result?;
         self.error = error;
         Ok(0)
+    }
+    fn next_seed(&self, previous: u32) -> Result<u32> {
+        self.serial
+            .max(previous)
+            .max(1023)
+            .checked_add(1)
+            .ok_or_else(|| bad("color seed namespace exhausted"))
     }
     fn protect(
         &mut self,
@@ -212,11 +226,12 @@ impl Manager {
         } else {
             old & !flag
         };
-        let seed = m.u32(data)?.wrapping_add(1);
+        let seed = self.next_seed(m.u32(data)?)?;
         m.validate_write(data, 4)?;
         m.validate_write(entry, 2)?;
         m.write(entry, &value.to_be_bytes())?;
         m.write(data, &seed.to_be_bytes())?;
+        self.serial = seed;
         Ok(0)
     }
     fn make(

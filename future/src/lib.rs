@@ -7,6 +7,7 @@ mod callback;
 pub mod cfm;
 pub mod color;
 pub mod color_ports;
+mod color_tables;
 pub mod controls;
 pub mod cpu;
 pub mod cursor;

@@ -2760,3 +2760,51 @@ the existing GetCTable contracts. Text library integration and the full rebuild
 remain ongoing requirements; the goal is not complete.
 
 Final strict fixture lint: /tmp/systemless-reserve-test-lint.txt, terminal exit 0.
+
+
+## Standard color resources and shared seeds (2026-10-16)
+
+The shared resource provider now supplies built-in clut IDs 1/2/4/8 and grayscale
+IDs 34/36/40 without a ROM/System file. Application/resource-chain overrides keep
+precedence. Built-in source handles have stable resource identity; GetCTable
+continues to validate and copy live source bytes into independently disposable,
+ordinary handles. Edits, release, allocation failure and recovery follow the same
+resource/handle path as existing cursors. This does not establish a complete
+system resource catalog or enumeration behavior. Highlight-adjusted IDs, 33 and
+127 remain explicitly unfinished when not resource-backed.
+
+The 4/8-bit tables match full captured Systemless reference bytes, whose pinned
+baseline, source functions and SHA-256 values are recorded in
+[reference provenance](../tests/reference/standard-cluts.md). These are legacy
+comparisons authorized by the user, not new native System 7/ROM conformance.
+Apple's [default-table documentation](https://dev.os9.ca/techpubs/mac/ACI/ACI-20.html)
+establishes the resource IDs and grayscale convention. The host RGB332 display
+policy remains separate from these standard Macintosh source palettes.
+
+Both CPU adapters now dispatch GetCTSeed to one shared sequence above minSeed
+1023. Palette protection/reservation invalidation also uses that sequence rather
+than independently incrementing each table's seed into possible collisions.
+The sequence advances above the previous table seed, preserves QDError for
+GetCTSeed, allocates no guest memory, and reports exhaustion before wrapping.
+The semantic reference is Apple's Color Manager chapter, Color Table Management.
+
+Final validation: /tmp/systemless-standard-color-acceptance.txt, terminal exit 0:
+16 passed / 0 failed / 0 ignored (color tables 6, inverse/color services 7,
+standard cursors 3). Cases include full reference bytes, both CPU adapters,
+resource ownership/live edits/overrides, source-allocation failure and recovery,
+unique interleaved seeds, preserved QDError and cursor-provider regressions.
+Strict runtime/probe lint passes in /tmp/systemless-standard-clut-seed-lint.txt;
+final fixture lint is recorded separately. Formatting/whitespace checks pass.
+Earlier narrower color-table runs are preliminary, not additional acceptance.
+
+Original Escape Velocity passes GetCTable(8) and GetCTSeed, now stopping at
+SetEntries AA3F, PC 0001A07C. Evidence:
+/tmp/systemless-ev-standard-clut-seed.txt, terminal exit 1 at that explicit missing
+service; tracer build exit 0. Replay uses the original resource fork, one million
+instructions, 640x480x8 graphics and no companion volume. Sound/timer/VBL callback
+counts remain zero; title/menu/gameplay/audio acceptance is not established.
+Marathon was not replayed. Next: atomic shared SetEntries updates honoring
+protection/client reservations, palette seed changes and live wgpu presentation.
+The full rebuild, including complete text rendering, remains incomplete.
+
+Final strict fixture lint: /tmp/systemless-standard-color-test-lint.txt, terminal exit 0.

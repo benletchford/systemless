@@ -156,7 +156,9 @@ impl Process {
         {
             return self.get_owned_resource(memory, o, kind, id);
         }
-        if kind == *b"CURS" && crate::cursor::standard(id).is_some() {
+        if (kind == *b"CURS" && crate::cursor::standard(id).is_some())
+            || (kind == *b"clut" && crate::color_tables::standard(id).is_some())
+        {
             return self.get_owned_resource(memory, 0, kind, id);
         }
         self.resource_miss(kind, false);
@@ -180,11 +182,16 @@ impl Process {
                 ));
             }
             (r.data.clone(), r.attributes)
-        } else if owner == 0 && kind == *b"CURS" {
+        } else if owner == 0 {
+            let contents = if kind == *b"CURS" {
+                crate::cursor::standard(id).map(|bytes| bytes.to_vec())
+            } else if kind == *b"clut" {
+                crate::color_tables::standard(id)
+            } else {
+                None
+            };
             (
-                crate::cursor::standard(id)
-                    .ok_or_else(|| Error::Load("missing builtin cursor".into()))?
-                    .to_vec(),
+                contents.ok_or_else(|| Error::Load("missing builtin resource".into()))?,
                 0,
             )
         } else {

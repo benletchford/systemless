@@ -224,9 +224,7 @@ impl Manager {
         memory.validate_write(GuestPtr(0xa60), 2)?;
         let source = process.get_resource(memory, *b"clut", id)?;
         if source == 0 {
-            if process.res_error == -192
-                && matches!(id, 1 | 2 | 4 | 8 | 33 | 34 | 36 | 40 | 66 | 68 | 72 | 127)
-            {
+            if process.res_error == -192 && matches!(id, 33 | 66 | 68 | 72 | 127) {
                 return Err(invalid("standard system color tables are not implemented"));
             }
             return Ok(0);

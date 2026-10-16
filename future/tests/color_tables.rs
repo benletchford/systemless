@@ -165,7 +165,7 @@ fn table_missing_empty_malformed_and_system_requests_have_explicit_results() {
         assert!(direct(&mut a, id).is_err());
         assert_eq!(a.runtime.process.free_memory(), before);
     }
-    assert!(direct(&mut a, 8)
+    assert!(direct(&mut a, 66)
         .unwrap_err()
         .to_string()
         .contains("standard system color tables"));
@@ -191,4 +191,125 @@ fn copy_allocation_failure_returns_nil_with_real_memory_error_and_preserves_reso
     assert_eq!(a.runtime.memory.u16(GuestPtr(0x220)).unwrap() as i16, -108);
     assert_eq!(a.runtime.memory.u16(GuestPtr(0xa60)).unwrap(), 0);
     assert_eq!(bytes(&mut a, source), table());
+}
+
+#[test]
+fn standard_tables_match_preserved_reference_and_gray_ramps_on_both_cpus() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        for (id, count) in [
+            (1, 2usize),
+            (2, 4),
+            (4, 16),
+            (8, 256),
+            (34, 4),
+            (36, 16),
+            (40, 256),
+        ] {
+            let h = get(&mut a, arch, id);
+            assert_ne!(h, 0);
+            let data = bytes(&mut a, h);
+            assert_eq!(data.len(), 8 + count * 8);
+            assert_eq!(&data[..4], &(id as u32).to_be_bytes());
+            assert_eq!(
+                &data[4..8],
+                &[0, 0, ((count - 1) >> 8) as u8, (count - 1) as u8]
+            );
+            for (index, entry) in data[8..].chunks_exact(8).enumerate() {
+                assert_eq!(&entry[..2], &(index as u16).to_be_bytes());
+                if ![4, 8].contains(&id) {
+                    let intensity = ((255 - index * 255 / (count - 1)) * 257) as u16;
+                    assert_eq!(&entry[2..], intensity.to_be_bytes().repeat(3));
+                }
+            }
+            if id == 4 {
+                assert_eq!(data, include_bytes!("reference/clut4-systemless.bin"));
+            }
+            if id == 8 {
+                assert_eq!(data, include_bytes!("reference/clut8-systemless.bin"));
+            }
+            assert_eq!(a.runtime.memory.u16(GuestPtr(0xa60)).unwrap(), 0);
+            assert_eq!(
+                a.runtime
+                    .process
+                    .handle_state(&a.runtime.memory, h)
+                    .unwrap(),
+                0
+            );
+        }
+    }
+}
+
+#[test]
+fn builtin_resource_ownership_live_edits_and_application_override_are_preserved() {
+    let mut a = app();
+    let original = get(&mut a, Architecture::M68k, 8);
+    let resource = a
+        .runtime
+        .process
+        .get_resource(&mut a.runtime.memory, *b"clut", 8)
+        .unwrap();
+    assert_ne!(original, resource);
+    assert_eq!(
+        a.runtime
+            .process
+            .get_resource(&mut a.runtime.memory, *b"clut", 8)
+            .unwrap(),
+        resource
+    );
+    assert_eq!(
+        a.runtime
+            .process
+            .handle_state(&a.runtime.memory, resource)
+            .unwrap()
+            & 0x20,
+        0x20
+    );
+    let pointer = a.runtime.memory.u32(GuestPtr(resource)).unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(pointer + 10), &0x1234u16.to_be_bytes())
+        .unwrap();
+    let edited = get(&mut a, Architecture::PowerPc, 8);
+    assert_eq!(&bytes(&mut a, edited)[10..12], &[0x12, 0x34]);
+    assert_eq!(
+        bytes(&mut a, original),
+        include_bytes!("reference/clut8-systemless.bin")
+    );
+    a.runtime
+        .process
+        .release_resource(&mut a.runtime.memory, resource)
+        .unwrap();
+    ppc(&mut a, 1, original);
+    assert_eq!(&bytes(&mut a, edited)[10..12], &[0x12, 0x34]);
+    let mut a = app();
+    let fork = support::resource(vec![(*b"clut", 8, None, table())]);
+    a.runtime.process.install_application_resources(
+        systemless_future::load::resource::ResourceFork::parse(&fork).unwrap(),
+    );
+    let overridden = get(&mut a, Architecture::M68k, 8);
+    assert_eq!(bytes(&mut a, overridden), table());
+}
+
+#[test]
+fn builtin_source_allocation_failure_can_recover_without_caching_a_nil_resource() {
+    let mut a = app();
+    let free = a.runtime.process.free_memory();
+    let filler = a
+        .runtime
+        .process
+        .new_pointer(&mut a.runtime.memory, free, false)
+        .unwrap();
+    assert_ne!(filler, 0);
+    assert_eq!(get(&mut a, Architecture::M68k, 8), 0);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0x220)).unwrap() as i16, -108);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0xa60)).unwrap() as i16, -108);
+    a.runtime.process.dispose_pointer(filler);
+    let recovered = get(&mut a, Architecture::PowerPc, 8);
+    assert_ne!(recovered, 0);
+    assert_eq!(
+        bytes(&mut a, recovered),
+        include_bytes!("reference/clut8-systemless.bin")
+    );
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0xa60)).unwrap(), 0);
 }

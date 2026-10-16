@@ -16,6 +16,7 @@ fn app() -> LoadedApplication {
             b"GetGDevice",
             b"ProtectEntry",
             b"ReserveEntry",
+            b"GetCTSeed",
         ],
         32,
     );
@@ -28,7 +29,9 @@ fn app() -> LoadedApplication {
         .memory
         .map(
             GuestPtr(BASE + 4096),
-            vec![0xaa, 0x39, 0xaa, 0x40, 0xaa, 0x32, 0xaa, 0x3d, 0xaa, 0x3e],
+            vec![
+                0xaa, 0x39, 0xaa, 0x40, 0xaa, 0x32, 0xaa, 0x3d, 0xaa, 0x3e, 0xaa, 0x28,
+            ],
             Permissions::RX,
         )
         .unwrap();
@@ -96,7 +99,7 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, args: &[u32])
             assert_eq!(c.dar[0], 0x12345678);
             if index == 1 {
                 a.runtime.memory.u16(GuestPtr(STACK)).unwrap() as i16 as i32 as u32
-            } else if index == 2 {
+            } else if index == 2 || index == 5 {
                 a.runtime.memory.u32(GuestPtr(STACK)).unwrap()
             } else if index == 3 || index == 4 {
                 assert_eq!(
@@ -355,10 +358,7 @@ fn protection_is_live_shared_and_invalidates_without_changing_rgb_or_client() {
         };
         call(&mut a, other, 3, &[1, 1]);
         assert_eq!(call(&mut a, other, 1, &[]) as i32, -154);
-        assert_eq!(
-            a.runtime.memory.u32(GuestPtr(ct)).unwrap(),
-            seed.wrapping_add(1)
-        );
+        assert!(a.runtime.memory.u32(GuestPtr(ct)).unwrap() > seed);
         assert_eq!(a.runtime.memory.u16(GuestPtr(ct + 16)).unwrap(), 0x8001);
         assert_eq!(
             a.runtime.memory.read(GuestPtr(ct + 18), 6).unwrap(),
@@ -475,4 +475,28 @@ fn reservation_retains_protection_copies_client_and_excludes_inverse_matches() {
         assert_eq!(a.runtime.memory.u16(GuestPtr(ct + 16)).unwrap(), 0x8034);
         assert_eq!(call(&mut a, arch, 1, &[]) as i32, 0);
     }
+}
+
+#[test]
+fn color_seeds_are_unique_across_cpus_and_entry_invalidations_without_allocation() {
+    let mut a = app();
+    let gd_handle = call(&mut a, Architecture::M68k, 2, &[]);
+    let gd = a.runtime.memory.u32(GuestPtr(gd_handle)).unwrap();
+    let pm_handle = a.runtime.memory.u32(GuestPtr(gd + 22)).unwrap();
+    let pm = a.runtime.memory.u32(GuestPtr(pm_handle)).unwrap();
+    let ct_handle = a.runtime.memory.u32(GuestPtr(pm + 42)).unwrap();
+    let ct = a.runtime.memory.u32(GuestPtr(ct_handle)).unwrap();
+    let free = a.runtime.process.free_memory();
+    let first = call(&mut a, Architecture::M68k, 5, &[]);
+    let second = call(&mut a, Architecture::PowerPc, 5, &[]);
+    assert!(first > 1023 && second > first);
+    call(&mut a, Architecture::M68k, 3, &[1, 1]);
+    let changed = a.runtime.memory.u32(GuestPtr(ct)).unwrap();
+    assert!(changed > second);
+    call(&mut a, Architecture::PowerPc, 3, &[1, 1]);
+    assert_eq!(call(&mut a, Architecture::M68k, 1, &[]) as i32, -154);
+    let third = call(&mut a, Architecture::PowerPc, 5, &[]);
+    assert!(third > changed);
+    assert_eq!(call(&mut a, Architecture::M68k, 1, &[]) as i32, -154);
+    assert_eq!(a.runtime.process.free_memory(), free);
 }

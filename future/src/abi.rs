@@ -78,6 +78,7 @@ pub enum Service {
     DisposeDevice,
     DisposeColorTable,
     GetColorTable,
+    GetCTSeed,
     ReserveEntry,
     ProtectEntry,
     SetClientID,
@@ -420,6 +421,7 @@ impl Abi {
             b"OpenCPort" => Some(Service::ColorPort(crate::color_ports::Action::Open)),
             b"InitCPort" => Some(Service::ColorPort(crate::color_ports::Action::Init)),
             b"CloseCPort" => Some(Service::ColorPort(crate::color_ports::Action::Close)),
+            b"GetCTSeed" => Some(Service::GetCTSeed),
             b"ReserveEntry" => Some(Service::ReserveEntry),
             b"ProtectEntry" => Some(Service::ProtectEntry),
             b"SetClientID" => Some(Service::SetClientID),
@@ -1631,6 +1633,13 @@ impl Abi {
                 };
                 c.dar[15] = next;
                 Ok((Call::Device(op), Reply::StackWord(GuestPtr(next))))
+            }
+            0xaa28 => {
+                memory.validate_write(GuestPtr(sp), 4)?;
+                Ok((
+                    Call::Color(crate::color::Op::Seed),
+                    Reply::StackLong(GuestPtr(sp)),
+                ))
             }
             0xaa3d | 0xaa3e => {
                 let args = memory.read(GuestPtr(sp), 4)?;
@@ -3410,6 +3419,7 @@ impl Abi {
                 destination: c.gpr[4],
                 resolution: c.gpr[5] as i16,
             }),
+            Service::GetCTSeed => Call::Color(crate::color::Op::Seed),
             Service::ReserveEntry => Call::Color(crate::color::Op::Reserve {
                 index: c.gpr[3] as i16,
                 reserve: c.gpr[4] as u8 != 0,
