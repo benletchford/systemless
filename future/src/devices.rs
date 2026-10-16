@@ -19,6 +19,7 @@ pub enum Op {
         flags: u16,
         set: bool,
     },
+    Maximum(GuestPtr),
     Current,
     Select(u32),
     Main,
@@ -218,6 +219,29 @@ impl Manager {
                     failure
                 });
             }
+            if let Op::Maximum(pointer) = op {
+                // Read before lazy initialization: bad input must not allocate.
+                let bytes = memory.read(pointer, 8)?;
+                let mut rect = [0i16; 4];
+                for (i, value) in rect.iter_mut().enumerate() {
+                    *value = i16::from_be_bytes(bytes[i * 2..i * 2 + 2].try_into().unwrap());
+                }
+                let device = self.initialize(memory, process)?;
+                let data = record(memory, process, device, 62)?;
+                if memory.u32(FIRST)? != device || memory.u32(GuestPtr(data.0 + 30))? != 0 {
+                    return Err(invalid("unregistered display list"));
+                }
+                let bounds = process.display.bitmap().bounds;
+                // Only registered host screens participate, never SetGDevice's
+                // application-owned offscreen selection. One host screen exists.
+                let intersects = rect[0] < rect[2]
+                    && rect[1] < rect[3]
+                    && i32::from(rect[0]) < bounds.bottom
+                    && i32::from(rect[2]) > bounds.top
+                    && i32::from(rect[1]) < bounds.right
+                    && i32::from(rect[3]) > bounds.left;
+                return Ok(if intersects { device } else { 0 });
+            }
             // Applications also own offscreen GDevice records. Attribute access
             // changes only that record; it must not initialize/select a screen.
             if let Op::Attribute { device, bit } | Op::SetAttribute { device, bit, .. } = op {
@@ -263,7 +287,7 @@ impl Manager {
             };
             let data = record(memory, process, device, 62)?;
             match op {
-                Op::Depth { .. } | Op::Select(_) | Op::Next(_) => unreachable!(),
+                Op::Maximum(_) | Op::Depth { .. } | Op::Select(_) | Op::Next(_) => unreachable!(),
                 Op::Current | Op::Main | Op::First => {
                     let pointer = match op {
                         Op::Current => CURRENT,

@@ -73,6 +73,7 @@ pub enum Service {
     Device(crate::devices::Op),
     ColorPort(crate::color_ports::Action),
     NextDevice,
+    MaxDevice,
     SetDevice,
     HasDepth,
     SetDepth,
@@ -415,6 +416,7 @@ impl Abi {
             b"GetGDevice" => Some(Service::Device(crate::devices::Op::Current)),
             b"GetMainDevice" => Some(Service::Device(crate::devices::Op::Main)),
             b"GetDeviceList" => Some(Service::Device(crate::devices::Op::First)),
+            b"GetMaxDevice" => Some(Service::MaxDevice),
             b"GetNextDevice" => Some(Service::NextDevice),
             b"HasDepth" => Some(Service::HasDepth),
             b"SetDepth" => Some(Service::SetDepth),
@@ -1647,6 +1649,18 @@ impl Abi {
                 };
                 c.dar[15] = next;
                 Ok((Call::Device(op), Reply::None))
+            }
+            0xaa27 => {
+                let pointer = GuestPtr(memory.u32(GuestPtr(sp))?);
+                let next = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("GetMaxDevice stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 4)?;
+                c.dar[15] = next;
+                Ok((
+                    Call::Device(crate::devices::Op::Maximum(pointer)),
+                    Reply::StackLong(GuestPtr(next)),
+                ))
             }
             0xaa29 | 0xaa2a | 0xaa32 => {
                 memory.validate_write(GuestPtr(sp), 4)?;
@@ -3121,6 +3135,7 @@ impl Abi {
             }),
             Service::Device(op) => Call::Device(op),
             Service::SetDevice => Call::Device(crate::devices::Op::Select(c.gpr[3])),
+            Service::MaxDevice => Call::Device(crate::devices::Op::Maximum(GuestPtr(c.gpr[3]))),
             Service::NextDevice => Call::Device(crate::devices::Op::Next(c.gpr[3])),
             Service::SetDeviceAttribute => Call::Device(crate::devices::Op::SetAttribute {
                 device: c.gpr[3],

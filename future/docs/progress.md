@@ -5592,3 +5592,29 @@ Final non-Markdown source fingerprint:
 Next: implement shared GetMaxDevice with documented display selection semantics,
 continue Marathon startup, then implement EV palette ownership/protection. Keep
 the full rebuild goal active and the PR in draft.
+
+
+## GetMaxDevice checkpoint (2026-10-16)
+
+Shared GetMaxDevice ($AA27/PPC import) now returns the one registered host display
+when its bounds intersect the global rectangle by positive area, otherwise nil.
+It validates input before lazy allocation, preserves selected offscreen device
+state and rejects an unregistered display list. Multiple host displays and depth
+ranking among them remain unfinished. Apple's QuickDraw-288 and QD13 specify
+greatest depth, not intersection area; sources are in architecture.md.
+
+Nine device integration checks pass with zero failed/ignored, including both CPU
+ABIs, empty/inverted/disjoint/one-pixel rectangles, offscreen selection retention,
+and the real GPU CopyBits/readback regression. Evidence:
+/tmp/systemless-maxdevice-tests.txt, terminal exit 0. Strict Rust 1.99 all-target
+Clippy passes: /tmp/systemless-maxdevice-lint.txt, exit 0. Changed-file sequential
+formatting and whitespace checks pass. No full-suite rerun is claimed.
+
+Original Marathon passes GetMaxDevice, allocates 121,856-byte drawing storage and
+a 122-byte port, then stops at NewGDevice ($AA2F), PC $01034C08. Evidence:
+/tmp/systemless-marathon-maxdevice.txt, diagnostic exit 1. Its VBL task remains
+dormant and no callbacks complete before this boundary. EV's previously verified
+ProtectEntry boundary is unchanged by scope; it was not replayed this checkpoint.
+Neither original game is playable. Next: shared owned NewGDevice/DisposeGDevice
+lifecycle with correct detached offscreen records and public ABI fixtures, then
+continue Marathon startup. Keep the full rebuild active.

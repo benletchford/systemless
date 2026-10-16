@@ -2530,3 +2530,17 @@ masking, additional display rates/slots, direct foreign queue mutation,
 AttachVBL/DoVBLTask, general interrupt-safe Toolbox coverage and production Mixed
 Mode remain unfinished. No full Vertical Retrace Manager Gestalt capability is
 advertised. Only implemented trap entries/imports are exposed.
+
+
+### Display selection by global rectangle
+
+GetMaxDevice ($AA27 and the PPC import) uses one shared device operation. It
+reads the global Rect before lazy allocation, returns the registered host screen
+for positive-area intersection and nil for disjoint/empty/inverted rectangles.
+The current host supports one screen, so it is necessarily the deepest intersecting
+screen. Application-owned offscreen selection does not participate or change.
+An unregistered list head/next link fails explicitly; multiple displays remain
+unfinished. This follows Inside Macintosh's greatest pixel-depth rule and QD13's
+one-pixel intersection/nil rule, not a greatest-area heuristic:
+https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-288.html
+https://leopard-adc.pepas.com/technotes/qd/qd_13.html

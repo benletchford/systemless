@@ -23,6 +23,7 @@ fn app() -> LoadedApplication {
             b"CopyBits",
             b"SetGDevice",
             b"SetDeviceAttribute",
+            b"GetMaxDevice",
         ],
         64,
     );
@@ -32,7 +33,7 @@ fn app() -> LoadedApplication {
         .map(
             GuestPtr(0x50000000),
             [
-                0xaa32u16, 0xaa2a, 0xaa29, 0xaa2b, 0xaa2c, 0xaa34, 0xa8ec, 0xaa31, 0xaa2d,
+                0xaa32u16, 0xaa2a, 0xaa29, 0xaa2b, 0xaa2c, 0xaa34, 0xa8ec, 0xaa31, 0xaa2d, 0xaa27,
             ]
             .into_iter()
             .flat_map(u16::to_be_bytes)
@@ -528,4 +529,36 @@ fn offscreen_selection_palette_queries_and_main_initialization_share_one_live_de
         .unwrap();
     assert!(call(&mut a, Op::Select(off)).is_err());
     assert_eq!(a.runtime.memory.u32(devices::CURRENT).unwrap(), main);
+}
+
+#[test]
+fn max_device_intersection_is_shared_by_both_cpus() {
+    let mut a = app();
+    let main = ppc(&mut a, 1, &[]);
+    let offscreen = a
+        .runtime
+        .process
+        .new_handle(&mut a.runtime.memory, 62, true)
+        .unwrap();
+    call(&mut a, Op::Select(offscreen)).unwrap();
+    let pointer = STACK_BASE + 0x7000;
+    for (rect, expected) in [
+        ([0i16, 0, 1, 1], main),
+        ([-1, -1, 1, 1], main),
+        ([0, 0, 0, 1], 0),
+        ([0, 0, 1, 0], 0),
+        ([-2, -2, -1, -1], 0),
+        ([1, 1, 0, 0], 0),
+        ([30000, 30000, 30001, 30001], 0),
+    ] {
+        let bytes: Vec<_> = rect.into_iter().flat_map(i16::to_be_bytes).collect();
+        a.runtime.memory.write(GuestPtr(pointer), &bytes).unwrap();
+        assert_eq!(ppc(&mut a, 12, &[pointer]), expected);
+        assert_eq!(
+            native(&mut a, 9, &pointer.to_be_bytes(), 4),
+            expected.to_be_bytes()
+        );
+    }
+    assert!(call(&mut a, Op::Maximum(GuestPtr(0xfffffff0))).is_err());
+    assert_eq!(call(&mut a, Op::Current).unwrap(), offscreen);
 }
