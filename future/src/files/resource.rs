@@ -95,6 +95,34 @@ impl Files {
         self.changed();
         Ok(0)
     }
+    pub(crate) fn resource_spec_target(
+        &self,
+        memory: &Memory,
+        spec: GuestPtr,
+    ) -> Result<std::result::Result<u32, i16>> {
+        if spec.0 == 0 {
+            return Err(crate::Error::Cpu("nil resource FSSpec".into()));
+        }
+        let bytes = memory.read(spec, 70)?;
+        let length = usize::from(bytes[6]);
+        if length > 63 {
+            return Ok(Err(-50));
+        }
+        let name = &bytes[7..7 + length];
+        if name.is_empty() || name.len() > 31 || name.contains(&0) || name.contains(&b':') {
+            return Ok(Err(-37));
+        }
+        let volume = i16::from_be_bytes(bytes[..2].try_into().unwrap());
+        let directory = u32::from_be_bytes(bytes[2..6].try_into().unwrap());
+        Ok(self
+            .parent(volume, directory)
+            .and_then(|parent| self.path(name, parent))
+            .and_then(|node| {
+                self.node_fork(node, super::Fork::Resource)
+                    .map(|_| node)
+                    .ok_or(-43)
+            }))
+    }
     pub(crate) fn protect_resource_access(&mut self, reference: i16) {
         self.open.get_mut(&reference).unwrap().resource_map = true;
     }

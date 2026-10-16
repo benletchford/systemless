@@ -17,6 +17,7 @@ fn app() -> LoadedApplication {
             b"UseResFile",
             b"CloseResFile",
             b"HomeResFile",
+            b"FSpOpenResFile",
         ],
         32,
     );
@@ -101,7 +102,7 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, arg: u32) -> 
     let stack = STACK_BASE + 0x8000;
     if arch == Architecture::M68k {
         let frame = if index == 0 {
-            let mut b = vec![1, 0x7f, 0, 0];
+            let mut b = vec![0, 0x7f, 0, 0];
             b.extend(NAME.0.to_be_bytes());
             b.extend([0xa5; 2]);
             b
@@ -127,7 +128,7 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, arg: u32) -> 
         };
         c.gpr[3] = if index == 0 { NAME.0 } else { arg };
         c.gpr[4] = 0;
-        c.gpr[5] = 1;
+        c.gpr[5] = 0;
     }
     assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
     assert_eq!(
@@ -326,4 +327,178 @@ fn preload_failure_rolls_back_handles_file_access_and_selection() {
         ),
         0
     );
+}
+
+fn open_spec(a: &mut LoadedApplication, arch: Architecture, leaf: &[u8], permission: i8) -> i16 {
+    let spec = GuestPtr(NAME.0 + 3000);
+    let stack = STACK_BASE + 0x8000;
+    let mut bytes = [0; 70];
+    bytes[..2].copy_from_slice(&(-1i16).to_be_bytes());
+    bytes[2..6].copy_from_slice(&2u32.to_be_bytes());
+    bytes[6] = leaf.len() as u8;
+    bytes[7..7 + leaf.len()].copy_from_slice(leaf);
+    a.runtime.memory.write(spec, &bytes).unwrap();
+    let mut frame = vec![permission as u8, 0x5a];
+    frame.extend(spec.0.to_be_bytes());
+    frame.extend([0x5a; 6]);
+    a.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+    let gate = if arch == Architecture::M68k {
+        0x51000008
+    } else {
+        let v = a
+            .runtime
+            .memory
+            .u32(GuestPtr(a.info.toc_or_a5 + 24))
+            .unwrap();
+        a.runtime.memory.u32(GuestPtr(v)).unwrap()
+    };
+    a.runtime.cpu = Cpu::new(arch, gate, stack);
+    match &mut a.runtime.cpu {
+        Cpu::M68k(c) => {
+            c.dar[0] = 0x1234000d;
+            c.dar[1] = 0xaabbccdd;
+        }
+        Cpu::PowerPc(c) => {
+            c.gpr[3] = spec.0;
+            c.gpr[4] = 0xabcd0000 | u32::from(permission as u8);
+            c.gpr[5] = 0xaabbccdd;
+        }
+    }
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    let result = match &a.runtime.cpu {
+        Cpu::M68k(c) => {
+            assert_eq!(
+                (c.dar[0], c.dar[1], c.dar[15]),
+                (0x1234000d, 0xaabbccdd, stack + 6)
+            );
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(stack), 6).unwrap(),
+                &frame[..6]
+            );
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(stack + 8), 4).unwrap(),
+                [0x5a; 4]
+            );
+            a.runtime.memory.u16(GuestPtr(stack + 6)).unwrap() as i16
+        }
+        Cpu::PowerPc(c) => {
+            assert_eq!(
+                (c.gpr[4], c.gpr[5]),
+                (0xabcd0000 | u32::from(permission as u8), 0xaabbccdd)
+            );
+            c.gpr[3] as i16
+        }
+    };
+    assert_eq!(a.runtime.memory.read(spec, 70).unwrap(), bytes);
+    assert_eq!(
+        a.runtime.memory.u16(GuestPtr(0xa60)).unwrap() as i16,
+        a.runtime.process.res_error
+    );
+    assert_eq!(
+        a.runtime.memory.u16(GuestPtr(0xa5a)).unwrap() as i16,
+        a.runtime.process.current_resource_file()
+    );
+    result
+}
+#[test]
+fn both_spec_adapters_share_maps_permissions_reopen_selection_and_file_scoped_handles() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        a.runtime
+            .memory
+            .map(GuestPtr(0x51000008), vec![0xaa, 0x52], Permissions::RX)
+            .unwrap();
+        file(
+            &mut a,
+            b"A",
+            &support::resource(vec![(*b"DATA", 7, None, vec![11])]),
+        );
+        file(
+            &mut a,
+            b"B",
+            &support::resource(vec![(*b"DATA", 7, None, vec![22])]),
+        );
+        let original = a.runtime.process.current_resource_file();
+        let ra = open_spec(&mut a, arch, b"A", 3);
+        assert!(ra > 0);
+        let ha = get(&mut a, 7);
+        let rb = open_spec(&mut a, arch, b"B", 3);
+        assert!(rb > 0);
+        assert_ne!(ra, rb);
+        assert_eq!(a.runtime.process.current_resource_file(), rb);
+        assert_eq!(open_spec(&mut a, arch, b"A", 3), ra);
+        assert_eq!(a.runtime.process.current_resource_file(), rb);
+        let readonly = open_spec(&mut a, arch, b"A", 1);
+        assert!(readonly > 0);
+        assert_ne!(readonly, ra);
+        assert_eq!(a.runtime.process.current_resource_file(), rb);
+        call(&mut a, arch, 1, readonly as u32);
+        let separate = get(&mut a, 7);
+        assert_ne!(separate, ha);
+        let data = a.runtime.memory.u32(GuestPtr(separate)).unwrap();
+        assert_eq!(a.runtime.memory.read(GuestPtr(data), 1).unwrap(), [11]);
+        for (leaf, permission, error) in
+            [(b"Missing".as_slice(), 1, -43), (b"A".as_slice(), -1, -50)]
+        {
+            let current = a.runtime.process.current_resource_file();
+            assert_eq!(open_spec(&mut a, arch, leaf, permission), -1);
+            assert_eq!(a.runtime.process.res_error, error);
+            assert_eq!(a.runtime.process.current_resource_file(), current);
+        }
+        call(&mut a, arch, 2, readonly as u32);
+        call(&mut a, arch, 2, rb as u32);
+        call(&mut a, arch, 2, ra as u32);
+        assert_eq!(a.runtime.process.current_resource_file(), original);
+    }
+}
+#[test]
+fn spec_open_native_preflight_preserves_frames_and_globals_on_fault() {
+    use systemless_future::{abi::Abi, memory::Memory};
+    for which in 0..4 {
+        let mut m = Memory::default();
+        m.map(
+            GuestPtr(0x1000),
+            vec![0; if which == 0 { 7 } else { 12 }],
+            Permissions::RW,
+        )
+        .unwrap();
+        m.map(
+            GuestPtr(0x2000),
+            vec![0; if which == 1 { 69 } else { 70 }],
+            Permissions::RX,
+        )
+        .unwrap();
+        m.map(
+            GuestPtr(0xa5a),
+            vec![0x5a; 2],
+            if which == 2 {
+                Permissions::RX
+            } else {
+                Permissions::RW
+            },
+        )
+        .unwrap();
+        m.map(
+            GuestPtr(0xa60),
+            vec![0x5a; 2],
+            if which == 3 {
+                Permissions::RX
+            } else {
+                Permissions::RW
+            },
+        )
+        .unwrap();
+        let mut frame = vec![3, 0x7f];
+        frame.extend(0x2000u32.to_be_bytes());
+        m.write(GuestPtr(0x1000), &frame).unwrap();
+        let Cpu::M68k(mut c) = Cpu::new(Architecture::M68k, 0, 0x1000) else {
+            unreachable!()
+        };
+        c.dar[0] = 13;
+        assert!(Abi::trap(0xaa52, &mut c, &m).is_err());
+        assert_eq!(c.dar[15], 0x1000);
+        assert_eq!(m.read(GuestPtr(0x1000), 6).unwrap(), frame);
+        assert_eq!(m.read(GuestPtr(0xa5a), 2).unwrap(), [0x5a; 2]);
+        assert_eq!(m.read(GuestPtr(0xa60), 2).unwrap(), [0x5a; 2]);
+    }
 }

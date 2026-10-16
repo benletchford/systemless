@@ -35,6 +35,10 @@ pub enum Action {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
+    OpenSpec {
+        spec: GuestPtr,
+        permission: i8,
+    },
     Open {
         name: GuestPtr,
         volume: i16,
@@ -237,6 +241,15 @@ impl Process {
         }
         self.res_error = 0;
         let result = match op {
+            Op::OpenSpec { spec, permission } => {
+                match self.files.resource_spec_target(memory, spec)? {
+                    Ok(node) => self.open_resource_node(memory, node, permission),
+                    Err(error) => {
+                        self.res_error = error;
+                        Ok(-1)
+                    }
+                }
+            }
             Op::Open {
                 name,
                 volume,
@@ -290,10 +303,19 @@ impl Process {
             }
             Err(e) => return Err(e),
         };
+        self.open_resource_node(memory, node, permission)
+    }
+    fn open_resource_node(
+        &mut self,
+        memory: &mut Memory,
+        node: u32,
+        permission: i8,
+    ) -> Result<i16> {
         if !(0..=4).contains(&permission) {
             self.res_error = -50;
             return Ok(-1);
         }
+        let mut already_open = false;
         for &o in &self.resource_files.chain {
             let (n, writable) = if o == APPLICATION {
                 (16, false)
@@ -301,7 +323,8 @@ impl Process {
                 let f = &self.resource_files.files[&o];
                 (f.node, f.writable)
             };
-            if n == node && (permission <= 1 || writable) {
+            already_open |= n == node;
+            if n == node && (permission == 0 || (permission >= 2 && writable)) {
                 return Ok(self.owner_reference(o));
             }
         }
@@ -367,7 +390,9 @@ impl Process {
             }
         }
         self.resource_files.chain.insert(0, reference);
-        self.resource_files.current = reference;
+        if !already_open {
+            self.resource_files.current = reference;
+        }
         self.res_error = 0;
         Ok(reference)
     }

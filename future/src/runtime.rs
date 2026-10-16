@@ -2194,7 +2194,10 @@ impl Runtime {
                             | Call::Region { .. }
                             | Call::HandleSize(_)
                             | Call::SetHandleSize { .. }
-                            | Call::ResourceFile(crate::process::resources::Op::Open { .. })
+                            | Call::ResourceFile(
+                                crate::process::resources::Op::Open { .. }
+                                    | crate::process::resources::Op::OpenSpec { .. }
+                            )
                             | Call::GetCurrentResource { .. }
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }

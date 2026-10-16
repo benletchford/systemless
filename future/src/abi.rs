@@ -247,6 +247,7 @@ pub enum Service {
     FreeMemory,
     ResError,
     CurResFile,
+    OpenSpecResource,
     OpenResourceFile(bool),
     ResourceFile(crate::process::resources::Action),
     GetNamedResource,
@@ -727,6 +728,7 @@ impl Abi {
             b"GetNamedResource" => Some(Service::GetNamedResource),
             b"Get1NamedResource" => Some(Service::Get1NamedResource),
             b"OpenRFPerm" => Some(Service::OpenResourceFile(true)),
+            b"FSpOpenResFile" => Some(Service::OpenSpecResource),
             b"OpenResFile" => Some(Service::OpenResourceFile(false)),
             b"UseResFile" => Some(Service::ResourceFile(
                 crate::process::resources::Action::Use,
@@ -1083,6 +1085,28 @@ impl Abi {
                 Ok((
                     Call::FixedMultiply { left, right },
                     Reply::StackLong(GuestPtr(next)),
+                ))
+            }
+            0xaa52 if c.dar[0] as u16 == 13 => {
+                let args = memory.read(GuestPtr(sp), 6)?;
+                let spec = GuestPtr(u32::from_be_bytes(args[2..6].try_into().unwrap()));
+                if spec.0 == 0 {
+                    return Err(Error::Cpu("nil resource FSSpec".into()));
+                }
+                memory.read(spec, 70)?;
+                memory.validate_write(GuestPtr(0xa60), 2)?;
+                memory.validate_write(GuestPtr(0xa5a), 2)?;
+                let next = sp
+                    .checked_add(6)
+                    .ok_or_else(|| Error::Cpu("FSpOpenResFile stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 2)?;
+                c.dar[15] = next;
+                Ok((
+                    Call::ResourceFile(crate::process::resources::Op::OpenSpec {
+                        spec,
+                        permission: args[0] as i8,
+                    }),
+                    Reply::StackWord(GuestPtr(next)),
                 ))
             }
             0xaa52 if c.dar[0] as u16 == 14 => {
@@ -4235,6 +4259,12 @@ impl Abi {
             Service::MemError => Call::MemError,
             Service::ResError => Call::ResError,
             Service::CurResFile => Call::CurResFile,
+            Service::OpenSpecResource => {
+                Call::ResourceFile(crate::process::resources::Op::OpenSpec {
+                    spec: GuestPtr(c.gpr[3]),
+                    permission: c.gpr[4] as i8,
+                })
+            }
             Service::OpenResourceFile(permission) => {
                 Call::ResourceFile(crate::process::resources::Op::Open {
                     name: GuestPtr(c.gpr[3]),

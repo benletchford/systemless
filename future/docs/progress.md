@@ -6940,3 +6940,52 @@ game preference persistence is not yet verified. No title/menu/gameplay/audio
 acceptance; Marathon not replayed. Next: FSpOpenResFile through shared resource
 map ownership, access permissions and search-chain state, then repeat EV startup.
 Full rebuild and complete wgpu text rendering remain active requirements.
+
+
+## Shared FSpOpenResFile and resource reopen semantics (2026-10-16)
+
+AA52 selector 000D and PPC FSpOpenResFile now resolve the FSSpec's volume,
+parent and leaf through the shared Files catalog and enter the same resource
+opening routine as the existing filename API. Map parsing, quota checks, access
+paths, preload rollback, map ownership, search order, current-file state and
+resource-handle identity are shared. Results return a signed reference/-1 and
+publish ResError; current resource-file publication remains shared. Native
+preflight validates the six-byte argument frame, full readable FSSpec, result
+word and error/current-file globals before popping arguments.
+
+The shared routine now distinguishes independent read-only reopens from reuse
+of the process's existing writable reference. Reopens preserve current-file
+selection. The legacy filename-route reuse fixture now requests fsCurPerm,
+matching that behavior; a separate new case explicitly verifies a distinct
+read-only reference and handle for the same on-disk resource. No separate
+architecture-specific resource manager or map state was added.
+
+Primary: [FSpOpenResFile](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-41.html),
+Inside Macintosh: More Macintosh Toolbox, including separate read maps and
+unchanged selection on reopening. Selector 000D is corroborated by the [File
+Manager summary](https://dev.os9.ca/techpubs/mac/Files/Files-301A.html) and original
+trap; the older resource-reference page's selector table contains a typo.
+No native System 7 conformance run. Guest-visible resource-map exposure, broader
+writeback, multiple processes/volumes and other existing limits remain open.
+
+Validation: /tmp/systemless-open-spec-tests.txt terminal exit 0: 72 tests pass,
+none failed/skipped (library 57, creation 2, lifetime 7, resource maps 6).
+Actual 68K/PPC tests verify signed-byte permission marshalling, native result/
+argument guards, unrelated registers, mirrored ResError/current file, shared
+selection, writable reference reuse, distinct read maps/handles, payloads,
+missing targets, invalid permissions and close lifecycle. Native short frames,
+short FSSpecs and read-only globals preserve SP/global bytes. Existing malformed
+map, preload rollback and handle-lifetime tests exercise the common opening
+routine. Strict library/fixture lint passes in /tmp/systemless-open-spec-lint.txt;
+tracer build passes in /tmp/systemless-open-spec-build.txt; sequential formatting
+and whitespace pass. No fresh full-suite/native/GPU-pixel/browser acceptance.
+
+Original asset-backed EV opens its preferences resource file with permission 3,
+allocates a 98-byte preferences handle and selects resource file 2, then stops at
+AddResource A9AB, PC 0002CA80. Evidence: /tmp/systemless-ev-open-spec.txt,
+expected unsupported-service exit 1. Original fork, companion volume, ten-million
+instruction bound and 640x480x8 graphics are unchanged; sound/timer/VBL callbacks
+remain zero. No game preference save/reload, title/menu/gameplay/audio acceptance;
+Marathon not replayed. Next: AddResource with handle ownership, duplicate IDs,
+changed-resource state, permissions and both adapters, followed by real writeback
+and EV replay. Full rebuild and complete wgpu text rendering remain active.
