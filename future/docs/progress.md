@@ -6804,3 +6804,45 @@ Git. Original resource fork and 640x480x8 graphics are unchanged. Neither game
 is playable; Marathon not replayed. Next: shared Gregorian SecondsToDate with
 both ABIs, epoch/leap-year/range validation, then asset-backed EV replay. The
 full rebuild and complete wgpu text requirement remain active.
+
+
+## Shared Gregorian SecondsToDate (2026-10-16)
+
+Native A9C6 (D0 seconds, A0 record) and PPC SecondsToDate/Secs2Date imports now
+use one shared calendar conversion. All unsigned 32-bit timestamps are supported:
+1904-01-01 00:00:00 through 2040-02-06 06:28:15. Gregorian leap rules include
+the year 2000; weekday is Sunday=1. The service publishes exactly seven
+big-endian words, preserves register/stack inputs and has no clock, timezone,
+allocation or error-global side effects. Nil, read-only and truncated records
+fail explicitly before writes. The bounded nonallocating operation joins the
+existing interrupt-safe scalar whitelist; nested interrupt invocation was not
+newly exercised. DateToSeconds and long-calendar/localization APIs remain open.
+
+Primary: [SecondsToDate](https://dev.os9.ca/techpubs/mac/OSUtilities/OSUtilities-113.html)
+and [DateTimeRec](https://dev.os9.ca/techpubs/mac/OSUtilities/OSUtilities-98.html),
+Inside Macintosh: Operating System Utilities. No native System 7 conformance run.
+
+Validation: /tmp/systemless-date-tests-final.txt terminal exit 0: 8 passed,
+none failed/skipped (conversion 4, existing calendar 4). Fourteen independent
+Python datetime anchors cover epoch, first leap day, Unix epoch, signed 32-bit
+boundary, 2000 leap day, the original EV timestamp and unsigned maximum.
+Day starts/ends across all 49,711 representable days (99,422 selected timestamps)
+are checked against a separate closed-form Gregorian ordinal and time/weekday
+invariants; this is not exhaustive testing of all 2^32 seconds. Actual 68K/PPC
+execution checks exact bytes/guards, both PPC names, native registers and stack,
+PPC void returns, unchanged clock/allocation/error state and installed veneer.
+Strict lint passes in /tmp/systemless-date-lint-final.txt. Initial lint required
+replacing manual divisibility expressions; final tests and tracer were rebuilt
+from that corrected source. /tmp/systemless-date-build-final.txt exits 0;
+sequential formatting and whitespace pass. No fresh full-suite/native/browser
+or GPU-pixel acceptance.
+
+Original EV with the companion volume passes SecondsToDate(3029529619), producing
+2000-01-01 00:00:19, Saturday=7, then stops at HighLevelFSDispatch AA52 selector
+1 (FSMakeFSSpec), PC 0002C5DA. Evidence: /tmp/systemless-ev-date.txt, expected
+unsupported-service exit 1. Same original resource fork, disposable original
+asset volume, ten-million instruction bound and 640x480x8 graphics; completed
+sound/timer/VBL callbacks remain zero. No title/menu/gameplay/audio acceptance;
+Marathon not replayed. Next: shared FSMakeFSSpec catalog/path semantics with
+missing-leaf hints and both adapters, then asset-backed EV replay. Full rebuild
+and complete wgpu text rendering remain active.

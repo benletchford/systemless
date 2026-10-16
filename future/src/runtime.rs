@@ -297,6 +297,7 @@ impl Runtime {
                         && !matches!(
                             call,
                             Call::Ticks
+                                | Call::SecondsToDate { .. }
                                 | Call::ReadDateTime(_)
                                 | Call::PostEvent { .. }
                                 | Call::FixedMultiply { .. }
@@ -645,6 +646,17 @@ impl Runtime {
                                 Err(error) => (0, error),
                             };
                             reply.apply(&mut self.cpu, &mut self.memory, value, error)?;
+                        }
+                        Call::SecondsToDate {
+                            seconds,
+                            destination,
+                        } => {
+                            crate::calendar::seconds_to_date(
+                                &mut self.memory,
+                                seconds,
+                                destination,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
                         Call::ReadDateTime(destination) => {
                             crate::calendar::read(&mut self.memory, destination)?;
@@ -2220,6 +2232,7 @@ impl Runtime {
                         | Call::Rectangle(_)
                         | Call::ToolboxEvent { .. }
                         | Call::Gestalt(_)
+                        | Call::SecondsToDate { .. }
                         | Call::ReadDateTime(_)
                         | Call::Decimal(_)
                         | Call::StillDown

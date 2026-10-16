@@ -12,6 +12,7 @@ pub enum Service {
     FixedMultiply,
     LongToFixed,
     FixedRatio,
+    SecondsToDate,
     GetDateTime,
     ReadDateTime,
     Timer(u8),
@@ -309,6 +310,7 @@ impl Abi {
             return None;
         }
         match symbol {
+            b"SecondsToDate" | b"Secs2Date" => Some(Service::SecondsToDate),
             b"GetDateTime" => Some(Service::GetDateTime),
             b"VInstall" => Some(Service::Retrace {
                 remove: false,
@@ -761,6 +763,13 @@ impl Abi {
                     },
                 }),
                 Reply::M68kError,
+            )),
+            0xa9c6 => Ok((
+                Call::SecondsToDate {
+                    seconds: c.dar[0],
+                    destination: GuestPtr(c.dar[8]),
+                },
+                Reply::None,
             )),
             0xa039 => Ok((Call::ReadDateTime(GuestPtr(c.dar[8])), Reply::M68kError)),
             0xa9ee => {
@@ -3620,6 +3629,10 @@ impl Abi {
                     _ => crate::timers::Action::Remove,
                 },
             }),
+            Service::SecondsToDate => Call::SecondsToDate {
+                seconds: c.gpr[3],
+                destination: GuestPtr(c.gpr[4]),
+            },
             Service::GetDateTime | Service::ReadDateTime => Call::ReadDateTime(GuestPtr(c.gpr[3])),
             Service::NumToString => Call::Decimal(crate::decimal::Op::Format {
                 number: c.gpr[3] as i32,
@@ -4262,6 +4275,7 @@ impl Abi {
                         | Service::DisposeDialog(_)
                         | Service::MakeITable
                         | Service::SetDeviceAttribute
+                        | Service::SecondsToDate
                         | Service::GetDateTime
                         | Service::GetResInfo
                         | Service::CopyMask

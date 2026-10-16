@@ -95,6 +95,10 @@ pub enum Call {
     RetraceHeader,
     CreateResourceFile(GuestPtr),
     Decimal(crate::decimal::Op),
+    SecondsToDate {
+        seconds: u32,
+        destination: GuestPtr,
+    },
     ReadDateTime(GuestPtr),
     Gestalt(u32),
     StillDown,
