@@ -9570,3 +9570,83 @@ and implement shared Munger handle/search/replace semantics for EV with primary
 reference and transactional resize/alias tests. Neither priority game is verified
 playable. Full text/Glyphon integration, font fidelity, Mixed Mode, remaining
 services and platform/full-rebuild acceptance remain active.
+
+### Window Manager startup port, 2026-10-17
+
+InitGraf retains its documented NIL initial port. First InitWindows now retains
+the real manager port selected by OpenPort when there was no caller port; it
+preserves an existing caller port/device, and repeated initialization preserves
+a later explicit NIL. The old InitGraf synthetic default-port behavior is not
+carried over. Primary documentation proves InitGraf NIL and manager-port creation;
+exact native InitWindows selection was not independently measured. See the
+architecture ownership section for references and this evidence boundary.
+
+The new real-CPU regression failed before the fix (PowerPC expected actual manager
+268441216, observed0), then passes with the fix for both 68K traps and PPC imports,
+with/without caller ports, offscreen-device selection, Pascal stack canaries,
+GetPort/GetWMgrPort and repeat InitWindows after SetPort(NIL). Pre-fix evidence:
+/tmp/systemless-window-init-before.txt.
+
+Fresh original Marathon replay uses the existing1M budget,640x480x8 volume and
+read-only77ffec watcher, saving /tmp/systemless-marathon-window-init.{txt,slv,ppm}.
+It advances from TextFont4 at216,672/01010E86 to GetFontInfo at216,681/01012E0C,
+with actual manager port00011A7C and requested Monaco4,bold1,size9. The new explicit
+error is selected font family has no resource or fallback. The original resource
+fork has no FONT/NFNT/FOND/sfnt resources. A proportional sans-serif substitute
+should not be silently assigned to this fixed-width family.
+
+Independent saved-volume checks pass: all original companion records/forks and
+metadata unchanged, only first-run Marathon Preferences node21,data1222,resource0,
+next22. Volume SHA256e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42
+(11,597,088bytes). No menu, motion, audio or playability claim follows.
+
+Fresh EV replay /tmp/systemless-ev-window-init.{txt,slv,ppm} with the same16M
+budget and real Enter Ship key events reaches the unchanged Munger boundary at
+15,136,642/0102C7CA. Both saved-volume and canonical-screen hashes are byte-identical
+to the MMU milestone. Independent v2 CRC/catalog/script/alias checks pass; all
+pilot and companion data remain intact. Private evidence for both originals is
+stored as2026-10-17-window-init.* and associated trace tails/volume checks.
+
+The first scoped run passes88core+18dialog_resources+1new initialization test,
+then exposes one older window test expecting NIL immediately after InitWindows
+(15 other window tests pass). The fixture now checks actual initial ownership
+and explicitly writes NIL before the existing GetWMgrPort nonmutation assertions,
+retaining that nil-query coverage. Affected windows tests and strict lint are
+rerun separately; do not treat the earlier failed command as an overall pass.
+
+The corrected windows rerun passes16/16,0ignored with real GPU cases enabled.
+Together with the unchanged88core,18dialog_resources and1startup regression,
+this is123 scoped passing tests across the two recorded runs, not a fresh full
+suite. Logs: /tmp/systemless-window-init-tests.txt and
+/tmp/systemless-window-init-windows-fixed.txt. The tracer build and sequential
+changed-file formatting/whitespace checks pass. Strict all-target lint is tracked
+separately in /tmp/systemless-window-init-lint.txt.
+
+Next priorities: provide a documented fixed-width font source/metric path for
+Marathon (the preserved OFL Nimbus Mono substitute is a candidate, not Apple's
+Monaco artwork), and implement shared Munger with primary semantics/transactional
+handle tests for EV. Full text/Glyphon integration, font fidelity, Mixed Mode and
+native/browser/full rebuild acceptance remain unfinished.
+
+Munger continuation research: Apple's [Text Utilities reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Text_Utilities/Reference/reference.html)
+specifies byte searches, direct replacement when ptr1 is NIL, negative len1 in
+that direct mode replacing the remaining tail, insertion for len1=0, search-only
+for ptr2=NIL, deletion for nonnil ptr2/len2=0, and replacement of a matching
+partial tail. It uses GetHandleSize/SetHandleSize and may move memory. The
+preserved implementation has a partial-tail rejection test; do not import that
+behavior as authoritative. Apple's [PT14 glue example](https://leopard-adc.pepas.com/technotes/pt/pt_14.html)
+confirms six Pascal long arguments, a four-byte stack result, and separate D0
+error information. Validate result/error handling and transactional guest-source
+alias snapshots before implementing the next slice.
+
+Fixed-width font continuation: current Fonts::fallback is keyed only by point
+size and font::fallback always generates Nimbus Sans. Adding family4 must also
+separate source-family cache identity (including aliases) so Monaco9 cannot
+reuse a previously generated Geneva9 handle. Preserve guest resource priority,
+editable guest strikes, count bounds, bold synthesis and shared wgpu destination
+semantics. The preserved repository carries an unmodified OFL NimbusMonoPS-Regular
+asset with provenance; do not copy its separate historical Monaco widMax override
+without independently establishing that metric policy.
+
+Strict all-target Clippy finishes successfully (6m52s, exit0). The complete
+rerun chain exits0. Private2026-10-17-window-init-lint.txt preserves this result.

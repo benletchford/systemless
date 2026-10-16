@@ -116,7 +116,10 @@ fn windows_share_records_visibility_pixels_and_ownership_across_cpu_adapters() {
     invoke(&mut app, 1, &[]);
     assert_ne!(app.runtime.memory.u32(GuestPtr(0x9de)).unwrap(), 0);
     assert_ne!(app.runtime.memory.u32(GuestPtr(0x9ee)).unwrap(), 0);
-    assert_eq!(app.runtime.memory.u32(slot).unwrap(), 0);
+    let initialized = app.runtime.memory.u32(GuestPtr(0x9de)).unwrap();
+    assert_eq!(app.runtime.memory.u32(slot).unwrap(), initialized);
+    // Exercise a deliberately nil caller independently of initial ownership.
+    app.runtime.memory.write(slot, &0u32.to_be_bytes()).unwrap();
     // Query remains available without a GPU and does not mutate the manager,
     // caller port, heap allocation or either guest/process error authority.
     let manager = app.runtime.memory.u32(GuestPtr(0x9de)).unwrap();

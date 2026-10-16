@@ -3699,3 +3699,18 @@ perform no allocation or blocking and are permitted by the VBL service guard.
 The OS trap discovery table now exposes a readable executable A05D/RTS veneer;
 the five oval verbs also have their implemented canonical discovery entries.
 Entries are appended so existing built-in addresses retain their identity.
+
+### Initial Window Manager port ownership
+
+InitGraf leaves thePort NIL, as specified in Imaging With QuickDraw Table2-1.
+InitWindows opens the real Window Manager-owned port and retains that selection
+on first initialization when no caller port existed. An existing caller port and
+the current graphics device are preserved. Repeated InitWindows is idempotent,
+including after an explicit SetPort(NIL). No text operation repairs a nil port;
+BeginUpdate continues to preserve the caller selection. This startup ownership
+policy follows the documented creation/OpenPort operations; exact native
+InitWindows selection behavior has not been independently measured. The preserved
+implementation's synthetic InitGraf port is not copied.
+
+Primary references: [QuickDraw initial values, Table2-1](https://www.vintageapple.org/inside_r/pdf/Imaging_With_QuickDraw_1994.pdf)
+and [InitWindows creates the Window Manager port](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-222.html).

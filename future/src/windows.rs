@@ -429,7 +429,12 @@ impl Windows {
             &[0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55],
         )?;
         memory.write(GuestPtr(0xa64), &[0; 8])?;
-        memory.write(ports.current_slot, &old.to_be_bytes())?;
+        // OpenPort selected the newly owned Window Manager port. First
+        // initialization retains that context when no caller port existed;
+        // an existing caller keeps its own context. Repeated InitWindows
+        // returns above and preserves even an explicit later NIL selection.
+        let selected = if old == 0 { manager } else { old };
+        memory.write(ports.current_slot, &selected.to_be_bytes())?;
         self.desktop(memory, process, gpu, &rect_bytes(desktop)?)
     }
     fn paint(

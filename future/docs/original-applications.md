@@ -4423,3 +4423,21 @@ are untouched and first-run preferences are the only new file.
 149 scoped passes and strict all-target lint pass; details are in progress.md.
 Next: correct shared graphics initialization for Marathon and generic Munger
 semantics for EV. Both original games and the entire rebuild remain unfinished.
+
+### Window Manager startup ownership refresh, 2026-10-17
+
+InitGraf still leaves NIL. First InitWindows now retains its opened manager port
+when no caller port existed; existing caller contexts and later explicit NIL
+selections are preserved. This is shared by both CPU adapters. Fresh Marathon
+reaches GetFontInfo at216,681/01012E0C with manager00011A7C, Monaco4,bold1,size9;
+it now stops explicitly for the unavailable font family. No FONT/NFNT/FOND/sfnt
+resources are embedded in the original application fork. Its original companion
+files remain untouched, with only the same first-run preferences file created.
+
+Fresh EV with the preceding16M/key-event sequence still reaches Munger at
+15,136,642/0102C7CA; canonical screen and saved volume are byte-identical to the
+MMU-stage evidence. Both independent saved-volume verifiers pass. Fresh private
+2026-10-17-window-init.{slv,ppm} and trace/verification records exist for both games.
+Neither original is verified playable. Next: a suitable fixed-width system font
+source/metrics path for Marathon and generic Munger semantics for EV. Full text
+rendering, production library integration and the full rebuild remain active.
