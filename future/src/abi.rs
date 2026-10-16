@@ -226,6 +226,8 @@ pub enum Service {
     CreateResFile,
     GetResource,
     Get1Resource,
+    GetCIcon,
+    DisposeCIcon,
     GetPixPat,
     DisposePixPat,
     GetPixBaseAddr,
@@ -682,6 +684,8 @@ impl Abi {
             b"GetResInfo" => Some(Service::GetResInfo),
             b"GetResource" => Some(Service::GetResource),
             b"Get1Resource" => Some(Service::Get1Resource),
+            b"GetCIcon" => Some(Service::GetCIcon),
+            b"DisposeCIcon" | b"DisposCIcon" => Some(Service::DisposeCIcon),
             b"GetPixPat" => Some(Service::GetPixPat),
             b"DisposePixPat" | b"DisposPixPat" => Some(Service::DisposePixPat),
             b"GetPixBaseAddr" => Some(Service::GetPixBaseAddr),
@@ -2356,6 +2360,25 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("client ABI stack overflow".into()))?;
                 c.dar[15] = next;
                 Ok((Call::Device(crate::devices::Op::Client(id)), Reply::None))
+            }
+            0xaa1e => {
+                let id = memory.u16(GuestPtr(sp))? as i16;
+                let next = sp
+                    .checked_add(2)
+                    .ok_or_else(|| Error::Cpu("GetCIcon stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 4)?;
+                c.dar[15] = next;
+                Ok((
+                    Call::CIcon(crate::cicon::Op::Get(id)),
+                    Reply::StackLong(GuestPtr(next)),
+                ))
+            }
+            0xaa25 => {
+                let handle = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("DisposeCIcon stack overflow".into()))?;
+                Ok((Call::CIcon(crate::cicon::Op::Dispose(handle)), Reply::None))
             }
             0xaa0c => {
                 let id = memory.u16(GuestPtr(sp))? as i16;
@@ -4481,6 +4504,8 @@ impl Abi {
                 kind: GuestPtr(c.gpr[5]),
                 name: GuestPtr(c.gpr[6]),
             }),
+            Service::GetCIcon => Call::CIcon(crate::cicon::Op::Get(c.gpr[3] as i16)),
+            Service::DisposeCIcon => Call::CIcon(crate::cicon::Op::Dispose(c.gpr[3])),
             Service::GetPixPat => Call::PixPat(crate::pixpat::Op::Get(c.gpr[3] as i16)),
             Service::DisposePixPat => Call::PixPat(crate::pixpat::Op::Dispose(c.gpr[3])),
             Service::GetPixBaseAddr => Call::PixelBase(c.gpr[3]),
@@ -4832,6 +4857,7 @@ impl Abi {
                         | Service::DisposeHandle
                         | Service::FlushEvents
                         | Service::SetToolboxTrapAddress
+                        | Service::DisposeCIcon
                         | Service::DisposePixPat
                         | Service::UnlockPixels
                         | Service::Delay

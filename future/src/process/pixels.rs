@@ -10,7 +10,7 @@ fn bad() -> Error {
 }
 impl Process {
     pub(super) fn pixel_pinned(&self, handle: u32) -> bool {
-        self.pixel_locks.values().any(|lock| lock.image == handle)
+        self.cicons.pins(handle) || self.pixel_locks.values().any(|lock| lock.image == handle)
     }
     fn pixel_record(&self, memory: &Memory, pixmap: u32) -> Result<(u32, u32, u32)> {
         let pm = self.handles.get(&pixmap).copied().ok_or_else(bad)?;

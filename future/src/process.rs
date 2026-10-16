@@ -25,6 +25,7 @@ pub struct ResourceInfo {
 #[derive(Default)]
 pub struct Process {
     pub pixpats: crate::pixpat::Manager,
+    pub cicons: crate::cicon::Manager,
     pub numerics: crate::numerics::Numerics,
     pub timers: crate::timers::Timers,
     pub retrace: crate::retrace::Retrace,
@@ -696,6 +697,7 @@ impl Process {
         self.handle_size(memory, handle)?;
         self.pixel_locks.remove(&handle);
         self.pixpats.forget(handle);
+        self.cicons.forget(handle);
         let HandleBlock { data, .. } = self.handles.remove(&handle).unwrap();
         let heap = self.heap.as_mut().unwrap();
         heap.release(data);

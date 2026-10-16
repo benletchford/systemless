@@ -5,6 +5,7 @@ pub mod bitmap;
 pub mod calendar;
 mod callback;
 pub mod cfm;
+pub mod cicon;
 pub mod color;
 pub mod color_ports;
 mod color_tables;

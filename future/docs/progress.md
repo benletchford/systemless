@@ -8512,3 +8512,76 @@ Continue with typed color-icon resource loading; pixel-pattern installation and
 painting remain separate open work. No original frame/UI/audio/gameplay, full-suite,
 native/browser/CI or full rebuild acceptance is claimed. All tracked handles are
 terminal. Full rebuild, both games and complete wgpu text remain active.
+
+## Color-icon ownership implementation (2026-10-16)
+
+Following pushed PixPat checkpoint 2f10a8b35, implemented shared GetCIcon and
+DisposeCIcon ABI dispatch and typed compiled-resource reconstruction. The original
+EV Graphics resource cicn10000 is 202 bytes:16x16,1-bit indexed pixels,rowBytes2,
+mask and monochrome rows2. It is absent from the application's own fork; normal
+open-resource-file lookup must find its companion. The resource layout matches
+Apple's compiled CIcon description, not the ppat offset-based format.
+
+The new manager owns a fresh82-byte record, image/table handles and fixed mask
+storage per Get; source release is independent. Internal image pinning keeps its
+live baseAddr stable across compaction without changing public handle flags.
+Disposal preflights the complete graph, and partial allocation failure rolls back.
+Primary contracts and explicit format/lifetime limits are in architecture.md.
+Compilation passed (/tmp/systemless-cicon-check.txt). New dual-CPU integration
+coverage is being run; no test, gameplay or original replay success is claimed yet.
+
+
+The initial real replay rejected the cached header at GetCIcon rather than
+advancing. A read-only watch (/tmp/systemless-ev-cicon-watch.txt) established the
+cause: at PC00017D8A, EV writes004DB60A into the cached iconMask.baseAddr at004DB5EA.
+The original file has zero there. The new parser had incorrectly required all
+pointer placeholders to remain zero. Corrected it to ignore all five source
+pointer/handle placeholders and replace them in the fresh graph, while continuing
+to validate actual layout/packing/reserved fields and inline data. A dual-CPU
+regression writes DEAD BEEF into all five placeholders and verifies they are never
+followed, the output graph contains only owned addresses and the source stays
+unchanged. Final-source tests and replay follow; the first failed replay is not
+accepted as progress past GetCIcon.
+
+The first replay's private checkpoint (/tmp/systemless-ev-cicon-saved.slv) is
+7,239,400bytes,SHA256 b2d0862f9286b6f61aff477109cf822962995538e10889a4a9bd3057dd53ab9c.
+Independent volume verification passes CRC/catalog/forks, preferences48->49, with
+identical metadata/fork bytes and all companions unchanged. It is diagnostic
+state, not host persistence or gameplay acceptance.
+
+
+Final-source validation: seven CIcon integration cases pass, zero ignored, in
+/tmp/systemless-cicon-final-tests.txt (terminal exit0). The source placeholder
+fix only changes CIcon parsing; the earlier final regression run contributes
+76core+6PixPat+3current_resource+8resource_maps passes
+(/tmp/systemless-cicon-regressions.txt,exit0), and pixel ownership regressions add
+5passes (/tmp/systemless-cicon-pixel-regressions.txt,exit0). Thus105distinct scoped
+cases pass. Three core GPU cases and one pixel-lock GPU case were ignored and
+remain unverified; no fresh GPU rendering acceptance is claimed for this
+resource-only slice. The initial six CIcon passes are superseded, not added twice.
+Strict final scoped lint (/tmp/systemless-cicon-final-lint.txt) and tracer build
+(/tmp/systemless-cicon-final-tracer-build.txt) both exit0. Changed-file sequential
+formatting and whitespace checks pass. Full-suite, CI, native/browser, full text
+integration and original-gameplay acceptance remain open.
+
+The final original EV replay (/tmp/systemless-ev-cicon-final.txt, terminal exit1)
+passes CIcon(Get(10000)), then explicitly obtains and releases the original
+resource handle5092996. It next stops at unsupported PlotCIcon ($AA1F), PC00017424,
+not inside the new loader. The stack contains CIcon handle004DB6D8, whose root at
+004DB878 contains live image004DB8CC, ColorTable handle004DB8EC and mask004DB8F0.
+Its destination is a16x16,8-bit offscreen port. Completed callbacks:sound0,timer0,VBL0.
+No icon drawing, original frame/UI/audio or gameplay acceptance is claimed.
+
+Input remains the verified original app SHA256
+d739c1d5bd0d5c7efddc55f34bfadd8f66a25c819a00bbed9523c7c56e3f716b
+and volume74930f4351f5fba929ece70350ab5b2a98564a970e668627f21b0e2e70785160.
+The final output /tmp/systemless-ev-cicon-final-saved.slv has the same diagnostic
+checkpoint hash b2d0862f9286b6f61aff477109cf822962995538e10889a4a9bd3057dd53ab9c
+(7,239,400bytes). The independent verifier confirms CRC/catalog/forks,
+preferences48->49 with identical metadata/fork bytes and unchanged companions.
+Flushes remain explicitly memory-only. Next executable slice: shared wgpu
+PlotCIcon with indexed palettes, monochrome destinations, masks, scaling, clips
+and both ABI frames, then retry EV. Marathon was not replayed this milestone;
+its last verified indexed-display stop remains TextFont/no-current-port. Neither
+priority game is playable. Full rebuild and complete wgpu text rendering remain
+active requirements.

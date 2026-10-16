@@ -3929,3 +3929,41 @@ Saved /tmp/systemless-ev-pixpat-final-saved.slv (7,239,400bytes), SHA256
 passes independent CRC/catalog/fork checks against ev-pixpat-saved: preferences
 47->48 only identity change, metadata/fork bytes and companions unchanged. Use
 this checkpoint with the ignored original application fork for the color-icon slice.
+
+## Original Escape Velocity: typed color-icon loading (2026-10-16)
+
+Implemented GetCIcon/DisposeCIcon through one manager for native and PPC callers.
+The original requests cicn10000 from EV Graphics:202bytes,16x16,1-bit indexed,
+with mask and monochrome images. EV first edits the cached mask baseAddr; a
+read-only watch proves that write at PC00017D8A. GetCIcon now replaces resource
+pointer placeholders with independent owned addresses rather than requiring zero
+or following guest addresses. Seven new integration cases cover both CPU frames,
+live source edits, independent graphs, source release, compaction, all indexed
+depths, malformed input, allocation rollback and full disposal. Total scoped
+validation:105distinct passes,4existing GPU cases ignored; strict scoped lint and
+exact-source tracer build pass. No fresh GPU draw acceptance for this resource
+loading slice.
+
+Final replay:
+
+```sh
+future/target/debug/examples/trace_application code \
+  future/target/private-originals/ev/application.raw-rsrc 10000000 \
+  --graphics --display 640x480x8 \
+  --volume /tmp/systemless-ev-pixpat-final-saved.slv \
+  --save-volume /tmp/systemless-ev-cicon-final-saved.slv \
+  --services-only --elapse-waits
+```
+
+The saved-volume destination must be fresh when repeating. Log:
+/tmp/systemless-ev-cicon-final.txt. It passes GetCIcon and ReleaseResource, then
+stops at missing PlotCIcon ($AA1F), PC00017424, for a16x16 indexed offscreen target.
+Sound/timer/VBL callbacks all0. The final checkpoint is7,239,400bytes,SHA256
+b2d0862f9286b6f61aff477109cf822962995538e10889a4a9bd3057dd53ab9c.
+The independent verifier passes CRC/catalog/forks, preferences48->49 with unchanged
+metadata/fork bytes and companions. App and input hashes are in progress.md.
+Tracer flushes remain memory-only. PlotCIcon drawing is the next executable slice;
+original frame/UI/audio/gameplay acceptance remains unverified. Marathon retains
+its last verified indexed TextFont/no-current-port stop and was not replayed here.
+Neither priority game is playable. Full rebuild and complete wgpu text rendering
+remain active.

@@ -154,6 +154,7 @@ pub enum Call {
     Device(crate::devices::Op),
     Color(crate::color::Op),
     PixPat(crate::pixpat::Op),
+    CIcon(crate::cicon::Op),
     PixelBase(u32),
     Pixels {
         pixmap: u32,

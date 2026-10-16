@@ -1959,6 +1959,16 @@ impl Runtime {
                             self.process.resource_info(&mut self.memory, request)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::CIcon(op) => {
+                            self.memory.validate_write(GuestPtr(0x220), 2)?;
+                            if matches!(op, crate::cicon::Op::Get(_)) {
+                                self.memory.validate_write(GuestPtr(0xa60), 2)?;
+                            }
+                            let mut manager = std::mem::take(&mut self.process.cicons);
+                            let result = manager.call(&mut self.memory, &mut self.process, op);
+                            self.process.cicons = manager;
+                            reply.apply(&mut self.cpu, &mut self.memory, result?, 0)?;
+                        }
                         Call::PixPat(op) => {
                             self.memory.validate_write(GuestPtr(0x220), 2)?;
                             if matches!(op, crate::pixpat::Op::Get(_)) {
@@ -2402,6 +2412,7 @@ impl Runtime {
                             | Call::Window { .. }
                             | Call::NewPointer { .. }
                             | Call::PointerSize(_)
+                            | Call::CIcon(_)
                             | Call::PixPat(_)
                             | Call::SetPointerSize { .. }
                             | Call::DisposePointer(_)
@@ -2448,6 +2459,7 @@ impl Runtime {
                             | Call::FontInfo(_)
                             | Call::ResourceInfo(_)
                             | Call::Dialog(crate::dialogs::Op::Resource { .. })
+                            | Call::CIcon(crate::cicon::Op::Get(_))
                             | Call::PixPat(crate::pixpat::Op::Get(_))
                             | Call::CountResources { .. }
                             | Call::GetCurrentResource { .. }
@@ -2570,6 +2582,7 @@ impl Runtime {
                         | Call::HandleSize(_)
                         | Call::SetHandleSize { .. }
                         | Call::ResourceInfo(_)
+                        | Call::CIcon(_)
                         | Call::PixPat(_)
                         | Call::PixelBase(_)
                         | Call::Pixels { .. }

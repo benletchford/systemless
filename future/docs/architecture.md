@@ -3404,3 +3404,35 @@ DisposePixPat preflights the complete graph before freeing it. Partial allocatio
 failure rolls back new graph members. Both CPU adapters marshal into one manager.
 This is typed resource-object support; installation and GPU color-pattern painting
 remain separate requirements, alongside other PixPat constructors/copy operations.
+
+### Owned color-icon records
+
+The shared `cicon` manager reconstructs compiled `cicn` resources for native
+GetCIcon ($AA1E) and PPC GetCIcon. DisposeCIcon ($AA25), including the PPC
+DisposCIcon spelling, releases the owned graph. Both adapters marshal into one
+service; source lookup remains the normal Resource Manager search over live cached
+resource bytes. Each successful Get allocates an independent, nonresource 82-byte
+CIcon handle, a pixel-image handle, a ColorTable handle and fixed storage for mask
+and optional monochrome image. File placeholders become live pointers/handles;
+returning the resource handle itself would expose an invalid graph. Cached resource
+pointer placeholders may already contain guest addresses; these values are
+ignored and replaced, never dereferenced. Inline mask/table/pixel bytes remain the
+source of the fresh graph. EV directly populates iconMask.baseAddr before GetCIcon.
+
+The source format and field meanings follow Apple's [Color Icon Record](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-277.html)
+and [compiled color-icon resource](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-268.html).
+This slice accepts bounded, uncompressed indexed 1/2/4/8-bit images, matching mask
+bounds and an optional nil monochrome bitmap. It checks all ranges, palette
+indices and exact payload length before allocating typed children. Unsupported
+packing, direct color and relative tables fail explicitly.
+
+Live PixMap.baseAddr contains a pointer. An internal ownership pin prevents the
+pixel image from moving or purging while its CIcon lives; this pin is independent
+of guest HLock/HUnlock and does not alter the public handle flags. Masks use fixed
+storage and remain stable when the root record or color table moves. This is an
+explicit lifetime policy, not verified native allocation-layout or lock-state
+parity. In-place guest resizing follows existing handle semantics; structural
+mutations outside the supported owned graph are not silently repaired. Disposal
+preflights all owned members and expected pointer/handle links before freeing any.
+Raw DisposeHandle invalidates root metadata but is not a deep destructor; proper
+callers must use DisposeCIcon. PlotCIcon rendering remains a separate open service.
