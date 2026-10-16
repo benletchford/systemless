@@ -4535,3 +4535,44 @@ byte-identical to the preceding stage. Both independent volume checks pass.
 Private2026-10-17-menu-list[-loop|-8m].* evidence retains these results. Strict
 all-target lint passes. Next: Munger and CTabChanged; both games, full text and
 the entire rebuild remain unfinished.
+
+
+### Munger and TextEdit color destinations,2026-10-17
+
+Munger now reaches one shared handle editor through nativeA9E0 and InterfaceLib.
+106scoped tests pass across recorded scopes,0ignored;56,154 offset/payload cases
+match the actual preserved evaluator. Partial tails and both-NIL direct deletion
+follow the authorized reference policy, whose difference from Apple's general
+API description is explicit. This is not newly measured native parity.
+
+With unchanged16M Enter Ship input, EV executes13Munger calls and reaches
+TextBox at15,140,020/0100E416. The initial replay fails because shared redraw
+reads a CGrafPort as a BitMap. After resolving through the existing shared
+GrafPort/CGrafPort destination service, the same replay gets through TextBox
+and reaches16,000,000instructions,PC007E8268,without another unsupported-service
+fault. Instruction-budget exhaustion remains a non-passing trace outcome.
+The inspected canonical screen includes the ship-name text at bottom left and
+planet/station imagery and HUD; motion, steering, audio and gameplay are not
+verified. PPM SHA25638a1fbb41189fb905a010d8f9b6a151afefe3cb39d455b6950501f7a6552ca8c.
+The saved-volume verifier passes with unchanged pilot/preferences/alias/companions
+and outputSHA256e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80.
+A24M extension is justified by the new TextBox progress; no state override is used.
+
+All17TextEdit tests pass,0ignored,including the new real eight-bit GPU regression
+and existing mono/CPU-adapter cases. Affected-target strict lint and tracer build
+pass. Fresh Marathon remains atCTabChanged/00040007,2,915,975/0100864E; independent
+volume verification confirms original companions are intact and only the same
+first-run preferences file is added. Its arrow-over-black screen remains byte
+identical to the preceding stage. Both games and full rebuild remain unaccepted.
+
+
+The24M extension finishes atPC007E6830 with instruction-budget exhaustion and
+no new unsupported-service fault. Saved-volume verification passes with the same
+output hash. Its inspected screen keeps the planet/station and HUD; the temporary
+ship-name caption is absent. Canonical PPM SHA256 is
+11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48.
+This proves bounded execution beyond the TextBox boundary, not motion or
+playability. Next EV acceptance work should use explicit steering/thrust input
+and observable before/after state rather than merely increasing an idle budget.
+Marathon's next shared service remains CTabChanged; see primary Imaging With
+QuickDraw pp4-97–4-98 for unique seed and inverse-table invalidation requirements.

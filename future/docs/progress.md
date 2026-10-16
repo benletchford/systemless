@@ -10005,4 +10005,19 @@ padding, restored port/current-slot and attached pen-pattern bytes. All17TextEdi
 tests pass,0ignored; affected lib/test Clippy passes14.19s and tracer build6.84s.
 The new indexed fixture uses the shared service directly; existing real CPU
 adapter tests remain in the suite. No new native or both-ABI indexed-pixel parity
-claim is made. Original EV replay with unchanged input is being checked next.
+claim is made. Original EV gets through TextBox and reaches the16M instruction
+budget at007E8268,without a new service fault; that budget outcome is not a pass.
+The inspected frame now includes ship-name text; saved-volume verification still
+passes. A24M extension with identical input continues the bounded investigation.
+
+
+The24M extension finishes atPC007E6830 with instruction-budget exhaustion and
+no new unsupported-service fault. Saved-volume verification passes with the same
+output hash. Its inspected screen keeps the planet/station and HUD; the temporary
+ship-name caption is absent. Canonical PPM SHA256 is
+11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48.
+This proves bounded execution beyond the TextBox boundary, not motion or
+playability. Next EV acceptance work should use explicit steering/thrust input
+and observable before/after state rather than merely increasing an idle budget.
+Marathon's next shared service remains CTabChanged; see primary Imaging With
+QuickDraw pp4-97–4-98 for unique seed and inverse-table invalidation requirements.
