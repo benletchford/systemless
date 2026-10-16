@@ -15,6 +15,18 @@ impl Completion {
         self.0.load(Ordering::Relaxed) == 0
     }
 }
+pub(super) struct FilePlay {
+    completion: Completion,
+    paused: bool,
+}
+impl FilePlay {
+    fn active(&self) -> bool {
+        !self.completion.done()
+    }
+    pub(super) fn paused(&self) -> bool {
+        self.paused && self.active()
+    }
+}
 pub(super) struct Pending {
     pub bytes: [u8; 8],
     completion: Option<Completion>,
@@ -128,6 +140,24 @@ fn parse(m: &Memory, base: u32, size: usize) -> Result<std::result::Result<Resou
     }))
 }
 impl Manager {
+    pub fn pause_file(&mut self, m: &Memory, p: &mut Process, channel: u32) -> Result<i16> {
+        let errors = (p.mem_error, p.res_error);
+        let result = (|| {
+            if !self.valid(m, p, channel)? {
+                return Ok(BAD_CHANNEL);
+            }
+            let Some(file) = &mut self.channels.get_mut(&channel).unwrap().file_play else {
+                return Ok(-211);
+            };
+            if !file.active() {
+                return Ok(-211);
+            }
+            file.paused = !file.paused;
+            Ok(0)
+        })();
+        (p.mem_error, p.res_error) = errors;
+        result
+    }
     pub(crate) fn begin_file_play(
         &mut self,
         m: &mut Memory,
@@ -145,11 +175,28 @@ impl Manager {
         }
         let errors = (p.mem_error, p.res_error);
         let result = (|| {
+            if r.channel != 0 {
+                if !self.valid(m, p, r.channel)? {
+                    return Ok(Err(BAD_CHANNEL));
+                }
+                if self.busy(r.channel) == Some(true) {
+                    return Ok(Err(-209));
+                }
+            }
             let handle = p.get_resource(m, *b"snd ", r.resource)?;
             if handle == 0 {
                 return Ok(Err(-192));
             }
-            self.begin_play(m, p, r.channel, handle, r.asynchronous)
+            let result = self.begin_play(m, p, r.channel, handle, r.asynchronous)?;
+            if let Ok(play) = &result {
+                if r.asynchronous {
+                    self.channels.get_mut(&play.channel).unwrap().file_play = Some(FilePlay {
+                        completion: play.completion.clone(),
+                        paused: false,
+                    });
+                }
+            }
+            Ok(result)
         })();
         (p.mem_error, p.res_error) = errors;
         result
@@ -220,6 +267,7 @@ impl Manager {
                 head: 0,
                 tail: 0,
                 callback: None,
+                file_play: None,
             };
             for &bytes in &resource.commands {
                 let e = queue::check(m, &probe, bytes, true)?;

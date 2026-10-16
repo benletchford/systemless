@@ -3743,3 +3743,21 @@ Independent CRC/catalog/fork verification against fileplay-saved passes:
 preferences identity33->34, all metadata/forks, companions and directories
 unchanged. Input is unchanged, and tracer flush acknowledgments remain explicitly
 memory-only. Use this snapshot with a fresh save filename for further replay.
+
+### EV pause replay and declared memory partition (2026-10-16)
+
+/tmp/systemless-ev-pause.txt passes SndPauseFilePlay after its missing music
+resource and enters an insufficient-memory alert. Guest text says EV needs at
+least another1500K; execution stops at unsupported ModalDialog(A991), PC001B4600,
+expected exit1. This is an error path, not successful startup, gameplay or audio.
+Original SIZE(-1) payload58800081b00000659000 declares preferred8,499,200 and
+minimum6,656,000bytes. Current CODE A5_BASE4MiB/STACK_BASE8MiB ignores the requested
+partition. Next loader work should honor actual SIZE-driven heap/A5/stack bounds;
+do not fake larger free-memory results or merely raise A5 across the old stack.
+
+Snapshot /tmp/systemless-ev-pause-saved.slv is7,239,400bytes,
+SHA256d995f8ce1631d1b110e7a7e55dd40b0584fc6eb978360045374393373b59b9d2.
+Independent CRC/catalog/fork checks pass: preferences identity34->35, all metadata,
+forks, companions and directories unchanged. Input remains unchanged. Tracer
+flushes are still explicit memory-only acknowledgments; no host checkpoint,
+original frame/UI, native audio or gameplay acceptance is established.

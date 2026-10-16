@@ -3296,3 +3296,20 @@ p8-13 specifies this bit8 distinction. PPC validates its nonnil4-byte grow outpu
 before any purge/relocation; runtime preflights MemErr publication and clears it
 on success, preserving ResErr. This is owned application-zone behavior, not an
 assertion that all Memory Manager zone/compaction/purge APIs are complete.
+
+### Resource file-play pause state (2026-10-16)
+
+Successful asynchronous SndStartFilePlay resource requests retain their own
+completion identity and pause flag on the shared channel. SndPauseFilePlay toggles
+only active file-play work, returns channelNotBusy(-211) for valid idle or ordinary
+SndPlay channels, and badChannel(-205) for invalid channels. Both ABIs share this
+state; native frames preflight the result before popping. Paused channels preserve
+sample phase, queue order and pending callbacks across rendered and silent time.
+Status reports the actual pause bit. Completion/quiet/flush makes the old identity
+inactive, so later ordinary channel work is not misclassified as file play.
+
+This remains resource-backed file-play support: AIFF streaming/position times,
+file completion routines, caller buffers/selections and stop semantics are open.
+Resource source lifetime still follows the existing live SndPlay path; automatic
+file-play source pinning/owned buffering across compaction/purge must be finished
+before complete file-play compatibility or original music acceptance is claimed.

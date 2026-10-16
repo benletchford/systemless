@@ -16,6 +16,7 @@ fn app() -> LoadedApplication {
             b"SndDoCommand",
             b"SndDoImmediate",
             b"SndStartFilePlay",
+            b"SndPauseFilePlay",
         ],
         32,
     );
@@ -526,6 +527,56 @@ fn disposal_during_resource_wait_reports_bad_channel_instead_of_targeting_a_repl
     assert_eq!(a.runtime.process.sound.busy(ch), Some(false));
 }
 
+fn pause_file(a: &mut LoadedApplication, arch: Architecture, ch: u32, expected: i16) {
+    let errors = (a.runtime.process.mem_error, a.runtime.process.res_error);
+    if arch == Architecture::M68k {
+        let mut frame = ch.to_be_bytes().to_vec();
+        frame.extend([0x5a; 4]);
+        a.runtime.memory.write(GuestPtr(STACK), &frame).unwrap();
+        a.runtime.cpu = Cpu::new(arch, 0x52000000, STACK);
+        if let Cpu::M68k(c) = &mut a.runtime.cpu {
+            c.dar[0] = 0x02040008;
+            c.dar[1] = 0x12345678;
+        }
+    } else {
+        let tv = a
+            .runtime
+            .memory
+            .u32(GuestPtr(a.info.toc_or_a5 + 24))
+            .unwrap();
+        let pc = a.runtime.memory.u32(GuestPtr(tv)).unwrap();
+        a.runtime.cpu = Cpu::new(arch, pc, STACK);
+        if let Cpu::PowerPc(c) = &mut a.runtime.cpu {
+            c.gpr[3] = ch;
+            c.gpr[4] = 0x12345678;
+        }
+    }
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    match &a.runtime.cpu {
+        Cpu::M68k(c) => {
+            assert_eq!(
+                (c.dar[0], c.dar[1], c.dar[15]),
+                (0x02040008, 0x12345678, STACK + 4)
+            );
+            assert_eq!(
+                a.runtime.memory.u16(GuestPtr(STACK + 4)).unwrap() as i16,
+                expected
+            );
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(STACK + 6), 2).unwrap(),
+                [0x5a; 2]
+            );
+        }
+        Cpu::PowerPc(c) => assert_eq!(
+            (c.gpr[3] as i32, c.gpr[4]),
+            (i32::from(expected), 0x12345678)
+        ),
+    }
+    assert_eq!(
+        (a.runtime.process.mem_error, a.runtime.process.res_error),
+        errors
+    );
+}
 #[test]
 fn file_play_resource_uses_shared_mixer_through_both_cpu_adapters() {
     use systemless_future::{
@@ -571,7 +622,7 @@ fn file_play_resource_uses_shared_mixer_through_both_cpu_adapters() {
                 .unwrap()
                 > 0
         );
-        let h = handle(&mut a, &payload(1, &[128, 192, 64], 1));
+        let h = handle(&mut a, &payload(1, &[128, 192, 64], 2));
         a.runtime.memory.write(GuestPtr(BASE + 600), &[0]).unwrap();
         a.runtime
             .process
@@ -639,10 +690,41 @@ fn file_play_resource_uses_shared_mixer_through_both_cpu_adapters() {
             (a.runtime.process.mem_error, a.runtime.process.res_error),
             (-108, -192)
         );
+        assert_eq!(a.runtime.render_sound(1, 8000).unwrap(), [[0; 2]]);
+        pause_file(&mut a, arch, ch, 0);
+        assert_eq!(a.runtime.render_sound(10, 8000).unwrap(), [[0; 2]; 10]);
+        a.runtime.elapse_sound_silently(600).unwrap();
+        let sound = std::mem::take(&mut a.runtime.process.sound);
+        assert_eq!(
+            sound
+                .status(
+                    &mut a.runtime.memory,
+                    &mut a.runtime.process,
+                    systemless_future::sound::Status {
+                        channel: Some(ch),
+                        length: 24,
+                        destination: GuestPtr(BASE + 700)
+                    }
+                )
+                .unwrap(),
+            0
+        );
+        a.runtime.process.sound = sound;
+        assert_eq!(a.runtime.memory.read(GuestPtr(BASE + 714), 1).unwrap(), [1]);
+        pause_file(&mut a, arch, ch, 0);
+        assert_eq!(
+            a.runtime.render_sound(2, 8000).unwrap(),
+            [[16384; 2], [-16384; 2]]
+        );
+        pause_file(&mut a, arch, ch, 0);
+        a.runtime.elapse_sound_silently(600).unwrap();
+        assert_eq!(a.runtime.render_sound(3, 8000).unwrap(), [[0; 2]; 3]);
+        pause_file(&mut a, arch, ch, 0);
         assert_eq!(
             a.runtime.render_sound(3, 8000).unwrap(),
             [[0; 2], [16384; 2], [-16384; 2]]
         );
+        pause_file(&mut a, arch, ch, -211);
     }
 }
 
@@ -711,6 +793,28 @@ fn file_play_missing_resource_and_nil_async_channel_return_signed_errors() {
             assert_eq!(a.runtime.memory.u16(GuestPtr(0x220)).unwrap(), 0xbeef);
             assert_eq!(a.runtime.memory.u16(GuestPtr(0xa60)).unwrap(), 0xcafe);
             assert_eq!(a.runtime.render_sound(1, 8000).unwrap(), [[0; 2]]);
+            let idle = channel(&mut a, 128);
+            pause_file(&mut a, arch, idle, -211);
+            pause_file(&mut a, arch, 0, -205);
         }
+    }
+}
+
+#[test]
+fn pause_file_rejects_ordinary_resource_play_without_stopping_its_audio() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        a.runtime
+            .memory
+            .map(GuestPtr(0x52000000), vec![0xa8, 0], Permissions::RX)
+            .unwrap();
+        let ch = channel(&mut a, 128);
+        let h = handle(&mut a, &payload(1, &[192, 64], 1));
+        assert_eq!(submit(&mut a, arch, ch, h, true), Stop::Budget);
+        pause_file(&mut a, arch, ch, -211);
+        assert_eq!(
+            a.runtime.render_sound(2, 8000).unwrap(),
+            [[16384; 2], [-16384; 2]]
+        );
     }
 }

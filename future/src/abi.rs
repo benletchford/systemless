@@ -240,6 +240,7 @@ pub enum Service {
     SndDoCommand,
     SndPlay,
     SndStartFilePlay,
+    SndPauseFilePlay,
     SndSoundManagerVersion,
     SndChannelStatus,
     SndManagerStatus,
@@ -630,6 +631,7 @@ impl Abi {
             b"SndDoCommand" => Some(Service::SndDoCommand),
             b"SndPlay" => Some(Service::SndPlay),
             b"SndStartFilePlay" => Some(Service::SndStartFilePlay),
+            b"SndPauseFilePlay" => Some(Service::SndPauseFilePlay),
             b"SndSoundManagerVersion" => Some(Service::SndSoundManagerVersion),
             b"SndChannelStatus" => Some(Service::SndChannelStatus),
             b"SndManagerStatus" => Some(Service::SndManagerStatus),
@@ -1307,6 +1309,19 @@ impl Abi {
             0xa800 => {
                 let selector = c.dar[0];
                 match selector & 0x00ff_ffff {
+                    0x00040008 if selector >> 24 == 2 => {
+                        let channel = memory.u32(GuestPtr(sp))?;
+                        let result = sp
+                            .checked_add(4)
+                            .ok_or_else(|| Error::Cpu("SndPauseFilePlay stack overflow".into()))?;
+                        memory.validate_write(GuestPtr(result), 2)?;
+                        c.dar[15] = result;
+                        Ok((
+                            Call::SoundPauseFile(channel),
+                            Reply::StackWord(GuestPtr(result)),
+                        ))
+                    }
+
                     0x00000008 if selector >> 24 == 13 => {
                         let b = memory.read(GuestPtr(sp), 26)?;
                         let long =
@@ -4396,6 +4411,7 @@ impl Abi {
                 length: c.gpr[3] as i16,
                 destination: GuestPtr(c.gpr[4]),
             }),
+            Service::SndPauseFilePlay => Call::SoundPauseFile(c.gpr[3]),
             Service::SndStartFilePlay => Call::SoundStartFile(crate::sound::StartFilePlay {
                 channel: c.gpr[3],
                 file: c.gpr[4] as i16,

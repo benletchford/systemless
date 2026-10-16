@@ -1,6 +1,6 @@
-//! Live status for the virtual Sound Manager 3.0 profile. Disk playback and
-//! pause commands are unsupported, so disk times/paused remain zero. CPU-load
-//! fields are obsolete in 3.0 and deliberately contain no fabricated estimate.
+//! Live status for the virtual Sound Manager 3.0 profile. Resource file-play
+//! pause state is reported; disk-position times require unfinished streaming.
+//! CPU-load fields are obsolete in 3.0 and contain no fabricated estimate.
 use super::*;
 impl Manager {
     pub fn status(
@@ -21,6 +21,7 @@ impl Manager {
                     return Ok(BAD_CHANNEL);
                 }
                 bytes[12] = u8::from(self.busy(channel).unwrap());
+                bytes[14] = u8::from(self.channels[&channel].file_paused());
                 bytes[16..20].copy_from_slice(&self.channels[&channel].init.to_be_bytes());
             } else {
                 for &channel in &self.order {

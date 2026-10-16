@@ -40,6 +40,14 @@ struct Channel {
     head: u16,
     tail: u16,
     callback: Option<bool>,
+    file_play: Option<resource::FilePlay>,
+}
+impl Channel {
+    fn file_paused(&self) -> bool {
+        self.file_play
+            .as_ref()
+            .is_some_and(resource::FilePlay::paused)
+    }
 }
 #[derive(Default)]
 pub struct Manager {
@@ -169,6 +177,7 @@ impl Manager {
                 head: 0,
                 tail: 0,
                 callback: None,
+                file_play: None,
             },
         );
         self.next_serial = serial;

@@ -1945,6 +1945,18 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::SoundPauseFile(channel) => {
+                            let mut sound = std::mem::take(&mut self.process.sound);
+                            let result = sound.pause_file(&self.memory, &mut self.process, channel);
+                            self.process.sound = sound;
+                            let error = result?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::SoundStartFile(request) => {
                             let mut sound = std::mem::take(&mut self.process.sound);
                             let result =
@@ -2494,6 +2506,7 @@ impl Runtime {
                         | Call::SoundChannel(_)
                         | Call::SoundImmediate { .. }
                         | Call::SoundQueue { .. }
+                        | Call::SoundPauseFile(_)
                         | Call::SoundStartFile(_)
                         | Call::SoundPlay { .. }
                         | Call::SoundVersion

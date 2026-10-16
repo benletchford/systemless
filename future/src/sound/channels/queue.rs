@@ -126,6 +126,9 @@ pub(super) fn execute(
     Ok(0)
 }
 pub(super) fn pump(m: &mut Memory, channel: u32, c: &mut Channel) -> Result<()> {
+    if c.file_paused() {
+        return Ok(());
+    }
     while c.playback.voice.is_none() && c.callback.is_none() {
         let Some(bytes) = c.commands.front().map(|p| p.bytes) else {
             break;
@@ -206,7 +209,9 @@ impl Manager {
         let errors = (p.mem_error, p.res_error);
         let result = (|| {
             for &channel in &self.order {
-                if self.channels[&channel].callback == Some(false) {
+                if self.channels[&channel].callback == Some(false)
+                    && !self.channels[&channel].file_paused()
+                {
                     if !self.valid(m, p, channel)? {
                         return Err(bad("corrupt callback sound channel"));
                     }

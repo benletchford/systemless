@@ -7800,3 +7800,57 @@ integration checks,96distinct tests pass against this milestone. Strict scoped
 lint, formatting, whitespace, original replay and independent volume verification
 are complete as recorded. No full integration/all-target/native/browser/CI or
 original gameplay/audio acceptance is claimed. Full rebuild remains active.
+
+## Stateful resource file pause/resume (2026-10-16, final validation in progress)
+
+Primary SndPauseFilePlay reference specifies selector02040008, badChannel-205
+and channelNotBusy-211 for a valid channel with no file play:
+https://dev.os9.ca/techpubs/mac/Sound/Sound-94.html. Both CPU adapters now invoke
+one shared pause operation with native result-slot preflight. Successful
+asynchronous resource-backed starts retain completion identity and paused state;
+busy channels reject a new start. Pause/resume freezes mixer phase, queued pump,
+pending callbacks and both silent clocks. Channel status reports the actual
+paused bit. Completed/flushed/quieted work stops counting as active file play;
+ordinary SndPlay remains outside file-pause ownership. File streaming, selections,
+caller buffers, file completion callbacks and full disk-position status remain open.
+
+Initial resource tests65698 passed13 with an unused-mut warning; warning removed
+before final tests. Initial check28439 failed for a missing Channel probe field,
+fixed before passing builds. Final two-buffer resource tests10944 passed13,
+0ignored in /tmp/systemless-pause-queued-final.txt: both CPUs pause across queued
+and single-voice silent clocks, output silence without consuming source frames,
+resume exact subsequent samples, report paused status, return idle/invalid errors
+and reject pausing ordinary SndPlay. Earlier lint99266 passed, but final test-only
+coverage refinements have a fresh lint job (see returned handle), output
+/tmp/systemless-pause-final-lint.txt. Six-suite sound regression42798 remains
+live in /tmp/systemless-pause-sound-final.txt. Tracer build96449 passed exit0.
+
+Original EV replay48839 completed next-service exit1 in
+/tmp/systemless-ev-pause.txt. It passes pause calls after missing snd30000 and
+enters an insufficient-memory alert, then stops at trapA991 (ModalDialog),
+PC001B4600. Guest text reports needing at least1500K additional memory. This is
+not successful application startup, audio or gameplay. Independent volume
+verification passes: prefs identity34->35, all metadata/forks and companions
+unchanged. Snapshot /tmp/systemless-ev-pause-saved.slv7,239,400bytes,
+SHA256d995f8ce1631d1b110e7a7e55dd40b0584fc6eb978360045374393373b59b9d2.
+
+Important next loading milestone: original EV SIZE(-1) bytes58800081b00000659000
+request preferred8,499,200 and minimum6,656,000bytes. The CODE loader currently
+fixes A5_BASE at4MiB and STACK_BASE at8MiB, ignoring this declared partition.
+Honor real SIZE-driven application memory with checked A5/global/stack/section
+layout, not inflated MaxMem/FreeMem values or reduced game thresholds. Preferred
+size exceeds the old fixed stack base, so increasing a constant alone is unsafe.
+Keep native/PPC loader policy and actual allocator reservation coherent and test
+boundaries/overflow/fixture defaults. ModalDialog remains unfinished separately.
+Full rebuild, both games and complete GPU text rendering remain active.
+
+Final validation: six-suite session42798 completed exit0 with43distinct sound
+tests (13resource,3volume,5channel,6info,8playback,8queue),0ignored. Final two-buffer
+resource session10944 also completed exit0; it supersedes the single-buffer
+coverage in that suite without adding test-count duplicates. Strict final scoped
+lint27748 completed exit0 in /tmp/systemless-pause-final-lint.txt. Formatting and
+whitespace passed. Tracer/original replay/independent volume verification are
+terminal as recorded. No complete file-play/source-pinning, whole integration,
+original audio/gameplay, native/browser or CI acceptance is claimed. Source
+pinning/owned buffering across MaxMem remains explicit follow-up alongside SIZE
+loader policy. All live validation handles are terminal; full rebuild stays active.

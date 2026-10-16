@@ -211,6 +211,9 @@ impl Manager {
                 }
             }
             for (&channel, c) in &mut self.channels {
+                if c.file_paused() {
+                    continue;
+                }
                 if let Some(v) = &mut c.playback.voice {
                     v.denominator(60);
                     let numerator =
@@ -246,6 +249,9 @@ impl Manager {
                 }
             }
             for (&channel, c) in &mut self.channels {
+                if c.file_paused() {
+                    continue;
+                }
                 let mut frames = u64::from(ticks) * 800;
                 loop {
                     super::queue::pump(m, channel, c)?;
@@ -305,6 +311,9 @@ impl Manager {
             let mut mixed = vec![[0i64; 2]; frames];
             let master = i64::from(super::super::volume(m)?);
             for (&channel, c) in &mut self.channels {
+                if c.file_paused() {
+                    continue;
+                }
                 let mut offset = 0;
                 loop {
                     super::queue::pump(m, channel, c)?;
