@@ -4441,3 +4441,25 @@ MMU-stage evidence. Both independent saved-volume verifiers pass. Fresh private
 Neither original is verified playable. Next: a suitable fixed-width system font
 source/metrics path for Marathon and generic Munger semantics for EV. Full text
 rendering, production library integration and the full rebuild remain active.
+
+### Fixed-width font refresh, 2026-10-17
+
+Shared source-specific Nimbus Mono PS fallback supports Monaco4/Courier22 while
+retaining guest font resource priority, separate proportional/fixed-width cache
+identity and wgpu destination drawing. It is an OFL substitute with its own
+metrics, not Apple's font artwork or proof of classic layout equivalence.
+
+Fresh original Marathon advances past GetFontInfo to NewPixMap/AA03 at
+218,829/0100420A, using the same1M budget,640x480x8 and companion input. The
+screen remains black; no original menu/text presentation or gameplay is claimed.
+Its saved volume is unchanged from the preceding stage, with original companion
+forks/metadata intact and only the expected preferences file added.
+
+Fresh original EV with the same16M budget/real Enter Ship events reaches the
+unchanged Munger boundary at15,136,642/0102C7CA. Its screen and saved volume are
+byte-identical to the preceding stage; both independent volume verifiers pass.
+Private2026-10-17-mono.* evidence records are retained for each original.
+107 scoped tests pass with0ignored (89core,13fonts,5text), including actual GPU
+and both CPU adapters. Next: shared NewPixMap ownership/lifecycle for Marathon
+and generic Munger semantics for EV. Both games/full rebuild/text acceptance
+remain unfinished.

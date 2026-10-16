@@ -2,11 +2,32 @@
 //! CPU rasterization creates source font data; guest drawing remains a GPU task.
 use crate::{font::Strike, Error, Result};
 use ab_glyph::{Font, FontRef, ScaleFont};
-pub(crate) fn strike(size: i16) -> Result<Vec<u8>> {
+/// Bundled source identity, shared by compatibility aliases but not other faces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Source {
+    Sans,
+    Mono,
+}
+impl Source {
+    pub(crate) fn family(family: i16) -> Result<Self> {
+        match family {
+            0 | 3 | 21 => Ok(Self::Sans),
+            4 | 22 => Ok(Self::Mono),
+            _ => Err(Error::Graphics(
+                "selected font family has no resource or fallback".into(),
+            )),
+        }
+    }
+}
+pub(crate) fn strike(source: Source, size: i16) -> Result<Vec<u8>> {
     if !(1..=96).contains(&size) {
         return Err(Error::Graphics("fallback font size outside 1..96".into()));
     }
-    let font = FontRef::try_from_slice(include_bytes!("../assets/fonts/NimbusSans-Regular.ttf"))
+    let bytes: &[u8] = match source {
+        Source::Sans => include_bytes!("../assets/fonts/NimbusSans-Regular.ttf"),
+        Source::Mono => include_bytes!("../assets/fonts/NimbusMonoPS-Regular.ttf"),
+    };
+    let font = FontRef::try_from_slice(bytes)
         .map_err(|_| Error::Load("invalid bundled fallback font".into()))?;
     outline(font, size, None)
 }
@@ -172,7 +193,7 @@ mod tests {
     #[test]
     fn fallback_strikes_decode_at_small_default_and_extended_offset_sizes() {
         for size in [1, 9, 12, 96] {
-            let bytes = strike(size).unwrap();
+            let bytes = strike(Source::Sans, size).unwrap();
             let font = Strike::parse(&bytes).unwrap();
             assert!(font.metrics.ascent > 0);
             assert!(font.metrics.maximum_width > 0);
@@ -188,7 +209,7 @@ mod tests {
             }
         }
         for size in [0, -1, 97] {
-            assert!(strike(size).is_err());
+            assert!(strike(Source::Sans, size).is_err());
         }
     }
 }

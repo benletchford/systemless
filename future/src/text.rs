@@ -81,12 +81,7 @@ pub(crate) fn font_bytes(
                 "Font Manager has not been initialized".into(),
             ));
         }
-        if !matches!(family, 0 | 3 | 21) {
-            return Err(Error::Graphics(
-                "selected font family has no resource or fallback".into(),
-            ));
-        }
-        crate::font::fallback(memory, process, size)?
+        crate::font::fallback(memory, process, family, size)?
     };
     let length = process.handle_size(memory, handle)? as usize;
     let data = GuestPtr(memory.u32(GuestPtr(handle))?);

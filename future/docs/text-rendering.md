@@ -327,3 +327,20 @@ font rendering remains the same supported slice. Correctness/playability and the
 full text checklist remain unverified. Marathon's initialization port remains nil
 in fresh read-only watch evidence. See progress.md for the149 scoped checks and
 exact game snapshots; this does not complete the text or full rebuild goal.
+
+### Fixed-width bundled source, 2026-10-17
+
+Marathon's original GetFontInfo requests Monaco4,bold,size9 without embedded font
+resources. The existing ab_glyph source converter now accepts a distinct bundled
+Nimbus Mono PS source for families4/22, with the same preserved OFL asset/provenance
+as the baseline. No new library is added. Source identity and point size key the
+bounded32-strike guest-handle cache, so proportional and fixed-width requests
+cannot collide; aliases for one source share live guest bytes. Guest FOND/sfnt
+and FONT resolution still precede bundled substitutes.
+
+Source decoding, Mac Roman mapping and monochrome mask preparation remain CPU
+work. Destination transfer, clipping and composition stay in the existing wgpu
+text path. This adds no independent renderer and does not constitute Glyphon
+production integration. Nimbus Mono glyph advances/metrics and synthetic bold
+are explicit substitutes; classic Monaco hinting, artwork and layout equivalence
+remain unverified. The preserved historical widMax override is not imported.

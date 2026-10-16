@@ -698,3 +698,234 @@ fn embedded_outline_draw_string_on_both_cpus_uses_gpu_clip_and_family_advances()
     }
     assert_eq!(outputs[0], outputs[1]);
 }
+
+#[test]
+fn fixed_width_substitutes_keep_distinct_source_identity_and_share_both_cpu_metrics() {
+    use systemless_future::{
+        quickdraw::Ports,
+        text::{self, Input},
+    };
+    let f = pef_program(&[0x4e800020], &[b"GetFontInfo"], 128);
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), vec![0; 512], Permissions::RW)
+        .unwrap();
+    let ports = Ports {
+        current_slot: GuestPtr(0x51000000),
+        screen_bitmap: GuestPtr(0),
+    };
+    let port = GuestPtr(0x51000100);
+    app.runtime
+        .memory
+        .write(ports.current_slot, &port.0.to_be_bytes())
+        .unwrap();
+    app.runtime.process.ports = Some(ports);
+    systemless_future::font::initialize(&mut app.runtime.memory, &mut app.runtime.process).unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa8, 0x8b], Permissions::RX)
+        .unwrap();
+    let stack = STACK_BASE + 0x8000;
+    let out = app.info.toc_or_a5 + 64;
+    let vector = app
+        .runtime
+        .memory
+        .u32(GuestPtr(app.info.toc_or_a5 + 8))
+        .unwrap();
+    let gate = app.runtime.memory.u32(GuestPtr(vector)).unwrap();
+    let mut mono = None;
+    let mut mono_metrics = None;
+    for family in [3u16, 4, 22, 3, 4] {
+        app.runtime
+            .memory
+            .write(
+                GuestPtr(port.0 + 68),
+                &[0, family as u8, 0, 0xa5, 0, 1, 0, 9],
+            )
+            .unwrap();
+        let mut widths = Vec::new();
+        for ch in [b'i', b'W', b' ', 0x80] {
+            widths.push(
+                text::width(
+                    &mut app.runtime.memory,
+                    &mut app.runtime.process,
+                    ports,
+                    Input::Character(ch),
+                )
+                .unwrap(),
+            );
+        }
+        if family == 3 {
+            assert_ne!(widths[0], widths[1]);
+        } else {
+            assert!(widths[0] > 0);
+            assert!(widths.iter().all(|w| *w == widths[0]));
+            if let Some(previous) = &mono {
+                assert_eq!(&widths, previous);
+            } else {
+                mono = Some(widths);
+            }
+        }
+        let mut metrics = Vec::new();
+        for architecture in [Architecture::PowerPc, Architecture::M68k] {
+            app.runtime
+                .memory
+                .write(GuestPtr(stack), &out.to_be_bytes())
+                .unwrap();
+            app.runtime
+                .memory
+                .write(GuestPtr(stack + 4), &[0xa5; 4])
+                .unwrap();
+            app.runtime.cpu = Cpu::new(
+                architecture,
+                if architecture == Architecture::PowerPc {
+                    gate
+                } else {
+                    0x50000000
+                },
+                stack,
+            );
+            if let Cpu::PowerPc(c) = &mut app.runtime.cpu {
+                c.gpr[3] = out;
+            }
+            assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+            if let Cpu::M68k(c) = &app.runtime.cpu {
+                assert_eq!(c.dar[15], stack + 4);
+                assert_eq!(
+                    app.runtime.memory.u32(GuestPtr(stack + 4)).unwrap(),
+                    0xa5a5a5a5
+                );
+            }
+            metrics.push(app.runtime.memory.read(GuestPtr(out), 8).unwrap().to_vec());
+        }
+        assert_eq!(metrics[0], metrics[1]);
+        if family != 3 {
+            if let Some(previous) = &mono_metrics {
+                assert_eq!(&metrics[0], previous);
+            } else {
+                mono_metrics = Some(metrics[0].clone());
+            }
+        }
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(port.0 + 71), 1).unwrap(),
+            [0xa5]
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn fixed_width_fallback_draw_string_on_both_cpus_uses_gpu_clip_and_bold_advances() {
+    use systemless_future::{
+        graphics::{Graphics, Rect},
+        quickdraw::Ports,
+        text,
+    };
+    let f = pef_program(&[0x4e800020], &[b"DrawString"], 128);
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    systemless_future::font::initialize(&mut app.runtime.memory, &mut app.runtime.process).unwrap();
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), vec![0; 512], Permissions::RW)
+        .unwrap();
+    let mut before = vec![0; 320];
+    for row in 0..32 {
+        before[row * 10 + 8..row * 10 + 10].fill(0xa5);
+    }
+    app.runtime
+        .memory
+        .map(GuestPtr(0x52000000), before.clone(), Permissions::RW)
+        .unwrap();
+    let ports = Ports {
+        current_slot: GuestPtr(0x51000020),
+        screen_bitmap: GuestPtr(0x51000000),
+    };
+    let mut bitmap = vec![0; 14];
+    w32(&mut bitmap, 0, 0x52000000);
+    w16(&mut bitmap, 4, 10);
+    w16(&mut bitmap, 10, 32);
+    w16(&mut bitmap, 12, 64);
+    app.runtime
+        .memory
+        .write(ports.screen_bitmap, &bitmap)
+        .unwrap();
+    let port = GuestPtr(0x51000080);
+    ports
+        .open(&mut app.runtime.memory, &mut app.runtime.process, port)
+        .unwrap();
+    ports
+        .clip_rect(&mut app.runtime.memory, Rect::new(8, 0, 40, 32))
+        .unwrap();
+    app.runtime
+        .memory
+        .write(GuestPtr(port.0 + 68), &[0, 4, 1, 0xa5, 0, 0, 0, 9])
+        .unwrap();
+    app.runtime.process.ports = Some(ports);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    app.runtime.graphics =
+        Some(pollster::block_on(Graphics::new(&instance, None, 64, 32, GuestPtr(0x4000))).unwrap());
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa8, 0x84], Permissions::RX)
+        .unwrap();
+    let string = app.info.toc_or_a5 + 64;
+    app.runtime
+        .memory
+        .write(GuestPtr(string), &[3, b'A', 0x80, b' '])
+        .unwrap();
+    let vector = app
+        .runtime
+        .memory
+        .u32(GuestPtr(app.info.toc_or_a5 + 8))
+        .unwrap();
+    let gate = app.runtime.memory.u32(GuestPtr(vector)).unwrap();
+    let stack = STACK_BASE + 0x8000;
+    let mut outputs = Vec::new();
+    for architecture in [Architecture::PowerPc, Architecture::M68k] {
+        app.runtime
+            .memory
+            .write(GuestPtr(0x52000000), &before)
+            .unwrap();
+        text::move_to(&mut app.runtime.memory, ports, 4, 22).unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(stack), &string.to_be_bytes())
+            .unwrap();
+        app.runtime.cpu = Cpu::new(
+            architecture,
+            if architecture == Architecture::PowerPc {
+                gate
+            } else {
+                0x50000000
+            },
+            stack,
+        );
+        if let Cpu::PowerPc(c) = &mut app.runtime.cpu {
+            c.gpr[3] = string;
+        }
+        assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+        let output = app
+            .runtime
+            .memory
+            .read(GuestPtr(0x52000000), 320)
+            .unwrap()
+            .to_vec();
+        assert!(output
+            .chunks_exact(10)
+            .any(|row| row[1..5].iter().any(|pixel| *pixel != 0)));
+        for row in output.chunks_exact(10) {
+            assert_eq!(row[0], 0);
+            assert_eq!(&row[5..8], &[0; 3]);
+            assert_eq!(&row[8..], &[0xa5; 2]);
+        }
+        assert_eq!(app.runtime.memory.u16(GuestPtr(port.0 + 50)).unwrap(), 22);
+        assert_eq!(app.runtime.memory.u16(GuestPtr(port.0 + 48)).unwrap(), 22);
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(port.0 + 71), 1).unwrap(),
+            [0xa5]
+        );
+        outputs.push(output);
+    }
+    assert_eq!(outputs[0], outputs[1]);
+}

@@ -3714,3 +3714,16 @@ implementation's synthetic InitGraf port is not copied.
 
 Primary references: [QuickDraw initial values, Table2-1](https://www.vintageapple.org/inside_r/pdf/Imaging_With_QuickDraw_1994.pdf)
 and [InitWindows creates the Window Manager port](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-222.html).
+
+### Bundled source identities for fixed-width text
+
+The fallback source selector maps system/Geneva/Helvetica families0/3/21 to
+Nimbus Sans and Monaco/Courier4/22 to Nimbus Mono PS. Existing guest FOND/sfnt
+and legacy FONT resources resolve first. The bounded per-process cache uses
+(source identity,point size), retaining one editable guest handle for aliases of
+the same source and distinct handles across proportional/fixed-width sources.
+Family mappings and source preparation do not add a rendering backend: packed
+strikes, measurement, bold preparation and wgpu destination services stay shared.
+The fixed-width substitute retains its own metrics; no historical Monaco metric
+override or Apple glyph artwork is introduced. Full classic font fidelity remains
+open. Asset provenance is in assets/fonts/README.md.

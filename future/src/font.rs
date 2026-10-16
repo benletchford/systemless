@@ -239,7 +239,7 @@ impl<'a> Strike<'a> {
 #[derive(Default)]
 pub struct Manager {
     pub initialized: bool,
-    pub(crate) fallback: std::collections::BTreeMap<i16, u32>,
+    pub(crate) fallback: std::collections::BTreeMap<(crate::font_fallback::Source, i16), u32>,
     pub(crate) outlines: Vec<crate::font_family::CachedOutline>,
 }
 pub fn initialize(
@@ -261,10 +261,7 @@ pub fn initialize(
         let data = crate::memory::GuestPtr(memory.u32(crate::memory::GuestPtr(handle))?);
         Strike::parse(memory.read(data, length)?)?;
     } else {
-        if !matches!(family, 0 | 3 | 21) {
-            return Err(bad("system font has no resource or fallback"));
-        }
-        fallback(memory, process, size)?;
+        fallback(memory, process, family, size)?;
     }
     if memory.u16(crate::memory::GuestPtr(0xba8))? == 0 {
         memory.write(crate::memory::GuestPtr(0xba8), &12u16.to_be_bytes())?;
@@ -278,21 +275,66 @@ pub fn initialize(
 pub(crate) fn fallback(
     memory: &mut crate::memory::Memory,
     process: &mut crate::process::Process,
+    family: i16,
     size: i16,
 ) -> Result<u32> {
-    if let Some(handle) = process.fonts.fallback.get(&size) {
+    let source = crate::font_fallback::Source::family(family)?;
+    let key = (source, size);
+    if let Some(handle) = process.fonts.fallback.get(&key) {
         return Ok(*handle);
     }
     if process.fonts.fallback.len() >= 32 {
         return Err(bad("fallback font strike count limit exceeded"));
     }
-    let bytes = crate::font_fallback::strike(size)?;
+    let bytes = crate::font_fallback::strike(source, size)?;
     let handle = process.new_handle(memory, bytes.len() as u32, false)?;
     if handle == 0 {
         return Err(bad("fallback font heap allocation failed"));
     }
     let data = crate::memory::GuestPtr(memory.u32(crate::memory::GuestPtr(handle))?);
     memory.write(data, &bytes)?;
-    process.fonts.fallback.insert(size, handle);
+    process.fonts.fallback.insert(key, handle);
     Ok(handle)
+}
+
+#[cfg(test)]
+mod fallback_cache_tests {
+    use super::*;
+    use crate::{
+        memory::{GuestPtr, Memory, Permissions},
+        process::Process,
+    };
+    #[test]
+    fn source_aliases_share_live_guest_strikes_without_colliding_with_other_faces() {
+        let mut memory = Memory::default();
+        memory
+            .map(GuestPtr(0), vec![0; 4096], Permissions::RW)
+            .unwrap();
+        let mut process = Process::default();
+        let sans = fallback(&mut memory, &mut process, 3, 9).unwrap();
+        let mono = fallback(&mut memory, &mut process, 4, 9).unwrap();
+        assert_ne!(sans, mono);
+        assert_eq!(fallback(&mut memory, &mut process, 22, 9).unwrap(), mono);
+        assert_eq!(fallback(&mut memory, &mut process, 21, 9).unwrap(), sans);
+        assert_eq!(process.fonts.fallback.len(), 2);
+        let pointer = GuestPtr(memory.u32(GuestPtr(mono)).unwrap());
+        let length = process.handle_size(&memory, mono).unwrap() as usize;
+        let font = Strike::parse(memory.read(pointer, length).unwrap()).unwrap();
+        assert_eq!(font.glyph(b'i').advance, 5);
+        assert_eq!(font.glyph(b'W').advance, 5);
+        memory
+            .write(GuestPtr(pointer.0 + 6), &99u16.to_be_bytes())
+            .unwrap();
+        let alias = fallback(&mut memory, &mut process, 22, 9).unwrap();
+        let pointer = GuestPtr(memory.u32(GuestPtr(alias)).unwrap());
+        assert_eq!(
+            Strike::parse(memory.read(pointer, length).unwrap())
+                .unwrap()
+                .metrics
+                .maximum_width,
+            99
+        );
+        assert!(fallback(&mut memory, &mut process, 99, 9).is_err());
+        assert_eq!(process.fonts.fallback.len(), 2);
+    }
 }

@@ -9650,3 +9650,78 @@ without independently establishing that metric policy.
 
 Strict all-target Clippy finishes successfully (6m52s, exit0). The complete
 rerun chain exits0. Private2026-10-17-window-init-lint.txt preserves this result.
+
+### Fixed-width bundled source for Marathon, 2026-10-17
+
+The new real-CPU font regression first fails on the old code with the selected
+font family has no resource or fallback error (/tmp/systemless-mono-before.txt).
+The shared source converter now selects the unchanged OFL NimbusMonoPS-Regular
+asset for Monaco4/Courier22. Source SHA256bf749d47bf69f4bf6963833afb66a3a5b6e62185bfffaf068b7a1b3f0276ba82
+is checked against the preserved licensed asset. Existing license files cover
+this same upstream Core35 release. No new production dependency is added.
+
+Fallback cache keys are now bundled source identity plus point size, retaining
+the32-strike total bound and editable guest handles. Compatibility aliases share
+a source handle; proportional and fixed-width sources cannot collide. Guest
+FOND/sfnt and FONT priority remains unchanged. InitFonts uses the same selector
+as subsequent text/font queries. Source preparation remains CPU-side; destination
+operations stay in the shared wgpu path.
+
+A unit regression checks distinct handles, same-source aliases, live guest metric
+edits and unsupported-family rejection without cache growth. Shared text-width
+queries verify fixed widths for i,W,space and extended Mac Roman after a same-size
+proportional cache entry, while switching back/forth and through Courier aliases.
+Both real GetFontInfo adapters agree and preserve stack/padding. The new real-GPU
+DrawString test checks identical nonempty output on both CPUs, clipping, bold
+advance, pen and row-padding preservation.
+
+Nimbus Mono metrics/pixels are explicit substitutes, not proof of native Monaco
+layout. The old implementation's historical widMax override is not copied. Font
+fidelity, hinting, production Glyphon integration and complete native/browser
+text acceptance remain open.
+
+Scoped verification passes107tests,0ignored:89core,13fonts,5text. Actual GPU
+cases are enabled; this is not a fresh whole-suite result. Logs are
+/tmp/systemless-mono-tests.txt; the tracer build and strict all-target lint
+continue separately. Sequential changed-file format and whitespace checks pass.
+
+The tracer build passes (1m18s). Fresh original Marathon uses the same1M budget,
+640x480x8, companion volume and read-only77ffec watcher, with fresh outputs
+/tmp/systemless-marathon-mono.{txt,slv,ppm}. It advances from GetFontInfo at
+216,681/01012E0C to NewPixMap/AA03 at218,829/0100420A. No original DrawString or
+menu presentation is established by this metric-only advancement. The screen is
+still black. Independent volume verification passes, all original companions
+unchanged; only the same first-run preferences are added. Saved volume SHA256
+e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42,
+11,597,088bytes. Private2026-10-17-mono.{slv,ppm}, trace tail, before/test/build
+logs and volume-verification record retain the evidence.
+
+NewPixMap continuation reference: [Imaging With QuickDraw,4-85–4-87](https://www.vintageapple.org/inside_r/pdf/Imaging_With_QuickDraw_1994.pdf)
+says NewPixMap copies the current device's descriptor, gives it a separate
+uninitialized color-table handle, and forces hRes/vRes to72dpi on System7. It
+does not allocate/copy the pixel image. CopyPixMap deep-copies the table but
+retains the base pointer; DisposePixMap owns descriptor/table disposal. Preserve
+these ownership boundaries, allocation-failure rollback, source current-device
+selection and ABI result preflight. Current devices/pixmap shared modules are
+the intended home; do not invent a separate offscreen renderer or apply the
+operation only to Marathon. EV's next operation remains generic Munger.
+
+Fresh original EV with the existing16M budget,real E down8M/up8,005,000 and the
+script-reopen volume still reaches Munger at15,136,642/0102C7CA. Saved volume
+and canonical screen are byte-identical to the MMU/window-init milestones
+(volume SHA256e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80;
+PPM SHA256d82210c6933ee86e43a0cd2905d57262c69cf61daca726c789d45cf1fd9a7650).
+Independent catalog/CRC/script/alias verification passes; pilot and original
+companions are unchanged. Private2026-10-17-mono.{slv,ppm}, trace tail and
+volume verification preserve the regression. Neither game is verified playable.
+
+The Marathon trace contains14 successful GetFontInfo calls: Monaco9 plain/bold,
+Courier12 plain and Courier14 bold. It contains no TextDraw service call before
+the PixMap stop, so this original replay proves metric-path advancement only;
+new fixed-width destination pixels are verified by the real-CPU GPU fixture.
+
+Strict all-target Clippy passes (5m44s,exit0); the full scoped-test/tracer/lint
+chain exits0. Private2026-10-17-mono-lint.txt retains the log. Next executable
+priorities are shared NewPixMap lifecycle and generic Munger; production Glyphon,
+font fidelity, complete text/Mixed Mode/native/browser/full rebuild acceptance
+remain active.
