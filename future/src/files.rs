@@ -10,6 +10,7 @@ mod browse;
 pub use aliases::ResolveAliasFile;
 mod io;
 mod resource;
+pub use resource::CreateSpecResource;
 mod spec;
 pub use spec::MakeSpec;
 mod volume;

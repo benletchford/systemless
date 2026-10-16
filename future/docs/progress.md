@@ -6893,3 +6893,50 @@ no title/menu/gameplay/audio acceptance. Marathon not replayed. Next: implement
 FSpCreateResFile using shared catalog/resource-fork ownership, Finder metadata,
 ResError and both ABI adapters, then replay EV. Full rebuild and complete wgpu
 text rendering remain active requirements.
+
+
+## Shared FSpCreateResFile (2026-10-16)
+
+AA52 selector 000E and PPC FSpCreateResFile now create an actual encoded empty
+resource map through one shared Files service. New files retain zero-length data
+forks and receive current creation/modification dates plus raw four-byte creator
+and type metadata. Existing zero-resource files retain their data, node identity,
+creation date and other Finder bytes while receiving the resource map and new
+type/creator. Existing nonempty resource forks and directories are not replaced.
+The operation does not open a fork or change current resource-file state.
+Errors publish shared ResError and the low-memory word; void native/PPC results
+preserve registers and native Pascal parameters pop 14 bytes.
+
+This stage supports Roman (0) and system-Roman (-1) filename scripts; other
+scripts stop explicitly before file changes. Extended Finder/script metadata,
+other script systems, multiple volumes and full HFS collation remain open.
+Primary: [Creating and Opening a Resource Fork](https://dev.os9.ca/techpubs/mac/MoreToolbox/MoreToolbox-20.html),
+Inside Macintosh: More Macintosh Toolbox. No native System 7 conformance run.
+
+Validation: 65 distinct tests pass, none failed/skipped: library 57 and existing
+resource files 6 in /tmp/systemless-create-spec-tests.txt (terminal exit 0), plus
+both final adapter tests in /tmp/systemless-create-spec-adapters-final.txt
+(terminal exit 0). The first log also ran an earlier copy of the successful ABI
+test; that duplicate is not counted again. Tests parse actual resource maps,
+check empty data, metadata and current dates, preserve existing data/identity/
+Finder fields, verify unchanged duplicate/error images, and save/restore the
+volume with both forks and metadata intact. Real CPU cases verify void results,
+PPC script narrowing, input/stack guards, unchanged MemError/current resource
+file and mirrored ResError. Native short frames/specs, nil spec and read-only
+ResError fail before SP/global mutation. The unsupported-script slice is checked
+for no catalog changes. Strict final library/fixture lint passes in
+/tmp/systemless-create-spec-lint-final.txt; tracer build succeeds in
+/tmp/systemless-create-spec-build.txt. Sequential formatting/whitespace pass.
+No fresh full-suite, native, GPU-pixel or browser acceptance.
+
+Original EV passes FSpCreateResFile with creator 4D917263, type 4D70A8C4 and
+script 0, then stops at AA52 selector 000D (FSpOpenResFile), PC 0002C8EA.
+Evidence: /tmp/systemless-ev-create-spec.txt, expected unsupported-selector exit
+1. Same original resource fork, companion volume, ten-million instruction bound
+and 640x480x8 graphics; sound/timer/VBL callbacks remain zero. The disposable
+volume image remains unchanged on this faulting replay (same initial SHA-256
+12fa5917d2a7c22dd21bdf5a5f8068800ca99d44a42ee95c0ac3c3ea9e0cc2f6);
+game preference persistence is not yet verified. No title/menu/gameplay/audio
+acceptance; Marathon not replayed. Next: FSpOpenResFile through shared resource
+map ownership, access permissions and search-chain state, then repeat EV startup.
+Full rebuild and complete wgpu text rendering remain active requirements.

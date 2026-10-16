@@ -5,7 +5,96 @@ use crate::{
     memory::{GuestPtr, Memory},
     Result,
 };
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreateSpecResource {
+    pub spec: GuestPtr,
+    pub creator: [u8; 4],
+    pub kind: [u8; 4],
+    pub script: i16,
+}
+impl CreateSpecResource {
+    pub fn validate(self, memory: &Memory) -> Result<()> {
+        if self.spec.0 == 0 {
+            return Err(crate::Error::Cpu("nil resource FSSpec".into()));
+        }
+        memory.read(self.spec, 70)?;
+        Ok(())
+    }
+}
 impl Files {
+    /// Create a real empty resource map, retaining existing data and catalog identity.
+    /// Only the runtime's Roman/system-Roman script is currently supported.
+    pub fn create_spec_resource(
+        &mut self,
+        memory: &Memory,
+        request: CreateSpecResource,
+    ) -> Result<i16> {
+        request.validate(memory)?;
+        if ![-1, 0].contains(&request.script) {
+            return Err(crate::Error::Cpu(
+                "unsupported resource filename script".into(),
+            ));
+        }
+        let spec = memory.read(request.spec, 70)?;
+        let length = usize::from(spec[6]);
+        if length > 63 {
+            return Ok(-50);
+        }
+        let name = &spec[7..7 + length];
+        if name.is_empty() || name.len() > 31 || name.contains(&0) || name.contains(&b':') {
+            return Ok(-37);
+        }
+        let volume = i16::from_be_bytes(spec[..2].try_into().unwrap());
+        let directory = u32::from_be_bytes(spec[2..6].try_into().unwrap());
+        let parent = match self.parent(volume, directory) {
+            Ok(p) => p,
+            Err(e) => return Ok(e),
+        };
+        if self.name.is_empty() {
+            return Ok(-35);
+        }
+        if !self.directory_exists(parent) {
+            return Ok(-120);
+        }
+        let target = self.child(parent, name);
+        if let Some(node) = target {
+            let Some(file) = self.file(node) else {
+                return Ok(-48);
+            };
+            if file.locked {
+                return Ok(-45);
+            }
+            if file.resource.is_some_and(|r| !r.is_empty()) {
+                return Ok(-48);
+            }
+        }
+        let bytes = ResourceFork::default().encode()?;
+        let used: usize = self
+            .files
+            .values()
+            .map(|f| f.data.len() + f.resource.len())
+            .sum();
+        if used > super::io::LIMIT - bytes.len() {
+            return Ok(-34);
+        }
+        let mut finder = [0; 16];
+        finder[..4].copy_from_slice(&request.kind);
+        finder[4..8].copy_from_slice(&request.creator);
+        let node = match target {
+            Some(node) => node,
+            None => {
+                match self.create_file(name, volume, parent, memory.u32(GuestPtr(0x20c))?, finder) {
+                    Ok(n) => n,
+                    Err(e) => return Ok(e),
+                }
+            }
+        };
+        let file = self.files.get_mut(&node).unwrap();
+        file.finder[..8].copy_from_slice(&finder[..8]);
+        file.resource = bytes;
+        self.changed();
+        Ok(0)
+    }
     pub(crate) fn protect_resource_access(&mut self, reference: i16) {
         self.open.get_mut(&reference).unwrap().resource_map = true;
     }
@@ -147,5 +236,110 @@ impl Files {
         self.files.get_mut(&node).unwrap().resource = bytes;
         self.changed();
         Ok(0)
+    }
+}
+#[cfg(test)]
+mod create_spec_tests {
+    use super::*;
+    use crate::memory::Permissions;
+    fn setup() -> (Files, Memory, CreateSpecResource) {
+        let f = Files::application(&[], None);
+        let mut m = Memory::default();
+        m.map(GuestPtr(0), vec![0; 4096], Permissions::RW).unwrap();
+        m.write(GuestPtr(0x20c), &1234u32.to_be_bytes()).unwrap();
+        let mut spec = [0; 70];
+        spec[..2].copy_from_slice(&(-1i16).to_be_bytes());
+        spec[2..6].copy_from_slice(&2u32.to_be_bytes());
+        spec[6] = 5;
+        spec[7..12].copy_from_slice(b"Prefs");
+        m.write(GuestPtr(0x100), &spec).unwrap();
+        (
+            f,
+            m,
+            CreateSpecResource {
+                spec: GuestPtr(0x100),
+                creator: *b"TEST",
+                kind: *b"pref",
+                script: 0,
+            },
+        )
+    }
+    #[test]
+    fn existing_data_identity_dates_and_finder_fields_survive_resource_initialization_and_duplicate(
+    ) {
+        let (mut f, m, r) = setup();
+        let node = f.create_file(b"Prefs", -1, 2, 17, [0x5a; 16]).unwrap();
+        f.files.get_mut(&node).unwrap().data = b"keep data".to_vec();
+        assert_eq!(f.create_spec_resource(&m, r).unwrap(), 0);
+        let file = &f.files[&node];
+        assert_eq!(file.data, b"keep data");
+        assert_eq!(file.created, 17);
+        assert_eq!(&file.finder[..8], b"prefTEST");
+        assert_eq!(&file.finder[8..], &[0x5a; 8]);
+        assert_eq!(
+            ResourceFork::parse(&file.resource)
+                .unwrap()
+                .entries()
+                .count(),
+            0
+        );
+        let image = f.export_volume().unwrap();
+        assert_eq!(
+            f.create_spec_resource(
+                &m,
+                CreateSpecResource {
+                    creator: *b"NOPE",
+                    ..r
+                }
+            )
+            .unwrap(),
+            -48
+        );
+        assert_eq!(f.export_volume().unwrap(), image);
+        let mut restored = Files::application(&[], None);
+        restored.restore_volume(&image).unwrap();
+        assert_eq!(restored.files[&node].data, b"keep data");
+        assert_eq!(restored.files[&node].finder, f.files[&node].finder);
+        assert_eq!(restored.files[&node].resource, f.files[&node].resource);
+    }
+    #[test]
+    fn new_files_have_current_dates_and_failures_do_not_publish_partial_catalog_changes() {
+        let (mut f, mut m, r) = setup();
+        assert_eq!(f.create_spec_resource(&m, r).unwrap(), 0);
+        let node = f.child(2, b"Prefs").unwrap();
+        assert_eq!(
+            (f.files[&node].created, f.files[&node].modified),
+            (1234, 1234)
+        );
+        let image = f.export_volume().unwrap();
+        assert!(f
+            .create_spec_resource(&m, CreateSpecResource { script: 1, ..r })
+            .is_err());
+        assert_eq!(f.export_volume().unwrap(), image);
+        for (volume, parent, name, error) in [
+            (7i16, 2u32, b"New".as_slice(), -35),
+            (-1, 999, b"New".as_slice(), -120),
+            (-1, 2, b"".as_slice(), -37),
+        ] {
+            let mut spec = [0; 70];
+            spec[..2].copy_from_slice(&volume.to_be_bytes());
+            spec[2..6].copy_from_slice(&parent.to_be_bytes());
+            spec[6] = name.len() as u8;
+            spec[7..7 + name.len()].copy_from_slice(name);
+            m.write(r.spec, &spec).unwrap();
+            assert_eq!(f.create_spec_resource(&m, r).unwrap(), error);
+            assert_eq!(f.export_volume().unwrap(), image);
+        }
+        let revision = f.revision();
+        assert!(f
+            .create_spec_resource(
+                &m,
+                CreateSpecResource {
+                    spec: GuestPtr(0xff0),
+                    ..r
+                }
+            )
+            .is_err());
+        assert_eq!(f.revision(), revision);
     }
 }

@@ -1820,6 +1820,14 @@ impl Runtime {
                             self.process.release_resource(&mut self.memory, handle)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::CreateSpecResource(request) => {
+                            self.memory.validate_write(GuestPtr(0xa60), 2)?;
+                            self.process.res_error = self
+                                .process
+                                .files
+                                .create_spec_resource(&self.memory, request)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::CreateResourceFile(name) => {
                             self.memory.validate_write(GuestPtr(0xa60), 2)?;
                             self.process.res_error = self
@@ -2201,7 +2209,8 @@ impl Runtime {
                                 | crate::menus::Op::Load(_)
                                 | crate::menus::Op::Bar(_)
                                 | crate::menus::Op::AppendResources { .. }
-                        ) | Call::CreateResourceFile(_)
+                        ) | Call::CreateSpecResource(_)
+                            | Call::CreateResourceFile(_)
                             | Call::ResourceFile(_)
                             | Call::FontInfo(_)
                             | Call::ResourceInfo(_)
@@ -2341,6 +2350,7 @@ impl Runtime {
                         | Call::ReleaseResource(_)
                         | Call::CurResFile
                         | Call::ResourceFile(_)
+                        | Call::CreateSpecResource(_)
                         | Call::CreateResourceFile(_)
                         | Call::GetNamedResource { .. }
                         | Call::CreateDirectory(_)
