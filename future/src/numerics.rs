@@ -594,6 +594,52 @@ impl Numerics {
         bytes[2..].copy_from_slice(&m.to_be_bytes());
         bytes
     }
+    /// Convert finite extended values using the supported nearest-even environment.
+    /// Exceptional integer result encodings remain explicit compatibility gaps.
+    pub fn extended_to_integer(
+        &mut self,
+        memory: &mut Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+        bits: u8,
+    ) -> Result<()> {
+        if ![16, 32].contains(&bits) {
+            return Err(Error::Cpu("unsupported SANE integer width".into()));
+        }
+        let input = memory.read(source, 10)?.try_into().unwrap();
+        memory.validate_write(destination, usize::from(bits / 8))?;
+        let mut next = self.clone();
+        let rounded = next.round_integral(input, false)?;
+        let se = u16::from_be_bytes(rounded[..2].try_into().unwrap());
+        let m = u64::from_be_bytes(rounded[2..].try_into().unwrap());
+        let exponent = i32::from(se & 0x7fff) - 16383;
+        if exponent >= i32::from(bits) {
+            return Err(Error::Cpu(
+                "unsupported exceptional SANE integer conversion".into(),
+            ));
+        }
+        let magnitude = if m == 0 {
+            0
+        } else {
+            m >> (63 - exponent) as u32
+        };
+        let limit = 1u64 << (bits - 1);
+        let negative = se & 0x8000 != 0;
+        if magnitude > limit || (magnitude == limit && !negative) {
+            return Err(Error::Cpu(
+                "unsupported exceptional SANE integer conversion".into(),
+            ));
+        }
+        let result = if negative {
+            -(magnitude as i64)
+        } else {
+            magnitude as i64
+        };
+        let bytes = (result as i32).to_be_bytes();
+        memory.write(destination, &bytes[4 - usize::from(bits / 8)..])?;
+        *self = next;
+        Ok(())
+    }
     pub fn extended_to_double(
         &mut self,
         memory: &mut Memory,

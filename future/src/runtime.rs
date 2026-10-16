@@ -767,6 +767,19 @@ impl Runtime {
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::ExtendedToInteger {
+                            source,
+                            destination,
+                            bits,
+                        } => {
+                            self.process.numerics.extended_to_integer(
+                                &mut self.memory,
+                                source,
+                                destination,
+                                bits,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::ExtendedToDouble {
                             source,
                             destination,
@@ -2273,6 +2286,7 @@ impl Runtime {
                         | Call::IntegerToExtended { .. }
                         | Call::DivideExtended { .. }
                         | Call::DoubleToExtended { .. }
+                        | Call::ExtendedToInteger { .. }
                         | Call::ExtendedToDouble { .. }
                         | Call::MultiplyExtended { .. }
                         | Call::RoundIntegralExtended { .. }

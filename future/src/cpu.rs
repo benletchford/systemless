@@ -35,6 +35,11 @@ pub enum Call {
         source: GuestPtr,
         destination: GuestPtr,
     },
+    ExtendedToInteger {
+        source: GuestPtr,
+        destination: GuestPtr,
+        bits: u8,
+    },
     ExtendedToDouble {
         source: GuestPtr,
         destination: GuestPtr,

@@ -5993,3 +5993,36 @@ unverified. EV was not replayed and retains its prior ProtectEntry boundary.
 Neither game is playable. Next: real extended-to-integer conversion with proper
 rounding/range/invalid behavior, then continue Marathon startup. Full rebuild
 stays active and PR remains draft.
+
+
+## Finite integer storage conversion checkpoint (2026-10-16)
+
+Native FX2I/FX2L now call one shared finite extended-to-signed-16/32 conversion.
+Nearest-even rounding precedes signed range checks without a binary64 intermediate.
+Source snapshots, exact destination sizes and transactional status preserve aliases,
+readonly sources and failure behavior. Signed zero, tiny values, halfway ties and
+both integer limits are covered. NaNs, infinities and rounded out-of-range values
+remain explicit unsupported errors, preserving output/status; compatible exceptional
+integer encodings and invalid status are not claimed. Other environment modes and
+PPC math imports remain open.
+
+Final frozen-source acceptance: 83 checks pass, zero failed/ignored: 51 library,
+21 numeric integration, seven timer and four trap patch tests. Evidence:
+/tmp/systemless-sane-integer-storage-acceptance.txt, terminal exit 0. The earlier
+83-check run is preliminary/overlapping and not added to this count. Strict Rust
+1.99 all-target lint and Rust 1.93 library checks pass:
+/tmp/systemless-sane-integer-storage-lint.txt and
+/tmp/systemless-sane-integer-storage-msrv.txt. Sequential formatting and whitespace
+checks pass. No new full/GPU/wasm suite or native-system conformance is claimed.
+
+Original Marathon executes four FX2I conversions and continues into file startup.
+The next boundary is unregistered FSDispatch $A060 with D0 selector $001A,
+PC $01001D2E, A0 parameter block $0080FE6C. Evidence:
+/tmp/systemless-marathon-sane-integer-storage.txt, explicit Service(41056) exit 1.
+Completed timer=1, sound=0, VBL=0. The A260 variant already routes selector $001A
+to hierarchical data-fork open; verify the A060 form and parameter-block contract
+before adding its route. Title/menu/gameplay and native audio remain unverified.
+EV was not replayed and retains its prior ProtectEntry boundary. Neither game is
+playable. Next: verify and implement Marathon's actual FSDispatch request, then
+continue original startup; complete exceptional integer conversions with primary
+or reference evidence. The full rebuild stays active and the PR remains draft.

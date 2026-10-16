@@ -16,8 +16,10 @@ fn app(selector: u16, pointer: u32) -> LoadedApplication {
                 0xa9,
                 if ([0, 2, 4, 6].contains(&(selector & 0xff))
                     && [0, 0x0800, 0x1000, 0x2000, 0x2800].contains(&(selector & 0xff00)))
-                    || [0, 2, 4, 6, 8, 10, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e]
-                        .contains(&selector)
+                    || [
+                        0, 2, 4, 6, 8, 10, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e, 0x2010, 0x2810,
+                    ]
+                    .contains(&selector)
                 {
                     0xeb
                 } else {
@@ -812,5 +814,113 @@ fn native_integral_rounding_has_real_values_flags_and_six_byte_frames() {
         for i in 0..15 {
             assert_eq!(c.dar[i], 0x12340000 + i as u32);
         }
+    }
+}
+
+#[test]
+fn native_integer_storage_conversion_rounds_ties_and_checks_range() {
+    for (selector, width) in [(0x2010, 2usize), (0x2810, 4)] {
+        let mut cases = vec![
+            (0x3ffeu16, 1u64 << 63, 0i32),
+            (0x3fff, 0xc000_0000_0000_0000, 2),
+            (0xc000, 0xa000_0000_0000_0000, -2),
+            (0xc00e, 1 << 63, -32768),
+            (0x400d, 0xfffe_0000_0000_0000, 32767),
+            (0x8000, 0, 0),
+            (0, 1, 0),
+        ];
+        if width == 4 {
+            cases.extend([
+                (0xc01e, 1 << 63, i32::MIN),
+                (0x401d, 0xffff_fffe_0000_0000, i32::MAX),
+            ]);
+        }
+        for (se, m, expected) in cases {
+            let destination = STACK_BASE + 0x6000;
+            let source = 0x55000000;
+            let mut a = app(selector, destination);
+            let mut input = se.to_be_bytes().to_vec();
+            input.extend(m.to_be_bytes());
+            a.runtime
+                .memory
+                .map(
+                    GuestPtr(source),
+                    input.clone(),
+                    Permissions {
+                        read: true,
+                        write: false,
+                        execute: false,
+                    },
+                )
+                .unwrap();
+            a.runtime
+                .memory
+                .write(GuestPtr(STACK_BASE + 0x7006), &source.to_be_bytes())
+                .unwrap();
+            a.runtime
+                .memory
+                .write(GuestPtr(destination), &[0xcc; 6])
+                .unwrap();
+            assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(destination), width).unwrap(),
+                &expected.to_be_bytes()[4 - width..]
+            );
+            assert_eq!(
+                a.runtime
+                    .memory
+                    .read(GuestPtr(destination + width as u32), 2)
+                    .unwrap(),
+                &[0xcc; 2]
+            );
+            assert_eq!(a.runtime.memory.read(GuestPtr(source), 10).unwrap(), input);
+            let Cpu::M68k(c) = &a.runtime.cpu else {
+                panic!()
+            };
+            assert_eq!(c.dar[15], STACK_BASE + 0x700a);
+            for i in 0..15 {
+                assert_eq!(c.dar[i], 0x12340000 + i as u32);
+            }
+        }
+    }
+}
+
+#[test]
+fn exceptional_integer_conversions_preserve_output_and_status() {
+    for (selector, se, m) in [
+        (0x2010, 0x400eu16, 1u64 << 63),
+        (0x2810, 0x401e, 1 << 63),
+        (0x2010, 0x7fff, 1 << 63),
+        (0x2010, 0x7fff, 0xc000_0000_0000_0001),
+        (0x2810, 0x7fff, 0x8000_0000_0000_0001),
+    ] {
+        let destination = STACK_BASE + 0x6000;
+        let source = STACK_BASE + 0x6100;
+        let mut a = app(selector, destination);
+        let mut input = se.to_be_bytes().to_vec();
+        input.extend(m.to_be_bytes());
+        a.runtime.memory.write(GuestPtr(source), &input).unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(STACK_BASE + 0x7006), &source.to_be_bytes())
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(destination), &[0xcc; 4])
+            .unwrap();
+        a.runtime.process.numerics.divide_by_zero = true;
+        assert!(a
+            .runtime
+            .advance(1)
+            .unwrap_err()
+            .to_string()
+            .contains("exceptional SANE integer"));
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(destination), 4).unwrap(),
+            &[0xcc; 4]
+        );
+        assert!(a.runtime.process.numerics.divide_by_zero);
+        assert!(!a.runtime.process.numerics.invalid);
+        assert!(!a.runtime.process.numerics.inexact);
     }
 }

@@ -2763,3 +2763,21 @@ truncates toward zero. Discarded fractions set inexact without introducing
 underflow for a zero result. Signed zero, large exact integers, infinities and
 NaN quieting are explicit. Both use checked ten-byte operands and six-byte native
 frames. Alternate environment rounding remains rejected rather than ignored.
+
+
+### Finite signed integer storage conversion (2026-10-16)
+
+FX2I/FX2L decode two-address native frames into a shared typed service, which
+snapshots the ten-byte source and preflights only the two/four-byte destination.
+Default nearest-even integral rounding precedes a signed range check; conversion
+uses the original extended significand, without a binary64 intermediate. Signed
+zero and tiny values store zero. Status changes commit with output only.
+
+Apple Numerics Manual, second edition, chapter 3 (p. 22) specifies rounding before
+integral range checking; chapter 21 (pp. 156–157) specifies address operands and
+integer widths. Source: https://manuals.plus/m/1f06cc272b1e59ae58f6379edca5b7829815540f233f0679c0f5f26cb9dbcbde
+
+Exceptional integer conversion encodings remain unverified for software MC68000
+SANE. NaN, infinity and rounded out-of-range inputs fail explicitly without
+changing numeric status or output; they do not claim compatible invalid-result
+semantics. Alternate rounding controls and PPC numeric imports remain open.

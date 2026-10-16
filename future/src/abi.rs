@@ -1755,7 +1755,11 @@ impl Abi {
                 }
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let selector = u16::from_be_bytes(args[..2].try_into().unwrap());
-                if ![8, 10, 0x001c, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
+                if ![
+                    8, 10, 0x001c, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e, 0x2010, 0x2810,
+                ]
+                .contains(&selector)
+                {
                     return Err(Error::Cpu(format!(
                         "unsupported FP68K selector {selector:04x}"
                     )));
@@ -1778,7 +1782,8 @@ impl Abi {
                     memory.validate_write(
                         destination,
                         match selector {
-                            0x001c => 2,
+                            0x001c | 0x2010 => 2,
+                            0x2810 => 4,
                             0x0810 => 8,
                             _ => 10,
                         },
@@ -1809,6 +1814,12 @@ impl Abi {
                             source,
                             destination,
                             bits: if selector == 0x200e { 16 } else { 32 },
+                        }
+                    } else if [0x2010, 0x2810].contains(&selector) {
+                        Call::ExtendedToInteger {
+                            source,
+                            destination,
+                            bits: if selector == 0x2010 { 16 } else { 32 },
                         }
                     } else if selector == 0x080e {
                         Call::DoubleToExtended {
