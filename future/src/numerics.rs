@@ -61,6 +61,15 @@ pub struct Numerics {
     pub overflow: bool,
     pub divide_by_zero: bool,
 }
+// Apple Numerics Manual, table E-5: the explicit integer bit is ignored for
+// infinity and NaN. Canonicalize only local arithmetic operands; raw sign
+// operations deliberately retain every nonsign bit in guest memory.
+fn canonical_special(mut bytes: [u8; 10]) -> [u8; 10] {
+    if u16::from_be_bytes(bytes[..2].try_into().unwrap()) & 0x7fff == 0x7fff {
+        bytes[2] |= 0x80;
+    }
+    bytes
+}
 impl Numerics {
     /// Nonarithmetic SANE sign manipulation: preserve payload and exception state,
     /// including signaling NaNs (Apple Numerics Manual, ch. 20, p. 150).
@@ -92,6 +101,7 @@ impl Numerics {
         memory.write(pointer, &result)
     }
     fn round_integral(&mut self, input: [u8; 10], truncate: bool) -> Result<[u8; 10]> {
+        let input = canonical_special(input);
         let se = u16::from_be_bytes(input[..2].try_into().unwrap());
         let e = se & 0x7fff;
         let m = u64::from_be_bytes(input[2..].try_into().unwrap());
@@ -224,6 +234,7 @@ impl Numerics {
         memory.write(pointer, &result)
     }
     fn square_root(&mut self, input: [u8; 10]) -> Result<[u8; 10]> {
+        let input = canonical_special(input);
         let se = u16::from_be_bytes(input[..2].try_into().unwrap());
         let exponent = se & 0x7fff;
         let mantissa = u64::from_be_bytes(input[2..].try_into().unwrap());
@@ -287,6 +298,7 @@ impl Numerics {
         memory.write(destination, &result)
     }
     fn add(&mut self, a: [u8; 10], b: [u8; 10], subtract: bool) -> Result<[u8; 10]> {
+        let (a, b) = (canonical_special(a), canonical_special(b));
         let decode = |bytes: [u8; 10]| -> Result<(u16, u64)> {
             let e = u16::from_be_bytes(bytes[..2].try_into().unwrap());
             let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
@@ -425,6 +437,7 @@ impl Numerics {
         Ok(relation)
     }
     fn compare_values(&mut self, a: [u8; 10], b: [u8; 10], signaling: bool) -> Result<Relation> {
+        let (a, b) = (canonical_special(a), canonical_special(b));
         let decode = |bytes: [u8; 10]| -> Result<(u16, u64)> {
             let e = u16::from_be_bytes(bytes[..2].try_into().unwrap());
             let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
@@ -516,6 +529,7 @@ impl Numerics {
         destination: GuestPtr,
     ) -> Result<()> {
         let bytes: [u8; 10] = memory.read(source, 10)?.try_into().unwrap();
+        let bytes = canonical_special(bytes);
         memory.validate_write(destination, 2)?;
         let se = u16::from_be_bytes(bytes[..2].try_into().unwrap());
         let e = se & 0x7fff;
@@ -549,7 +563,8 @@ impl Numerics {
         source: GuestPtr,
         destination: GuestPtr,
     ) -> Result<()> {
-        let mut bytes: [u8; 10] = memory.read(source, 10)?.try_into().unwrap();
+        let bytes: [u8; 10] = memory.read(source, 10)?.try_into().unwrap();
+        let mut bytes = canonical_special(bytes);
         memory.validate_write(destination, 10)?;
         let e = u16::from_be_bytes(bytes[..2].try_into().unwrap()) & 0x7fff;
         let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
@@ -682,6 +697,7 @@ impl Numerics {
         memory.write(destination, &result.to_be_bytes())
     }
     fn convert_double(&mut self, bytes: [u8; 10]) -> Result<u64> {
+        let bytes = canonical_special(bytes);
         let se = u16::from_be_bytes(bytes[..2].try_into().unwrap());
         let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
         let e = se & 0x7fff;
@@ -752,6 +768,7 @@ impl Numerics {
         memory.write(destination, &bytes)
     }
     fn divide(&mut self, a: [u8; 10], b: [u8; 10]) -> Result<[u8; 10]> {
+        let (a, b) = (canonical_special(a), canonical_special(b));
         let decode = |v: [u8; 10]| -> Result<(u16, u64)> {
             let e = u16::from_be_bytes(v[..2].try_into().unwrap());
             let m = u64::from_be_bytes(v[2..].try_into().unwrap());
@@ -854,6 +871,7 @@ impl Numerics {
         memory.write(destination, &result)
     }
     fn multiply(&mut self, a: [u8; 10], b: [u8; 10]) -> Result<[u8; 10]> {
+        let (a, b) = (canonical_special(a), canonical_special(b));
         let decode = |bytes: [u8; 10]| -> Result<(u16, u64)> {
             let e = u16::from_be_bytes(bytes[..2].try_into().unwrap());
             let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
@@ -941,6 +959,7 @@ impl Numerics {
         memory.write(pointer, &result)
     }
     fn elementary_value(&mut self, op: Unary, input: [u8; 10]) -> Result<[u8; 10]> {
+        let input = canonical_special(input);
         let se = u16::from_be_bytes(input[..2].try_into().unwrap());
         let mantissa = u64::from_be_bytes(input[2..].try_into().unwrap());
         let exponent = se & 0x7fff;
@@ -1037,6 +1056,118 @@ mod tests {
         b[..2].copy_from_slice(&se.to_be_bytes());
         b[2..].copy_from_slice(&m.to_be_bytes());
         b
+    }
+    #[test]
+    fn both_special_integer_bits_have_identical_numeric_meaning_and_flags() {
+        let one = value(0x3fff, 1 << 63);
+        for sign in [0, 0x8000] {
+            for fraction in [0, 1, 0x12345, 1 << 62, (1 << 62) | 0x12345] {
+                let raw = value(sign | 0x7fff, fraction);
+                let canonical = value(sign | 0x7fff, fraction | 1 << 63);
+                for other in [value(0, 0), one, value(0xbfff, 1 << 63), raw, canonical] {
+                    for reverse in [false, true] {
+                        let (a, b, ca, cb) = if reverse {
+                            (other, raw, other, canonical)
+                        } else {
+                            (raw, other, canonical, other)
+                        };
+                        for operation in 0..6 {
+                            let mut n = Numerics::default();
+                            let mut c = Numerics::default();
+                            if operation < 4 {
+                                let run = |n: &mut Numerics, a, b| match operation {
+                                    0 => n.add(a, b, false),
+                                    1 => n.add(a, b, true),
+                                    2 => n.multiply(a, b),
+                                    _ => n.divide(a, b),
+                                };
+                                assert_eq!(
+                                    run(&mut n, a, b).unwrap(),
+                                    run(&mut c, ca, cb).unwrap()
+                                );
+                            } else {
+                                assert_eq!(
+                                    n.compare_values(a, b, operation == 5).unwrap(),
+                                    c.compare_values(ca, cb, operation == 5).unwrap()
+                                );
+                            }
+                            assert_eq!(n.environment_word(), c.environment_word());
+                        }
+                    }
+                }
+                for operation in 0..8 {
+                    let mut n = Numerics::default();
+                    let mut c = Numerics::default();
+                    let run = |n: &mut Numerics, input| match operation {
+                        0 => n.round_integral(input, false),
+                        1 => n.round_integral(input, true),
+                        2 => n.square_root(input),
+                        3 => n.elementary_value(Unary::Atan, input),
+                        4 => n.elementary_value(Unary::Sin, input),
+                        5 => n.elementary_value(Unary::Cos, input),
+                        6 => n.elementary_value(Unary::Tan, input),
+                        _ => n.convert_double(input).map(|v| {
+                            let mut b = [0; 10];
+                            b[2..].copy_from_slice(&v.to_be_bytes());
+                            b
+                        }),
+                    };
+                    assert_eq!(run(&mut n, raw).unwrap(), run(&mut c, canonical).unwrap());
+                    assert_eq!(n.environment_word(), c.environment_word());
+                }
+            }
+        }
+        let mut n = Numerics::default();
+        let infinity = value(0x7fff, 0);
+        assert_eq!(
+            n.compare_values(infinity, one, false).unwrap(),
+            Relation::Greater
+        );
+        assert_eq!(
+            n.compare_values(value(0xffff, 0), one, false).unwrap(),
+            Relation::Less
+        );
+        assert_eq!(
+            n.compare_values(infinity, value(0x7fff, 1 << 63), false)
+                .unwrap(),
+            Relation::Equal
+        );
+        assert_eq!(n.convert_double(infinity).unwrap(), f64::INFINITY.to_bits());
+        assert_eq!(n.environment_word(), 0);
+    }
+    #[test]
+    fn special_classification_and_copy_preserve_sources_and_accept_both_integer_bits() {
+        use crate::memory::Permissions;
+        let mut memory = Memory::default();
+        memory
+            .map(GuestPtr(0x1000), vec![0; 32], Permissions::RW)
+            .unwrap();
+        for sign in [0, 0x8000] {
+            for integer in [0, 1 << 63] {
+                for (fraction, class, invalid) in [(0, 3, false), (1, 1, true), (1 << 62, 2, false)]
+                {
+                    let input = value(sign | 0x7fff, integer | fraction);
+                    memory.write(GuestPtr(0x1000), &input).unwrap();
+                    let mut n = Numerics::default();
+                    n.classify_extended(&mut memory, GuestPtr(0x1000), GuestPtr(0x1010))
+                        .unwrap();
+                    assert_eq!(
+                        memory.u16(GuestPtr(0x1010)).unwrap() as i16,
+                        if sign == 0 { class } else { -class }
+                    );
+                    assert_eq!(n.environment_word(), 0);
+                    n.copy_extended(&mut memory, GuestPtr(0x1000), GuestPtr(0x1010))
+                        .unwrap();
+                    assert_eq!(memory.read(GuestPtr(0x1000), 10).unwrap(), input);
+                    let mut expected = value(sign | 0x7fff, (1 << 63) | fraction);
+                    if invalid {
+                        expected[2] |= 0x40;
+                    }
+                    assert_eq!(memory.read(GuestPtr(0x1010), 10).unwrap(), expected);
+                    assert_eq!(n.invalid, invalid);
+                }
+            }
+        }
     }
     #[test]
     fn integral_rounding_uses_even_ties_and_truncation_preserves_signed_zero() {

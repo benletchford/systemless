@@ -6714,3 +6714,46 @@ numeric consumers, verify equivalent arithmetic/comparison/classification and
 conversion behavior, then replay EV. Same original fork, one-million instruction
 budget, 640x480x8, no companion volume; callbacks remain zero. No gameplay/audio
 acceptance; Marathon not rerun. Full rebuild and complete wgpu text remain open.
+
+
+## Documented extended special encodings (2026-10-16)
+
+All currently implemented extended numeric consumers now canonicalize their local
+infinity/NaN operand integer bit before interpretation. Apple Numerics Manual,
+appendix E table E-5 permits either integer bit when the exponent is 7FFF;
+previous normal-form checks incorrectly rejected the zero-significand infinity
+constants used by original EV. Normalizing local operands also ensures the two
+infinity representations compare equally and are never mistaken for zero.
+Arithmetic, comparison, rounding/truncation, square root, elementary functions,
+classification, copy and double conversion share this interpretation. Integer
+conversion still explicitly rejects exceptional results. Sign-only operations
+retain raw payload bits. This does not extend finite unnormal-format support or
+add PPC numeric imports/96-bit ABI support.
+
+Primary: [Apple Numerics Manual transcription](https://manuals.plus/m/1f06cc272b1e59ae58f6379edca5b7829815540f233f0679c0f5f26cb9dbcbde),
+appendix E table E-5, p. 266. This is documented-format evidence, not native
+System 7 conformance.
+
+Validation: /tmp/systemless-special-tests.txt terminal exit 0: 79 tests pass,
+none failed/skipped (library 53, numeric sign 3, numeric integration 23).
+New tests exercise both integer bits, both signs, infinity and multiple quiet/
+signaling NaN payloads against zero, finite values and each other, in both
+operand orders. Results and exception state match across arithmetic, comparison
+and unary consumers. Explicit expected infinity ordering/equality/double bits,
+classification, copy payload/quieting and unchanged sources are checked. Existing
+native ABI and raw sign tests pass. Strict library/fixture lint succeeds in
+/tmp/systemless-special-lint.txt; tracer build succeeds in
+/tmp/systemless-special-build.txt. Sequential formatting/whitespace pass. This
+is not a fresh all-integration, native or browser acceptance run.
+
+Original EV passes infinity comparisons and reaches further trigonometric calls
+within the original one-million-instruction bound, then exhausts that budget
+(/tmp/systemless-ev-special.txt, exit 1). A separate bounded ten-million run
+reaches folder setup and explicitly stops at AliasDispatch A823, PC 0002FB7A,
+D0=0000000C (/tmp/systemless-ev-special-10m.txt, exit 1). Sound/timer/VBL
+callbacks remain zero. Original fork, 640x480x8 graphics and no companion volume
+are unchanged. No title/menu/gameplay/audio acceptance; Marathon not replayed.
+Next: identify the AliasDispatch selector/stack contract from primary file-system
+references, implement the shared file service and both relevant adapters, then
+replay with the appropriate application-volume fixture. Full rebuild and complete
+wgpu text rendering remain open.
