@@ -10013,8 +10013,9 @@ passes. A24M extension with identical input continues the bounded investigation.
 
 The24M extension finishes atPC007E6830 with instruction-budget exhaustion and
 no new unsupported-service fault. Saved-volume verification passes with the same
-output hash. Its inspected screen keeps the planet/station and HUD; the temporary
-ship-name caption is absent. Canonical PPM SHA256 is
+output hash. Its inspected screen keeps the planet/station, HUD and ship-name caption.
+A later pixel audit confirms399white caption pixels in the measured crop; the
+earlier visual-only absence inference was incorrect. Canonical PPM SHA256 is
 11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48.
 This proves bounded execution beyond the TextBox boundary, not motion or
 playability. Next EV acceptance work should use explicit steering/thrust input
@@ -10070,3 +10071,20 @@ under marathon/evidence/2026-10-17-ctab*. No original menu/gameplay, native nume
 parity or full application acceptance is inferred. Full GPU text and whole rebuild
 remain unfinished. A fresh EV24M replay additionally exercises right/up-arrow
 input after Enter Ship; its result is pending rather than assumed playable.
+
+
+EV interaction probe,2026-10-17: same24M Enter Ship setup, plus real right-arrow
+(code124) down16M/up17M and up-arrow(code126) down18M/up20M. The tracer records
+all six input edges including Enter Ship, and the guest continues polling GetKeys.
+It reaches the instruction budget atPC00035E38 with no new service fault. Saved
+volume independently verifies unchanged with the same e524aeff... hash. The
+inspected screen retains planet/station, HUD and ship-name caption. Canonical PPM
+SHA2567ed6e6a120fee390e0c8f61516a31a4ad3730e9dcb25ff91d9fe3d3e95aae7e2.
+Compared with the earlier24M idle PPM,171pixels differ only in rectangle
+(6,1)–(18,24),a small upper-left object. This is an observed visual difference;
+steering causality and thrust/movement remain unproven without a same-build
+control and direct state/position checks. All three16M/24M/interaction captures
+contain399white pixels in the ship-caption crop(20,400)–(230,425),correcting the
+earlier visual-only caption-absence note. Do not infer gameplay or real-time
+performance from this instruction-budget probe. Next: controlled input/state
+acceptance for EV and shared single-to-extended numeric routing for Marathon.
