@@ -277,15 +277,64 @@ pub fn metrics(
     Ok(crate::font::Strike::parse(&data)?.metrics)
 }
 
+/// Ordered source cell, including opaque spacing around the glyph. The mask is
+/// row-major binary coverage; drawing cells in order preserves overlap/XOR.
+#[derive(Debug, PartialEq, Eq)]
+pub struct GlyphCell {
+    pub bounds: Rect,
+    pub mask: Vec<u8>,
+}
+
 pub(crate) type GlyphCoverage = (Rect, Vec<Rect>, Vec<Rect>);
-/// Shared source glyph geometry; destination transfers stay in the GPU services.
+/// Existing coverage renderer and library adapters share the same cell planner.
 pub(crate) fn plan_strike(
+    font: &crate::font::Strike<'_>,
+    bytes: &[u8],
+    h: i16,
+    v: i16,
+) -> Result<(Vec<GlyphCoverage>, i16)> {
+    let (cells, end) = plan_cells(font, bytes, h, v)?;
+    let plans = cells
+        .into_iter()
+        .map(|cell| {
+            let mut ink = Vec::new();
+            let mut paper = Vec::new();
+            let width = (cell.bounds.right - cell.bounds.left) as usize;
+            if width != 0 {
+                for (y, row) in cell.mask.chunks_exact(width).enumerate() {
+                    let mut x = 0;
+                    while x < width {
+                        let start = x;
+                        let value = row[x];
+                        x += 1;
+                        while x < width && row[x] == value {
+                            x += 1;
+                        }
+                        let coverage = if value != 0 { &mut ink } else { &mut paper };
+                        coverage.push(Rect::new(
+                            cell.bounds.left + start as i32,
+                            cell.bounds.top + y as i32,
+                            cell.bounds.left + x as i32,
+                            cell.bounds.top + y as i32 + 1,
+                        ));
+                    }
+                }
+            }
+            (cell.bounds, ink, paper)
+        })
+        .collect();
+    Ok((plans, end))
+}
+
+/// Decode and position cells without drawing destination pixels. Pen arithmetic,
+/// bearings, opaque spaces and work limits are shared across text backends.
+pub fn plan_cells(
     font: &crate::font::Strike<'_>,
     bytes: &[u8],
     mut h: i16,
     v: i16,
-) -> Result<(Vec<GlyphCoverage>, i16)> {
-    let mut plans = Vec::new();
+) -> Result<(Vec<GlyphCell>, i16)> {
+    let mut cells = Vec::new();
     let mut work = 0usize;
     for &c in bytes {
         let g = font.glyph(c);
@@ -301,32 +350,23 @@ pub(crate) fn plan_strike(
         {
             return Err(Error::Graphics("text drawing coordinate overflow".into()));
         }
-        work = work.saturating_add((right - left) as usize * usize::from(g.height));
+        let width = (right - left) as usize;
+        work = work.saturating_add(width * usize::from(g.height));
         if work > 1_000_000 {
             return Err(Error::Graphics("text glyph work limit exceeded".into()));
         }
-        let mut ink = Vec::new();
-        let mut paper = Vec::new();
+        let mut cell = vec![0; width * usize::from(g.height)];
         for y in 0..usize::from(g.height) {
-            let mut x = left;
-            while x < right {
-                let bit = |x: i32| {
-                    x >= gx
-                        && x < gx + i32::from(g.width)
-                        && mask[y * usize::from(g.width) + (x - gx) as usize] != 0
-                };
-                let value = bit(x);
-                let start = x;
-                x += 1;
-                while x < right && bit(x) == value {
-                    x += 1;
-                }
-                let rows = if value { &mut ink } else { &mut paper };
-                rows.push(Rect::new(start, top + y as i32, x, top + y as i32 + 1));
-            }
+            let offset = y * width + (gx - left) as usize;
+            let source = y * usize::from(g.width);
+            cell[offset..offset + usize::from(g.width)]
+                .copy_from_slice(&mask[source..source + usize::from(g.width)]);
         }
-        plans.push((Rect::new(left, top, right, bottom), ink, paper));
+        cells.push(GlyphCell {
+            bounds: Rect::new(left, top, right, bottom),
+            mask: cell,
+        });
         h = h.wrapping_add(i16::from(g.advance));
     }
-    Ok((plans, h))
+    Ok((cells, h))
 }

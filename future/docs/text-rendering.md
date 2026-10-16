@@ -142,3 +142,22 @@ bounded prototype choice, not a measured production performance decision.
 Actual DrawString/TextEdit/UI integration, ordered overlapping glyph cells,
 workload measurements and platform acceptance remain open. No production
 library dependency has been added.
+
+
+## Shared ordered glyph cells (2026-10-16)
+
+The production text coverage renderer and the isolated Glyphon adapter now use
+text::plan_cells for source masks, cell bounds and final pen position. Cells
+include blank spacing, preserve negative bearings and remain ordered so adapters
+can preserve opaque overlap and XOR. The existing coverage planner derives its
+row runs from these cells; there is no duplicate library layout algorithm.
+
+All five text integration tests pass, including the real GPU transfer/clip/port
+check and a new explicit geometry/pen/overflow fixture:
+/tmp/systemless-text-cells.txt, terminal exit 0. All 24 Glyphon GPU probe cases
+pass, including two shared cells and restoring the transfer source:
+/tmp/systemless-shared-cells-probe.txt, terminal exit 0. Strict all-target Clippy
+passes in /tmp/systemless-shared-cells-lint.txt. Sequential formatting and diff
+whitespace checks pass. These checks do not establish full text API/UI or platform
+acceptance. Next: ordered library cell transfers through actual guest text calls,
+followed by representative workload measurements before production selection.

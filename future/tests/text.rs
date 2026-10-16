@@ -194,3 +194,23 @@ fn text_buffer_adapter_marshals_reversed_pascal_words_and_validates_result() {
     assert!(Abi::trap(0xa886, &mut c, &read_only).is_err());
     assert_eq!(c.dar[15], 0x1000);
 }
+
+#[test]
+fn shared_cells_keep_bearings_opaque_spacing_order_and_pen() {
+    use systemless_future::{font::Strike, graphics::Rect};
+    let words = [
+        0x9000u16, 65, 66, 4, 0xfffe, 0xffff, 4, 3, 12, 2, 1, 0xffff, 1, 0xe400, 0xba00, 0x4600, 0,
+        3, 5, 7, 0x0104, 0xffff, 0x0203, 0xffff,
+    ];
+    let data: Vec<_> = words.into_iter().flat_map(u16::to_be_bytes).collect();
+    let font = Strike::parse(&data).unwrap();
+    let (cells, pen) = text::plan_cells(&font, b"AA", 1, 2).unwrap();
+    assert_eq!(pen, 9);
+    assert_eq!(cells[0].bounds, Rect::new(0, 0, 5, 3));
+    assert_eq!(cells[1].bounds, Rect::new(4, 0, 9, 3));
+    assert_eq!(cells[0].mask, [1, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
+    assert_eq!(cells[0].mask, cells[1].mask);
+    assert!(text::plan_cells(&font, b"A", i16::MAX, 2).is_err());
+    assert!(text::plan_cells(&font, b"A", 1, i16::MIN).is_err());
+    assert_eq!(text::plan_cells(&font, b"", 12, 2).unwrap(), (vec![], 12));
+}

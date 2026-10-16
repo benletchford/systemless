@@ -455,6 +455,25 @@ fn main() -> Result<()> {
     let (pixels, uploads) = probe.cached_frame(draw)?;
     check("original restored after rollover", &pixels, &first);
     assert_eq!(uploads, 1);
+    let (cells, end) = systemless_future::text::plan_cells(&font, b"AA", 3, 4)?;
+    assert_eq!(end, 11);
+    for cell in cells {
+        let request = Draw {
+            mask: &cell.mask,
+            width: (cell.bounds.right - cell.bounds.left) as u16,
+            height: (cell.bounds.bottom - cell.bounds.top) as u16,
+            origin: (cell.bounds.left as f32, cell.bounds.top as f32),
+            ..draw
+        };
+        let (pixels, _) = probe.cached_frame(request)?;
+        check("shared runtime glyph cell", &pixels, &expected(request));
+    }
+    let (pixels, _) = probe.cached_frame(draw)?;
+    check(
+        "restore transfer source after shared cells",
+        &pixels,
+        &first,
+    );
     transfer_probe(&probe, &first)?;
     println!("RESULT GPU mask transfer seam verified; bounded content cache verified; text API integration remains required");
     Ok(())
