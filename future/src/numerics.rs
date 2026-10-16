@@ -70,6 +70,28 @@ fn canonical_special(mut bytes: [u8; 10]) -> [u8; 10] {
     }
     bytes
 }
+// Apple Numerics Manual, table E-5: every finite exponent permits either
+// explicit integer bit. Normalize local arithmetic operands without rounding;
+// exponent zero is a valid normal exponent and the floor for denormals.
+fn canonical_extended(bytes: [u8; 10]) -> [u8; 10] {
+    let mut bytes = canonical_special(bytes);
+    let se = u16::from_be_bytes(bytes[..2].try_into().unwrap());
+    let mut exponent = se & 0x7fff;
+    if exponent == 0x7fff {
+        return bytes;
+    }
+    let mut mantissa = u64::from_be_bytes(bytes[2..].try_into().unwrap());
+    if mantissa == 0 {
+        exponent = 0;
+    } else {
+        let shift = mantissa.leading_zeros().min(u32::from(exponent));
+        mantissa <<= shift;
+        exponent -= shift as u16;
+    }
+    bytes[..2].copy_from_slice(&((se & 0x8000) | exponent).to_be_bytes());
+    bytes[2..].copy_from_slice(&mantissa.to_be_bytes());
+    bytes
+}
 impl Numerics {
     /// Nonarithmetic SANE sign manipulation: preserve payload and exception state,
     /// including signaling NaNs (Apple Numerics Manual, ch. 20, p. 150).
@@ -101,13 +123,10 @@ impl Numerics {
         memory.write(pointer, &result)
     }
     fn round_integral(&mut self, input: [u8; 10], truncate: bool) -> Result<[u8; 10]> {
-        let input = canonical_special(input);
+        let input = canonical_extended(input);
         let se = u16::from_be_bytes(input[..2].try_into().unwrap());
         let e = se & 0x7fff;
         let m = u64::from_be_bytes(input[2..].try_into().unwrap());
-        if (e != 0 && m >> 63 == 0) || (e == 0 && m >> 63 != 0) {
-            return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
-        }
         if e == 0x7fff {
             if m == 1 << 63 {
                 return Ok(input);
@@ -120,7 +139,7 @@ impl Numerics {
         if m == 0 {
             return Ok(input);
         }
-        let exponent = i32::from(e.max(1)) - 16383;
+        let exponent = i32::from(e) - 16383;
         if exponent >= 63 {
             return Ok(input);
         }
@@ -234,13 +253,10 @@ impl Numerics {
         memory.write(pointer, &result)
     }
     fn square_root(&mut self, input: [u8; 10]) -> Result<[u8; 10]> {
-        let input = canonical_special(input);
+        let input = canonical_extended(input);
         let se = u16::from_be_bytes(input[..2].try_into().unwrap());
         let exponent = se & 0x7fff;
         let mantissa = u64::from_be_bytes(input[2..].try_into().unwrap());
-        if (exponent != 0 && mantissa >> 63 == 0) || (exponent == 0 && mantissa >> 63 != 0) {
-            return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
-        }
         if exponent == 0x7fff && mantissa != 1 << 63 {
             self.invalid |= mantissa & (1 << 62) == 0;
             let mut result = input;
@@ -264,7 +280,7 @@ impl Numerics {
         let words = [mantissa];
         #[cfg(target_pointer_width = "32")]
         let words = [mantissa as u32, (mantissa >> 32) as u32];
-        let value = BigFloat::from_words(&words, Sign::Pos, i32::from(exponent.max(1)) - 16382);
+        let value = BigFloat::from_words(&words, Sign::Pos, i32::from(exponent) - 16382);
         let result = value.sqrt(64, RoundingMode::ToEven);
         let Some((words, bits, _, exp, inexact)) = result.as_raw_parts() else {
             return Err(Error::Cpu("software square root failed".into()));
@@ -298,13 +314,10 @@ impl Numerics {
         memory.write(destination, &result)
     }
     fn add(&mut self, a: [u8; 10], b: [u8; 10], subtract: bool) -> Result<[u8; 10]> {
-        let (a, b) = (canonical_special(a), canonical_special(b));
+        let (a, b) = (canonical_extended(a), canonical_extended(b));
         let decode = |bytes: [u8; 10]| -> Result<(u16, u64)> {
             let e = u16::from_be_bytes(bytes[..2].try_into().unwrap());
             let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
-            if (e & 0x7fff != 0 && m >> 63 == 0) || (e & 0x7fff == 0 && m >> 63 != 0) {
-                return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
-            }
             Ok((e, m))
         };
         let (ae, am) = decode(a)?;
@@ -349,7 +362,7 @@ impl Numerics {
             } else {
                 Sign::Neg
             },
-            i32::from((ae & 0x7fff).max(1)) - 16382,
+            i32::from(ae & 0x7fff) - 16382,
         );
         let bv = BigFloat::from_words(
             &bw,
@@ -358,7 +371,7 @@ impl Numerics {
             } else {
                 Sign::Neg
             },
-            i32::from((be & 0x7fff).max(1)) - 16382,
+            i32::from(be & 0x7fff) - 16382,
         );
         let exact = if subtract {
             av.sub_full_prec(&bv)
@@ -378,9 +391,9 @@ impl Numerics {
                 "SANE addition exceeded bounded extended alignment".into(),
             ));
         }
-        let tiny = exponent < -16381;
+        let tiny = exponent < -16382;
         let shift = if tiny {
-            bits as i32 - exponent - 16445
+            bits as i32 - exponent - 16446
         } else {
             bits as i32 - 64
         };
@@ -403,11 +416,7 @@ impl Numerics {
         }
         self.inexact |= lost;
         let sign = if sign == Sign::Neg { 0x8000 } else { 0 };
-        let mut biased = if tiny {
-            u16::from(significand >= 1u128 << 63)
-        } else {
-            (exponent + 16382) as u16
-        };
+        let mut biased = if tiny { 0 } else { (exponent + 16382) as u16 };
         if !tiny && significand == 1u128 << 64 {
             significand >>= 1;
             biased += 1;
@@ -417,7 +426,7 @@ impl Numerics {
             self.inexact = true;
             return Ok(encode(sign | 0x7fff, 1 << 63));
         }
-        self.underflow |= biased == 0 && lost;
+        self.underflow |= significand < 1u128 << 63 && lost;
         Ok(encode(sign | biased, significand as u64))
     }
     pub fn compare(
@@ -437,13 +446,10 @@ impl Numerics {
         Ok(relation)
     }
     fn compare_values(&mut self, a: [u8; 10], b: [u8; 10], signaling: bool) -> Result<Relation> {
-        let (a, b) = (canonical_special(a), canonical_special(b));
+        let (a, b) = (canonical_extended(a), canonical_extended(b));
         let decode = |bytes: [u8; 10]| -> Result<(u16, u64)> {
             let e = u16::from_be_bytes(bytes[..2].try_into().unwrap());
             let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
-            if (e & 0x7fff != 0 && m >> 63 == 0) || (e & 0x7fff == 0 && m >> 63 != 0) {
-                return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
-            }
             Ok((e, m))
         };
         let (ae, am) = decode(a)?;
@@ -534,9 +540,6 @@ impl Numerics {
         let se = u16::from_be_bytes(bytes[..2].try_into().unwrap());
         let e = se & 0x7fff;
         let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
-        if (e != 0 && m >> 63 == 0) || (e == 0 && m >> 63 != 0) {
-            return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
-        }
         let class: i16 = if e == 0x7fff {
             if m == 1 << 63 {
                 3
@@ -545,12 +548,10 @@ impl Numerics {
             } else {
                 1
             }
-        } else if e == 0 {
-            if m == 0 {
-                4
-            } else {
-                6
-            }
+        } else if m == 0 {
+            4
+        } else if m >> 63 == 0 {
+            6
         } else {
             5
         };
@@ -564,13 +565,10 @@ impl Numerics {
         destination: GuestPtr,
     ) -> Result<()> {
         let bytes: [u8; 10] = memory.read(source, 10)?.try_into().unwrap();
-        let mut bytes = canonical_special(bytes);
+        let mut bytes = canonical_extended(bytes);
         memory.validate_write(destination, 10)?;
         let e = u16::from_be_bytes(bytes[..2].try_into().unwrap()) & 0x7fff;
         let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
-        if (e != 0 && m >> 63 == 0) || (e == 0 && m >> 63 != 0) {
-            return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
-        }
         if e == 0x7fff && m != 1 << 63 {
             self.invalid |= m & (1 << 62) == 0;
             bytes[2] |= 0x40;
@@ -701,14 +699,11 @@ impl Numerics {
         memory.write(destination, &result.to_be_bytes())
     }
     fn convert_double(&mut self, bytes: [u8; 10]) -> Result<u64> {
-        let bytes = canonical_special(bytes);
+        let bytes = canonical_extended(bytes);
         let se = u16::from_be_bytes(bytes[..2].try_into().unwrap());
         let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
         let e = se & 0x7fff;
         let sign = u64::from(se & 0x8000) << 48;
-        if (e != 0 && m >> 63 == 0) || (e == 0 && m >> 63 != 0) {
-            return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
-        }
         if e == 0x7fff {
             if m == 1 << 63 {
                 return Ok(sign | 0x7ff0_0000_0000_0000);
@@ -720,7 +715,7 @@ impl Numerics {
             return Ok(sign);
         }
         let top = 63 - m.leading_zeros() as i32;
-        let scale = i32::from(e.max(1)) - 16446;
+        let scale = i32::from(e) - 16446;
         let mut exponent = top + scale;
         let tiny = exponent < -1022;
         let shift = if tiny { -scale - 1074 } else { top - 52 };
@@ -772,13 +767,10 @@ impl Numerics {
         memory.write(destination, &bytes)
     }
     fn divide(&mut self, a: [u8; 10], b: [u8; 10]) -> Result<[u8; 10]> {
-        let (a, b) = (canonical_special(a), canonical_special(b));
+        let (a, b) = (canonical_extended(a), canonical_extended(b));
         let decode = |v: [u8; 10]| -> Result<(u16, u64)> {
             let e = u16::from_be_bytes(v[..2].try_into().unwrap());
             let m = u64::from_be_bytes(v[2..].try_into().unwrap());
-            if (e & 0x7fff != 0 && m >> 63 == 0) || (e & 0x7fff == 0 && m >> 63 != 0) {
-                return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
-            }
             Ok((e, m))
         };
         let (ae, am) = decode(a)?;
@@ -817,13 +809,11 @@ impl Numerics {
         let bshift = bm.leading_zeros();
         let am = am << ashift;
         let bm = bm << bshift;
-        let delta =
-            i32::from((ae & 0x7fff).max(1)) - ashift as i32 - i32::from((be & 0x7fff).max(1))
-                + bshift as i32;
+        let delta = i32::from(ae & 0x7fff) - ashift as i32 - i32::from(be & 0x7fff) + bshift as i32;
         let mut exponent = delta - i32::from(am < bm);
-        let tiny = exponent < -16382;
+        let tiny = exponent < -16383;
         let shift = if tiny {
-            delta + 16445
+            delta + 16446
         } else if am < bm {
             64
         } else {
@@ -854,12 +844,8 @@ impl Numerics {
             self.inexact = true;
             return Ok(encode(sign | 0x7fff, 1 << 63));
         }
-        let biased = if tiny {
-            u16::from(result >= 1u128 << 63)
-        } else {
-            (exponent + 16383) as u16
-        };
-        self.underflow |= biased == 0 && remainder != 0;
+        let biased = if tiny { 0 } else { (exponent + 16383) as u16 };
+        self.underflow |= result < 1u128 << 63 && remainder != 0;
         Ok(encode(sign | biased, result as u64))
     }
     pub fn multiply_extended(
@@ -875,13 +861,10 @@ impl Numerics {
         memory.write(destination, &result)
     }
     fn multiply(&mut self, a: [u8; 10], b: [u8; 10]) -> Result<[u8; 10]> {
-        let (a, b) = (canonical_special(a), canonical_special(b));
+        let (a, b) = (canonical_extended(a), canonical_extended(b));
         let decode = |bytes: [u8; 10]| -> Result<(u16, u64)> {
             let e = u16::from_be_bytes(bytes[..2].try_into().unwrap());
             let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
-            if ((e & 0x7fff) != 0 && m >> 63 == 0) || ((e & 0x7fff) == 0 && m >> 63 != 0) {
-                return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
-            }
             Ok((e, m))
         };
         let (ae, am) = decode(a)?;
@@ -913,11 +896,11 @@ impl Numerics {
             return Ok(encode(sign, 0));
         }
         let product = u128::from(am) * u128::from(bm);
-        let scale = i32::from((ae & 0x7fff).max(1)) + i32::from((be & 0x7fff).max(1)) - 32892;
+        let scale = i32::from(ae & 0x7fff) + i32::from(be & 0x7fff) - 32892;
         let top = 127 - product.leading_zeros() as i32;
         let mut exponent = top + scale;
-        let tiny = exponent < -16382;
-        let shift = if tiny { -scale - 16445 } else { top - 63 };
+        let tiny = exponent < -16383;
+        let shift = if tiny { -scale - 16446 } else { top - 63 };
         let (mut mantissa, lost) = if shift <= 0 {
             (product << (-shift as u32), false)
         } else if shift > 128 {
@@ -945,12 +928,8 @@ impl Numerics {
             self.inexact = true;
             return Ok(encode(sign | 0x7fff, 0x8000_0000_0000_0000));
         }
-        let biased = if tiny {
-            u16::from(mantissa >= 1u128 << 63)
-        } else {
-            (exponent + 16383) as u16
-        };
-        self.underflow |= biased == 0 && lost;
+        let biased = if tiny { 0 } else { (exponent + 16383) as u16 };
+        self.underflow |= mantissa < 1u128 << 63 && lost;
         Ok(encode(sign | biased, mantissa as u64))
     }
     pub fn atan_extended(&mut self, memory: &mut Memory, pointer: GuestPtr) -> Result<()> {
@@ -963,7 +942,7 @@ impl Numerics {
         memory.write(pointer, &result)
     }
     fn elementary_value(&mut self, op: Unary, input: [u8; 10]) -> Result<[u8; 10]> {
-        let input = canonical_special(input);
+        let input = canonical_extended(input);
         let se = u16::from_be_bytes(input[..2].try_into().unwrap());
         let mantissa = u64::from_be_bytes(input[2..].try_into().unwrap());
         let exponent = se & 0x7fff;
@@ -988,9 +967,6 @@ impl Numerics {
                 input
             });
         }
-        if (exponent != 0 && mantissa >> 63 == 0) || (exponent == 0 && mantissa >> 63 != 0) {
-            return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
-        }
         if exponent == 0x7fff {
             if mantissa != 0x8000_0000_0000_0000 {
                 self.invalid |= mantissa & 0x4000_0000_0000_0000 == 0;
@@ -1010,7 +986,7 @@ impl Numerics {
         // Preserve even the smallest subnormal without narrowing its exponent.
         if exponent < 0x3fde {
             self.inexact = true;
-            self.underflow |= exponent == 0 && op != Unary::Cos;
+            self.underflow |= mantissa >> 63 == 0 && op != Unary::Cos;
             if op == Unary::Cos {
                 let mut one = [0; 10];
                 one[..2].copy_from_slice(&0x3fffu16.to_be_bytes());
@@ -1035,7 +1011,7 @@ impl Numerics {
         let Some((words, bits, result_sign, exp, _)) = result.as_raw_parts() else {
             return Err(Error::Cpu("software elementary evaluation failed".into()));
         };
-        if bits != 64 || !(-16381..=16384).contains(&exp) {
+        if bits != 64 || !(-16382..=16384).contains(&exp) {
             return Err(Error::Cpu(
                 "unexpected software elementary representation".into(),
             ));
@@ -1229,7 +1205,7 @@ mod tests {
         assert!(n.inexact);
         assert_eq!(
             n.square_root(value(0, 1)).unwrap(),
-            value(0x1fe0, 0xb504_f333_f9de_6484)
+            value(0x1fe0, 1 << 63) // sqrt(2^-16446) = 2^-8223
         );
         assert_eq!(n.square_root(value(0x8000, 0)).unwrap(), value(0x8000, 0));
         assert_eq!(
@@ -1250,7 +1226,7 @@ mod tests {
         assert_eq!(
             n.add(value(1, 1 << 63), value(0, 0x7fff_ffff_ffff_ffff), true)
                 .unwrap(),
-            value(0, 1)
+            value(0, (1 << 63) + 1)
         );
         assert!(!n.inexact);
         assert_eq!(n.add(one, value(0x3fbf, 1 << 63), false).unwrap(), one);
@@ -1484,7 +1460,7 @@ mod tests {
         );
         assert!(n.inexact);
         let mut n = Numerics::default();
-        assert_eq!(n.divide(value(1, 1 << 63), two).unwrap(), value(0, 1 << 62));
+        assert_eq!(n.divide(value(1, 1 << 63), two).unwrap(), value(0, 1 << 63));
         assert!(!n.underflow && !n.inexact);
         assert_eq!(n.divide(value(0, 1), two).unwrap(), value(0, 0));
         assert!(n.underflow && n.inexact);
@@ -1588,7 +1564,7 @@ mod tests {
         let mut n = Numerics::default();
         assert_eq!(
             n.multiply(value(1, 1 << 63), half).unwrap(),
-            value(0, 1 << 62)
+            value(0, 1 << 63)
         );
         assert!(!n.underflow && !n.inexact);
         assert_eq!(n.multiply(value(0, 1), half).unwrap(), value(0, 0));
@@ -1602,7 +1578,7 @@ mod tests {
                     value(0x3fff, 0x8000_0000_0000_0001)
                 )
                 .unwrap(),
-            value(1, 0x8000_0000_0000_0000)
+            value(0, 0x8000_0000_0000_0000)
         );
         assert!(boundary.inexact && !boundary.underflow);
         assert_eq!(
@@ -1658,5 +1634,66 @@ mod tests {
             value(0x7fff, 0xc000_0000_0000_0001)
         );
         assert!(n.invalid);
+    }
+    #[test]
+    fn finite_encodings_follow_table_e5_and_normalize_without_rounding() {
+        for sign in [0, 0x8000] {
+            for (raw_e, raw_m, e, m) in [
+                (0x4000u16, 1u64 << 62, 0x3fff, 1u64 << 63),
+                (1, 1, 0, 2),
+                (0, 1, 0, 1),
+                (0, 1 << 63, 0, 1 << 63),
+                (0x2000, 0, 0, 0),
+                (0x7ffe, 1, 0x7fbf, 1 << 63),
+                (0x1ff9, 0x1006_49b8_b82a_1010, 0x1ff6, 0x8032_4dc5_c150_8080),
+            ] {
+                let raw = value(sign | raw_e, raw_m);
+                let canonical = value(sign | e, m);
+                assert_eq!(canonical_extended(raw), canonical);
+                for other in [value(0x3fff, 1 << 63), value(0, 1), value(0, 1 << 63)] {
+                    for op in 0..6 {
+                        let mut n = Numerics::default();
+                        let mut c = Numerics::default();
+                        let run = |n: &mut Numerics, a, b| match op {
+                            0 => n.add(a, b, false),
+                            1 => n.add(a, b, true),
+                            2 => n.multiply(a, b),
+                            3 => n.divide(a, b),
+                            4 => n.square_root(a),
+                            _ => n.round_integral(a, false),
+                        };
+                        assert_eq!(
+                            run(&mut n, raw, other).unwrap(),
+                            run(&mut c, canonical, other).unwrap()
+                        );
+                        assert_eq!(n.environment_word(), c.environment_word());
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn exponent_zero_has_its_own_value_and_normal_boundary() {
+        let mut n = Numerics::default();
+        let smallest = value(0, 1);
+        let normal = value(0, 1 << 63);
+        assert_eq!(
+            n.add(normal, value(0, 0x7fff_ffff_ffff_ffff), true)
+                .unwrap(),
+            smallest
+        );
+        assert_eq!(
+            n.multiply(normal, value(0x3ffe, 1 << 63)).unwrap(),
+            value(0, 1 << 62)
+        );
+        assert_eq!(
+            n.divide(normal, value(0x4000, 1 << 63)).unwrap(),
+            value(0, 1 << 62)
+        );
+        assert_eq!(n.square_root(smallest).unwrap(), value(0x1fe0, 1 << 63));
+        assert_eq!(n.environment_word(), 0);
+        let mut normal_n = Numerics::default();
+        normal_n.elementary_value(Unary::Atan, normal).unwrap();
+        assert!(normal_n.inexact && !normal_n.underflow);
     }
 }

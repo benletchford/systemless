@@ -341,6 +341,10 @@ fn native_extended_classification_returns_signed_word_and_never_quiets_nan() {
             (0, 0, 4),
             (0x3fff, 0x8000_0000_0000_0000, 5),
             (0, 1, 6),
+            (0, 1 << 63, 5),
+            (0x4000, 1 << 62, 6),
+            (0x2000, 0, 4),
+            (0x1ff9, 0x1006_49b8_b82a_1010, 6),
         ] {
             let source = 0x52000000u32;
             let destination = STACK_BASE + 0x6000;
@@ -745,7 +749,7 @@ fn mixed_subnormals_are_exact_and_failed_operations_do_not_commit_exception_stat
         .binary(
             &mut a.runtime.memory,
             GuestPtr(source),
-            GuestPtr(destination),
+            GuestPtr(0x57000000),
             SourceFormat::Single,
             Binary::Multiply
         )
@@ -1083,7 +1087,7 @@ fn typed_comparison_nan_status_is_transactional_without_operand_changes() {
                 .numerics
                 .compare(
                     &a.runtime.memory,
-                    GuestPtr(source),
+                    GuestPtr(0x57000000),
                     GuestPtr(destination),
                     if is_single {
                         SourceFormat::Single
@@ -1143,5 +1147,52 @@ fn integer_range_is_checked_after_rounding_and_invalid_preserves_sticky_state() 
                 &bytes[width..]
             );
         }
+    }
+}
+
+#[test]
+fn native_extended_subtraction_accepts_the_observed_readonly_denormal_encoding() {
+    let destination = STACK_BASE + 0x6000;
+    let source = 0x55000000;
+    let mut a = app(0x0002, destination);
+    let input = [0x1f, 0xf9, 0x10, 0x06, 0x49, 0xb8, 0xb8, 0x2a, 0x10, 0x10];
+    a.runtime
+        .memory
+        .map(
+            GuestPtr(source),
+            input.to_vec(),
+            Permissions {
+                read: true,
+                write: false,
+                execute: false,
+            },
+        )
+        .unwrap();
+    let expected = [0x40, 0x07, 0x92, 0x80, 0, 0, 0, 0, 0, 0]; // 292 minus a tiny positive value rounds to 292
+    a.runtime
+        .memory
+        .write(GuestPtr(destination), &expected)
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(STACK_BASE + 0x7006), &source.to_be_bytes())
+        .unwrap();
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(destination), 10).unwrap(),
+        expected
+    );
+    assert_eq!(a.runtime.memory.read(GuestPtr(source), 10).unwrap(), input);
+    assert!(
+        a.runtime.process.numerics.inexact
+            && !a.runtime.process.numerics.invalid
+            && !a.runtime.process.numerics.underflow
+    );
+    let Cpu::M68k(c) = &a.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(c.dar[15], STACK_BASE + 0x700a);
+    for i in 0..15 {
+        assert_eq!(c.dar[i], 0x12340000 + i as u32);
     }
 }

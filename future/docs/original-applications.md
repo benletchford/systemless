@@ -3801,3 +3801,17 @@ stops at TextFont family4, PC01010E86, with no current QuickDraw port. It runs
 with its declared SIZE layout and completes62timer,0sound/0VBL callbacks. Dormant
 VBL record remains0001821C. This verifies the current boundary after loader/math
 changes; it does not establish interactive play or justify inventing a port.
+
+
+### EV: finite software SANE representation checkpoint
+
+The documented software extended format accepts EV's finite denormal source
+1ff9100649b8b82a1010. Shared exact normalization and exponent-zero boundary fixes
+let the original proceed to CountResources ($A99C), PC0002A28A, which is the next
+unsupported service. Replay /tmp/systemless-ev-extended.txt terminates exit1;
+zero sound/timer/VBL callbacks, no gameplay/frame/UI/audio acceptance.
+Input /tmp/systemless-ev-integer-saved.slv remains unchanged. Saved output
+/tmp/systemless-ev-extended-saved.slv (7,239,400bytes) hashes to
+8a9584ae108f9baa55d47a58aa94718e86b4dcdfa06bb925f8fc7e2986cce859.
+Independent CRC/catalog/fork validation proves preferences37->38 is the only
+identity change, with metadata and fork bytes retained across all files.

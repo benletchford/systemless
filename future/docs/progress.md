@@ -8002,3 +8002,39 @@ exit1: TextFont family4/PC01010E86, no current port,62timer/0sound/0VBL callback
 formatting/whitespace, original replays and EV volume verification are terminal.
 No fresh all-target/full integration/native/browser/CI or gameplay/audio/frame/UI
 acceptance is claimed. Full rebuild and complete GPU text rendering stay active.
+
+
+## Software SANE finite extended representations
+
+Apple Numerics Manual (second edition, 1988), printed page266/table E-5,
+was inspected visually at physical PDF page272. Primary scan:
+https://vintageapple.org/inside_o/pdf/Apple_Numerics_Manual_Second_Edition_1988.pdf.
+For every finite exponent e, the value is signed mantissa times 2^(e-16446).
+The explicit integer bit determines normal versus denormal classification;
+exponent zero is a valid normal exponent. This differs from the hardware-style
+exponent-zero alias previously used. Finite values with a clear integer bit
+are valid software SANE operands, including EV's 1ff9100649b8b82a1010.
+
+The shared numerics core now normalizes local operands exactly, stopping at
+exponent zero, while preserving source bytes and raw classification. Arithmetic,
+square root, rounding, conversion and elementary paths share these rules.
+Smallest denormal is 2^-16446; smallest normal is 2^-16383. Boundary regression
+expectations were corrected from the documented formula. Existing transaction
+fault tests now use unmapped memory rather than expecting valid finite encodings
+to fail. No allocator clearing or production dependency was introduced.
+
+Original EV passes the former subtraction fault and reaches missing CountResources
+($A99C), PC0002A28A, after parsing companion strings. Replay is terminal exit1:
+/tmp/systemless-ev-extended.txt. No sound/timer/VBL callbacks completed. Independent
+volume validation passes: preferences37->38; all metadata/fork bytes and companion
+files unchanged. Snapshot /tmp/systemless-ev-extended-saved.slv is 7,239,400bytes,
+SHA256 8a9584ae108f9baa55d47a58aa94718e86b4dcdfa06bb925f8fc7e2986cce859.
+This is an initialization milestone, not frame/UI/audio/gameplay acceptance.
+Next resource slice is shared CountResources/Count1Resources search semantics.
+Full rebuild, original-game acceptance and complete wgpu text remain active.
+
+Final validation is terminal: session9610 exit0, 73core +3numeric-sign +25numeric
+integration =101passed,0ignored, /tmp/systemless-extended-verified-tests.txt.
+Strict scoped lint6773 exit0, /tmp/systemless-extended-final-lint.txt; tracer
+build exit0, /tmp/systemless-extended-tracer-build.txt. Sequential stdin formatting
+checks and git diff whitespace pass. No fresh full-suite/native/browser/CI claim.
