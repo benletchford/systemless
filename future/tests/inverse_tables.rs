@@ -10,7 +10,7 @@ const STACK: u32 = STACK_BASE + 0x8000;
 fn app() -> LoadedApplication {
     let f = support::pef_program(
         &[0x4e800020],
-        &[b"MakeITable", b"QDError", b"GetGDevice"],
+        &[b"MakeITable", b"QDError", b"GetGDevice", b"ProtectEntry"],
         32,
     );
     let mut a = LoadedApplication::pef(&f.bytes, None).unwrap();
@@ -22,7 +22,7 @@ fn app() -> LoadedApplication {
         .memory
         .map(
             GuestPtr(BASE + 4096),
-            vec![0xaa, 0x39, 0xaa, 0x40, 0xaa, 0x32],
+            vec![0xaa, 0x39, 0xaa, 0x40, 0xaa, 0x32, 0xaa, 0x3d],
             Permissions::RX,
         )
         .unwrap();
@@ -39,13 +39,21 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, args: &[u32])
         .memory
         .write(GuestPtr(0xa60), &(-78i16).to_be_bytes())
         .unwrap();
-    let consumed = if index == 0 { 10 } else { 0 };
+    let consumed = match index {
+        0 => 10,
+        3 => 4,
+        _ => 0,
+    };
     if arch == Architecture::M68k {
         let mut frame = Vec::new();
         if index == 0 {
             frame.extend((args[2] as u16).to_be_bytes());
             frame.extend(args[1].to_be_bytes());
             frame.extend(args[0].to_be_bytes());
+        }
+        if index == 3 {
+            frame.extend([args[1] as u8, 0x5a]);
+            frame.extend((args[0] as u16).to_be_bytes());
         }
         frame.extend([0xa5; 8]);
         a.runtime.memory.write(GuestPtr(STACK), &frame).unwrap();
@@ -84,6 +92,12 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, args: &[u32])
                 a.runtime.memory.u16(GuestPtr(STACK)).unwrap() as i16 as i32 as u32
             } else if index == 2 {
                 a.runtime.memory.u32(GuestPtr(STACK)).unwrap()
+            } else if index == 3 {
+                assert_eq!(
+                    a.runtime.memory.u32(GuestPtr(STACK + 4)).unwrap(),
+                    0xa5a5a5a5
+                );
+                0
             } else {
                 assert_eq!(
                     a.runtime.memory.u32(GuestPtr(STACK + 10)).unwrap(),
@@ -93,7 +107,7 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, args: &[u32])
             }
         }
         Cpu::PowerPc(c) => {
-            if index == 0 {
+            if index == 0 || index == 3 {
                 assert_eq!(c.gpr[3], args[0]);
                 0
             } else {
@@ -312,4 +326,96 @@ fn malformed_tables_fault_before_output_resize_or_payload_mutation() {
     a.runtime.process.color = manager;
     assert_eq!(bytes(&mut a, out), [0xa5; 32]);
     assert_eq!(a.runtime.process.free_memory(), free);
+}
+
+#[test]
+fn protection_is_live_shared_and_invalidates_without_changing_rgb_or_client() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        let gd_handle = call(&mut a, arch, 2, &[]);
+        let gd = a.runtime.memory.u32(GuestPtr(gd_handle)).unwrap();
+        let pm_handle = a.runtime.memory.u32(GuestPtr(gd + 22)).unwrap();
+        let pm = a.runtime.memory.u32(GuestPtr(pm_handle)).unwrap();
+        let ct_handle = a.runtime.memory.u32(GuestPtr(pm + 42)).unwrap();
+        let ct = a.runtime.memory.u32(GuestPtr(ct_handle)).unwrap();
+        let initial = a.runtime.memory.read(GuestPtr(ct), 24).unwrap().to_vec();
+        let seed = a.runtime.memory.u32(GuestPtr(ct)).unwrap();
+        call(&mut a, arch, 3, &[1, 0x80]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, 0);
+        let other = if arch == Architecture::M68k {
+            Architecture::PowerPc
+        } else {
+            Architecture::M68k
+        };
+        call(&mut a, other, 3, &[1, 1]);
+        assert_eq!(call(&mut a, other, 1, &[]) as i32, -154);
+        assert_eq!(
+            a.runtime.memory.u32(GuestPtr(ct)).unwrap(),
+            seed.wrapping_add(1)
+        );
+        assert_eq!(a.runtime.memory.u16(GuestPtr(ct + 16)).unwrap(), 0x8001);
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(ct + 18), 6).unwrap(),
+            &initial[18..24]
+        );
+        // Protected colors still participate in inverse matching.
+        call(&mut a, arch, 0, &[0, 0, 3]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, 0);
+        call(&mut a, other, 3, &[1, 0]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, 0);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(ct + 16)).unwrap(), 1);
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(ct + 4), 20).unwrap(),
+            &initial[4..]
+        );
+        let after = a.runtime.memory.read(GuestPtr(ct), 24).unwrap().to_vec();
+        call(&mut a, arch, 3, &[u32::MAX, 1]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, -153);
+        assert_eq!(a.runtime.memory.read(GuestPtr(ct), 24).unwrap(), after);
+        let mut devices = std::mem::take(&mut a.runtime.process.devices);
+        let detached = devices
+            .call(
+                &mut a.runtime.memory,
+                &mut a.runtime.process,
+                systemless_future::devices::Op::New {
+                    reference: 0,
+                    mode: -1,
+                },
+            )
+            .unwrap();
+        devices
+            .call(
+                &mut a.runtime.memory,
+                &mut a.runtime.process,
+                systemless_future::devices::Op::Select(detached),
+            )
+            .unwrap();
+        a.runtime.process.devices = devices;
+        let detached_gd = a.runtime.memory.u32(GuestPtr(detached)).unwrap();
+        let detached_pm = a.runtime.memory.u32(GuestPtr(detached_gd + 22)).unwrap();
+        let detached_pixels = a.runtime.memory.u32(GuestPtr(detached_pm)).unwrap();
+        let detached_table = a
+            .runtime
+            .memory
+            .u32(GuestPtr(detached_pixels + 42))
+            .unwrap();
+        let mut detached_colors = initial.clone();
+        detached_colors[6..8].copy_from_slice(&1u16.to_be_bytes());
+        a.runtime
+            .process
+            .set_handle_size(
+                &mut a.runtime.memory,
+                detached_table,
+                detached_colors.len() as u32,
+            )
+            .unwrap();
+        let detached_data = a.runtime.memory.u32(GuestPtr(detached_table)).unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(detached_data), &detached_colors)
+            .unwrap();
+        call(&mut a, other, 3, &[0, 1]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, 0);
+        assert_eq!(a.runtime.memory.read(GuestPtr(ct), 24).unwrap(), after);
+    }
 }

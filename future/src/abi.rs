@@ -78,6 +78,7 @@ pub enum Service {
     DisposeDevice,
     DisposeColorTable,
     GetColorTable,
+    ProtectEntry,
     SetClientID,
     SetDevice,
     HasDepth,
@@ -418,6 +419,7 @@ impl Abi {
             b"OpenCPort" => Some(Service::ColorPort(crate::color_ports::Action::Open)),
             b"InitCPort" => Some(Service::ColorPort(crate::color_ports::Action::Init)),
             b"CloseCPort" => Some(Service::ColorPort(crate::color_ports::Action::Close)),
+            b"ProtectEntry" => Some(Service::ProtectEntry),
             b"SetClientID" => Some(Service::SetClientID),
             b"SetGDevice" => Some(Service::SetDevice),
             b"GetGDevice" => Some(Service::Device(crate::devices::Op::Current)),
@@ -1627,6 +1629,18 @@ impl Abi {
                 };
                 c.dar[15] = next;
                 Ok((Call::Device(op), Reply::StackWord(GuestPtr(next))))
+            }
+            0xaa3d => {
+                let args = memory.read(GuestPtr(sp), 4)?;
+                let op = crate::color::Op::Protect {
+                    index: i16::from_be_bytes(args[2..4].try_into().unwrap()),
+                    protect: args[0] != 0,
+                };
+                let next = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("ProtectEntry stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((Call::Color(op), Reply::None))
             }
             0xaa40 => {
                 memory.validate_write(GuestPtr(sp), 2)?;
@@ -3386,6 +3400,10 @@ impl Abi {
                 destination: c.gpr[4],
                 resolution: c.gpr[5] as i16,
             }),
+            Service::ProtectEntry => Call::Color(crate::color::Op::Protect {
+                index: c.gpr[3] as i16,
+                protect: c.gpr[4] as u8 != 0,
+            }),
             Service::QDError => Call::Color(crate::color::Op::Error),
             Service::HasDepth | Service::SetDepth => Call::Device(crate::devices::Op::Depth {
                 device: c.gpr[3],
@@ -4065,7 +4083,8 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Intersects | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::SetClientID
+                    Service::ProtectEntry
+                        | Service::SetClientID
                         | Service::SetDevice
                         | Service::GetDialogItem
                         | Service::DrawDialog

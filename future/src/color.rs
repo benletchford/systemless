@@ -13,12 +13,19 @@ pub enum Op {
         destination: u32,
         resolution: i16,
     },
+    Protect {
+        index: i16,
+        protect: bool,
+    },
     Error,
 }
 #[derive(Default)]
 pub struct Manager {
     error: i16,
 }
+// The device ColorSpec high byte is reserved to the Color/Palette Managers.
+// This runtime stores protection in bit 15; public pixel indices use ordinals.
+const PROTECTED: u16 = 0x8000;
 fn bad(message: &str) -> Error {
     Error::Graphics(message.into())
 }
@@ -78,9 +85,9 @@ fn palette(m: &Memory, p: &mut Process, h: u32) -> Result<Palette> {
     for ordinal in 0..count {
         let at = 8 + ordinal * 8;
         let value = u16::from_be_bytes(raw[at..at + 2].try_into().unwrap());
-        // Tagged/reserved client entries need a reservation model, not accidental
-        // treatment as ordinary colors. Reject them until that model is available.
-        if value > 255 {
+        // Protection does not hide colors from matching. Other tags remain
+        // unsupported until reservation-aware matching is implemented.
+        if value & !(if device { PROTECTED | 255 } else { 255 }) != 0 {
             return Err(bad("tagged/reserved color entries are unsupported"));
         }
         let index = if device { ordinal as u8 } else { value as u8 };
@@ -120,19 +127,67 @@ fn table(palette: &Palette, resolution: u16) -> Vec<u8> {
 }
 impl Manager {
     pub fn call(&mut self, m: &mut Memory, p: &mut Process, op: Op) -> Result<u32> {
-        let Op::Make {
-            source,
-            destination,
-            resolution,
-        } = op
-        else {
+        if op == Op::Error {
             return Ok(self.error as i32 as u32);
-        };
+        }
         let saved = (p.mem_error, p.res_error);
-        let result = self.make(m, p, source, destination, resolution);
+        let result = match op {
+            Op::Make {
+                source,
+                destination,
+                resolution,
+            } => self.make(m, p, source, destination, resolution),
+            Op::Protect { index, protect } => self.protect(m, p, index, protect),
+            Op::Error => unreachable!(),
+        };
         (p.mem_error, p.res_error) = saved;
         let error = result?;
         self.error = error;
+        Ok(0)
+    }
+    fn protect(
+        &mut self,
+        m: &mut Memory,
+        p: &mut Process,
+        index: i16,
+        protect: bool,
+    ) -> Result<i16> {
+        if !(0..256).contains(&index) {
+            return Ok(-153);
+        }
+        let mut devices = std::mem::take(&mut p.devices);
+        let device = devices.call(m, p, devices::Op::Current);
+        p.devices = devices;
+        let gd = owned(m, p, device?, 62)?;
+        let pixels = owned(m, p, m.u32(GuestPtr(gd.0 + 22))?, 50)?;
+        let table = m.u32(GuestPtr(pixels.0 + 42))?;
+        let data = owned(m, p, table, 8)?;
+        let last = m.u16(GuestPtr(data.0 + 6))? as i16;
+        if !(-1..256).contains(&last) {
+            return Err(bad("invalid device color count"));
+        }
+        if index > last {
+            return Ok(-153);
+        }
+        if m.u16(GuestPtr(data.0 + 4))? != 0x8000 {
+            return Err(bad("protection requires an ordinary device table"));
+        }
+        owned(m, p, table, 8 + (last as u32 + 1) * 8)?;
+        let entry = GuestPtr(data.0 + 8 + index as u32 * 8);
+        let old = m.u16(entry)?;
+        if protect && old & PROTECTED != 0 {
+            return Ok(-154);
+        }
+        let value = if protect {
+            old | PROTECTED
+        } else {
+            old & !PROTECTED
+        };
+        let seed = m.u32(data)?.wrapping_add(1);
+        m.validate_write(data, 4)?;
+        m.validate_write(entry, 2)?;
+        m.write(entry, &value.to_be_bytes())?;
+        m.write(data, &seed.to_be_bytes())?;
         Ok(0)
     }
     fn make(

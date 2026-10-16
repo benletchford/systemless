@@ -6328,3 +6328,45 @@ and probe lint passes in /tmp/systemless-client-id-lint.txt exit 0. Formatting a
 whitespace checks pass. The earlier test run failed because its fixture requested
 unsupported driver mode 0; final uses the documented detached mode -1. This is
 not an original-game replay or full color-manager acceptance.
+
+
+## Live palette protection (2026-10-16)
+
+ProtectEntry is shared by the 68K AA3D Pascal procedure and PPC import. It
+protects/unprotects an entry in the current device's live owned ColorTable,
+reports cProtectErr (-154) on duplicate protection and cRangeErr (-153) on an
+invalid index, preserves RGB/client bytes, and increments ctSeed after successful
+updates. Write preflights precede both metadata/seed writes. The high-byte
+protection bit is the rebuild's private manager representation, not a claim of
+byte-for-byte ROM-private metadata compatibility. Device-table matching ignores
+this protection bit because protection does not reserve/hide a color; unknown
+reservation tags remain explicitly unsupported.
+
+Primary references:
+[Apple Color Manager chapter, mirrored SpInside Macintosh](https://spinsidemacintosh.neocities.org/im202),
+Color Table Management and inverse-table invalidation;
+[Apple MacErrors.h](https://github.com/apple-oss-distributions/CarbonHeaders/blob/main/MacErrors.h),
+cRangeErr/cProtectErr constants. SetEntries/reservation/ownership matching are
+still missing, so palette modification and animation acceptance remain open.
+No successful SetEntries operation can yet bypass protection because that API
+remains unsupported rather than silently implemented.
+
+Validation: five color-manager/inverse-table tests pass on both real CPU adapters
+in /tmp/systemless-protect-verified.txt, terminal exit 0; strict test lint passes
+in /tmp/systemless-protect-verified-lint.txt. The fixture covers noncanonical
+Boolean true values, padding/stack preservation, cross-CPU duplicate errors,
+seed changes, inverse rebuilding, unchanged RGB/client data, invalid indices,
+and isolation from a selected detached device. Earlier extended-fixture runs
+failed first on an uninitialized detached palette and then use of a private
+helper; these were corrected using public guest handle resizing/writes. Those
+runs are superseded, not additional acceptance counts.
+
+
+Final-source original Escape Velocity 1.0.5 replay:
+/tmp/systemless-ev-protect-final.txt, terminal exit 1 at explicit unsupported
+ReserveEntry AA3E, PC 0001AD04, after successful ProtectEntry(index 0, false).
+This supersedes the previous AA3D / 0001ACFE boundary. Replay used one million
+instructions and the original resource fork with graphics at 640x480x8; no
+companion volume was mounted in this bounded startup run. No callbacks or
+playable title/menu/gameplay were observed. Marathon was not replayed and its
+last TextFont/no-current-port boundary remains unchanged.
