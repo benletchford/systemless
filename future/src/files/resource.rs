@@ -113,17 +113,15 @@ impl Files {
         Ok(0)
     }
     /// Create a real empty resource map, retaining existing data and catalog identity.
-    /// Only the runtime's Roman/system-Roman script is currently supported.
+    /// Explicit scripts retain the seven-bit FXInfo script code; -1 means system.
     pub fn create_spec_resource(
         &mut self,
         memory: &Memory,
         request: CreateSpecResource,
     ) -> Result<i16> {
         request.validate(memory)?;
-        if ![-1, 0].contains(&request.script) {
-            return Err(crate::Error::Cpu(
-                "unsupported resource filename script".into(),
-            ));
+        if !(-1..=127).contains(&request.script) {
+            return Ok(-50);
         }
         let spec = memory.read(request.spec, 70)?;
         let length = usize::from(spec[6]);
@@ -177,6 +175,13 @@ impl Files {
         };
         let file = self.files.get_mut(&node).unwrap();
         file.finder[..8].copy_from_slice(&finder[..8]);
+        // IM Toolbox Essentials, FXInfo: clear high bit selects system script;
+        // set high bit selects the explicit script in the remaining seven bits.
+        file.extended_finder[8] = if request.script == -1 {
+            0
+        } else {
+            0x80 | request.script as u8
+        };
         file.resource = bytes;
         self.changed();
         Ok(0)
@@ -304,6 +309,7 @@ impl Files {
                 created,
                 modified: created,
                 finder,
+                extended_finder: [0; 16],
             },
         );
         self.next_node = next;
@@ -413,6 +419,46 @@ mod create_spec_tests {
         assert_eq!(restored.files[&node].resource, f.files[&node].resource);
     }
     #[test]
+    fn filename_scripts_are_retained_in_extended_finder_bytes_and_catalog_queries() {
+        for script in [-1, 0, 1, 2, 127] {
+            let (mut f, mut m, r) = setup();
+            let node = f.create_file(b"Prefs", -1, 2, 17, [0x5a; 16]).unwrap();
+            f.files.get_mut(&node).unwrap().extended_finder = [0xa5; 16];
+            assert_eq!(
+                f.create_spec_resource(&m, CreateSpecResource { script, ..r })
+                    .unwrap(),
+                0
+            );
+            let mut expected = [0xa5; 16];
+            expected[8] = if script == -1 { 0 } else { 0x80 | script as u8 };
+            assert_eq!(f.files[&node].extended_finder, expected);
+            m.write(GuestPtr(0x400), b"\x05Prefs").unwrap();
+            let mut pb = [0; 108];
+            pb[18..22].copy_from_slice(&0x400u32.to_be_bytes());
+            pb[22..24].copy_from_slice(&(-1i16).to_be_bytes());
+            pb[48..52].copy_from_slice(&2u32.to_be_bytes());
+            m.write(GuestPtr(0x300), &pb).unwrap();
+            assert_eq!(f.catalog_info(&mut m, GuestPtr(0x300)).unwrap(), 0);
+            assert_eq!(m.read(GuestPtr(0x350), 16).unwrap(), expected);
+            let image = f.export_volume().unwrap();
+            assert_eq!(u32::from_be_bytes(image[8..12].try_into().unwrap()), 2);
+            let mut fresh = Files::application(&[], None);
+            fresh.restore_volume(&image).unwrap();
+            assert_eq!(fresh.files[&node].extended_finder, expected);
+            assert_eq!(fresh.export_volume().unwrap(), image);
+        }
+        for script in [-32768, -3, -2, 128, 32767] {
+            let (mut f, m, r) = setup();
+            let before = f.export_volume().unwrap();
+            assert_eq!(
+                f.create_spec_resource(&m, CreateSpecResource { script, ..r })
+                    .unwrap(),
+                -50
+            );
+            assert_eq!(f.export_volume().unwrap(), before);
+        }
+    }
+    #[test]
     fn new_files_have_current_dates_and_failures_do_not_publish_partial_catalog_changes() {
         let (mut f, mut m, r) = setup();
         assert_eq!(f.create_spec_resource(&m, r).unwrap(), 0);
@@ -422,9 +468,11 @@ mod create_spec_tests {
             (1234, 1234)
         );
         let image = f.export_volume().unwrap();
-        assert!(f
-            .create_spec_resource(&m, CreateSpecResource { script: 1, ..r })
-            .is_err());
+        assert_eq!(
+            f.create_spec_resource(&m, CreateSpecResource { script: 128, ..r })
+                .unwrap(),
+            -50
+        );
         assert_eq!(f.export_volume().unwrap(), image);
         for (volume, parent, name, error) in [
             (7i16, 2u32, b"New".as_slice(), -35),

@@ -111,9 +111,14 @@ impl Files {
         if self.name.is_empty() {
             return Err(bad("no application volume"));
         }
+        let version = if self.files.values().any(|f| f.extended_finder != [0; 16]) {
+            2
+        } else {
+            1
+        };
         let mut out = MAGIC.to_vec();
         for v in [
-            1,
+            version,
             self.next_node,
             self.directories.len() as u32,
             self.files.len() as u32,
@@ -134,6 +139,9 @@ impl Files {
                 word(&mut out, v);
             }
             out.extend(f.finder);
+            if version == 2 {
+                out.extend(f.extended_finder);
+            }
             word(&mut out, f.data.len() as u32);
             word(&mut out, f.resource.len() as u32);
             out.push(f.name.len() as u8);
@@ -173,7 +181,11 @@ impl Files {
             bytes: &image[..end],
             at: 0,
         };
-        if r.take(8)? != MAGIC || r.word()? != 1 {
+        if r.take(8)? != MAGIC {
+            return Err(bad("unsupported catalog image format"));
+        }
+        let version = r.word()?;
+        if !matches!(version, 1 | 2) {
             return Err(bad("unsupported catalog image format"));
         }
         let next = r.word()?;
@@ -230,6 +242,11 @@ impl Files {
             let created = r.word()?;
             let modified = r.word()?;
             let finder = r.take(16)?.try_into().unwrap();
+            let extended_finder = if version == 2 {
+                r.take(16)?.try_into().unwrap()
+            } else {
+                [0; 16]
+            };
             let data_len = r.word()? as usize;
             let resource_len = r.word()? as usize;
             used = used
@@ -251,6 +268,7 @@ impl Files {
                     created,
                     modified,
                     finder,
+                    extended_finder,
                 },
             );
         }
@@ -352,6 +370,7 @@ mod tests {
                 created: 124,
                 modified: 125,
                 finder: *b"GAMEFUTR12345678",
+                extended_finder: [0; 16],
             },
         );
         f.next_node = 20;
@@ -400,7 +419,7 @@ mod tests {
             assert_eq!(f.export_volume().unwrap(), empty);
         }
         for (offset, value) in [
-            (8, 2u32),
+            (8, 3u32),
             (12, 18),
             (16, 1025),
             (20, 1025),
@@ -429,6 +448,38 @@ mod tests {
         let before = f.export_volume().unwrap();
         assert!(f.restore_volume(&valid).is_err());
         assert_eq!(f.export_volume().unwrap(), before);
+    }
+    #[test]
+    fn extended_finder_v2_round_trips_and_v1_defaults_without_partial_imports() {
+        let old = catalog().export_volume().unwrap();
+        assert_eq!(&old[8..12], &1u32.to_be_bytes());
+        let mut f = Files::application(&[], None);
+        f.restore_volume(&old).unwrap();
+        assert_eq!(f.files[&18].extended_finder, [0; 16]);
+        f.files.get_mut(&18).unwrap().extended_finder = *b"12345678\x81abcdefg";
+        let image = f.export_volume().unwrap();
+        assert_eq!(&image[8..12], &2u32.to_be_bytes());
+        assert_eq!(image.len(), old.len() + 16);
+        let empty = Files::application(&[], None).export_volume().unwrap();
+        for n in 0..image.len() {
+            let mut fresh = Files::application(&[], None);
+            assert!(fresh.restore_volume(&image[..n]).is_err());
+            assert_eq!(fresh.export_volume().unwrap(), empty);
+        }
+        let mut fresh = Files::application(&[], None);
+        fresh.restore_volume(&image).unwrap();
+        assert_eq!(fresh.export_volume().unwrap(), image);
+        assert_eq!(
+            fresh.files[&18].extended_finder,
+            f.files[&18].extended_finder
+        );
+        assert_eq!(fresh.files[&18].finder, f.files[&18].finder);
+        let mut invalid = image.clone();
+        invalid[8..12].copy_from_slice(&3u32.to_be_bytes());
+        repair(&mut invalid);
+        let mut fresh = Files::application(&[], None);
+        assert!(fresh.restore_volume(&invalid).is_err());
+        assert_eq!(fresh.export_volume().unwrap(), empty);
     }
     #[test]
     fn exhausted_imported_ids_report_file_errors_without_wrapping_or_changing_catalog() {

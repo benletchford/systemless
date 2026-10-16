@@ -9165,3 +9165,66 @@ volume, budget6,300,000, trace-range6,194,000:6,194,050. Log:
 /tmp/systemless-ev-script-argument.slv. This is a deliberate additional CPU-state
 capture around the new fault, not a restart of a quiet process. Inspect the pushed
 script word and caller sequence before choosing the next implementation change.
+
+
+## Filename script metadata and refreshed saved pilot (2026-10-17)
+
+The bounded original trace confirms the guest pushes script1 to FSpCreateResFile,
+CPU instruction6,194,047, with no invented adapter default. Private diagnostic:
+2026-10-17-script-argument-trace-tail.txt. Files now retain full16-byte FXInfo
+separately from original Finder FInfo. FSpCreateResFile stores system-script -1
+with fdScript high bit clear, or explicit seven-bit script0..127 with high bit set;
+invalid/unrepresentable tags return guest paramErr before mutation. Other FXInfo
+bytes are retained. PBGetCatInfo publishes the exact extended file record.
+FSpSetFInfo still changes only FInfo. This preserves metadata, not installed
+non-Roman font/shaping behavior; directory extended metadata remains unsupported.
+
+Primary sources: Apple's
+[FXInfo record](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-465.html),
+[Script Manager constants](https://dev.os9.ca/techpubs/mac/Text/Text-408.html), and
+FSpCreateResFile/filename scriptTag documentation. Version2 volumes add16bytes of
+extended Finder data per file. Version1 remains accepted and emitted for entirely
+zero extended metadata; existing private v1 originals remain valid inputs.
+See volumes.md for the wire contract. Older v1-only builds cannot read v2 images.
+
+Validation:98passes (81core,8alias-record,2CreateResFile,4resource-update,
+3Finder-update),3GPUchecks explicitly ignored, /tmp/systemless-script-tests.txt,
+terminal exit0. Both adapters exercise system/Roman/Japanese/127 script arguments,
+PBGetCatInfo and saved catalog reload. Tests preserve other FXInfo bytes, verify
+v1 defaults/v2 reload and reject truncated or unknown-version imports without
+partial publication. Finder-update fixtures preserve the extended bytes.
+Library check, tracer build, strict all-target lint and sequential changed-file
+format/whitespace checks pass. Logs: /tmp/systemless-script-check.txt,
+/tmp/systemless-script-tracer-build.txt, /tmp/systemless-script-lint.txt.
+
+Original EV1.0.5, fresh runtime from the durable flagged v1 setfinfo-first volume,
+no creation input: resolves Last Pilot, reads actual pilot resources, replaces the
+alias using script1, writes/closes its resource fork and sets Finder flag0x8000.
+It continues drawing and reaches the input loop, ending only at the10M budget,
+CPU instruction10,000,000, PC00032FDE. Trace:
+/tmp/systemless-ev-script-reopen.txt, terminal exit1 for explicit budget exhaustion,
+not an unsupported-service failure. The screen remains black beneath File/Edit
+menu text; this does not establish playable display, flight or game audio.
+
+Independent standalone v1/v2 verification confirms original companions and ben
+unchanged, prefs node55 with explicit script0 byte0x80, refreshed Last Pilot node56
+with explicit script1 byte0x81 and Finder alias flag0x8000, nextID57. Its198-byte
+alis/0 record matches ben's catalog ID/date/type/creator and full path. Version2
+volume7,259,094bytes SHA256
+09166806147fef3f40ba7edbdf41efc67d46f51d7d369b4b987961817173c476.
+Last Pilot fork519bytes SHA256
+e30d61cd453ae0e6cc68181a1000239e356f5018d622d78fdac59fe4d2ca3e6a.
+
+Private durable evidence under future/target/private-originals/ev/evidence/:
+2026-10-17-script-reopen.{slv,ppm,png},
+2026-10-17-script-reopen-trace-tail.txt,
+2026-10-17-script-refresh-services.txt and2026-10-17-script-volume-verify.py.
+The verifier takes flagged v1 setfinfo-first input and refreshed v2 output paths.
+All private originals/snapshots/captures remain Git-ignored. Flush acknowledgment
+is still memory-only; no host-backed persistence acceptance is implied.
+
+Next executable slice: investigate black game content through canonical screen
+indices/palette and active/offscreen port diagnostics, then real user interaction.
+Saved-pilot alias loading/refresh now works through the observed sequence; neither
+priority game is verified playable. Marathon, complete wgpu text/library
+integration and all remaining full-rebuild acceptance stay active.

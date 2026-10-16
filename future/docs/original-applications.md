@@ -4288,3 +4288,24 @@ This establishes alias resolution and pilot resource loading, not a complete
 reopen/refresh or gameplay. Exact hashes, logs and durable private2026-10-17-setfinfo
 evidence are in progress.md. Next: verify the original script argument/contract and
 implement script metadata correctly. Neither priority game is playable.
+
+
+## EV saved-pilot alias refresh with filename script (2026-10-17)
+
+The original CPU trace confirms script1 is passed by the guest. Shared file
+metadata now preserves it in FXInfo, exposes it through PBGetCatInfo and persists
+it in backward-readable v2 volume images. The fresh no-input run from the flagged
+v1 saved pilot passes alias resolution, reads the real pilot resources, refreshes
+Last Pilot with script1, writes/closes the alias resource and sets its Finder
+alias flag. It reaches the input loop and ends at10M instructions, PC00032FDE,
+without an unsupported-call boundary. Independent v1/v2 CRC/catalog/resource
+verification proves untouched ben/companions, prefs55/script0, alias56/script1,
+valid alis/0 identity/path and nextID57. Hashes and private2026-10-17-script evidence
+are recorded in progress.md.98scoped checks and strict all-target lint pass;
+three GPU-only core cases are explicitly skipped.
+
+The final content area remains black beneath File/Edit menu text. This is
+successful observed alias load/refresh, not playable display/flight/audio evidence.
+Next: diagnose canonical screen pixels/palette and offscreen/current port drawing,
+then exercise original interaction. Neither priority game is verified playable;
+complete text/library integration and the full rebuild remain open.

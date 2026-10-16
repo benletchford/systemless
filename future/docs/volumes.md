@@ -57,7 +57,7 @@ checkpoint; concurrent mounting, journaling and crash recovery of in-flight gues
 operations remain unfinished. Native-window checkpoint wiring is compiled; the
 cross-launch behavioral evidence below uses the offscreen/CLI hosts.
 
-## Version 1 wire format
+## Versions 1 and 2 wire format
 
 All integers are unsigned big-endian. CRC-32/IEEE covers every byte except the
 final checksum; it detects accidental damage and is not an authentication format.
@@ -65,7 +65,7 @@ final checksum; it detects accidental damage and is not an authentication format
 | Header offset | Bytes | Meaning |
 | --- | ---: | --- |
 | 0 | 8 | ASCII `SLVOLUME` |
-| 8 | 4 | Version, exactly 1 |
+| 8 | 4 | Version, 1 or 2 |
 | 12 | 4 | Next mutable node ID |
 | 16 | 4 | Directory count |
 | 20 | 4 | File count |
@@ -76,6 +76,14 @@ Directories precede files, each group sorted by node ID. A directory contains
 ID, parent ID, creation date and a one-byte-length raw name. A file contains ID,
 parent ID, creation date, modification date, 16 Finder bytes, data-fork length,
 resource-fork length, the raw name and both fork byte strings in that order.
+Version 2 adds sixteen extended Finder bytes immediately after each file's
+original sixteen Finder bytes. Directory entries and the rest of the framing are
+unchanged. The decoder accepts version 1 with zero extended Finder information;
+the encoder uses version 2 whenever any mutable file has nonzero extended bytes,
+and otherwise emits version 1. This keeps older zero-metadata images readable and
+byte-stable while preserving script tags and future extended flags. Older runtime
+builds that only understand version 1 cannot read a version 2 image.
+
 Names have 1–31 bytes and contain neither NUL nor colon. Root ID 2 and application
 ID 16 are reserved; mutable IDs start at 17 and are less than the next ID.
 The payload is followed by one four-byte checksum. This is the independent

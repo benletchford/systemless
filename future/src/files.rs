@@ -38,6 +38,7 @@ struct File {
     created: u32,
     modified: u32,
     finder: [u8; 16],
+    extended_finder: [u8; 16],
 }
 struct FileView<'a> {
     name: &'a [u8],
@@ -48,6 +49,7 @@ struct FileView<'a> {
     created: u32,
     modified: u32,
     finder: [u8; 16],
+    extended_finder: [u8; 16],
 }
 #[derive(Clone, Copy)]
 struct OpenFork {
@@ -170,6 +172,7 @@ impl Files {
                 created: 0,
                 modified: 0,
                 finder: [0; 16],
+                extended_finder: [0; 16],
             })
         } else {
             self.files.get(&id).map(|f| FileView {
@@ -181,6 +184,7 @@ impl Files {
                 created: f.created,
                 modified: f.modified,
                 finder: f.finder,
+                extended_finder: f.extended_finder,
             })
         }
     }
@@ -586,6 +590,9 @@ impl Files {
             pb[104..108].copy_from_slice(&4096u32.to_be_bytes());
         }
         pb[80..100].fill(0);
+        if !root {
+            pb[80..96].copy_from_slice(&self.file(node).unwrap().extended_finder);
+        }
         if root {
             pb[72..80].fill(0);
         }

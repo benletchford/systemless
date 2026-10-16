@@ -9,120 +9,146 @@ use systemless_future::{
 #[test]
 fn both_cpus_create_real_resource_maps_publish_reserror_and_preserve_void_abi() {
     for arch in [Architecture::M68k, Architecture::PowerPc] {
-        let fixture = support::pef_program(&[0x4e800020], &[b"FSpCreateResFile"], 16);
-        let mut a = LoadedApplication::pef(&fixture.bytes, None).unwrap();
-        a.runtime
-            .memory
-            .map(GuestPtr(0x50000000), vec![0xaa, 0x52], Permissions::RX)
-            .unwrap();
-        let vector = a
-            .runtime
-            .memory
-            .u32(GuestPtr(a.info.toc_or_a5 + 8))
-            .unwrap();
-        let gate = a.runtime.memory.u32(GuestPtr(vector)).unwrap();
-        let spec = GuestPtr(STACK_BASE + 0x6000);
-        let stack = STACK_BASE + 0x7000;
-        let mut bytes = [0; 70];
-        bytes[..2].copy_from_slice(&(-1i16).to_be_bytes());
-        bytes[2..6].copy_from_slice(&2u32.to_be_bytes());
-        bytes[6] = 5;
-        bytes[7..12].copy_from_slice(b"Prefs");
-        a.runtime.memory.write(spec, &bytes).unwrap();
-        let free = a.runtime.process.free_memory();
-        a.runtime.process.mem_error = -108;
-        let current = a.runtime.memory.u16(GuestPtr(0xa5a)).unwrap();
-        for expected in [0, -48] {
-            let mut frame = (-1i16).to_be_bytes().to_vec();
-            frame.extend(b"pref");
-            frame.extend(b"TEST");
-            frame.extend(spec.0.to_be_bytes());
-            frame.extend([0x5a; 6]);
-            a.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
-            a.runtime.cpu = Cpu::new(
-                arch,
-                if arch == Architecture::M68k {
-                    0x50000000
-                } else {
-                    gate
-                },
-                stack,
-            );
-            match &mut a.runtime.cpu {
-                Cpu::M68k(c) => {
-                    c.dar[0] = 14;
-                    c.dar[1] = 0xaabbccdd;
-                }
-                Cpu::PowerPc(c) => {
-                    c.gpr[3] = spec.0;
-                    c.gpr[4] = u32::from_be_bytes(*b"TEST");
-                    c.gpr[5] = u32::from_be_bytes(*b"pref");
-                    c.gpr[6] = 0xabcdffff;
-                    c.gpr[7] = 0xaabbccdd;
-                }
-            }
-            assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
-            match &a.runtime.cpu {
-                Cpu::M68k(c) => assert_eq!(
-                    (c.dar[0], c.dar[1], c.dar[15]),
-                    (14, 0xaabbccdd, stack + 14)
-                ),
-                Cpu::PowerPc(c) => assert_eq!(
-                    (c.gpr[3], c.gpr[4], c.gpr[5], c.gpr[6], c.gpr[7]),
-                    (
-                        spec.0,
-                        u32::from_be_bytes(*b"TEST"),
-                        u32::from_be_bytes(*b"pref"),
-                        0xabcdffff,
-                        0xaabbccdd
-                    )
-                ),
-            }
-            assert_eq!(a.runtime.memory.read(GuestPtr(stack), 20).unwrap(), frame);
-            assert_eq!(a.runtime.process.res_error, expected);
-            assert_eq!(
-                a.runtime.memory.u16(GuestPtr(0xa60)).unwrap() as i16,
-                expected
-            );
-            assert_eq!(a.runtime.memory.read(spec, 70).unwrap(), bytes);
-            assert_eq!(a.runtime.memory.u16(GuestPtr(0xa5a)).unwrap(), current);
-        }
-        let view = a.runtime.process.files.directory_view(2).unwrap();
-        let node = view.entries.iter().find(|e| e.name == b"Prefs").unwrap().id;
-        assert!(a
-            .runtime
-            .process
-            .files
-            .catalog_fork(node, Fork::Data)
-            .unwrap()
-            .is_empty());
-        let fork = a
-            .runtime
-            .process
-            .files
-            .catalog_fork(node, Fork::Resource)
-            .unwrap();
-        assert!(fork.len() >= 256);
-        assert_eq!(ResourceFork::parse(fork).unwrap().entries().count(), 0);
-        let pb = GuestPtr(STACK_BASE + 0x6200);
-        let mut block = [0; 108];
-        block[18..22].copy_from_slice(&(spec.0 + 6).to_be_bytes());
-        block[22..24].copy_from_slice(&(-1i16).to_be_bytes());
-        a.runtime.memory.write(pb, &block).unwrap();
-        assert_eq!(
+        for script in [-1i16, 0, 1, 127] {
+            let fixture = support::pef_program(&[0x4e800020], &[b"FSpCreateResFile"], 16);
+            let mut a = LoadedApplication::pef(&fixture.bytes, None).unwrap();
             a.runtime
+                .memory
+                .map(GuestPtr(0x50000000), vec![0xaa, 0x52], Permissions::RX)
+                .unwrap();
+            let vector = a
+                .runtime
+                .memory
+                .u32(GuestPtr(a.info.toc_or_a5 + 8))
+                .unwrap();
+            let gate = a.runtime.memory.u32(GuestPtr(vector)).unwrap();
+            let spec = GuestPtr(STACK_BASE + 0x6000);
+            let stack = STACK_BASE + 0x7000;
+            let mut bytes = [0; 70];
+            bytes[..2].copy_from_slice(&(-1i16).to_be_bytes());
+            bytes[2..6].copy_from_slice(&2u32.to_be_bytes());
+            bytes[6] = 5;
+            bytes[7..12].copy_from_slice(b"Prefs");
+            a.runtime.memory.write(spec, &bytes).unwrap();
+            let free = a.runtime.process.free_memory();
+            a.runtime.process.mem_error = -108;
+            let current = a.runtime.memory.u16(GuestPtr(0xa5a)).unwrap();
+            for expected in [0, -48] {
+                let mut frame = script.to_be_bytes().to_vec();
+                frame.extend(b"pref");
+                frame.extend(b"TEST");
+                frame.extend(spec.0.to_be_bytes());
+                frame.extend([0x5a; 6]);
+                a.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+                a.runtime.cpu = Cpu::new(
+                    arch,
+                    if arch == Architecture::M68k {
+                        0x50000000
+                    } else {
+                        gate
+                    },
+                    stack,
+                );
+                match &mut a.runtime.cpu {
+                    Cpu::M68k(c) => {
+                        c.dar[0] = 14;
+                        c.dar[1] = 0xaabbccdd;
+                    }
+                    Cpu::PowerPc(c) => {
+                        c.gpr[3] = spec.0;
+                        c.gpr[4] = u32::from_be_bytes(*b"TEST");
+                        c.gpr[5] = u32::from_be_bytes(*b"pref");
+                        c.gpr[6] = 0xabcd0000 | u32::from(script as u16);
+                        c.gpr[7] = 0xaabbccdd;
+                    }
+                }
+                assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+                match &a.runtime.cpu {
+                    Cpu::M68k(c) => assert_eq!(
+                        (c.dar[0], c.dar[1], c.dar[15]),
+                        (14, 0xaabbccdd, stack + 14)
+                    ),
+                    Cpu::PowerPc(c) => assert_eq!(
+                        (c.gpr[3], c.gpr[4], c.gpr[5], c.gpr[6], c.gpr[7]),
+                        (
+                            spec.0,
+                            u32::from_be_bytes(*b"TEST"),
+                            u32::from_be_bytes(*b"pref"),
+                            0xabcd0000 | u32::from(script as u16),
+                            0xaabbccdd
+                        )
+                    ),
+                }
+                assert_eq!(a.runtime.memory.read(GuestPtr(stack), 20).unwrap(), frame);
+                assert_eq!(a.runtime.process.res_error, expected);
+                assert_eq!(
+                    a.runtime.memory.u16(GuestPtr(0xa60)).unwrap() as i16,
+                    expected
+                );
+                assert_eq!(a.runtime.memory.read(spec, 70).unwrap(), bytes);
+                assert_eq!(a.runtime.memory.u16(GuestPtr(0xa5a)).unwrap(), current);
+            }
+            let view = a.runtime.process.files.directory_view(2).unwrap();
+            let node = view.entries.iter().find(|e| e.name == b"Prefs").unwrap().id;
+            assert!(a
+                .runtime
                 .process
                 .files
-                .file_info(&mut a.runtime.memory, pb, false)
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            a.runtime.memory.read(GuestPtr(pb.0 + 32), 8).unwrap(),
-            b"prefTEST"
-        );
-        assert_eq!(a.runtime.process.free_memory(), free);
-        assert_eq!(a.runtime.process.mem_error, -108);
+                .catalog_fork(node, Fork::Data)
+                .unwrap()
+                .is_empty());
+            let fork = a
+                .runtime
+                .process
+                .files
+                .catalog_fork(node, Fork::Resource)
+                .unwrap();
+            assert!(fork.len() >= 256);
+            assert_eq!(ResourceFork::parse(fork).unwrap().entries().count(), 0);
+            let pb = GuestPtr(STACK_BASE + 0x6200);
+            let mut block = [0; 108];
+            block[18..22].copy_from_slice(&(spec.0 + 6).to_be_bytes());
+            block[22..24].copy_from_slice(&(-1i16).to_be_bytes());
+            a.runtime.memory.write(pb, &block).unwrap();
+            assert_eq!(
+                a.runtime
+                    .process
+                    .files
+                    .file_info(&mut a.runtime.memory, pb, false)
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(pb.0 + 32), 8).unwrap(),
+                b"prefTEST"
+            );
+            assert_eq!(a.runtime.process.free_memory(), free);
+            assert_eq!(a.runtime.process.mem_error, -108);
+            block[48..52].copy_from_slice(&2u32.to_be_bytes());
+            a.runtime.memory.write(pb, &block).unwrap();
+            assert_eq!(
+                a.runtime
+                    .process
+                    .files
+                    .catalog_info(&mut a.runtime.memory, pb)
+                    .unwrap(),
+                0
+            );
+            let mut expected = [0; 16];
+            expected[8] = if script == -1 { 0 } else { 0x80 | script as u8 };
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(pb.0 + 80), 16).unwrap(),
+                expected
+            );
+            let image = a.runtime.process.files.export_volume().unwrap();
+            assert_eq!(
+                u32::from_be_bytes(image[8..12].try_into().unwrap()),
+                if script == -1 { 1 } else { 2 }
+            );
+            let mut fresh = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+            fresh.runtime.process.files.restore_volume(&image).unwrap();
+            assert_eq!(fresh.runtime.process.files.export_volume().unwrap(), image);
+        }
     }
 }
 #[test]
