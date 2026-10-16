@@ -4,6 +4,12 @@
 @group(0) @binding(2) var<storage, read> palette: array<u32>;
 @group(0) @binding(3) var<storage, read> p: array<i32>;
 @group(0) @binding(4) var output: texture_storage_2d<rgba8unorm, write>;
+// Binary glyph coverage is produced on this device; no CPU mask readback.
+@group(0) @binding(5) var glyph_mask: texture_2d<f32>;
+fn source_index(x:i32,y:i32)->u32 {
+    if (p[2]&512)!=0 {return select(0u,1u,textureLoad(glyph_mask,vec2<i32>(x,y),0).r!=0.0);}
+    return source[u32(y*p[16]+x)];
+}
 // Match indexed source RGB against the current white/black destination policy.
 fn blit_bit(index:u32)->u32 {
     if p[21]==0 {return index;}
@@ -111,11 +117,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
                 valid=lx<hx && ly<hy;
                 for (var yy=ly; yy<hy && bit==0u; yy=yy+1) {
                     for (var xx=lx; xx<hx && bit==0u; xx=xx+1) {
-                        bit=bit | blit_bit(source[u32(yy*p[16]+xx)]);
+                        bit=bit | blit_bit(source_index(xx,yy));
                     }
                 }
             } else if sx>=0 && sy>=0 && sx<p[16] && sy<p[17] {
-                let sample=source[u32(sy*p[16]+sx)];bit=select(blit_bit(sample),sample,color_target()!=0);
+                let sample=source_index(sx,sy);bit=select(blit_bit(sample),sample,color_target()!=0);
             } else { valid=false; }
             if p[22]!=0 {
                 // Masked copies use the legacy reference's nearest-neighbor

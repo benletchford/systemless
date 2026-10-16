@@ -513,6 +513,50 @@ impl Ports {
         let handle = GuestPtr(memory.u32(offset(p, 28)?)?);
         write_region(memory, handle, r)
     }
+    /// Composite a binary red-channel mask created on the same wgpu device.
+    /// The mask is read only by GPU work; guest clipping, colors and transfers
+    /// use the same packed-surface path as CopyBits. Every texel must be 0 or 1.
+    pub fn copy_gpu_mask(
+        &self,
+        memory: &mut Memory,
+        gpu: &Graphics,
+        texture: &wgpu::Texture,
+        rect: Rect,
+        mode: i16,
+    ) -> Result<()> {
+        if !(0..=7).contains(&mode) {
+            return Err(Error::Graphics("unsupported GPU text transfer mode".into()));
+        }
+        if rect.left >= rect.right || rect.top >= rect.bottom {
+            return Ok(());
+        }
+        let (destination, clips) = self.drawing_target(memory)?;
+        let (foreground, background) =
+            port_layout::colors(memory, self.current(memory)?, &destination)?;
+        destination.execute_mask_texture(
+            gpu,
+            memory,
+            Draw::Blit {
+                mask: None,
+                rect,
+                clip: destination.bounds,
+                source: Rect::new(0, 0, texture.width() as i32, texture.height() as i32),
+                width: texture.width(),
+                height: texture.height(),
+                foreground,
+                background,
+                invert: mode & 4 != 0,
+                mode: match mode & 3 {
+                    0 => Transfer::Copy,
+                    1 => Transfer::Or,
+                    2 => Transfer::Xor,
+                    _ => Transfer::Bic,
+                },
+            },
+            Some(&clips),
+            texture,
+        )
+    }
     pub fn copy_bits(&self, memory: &mut Memory, gpu: &Graphics, request: CopyBits) -> Result<()> {
         if request.source.0 == 0 || request.destination.0 == 0 {
             return Ok(());

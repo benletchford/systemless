@@ -204,6 +204,28 @@ impl Surface {
         source: Option<&[u8]>,
         palette: Option<&[[u16; 3]; 256]>,
     ) -> Result<()> {
+        self.execute_inputs(gpu, memory, draw, clips, (source, palette), None)
+    }
+    pub(crate) fn execute_mask_texture(
+        &self,
+        gpu: &Graphics,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+        texture: &wgpu::Texture,
+    ) -> Result<()> {
+        self.execute_inputs(gpu, memory, draw, clips, (None, None), Some(texture))
+    }
+    fn execute_inputs(
+        &self,
+        gpu: &Graphics,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+        cpu_source: (Option<&[u8]>, Option<&[[u16; 3]; 256]>),
+        texture: Option<&wgpu::Texture>,
+    ) -> Result<()> {
+        let (source, palette) = cpu_source;
         if palette.is_none()
             && !matches!(draw, Draw::Copy { .. })
             && source.is_some_and(|s| s.iter().any(|v| *v > 1))
@@ -240,7 +262,7 @@ impl Surface {
         memory.validate_write(self.base, self.byte_len()?)?;
         if (width, height) != (gpu.width as usize, gpu.height as usize) {
             let target = gpu.target(width as u32, height as u32)?;
-            return self.execute_source_palette(&target, memory, draw, clips, source, palette);
+            return self.execute_inputs(&target, memory, draw, clips, cpu_source, texture);
         }
         let coordinate = |value: i32, origin: i32| {
             value
@@ -389,14 +411,24 @@ impl Surface {
             a == b.rgb.as_ref()
                 && source.is_some_and(|s| s.iter().all(|v| self.index(u32::from(*v)).is_ok()))
         });
-        gpu.execute_indexed(
-            &mut staging,
-            draw,
-            translated.as_deref(),
-            source,
-            palette,
-            self.config(direct_source),
-        )?;
+        if let Some(texture) = texture {
+            gpu.execute_gpu_mask(
+                &mut staging,
+                draw,
+                translated.as_deref(),
+                texture,
+                self.config(false),
+            )?;
+        } else {
+            gpu.execute_indexed(
+                &mut staging,
+                draw,
+                translated.as_deref(),
+                source,
+                palette,
+                self.config(direct_source),
+            )?;
+        }
         self.pack(memory, staging.read(gpu.base, width * height)?)
     }
 }

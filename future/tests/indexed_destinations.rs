@@ -726,3 +726,156 @@ fn rgb_device_mismatch_fails_without_changing_the_port_or_switching_devices() {
         main
     );
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn gpu_text_masks_match_copybits_for_all_indexed_depths_modes_clips_and_padding() {
+    use systemless_future::quickdraw::CopyBits;
+    for depth in [2u16, 4, 8] {
+        let (mut a, map, stride, colors) = setup(depth);
+        rgb(&mut a, colors[1], false, true);
+        rgb(&mut a, colors[2], true, false);
+        let ports = a.runtime.process.ports.unwrap();
+        ports
+            .clip_rect(&mut a.runtime.memory, Rect::new(-2, -1, 3, 1))
+            .unwrap();
+        let source = [0xaau8, 0x5a, 0x54, 0xa5, 0xf0, 0xcc];
+        a.runtime
+            .memory
+            .map(GuestPtr(SOURCE), source.to_vec(), Permissions::RX)
+            .unwrap();
+        let mut header = SOURCE.to_be_bytes().to_vec();
+        header.extend(2u16.to_be_bytes());
+        for value in [0i16, 0, 3, 7] {
+            header.extend(value.to_be_bytes());
+        }
+        a.runtime
+            .memory
+            .write(GuestPtr(PORT + 256), &header)
+            .unwrap();
+        rectangle(&mut a, PORT + 272, Rect::new(0, 0, 7, 3));
+        let destination = Rect::new(-3, -2, 4, 1);
+        rectangle(&mut a, PORT + 288, destination);
+        let gpu = a.runtime.graphics.as_ref().unwrap();
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("binary GPU text coverage"),
+            size: wgpu::Extent3d {
+                width: 7,
+                height: 3,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let rgba: Vec<u8> = (0..21)
+            .flat_map(|i| {
+                let bit = (source[(i / 7) * 2] >> (7 - i % 7)) & 1;
+                [bit * 255, 0, 0, 255]
+            })
+            .collect();
+        gpu.queue.write_texture(
+            texture.as_image_copy(),
+            &rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(28),
+                rows_per_image: Some(3),
+            },
+            wgpu::Extent3d {
+                width: 7,
+                height: 3,
+                depth_or_array_layers: 1,
+            },
+        );
+        let original: Vec<_> = (0..21).map(|i| (i % (1usize << depth)) as u8).collect();
+        let initial = packed(&original, depth, stride);
+        for mode in 0..8i16 {
+            a.runtime.memory.write(GuestPtr(BITS), &initial).unwrap();
+            ports
+                .copy_bits(
+                    &mut a.runtime.memory,
+                    gpu,
+                    CopyBits {
+                        source: GuestPtr(PORT + 256),
+                        destination: GuestPtr(map),
+                        source_rect: GuestPtr(PORT + 272),
+                        destination_rect: GuestPtr(PORT + 288),
+                        mode,
+                        mask: GuestPtr(0),
+                    },
+                )
+                .unwrap();
+            let reference = a
+                .runtime
+                .memory
+                .read(GuestPtr(BITS), initial.len())
+                .unwrap()
+                .to_vec();
+            let display = gpu.read_rgba().unwrap();
+            a.runtime.memory.write(GuestPtr(BITS), &initial).unwrap();
+            ports
+                .copy_gpu_mask(&mut a.runtime.memory, gpu, &texture, destination, mode)
+                .unwrap();
+            assert_eq!(
+                a.runtime
+                    .memory
+                    .read(GuestPtr(BITS), initial.len())
+                    .unwrap(),
+                reference,
+                "depth={depth} mode={mode}"
+            );
+            assert_eq!(
+                gpu.read_rgba().unwrap(),
+                display,
+                "depth={depth} mode={mode}"
+            );
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(BITS - 1), 1).unwrap(),
+                [0xa5]
+            );
+            assert_eq!(
+                a.runtime
+                    .memory
+                    .read(GuestPtr(BITS + initial.len() as u32), 1)
+                    .unwrap(),
+                [0xa5]
+            );
+        }
+        a.runtime.memory.write(GuestPtr(BITS), &initial).unwrap();
+        assert!(ports
+            .copy_gpu_mask(&mut a.runtime.memory, gpu, &texture, destination, 8)
+            .is_err());
+        let bad = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rejected text mask format"),
+            size: wgpu::Extent3d {
+                width: 7,
+                height: 3,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        assert!(ports
+            .copy_gpu_mask(&mut a.runtime.memory, gpu, &bad, destination, 0)
+            .is_err());
+        assert!(ports
+            .copy_gpu_mask(&mut a.runtime.memory, gpu, &gpu.texture, destination, 0)
+            .is_err());
+        gpu.check_error().unwrap();
+        assert_eq!(
+            a.runtime
+                .memory
+                .read(GuestPtr(BITS), initial.len())
+                .unwrap(),
+            initial
+        );
+    }
+}

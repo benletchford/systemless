@@ -4,11 +4,17 @@ use glyphon::{
     Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use std::error::Error;
-use systemless_future::font::Strike;
+use systemless_future::{
+    font::Strike,
+    graphics::{Graphics, Rect},
+    memory::{GuestPtr, Memory, Permissions},
+    quickdraw::Ports,
+};
 const WIDTH: u32 = 16;
 const HEIGHT: u32 = 12;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 struct Probe {
+    gpu: Graphics,
     device: wgpu::Device,
     queue: wgpu::Queue,
     font_system: FontSystem,
@@ -22,9 +28,10 @@ struct Probe {
 impl Probe {
     async fn new() -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = instance.request_adapter(&Default::default()).await?;
-        println!("adapter={:?}", adapter.get_info());
-        let (device, queue) = adapter.request_device(&Default::default()).await?;
+        let gpu = Graphics::new(&instance, None, WIDTH, HEIGHT, GuestPtr(0x4000)).await?;
+        println!("adapter={:?}", gpu.adapter.get_info());
+        let device = gpu.device.clone();
+        let queue = gpu.queue.clone();
         let cache = Cache::new(&device);
         let mut viewport = Viewport::new(&device, &cache);
         viewport.update(
@@ -51,10 +58,13 @@ impl Probe {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         Ok(Self {
+            gpu,
             device,
             queue,
             font_system,
@@ -221,7 +231,99 @@ fn check(label: &str, actual: &[u8], reference: &[u8]) {
     {
         panic!("{label}: byte {offset} was {a}, expected {b}");
     }
-    println!("PASS {label}: {} exact RGBA pixels", actual.len() / 4);
+    println!("PASS {label}: {} exact bytes", actual.len());
+}
+fn transfer_probe(probe: &Probe, mask: &[u8]) -> Result<()> {
+    let mut memory = Memory::default();
+    memory.map(GuestPtr(0x1000), vec![0; 1024], Permissions::RW)?;
+    memory.map(
+        GuestPtr(0x4000),
+        vec![0; (WIDTH * HEIGHT / 8) as usize],
+        Permissions::RW,
+    )?;
+    let ports = Ports {
+        current_slot: GuestPtr(0x1000),
+        screen_bitmap: GuestPtr(0x1080),
+    };
+    memory.write(ports.current_slot, &0x1100u32.to_be_bytes())?;
+    let mut bitmap = 0x4000u32.to_be_bytes().to_vec();
+    bitmap.extend((WIDTH as u16 / 8).to_be_bytes());
+    for v in [0i16, 0, HEIGHT as i16, WIDTH as i16] {
+        bitmap.extend(v.to_be_bytes());
+    }
+    memory.write(ports.screen_bitmap, &bitmap)?;
+    memory.write(GuestPtr(0x1102), &bitmap)?;
+    let bounds: Vec<_> = [0i16, 0, HEIGHT as i16, WIDTH as i16]
+        .into_iter()
+        .flat_map(i16::to_be_bytes)
+        .collect();
+    memory.write(GuestPtr(0x1110), &bounds)?;
+    for (field, master, data) in [(24, 0x1200u32, 0x1220u32), (28, 0x1210, 0x1230)] {
+        memory.write(GuestPtr(0x1100 + field), &master.to_be_bytes())?;
+        memory.write(GuestPtr(master), &data.to_be_bytes())?;
+        let mut region = 10u16.to_be_bytes().to_vec();
+        region.extend(&bounds);
+        memory.write(GuestPtr(data), &region)?;
+    }
+    memory.write(GuestPtr(0x1150), &33u32.to_be_bytes())?;
+    memory.write(GuestPtr(0x1154), &30u32.to_be_bytes())?;
+    let clip: Vec<_> = [1i16, 3, 10, 13]
+        .into_iter()
+        .flat_map(i16::to_be_bytes)
+        .collect();
+    memory.write(GuestPtr(0x1232), &clip)?;
+    let rect = Rect::new(0, 0, WIDTH as i32, HEIGHT as i32);
+    let initial = vec![0xa5u8; (WIDTH * HEIGHT / 8) as usize];
+    for mode in 0..8i16 {
+        memory.write(GuestPtr(0x4000), &initial)?;
+        ports.copy_gpu_mask(&mut memory, &probe.gpu, &probe.target, rect, mode)?;
+        let mut expected = initial.clone();
+        for y in 1..10usize {
+            for x in 3..13usize {
+                let at = y * WIDTH as usize + x;
+                let src = u8::from(mask[at * 4] != 0) ^ u8::from(mode & 4 != 0);
+                let bit = 7 - at % 8;
+                let dst = (initial[at / 8] >> bit) & 1;
+                let value = match mode & 3 {
+                    0 => src,
+                    1 => dst | src,
+                    2 => dst ^ src,
+                    _ => dst & (src ^ 1),
+                };
+                expected[at / 8] = (expected[at / 8] & !(1 << bit)) | value << bit;
+            }
+        }
+        check(
+            &format!("GPU mask QuickDraw mode {mode} packed bytes"),
+            memory.read(GuestPtr(0x4000), initial.len())?,
+            &expected,
+        );
+    }
+    memory.write(GuestPtr(0x1232), &bounds)?;
+    let zero = vec![0; initial.len()];
+    memory.write(GuestPtr(0x4000), &zero)?;
+    for _ in 0..2 {
+        ports.copy_gpu_mask(&mut memory, &probe.gpu, &probe.target, rect, 2)?;
+    }
+    assert_eq!(memory.read(GuestPtr(0x4000), zero.len())?, zero);
+    println!("PASS two GPU mask XOR draws cancel in guest memory");
+    ports.copy_gpu_mask(&mut memory, &probe.gpu, &probe.target, rect, 2)?;
+    let at = mask
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .position(|p| p[0] != 0)
+        .unwrap();
+    let bit = 1u8 << (7 - at % 8);
+    let pointer = GuestPtr(0x4000 + at as u32 / 8);
+    let changed = memory.read(pointer, 1)?[0] ^ bit;
+    memory.write(pointer, &[changed])?;
+    ports.copy_gpu_mask(&mut memory, &probe.gpu, &probe.target, rect, 2)?;
+    let mut expected = zero;
+    expected[at / 8] = bit;
+    assert_eq!(memory.read(GuestPtr(0x4000), expected.len())?, expected);
+    println!("PASS direct guest pixel edit survives subsequent GPU mask XOR");
+    Ok(())
 }
 fn main() -> Result<()> {
     let words = [
@@ -298,6 +400,7 @@ fn main() -> Result<()> {
         twice, black,
         "stock renderer unexpectedly implemented QuickDraw XOR"
     );
-    println!("RESULT bitmap adapter viable; explicit source generations and QuickDraw GPU transfer adapter required");
+    transfer_probe(&probe, &first)?;
+    println!("RESULT GPU mask transfer seam verified; source-generation cache and text API integration remain required");
     Ok(())
 }

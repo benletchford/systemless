@@ -110,6 +110,10 @@ pub(crate) struct IndexedTarget<'a> {
     pub defined: &'a [bool; 256],
     pub direct_source: bool,
 }
+enum CopySource<'a> {
+    Cpu(&'a [u8]),
+    GpuMask(&'a wgpu::Texture),
+}
 pub struct Graphics {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -120,6 +124,7 @@ pub struct Graphics {
     pub base: GuestPtr,
     pub palette: [[u8; 4]; 256],
     pipeline: wgpu::ComputePipeline,
+    empty_source: wgpu::Texture,
     error: Arc<Mutex<Option<String>>>,
 }
 fn words_bytes(words: impl IntoIterator<Item = u32>) -> Vec<u8> {
@@ -187,6 +192,20 @@ impl Graphics {
                 | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
+        let empty_source = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("unused source mask"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
         let palette = std::array::from_fn(|i| [i as u8, i as u8, i as u8, 255]);
         Ok(Self {
             device,
@@ -198,6 +217,7 @@ impl Graphics {
             base,
             palette,
             pipeline,
+            empty_source,
             error,
         })
     }
@@ -234,6 +254,7 @@ impl Graphics {
             base: self.base,
             palette: self.palette,
             pipeline: self.pipeline.clone(),
+            empty_source: self.empty_source.clone(),
             error: self.error.clone(),
         })
     }
@@ -283,6 +304,62 @@ impl Graphics {
         source_palette: Option<&[[u16; 3]; 256]>,
         target: Option<IndexedTarget<'_>>,
     ) -> Result<()> {
+        self.execute_source_input(
+            memory,
+            draw,
+            clips,
+            copy_source.map(CopySource::Cpu),
+            source_palette,
+            target,
+        )
+    }
+    pub(crate) fn execute_gpu_mask(
+        &self,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+        texture: &wgpu::Texture,
+        target: Option<IndexedTarget<'_>>,
+    ) -> Result<()> {
+        self.execute_source_input(
+            memory,
+            draw,
+            clips,
+            Some(CopySource::GpuMask(texture)),
+            None,
+            target,
+        )
+    }
+    fn execute_source_input(
+        &self,
+        memory: &mut Memory,
+        draw: Draw,
+        clips: Option<&[Rect]>,
+        input: Option<CopySource<'_>>,
+        source_palette: Option<&[[u16; 3]; 256]>,
+        target: Option<IndexedTarget<'_>>,
+    ) -> Result<()> {
+        let (copy_source, gpu_mask) = match input {
+            Some(CopySource::Cpu(bytes)) => (Some(bytes), None),
+            Some(CopySource::GpuMask(texture)) => (None, Some(texture)),
+            None => (None, None),
+        };
+        if let Some(texture) = gpu_mask {
+            let valid = matches!(draw, Draw::Blit { mask: None, width, height, .. }
+                if width == texture.width() && height == texture.height());
+            if !valid
+                || texture == &self.texture
+                || texture.format() != wgpu::TextureFormat::Rgba8Unorm
+                || texture.dimension() != wgpu::TextureDimension::D2
+                || texture.depth_or_array_layers() != 1
+                || texture.sample_count() != 1
+                || !texture
+                    .usage()
+                    .contains(wgpu::TextureUsages::TEXTURE_BINDING)
+            {
+                return Err(Error::Graphics("invalid GPU text mask texture".into()));
+            }
+        }
         if source_palette.is_some() && !matches!(draw, Draw::Blit { .. }) {
             return Err(Error::Graphics(
                 "indexed source requires a bitmap blit".into(),
@@ -311,7 +388,7 @@ impl Graphics {
                 || source.bottom <= source.top
                 || source.right - source.left > 4096
                 || source.bottom - source.top > 4096
-                || copy_source.is_none()
+                || (copy_source.is_none() && gpu_mask.is_none())
             {
                 return Err(Error::Graphics("invalid scaled bitmap source".into()));
             }
@@ -649,6 +726,9 @@ impl Graphics {
                 p.push(i32::from(target.defined[i]));
             }
         }
+        if gpu_mask.is_some() {
+            p[2] |= 512;
+        }
         let indices = words_bytes(
             memory
                 .read(self.base, (self.width * self.height) as usize)?
@@ -700,6 +780,9 @@ impl Graphics {
             wgpu::BufferUsages::STORAGE,
         );
         let view = self.texture.create_view(&Default::default());
+        let mask_view = gpu_mask
+            .unwrap_or(&self.empty_source)
+            .create_view(&Default::default());
         let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.pipeline.get_bind_group_layout(0),
@@ -723,6 +806,10 @@ impl Graphics {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&mask_view),
                 },
             ],
         });

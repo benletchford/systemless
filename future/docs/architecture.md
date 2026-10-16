@@ -2852,3 +2852,30 @@ QuickDraw XOR. A production integration therefore needs bounded source-generatio
 cache identity and a GPU mask-to-QuickDraw transfer seam, not direct substitution
 of RGBA text painting for indexed guest semantics. Pixel/layout/platform/performance
 acceptance remains open. See text-rendering.md and the prototype README.
+
+
+### GPU-resident text mask transfer boundary (2026-10-16)
+
+Ports::copy_gpu_mask accepts a same-device binary red-channel Rgba8Unorm texture
+and applies the eight supported source transfer modes through the shared packed
+Surface and Graphics pipeline. The new CopySource variant selects GPU texture
+loads inside the existing Blit kernel; RGB matching, inversion, region clipping
+and destination semantics remain shared with CPU bitmap sources. An unused
+one-pixel source texture keeps the ordinary pipeline's bindings valid. Scratch
+targets share its device/pipeline and validate the actual source/output texture
+identity. Format, usage, sample/layer shape, size and output-alias errors are
+rejected before dispatch. Masks are binary coverage; antialiased/color glyphs
+remain outside this interface's contract.
+
+Guest bitmap origins, portRect, clip/visibility, colors and packed 1/2/4/8-bit
+storage use the existing drawing-target path. CPU work only validates and packs
+storage; transfer/composition runs on wgpu. Intermediate mask pixels are never
+read back or reuploaded by the bridge. Destination readback remains the existing
+synchronous guest-memory boundary, observing direct guest writes between calls.
+
+The real Glyphon probe now renders on the Graphics device and feeds that texture
+directly into the transfer boundary. It demonstrates all eight monochrome modes,
+XOR cancellation and intervening guest writes. Production DrawString/TextEdit/UI
+calls still use the prior GPU coverage path. Choosing the library-backed path
+requires a bounded source-generation cache, cell/layout integration, actual ABI
+acceptance and workload measurement. No second graphics backend is introduced.

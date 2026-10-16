@@ -2589,3 +2589,49 @@ Neither game is playable. Next: resolve Marathon's current-port/text context and
 continue its startup, and prototype the library-backed GPU text path described in
 [text-rendering.md](text-rendering.md). The full rebuild, including the user-added
 complete wgpu text requirement, stays active and PR #4802 remains draft.
+
+
+## GPU-resident text mask transfers checkpoint (2026-10-16)
+
+The shared Ports/Surface/Graphics path now consumes a same-device binary red-channel
+Rgba8Unorm texture. Glyphon coverage can feed the existing Blit kernel directly;
+all eight source transfers, inversion, RGB matching, clipping and packed storage
+remain shared with CopyBits. Ordinary CPU sources retain the same behavior via
+an unused valid texture binding. Invalid texture format/usage/sample/layer/size
+and source/output aliases are rejected before dispatch. No mask readback/reupload
+is needed by the bridge; destination readback remains the established synchronous
+guest-memory boundary. Binary coverage is the contract; antialiasing/color-glyph
+interpretation remains open.
+
+Final frozen-source acceptance: 83 checks pass, zero failed/ignored with GPU cases
+explicitly included: 51 library, four bitmap, five color-port, eight indexed,
+four text, seven timer and four trap patch checks. Evidence:
+/tmp/systemless-gpu-mask-final-acceptance.txt, terminal exit 0. The new indexed
+matrix compares packed bytes and RGBA against existing CopyBits for 2/4/8-bit
+targets and all eight modes, with colored foreground/background, negative bounds,
+partial clipping, padding and output guards. Invalid mode/format/output aliases
+preserve guest bytes and do not poison GPU error state. Existing independent RGB
+mode tests and both-CPU drawing fixtures also pass in this run. The earlier
+83-check run is preliminary/overlapping and not added to this count.
+
+The real Glyphon probe now shares the runtime Graphics device and passes sixteen
+cases on M1/Metal: its original six cases (including two library-gap
+characterizations), all eight monochrome transfer equations, double-XOR
+cancellation and direct guest-write coherence. Evidence:
+/tmp/systemless-glyphon-transfer-final.txt, terminal exit 0. Strict Rust 1.99 lint
+passes for runtime and probe: /tmp/systemless-gpu-mask-final-lint.txt and
+/tmp/systemless-gpu-mask-probe-lint.txt. Rust 1.93 checks pass for the production
+locked graph and probe: /tmp/systemless-gpu-mask-runtime-msrv.txt and
+/tmp/systemless-gpu-mask-final-msrv.txt. Sequential formatting and whitespace
+checks pass. Production dependencies are unchanged. This selected GPU suite does
+not claim full graphics, native-window, browser or performance acceptance.
+
+Original Marathon retains the previous TextFont family 4/no-current-port boundary,
+PC $01010E86, with timer=62, sound=0, VBL=0. Evidence:
+/tmp/systemless-marathon-gpu-mask.txt, explicit graphics-error exit 1. The shared
+shader change causes no earlier observed startup failure. EV was not replayed
+and retains its previous ProtectEntry boundary. Neither game is playable.
+Production text calls still use the established GPU coverage path. Next: bounded
+font-generation cache identities, glyph/cell/metrics/pen integration and actual
+68K/PPC text/UI entry points through the library bridge; continue Marathon's port
+lifecycle investigation. The complete text and full rebuild goals remain active.

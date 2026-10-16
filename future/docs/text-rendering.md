@@ -104,3 +104,20 @@ Next: tie bounded glyph cache identities to source font generations and feed GPU
 coverage into exact GPU QuickDraw transfer/composition for real guest calls. Keep
 classic metrics in the shared runtime. Measure complete workloads before selecting
 Glyphon for production. Vello remains an alternative under consideration.
+
+
+## GPU transfer bridge (2026-10-16)
+
+The shared runtime now accepts same-device binary text-mask textures through
+Ports::copy_gpu_mask and its existing packed-surface/Blit pipeline. The real
+Glyphon executable feeds its GPU texture directly into this path. All eight
+monochrome transfers, double-XOR cancellation and guest-write coherence pass;
+the combined probe has sixteen cases, including the earlier two library-gap
+characterizations. The indexed fixture verifies equivalence to existing CopyBits
+across 2/4/8-bit targets, colors, negative bounds, clips and packed storage guards.
+
+The transfer boundary is implemented; full library text integration is not yet
+complete. Next: bounded source-generation cache IDs, text cells/metrics/pen
+updates and actual 68K/PPC text/UI entry points, followed by workload and platform
+acceptance. Current production text calls continue their existing GPU coverage
+path until that integration is tested.

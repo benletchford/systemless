@@ -20,7 +20,7 @@ shared `systemless_future::font::Strike`; Glyphon receives the resulting one-bit
 mask through `prepare_with_custom`. The host font database is empty, and
 `Buffer::new_empty` avoids fallback shaping. No native font APIs render pixels.
 
-The six cases verify or characterize:
+The original six cases verify or characterize:
 
 1. Exact bitmap mask pixels and physical-pixel snapping at a fractional placement.
 2. Cache reuse without another rasterization request.
@@ -59,8 +59,8 @@ The result supports a bitmap-mask adapter prototype. Before production adoption:
 
 - Preserve guest metrics/layout and assign bounded cache identities tied to font
   content/selection/generation. Handle edits, moves, replacement and ID exhaustion.
-- Render masks on the GPU, then apply the runtime's exact QuickDraw transfers,
-  colors, clipping and packed indexed destination semantics on the GPU. Keep
+- Connect actual guest text to the verified GPU mask/QuickDraw transfer bridge
+  described below, preserving colors, clipping and packed destinations. Keep
   readback in tests; the production bridge must not copy mask pixels through the
   CPU merely to perform destination composition.
 - Verify 68K/PPC guest entry points, synchronization with guest pixel writes,
@@ -73,3 +73,24 @@ Primary API references:
 [Glyphon TextRenderer 0.12.0](https://docs.rs/glyphon/0.12.0/glyphon/struct.TextRenderer.html),
 [COSMIC Text Buffer 0.19.0](https://docs.rs/cosmic-text/0.19.0/cosmic_text/struct.Buffer.html),
 and [custom glyph source](https://github.com/grovesNL/glyphon/blob/main/src/custom_glyph.rs).
+
+
+## GPU QuickDraw transfer bridge (2026-10-16)
+
+The probe now shares the actual runtime Graphics device with Glyphon. Its binary
+mask texture is bound directly into the existing QuickDraw Blit kernel through
+Ports::copy_gpu_mask. Eight additional cases check packed one-bit outputs against
+independent transfer equations with port clipping; two more check double-XOR
+cancellation and direct guest edits between GPU draws. All sixteen cases pass on
+M1/Metal: /tmp/systemless-glyphon-transfer-final.txt, terminal exit 0. The original
+stock renderer still lacks XOR; the shared runtime bridge supplies it. No mask
+readback/reupload is used as input to the bridge; readbacks in this executable
+serve assertions, while destination readback implements coherent guest memory.
+
+The runtime's indexed-destination fixture separately compares GPU masks to the
+existing CopyBits path across 2/4/8-bit targets and all eight modes, including
+negative bounds, color palettes, clipping, packed padding and output guards.
+Production library selection, source-generation caching, complete text layout/API
+integration, native/browser presentation and performance acceptance remain open.
+The bridge supports binary Rgba8Unorm red-channel coverage; it does not interpret
+antialiased or color glyph output.
