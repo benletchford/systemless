@@ -971,6 +971,17 @@ impl Runtime {
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::PowerExtended {
+                            source,
+                            destination,
+                        } => {
+                            self.process.numerics.power_extended(
+                                &mut self.memory,
+                                source,
+                                destination,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::NumericBinary {
                             source,
                             destination,
@@ -2804,6 +2815,7 @@ impl Runtime {
                         | Call::MultiplyExtended { .. }
                         | Call::SignExtended { .. }
                         | Call::RoundIntegralExtended { .. }
+                        | Call::PowerExtended { .. }
                         | Call::NumericBinary { .. }
                         | Call::SquareRootExtended(_)
                         | Call::AddExtended { .. }

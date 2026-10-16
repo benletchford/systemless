@@ -29,6 +29,10 @@ pub enum Call {
         pointer: GuestPtr,
         truncate: bool,
     },
+    PowerExtended {
+        source: GuestPtr,
+        destination: GuestPtr,
+    },
     NumericBinary {
         source: GuestPtr,
         destination: GuestPtr,

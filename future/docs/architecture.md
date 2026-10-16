@@ -3889,3 +3889,34 @@ exception flags use the common implementation. Single writes exactly4bytes,
 double8; both snapshot ten source bytes and preflight before changing flags.
 Rounding modes/precision/halts outside the existing supported SANE environment
 remain explicit gaps rather than implied native parity.
+
+
+### Shared SANE general exponentiation
+
+Elems68K8012 (FXPWRY) decodes two extended pointers, validates both operands and
+the destination before popping its ten-byte frame, and calls shared numeric state.
+Both operands are snapshotted; numeric flags publish only after successful output.
+No PPC symbol is fabricated. Source masks/canonical values retain extended low
+bits instead of converting through host f64.
+
+[Apple Numerics Manual](https://manuals.plus/m/1f06cc272b1e59ae58f6379edca5b7829815540f233f0679c0f5f26cb9dbcbde)
+chapter8,p64 and table5-1 require special zero/infinity/domain rules and NANPOWER
+code25hex. Those cases, NaN quieting/payloads, negative-base integral parity and
+signed-zero poles precede dependency evaluation. Finite general powers use pinned
+astro-float-num0.3.7, whose API and directed rounding implementation were inspected
+locally. Its general pow path stalled on exact cases, so evaluation composes
+directed ln/mul/exp bounds instead. Integer magnitudes up to65535 use powi and
+outward reciprocal bounds; dyadic exponents additionally check up to16exact square
+roots by squaring them back with full precision. This resolves algebraic midpoints
+without guessing which endpoint to select. Down/up results use the shared exact
+extended rounder; a value is accepted only when both bounds round to identical
+bits.
+Requested precision escalates128→4096bits before an explicit unresolved-rounding
+error. Dependency evaluation remains adaptive internally; guest instruction
+budgets do not prove wall-time bounds. No new production dependency is introduced.
+
+The exact wide-result packing formerly inside addition is shared, with an early
+extended-range overflow check before narrowing the exponent. Gradual underflow,
+nearest-even rounding and range flags remain common. Mathematical inexactness can
+be conservatively accrued by elementary evaluation as allowed by the manual;
+ROM-specific last-bit/flag parity and alternate environments remain unverified.

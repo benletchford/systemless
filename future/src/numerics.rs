@@ -5,6 +5,7 @@ use crate::{
     Error, Result,
 };
 use astro_float_num::{BigFloat, Consts, RoundingMode, Sign};
+mod power;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unary {
     Atan,
@@ -381,14 +382,44 @@ impl Numerics {
         if exact.is_zero() {
             return Ok(encode(0, 0));
         }
-        let Some((words, _, sign, exponent, _)) = exact.as_raw_parts() else {
-            return Err(Error::Cpu("exact SANE addition failed".into()));
+        self.pack_big(&exact)
+    }
+    fn pack_big(&mut self, value: &BigFloat) -> Result<[u8; 10]> {
+        let encode = |se: u16, m: u64| {
+            let mut bytes = [0; 10];
+            bytes[..2].copy_from_slice(&se.to_be_bytes());
+            bytes[2..].copy_from_slice(&m.to_be_bytes());
+            bytes
         };
+        let sign = if value.sign() == Some(Sign::Neg) {
+            0x8000
+        } else {
+            0
+        };
+        if value.is_inf() {
+            self.overflow = true;
+            self.inexact = true;
+            return Ok(encode(sign | 0x7fff, 1 << 63));
+        }
+        if value.is_zero() {
+            return Ok(encode(sign, 0));
+        }
+        let Some((words, _, sign, exponent, _)) = value.as_raw_parts() else {
+            return Err(Error::Cpu("SANE result representation failed".into()));
+        };
+        if exponent > 16384 {
+            self.overflow = true;
+            self.inexact = true;
+            return Ok(encode(
+                if sign == Sign::Neg { 0xffff } else { 0x7fff },
+                1 << 63,
+            ));
+        }
         let word_bits = std::mem::size_of_val(&words[0]) * 8;
         let bits = words.len() * word_bits;
         if bits > 33024 {
             return Err(Error::Cpu(
-                "SANE addition exceeded bounded extended alignment".into(),
+                "SANE result exceeded bounded significand storage".into(),
             ));
         }
         let tiny = exponent < -16382;

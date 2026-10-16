@@ -4648,3 +4648,41 @@ extended low bits that would be lost through a host double intermediate, alongsi
 subnormal carry/underflow,overflow and NaN flags. Tracer probe build passes32.95s;
 subsequent validation build is an incremental0.25s,not a new full compile. Strict
 lint is tracked separately. Whole rebuild and full GPU text acceptance remain open.
+
+
+General-power final result,2026-10-17: four power tests pass,0ignored,after the
+recorded stalled direct-pow run and genuine minimum-denormal midpoint failure.
+The retained and added exact ties pass with algebraic evaluation; general finite
+bounds preserve low extended bits. Existing17numeric units+32sign/numeric/single
+integrations pass across recorded runs:53scoped checks total,not a whole-suite
+claim. Final affected-target Clippy passes21.09s and tracer build8.13s. No new
+production dependency or host-f64 intermediate is introduced.
+
+Unchanged original Marathon8M replay now executes768PowerExtended calls, then
+CTabChanged and SetEntries. It stops at driver Control reference0/code3,
+CPU2,982,957,PC010114D2,PB00790974,csParam pointer007909A6. Current runtime routes
+all Control requests through sound::control,which only implements(-4,2). Current
+GDevice records expose a zero driver reference. Determine the actual Device
+Manager error/video-driver contract before changing this: do not return success
+just to pass the boundary. csParam must be decoded/validated and any advertised
+video-driver identity must be coherent across GDevices and palette state.
+The inspected screen remains arrow over black with PPM SHA256
+d5cee18abe289b1be11164e9eec2225db24784d65114d4b2239b2d46063079a3.
+Independent volume verification confirms unchanged original companions and the
+same preferences-only addition,outputSHA256
+e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42.
+This is startup/palette progress,not native numeric parity or gameplay acceptance.
+Full rebuild,GPU text integration and controlled EV state checks remain active.
+
+
+Driver-boundary continuation evidence: preserved source memory.rs2443–2646 handles
+video cscSetEntries(code3) separately from Sound(-4),and shapes.rs1339–1368 states
+that low-level entries update the hardware/display palette without changing the
+QuickDraw GDevice matching table. Do not conflate physical presentation colors
+with guest color-matching metadata. Primary Device Manager PBControl documents
+D0/ioResult errors (badUnitErr-21,controlErr-17),which is different from silently
+succeeding or aborting the host runtime. Establish a coherent virtual display
+driver reference and correct driver/palette behavior before interpreting this
+original call as success; native reference0 behavior is not proved by legacy
+acceptance. Existing graphics.palette and live PixMap table paths need explicit
+ownership/synchronization if hardware palette control is added.

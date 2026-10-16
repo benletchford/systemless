@@ -10170,3 +10170,70 @@ Strict affected lib/test Clippy passes1m31s for the final paired conversion sour
 the complete unit/integration/build/lint pipeline exits0. Changed-file formatting
 and whitespace checks pass. The original probe and actual-source bit-vector
 coverage do not establish native SANE parity or either game's playability.
+
+
+### Shared general power for Marathon,2026-10-17
+
+Elems68K8012 now decodes two extended pointers into one shared power service.
+Both operands and destination are checked before native stack changes; snapshots
+and staged numeric state preserve aliases and failures. Primary Apple Numerics
+Manual ch8,p64/table5-1/appE specify the special-domain cases and NANPOWER25hex;
+those rules, NaN quieting/payloads, integral parity, signed-zero poles and infinite
+limits precede finite library work. No game-specific value or host-f64 pow is used.
+
+The first dependency pow-based run passes two tests, then two exact-value cases
+consume CPU without finishing. The local dependency implementation evaluates
+exp(y*ln(x)) adaptively; process inspection confirms the tests are computing,
+not in startup. That owned test process is interrupted and the log retained.
+Evaluation changes to separately directed ln/mul/exp bounds plus algebraic integer
+powers. A second run passes3/4 but correctly reports unresolved rounding for the
+exact minimum-denormal midpoint2^-16447: the initial small-integer cutoff routed
+it through log/exp. The corrected algebraic path covers16-bit magnitudes and
+proves exact square roots for dyadic exponents, retaining this test and adding
+(3000001^2)^(3/2),an exact65-bit odd integer midpoint. General bounds agree before
+any guest value is accepted; precision128→4096 is explicit and exhaustion fails
+transactionally. The original hanging dependency path is no longer called.
+
+Existing17numeric units and32numeric/sign/single integrations pass across the
+recorded regression pipeline. The shared wide-result packer is extracted from
+addition and reused for power, including an early extended overflow check. Final
+power tests, fresh lint and original Marathon replay remain pending; no app or
+native numeric acceptance is inferred from the intermediate results.
+
+
+General-power final result,2026-10-17: four power tests pass,0ignored,after the
+recorded stalled direct-pow run and genuine minimum-denormal midpoint failure.
+The retained and added exact ties pass with algebraic evaluation; general finite
+bounds preserve low extended bits. Existing17numeric units+32sign/numeric/single
+integrations pass across recorded runs:53scoped checks total,not a whole-suite
+claim. Final affected-target Clippy passes21.09s and tracer build8.13s. No new
+production dependency or host-f64 intermediate is introduced.
+
+Unchanged original Marathon8M replay now executes768PowerExtended calls, then
+CTabChanged and SetEntries. It stops at driver Control reference0/code3,
+CPU2,982,957,PC010114D2,PB00790974,csParam pointer007909A6. Current runtime routes
+all Control requests through sound::control,which only implements(-4,2). Current
+GDevice records expose a zero driver reference. Determine the actual Device
+Manager error/video-driver contract before changing this: do not return success
+just to pass the boundary. csParam must be decoded/validated and any advertised
+video-driver identity must be coherent across GDevices and palette state.
+The inspected screen remains arrow over black with PPM SHA256
+d5cee18abe289b1be11164e9eec2225db24784d65114d4b2239b2d46063079a3.
+Independent volume verification confirms unchanged original companions and the
+same preferences-only addition,outputSHA256
+e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42.
+This is startup/palette progress,not native numeric parity or gameplay acceptance.
+Full rebuild,GPU text integration and controlled EV state checks remain active.
+
+
+Driver-boundary continuation evidence: preserved source memory.rs2443–2646 handles
+video cscSetEntries(code3) separately from Sound(-4),and shapes.rs1339–1368 states
+that low-level entries update the hardware/display palette without changing the
+QuickDraw GDevice matching table. Do not conflate physical presentation colors
+with guest color-matching metadata. Primary Device Manager PBControl documents
+D0/ioResult errors (badUnitErr-21,controlErr-17),which is different from silently
+succeeding or aborting the host runtime. Establish a coherent virtual display
+driver reference and correct driver/palette behavior before interpreting this
+original call as success; native reference0 behavior is not proved by legacy
+acceptance. Existing graphics.palette and live PixMap table paths need explicit
+ownership/synchronization if hardware palette control is added.

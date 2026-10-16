@@ -2373,6 +2373,24 @@ impl Abi {
             }
             0xa9ec => {
                 let selector = memory.u16(GuestPtr(sp))?;
+                if selector == 0x8012 {
+                    let args = memory.read(GuestPtr(sp), 10)?;
+                    let destination = GuestPtr(u32::from_be_bytes(args[2..6].try_into().unwrap()));
+                    let source = GuestPtr(u32::from_be_bytes(args[6..10].try_into().unwrap()));
+                    memory.read(source, 10)?;
+                    memory.read(destination, 10)?;
+                    memory.validate_write(destination, 10)?;
+                    c.dar[15] = sp
+                        .checked_add(10)
+                        .ok_or_else(|| Error::Cpu("power stack overflow".into()))?;
+                    return Ok((
+                        Call::PowerExtended {
+                            source,
+                            destination,
+                        },
+                        Reply::None,
+                    ));
+                }
                 if ![0x18, 0x1a, 0x1c, 0x1e].contains(&selector) {
                     return Err(Error::Cpu(format!(
                         "unsupported Elems68K selector {selector:04x}"
