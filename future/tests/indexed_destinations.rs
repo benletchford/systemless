@@ -1007,3 +1007,150 @@ fn setentries_recolors_live_main_display_without_changing_guest_pixels_or_paddin
     check_gpu(&a, &indices, &[[65535, 65535, 0], [0, 0, 65535]]);
     assert_eq!(a.runtime.memory.read(SCREEN, pixels.len()).unwrap(), pixels);
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn live_direct_copybits_sources_share_rgb_modes_and_dither_across_cpu_adapters() {
+    for source_depth in [16u16, 32] {
+        for depth in [2u16, 4, 8] {
+            let (mut a, map, stride, colors) = setup(depth);
+            let bytes = usize::from(source_depth / 8);
+            let row = 7 * bytes + 4;
+            let mut pixels = vec![0xa5; row * 3];
+            let mut source = Vec::new();
+            for i in 0..21 {
+                let c = [
+                    [255, 255, 255],
+                    [0, 0, 0],
+                    [255, 0, 0],
+                    [0, 255, 0],
+                    [0, 0, 255],
+                    [132, 132, 132],
+                    [90, 222, 33],
+                ][i % 7];
+                let at = (i / 7) * row + (i % 7) * bytes;
+                if source_depth == 16 {
+                    let v = 0x8000
+                        | (((c[0] as u16) >> 3) << 10)
+                        | (((c[1] as u16) >> 3) << 5)
+                        | ((c[2] as u16) >> 3);
+                    pixels[at..at + 2].copy_from_slice(&v.to_be_bytes());
+                    source.push([10, 5, 0].map(|s| {
+                        let v = (v >> s) & 31;
+                        (v << 11) | (v << 6) | (v << 1) | (v >> 4)
+                    }));
+                } else {
+                    pixels[at..at + 4].copy_from_slice(&[0xa5, c[0], c[1], c[2]]);
+                    source.push(c.map(|v| u16::from(v) * 257));
+                }
+            }
+            a.runtime
+                .memory
+                .map(GuestPtr(SOURCE), pixels.clone(), Permissions::RW)
+                .unwrap();
+            let mut header = vec![0; 50];
+            support::w32(&mut header, 0, SOURCE);
+            support::w16(&mut header, 4, 0x8000 | row as u16);
+            for (i, v) in [-2i16, -3, 1, 4].into_iter().enumerate() {
+                support::w16(&mut header, 6 + i * 2, v as u16);
+            }
+            for (at, v) in [
+                (30, 16),
+                (32, source_depth),
+                (34, 3),
+                (36, if source_depth == 16 { 5 } else { 8 }),
+            ] {
+                support::w16(&mut header, at, v);
+            }
+            support::w32(&mut header, 42, 0xfffffffdu32);
+            a.runtime
+                .memory
+                .write(GuestPtr(PORT + 256), &header)
+                .unwrap();
+            rgb(&mut a, [0; 3], false, true);
+            rgb(&mut a, [65535; 3], true, false);
+            let port_before = a.runtime.memory.read(GuestPtr(PORT), 108).unwrap().to_vec();
+            let original: Vec<_> = (0..21).map(|i| if i % 2 == 0 { 1 } else { 2 }).collect();
+            for mode in 0..8u16 {
+                let expected: Vec<_> = source
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let s = if mode & 4 != 0 {
+                            c.map(|v| 65535 - v)
+                        } else {
+                            *c
+                        };
+                        let d = colors[usize::from(original[i])];
+                        let out = match mode & 3 {
+                            0 => s,
+                            1 => mix(s, [0; 3], d),
+                            2 => {
+                                if s == [0; 3] {
+                                    d.map(|v| 65535 - v)
+                                } else {
+                                    d
+                                }
+                            }
+                            _ => mix(s, [65535; 3], d),
+                        };
+                        nearest(out, &colors)
+                    })
+                    .collect();
+                for native_call in [false, true] {
+                    a.runtime
+                        .memory
+                        .write(GuestPtr(BITS), &packed(&original, depth, stride))
+                        .unwrap();
+                    copy(&mut a, map, mode, native_call);
+                    assert_eq!(
+                        unpack(&a, depth, stride),
+                        expected,
+                        "source{source_depth} target{depth} mode{mode} native{native_call}"
+                    );
+                    check_gpu(&a, &expected, &colors);
+                    assert_eq!(
+                        a.runtime.memory.read(GuestPtr(BITS), stride * 3).unwrap(),
+                        packed(&expected, depth, stride)
+                    );
+                }
+            }
+            let mut dithered = None;
+            for native_call in [false, true] {
+                a.runtime
+                    .memory
+                    .write(GuestPtr(BITS), &packed(&original, depth, stride))
+                    .unwrap();
+                copy(&mut a, map, 0x40, native_call);
+                let actual = unpack(&a, depth, stride);
+                if let Some(expected) = &dithered {
+                    assert_eq!(&actual, expected);
+                }
+                check_gpu(&a, &actual, &colors);
+                dithered = Some(actual);
+            }
+            assert_eq!(
+                a.runtime
+                    .memory
+                    .read(GuestPtr(SOURCE), pixels.len())
+                    .unwrap(),
+                pixels
+            );
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(PORT), 108).unwrap(),
+                port_before
+            );
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(PORT + 256), 50).unwrap(),
+                header
+            );
+            // Source guest edits must be observed without changing the descriptor.
+            a.runtime
+                .memory
+                .write(GuestPtr(SOURCE), &[0; 4][..bytes])
+                .unwrap();
+            copy(&mut a, map, 0, true);
+            assert_eq!(unpack(&a, depth, stride)[0], nearest([0; 3], &colors));
+        }
+    }
+}

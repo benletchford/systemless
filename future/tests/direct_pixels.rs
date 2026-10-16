@@ -45,9 +45,9 @@ fn direct_gpu_storage_preserves_padding_clips_and_overlap() {
         for x in 1..3 {
             let at = x * bytes;
             if bytes == 2 {
-                expected[at..at + 2].copy_from_slice(&((red as u16) | 0x8000).to_be_bytes());
+                expected[at..at + 2].copy_from_slice(&(red as u16).to_be_bytes());
             } else {
-                expected[at + 1..at + 4].copy_from_slice(&red.to_be_bytes()[1..]);
+                expected[at..at + 4].copy_from_slice(&red.to_be_bytes());
             }
         }
         assert_eq!(memory.read(base, row * 2).unwrap(), expected);
@@ -67,9 +67,9 @@ fn direct_gpu_storage_preserves_padding_clips_and_overlap() {
         }
         assert_eq!(memory.read(base, row * 2).unwrap(), expected);
         let copy = Draw::Copy {
-            rect: Rect::new(1, 0, 4, 1),
+            rect: Rect::new(0, 0, 4, 1),
             clip: whole,
-            source_x: 0,
+            source_x: -1,
             source_y: 0,
             mode: Transfer::Copy,
         };
@@ -78,7 +78,13 @@ fn direct_gpu_storage_preserves_padding_clips_and_overlap() {
         let source = expected.clone();
         for x in 1..4 {
             let at = x * bytes;
-            expected[at..at + bytes].copy_from_slice(&source[(x - 1) * bytes..x * bytes]);
+            if bytes == 2 {
+                let v = u16::from_be_bytes(source[(x - 1) * 2..x * 2].try_into().unwrap()) & 0x7fff;
+                expected[at..at + 2].copy_from_slice(&v.to_be_bytes());
+            } else {
+                expected[at..at + bytes].copy_from_slice(&source[(x - 1) * bytes..x * bytes]);
+                expected[at] = 0;
+            }
         }
         assert_eq!(memory.read(base, row * 2).unwrap(), expected);
         let saved = expected;
@@ -190,13 +196,10 @@ fn direct_rgb_source_keeps_more_than_256_colors_and_rejects_short_sources() {
         let output = memory.read(base, row).unwrap();
         for i in 0..300 {
             if bytes == 2 {
-                let expected = 0x8000 | (((i as u16) >> 5) << 10) | (((i as u16) & 31) << 5);
+                let expected = (((i as u16) >> 5) << 10) | (((i as u16) & 31) << 5);
                 assert_eq!(&output[i * 2..i * 2 + 2], &expected.to_be_bytes());
             } else {
-                assert_eq!(
-                    &output[i * 4..i * 4 + 4],
-                    &[0xa5, (i >> 8) as u8, i as u8, 0]
-                );
+                assert_eq!(&output[i * 4..i * 4 + 4], &[0, (i >> 8) as u8, i as u8, 0]);
             }
         }
         assert_eq!(&output[300 * bytes..], &[0xa5; 4]);

@@ -292,17 +292,10 @@ impl Surface {
         dither: bool,
     ) -> Result<()> {
         if dither {
-            let rgb: Vec<_> = source
-                .indices
-                .iter()
-                .map(|&i| {
-                    source
-                        .palette
-                        .as_ref()
-                        .map_or(if i == 0 { [65535; 3] } else { [0; 3] }, |p| p[i as usize])
-                })
-                .collect();
+            let rgb = source.colors();
             self.execute_inputs(gpu, memory, draw, None, (None, None, Some(&rgb), 3), None)
+        } else if let Some(rgb) = &source.rgb {
+            self.execute_inputs(gpu, memory, draw, None, (None, None, Some(rgb), 2), None)
         } else {
             self.execute_inputs(
                 gpu,

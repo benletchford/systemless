@@ -32,7 +32,7 @@ fn color_target()->i32{if (p[2]&256)==0{return 0;}return i32(arrayLength(&p))-10
 fn direct_depth()->i32{let q=color_target();if q!=0 && p[q]>8{return p[q];}return 0;}
 fn pixel_mask()->u32{if direct_depth()==16{return 32767u;}if direct_depth()==32{return 16777215u;}return 255u;}
 fn destination_rgb(index:u32)->vec3<u32>{
-    if direct_depth()==16{return vec3<u32>((index>>10u)&31u,(index>>5u)&31u,index&31u)*65535u/31u;}
+    if direct_depth()==16{let c=vec3<u32>((index>>10u)&31u,(index>>5u)&31u,index&31u);return c*2114u+c/16u;}
     if direct_depth()==32{return vec3<u32>((index>>16u)&255u,(index>>8u)&255u,index&255u)*257u;}
     let q=color_target()+2+4*i32(index);return vec3<u32>(u32(p[q]),u32(p[q+1]),u32(p[q+2]));
 }
@@ -190,8 +190,10 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             case 3: { value=value & (~src); }
             default: {}
         } }
-        value=value & pixel_mask();
-        pixels[at]=value;
+        if valid {
+            value=value & pixel_mask();
+            pixels[at]=value;
+        }
     }
     // Cursor data/mask affect presentation only, never canonical pixel storage.
     if draw_kind()==3 {

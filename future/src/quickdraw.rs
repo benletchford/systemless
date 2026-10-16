@@ -692,17 +692,10 @@ impl Ports {
             },
         };
         if request.mode & 0x40 != 0 {
-            let rgb = source_data
-                .indices
-                .iter()
-                .map(|&i| {
-                    source_data
-                        .palette
-                        .as_ref()
-                        .map_or(if i == 0 { [65535; 3] } else { [0; 3] }, |p| p[i as usize])
-                })
-                .collect::<Vec<_>>();
+            let rgb = source_data.colors();
             destination.execute_dithered_rgb(gpu, memory, draw, Some(&clips), &rgb)
+        } else if let Some(rgb) = &source_data.rgb {
+            destination.execute_rgb(gpu, memory, draw, Some(&clips), rgb)
         } else {
             destination.execute_source_palette(
                 gpu,

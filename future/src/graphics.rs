@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 mod direct;
 mod dither;
+pub(crate) use direct::rgb555;
 pub use direct::DirectFormat;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {

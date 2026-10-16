@@ -16,13 +16,15 @@ impl DirectFormat {
     fn bytes(self) -> usize {
         usize::from(self.depth() / 8)
     }
-    fn mask(self) -> u32 {
-        match self {
-            Self::Rgb555 => 0x7fff,
-            Self::Xrgb8888 => 0x00ff_ffff,
-        }
-    }
 }
+/// Expand stored components by repeating their five bits, shared with PICT input.
+pub(crate) fn rgb555(pixel: u16) -> [u16; 3] {
+    [10, 5, 0].map(|shift| {
+        let v = (pixel >> shift) & 31;
+        (v << 11) | (v << 6) | (v << 1) | (v >> 4)
+    })
+}
+
 impl Graphics {
     /// Draw coordinates are bitmap-local, as for the underlying Graphics API.
     /// CPU work only encodes storage. Pixel operations use the existing shader.
@@ -52,7 +54,7 @@ impl Graphics {
                 } else {
                     u32::from_be_bytes(original[at..at + 4].try_into().unwrap())
                 };
-                canonical.extend((v & format.mask()).to_be_bytes());
+                canonical.extend(v.to_be_bytes());
             }
         }
         if (width, height) != (self.width as usize, self.height as usize) {
@@ -88,12 +90,9 @@ impl Graphics {
                 let index = (y * width + x) * 4;
                 let v = u32::from_be_bytes(output[index..index + 4].try_into().unwrap());
                 if stride == 2 {
-                    let pad = u16::from_be_bytes(result[at..at + 2].try_into().unwrap()) & 0x8000;
-                    result[at..at + 2].copy_from_slice(&(pad | v as u16).to_be_bytes());
+                    result[at..at + 2].copy_from_slice(&(v as u16).to_be_bytes());
                 } else {
-                    let pad = result[at];
                     result[at..at + 4].copy_from_slice(&v.to_be_bytes());
-                    result[at] = pad;
                 }
             }
         }

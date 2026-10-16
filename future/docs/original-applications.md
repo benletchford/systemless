@@ -4997,3 +4997,33 @@ does not exercise the new direct backend. Private captures are retained as
 future/target/private-originals/marathon/evidence/2026-10-17-direct-foundation.*.
 No fresh EV/PPC-original, playable-game, native/browser or performance acceptance
 is claimed. Complete GPU text/library integration and the full rebuild stay open.
+
+### Live direct PixMap source regression (2026-10-17)
+
+Shared native/PPC CopyBits now accepts checked live RGB555/xRGB8888 sources and
+sends their RGB samples through the existing GPU transfer/dither path. The direct
+backend also follows Apple's documented zero unused high bits on written pixels,
+while preserving untouched pixels and padding. Direct destination PixMaps/GWorlds,
+full graphics-profile capability and complete GPU text remain unfinished.
+
+Both unchanged original replays were refreshed with the same recorded inputs and
+interaction. Marathon's23M run again faults at CPU22,890,015/PC0102605C,
+readFFFCC1AF; EV's24M run stops at PC007E6830 after the prior scheduled key pair.
+These are bounded regression observations, not playable-game acceptance.
+
+SHA256:
+
+- Marathon screen: `7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e`.
+- Marathon volume: `e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+- EV screen: `11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48`.
+- EV volume: `e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`.
+
+All four match the preceding canonical captures exactly. Independent volume checks
+preserve original companion records/forks/metadata and directories. Marathon adds
+only the same1222-byte preferences node; its verifier now explicitly compares
+directories as well as file records. EV retains the same pilot/preferences and
+flagged alis/0 target/path/script checks (nodes57/53/58,next59). Preference
+contents remain native-unvalidated. The Marathon trace still makes zero GWorld
+and pixel-state calls; AB03 remains unavailable. No fresh PPC-original or native
+System7 execution is claimed. Private captures are retained under each game's
+future/target/private-originals/.../evidence/2026-10-17-live-direct.*.

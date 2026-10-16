@@ -4069,9 +4069,10 @@ The shared integer drawing pipeline accepts RGB555 and xRGB8888 destinations.
 colour words, runs the existing WGSL commands, and repacks after successful GPU
 readback. CPU work encodes storage; destination pixel operations remain on wgpu.
 RGB555 uses bits 10/5/0 for five-bit R/G/B; xRGB8888 uses RGB bytes after the
-unused leading byte. Packing preserves that unused bit/byte and row padding.
-These are explicit supported storage contracts; exact native unused-bit and
-quantization behavior still need authoritative conformance evidence.
+unused leading byte. Packing clears the unused bit/byte on pixels written by QuickDraw, while
+preserving untouched pixels and row padding. Apple's PixMap reference explicitly
+requires zero unused high bits. Exact native edge and quantization behavior
+still need conformance evidence.
 
 Draw coordinates at this backend boundary are bitmap-local. The existing shader
 handles patterns, clipping, source-snapshot overlap, transfer modes and direct
@@ -4081,8 +4082,39 @@ All entry paths reject scalar values outside the destination storage format.
 The direct wrapper publishes guest bytes only after successful validation and GPU
 readback, preserving writable-memory checks and synchronous guest visibility.
 
-This backend work does not yet extend `Surface`, guest PixMap parsing, screen
-profiles or NewGWorld/UpdateGWorld to direct colour. Those shared service changes,
+Live direct PixMap sources are now parsed as described below. Direct destination
+`Surface` records, screen profiles and NewGWorld/UpdateGWorld remain unfinished.
+Those shared service changes,
 both ABI adapters, display presentation and original-game acceptance are next.
 Do not advertise AB03/complete 32-bit QuickDraw from this backend foundation.
 It also does not complete the separate text-library integration requirement.
+
+
+### Live direct PixMap sources
+
+Shared CopyBits source parsing accepts RGBDirect (pixelType16), pixelSize16/32,
+three components of size5/8, pmVersion0/4, raw packType0/1 with packSize0,
+zero planeBytes/reserved fields and checked aligned row storage. CPU preparation
+extracts RGB555/xRGB8888 data, ignores unused high bits and pmTable, and snapshots
+all source colours before destination drawing. Serialized PICT compressed rows
+remain a separate input decoder. Unsupported packed/planar/component formats
+reject explicitly instead of being interpreted as indexed data.
+
+Both native and PPC CopyBits route those RGB samples through existing shared GPU
+RGB transfer and dithering services. Indexed destination policy, port colours,
+clipping and guest-memory readback stay unchanged. Shared image conversion also
+accepts RGB samples without introducing a second drawing implementation. A
+borrowed RGB view avoids reallocation when dithering direct sources. RGB555 CPU
+expansion is shared with PICT decoding; the shader repeats the same five bits.
+This establishes one expansion contract, not verified native rounding parity.
+Direct destination PixMaps, direct CIcons and full graphics-profile capability
+remain unfinished; do not advertise AB03 from source support alone.
+
+Primary format/high-bit authority:
+[Apple QuickDraw Reference, PixMap](https://leopard-adc.pepas.com/documentation/Carbon/Reference/QuickDraw_Ref/QuickDraw_Ref.pdf),
+Data Types, page130; and
+[Apple QD13](https://leopard-adc.pepas.com/technotes/qd/qd_13.html).
+The preceding backend milestone's preservation of high bits on written pixels
+was an explicit provisional contract; it is now corrected to the documented zero
+behavior. Only CPU storage encoding/decoding is used; destination rendering stays
+on the shared wgpu pipeline.

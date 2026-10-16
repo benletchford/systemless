@@ -10899,8 +10899,8 @@ The existing integer GPU pipeline now supports RGB555 and xRGB8888 storage.
 Draw foreground/background scalars widen to u32, with explicit format validation
 and indexed callers preserving their checked u8 indices at the boundary. The
 new direct wrapper decodes/repackages big-endian storage around the same shader;
-CPU work does not draw destination pixels. Row padding and unused high bits stay
-intact, guest writes precede draws, and successful readback publishes guest bytes
+CPU work does not draw destination pixels. Row padding stays intact; the provisional unused-bit behavior is superseded below.
+Guest writes precede draws, and successful readback publishes guest bytes
 synchronously. RGB matching/expansion uses direct components instead of palette
 searches; existing indexed/pattern/text transfer policies remain shared.
 
@@ -10941,3 +10941,64 @@ synchronization. Do not advertise the unfinished graphics profile or install
 AB03 merely from backend support. Complete text-library integration, styles,
 native/browser verification, both priority games and the entire rebuild remain
 open; the goal stays active and PR4802 stays draft.
+
+### Live direct PixMap sources and documented high-bit correction (2026-10-17)
+
+Native and PPC CopyBits now accept shared live RGB555/xRGB8888 source PixMaps,
+including colour-port aliases. Checked raw rows decode to RGB samples before any
+destination write; they ignore pmTable and unused high bits. The existing GPU RGB
+transfer/dithering services still own every destination operation. Indexed source
+behaviour is retained, and RGB image conversion can borrow prepared direct
+samples instead of constructing an indexed palette. Source formats are explicit:
+RGBDirect,16/32bits,3components of5/8bits,pmVersion0/4,packType0/1,packSize0,
+zero planes/reserved and valid aligned bounded storage. Serialized packed PICT
+rows keep their separate checked input decoder.
+
+Primary review found that the preceding backend's provisional preservation of
+unused bits on written pixels contradicts Apple's PixMap reference (page130):
+QuickDraw sets them to zero. GPU writes now clear those bits; untouched pixels,
+invalid-source holes and row padding stay intact. Tests were corrected to assert
+the documented result, including an overlapping copy with an out-of-range first
+source pixel. This is an evidence-driven semantic correction, not a weakened
+pixel comparison. RGB555 expansion now uses one CPU helper for live/PICT sources
+and the same bit-repetition rule in WGSL. Native rounding/edge conformance remains
+unverified. Architecture notes cite the primary format/high-bit references.
+
+New decoder checks cover every five-bit component value, table independence,
+read-only source storage, aliases, pmVersion4, bad metadata and inaccessible
+backing. A real-GPU fixture uses both CPU adapters for all eight transfers into
+2/4/8-bit destinations, dithering parity, port/descriptor preservation, unchanged
+source bytes and direct guest-source edits. These are shared-service fixtures;
+direct destination PixMaps/GWorlds and full graphics-profile support remain open.
+
+Final scoped acceptance:68passed,0failed,0ignored. This is58integration checks
+(2direct pixels,25GWorld,11indexed destinations,15picture,5text),7PixMap decoder
+unit checks and3existing GPU-backend checks. Adapter-required checks were
+explicitly enabled. Commands:
+
+- cargo test --manifest-path future/Cargo.toml --test indexed_destinations --test direct_pixels --test text --test picture --test gworld -- --include-ignored --nocapture --test-threads=1
+- cargo test --manifest-path future/Cargo.toml --lib pixmap:: -- --nocapture
+- cargo test --manifest-path future/Cargo.toml --lib graphics:: -- --include-ignored --nocapture --test-threads=1
+- cargo clippy --manifest-path future/Cargo.toml --lib --test direct_pixels --test indexed_destinations --test text --test picture --test gworld --example trace_application -- -D warnings
+
+Strict scoped lint, tracer build, sequential changed-file formatting and whitespace
+checks pass. Final source includes direct colour-port alias coverage, written-pixel
+high-bit clearing and preservation of an invalid-source hole. Logs, first-stage
+checks and independent saved-volume verifiers are retained under ignored
+future/target/validation/live-direct-source/. Compile/startup waits are not
+performance measurements. These runs are scoped, not a whole-suite/native/browser
+or full-text acceptance claim.
+
+Both unchanged original replays retain their exact prior instruction/PC boundary,
+screen and independently verified committed volume. Marathon still faults at
+CPU22,890,015/PC0102605C/readFFFCC1AF; EV reaches24M/PC007E6830 with the same
+scheduled key pair. Independent verification covers original companions, forks,
+metadata, directories and the existing pilot/alias/script checks. Neither game is
+verified playable. Hashes and private evidence paths are in original-applications.md.
+
+Next: direct destination Surface/PixMap records, port colour values, CopyBits/text
+destinations and presentation, then managed NewGWorld/UpdateGWorld16/32formats
+through both adapters. Source support does not establish the full graphics profile;
+AB03 stays unavailable. Full GPU text/library integration, native/browser and Mixed
+Mode acceptance, both priority games and the complete rebuild remain open. Keep
+the goal active, the baseline checkout unchanged and PR4802 draft.

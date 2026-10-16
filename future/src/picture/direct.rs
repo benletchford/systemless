@@ -154,11 +154,7 @@ pub(super) fn decode(
         for x in 0..width {
             let color = if depth == 16 {
                 let pixel = u16::from_be_bytes([row[2 * x], row[2 * x + 1]]);
-                [10, 5, 0].map(|shift| {
-                    let value = (pixel >> shift) & 31;
-                    // Repeat the five stored bits across the sixteen-bit component.
-                    (value << 11) | (value << 6) | (value << 1) | (value >> 4)
-                })
+                crate::graphics::rgb555(pixel)
             } else if raw {
                 [row[4 * x + 1], row[4 * x + 2], row[4 * x + 3]].map(|v| u16::from(v) * 257)
             } else if pack == 2 {

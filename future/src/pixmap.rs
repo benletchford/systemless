@@ -1,4 +1,4 @@
-//! Checked live indexed PixMap sources for the shared CopyBits path.
+//! Checked live indexed and direct PixMap sources for the shared CopyBits path.
 //! IM: Imaging With QuickDraw, Color QuickDraw PixMap and ColorTable records.
 use crate::{
     bitmap::Bitmap,
@@ -6,11 +6,33 @@ use crate::{
     memory::{GuestPtr, Memory},
     Error, Result,
 };
+mod direct;
+
 pub(crate) struct Source {
     pub bitmap: Bitmap,
     pub indices: Vec<u8>,
+    pub rgb: Option<Vec<[u16; 3]>>,
     pub palette: Option<Box<[[u16; 3]; 256]>>,
 }
+impl Source {
+    pub fn colors(&self) -> std::borrow::Cow<'_, [[u16; 3]]> {
+        if let Some(rgb) = &self.rgb {
+            std::borrow::Cow::Borrowed(rgb)
+        } else {
+            std::borrow::Cow::Owned(
+                self.indices
+                    .iter()
+                    .map(|&i| {
+                        self.palette
+                            .as_ref()
+                            .map_or(if i == 0 { [65535; 3] } else { [0; 3] }, |p| p[i as usize])
+                    })
+                    .collect(),
+            )
+        }
+    }
+}
+
 fn bad() -> Error {
     Error::Graphics("unsupported or invalid indexed PixMap source".into())
 }
@@ -61,8 +83,12 @@ fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
         return Ok(Source {
             bitmap,
             indices,
+            rgb: None,
             palette: surface.colors.map(|c| c.rgb),
         });
+    }
+    if memory.u16(GuestPtr(address.0.checked_add(30).ok_or_else(bad)?))? == 16 {
+        return direct::source(memory, address);
     }
     indexed_source(memory, indexed(memory, address)?)
 }
@@ -85,6 +111,7 @@ fn indexed_source(memory: &Memory, map: Indexed) -> Result<Source> {
     Ok(Source {
         bitmap,
         indices,
+        rgb: None,
         palette: Some(palette),
     })
 }
