@@ -22,6 +22,9 @@ int main(void) {
     if (!TestDeviceAttribute(offscreen,noDriver) || !TestDeviceAttribute(offscreen,gdDevType) || (**offscreen).gdFlags!=0x4001) return 12;
     SetDeviceAttribute(offscreen,gdDevType,false);
     if (TestDeviceAttribute(offscreen,gdDevType) || (**offscreen).gdFlags!=0x4000 || (**offscreen).gdRefCon!=0x12345678) return 13;
+    DisposeCTable((**((**offscreen).gdPMap)).pmTable);
+    (**((**offscreen).gdPMap)).pmTable=(CTabHandle)NewHandleClear(sizeof(ColorTable));
+    if (!(**((**offscreen).gdPMap)).pmTable) return 27;
     DisposeGDevice(offscreen);
     InitGraf(&qd.thePort);
     device=GetGDevice();

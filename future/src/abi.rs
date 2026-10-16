@@ -76,6 +76,7 @@ pub enum Service {
     MaxDevice,
     NewDevice,
     DisposeDevice,
+    DisposeColorTable,
     SetDevice,
     HasDepth,
     SetDepth,
@@ -418,6 +419,7 @@ impl Abi {
             b"GetGDevice" => Some(Service::Device(crate::devices::Op::Current)),
             b"GetMainDevice" => Some(Service::Device(crate::devices::Op::Main)),
             b"GetDeviceList" => Some(Service::Device(crate::devices::Op::First)),
+            b"DisposeCTable" => Some(Service::DisposeColorTable),
             b"NewGDevice" => Some(Service::NewDevice),
             b"DisposeGDevice" | b"DisposGDevice" => Some(Service::DisposeDevice),
             b"GetMaxDevice" => Some(Service::MaxDevice),
@@ -1667,13 +1669,17 @@ impl Abi {
                 c.dar[15] = next;
                 Ok((Call::Device(op), Reply::StackLong(GuestPtr(next))))
             }
-            0xaa30 => {
+            0xaa24 | 0xaa30 => {
                 let device = memory.u32(GuestPtr(sp))?;
                 c.dar[15] = sp
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("DisposeGDevice stack overflow".into()))?;
                 Ok((
-                    Call::Device(crate::devices::Op::Dispose(device)),
+                    Call::Device(if opcode == 0xaa24 {
+                        crate::devices::Op::DisposeTable(device)
+                    } else {
+                        crate::devices::Op::Dispose(device)
+                    }),
                     Reply::None,
                 ))
             }
@@ -3162,6 +3168,7 @@ impl Abi {
             }),
             Service::Device(op) => Call::Device(op),
             Service::SetDevice => Call::Device(crate::devices::Op::Select(c.gpr[3])),
+            Service::DisposeColorTable => Call::Device(crate::devices::Op::DisposeTable(c.gpr[3])),
             Service::NewDevice => Call::Device(crate::devices::Op::New {
                 reference: c.gpr[3] as i16,
                 mode: c.gpr[4] as i32,

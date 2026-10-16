@@ -24,6 +24,7 @@ pub enum Op {
         mode: i32,
     },
     Dispose(u32),
+    DisposeTable(u32),
     Maximum(GuestPtr),
     Current,
     Select(u32),
@@ -215,6 +216,64 @@ impl Manager {
         }
         result
     }
+    fn main_table(&self, memory: &Memory, process: &mut Process) -> Result<u32> {
+        let Some(device) = self.device else {
+            return Ok(0);
+        };
+        let gd = record(memory, process, device, 62)?;
+        let pm = record(memory, process, memory.u32(GuestPtr(gd.0 + 22))?, 50)?;
+        memory.u32(GuestPtr(pm.0 + 42))
+    }
+    fn validate_table(&self, memory: &Memory, process: &mut Process, table: u32) -> Result<()> {
+        if let Some(device) = self.device {
+            let gd = record(memory, process, device, 62)?;
+            if [
+                device,
+                memory.u32(GuestPtr(gd.0 + 22))?,
+                memory.u32(GuestPtr(gd.0 + 6))?,
+            ]
+            .contains(&table)
+            {
+                return Err(invalid(
+                    "cannot dispose main display storage as a color table",
+                ));
+            }
+        }
+        if table == 0
+            || table == self.main_table(memory, process)?
+            || self
+                .detached
+                .iter()
+                .any(|(device, parts)| *device == table || parts[1..].contains(&table))
+        {
+            return Err(invalid("color table is nil or protected graphics storage"));
+        }
+        let ct = record(memory, process, table, 8)?;
+        let last = memory.u16(GuestPtr(ct.0 + 6))? as i16;
+        if !(-1..=255).contains(&last) {
+            return Err(invalid("invalid color table extent"));
+        }
+        record(memory, process, table, 8 + (i32::from(last) + 1) as u32 * 8)?;
+        Ok(())
+    }
+    fn dispose_table(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        table: u32,
+    ) -> Result<u32> {
+        self.validate_table(memory, process, table)?;
+        memory.validate_write(GuestPtr(table), 4)?;
+        process.dispose_handle(memory, table)?;
+        // Do not rewrite the caller's PixMap. It must install its replacement.
+        // Forget ownership before this freed master can be reused.
+        for parts in self.detached.values_mut() {
+            if parts[0] == table {
+                parts[0] = 0;
+            }
+        }
+        Ok(0)
+    }
     fn dispose_detached(
         &mut self,
         memory: &mut Memory,
@@ -227,11 +286,33 @@ impl Manager {
             .ok_or_else(|| invalid("DisposeGDevice requires an owned detached device"))?;
         let gd = record(memory, process, device, 62)?;
         let pm = record(memory, process, pixels, 50)?;
-        record(memory, process, table, 8)?;
+        let live_table = memory.u32(GuestPtr(pm.0 + 42))?;
+        if table == 0 {
+            if live_table != 0 {
+                self.validate_table(memory, process, live_table)?;
+                for (&other, parts) in &self.detached {
+                    if other == device {
+                        continue;
+                    }
+                    let other_pm = record(memory, process, parts[1], 50)?;
+                    if parts[0] == live_table
+                        || memory.u32(GuestPtr(other_pm.0 + 42))? == live_table
+                    {
+                        return Err(invalid("replacement table is shared with another device"));
+                    }
+                }
+            }
+        } else if live_table != table {
+            return Err(invalid(
+                "dispose the original device table before replacing it",
+            ));
+        }
+        let table = live_table;
+        if table != 0 {
+            record(memory, process, table, 8)?;
+        }
         record(memory, process, inverse, 6)?;
-        if memory.u32(GuestPtr(gd.0 + 6))? != inverse
-            || memory.u32(GuestPtr(gd.0 + 22))? != pixels
-            || memory.u32(GuestPtr(pm.0 + 42))? != table
+        if memory.u32(GuestPtr(gd.0 + 6))? != inverse || memory.u32(GuestPtr(gd.0 + 22))? != pixels
         {
             return Err(invalid("detached device supporting handles were replaced"));
         }
@@ -240,10 +321,16 @@ impl Manager {
                 "select another device before disposing the current device",
             ));
         }
-        for h in [device, inverse, pixels, table] {
+        for h in [device, inverse, pixels, table]
+            .into_iter()
+            .filter(|h| *h != 0)
+        {
             memory.validate_write(GuestPtr(h), 4)?;
         }
-        for h in [device, inverse, pixels, table] {
+        for h in [device, inverse, pixels, table]
+            .into_iter()
+            .filter(|h| *h != 0)
+        {
             process.dispose_handle(memory, h)?;
         }
         self.detached.remove(&device);
@@ -255,6 +342,9 @@ impl Manager {
         }
         let saved = process.mem_error;
         let result = (|| {
+            if let Op::DisposeTable(table) = op {
+                return self.dispose_table(memory, process, table);
+            }
             if let Op::Dispose(device) = op {
                 return self.dispose_detached(memory, process, device);
             }
@@ -376,6 +466,7 @@ impl Manager {
             let data = record(memory, process, device, 62)?;
             match op {
                 Op::New { .. }
+                | Op::DisposeTable(_)
                 | Op::Dispose(_)
                 | Op::Maximum(_)
                 | Op::Depth { .. }

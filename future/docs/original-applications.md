@@ -2121,3 +2121,36 @@ still the latest evidence. Neither original game is playable. Next executable
 slice: real ColorTable disposal/replacement ownership and subsequent Marathon
 setup, preserving main palettes and detached device cleanup. Full rebuild stays
 active; draft PR and no merge/release/deployment restrictions remain in force.
+
+
+## ColorTable replacement checkpoint (2026-10-16)
+
+DisposeCTable ($AA24/PPC import) now frees a checked owned ColorTable and forgets
+its detached-device ownership before the master pointer can be reused. It leaves
+the caller's PixMap field unchanged; the caller installs its replacement.
+DisposeGDevice can then free an independent live replacement, or a nil table,
+while rejecting main display storage, structural handles and replacement tables
+shared with another detached device. Replacement of PixMap/inverse handles and
+general borrowed-table lifecycle remain unfinished. Main palettes stay protected.
+
+Final acceptance: 13 device tests plus one pinned-SDK compiler-fixture test running
+both CPUs pass, zero failed/ignored. GPU CopyBits/readback executed. Logs:
+/tmp/systemless-disposetable-final-tests.txt and
+/tmp/systemless-disposetable-final-sdk-test.txt (its filtered device target runs
+zero tests; only the one MPW result is counted). The earlier 12-test run predates
+final guards and is preliminary. Compiler build:
+/tmp/systemless-disposetable-sdk-build.txt, no compiler/linker errors.
+Strict Rust 1.99 all-target lint passes:
+/tmp/systemless-disposetable-acceptance-lint.txt. Sequential changed-file formatting
+and whitespace checks pass. No full-suite or minimum-version rerun is claimed.
+
+Original Marathon now disposes the initial table, duplicates its chosen table,
+builds a 3-bit inverse table and selects the offscreen device. It then faults in
+ColorPort Open at PC $01034CEE with Memory read address 0. This is a runtime fault,
+not another missing trap or a gameplay pass. Evidence:
+/tmp/systemless-marathon-disposetable.txt, exit 1. The current PixMap has a zero
+baseAddr during setup; investigate color-port initialization's use of pixel-storage
+validation for default color metadata. No callbacks complete before this boundary.
+EV was not replayed and remains at its previously observed ProtectEntry boundary.
+Neither original is playable. Full rebuild stays active; next work is the actual
+color-port fault and subsequent Marathon startup.

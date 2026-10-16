@@ -2559,3 +2559,14 @@ Driver-backed modes fail explicitly. The rebuild still has one application heap;
 the documented system-heap distinction and driver initialization remain open.
 Sources: Apple NewGDevice (QuickDraw-279), InitGDevice (QuickDraw-280),
 DisposeGDevice (QuickDraw-283), mirrored at leopard-adc.pepas.com/documentation/mac/QuickDraw/.
+
+
+DisposeCTable now shares checked disposal through both CPU adapters. It validates
+the live ColorTable extent and protects registered screen/structural storage.
+Detached ownership forgets the disposed table before handle reuse; PixMap fields
+remain caller-owned. Device disposal can adopt an independent replacement or nil
+and rejects cross-device replacement sharing. Borrowed/replaced PixMap/inverse
+lifecycles remain unfinished. References: Apple QuickDraw Reference,
+https://leopard-adc.pepas.com/documentation/Carbon/Reference/QuickDraw_Ref/QuickDraw_Ref.pdf
+and QD13's offscreen table replacement example:
+https://leopard-adc.pepas.com/technotes/qd/qd_13.html

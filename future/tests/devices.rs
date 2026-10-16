@@ -26,6 +26,7 @@ fn app() -> LoadedApplication {
             b"GetMaxDevice",
             b"NewGDevice",
             b"DisposeGDevice",
+            b"DisposeCTable",
         ],
         64,
     );
@@ -36,7 +37,7 @@ fn app() -> LoadedApplication {
             GuestPtr(0x50000000),
             [
                 0xaa32u16, 0xaa2a, 0xaa29, 0xaa2b, 0xaa2c, 0xaa34, 0xa8ec, 0xaa31, 0xaa2d, 0xaa27,
-                0xaa2f, 0xaa30,
+                0xaa2f, 0xaa30, 0xaa24,
             ]
             .into_iter()
             .flat_map(u16::to_be_bytes)
@@ -647,4 +648,100 @@ fn detached_device_partial_allocation_failure_returns_nil_and_reclaims_storage()
     for pointer in [devices::MAIN, devices::FIRST, devices::CURRENT] {
         assert_eq!(a.runtime.memory.u32(pointer).unwrap(), 0);
     }
+}
+
+#[test]
+fn both_cpus_dispose_and_replace_detached_tables_without_freeing_main_palette() {
+    for architecture in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        let main = ppc(&mut a, 1, &[]);
+        let before = a.runtime.process.free_memory();
+        let main_data = a.runtime.memory.u32(GuestPtr(main)).unwrap();
+        let main_pm = a.runtime.memory.u32(GuestPtr(main_data + 22)).unwrap();
+        let main_pm_data = a.runtime.memory.u32(GuestPtr(main_pm)).unwrap();
+        let main_table = a.runtime.memory.u32(GuestPtr(main_pm_data + 42)).unwrap();
+        assert!(call(&mut a, Op::DisposeTable(main_table)).is_err());
+        let device = call(
+            &mut a,
+            Op::New {
+                reference: 0,
+                mode: -1,
+            },
+        )
+        .unwrap();
+        let gd = a.runtime.memory.u32(GuestPtr(device)).unwrap();
+        let pm = a.runtime.memory.u32(GuestPtr(gd + 22)).unwrap();
+        let data = a.runtime.memory.u32(GuestPtr(pm)).unwrap();
+        let table = a.runtime.memory.u32(GuestPtr(data + 42)).unwrap();
+        match architecture {
+            Architecture::PowerPc => {
+                ppc(&mut a, 15, &[table]);
+            }
+            Architecture::M68k => {
+                native(&mut a, 12, &table.to_be_bytes(), 0);
+            }
+        }
+        assert_eq!(a.runtime.memory.u32(GuestPtr(table)).unwrap(), 0);
+        assert_eq!(a.runtime.memory.u32(GuestPtr(data + 42)).unwrap(), table);
+        let replacement = a
+            .runtime
+            .process
+            .new_handle(&mut a.runtime.memory, 16, true)
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(data + 42), &replacement.to_be_bytes())
+            .unwrap();
+        call(&mut a, Op::Dispose(device)).unwrap();
+        assert_eq!(a.runtime.memory.u32(GuestPtr(replacement)).unwrap(), 0);
+        assert_eq!(call(&mut a, Op::Current).unwrap(), main);
+        assert_eq!(a.runtime.process.free_memory(), before);
+    }
+}
+
+#[test]
+fn replacement_table_aliases_are_rejected_before_device_storage_is_freed() {
+    let mut a = app();
+    let first = call(
+        &mut a,
+        Op::New {
+            reference: 0,
+            mode: -1,
+        },
+    )
+    .unwrap();
+    let second = call(
+        &mut a,
+        Op::New {
+            reference: 0,
+            mode: -1,
+        },
+    )
+    .unwrap();
+    let fields = |a: &LoadedApplication, device| {
+        let gd = a.runtime.memory.u32(GuestPtr(device)).unwrap();
+        let pm = a.runtime.memory.u32(GuestPtr(gd + 22)).unwrap();
+        let data = a.runtime.memory.u32(GuestPtr(pm)).unwrap();
+        (
+            data + 42,
+            a.runtime.memory.u32(GuestPtr(data + 42)).unwrap(),
+        )
+    };
+    let (field, old) = fields(&a, first);
+    let (_, shared) = fields(&a, second);
+    call(&mut a, Op::DisposeTable(old)).unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(field), &shared.to_be_bytes())
+        .unwrap();
+    let before = a.runtime.process.free_memory();
+    assert!(call(&mut a, Op::Dispose(first)).is_err());
+    assert_eq!(a.runtime.process.free_memory(), before);
+    assert_ne!(a.runtime.memory.u32(GuestPtr(first)).unwrap(), 0);
+    a.runtime
+        .memory
+        .write(GuestPtr(field), &0u32.to_be_bytes())
+        .unwrap();
+    call(&mut a, Op::Dispose(first)).unwrap();
+    call(&mut a, Op::Dispose(second)).unwrap();
 }
