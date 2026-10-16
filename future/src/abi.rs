@@ -78,6 +78,7 @@ pub enum Service {
     DisposeDevice,
     DisposeColorTable,
     GetColorTable,
+    RgbToHsl,
     SetEntries,
     GetCTSeed,
     ReserveEntry,
@@ -422,6 +423,7 @@ impl Abi {
             b"OpenCPort" => Some(Service::ColorPort(crate::color_ports::Action::Open)),
             b"InitCPort" => Some(Service::ColorPort(crate::color_ports::Action::Init)),
             b"CloseCPort" => Some(Service::ColorPort(crate::color_ports::Action::Close)),
+            b"RGB2HSL" => Some(Service::RgbToHsl),
             b"SetEntries" => Some(Service::SetEntries),
             b"GetCTSeed" => Some(Service::GetCTSeed),
             b"ReserveEntry" => Some(Service::ReserveEntry),
@@ -1635,6 +1637,30 @@ impl Abi {
                 };
                 c.dar[15] = next;
                 Ok((Call::Device(op), Reply::StackWord(GuestPtr(next))))
+            }
+            0xa82e => {
+                if memory.u16(GuestPtr(sp))? != 6 {
+                    return Err(Error::Service(u32::from(opcode)));
+                }
+                let args = memory.read(GuestPtr(sp), 10)?;
+                let destination = GuestPtr(u32::from_be_bytes(args[2..6].try_into().unwrap()));
+                let source = GuestPtr(u32::from_be_bytes(args[6..10].try_into().unwrap()));
+                if source.0 == 0 || destination.0 == 0 {
+                    return Err(Error::Graphics("nil Color Picker conversion record".into()));
+                }
+                memory.read(source, 6)?;
+                memory.validate_write(destination, 6)?;
+                let next = sp
+                    .checked_add(10)
+                    .ok_or_else(|| Error::Cpu("Color Picker stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((
+                    Call::Color(crate::color::Op::RgbToHsl {
+                        source,
+                        destination,
+                    }),
+                    Reply::None,
+                ))
             }
             0xaa3f => {
                 let args = memory.read(GuestPtr(sp), 8)?;
@@ -3434,6 +3460,10 @@ impl Abi {
                 destination: c.gpr[4],
                 resolution: c.gpr[5] as i16,
             }),
+            Service::RgbToHsl => Call::Color(crate::color::Op::RgbToHsl {
+                source: GuestPtr(c.gpr[3]),
+                destination: GuestPtr(c.gpr[4]),
+            }),
             Service::SetEntries => Call::Color(crate::color::Op::SetEntries {
                 start: c.gpr[3] as i16,
                 count: c.gpr[4] as i16,
@@ -4127,7 +4157,8 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Intersects | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::SetEntries
+                    Service::RgbToHsl
+                        | Service::SetEntries
                         | Service::ReserveEntry
                         | Service::ProtectEntry
                         | Service::SetClientID

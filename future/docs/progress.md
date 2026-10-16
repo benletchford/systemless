@@ -6519,3 +6519,46 @@ selector through shared services, preserving fractional formats and both ABIs.
 Full rebuild and text-library integration remain incomplete.
 
 Final strict fixture lint: /tmp/systemless-setentries-test-lint.txt, terminal exit 0.
+
+
+## Shared RGB2HSL conversion (2026-10-16)
+
+Pack12 A82E selector 6 and the PPC RGB2HSL import now marshal source/destination
+pointers to one shared color-record conversion. The service snapshots all three
+unsigned sixteen-bit RGB components before validating/writing the six-byte HSL
+record, so in-place and partially overlapping records work. Native frames pop
+the selector plus two pointers (10 bytes); record preflight precedes stack
+changes. PPC uses R3/R4 and a void reply. Color Picker conversions preserve
+QDError, resource/memory errors, palette seeds and guest allocation state.
+
+The integer algorithm uses bounded rational intermediates and nearest rounding,
+with halves upward. Saturation/lightness retain sixteen-bit component precision;
+red/green/blue hue anchors are 0/21845/43690. This follows the documented model and
+the legacy implementation's rounding policy; it is not a new native last-bit
+parity or exhaustive legacy-corpus claim. Other Pack12 selectors remain explicit
+unsupported operations. No destination-pixel renderer or dependency was added.
+
+Primary reference: [Apple's mirrored Color Picker chapter](https://spinsidemacintosh.neocities.org/im202),
+Conversion Facilities / package summary, specifies selector 6, HSL field order,
+unsigned SmallFract components, and the hue anchors. The published
+[HSL structure](https://dev.os9.ca/techpubs/mac/ACIReference/ACIReference-85.html)
+also distinguishes lightness from HSV brightness.
+
+Validation: /tmp/systemless-rgb-hsl-tests.txt, terminal exit 0: three tests pass,
+covering both actual CPU adapters, primary/complementary colors, grayscale,
+near-gray/near-white and low-value rounding, in-place/partial overlap, unchanged
+surrounding bytes, preserved QDError/error state/allocation, and invalid/readonly
+record preflight with unchanged native stack. Strict runtime/probe lint passes
+in /tmp/systemless-rgb-hsl-lint.txt; fixture lint is recorded separately.
+Formatting and whitespace checks pass.
+
+Original Escape Velocity now passes RGB2HSL and stops at FixRatio A869,
+PC 0001A5EA: /tmp/systemless-ev-rgb-hsl.txt, terminal exit 1 at the explicit missing
+service; tracer build exit 0. Same original resource fork, one million instruction
+bound, 640x480x8 graphics, no companion volume. Sound/timer/VBL callbacks remain
+zero; title/menu/gameplay/audio acceptance is not established. Marathon was not
+replayed. Next: verify signed integer-to-Fixed ratio semantics and overflow/error
+behavior, implement the shared arithmetic service and both ABI adapters, then
+replay. Full rebuild and text-library integration remain incomplete.
+
+Final strict fixture lint: /tmp/systemless-rgb-hsl-test-lint.txt, terminal exit 0.

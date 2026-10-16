@@ -8,6 +8,10 @@ use crate::{
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    RgbToHsl {
+        source: GuestPtr,
+        destination: GuestPtr,
+    },
     SetEntries {
         start: i16,
         count: i16,
@@ -146,8 +150,55 @@ fn table(palette: &Palette, resolution: u16) -> Vec<u8> {
     }
     bytes
 }
+// Normalized sixteen-bit components, with exact rational intermediates and
+// nearest rounding (half upward). This matches the legacy numerical policy;
+// native Color Picker last-bit rounding remains a separate conformance check.
+fn rgb_to_hsl(rgb: [u16; 3]) -> [u16; 3] {
+    let [r, g, b] = rgb.map(i64::from);
+    let high = r.max(g).max(b);
+    let low = r.min(g).min(b);
+    let sum = high + low;
+    let delta = high - low;
+    let lightness = ((sum + 1) / 2) as u16;
+    if delta == 0 {
+        return [0, 0, lightness];
+    }
+    let mut hue = if high == r {
+        g - b
+    } else if high == g {
+        2 * delta + b - r
+    } else {
+        4 * delta + r - g
+    };
+    if hue < 0 {
+        hue += 6 * delta;
+    }
+    let round = |numerator: i64, denominator: i64| {
+        ((numerator * 65535 + denominator / 2) / denominator) as u16
+    };
+    let saturation = round(delta, if sum <= 65535 { sum } else { 131070 - sum });
+    [round(hue, 6 * delta), saturation, lightness]
+}
 impl Manager {
     pub fn call(&mut self, m: &mut Memory, p: &mut Process, op: Op) -> Result<u32> {
+        if let Op::RgbToHsl {
+            source,
+            destination,
+        } = op
+        {
+            if source.0 == 0 || destination.0 == 0 {
+                return Err(bad("nil Color Picker conversion record"));
+            }
+            let raw = m.read(source, 6)?;
+            let rgb = std::array::from_fn(|i| u16::from_be_bytes([raw[i * 2], raw[i * 2 + 1]]));
+            m.validate_write(destination, 6)?;
+            let bytes: Vec<_> = rgb_to_hsl(rgb)
+                .into_iter()
+                .flat_map(u16::to_be_bytes)
+                .collect();
+            m.write(destination, &bytes)?;
+            return Ok(0);
+        }
         if op == Op::Seed {
             let seed = self.next_seed(0)?;
             self.serial = seed;
@@ -170,7 +221,7 @@ impl Manager {
                 source,
             } => self.set_entries(m, p, start, count, source),
             Op::Reserve { index, reserve } => self.entry(m, p, index, reserve, RESERVED),
-            Op::Error | Op::Seed => unreachable!(),
+            Op::Error | Op::Seed | Op::RgbToHsl { .. } => unreachable!(),
         };
         (p.mem_error, p.res_error) = saved;
         let error = result?;
