@@ -2125,6 +2125,21 @@ impl Runtime {
                             let count = self.process.count_resources(kind, current_only)?;
                             reply.apply(&mut self.cpu, &mut self.memory, u32::from(count), 0)?;
                         }
+                        Call::GetIndexedResource {
+                            kind,
+                            index,
+                            current_only,
+                        } => {
+                            self.memory.validate_write(GuestPtr(0xa60), 2)?;
+                            self.memory.validate_write(GuestPtr(0x220), 2)?;
+                            let value = self.process.get_indexed_resource(
+                                &mut self.memory,
+                                kind,
+                                index,
+                                current_only,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
+                        }
                         Call::GetCurrentResource { kind, id } => {
                             let v =
                                 self.process
@@ -2630,6 +2645,7 @@ impl Runtime {
                                 crate::process::resources::Op::Open { .. }
                                     | crate::process::resources::Op::OpenSpec { .. }
                             )
+                            | Call::GetIndexedResource { .. }
                             | Call::GetCurrentResource { .. }
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
@@ -2654,6 +2670,7 @@ impl Runtime {
                             | Call::CIcon(crate::cicon::Op::Get(_))
                             | Call::PixPat(crate::pixpat::Op::Get(_))
                             | Call::CountResources { .. }
+                            | Call::GetIndexedResource { .. }
                             | Call::GetCurrentResource { .. }
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
@@ -2785,6 +2802,7 @@ impl Runtime {
                         | Call::PixelBase(_)
                         | Call::Pixels { .. }
                         | Call::CountResources { .. }
+                        | Call::GetIndexedResource { .. }
                         | Call::GetCurrentResource { .. }
                         | Call::GetResource { .. }
                         | Call::SoundChannel(_)

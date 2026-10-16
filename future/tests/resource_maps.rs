@@ -20,6 +20,8 @@ fn app() -> LoadedApplication {
             b"FSpOpenResFile",
             b"CountResources",
             b"Count1Resources",
+            b"GetIndResource",
+            b"Get1IndResource",
         ],
         32,
     );
@@ -33,6 +35,14 @@ fn app() -> LoadedApplication {
         .map(
             GuestPtr(0x51000000),
             vec![0xa9, 0xc4, 0xa9, 0x98, 0xa9, 0x9a, 0xa9, 0xa4],
+            Permissions::RX,
+        )
+        .unwrap();
+    a.runtime
+        .memory
+        .map(
+            GuestPtr(0x51001000),
+            vec![0xa9, 0x9d, 0xa8, 0x0e],
             Permissions::RX,
         )
         .unwrap();
@@ -641,4 +651,195 @@ fn count_frames_validate_the_word_result_before_consuming_type() {
             );
         }
     }
+}
+
+fn indexed(
+    a: &mut LoadedApplication,
+    arch: Architecture,
+    kind: [u8; 4],
+    index: i16,
+    current_only: bool,
+) -> u32 {
+    let stack = STACK_BASE + 0x8000;
+    a.runtime.process.mem_error = -99;
+    if arch == Architecture::M68k {
+        let mut frame = index.to_be_bytes().to_vec();
+        frame.extend(kind);
+        frame.extend([0xa5; 8]);
+        a.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+        a.runtime.cpu = Cpu::new(arch, 0x51001000 + u32::from(current_only) * 2, stack);
+        let Cpu::M68k(c) = &mut a.runtime.cpu else {
+            unreachable!()
+        };
+        c.dar[0] = 0x12345678;
+    } else {
+        let tv = a
+            .runtime
+            .memory
+            .u32(GuestPtr(
+                a.info.toc_or_a5 + 8 + (7 + u32::from(current_only)) * 4,
+            ))
+            .unwrap();
+        let pc = a.runtime.memory.u32(GuestPtr(tv)).unwrap();
+        a.runtime.cpu = Cpu::new(arch, pc, stack);
+        let Cpu::PowerPc(c) = &mut a.runtime.cpu else {
+            unreachable!()
+        };
+        c.gpr[3] = u32::from_be_bytes(kind);
+        c.gpr[4] = 0xa5a50000 | u32::from(index as u16);
+    }
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    assert_eq!(
+        a.runtime.memory.u16(GuestPtr(0xa60)).unwrap() as i16,
+        a.runtime.process.res_error
+    );
+    assert_eq!(
+        a.runtime.memory.u16(GuestPtr(0x220)).unwrap() as i16,
+        a.runtime.process.mem_error
+    );
+    match &a.runtime.cpu {
+        Cpu::M68k(c) => {
+            assert_eq!(c.dar[15], stack + 6);
+            assert_eq!(c.dar[0], 0x12345678);
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(stack + 10), 4).unwrap(),
+                [0xa5; 4]
+            );
+            a.runtime.memory.u32(GuestPtr(stack + 6)).unwrap()
+        }
+        Cpu::PowerPc(c) => {
+            assert_eq!(c.gpr[4], 0xa5a50000 | u32::from(index as u16));
+            c.gpr[3]
+        }
+    }
+}
+fn payload(a: &LoadedApplication, h: u32) -> u8 {
+    let p = a.runtime.memory.u32(GuestPtr(h)).unwrap();
+    a.runtime.memory.read(GuestPtr(p), 1).unwrap()[0]
+}
+#[test]
+fn indexed_resources_use_all_open_files_and_reference_order_independent_of_use_res_file() {
+    use systemless_future::load::resource::ResourceFork;
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        let raw = support::resource(vec![
+            (*b"DATA", 90, None, vec![90]),
+            (*b"DATA", -7, None, vec![77]),
+            (*b"DATA", 15, None, vec![15]),
+        ]);
+        a.runtime
+            .process
+            .install_application_resources(ResourceFork::parse(&raw).unwrap());
+        let original = a.runtime.process.current_resource_file();
+        file(
+            &mut a,
+            b"A",
+            &support::resource(vec![
+                (*b"DATA", 30, None, vec![30]),
+                (*b"DATA", 9, None, vec![19]),
+            ]),
+        );
+        file(
+            &mut a,
+            b"B",
+            &support::resource(vec![
+                (*b"DATA", 9, None, vec![29]),
+                (*b"DATA", 100, None, vec![100]),
+            ]),
+        );
+        name(&mut a, b"A");
+        let ra = call(&mut a, arch, 0, 0);
+        name(&mut a, b"B");
+        let rb = call(&mut a, arch, 0, 0);
+        call(&mut a, arch, 1, ra as u32);
+        let mut first = 0;
+        for (i, (value, owner)) in [
+            (29, rb),
+            (100, rb),
+            (30, ra),
+            (19, ra),
+            (90, original),
+            (77, original),
+            (15, original),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let h = indexed(&mut a, arch, *b"DATA", i as i16 + 1, false);
+            assert_ne!(h, 0);
+            assert_eq!(payload(&a, h), value);
+            assert_eq!(call(&mut a, arch, 3, h), owner);
+            if i == 0 {
+                first = h;
+            }
+        }
+        assert_eq!(a.runtime.process.current_resource_file(), ra);
+        assert_ne!(get(&mut a, 9), first);
+        for (index, wanted) in [(1, 30), (2, 19)] {
+            let h = indexed(&mut a, arch, *b"DATA", index, true);
+            assert_eq!(payload(&a, h), wanted);
+        }
+        for (kind, index, one) in [
+            (*b"DATA", 0, false),
+            (*b"DATA", -1, false),
+            (*b"DATA", 8, false),
+            (*b"NONE", 1, false),
+            (*b"DATA", 3, true),
+        ] {
+            let free = a.runtime.process.free_memory();
+            assert_eq!(indexed(&mut a, arch, kind, index, one), 0);
+            assert_eq!(a.runtime.process.res_error, -192);
+            assert_eq!(a.runtime.process.mem_error, -99);
+            assert_eq!(a.runtime.process.free_memory(), free);
+        }
+        let ptr = a.runtime.memory.u32(GuestPtr(first)).unwrap();
+        a.runtime.memory.write(GuestPtr(ptr), &[42]).unwrap();
+        let other = if arch == Architecture::M68k {
+            Architecture::PowerPc
+        } else {
+            Architecture::M68k
+        };
+        assert_eq!(indexed(&mut a, other, *b"DATA", 1, false), first);
+        assert_eq!(payload(&a, first), 42);
+        a.runtime
+            .process
+            .release_resource(&mut a.runtime.memory, first)
+            .unwrap();
+        let h = indexed(&mut a, arch, *b"DATA", 1, false);
+        assert_eq!(payload(&a, h), 29);
+        call(&mut a, arch, 2, rb as u32);
+        let h = indexed(&mut a, arch, *b"DATA", 1, false);
+        assert_eq!(payload(&a, h), 30);
+        assert_eq!(
+            a.runtime.process.count_resources(*b"DATA", false).unwrap(),
+            5
+        );
+    }
+}
+#[test]
+fn reference_list_order_survives_serialization_without_sorting_signed_ids() {
+    use systemless_future::load::resource::ResourceFork;
+    let raw = support::resource(vec![
+        (*b"DATA", 100, None, vec![1]),
+        (*b"DATA", -7, None, vec![2]),
+        (*b"DATA", 2, None, vec![3]),
+    ]);
+    let map = ResourceFork::parse(&raw).unwrap();
+    assert_eq!(
+        map.indexed(*b"DATA").map(|r| r.id).collect::<Vec<_>>(),
+        [100, -7, 2]
+    );
+    let reparsed = ResourceFork::parse(&map.encode().unwrap()).unwrap();
+    assert_eq!(reparsed.attributes, map.attributes);
+    assert_eq!(
+        reparsed.entries().collect::<Vec<_>>(),
+        map.entries().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        reparsed
+            .indexed(*b"DATA")
+            .map(|r| r.data[0])
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
 }

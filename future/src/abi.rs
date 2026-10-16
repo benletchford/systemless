@@ -241,6 +241,8 @@ pub enum Service {
     SetHandleSize,
     CreateResFile,
     GetResource,
+    GetIndResource,
+    Get1IndResource,
     Get1Resource,
     PlotCIcon,
     GetCIcon,
@@ -726,6 +728,8 @@ impl Abi {
             b"GetPattern" => Some(Service::GetPattern),
             b"CreateResFile" => Some(Service::CreateResFile),
             b"GetResInfo" => Some(Service::GetResInfo),
+            b"GetIndResource" => Some(Service::GetIndResource),
+            b"Get1IndResource" => Some(Service::Get1IndResource),
             b"GetResource" => Some(Service::GetResource),
             b"Get1Resource" => Some(Service::Get1Resource),
             b"PlotCIcon" => Some(Service::PlotCIcon),
@@ -3717,7 +3721,7 @@ impl Abi {
                     Reply::StackWord(GuestPtr(result)),
                 ))
             }
-            0xa9a0 | 0xa81f => {
+            0xa9a0 | 0xa81f | 0xa99d | 0xa80e => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let id = i16::from_be_bytes(args[..2].try_into().unwrap());
                 let kind = args[2..6].try_into().unwrap();
@@ -3727,7 +3731,13 @@ impl Abi {
                 memory.validate_write(GuestPtr(result), 4)?;
                 c.dar[15] = result;
                 Ok((
-                    if opcode == 0xa81f {
+                    if opcode == 0xa99d || opcode == 0xa80e {
+                        Call::GetIndexedResource {
+                            kind,
+                            index: id,
+                            current_only: opcode == 0xa80e,
+                        }
+                    } else if opcode == 0xa81f {
                         Call::GetCurrentResource { kind, id }
                     } else {
                         Call::GetResource { kind, id }
@@ -4910,6 +4920,11 @@ impl Abi {
             Service::CountResources | Service::Count1Resources => Call::CountResources {
                 kind: c.gpr[3].to_be_bytes(),
                 current_only: service == Service::Count1Resources,
+            },
+            Service::GetIndResource | Service::Get1IndResource => Call::GetIndexedResource {
+                kind: c.gpr[3].to_be_bytes(),
+                index: c.gpr[4] as i16,
+                current_only: service == Service::Get1IndResource,
             },
             Service::Get1Resource => Call::GetCurrentResource {
                 kind: c.gpr[3].to_be_bytes(),

@@ -250,6 +250,36 @@ impl Process {
             0
         };
     }
+    /// IM: More Macintosh Toolbox 1-99–1-100: all open files, newest first,
+    /// independently of UseResFile. Indices are one-based; misses are -192.
+    pub fn get_indexed_resource(
+        &mut self,
+        memory: &mut Memory,
+        kind: [u8; 4],
+        index: i16,
+        current_only: bool,
+    ) -> Result<u32> {
+        if index > 0 {
+            let owners = if current_only {
+                vec![self.resource_files.current]
+            } else {
+                self.resource_files.chain.clone()
+            };
+            let selected = owners
+                .into_iter()
+                .flat_map(|owner| {
+                    self.resource_map(owner).into_iter().flat_map(move |map| {
+                        map.indexed(kind).map(move |resource| (owner, resource.id))
+                    })
+                })
+                .nth(index as usize - 1);
+            if let Some((owner, id)) = selected {
+                return self.get_owned_resource(memory, owner, kind, id);
+            }
+        }
+        self.res_error = -192;
+        Ok(0)
+    }
     pub fn get_current_resource(
         &mut self,
         memory: &mut Memory,

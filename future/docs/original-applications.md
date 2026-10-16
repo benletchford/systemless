@@ -4789,3 +4789,34 @@ Saved-volume SHA256 remains
 `e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`.
 Independent catalog/pilot/preferences/alias/script/companion checks pass. Budget
 exhaustion is not gameplay acceptance. Private evidence:ev/evidence/2026-10-17-getrgb-final.*.
+
+
+### Indexed resources and the next processing boundary (2026-10-17)
+
+GetIndResource/Get1IndResource now share real owner-scoped loading and preserve
+per-type reference-list order through parsing, insertion and serialization.
+Full enumeration uses newest-opened-first maps independently of UseResFile,
+following Apple's documented contract. All58scoped insertion/loading/lifetime/
+map/update checks pass,0ignored; strict lint and tracer build pass. See progress.md
+for sources, exact scope and corrected test-fixture failures.
+
+Original Marathon completes GetIndResource('film',2), selecting film129 from its
+original128,129reference order, then copies342header bytes and continues through
+guest processing. The unchanged8M request exhausts at snapshot CPU7,999,258,
+PC0102295C. A same-budget258-instruction window shows A1 advancing45bytes,
+justifying one bounded16M follow-up. That run reaches CPU15,999,258,PC010229FE
+with no new missing service and the same black canonical frame, SHA256
+`a6087ec5178c7619d8136de2aa159dde7161d56f9e4c3b899b7165935d0353d8`.
+No completed demo or gameplay is established. Next is identifying the active
+guest routine, input/output bounds and counters, rather than assuming a wait or
+increasing budgets without evidence. The earlier main-menu capture remains
+historical evidence before this later processing/fade stage.
+
+Both Marathon volumes independently preserve all original companions/forks/
+metadata and only add the same first-run preferences; output SHA256 remains
+`e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+Original EV24M retains its exact prior frame, volume, budget PC007E6830 and all
+catalog/pilot/preferences/alias/script/companion verifications. Neither game's
+playability or the complete rebuild/GPU text acceptance is proven.
+Private evidence:marathon/evidence/2026-10-17-indresource* and
+ ev/evidence/2026-10-17-indresource.*.

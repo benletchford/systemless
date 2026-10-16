@@ -387,6 +387,11 @@ pub enum Call {
         kind: [u8; 4],
         current_only: bool,
     },
+    GetIndexedResource {
+        kind: [u8; 4],
+        index: i16,
+        current_only: bool,
+    },
     GetCurrentResource {
         kind: [u8; 4],
         id: i16,

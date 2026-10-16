@@ -10435,3 +10435,85 @@ Saved-volume SHA256 remains
 `e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`.
 Independent catalog/pilot/preferences/alias/script/companion checks pass. Budget
 exhaustion is not gameplay acceptance. Private evidence:ev/evidence/2026-10-17-getrgb-final.*.
+
+
+### Ordered indexed resource retrieval (2026-10-17)
+
+Original Marathon reaches GetIndResource/A99D after drawing its main menu.
+GetIndResource and Get1IndResource now share Process::get_indexed_resource,
+with native function frames and InterfaceLib imports. Indices are signed,
+one-based words; the PPC adapter uses the low word. Nil results for nonpositive,
+out-of-range or absent-type indices publish resNotFound (-192) without allocation.
+Successful reads use the existing owner/type/ID handle cache and resource loading,
+including existing release, attributes, heap failure and file-close behavior.
+
+[Apple's Resource Manager reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Resource_Manager/Reference/reference.html#//apple_ref/c/func/GetIndResource)
+specifies newest-opened-first enumeration of all open resource files, independent
+of UseResFile; Get1IndResource uses only the current file. This differs from the
+preserved baseline's current-file-tail walk. The implementation follows the
+primary contract and retains ordinary ID/name lookup behavior separately.
+[Apple Universal Interfaces 3.4 Resources.h](https://github.com/elliotnunn/UniversalInterfaces/blob/master/3.4/Universal/Interfaces/CIncludes/Resources.h)
+confirms trap words A99D/A80E and the type/short-index/handle-result ABI.
+
+ResourceFork now retains reference-list order for each type, independently of
+its ID lookup map. Parsing records that order, AddResource appends to it, and
+encoding preserves it. Sorting signed IDs would otherwise silently change indexed
+lookup after a save/reopen. Resource type enumeration is not added in this slice.
+The normal eager resource-loading path is supported; SetResLoad and disabled-load
+empty-handle semantics remain explicitly unsupported, not simulated as success.
+Virtual built-in resources are not synthesized into enumerated maps.
+
+New real-CPU fixtures enumerate unsorted signed IDs across three maps, preserve
+duplicate-ID file ownership, distinguish ordinary lookup from indexed lookup
+after UseResFile, restrict Get1IndResource to the current map, preserve handle
+identity across CPU routes, reload released data, and remove a closed map from
+enumeration. A separate roundtrip checks reference order and payloads. Existing
+resource insertion, update, lifetime and loader fixtures are regression gates.
+Validation: 58 scoped checks pass, 0 ignored: 4 resource insertion, 33 loading,
+7 lifetime, 10 map and 4 update checks. The initial test compile error and a
+fixture code-mapping overlap are retained separately; the final map fixture uses
+its own executable region and all original file-opening assertions pass. Full
+affected-target/tracer Clippy passes (2m47s), final fixture Clippy passes (13.24s),
+and the tracer build passes (2m05s). Changed-file format/whitespace checks pass.
+
+An unchanged original Marathon 8M request now passes GetIndResource('film',2),
+copies a 342-byte header and continues through timer/driver/color work to budget
+exhaustion at snapshot CPU7,999,258, PC0102295C. Its original fork independently
+contains film128 (32,838 bytes), then film129 (7,902 bytes), so ordinal2 selects
+129. The inspected final640x480frame is black, SHA256
+`a6087ec5178c7619d8136de2aa159dde7161d56f9e4c3b899b7165935d0353d8`.
+This is neither startup completion nor verified demo playback. The precise wait
+or decode work at the final boundary remains under diagnostic inspection below.
+Independent saved-volume verification passes, with the same first-run preferences
+addition and unchanged original companions/forks/metadata, output SHA256
+`e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+Private evidence:marathon/evidence/2026-10-17-indresource.*.
+
+
+The same-build/same8M diagnostic trace contains258instructions (CPU7,999,000–
+7,999,257), with A1 advancing0071F484→0071F4B1 (45 bytes) across multiple PCs.
+It establishes active input processing at the budget boundary, not an idle wait;
+the exact decoder is not yet identified. This supports one bounded16M follow-up,
+not an application-acceptance claim. Diagnostic evidence:
+2026-10-17-indresource-tail-trace.txt.
+
+Final-source original EV24M regression retains budget PC007E6830 and the exact
+preceding canonical frame/SHA256
+`11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48`.
+The independently verified catalog/pilot/preferences/alias/script/companions are
+unchanged, outputvolumeSHA256
+`e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`.
+Private evidence:ev/evidence/2026-10-17-indresource.*. Neither game's gameplay
+nor the full rebuild/text acceptance is established.
+
+
+The single16M follow-up exhausts its requested limit at snapshot CPU15,999,258,
+PC010229FE, in the same code region. Its canonical frame is byte-identical to the
+inspected8M black frame and the independently verified volume is unchanged.
+There is one GetIndexedResource call; no later missing service is reached.
+This does not prove a completed decode, stable idle loop or demo playback.
+Next: identify this original guest routine and its input/output bounds and
+progress counters before selecting further execution budgets or injecting input.
+Do not reinterpret instruction tracing as interactive performance evidence.
+Private evidence:2026-10-17-indresource-16m.{txt,ppm,slv}. The entire rebuild,
+full GPU text/library integration and both games remain unaccepted.

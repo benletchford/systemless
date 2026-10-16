@@ -18,6 +18,7 @@ pub struct Resource {
 pub struct ResourceFork {
     pub attributes: u16,
     entries: BTreeMap<([u8; 4], i16), Resource>,
+    reference_order: BTreeMap<[u8; 4], Vec<i16>>,
 }
 impl ResourceFork {
     pub(crate) fn insert_unique(&mut self, resource: Resource) -> Result<()> {
@@ -26,8 +27,21 @@ impl ResourceFork {
                 "duplicate resource type/ID mutation is not supported",
             ));
         }
+        self.reference_order
+            .entry(resource.kind)
+            .or_default()
+            .push(resource.id);
         self.entries.insert((resource.kind, resource.id), resource);
         Ok(())
+    }
+    /// Reference-list order is guest-visible through Get[1]IndResource; it
+    /// cannot be reconstructed by sorting resource IDs.
+    pub fn indexed(&self, kind: [u8; 4]) -> impl Iterator<Item = &Resource> {
+        self.reference_order
+            .get(&kind)
+            .into_iter()
+            .flatten()
+            .map(move |id| &self.entries[&(kind, *id)])
     }
     pub fn get(&self, kind: [u8; 4], id: i16) -> Option<&Resource> {
         self.entries.get(&(kind, id))
@@ -120,9 +134,7 @@ impl ResourceFork {
                     name,
                     data: contents.to_vec(),
                 };
-                if result.entries.insert((kind, id), resource).is_some() {
-                    return Err(invalid("duplicate resource ID"));
-                }
+                result.insert_unique(resource)?;
             }
         }
         Ok(result)

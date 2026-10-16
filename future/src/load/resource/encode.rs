@@ -4,8 +4,8 @@ use crate::Result;
 impl ResourceFork {
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut groups = std::collections::BTreeMap::<[u8; 4], Vec<_>>::new();
-        for r in self.entries.values() {
-            groups.entry(r.kind).or_default().push(r);
+        for kind in self.reference_order.keys() {
+            groups.insert(*kind, self.indexed(*kind).collect());
         }
         if groups.len() > 65535 {
             return Err(invalid("resource type count exceeds on-disk limit"));
