@@ -1669,6 +1669,44 @@ impl Abi {
                 c.dar[15] = next;
                 Ok((Call::Device(op), Reply::StackLong(GuestPtr(next))))
             }
+            0xa9eb => {
+                let args = memory.read(GuestPtr(sp), 10)?;
+                let selector = u16::from_be_bytes(args[..2].try_into().unwrap());
+                if ![4, 0x0810, 0x080e].contains(&selector) {
+                    return Err(Error::Cpu(format!(
+                        "unsupported FP68K selector {selector:04x}"
+                    )));
+                }
+                let destination = GuestPtr(u32::from_be_bytes(args[2..6].try_into().unwrap()));
+                let source = GuestPtr(u32::from_be_bytes(args[6..10].try_into().unwrap()));
+                memory.read(source, if selector == 0x080e { 8 } else { 10 })?;
+                if selector == 4 {
+                    memory.read(destination, 10)?;
+                }
+                memory.validate_write(destination, if selector == 0x0810 { 8 } else { 10 })?;
+                c.dar[15] = sp
+                    .checked_add(10)
+                    .ok_or_else(|| Error::Cpu("FP68K stack overflow".into()))?;
+                Ok((
+                    if selector == 4 {
+                        Call::MultiplyExtended {
+                            source,
+                            destination,
+                        }
+                    } else if selector == 0x080e {
+                        Call::DoubleToExtended {
+                            source,
+                            destination,
+                        }
+                    } else {
+                        Call::ExtendedToDouble {
+                            source,
+                            destination,
+                        }
+                    },
+                    Reply::None,
+                ))
+            }
             0xa9ec => {
                 let selector = memory.u16(GuestPtr(sp))?;
                 if selector != 0x001e {

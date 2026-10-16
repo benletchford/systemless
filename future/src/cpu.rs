@@ -12,7 +12,19 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    DoubleToExtended {
+        source: GuestPtr,
+        destination: GuestPtr,
+    },
+    ExtendedToDouble {
+        source: GuestPtr,
+        destination: GuestPtr,
+    },
     AtanExtended(GuestPtr),
+    MultiplyExtended {
+        source: GuestPtr,
+        destination: GuestPtr,
+    },
     Timer(crate::timers::Op),
     Retrace(crate::retrace::Op),
     RetraceHeader,

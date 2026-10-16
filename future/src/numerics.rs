@@ -1,5 +1,5 @@
 //! Shared software numeric services. Apple Numerics Manual, 2nd ed., ch. 24.
-//! Initial SANE slice: default round-to-nearest extended arctangent only.
+//! SANE slices use default round-to-nearest 64-bit extended significands.
 use crate::{
     memory::{GuestPtr, Memory},
     Error, Result,
@@ -11,8 +11,203 @@ pub struct Numerics {
     pub inexact: bool,
     pub underflow: bool,
     pub invalid: bool,
+    pub overflow: bool,
 }
 impl Numerics {
+    pub fn double_to_extended(
+        &mut self,
+        memory: &mut Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+    ) -> Result<()> {
+        let input = u64::from_be_bytes(memory.read(source, 8)?.try_into().unwrap());
+        memory.validate_write(destination, 10)?;
+        let bytes = self.expand_double(input);
+        memory.write(destination, &bytes)
+    }
+    fn expand_double(&mut self, input: u64) -> [u8; 10] {
+        let sign = ((input >> 48) as u16) & 0x8000;
+        let exponent = ((input >> 52) & 0x7ff) as u16;
+        let fraction = input & 0x000f_ffff_ffff_ffff;
+        let (e, m) = if exponent == 0x7ff {
+            if fraction == 0 {
+                (0x7fff, 1u64 << 63)
+            } else {
+                self.invalid |= fraction & (1 << 51) == 0;
+                (0x7fff, (1u64 << 63) | (1u64 << 62) | (fraction << 11))
+            }
+        } else if exponent != 0 {
+            (exponent + 15360, ((1u64 << 52) | fraction) << 11)
+        } else if fraction == 0 {
+            (0, 0)
+        } else {
+            let top = 63 - fraction.leading_zeros();
+            ((top as i32 - 1074 + 16383) as u16, fraction << (63 - top))
+        };
+        let mut bytes = [0; 10];
+        bytes[..2].copy_from_slice(&(sign | e).to_be_bytes());
+        bytes[2..].copy_from_slice(&m.to_be_bytes());
+        bytes
+    }
+    pub fn extended_to_double(
+        &mut self,
+        memory: &mut Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+    ) -> Result<()> {
+        let bytes = memory.read(source, 10)?.try_into().unwrap();
+        memory.validate_write(destination, 8)?;
+        let result = self.convert_double(bytes)?;
+        memory.write(destination, &result.to_be_bytes())
+    }
+    fn convert_double(&mut self, bytes: [u8; 10]) -> Result<u64> {
+        let se = u16::from_be_bytes(bytes[..2].try_into().unwrap());
+        let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
+        let e = se & 0x7fff;
+        let sign = u64::from(se & 0x8000) << 48;
+        if (e != 0 && m >> 63 == 0) || (e == 0 && m >> 63 != 0) {
+            return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
+        }
+        if e == 0x7fff {
+            if m == 1 << 63 {
+                return Ok(sign | 0x7ff0_0000_0000_0000);
+            }
+            self.invalid |= m & (1 << 62) == 0;
+            return Ok(sign | 0x7ff8_0000_0000_0000 | ((m & 0x7fff_ffff_ffff_ffff) >> 11));
+        }
+        if m == 0 {
+            return Ok(sign);
+        }
+        let top = 63 - m.leading_zeros() as i32;
+        let scale = i32::from(e.max(1)) - 16446;
+        let mut exponent = top + scale;
+        let tiny = exponent < -1022;
+        let shift = if tiny { -scale - 1074 } else { top - 52 };
+        let (mut result, lost) = if shift <= 0 {
+            (m << (-shift as u32), false)
+        } else if shift > 64 {
+            (0, true)
+        } else {
+            let half = 1u64 << (shift - 1);
+            let q = if shift == 64 { 0 } else { m >> shift };
+            let rem = if shift == 64 {
+                m
+            } else {
+                m & ((1u64 << shift) - 1)
+            };
+            (
+                q + u64::from(rem > half || (rem == half && q & 1 != 0)),
+                rem != 0,
+            )
+        };
+        self.inexact |= lost;
+        if !tiny && result == 1 << 53 {
+            result >>= 1;
+            exponent += 1;
+        }
+        if exponent > 1023 {
+            self.inexact = true;
+            self.overflow = true;
+            return Ok(sign | 0x7ff0_0000_0000_0000);
+        }
+        let biased = if tiny {
+            u64::from(result >= 1 << 52)
+        } else {
+            (exponent + 1023) as u64
+        };
+        self.underflow |= biased == 0 && lost;
+        Ok(sign | (biased << 52) | (result & 0x000f_ffff_ffff_ffff))
+    }
+    pub fn multiply_extended(
+        &mut self,
+        memory: &mut Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+    ) -> Result<()> {
+        let a = memory.read(destination, 10)?.try_into().unwrap();
+        let b = memory.read(source, 10)?.try_into().unwrap();
+        memory.validate_write(destination, 10)?;
+        let result = self.multiply(a, b)?;
+        memory.write(destination, &result)
+    }
+    fn multiply(&mut self, a: [u8; 10], b: [u8; 10]) -> Result<[u8; 10]> {
+        let decode = |bytes: [u8; 10]| -> Result<(u16, u64)> {
+            let e = u16::from_be_bytes(bytes[..2].try_into().unwrap());
+            let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
+            if ((e & 0x7fff) != 0 && m >> 63 == 0) || ((e & 0x7fff) == 0 && m >> 63 != 0) {
+                return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
+            }
+            Ok((e, m))
+        };
+        let (ae, am) = decode(a)?;
+        let (be, bm) = decode(b)?;
+        let sign = (ae ^ be) & 0x8000;
+        let encode = |e: u16, m: u64| {
+            let mut bytes = [0; 10];
+            bytes[..2].copy_from_slice(&e.to_be_bytes());
+            bytes[2..].copy_from_slice(&m.to_be_bytes());
+            bytes
+        };
+        let nan = |e: u16, m: u64| e & 0x7fff == 0x7fff && m != 0x8000_0000_0000_0000;
+        let an = nan(ae, am);
+        let bn = nan(be, bm);
+        if an || bn {
+            self.invalid |=
+                (an && am & 0x4000_0000_0000_0000 == 0) || (bn && bm & 0x4000_0000_0000_0000 == 0);
+            let (e, m) = if an { (ae, am) } else { (be, bm) };
+            return Ok(encode(e, m | 0x4000_0000_0000_0000));
+        }
+        if ae & 0x7fff == 0x7fff || be & 0x7fff == 0x7fff {
+            if am == 0 || bm == 0 {
+                self.invalid = true;
+                return Ok(encode(0x7fff, 0xc008_0000_0000_0000));
+            }
+            return Ok(encode(sign | 0x7fff, 0x8000_0000_0000_0000));
+        }
+        if am == 0 || bm == 0 {
+            return Ok(encode(sign, 0));
+        }
+        let product = u128::from(am) * u128::from(bm);
+        let scale = i32::from((ae & 0x7fff).max(1)) + i32::from((be & 0x7fff).max(1)) - 32892;
+        let top = 127 - product.leading_zeros() as i32;
+        let mut exponent = top + scale;
+        let tiny = exponent < -16382;
+        let shift = if tiny { -scale - 16445 } else { top - 63 };
+        let (mut mantissa, lost) = if shift <= 0 {
+            (product << (-shift as u32), false)
+        } else if shift > 128 {
+            (0, true)
+        } else {
+            let half = 1u128 << (shift - 1);
+            let quotient = if shift == 128 { 0 } else { product >> shift };
+            let remainder = if shift == 128 {
+                product
+            } else {
+                product & ((1u128 << shift) - 1)
+            };
+            (
+                quotient + u128::from(remainder > half || (remainder == half && quotient & 1 != 0)),
+                remainder != 0,
+            )
+        };
+        self.inexact |= lost;
+        if !tiny && mantissa == 1u128 << 64 {
+            mantissa >>= 1;
+            exponent += 1;
+        }
+        if exponent > 16383 {
+            self.overflow = true;
+            self.inexact = true;
+            return Ok(encode(sign | 0x7fff, 0x8000_0000_0000_0000));
+        }
+        let biased = if tiny {
+            u16::from(mantissa >= 1u128 << 63)
+        } else {
+            (exponent + 16383) as u16
+        };
+        self.underflow |= biased == 0 && lost;
+        Ok(encode(sign | biased, mantissa as u64))
+    }
     pub fn atan_extended(&mut self, memory: &mut Memory, pointer: GuestPtr) -> Result<()> {
         let input: [u8; 10] = memory.read(pointer, 10)?.try_into().unwrap();
         memory.validate_write(pointer, 10)?;
@@ -87,6 +282,111 @@ mod tests {
         b[..2].copy_from_slice(&se.to_be_bytes());
         b[2..].copy_from_slice(&m.to_be_bytes());
         b
+    }
+    #[test]
+    fn expanding_binary64_is_exact_including_smallest_subnormal_and_signed_zero() {
+        let mut n = Numerics::default();
+        assert_eq!(n.expand_double(1), value(16383 - 1074, 1 << 63));
+        assert_eq!(n.expand_double(1f64.to_bits()), value(0x3fff, 1 << 63));
+        for bits in [
+            0,
+            1,
+            0x000f_ffff_ffff_ffff,
+            0x0010_0000_0000_0000,
+            1f64.to_bits(),
+            0x7fef_ffff_ffff_ffff,
+            0x7ff0_0000_0000_0000,
+        ] {
+            for sign in [0, 1u64 << 63] {
+                let bits = bits | sign;
+                let expanded = n.expand_double(bits);
+                assert_eq!(n.convert_double(expanded).unwrap(), bits);
+            }
+        }
+        assert!(!n.inexact && !n.underflow && !n.invalid && !n.overflow);
+    }
+    #[test]
+    fn double_conversion_rounds_low_bits_subnormals_and_overflow() {
+        let mut n = Numerics::default();
+        assert_eq!(
+            n.convert_double(value(0x3fff, 0x8000_0000_0000_0000))
+                .unwrap(),
+            1f64.to_bits()
+        );
+        assert!(!n.inexact);
+        assert_eq!(
+            n.convert_double(value(0x3fff, 0x8000_0000_0000_0400))
+                .unwrap(),
+            1f64.to_bits()
+        );
+        assert_eq!(
+            n.convert_double(value(0x3fff, 0x8000_0000_0000_0c00))
+                .unwrap(),
+            1f64.to_bits() + 2
+        );
+        let mut n = Numerics::default();
+        assert_eq!(n.convert_double(value(16383 - 1074, 1 << 63)).unwrap(), 1);
+        assert!(!n.underflow && !n.inexact);
+        assert_eq!(n.convert_double(value(16383 - 1075, 1 << 63)).unwrap(), 0);
+        assert!(n.underflow && n.inexact);
+        assert_eq!(
+            n.convert_double(value(16383 + 1024, 1 << 63)).unwrap(),
+            f64::INFINITY.to_bits()
+        );
+        assert!(n.overflow);
+        assert_eq!(
+            n.convert_double(value(0x8000, 0)).unwrap(),
+            (-0f64).to_bits()
+        );
+    }
+    #[test]
+    fn multiplication_rounds_once_with_gradual_underflow_and_exact_low_bits() {
+        let one = value(0x3fff, 1 << 63);
+        let half = value(0x3ffe, 1 << 63);
+        let mut n = Numerics::default();
+        assert_eq!(n.multiply(one, one).unwrap(), one);
+        assert!(!n.inexact);
+        assert_eq!(
+            n.multiply(
+                value(0x3fff, (1 << 63) + 1),
+                value(0x3fff, 0xc000_0000_0000_0000)
+            )
+            .unwrap(),
+            value(0x3fff, 0xc000_0000_0000_0002)
+        );
+        assert!(n.inexact);
+        let mut n = Numerics::default();
+        assert_eq!(
+            n.multiply(value(1, 1 << 63), half).unwrap(),
+            value(0, 1 << 62)
+        );
+        assert!(!n.underflow && !n.inexact);
+        assert_eq!(n.multiply(value(0, 1), half).unwrap(), value(0, 0));
+        assert!(n.underflow && n.inexact);
+        assert_eq!(n.multiply(value(0, 3), half).unwrap(), value(0, 2));
+        let mut boundary = Numerics::default();
+        assert_eq!(
+            boundary
+                .multiply(
+                    value(0, 0x7fff_ffff_ffff_ffff),
+                    value(0x3fff, 0x8000_0000_0000_0001)
+                )
+                .unwrap(),
+            value(1, 0x8000_0000_0000_0000)
+        );
+        assert!(boundary.inexact && !boundary.underflow);
+        assert_eq!(
+            n.multiply(value(0x7ffe, u64::MAX), value(0x4000, 1 << 63))
+                .unwrap(),
+            value(0x7fff, 1 << 63)
+        );
+        assert!(n.overflow);
+        assert_eq!(n.multiply(value(0x8000, 0), one).unwrap(), value(0x8000, 0));
+        assert_eq!(
+            n.multiply(value(0, 0), value(0x7fff, 1 << 63)).unwrap(),
+            value(0x7fff, 0xc008_0000_0000_0000)
+        );
+        assert!(n.invalid);
     }
     #[test]
     fn extended_arctangent_retains_low_significand_bits_and_special_values() {

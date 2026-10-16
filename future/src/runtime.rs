@@ -732,6 +732,39 @@ impl Runtime {
                             result?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::DoubleToExtended {
+                            source,
+                            destination,
+                        } => {
+                            self.process.numerics.double_to_extended(
+                                &mut self.memory,
+                                source,
+                                destination,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::ExtendedToDouble {
+                            source,
+                            destination,
+                        } => {
+                            self.process.numerics.extended_to_double(
+                                &mut self.memory,
+                                source,
+                                destination,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::MultiplyExtended {
+                            source,
+                            destination,
+                        } => {
+                            self.process.numerics.multiply_extended(
+                                &mut self.memory,
+                                source,
+                                destination,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::AtanExtended(pointer) => {
                             self.process
                                 .numerics
@@ -2124,6 +2157,9 @@ impl Runtime {
                         | Call::WorkingDirectory { .. }
                         | Call::Retrace(_)
                         | Call::RetraceHeader
+                        | Call::DoubleToExtended { .. }
+                        | Call::ExtendedToDouble { .. }
+                        | Call::MultiplyExtended { .. }
                         | Call::AtanExtended(_)
                         | Call::Timer(_)
                         | Call::FcbInfo(_) => {

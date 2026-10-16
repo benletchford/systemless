@@ -2218,3 +2218,37 @@ remain unverified. EV was not replayed and its last boundary is ProtectEntry.
 Neither original is playable. Next: shared FP68K extended arithmetic and conversion
 with correct rounding/range/exception state, then continue Marathon startup.
 Full rebuild remains active; PR stays draft.
+
+
+## Extended multiply and binary64 conversion checkpoint (2026-10-16)
+
+Shared numerics now handles FP68K FMULX ($0004), FX2D ($0810) and FD2X ($080E).
+Multiplication retains the full u128 product and rounds once, including direct
+subnormal rounding, overflow and SANE NANMUL code 8. Conversions round extended
+straight to binary64 and expand binary64 exactly, including its smallest subnormal.
+Operands are snapshotted for aliases and native adapters preflight actual 8/10-byte
+extents before popping ten-byte frames. Process exception status remains sticky;
+nearest-even and after-rounding tininess are the current modeled policy. The
+manual permits either tininess convention. Environment APIs/alternate modes,
+halts, other FP68K selectors, noncanonical values and PPC math imports remain open.
+
+Final acceptance: 59 CPU/service checks pass, zero failed/ignored: 42 library,
+six numeric integration, seven timer and four trap-patch tests. Evidence:
+/tmp/systemless-sane-arithmetic-pair-acceptance.txt, terminal exit 0. Tests cover
+low bits, halfway ties, signed zero/infinities/NaNs, exact/inexact subnormals,
+rounding up to minimum normal, overflow, conversion extents and alias snapshots,
+register/frame preservation and bad-source atomicity. Earlier multiply-only and
+one-way conversion runs are preliminary and not added to the 59 count. Final
+strict Rust 1.99 all-target lint and Rust 1.93 library checks pass:
+/tmp/systemless-sane-arithmetic-pair-final-lint.txt and
+/tmp/systemless-sane-arithmetic-pair-msrv.txt. Sequential changed-file formatting
+and whitespace checks pass. No new full-suite/GPU/wasm result is claimed.
+
+Original Marathon passes extended multiplication and both conversion directions.
+It next requests FDIVX ($A9EB selector $0006), PC $0101DC2A, destination $0080FE1A,
+source $0101DFC4. Evidence: /tmp/systemless-marathon-sane-arithmetic-pair.txt,
+explicit unsupported-selector exit 1. Completed timer=1, sound=0, VBL=0. The
+original title/menu/gameplay and native audio remain unverified. EV was not
+replayed and retains its previously recorded ProtectEntry boundary. Neither game
+is playable. Next: exact shared extended division, then continue Marathon startup.
+Keep the full rebuild active and PR in draft.

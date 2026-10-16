@@ -2607,3 +2607,32 @@ Primary interface: pinned MPW SANEMacs.a FATANX / FOATANX and Apple Numerics Man
 2nd edition, chapter 24, one-address elementary functions. Library API evaluation:
 https://docs.rs/astro-float-num/0.3.7/astro_float_num/struct.BigFloat.html
 https://github.com/stencillogic/astro-float
+
+
+### Exact extended multiplication
+
+FP68K FMULX ($A9EB/$0004) now invokes the same process numeric service. The
+native adapter preflights both ten-byte operands and writable destination before
+popping its ten-byte selector/address frame. The service snapshots both operands,
+including aliases, multiplies the complete 64-bit significands into u128 and
+rounds once to the extended result. Subnormal results round directly to the
+minimum quantum, avoiding double rounding. Sticky underflow follows inexact
+tininess after rounding; overflow returns signed infinity in default nearest mode.
+Signed zeros, infinities and NaNs are explicit; invalid zero-times-infinity uses
+SANE NANMUL code 8. With two NaNs, destination preference chooses one input as
+permitted by the manual, quieting signaling NaNs and retaining invalid status.
+Public SANE environment/alternate rounding/precision/halt controls, other FP68K
+selectors, noncanonical encodings and PPC math imports remain unfinished.
+Primary specification: Apple Numerics Manual, 2nd edition, chapters 5, 7, 19–20;
+pinned SANEMacs.a FMULX macro. Manual mirror:
+https://manuals.plus/m/1f06cc272b1e59ae58f6379edca5b7829815540f233f0679c0f5f26cb9dbcbde
+
+
+FP68K also marshals FX2D ($0810) and FD2X ($080E) through this shared service.
+Extended-to-double conversion rounds the original significand directly to binary64,
+including gradual underflow, overflow and NaN payloads. Double-to-extended expansion
+is exact for all canonical finite binary64 values, including the smallest
+subnormal. Source snapshots permit in-place use; the adapters validate actual
+8/10-byte extents and only write the destination's format size. No host float
+arithmetic computes the conversions. Current rounding remains nearest-even;
+public environment controls and PPC math imports remain unfinished.
