@@ -390,6 +390,7 @@ pub enum Call {
     },
     MakeSpec(crate::files::MakeSpec),
     DeleteSpec(GuestPtr),
+    GetSpecInfo(crate::files::GetSpecInfo),
     FlushVolume(GuestPtr),
     ResolveAliasFile(crate::files::ResolveAliasFile),
     FcbInfo(GuestPtr),

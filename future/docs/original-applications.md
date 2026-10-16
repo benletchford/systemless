@@ -3676,3 +3676,20 @@ including pointer/error/ABI checks and both CPU fixtures, then replay EV plug-in
 inspection. Keep actual Finder alias records distinct from these color-port
 bitmap references. Marathon's port initialization, actual gameplay/audio, complete
 text/library integration and the full rebuild remain active and unverified.
+
+### EV Finder metadata replay (2026-10-16)
+
+The original 68K EV1.0.5 passes FSpGetFInfo on its plug-in catalog entry and
+continues to drawing PICT128 from EV Titles. It stops at PC00010EAC with
+`PICT: unsupported indexed PixMap layout`: that resource is a packed 4-bit indexed
+picture, beyond the decoder's current 8-bit indexed slice. Trace:
+/tmp/systemless-ev-finfo.txt, expected exit1, sound/timer/VBL callbacks0. No
+interactive gameplay or original-frame acceptance is established.
+
+The exported committed volume /tmp/systemless-ev-finfo-saved.slv is 7,239,400
+bytes, SHA256 e1bc97cb6844fdf93d5bf412d2546104216d9f37fcd66bbc4a1f9d9a27f17236.
+Independent CRC/catalog/fork verification against alias-saved passes: only the
+preferences catalog identity increments30->31; metadata and both fork bytes,
+all companions and directories remain identical. The tracer still acknowledges
+PBFlushVol as a memory-only barrier, not a writable host checkpoint. Next replay
+may use this snapshot; use a fresh save filename.

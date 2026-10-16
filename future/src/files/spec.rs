@@ -21,19 +21,62 @@ impl MakeSpec {
         memory.validate_write(self.destination, 70)
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetSpecInfo {
+    pub spec: GuestPtr,
+    pub destination: GuestPtr,
+}
+impl GetSpecInfo {
+    pub fn validate(self, memory: &Memory) -> Result<()> {
+        if self.spec.0 == 0 || self.destination.0 == 0 {
+            return Err(Error::Cpu("nil FSpGetFInfo pointer".into()));
+        }
+        memory.read(self.spec, 70)?;
+        memory.validate_write(self.destination, 16)
+    }
+}
 impl Files {
+    pub fn get_spec_info(&self, memory: &mut Memory, request: GetSpecInfo) -> Result<i16> {
+        request.validate(memory)?;
+        let node = match self.spec_target(memory, request.spec)? {
+            Ok(node) => node,
+            Err(error) => return Ok(error),
+        };
+        let finder = self
+            .finder_info(node)
+            .ok_or_else(|| Error::Cpu("resolved Finder info target disappeared".into()))?;
+        memory.write(request.destination, &finder)?;
+        Ok(0)
+    }
     pub fn delete_spec(&mut self, memory: &Memory, spec: GuestPtr) -> Result<i16> {
+        let error = match self.spec_target(memory, spec)? {
+            Ok(node) => self.delete_node(node),
+            Err(error) => error,
+        };
+        if error == 0 {
+            self.changed();
+        }
+        Ok(error)
+    }
+    fn spec_target(
+        &self,
+        memory: &Memory,
+        spec: GuestPtr,
+    ) -> Result<std::result::Result<u32, i16>> {
         if spec.0 == 0 {
-            return Err(Error::Cpu("nil deletion FSSpec".into()));
+            return Err(Error::Cpu("nil catalog FSSpec".into()));
         }
         let bytes = memory.read(spec, 70)?;
         let length = usize::from(bytes[6]);
         if length > 63 {
-            return Ok(-50);
+            return Ok(Err(-50));
         }
         let name = &bytes[7..7 + length];
         if name.is_empty() || name.len() > 31 || name.contains(&0) || name.contains(&b':') {
-            return Ok(-37);
+            return Ok(Err(-37));
+        }
+        if self.name.is_empty() {
+            return Ok(Err(-35));
         }
         let volume = i16::from_be_bytes(bytes[..2].try_into().unwrap());
         let directory = u32::from_be_bytes(bytes[2..6].try_into().unwrap());
@@ -43,14 +86,7 @@ impl Files {
             self.parent(volume, directory)
                 .and_then(|parent| self.path(name, parent))
         };
-        let error = match node {
-            Ok(node) => self.delete_node(node),
-            Err(error) => error,
-        };
-        if error == 0 {
-            self.changed();
-        }
-        Ok(error)
+        Ok(node)
     }
     pub(super) fn delete_node(&mut self, node: u32) -> i16 {
         if node == 16 {
@@ -151,6 +187,73 @@ impl Files {
 mod tests {
     use super::*;
     use crate::{files::Directory, memory::Permissions};
+    #[test]
+    fn finder_info_reads_exact_catalog_bytes_without_mutation_and_preserves_failed_outputs() {
+        let mut files = Files::application(&[], None);
+        let finder = *b"TYPECREA01234567";
+        files.create_file(b"Test", -1, 2, 0, finder).unwrap();
+        let mut memory = Memory::default();
+        memory
+            .map(GuestPtr(0x1000), vec![0x5a; 256], Permissions::RW)
+            .unwrap();
+        let request = GetSpecInfo {
+            spec: GuestPtr(0x1000),
+            destination: GuestPtr(0x1081),
+        };
+        let mut spec = [0; 70];
+        spec[..2].copy_from_slice(&(-1i16).to_be_bytes());
+        spec[2..6].copy_from_slice(&2u32.to_be_bytes());
+        spec[6] = 4;
+        spec[7..11].copy_from_slice(b"tEsT");
+        memory.write(request.spec, &spec).unwrap();
+        let revision = files.revision;
+        assert_eq!(files.get_spec_info(&mut memory, request).unwrap(), 0);
+        assert_eq!(memory.read(request.destination, 16).unwrap(), finder);
+        assert_eq!(memory.read(GuestPtr(0x1080), 1).unwrap(), [0x5a]);
+        assert_eq!(memory.read(GuestPtr(0x1091), 1).unwrap(), [0x5a]);
+        assert_eq!(files.revision, revision);
+        for (volume, parent, name, error) in [
+            (-1i16, 2u32, b"Gone".as_slice(), -43),
+            (7, 2, b"Test".as_slice(), -35),
+            (-1, 999, b"Test".as_slice(), -120),
+            (-1, 2, b"Bad:".as_slice(), -37),
+        ] {
+            spec[..2].copy_from_slice(&volume.to_be_bytes());
+            spec[2..6].copy_from_slice(&parent.to_be_bytes());
+            spec[6] = name.len() as u8;
+            spec[7..7 + name.len()].copy_from_slice(name);
+            memory.write(request.spec, &spec).unwrap();
+            memory.write(request.destination, &[0x5a; 16]).unwrap();
+            assert_eq!(files.get_spec_info(&mut memory, request).unwrap(), error);
+            assert_eq!(memory.read(request.destination, 16).unwrap(), [0x5a; 16]);
+            assert_eq!(files.revision, revision);
+        }
+        assert!(files
+            .get_spec_info(
+                &mut memory,
+                GetSpecInfo {
+                    spec: GuestPtr(0),
+                    ..request
+                }
+            )
+            .is_err());
+        assert!(files
+            .get_spec_info(
+                &mut memory,
+                GetSpecInfo {
+                    destination: GuestPtr(0x10f1),
+                    ..request
+                }
+            )
+            .is_err());
+        spec[..2].copy_from_slice(&(-1i16).to_be_bytes());
+        spec[2..6].copy_from_slice(&1u32.to_be_bytes());
+        spec[6] = 18;
+        spec[7..25].copy_from_slice(b"Application Volume");
+        memory.write(request.spec, &spec).unwrap();
+        assert_eq!(files.get_spec_info(&mut memory, request).unwrap(), 0);
+        assert_eq!(memory.read(request.destination, 16).unwrap(), [0; 16]);
+    }
     #[test]
     fn deletion_removes_both_forks_and_reservations_but_preserves_busy_objects() {
         let mut files = Files::application(&[], None);

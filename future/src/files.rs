@@ -12,7 +12,7 @@ mod io;
 mod resource;
 pub use resource::CreateSpecResource;
 mod spec;
-pub use spec::MakeSpec;
+pub use spec::{GetSpecInfo, MakeSpec};
 mod volume;
 mod working;
 pub use browse::{CatalogEntry, DirectoryView};
@@ -360,6 +360,13 @@ impl Files {
         memory.write(pointer, &pb)?;
         Ok(error)
     }
+    /// Canonical original Finder record. Directories currently have default DInfo;
+    /// no supported operation mutates/imports nondefault folder Finder metadata.
+    fn finder_info(&self, node: u32) -> Option<[u8; 16]> {
+        self.file(node)
+            .map(|file| file.finder)
+            .or_else(|| self.directory_exists(node).then_some([0; 16]))
+    }
     fn fill_file_info(&self, pb: &mut [u8], node: u32) {
         let file = self.file(node).expect("checked file node");
         let reference = self
@@ -379,7 +386,7 @@ impl Files {
                     }
             },
         );
-        pb[32..48].copy_from_slice(&file.finder);
+        pb[32..48].copy_from_slice(&self.finder_info(node).unwrap());
         pb[48..52].copy_from_slice(&node.to_be_bytes());
         let data = file.data.len() as u32;
         let resource = file.resource.map_or(0, |bytes| bytes.len() as u32);
@@ -568,7 +575,7 @@ impl Files {
             )
         };
         pb[31] = 0;
-        pb[32..48].fill(0); // Finder info: virtual files have no imported Finder metadata.
+        pb[32..48].copy_from_slice(&self.finder_info(node).unwrap());
         pb[48..52].copy_from_slice(&node.to_be_bytes());
         if root {
             let children = self.children(node, false).len();

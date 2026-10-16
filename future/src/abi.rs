@@ -261,6 +261,7 @@ pub enum Service {
     CreateSpecResource,
     MakeSpec,
     DeleteSpec,
+    GetSpecInfo,
     FlushVolume,
     FlushVolumeWithAsync,
     ResolveAliasFile,
@@ -737,6 +738,7 @@ impl Abi {
             b"FSpCreateResFile" => Some(Service::CreateSpecResource),
             b"FSMakeFSSpec" => Some(Service::MakeSpec),
             b"FSpDelete" => Some(Service::DeleteSpec),
+            b"FSpGetFInfo" => Some(Service::GetSpecInfo),
             b"PBFlushVolSync" => Some(Service::FlushVolume),
             b"PBFlushVol" => Some(Service::FlushVolumeWithAsync),
             b"ResolveAliasFile" => Some(Service::ResolveAliasFile),
@@ -1159,6 +1161,20 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("FSpCreateResFile stack overflow".into()))?;
                 c.dar[15] = next;
                 Ok((Call::CreateSpecResource(request), Reply::None))
+            }
+            0xaa52 if c.dar[0] as u16 == 7 => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let request = crate::files::GetSpecInfo {
+                    destination: GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap())),
+                    spec: GuestPtr(u32::from_be_bytes(args[4..8].try_into().unwrap())),
+                };
+                request.validate(memory)?;
+                let next = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("FSpGetFInfo stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 2)?;
+                c.dar[15] = next;
+                Ok((Call::GetSpecInfo(request), Reply::StackWord(GuestPtr(next))))
             }
             0xaa52 if c.dar[0] as u16 == 6 => {
                 let spec = GuestPtr(memory.u32(GuestPtr(sp))?);
@@ -4455,6 +4471,10 @@ impl Abi {
                     script: c.gpr[6] as i16,
                 })
             }
+            Service::GetSpecInfo => Call::GetSpecInfo(crate::files::GetSpecInfo {
+                spec: GuestPtr(c.gpr[3]),
+                destination: GuestPtr(c.gpr[4]),
+            }),
             Service::DeleteSpec => Call::DeleteSpec(GuestPtr(c.gpr[3])),
             Service::MakeSpec => Call::MakeSpec(crate::files::MakeSpec {
                 volume: c.gpr[3] as i16,

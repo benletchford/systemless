@@ -3234,3 +3234,16 @@ headers and possible handle targets without changing guest execution or storage.
 
 Primary: [CopyBits](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-166.html),
 which describes the two high portVersion bits and PixMapHandle indirection.
+
+### FSSpec Finder information (2026-10-16)
+
+FSpGetFInfo (HighLevelHFSDispatch selector7 and PPC import) uses the shared
+catalog projection also used by parameter-block file/catalog information. It
+returns the original 16-byte FInfo/DInfo, not extended Finder fields, without
+opening either fork. Canonical FSSpec lookup is shared with deletion. Native
+arguments and the Pascal result slot are checked before stack adjustment;
+destination ranges are checked before lookup/writes. Lookup errors preserve
+output bytes. Files return their stored Finder record; directories/root currently
+have default zero DInfo because nondefault folder metadata import/mutation has
+not been implemented. That limitation remains explicit rather than returning a
+fabricated file type/creator for folders. See Inside Macintosh: Files p.2-160.

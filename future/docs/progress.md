@@ -7525,3 +7525,65 @@ including pointer/error/ABI checks and both CPU fixtures, then replay EV plug-in
 inspection. Keep actual Finder alias records distinct from these color-port
 bitmap references. Marathon's port initialization, actual gameplay/audio, complete
 text/library integration and the full rebuild remain active and unverified.
+
+
+## FSpGetFInfo implementation in progress (2026-10-16)
+
+The shared file manager now implements FSpGetFInfo, native HighLevelHFSDispatch
+selector 7 and the PowerPC import. It reads the catalog Finder bytes without
+opening a fork or changing catalog revision. FSSpec lookup is shared with
+FSpDelete. Directory/root DInfo currently contains the modeled default zero
+bytes; nondefault directory Finder metadata import/mutation remains unfinished.
+Failed catalog lookups preserve the destination, and pointer ranges are validated.
+
+Library compilation passed in /tmp/systemless-fspec-info-check.txt. All three
+focused shared FSSpec unit tests passed in /tmp/systemless-finfo-unit.txt,
+including exact metadata, guard bytes, errors, bounds and root-directory output.
+Adapter regression tests are still running under exec session 2453, with output
+in /tmp/systemless-finfo-adapters.txt. Updated tracer build is running under
+session 66919, output /tmp/systemless-finfo-tracer-build.txt. Do not restart these
+jobs merely because output is quiet. Original EV replay, broader lint and final
+review/commit remain pending. Latest replay input remains
+/tmp/systemless-ev-alias-saved.slv. Full rebuild and GPU text integration remain
+active requirements.
+
+Follow-up: tracer build session 66919 completed exit 0. Original EV replay
+session 73098 completed expected fault exit 1 in /tmp/systemless-ev-finfo.txt.
+It passed GetSpecInfo and advanced to DrawPicture, now stopping with
+Graphics("PICT: unsupported indexed PixMap layout") at PC00010EAC.
+Committed snapshot /tmp/systemless-ev-finfo-saved.slv is 7,239,400 bytes;
+independent snapshot verification remains pending. This is startup advancement,
+not gameplay acceptance. Adapter session 2453 remains live: existing deletion
+and construction suites passed, new spec_info executable is still running.
+
+
+Final adapter validation session 2453 completed exit 0: four integration tests
+passed across spec_info, delete_spec and file_spec, including real 68K/PPC
+Finder-info reads, signed missing-file replies, input preservation and output
+guards. Together with the three shared unit tests this is seven focused tests.
+The independent CRC/catalog/fork verifier passed for alias-saved -> finfo-saved:
+preferences node30 ->31, all companion metadata/forks unchanged. New snapshot
+SHA256 e1bc97cb6844fdf93d5bf412d2546104216d9f37fcd66bbc4a1f9d9a27f17236.
+All-target strict lint is live in exec session 5340, output
+/tmp/systemless-finfo-lint.txt. Latest EV failure follows GetResource PICT128;
+locating its resource in the companion volumes remains necessary before changing
+the PICT decoder. Application-fork byte-pattern candidates are not evidence of
+the actual failing picture.
+
+
+PICT diagnosis: resource-map parsing of the verified companion volume locates
+PICT128 in EV Titles (5,606 bytes), extracted to
+/tmp/systemless-ev-pict128-EV Titles.pict. Its first bitmap is PackBitsRect
+(opcode0098), rowBytes8048, bounds top0/left0/bottom480/right144,
+pixelType0, pixelSize4, cmpCount1, cmpSize4, planeBytes0, version0/packType0.
+The decoder rejects this real 4-bit layout because it currently requires
+depth8/componentSize8. Next graphics milestone must unpack indexed1/2/4-bit
+rows with palette/index checks and packed-row bounds, keeping destination
+composition in the existing wgpu path; test raw/PackBits, padding and malformed
+streams, then replay this actual resource and original EV. This is stronger
+evidence than application-fork opcode byte searches.
+
+Strict all-target lint session5340 completed exit0 in
+/tmp/systemless-finfo-lint.txt. Sequential stdin formatting checks for every
+changed Rust source/test and git diff whitespace checks also passed. Metadata
+milestone validation is complete; no full-runtime/gameplay acceptance is claimed.

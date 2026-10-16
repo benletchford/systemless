@@ -2145,6 +2145,18 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::GetSpecInfo(request) => {
+                            let error = self
+                                .process
+                                .files
+                                .get_spec_info(&mut self.memory, request)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::DeleteSpec(spec) => {
                             let error = self.process.files.delete_spec(&self.memory, spec)?;
                             reply.apply(
@@ -2493,6 +2505,7 @@ impl Runtime {
                         | Call::AtanExtended(_)
                         | Call::Timer(_)
                         | Call::FlushVolume(_)
+                        | Call::GetSpecInfo(_)
                         | Call::DeleteSpec(_)
                         | Call::MakeSpec(_)
                         | Call::ResolveAliasFile(_)
