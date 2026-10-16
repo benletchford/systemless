@@ -281,6 +281,7 @@ pub enum Service {
     MakeSpec,
     DeleteSpec,
     GetSpecInfo,
+    SetSpecInfo,
     FlushVolume,
     FlushVolumeWithAsync,
     NewAlias,
@@ -780,6 +781,7 @@ impl Abi {
             b"FSMakeFSSpec" => Some(Service::MakeSpec),
             b"FSpDelete" => Some(Service::DeleteSpec),
             b"FSpGetFInfo" => Some(Service::GetSpecInfo),
+            b"FSpSetFInfo" => Some(Service::SetSpecInfo),
             b"PBFlushVolSync" => Some(Service::FlushVolume),
             b"PBFlushVol" => Some(Service::FlushVolumeWithAsync),
             b"NewAlias" => Some(Service::NewAlias),
@@ -1204,6 +1206,20 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("FSpCreateResFile stack overflow".into()))?;
                 c.dar[15] = next;
                 Ok((Call::CreateSpecResource(request), Reply::None))
+            }
+            0xaa52 if c.dar[0] as u16 == 8 => {
+                let args = memory.read(GuestPtr(sp), 10)?;
+                let request = crate::files::SetSpecInfo {
+                    source: GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap())),
+                    spec: GuestPtr(u32::from_be_bytes(args[4..8].try_into().unwrap())),
+                };
+                request.validate(memory)?;
+                let next = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("FSpSetFInfo stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 2)?;
+                c.dar[15] = next;
+                Ok((Call::SetSpecInfo(request), Reply::StackWord(GuestPtr(next))))
             }
             0xaa52 if c.dar[0] as u16 == 7 => {
                 let args = memory.read(GuestPtr(sp), 8)?;
@@ -4813,6 +4829,10 @@ impl Abi {
                     script: c.gpr[6] as i16,
                 })
             }
+            Service::SetSpecInfo => Call::SetSpecInfo(crate::files::SetSpecInfo {
+                spec: GuestPtr(c.gpr[3]),
+                source: GuestPtr(c.gpr[4]),
+            }),
             Service::GetSpecInfo => Call::GetSpecInfo(crate::files::GetSpecInfo {
                 spec: GuestPtr(c.gpr[3]),
                 destination: GuestPtr(c.gpr[4]),

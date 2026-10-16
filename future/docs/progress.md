@@ -9085,3 +9085,83 @@ Durable private evidence in future/target/private-originals/ev/evidence/:
 All are Git-ignored. Next: shared FSpSetFInfo, then finish the alias flag and
 replay the saved volume to verify real pilot reopening. Neither priority game is
 playable. Complete text/library integration and the full rebuild remain active.
+
+
+## File Finder metadata updates (2026-10-17)
+
+Shared Files::set_spec_info now backs native HighLevelFSDispatch selector0008
+and the PowerPC FSpSetFInfo import. It resolves the same canonical FSSpec/catalog
+as reads and aliases, snapshots a read-only 16-byte FInfo source, updates only
+those original Finder bytes and marks the catalog changed only when necessary.
+It permits metadata changes while a resource fork is open. The immutable loaded
+application returns fLckdErr; directory/root DInfo writes remain explicitly
+unsupported rather than silently discarded. This does not add extended Finder
+records, mutable loaded-application storage, lock-management services or folder
+metadata persistence.
+
+Primary contract: Inside Macintosh: Files, pp.2-160–2-161, FSpSetFInfo,
+[File Manager chapter](https://leopard-adc.pepas.com/documentation/mac/pdf/Files/File_Manager.pdf).
+Native decoding validates both inputs and the result slot before popping the
+8-byte argument frame; PPC uses the same service and signed OSErr result.
+
+Library check passed (/tmp/systemless-setfinfo-check.txt). All three new metadata
+tests pass in /tmp/systemless-setfinfo-corrected-tests.txt: exact volume bytes
+outside FInfo/checksum remain unchanged; saved catalog reload and open-file
+metadata updates work through both CPUs; catalog errors, immutable application,
+unsupported root metadata and native nil/short/read-only-result preflight preserve
+inputs/catalog/stack. Eight alias-record regressions also passed in
+/tmp/systemless-setfinfo-final-tests.txt. That earlier run's fresh-catalog test
+failure was a fixture issue, superseded by the corrected-source run.
+
+The existing get-info test and tracer build also pass, for twelve distinct scoped
+integration passes including the earlier eight alias regressions. Strict
+all-target lint passes (session44925, terminal exit0). Logs:
+/tmp/systemless-setfinfo-corrected-tests.txt,
+/tmp/systemless-setfinfo-tracer-build.txt, /tmp/systemless-setfinfo-lint.txt.
+Sequential changed-file formatting and diff whitespace checks pass.
+
+Original EV now passes the real FSpSetFInfo call, restores resource selection,
+flushes the volume (memory-only barrier) and reaches its normal WaitNextEvent loop.
+The10M-poll replay ends at budget, CPU instruction9,988,873, PC0003148C, rather
+than an unsupported-service fault. Independent verification confirms intact
+original companions and a committed Last Pilot alis/0 record whose Finder alias
+flag is now0x8000. Volume7,258,966bytes SHA256
+aaa9494c50ad1b913c797996cdbdc49f58131358e09a6bf9e704d5c7634acacf.
+Last Pilot fork/record hashes and target identity remain those of the prior
+WriteResource milestone. The image shows File/Edit menu text and a black content
+area, not flight. No game audio or playable interaction is established.
+
+Durable private evidence: future/target/private-originals/ev/evidence/
+2026-10-17-setfinfo-first.{slv,ppm,png},
+2026-10-17-setfinfo-first-trace-tail.txt and2026-10-17-setfinfo-volume-verify.py
+(standalone, takes clean modal input and flagged output paths). All ignored.
+
+A fresh10M-poll replay from the flagged saved volume, with no synthetic creation
+input, follows ResolveAliasFile and opens/reads pilot resources Mp[95]L IDs129,
+128,129 (type bytes4d70954c). It then deletes the old Last Pilot and prepares a
+replacement alias. At CPU instruction6,194,048, PC0002E7E4, it stops at
+FSpCreateResFile script1 (Japanese), the explicit Roman-only filename-script
+boundary. This proves saved-alias resolution and pilot resource reads, not a
+finished alias refresh or playable reopening. Trace:
+/tmp/systemless-ev-setfinfo-reopen.txt, terminal exit1 at the typed service error.
+
+Independent catalog verification confirms ben and all companions unchanged;
+preferences52->55 otherwise byte-identical; only Last Pilot was deleted before
+replacement failed. Output7,258,396bytes SHA256
+b55bd819b3a791f391c47c64d944846d6c87bf36b3dd1bee547db8681c12506b.
+Private durable2026-10-17-setfinfo-reopen.{slv,ppm} and
+2026-10-17-setfinfo-reopen-trace-tail.txt are under the same ignored evidence path.
+The flagged first-run volume is the correct input for subsequent reopen replays;
+the failed refresh volume no longer contains Last Pilot.
+
+Next: investigate the original script1 argument with a bounded CPU trace and the
+File Manager's script-tag contract, then add correct script metadata semantics
+rather than silently ignoring the argument. Flight/interaction, Marathon and
+complete text/library acceptance remain open. The full rebuild goal stays active.
+
+Bounded diagnostic replay is live in session46771 from the durable flagged first-run
+volume, budget6,300,000, trace-range6,194,000:6,194,050. Log:
+/tmp/systemless-ev-script-argument.txt; output snapshot:
+/tmp/systemless-ev-script-argument.slv. This is a deliberate additional CPU-state
+capture around the new fault, not a restart of a quiet process. Inspect the pushed
+script word and caller sequence before choosing the next implementation change.

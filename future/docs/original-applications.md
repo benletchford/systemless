@@ -4266,3 +4266,25 @@ record/resource saving, not Finder recognition, pilot reopening or gameplay.
 Final scoped suite:93passes,3GPUchecks explicitly ignored; strict all-target lint
 and tracer build pass. Full details and hashes are in progress.md. No ROM/System7
 comparison is claimed. Neither original priority game is playable yet.
+
+
+## EV Finder alias flag and fresh pilot reads (2026-10-17)
+
+Shared FSpSetFInfo now persists actual file Finder metadata through native/PPC
+adapters. Twelve scoped integration tests, strict all-target lint and tracer build
+pass. Directory DInfo updates remain explicitly unsupported; immutable loaded
+application metadata is protected. Original EV completes pilot/alias save and
+FSpSetFInfo, reaches WaitNextEvent, and exhausts its10M-poll budget at CPU
+instruction9,988,873, PC0003148C. The captured content area remains black beneath
+File/Edit menus; this is not a flight frame. Independent volume verification proves
+real Last Pilot Finder flag0x8000 and matching alis/0 target ben; companions intact.
+
+Fresh runtime replay from that saved volume, with no creation input, resolves the
+alias and reads actual pilot resources4d70954c IDs129,128,129. It then tries to
+refresh Last Pilot and stops at FSpCreateResFile script1 (Japanese), CPU
+instruction6,194,048, PC0002E7E4. The previous Last Pilot has been deleted when the
+unsupported script boundary is reached; ben/companions remain byte-identical.
+This establishes alias resolution and pilot resource loading, not a complete
+reopen/refresh or gameplay. Exact hashes, logs and durable private2026-10-17-setfinfo
+evidence are in progress.md. Next: verify the original script argument/contract and
+implement script metadata correctly. Neither priority game is playable.

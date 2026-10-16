@@ -35,7 +35,48 @@ impl GetSpecInfo {
         memory.validate_write(self.destination, 16)
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetSpecInfo {
+    pub spec: GuestPtr,
+    pub source: GuestPtr,
+}
+impl SetSpecInfo {
+    pub fn validate(self, memory: &Memory) -> Result<()> {
+        if self.spec.0 == 0 || self.source.0 == 0 {
+            return Err(Error::Cpu("nil FSpSetFInfo pointer".into()));
+        }
+        memory.read(self.spec, 70)?;
+        memory.read(self.source, 16)?;
+        Ok(())
+    }
+}
 impl Files {
+    /// IM Files, pp. 2-160–2-161: replace only the original sixteen Finder bytes.
+    pub fn set_spec_info(&mut self, memory: &Memory, request: SetSpecInfo) -> Result<i16> {
+        request.validate(memory)?;
+        let node = match self.spec_target(memory, request.spec)? {
+            Ok(node) => node,
+            Err(error) => return Ok(error),
+        };
+        let finder: [u8; 16] = memory.read(request.source, 16)?.try_into().unwrap();
+        if self.directory_exists(node) {
+            return Err(Error::Cpu(
+                "directory Finder information writes are unsupported".into(),
+            ));
+        }
+        if node == 16 {
+            return Ok(-45);
+        }
+        let file = self
+            .files
+            .get_mut(&node)
+            .ok_or_else(|| Error::Cpu("resolved Finder info target disappeared".into()))?;
+        if file.finder != finder {
+            file.finder = finder;
+            self.changed();
+        }
+        Ok(0)
+    }
     pub fn get_spec_info(&self, memory: &mut Memory, request: GetSpecInfo) -> Result<i16> {
         request.validate(memory)?;
         let node = match self.spec_target(memory, request.spec)? {

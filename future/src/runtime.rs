@@ -2343,6 +2343,15 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::SetSpecInfo(request) => {
+                            let error = self.process.files.set_spec_info(&self.memory, request)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::GetSpecInfo(request) => {
                             let error = self
                                 .process
@@ -2753,6 +2762,7 @@ impl Runtime {
                         | Call::Timer(_)
                         | Call::FlushVolume(_)
                         | Call::GetSpecInfo(_)
+                        | Call::SetSpecInfo(_)
                         | Call::DeleteSpec(_)
                         | Call::MakeSpec(_)
                         | Call::NewAlias(_)

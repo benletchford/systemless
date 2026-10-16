@@ -416,6 +416,7 @@ pub enum Call {
     MakeSpec(crate::files::MakeSpec),
     DeleteSpec(GuestPtr),
     GetSpecInfo(crate::files::GetSpecInfo),
+    SetSpecInfo(crate::files::SetSpecInfo),
     FlushVolume(GuestPtr),
     NewAlias(crate::files::NewAlias),
     ResolveAlias(crate::files::ResolveAlias),

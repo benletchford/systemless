@@ -13,7 +13,7 @@ mod io;
 mod resource;
 pub use resource::CreateSpecResource;
 mod spec;
-pub use spec::{GetSpecInfo, MakeSpec};
+pub use spec::{GetSpecInfo, MakeSpec, SetSpecInfo};
 mod volume;
 mod working;
 pub use browse::{CatalogEntry, DirectoryView};
