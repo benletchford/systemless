@@ -78,6 +78,7 @@ pub enum Service {
     DisposeDevice,
     DisposeColorTable,
     GetColorTable,
+    SetEntries,
     GetCTSeed,
     ReserveEntry,
     ProtectEntry,
@@ -421,6 +422,7 @@ impl Abi {
             b"OpenCPort" => Some(Service::ColorPort(crate::color_ports::Action::Open)),
             b"InitCPort" => Some(Service::ColorPort(crate::color_ports::Action::Init)),
             b"CloseCPort" => Some(Service::ColorPort(crate::color_ports::Action::Close)),
+            b"SetEntries" => Some(Service::SetEntries),
             b"GetCTSeed" => Some(Service::GetCTSeed),
             b"ReserveEntry" => Some(Service::ReserveEntry),
             b"ProtectEntry" => Some(Service::ProtectEntry),
@@ -1633,6 +1635,19 @@ impl Abi {
                 };
                 c.dar[15] = next;
                 Ok((Call::Device(op), Reply::StackWord(GuestPtr(next))))
+            }
+            0xaa3f => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let op = crate::color::Op::SetEntries {
+                    source: GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap())),
+                    count: i16::from_be_bytes(args[4..6].try_into().unwrap()),
+                    start: i16::from_be_bytes(args[6..8].try_into().unwrap()),
+                };
+                let next = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("SetEntries stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((Call::Color(op), Reply::None))
             }
             0xaa28 => {
                 memory.validate_write(GuestPtr(sp), 4)?;
@@ -3419,6 +3434,11 @@ impl Abi {
                 destination: c.gpr[4],
                 resolution: c.gpr[5] as i16,
             }),
+            Service::SetEntries => Call::Color(crate::color::Op::SetEntries {
+                start: c.gpr[3] as i16,
+                count: c.gpr[4] as i16,
+                source: GuestPtr(c.gpr[5]),
+            }),
             Service::GetCTSeed => Call::Color(crate::color::Op::Seed),
             Service::ReserveEntry => Call::Color(crate::color::Op::Reserve {
                 index: c.gpr[3] as i16,
@@ -4107,7 +4127,8 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Intersects | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::ReserveEntry
+                    Service::SetEntries
+                        | Service::ReserveEntry
                         | Service::ProtectEntry
                         | Service::SetClientID
                         | Service::SetDevice

@@ -951,3 +951,59 @@ fn reserved_colors_keep_physical_pixels_but_match_only_for_the_owning_client() {
         }
     }
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn setentries_recolors_live_main_display_without_changing_guest_pixels_or_padding() {
+    use systemless_future::{display::Display, quickdraw::SCREEN};
+    let fixture = support::pef_program(&[0x4e800020], &[b"GetGDevice", b"SetEntries"], 32);
+    let mut a = LoadedApplication::pef(&fixture.bytes, None)
+        .unwrap()
+        .with_display(Display::indexed8(7, 3).unwrap())
+        .unwrap();
+    a.runtime
+        .memory
+        .map(
+            GuestPtr(0x51000000),
+            vec![0xaa, 0x32, 0xaa, 0x3f],
+            Permissions::RX,
+        )
+        .unwrap();
+    let pixels: Vec<_> = (0..3).flat_map(|_| [0u8, 1, 0, 1, 0, 1, 0, 0xa5]).collect();
+    a.runtime.memory.write(SCREEN, &pixels).unwrap();
+    let indices: Vec<_> = (0..21).map(|i| (i % 7 % 2) as u8).collect();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    a.runtime.graphics =
+        Some(pollster::block_on(Graphics::new(&instance, None, 7, 3, GuestPtr(0x4000))).unwrap());
+    let sequential: Vec<_> = [0xffffu16, 65535, 0, 0, 0xeeee, 0, 65535, 0]
+        .into_iter()
+        .flat_map(u16::to_be_bytes)
+        .collect();
+    a.runtime
+        .memory
+        .map(GuestPtr(SOURCE), sequential.clone(), Permissions::RX)
+        .unwrap();
+    let mut frame = SOURCE.to_be_bytes().to_vec();
+    frame.extend(1u16.to_be_bytes());
+    frame.extend(0u16.to_be_bytes());
+    native(&mut a, 2, &frame);
+    a.runtime.refresh_screen().unwrap();
+    check_gpu(&a, &indices, &[[65535, 0, 0], [0, 65535, 0]]);
+    assert_eq!(a.runtime.memory.read(SCREEN, pixels.len()).unwrap(), pixels);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(SOURCE), 16).unwrap(),
+        sequential
+    );
+    let indexed: Vec<_> = [1u16, 0, 0, 65535, 0, 65535, 65535, 0]
+        .into_iter()
+        .flat_map(u16::to_be_bytes)
+        .collect();
+    a.runtime
+        .memory
+        .map(GuestPtr(SOURCE + 4096), indexed, Permissions::RX)
+        .unwrap();
+    invoke(&mut a, 1, &[u32::MAX, 1, SOURCE + 4096]);
+    a.runtime.refresh_screen().unwrap();
+    check_gpu(&a, &indices, &[[65535, 65535, 0], [0, 0, 65535]]);
+    assert_eq!(a.runtime.memory.read(SCREEN, pixels.len()).unwrap(), pixels);
+}

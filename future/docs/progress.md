@@ -6474,3 +6474,48 @@ protection/client reservations, palette seed changes and live wgpu presentation.
 The full rebuild, including complete text rendering, remains incomplete.
 
 Final strict fixture lint: /tmp/systemless-standard-color-test-lint.txt, terminal exit 0.
+
+
+## Atomic SetEntries and live presentation (2026-10-16)
+
+68K AA3F and the PPC SetEntries import now use one shared Color Manager
+transaction. Sequential mode ignores input ColorSpec.value fields; index mode
+uses them to select entries. Counts are zero-based. Inputs are snapshotted before
+device lookup/writes, including input overlapping the destination table. Every
+requested entry is validated before a single table write: protected entries,
+foreign reservations and invalid target indices reject the entire batch with
+cProtectErr. Owner updates retain reservation metadata and record the current
+client byte. A successful transaction allocates a new shared seed; rejected
+updates preserve the palette and seed. No guest allocation or pixel writes are
+needed. Unsupported device types/depths and malformed tables remain explicit.
+
+Live surface reconstruction and the existing wgpu presentation path pick up the
+new palette. A new real-GPU main-display test uses native sequential and PPC
+indexed updates on a 7x3 8-bit screen, refreshes presentation, verifies exact
+red/green then yellow/blue pixels, and checks guest bytes, padding and read-only
+input preservation. This is offscreen presentation acceptance, not a native
+window/browser check. Existing indexed tests continue to cover 2/4/8-bit drawing,
+reservation-aware matching, transfer modes, clipping and guest-memory coherence.
+
+Validation: 10 indexed-destination tests (real GPU enabled) pass in
+/tmp/systemless-setentries-acceptance.txt, terminal exit 0. The final strengthened
+atomic fixture run has 8 color/inverse tests passing in
+/tmp/systemless-setentries-atomic-final.txt, exit 0. These are 18 distinct tests,
+not 26: the first log also contains an overlapping inverse suite. Atomic cases
+run both CPU adapters, change RGB requests before rejection, exercise reserved
+owner/foreign updates and an aliased index-mode swap, and preserve error globals,
+stack padding and guest allocation state. Strict runtime/probe lint passes in
+/tmp/systemless-setentries-runtime-lint-final.txt. Final fixture lint is recorded
+separately. Sequential formatting/whitespace checks pass.
+
+Original Escape Velocity 1.0.5 now passes its 256-entry SetEntries update and
+stops at Pack12 A82E, selector 6, PC 0001A5B4. Evidence:
+/tmp/systemless-ev-setentries.txt, terminal exit 1 at the explicit unsupported
+service; tracer build exit 0. The same original resource fork ran with a one
+million instruction bound, 640x480x8 graphics and no companion volume. No
+sound/timer/VBL callback or playable title/menu/gameplay acceptance was observed.
+Marathon was not replayed. Next: verify/implement the Color Picker conversion
+selector through shared services, preserving fractional formats and both ABIs.
+Full rebuild and text-library integration remain incomplete.
+
+Final strict fixture lint: /tmp/systemless-setentries-test-lint.txt, terminal exit 0.

@@ -8,6 +8,11 @@ use crate::{
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    SetEntries {
+        start: i16,
+        count: i16,
+        source: GuestPtr,
+    },
     Seed,
     Make {
         source: u32,
@@ -159,12 +164,86 @@ impl Manager {
                 resolution,
             } => self.make(m, p, source, destination, resolution),
             Op::Protect { index, protect } => self.protect(m, p, index, protect),
+            Op::SetEntries {
+                start,
+                count,
+                source,
+            } => self.set_entries(m, p, start, count, source),
             Op::Reserve { index, reserve } => self.entry(m, p, index, reserve, RESERVED),
             Op::Error | Op::Seed => unreachable!(),
         };
         (p.mem_error, p.res_error) = saved;
         let error = result?;
         self.error = error;
+        Ok(0)
+    }
+    fn set_entries(
+        &mut self,
+        m: &mut Memory,
+        p: &mut Process,
+        start: i16,
+        count: i16,
+        source: GuestPtr,
+    ) -> Result<i16> {
+        if count == -1 {
+            return Ok(0);
+        }
+        if start < -1 || !(0..256).contains(&count) {
+            return Ok(-153);
+        }
+        if source.0 == 0 {
+            return Err(bad("nil SetEntries source"));
+        }
+        // Snapshot before lazy allocation or destination writes: input may alias
+        // the device table, and index-mode requests may repeat an index.
+        let input = m.read(source, (count as usize + 1) * 8)?.to_vec();
+        let mut devices = std::mem::take(&mut p.devices);
+        let device = devices.call(m, p, devices::Op::Current);
+        p.devices = devices;
+        let gd = owned(m, p, device?, 62)?;
+        if m.u16(GuestPtr(gd.0 + 4))? != 0 {
+            return Ok(-155);
+        }
+        let pm = owned(m, p, m.u32(GuestPtr(gd.0 + 22))?, 50)?;
+        let depth = m.u16(GuestPtr(pm.0 + 32))?;
+        if ![1, 2, 4, 8].contains(&depth) {
+            return Ok(-155);
+        }
+        let handle = m.u32(GuestPtr(pm.0 + 42))?;
+        let table = owned(m, p, handle, 8)?;
+        let last = m.u16(GuestPtr(table.0 + 6))? as i16;
+        if !(-1..256).contains(&last) {
+            return Err(bad("invalid SetEntries device table count"));
+        }
+        if m.u16(GuestPtr(table.0 + 4))? != 0x8000 {
+            return Err(bad("SetEntries requires an ordinary device table"));
+        }
+        let length = 8 + (i32::from(last) + 1) as usize * 8;
+        owned(m, p, handle, length as u32)?;
+        let mut replacement = m.read(table, length)?.to_vec();
+        let client = m.u16(GuestPtr(gd.0 + 2))? & 255;
+        for (i, entry) in input.chunks_exact(8).enumerate() {
+            let index = if start == -1 {
+                usize::from(u16::from_be_bytes(entry[..2].try_into().unwrap()))
+            } else {
+                start as usize + i
+            };
+            if index >= (1usize << depth) || index as i32 > i32::from(last) {
+                return Ok(-154);
+            }
+            let at = 8 + index * 8;
+            let metadata = u16::from_be_bytes(replacement[at..at + 2].try_into().unwrap());
+            if metadata & PROTECTED != 0 || (metadata & RESERVED != 0 && metadata & 255 != client) {
+                return Ok(-154);
+            }
+            replacement[at..at + 2].copy_from_slice(&((metadata & 0xff00) | client).to_be_bytes());
+            replacement[at + 2..at + 8].copy_from_slice(&entry[2..]);
+        }
+        let seed = self.next_seed(m.u32(table)?)?;
+        replacement[..4].copy_from_slice(&seed.to_be_bytes());
+        m.validate_write(table, length)?;
+        m.write(table, &replacement)?;
+        self.serial = seed;
         Ok(0)
     }
     fn next_seed(&self, previous: u32) -> Result<u32> {

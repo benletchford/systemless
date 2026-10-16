@@ -17,8 +17,9 @@ fn app() -> LoadedApplication {
             b"ProtectEntry",
             b"ReserveEntry",
             b"GetCTSeed",
+            b"SetEntries",
         ],
-        32,
+        64,
     );
     let mut a = LoadedApplication::pef(&f.bytes, None).unwrap();
     a.runtime
@@ -30,7 +31,7 @@ fn app() -> LoadedApplication {
         .map(
             GuestPtr(BASE + 4096),
             vec![
-                0xaa, 0x39, 0xaa, 0x40, 0xaa, 0x32, 0xaa, 0x3d, 0xaa, 0x3e, 0xaa, 0x28,
+                0xaa, 0x39, 0xaa, 0x40, 0xaa, 0x32, 0xaa, 0x3d, 0xaa, 0x3e, 0xaa, 0x28, 0xaa, 0x3f,
             ],
             Permissions::RX,
         )
@@ -51,6 +52,7 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, args: &[u32])
     let consumed = match index {
         0 => 10,
         3 | 4 => 4,
+        6 => 8,
         _ => 0,
     };
     if arch == Architecture::M68k {
@@ -62,6 +64,11 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, args: &[u32])
         }
         if index == 3 || index == 4 {
             frame.extend([args[1] as u8, 0x5a]);
+            frame.extend((args[0] as u16).to_be_bytes());
+        }
+        if index == 6 {
+            frame.extend(args[2].to_be_bytes());
+            frame.extend((args[1] as u16).to_be_bytes());
             frame.extend((args[0] as u16).to_be_bytes());
         }
         frame.extend([0xa5; 8]);
@@ -101,9 +108,9 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, args: &[u32])
                 a.runtime.memory.u16(GuestPtr(STACK)).unwrap() as i16 as i32 as u32
             } else if index == 2 || index == 5 {
                 a.runtime.memory.u32(GuestPtr(STACK)).unwrap()
-            } else if index == 3 || index == 4 {
+            } else if index == 3 || index == 4 || index == 6 {
                 assert_eq!(
-                    a.runtime.memory.u32(GuestPtr(STACK + 4)).unwrap(),
+                    a.runtime.memory.u32(GuestPtr(STACK + consumed)).unwrap(),
                     0xa5a5a5a5
                 );
                 0
@@ -116,7 +123,7 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, args: &[u32])
             }
         }
         Cpu::PowerPc(c) => {
-            if index == 0 || index == 3 || index == 4 {
+            if index == 0 || index == 3 || index == 4 || index == 6 {
                 assert_eq!(c.gpr[3], args[0]);
                 0
             } else {
@@ -499,4 +506,98 @@ fn color_seeds_are_unique_across_cpus_and_entry_invalidations_without_allocation
     assert!(third > changed);
     assert_eq!(call(&mut a, Architecture::M68k, 1, &[]) as i32, -154);
     assert_eq!(a.runtime.process.free_memory(), free);
+}
+
+#[test]
+fn setentries_is_atomic_for_protection_reservations_ranges_and_aliased_index_requests() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        let gd_handle = call(&mut a, arch, 2, &[]);
+        let gd = a.runtime.memory.u32(GuestPtr(gd_handle)).unwrap();
+        let pm_handle = a.runtime.memory.u32(GuestPtr(gd + 22)).unwrap();
+        let pm = a.runtime.memory.u32(GuestPtr(pm_handle)).unwrap();
+        let ct_handle = a.runtime.memory.u32(GuestPtr(pm + 42)).unwrap();
+        let ct = a.runtime.memory.u32(GuestPtr(ct_handle)).unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(gd + 2), &0x1256u16.to_be_bytes())
+            .unwrap();
+        let mut input: Vec<_> = [
+            0xffffu16, 0x1111, 0x2222, 0x3333, 0xeeee, 0xaaaa, 0xbbbb, 0xcccc,
+        ]
+        .into_iter()
+        .flat_map(u16::to_be_bytes)
+        .collect();
+        a.runtime.memory.write(GuestPtr(BASE), &input).unwrap();
+        let free = a.runtime.process.free_memory();
+        call(&mut a, arch, 6, &[0, 1, BASE]); // count is last index; source values ignored.
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, 0);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(ct + 8)).unwrap(), 0x56);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(ct + 16)).unwrap(), 0x56);
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(ct + 10), 6).unwrap(),
+            &input[2..8]
+        );
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(ct + 18), 6).unwrap(),
+            &input[10..16]
+        );
+        input[2] = 0x99;
+        input[10] = 0x55;
+        a.runtime.memory.write(GuestPtr(BASE), &input).unwrap();
+        call(&mut a, arch, 3, &[1, 1]);
+        let protected = a.runtime.memory.read(GuestPtr(ct), 24).unwrap().to_vec();
+        call(&mut a, arch, 6, &[0, 1, BASE]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, -154);
+        assert_eq!(a.runtime.memory.read(GuestPtr(ct), 24).unwrap(), protected);
+        call(&mut a, arch, 3, &[1, 0]);
+        call(&mut a, arch, 4, &[1, 1]);
+        a.runtime
+            .memory
+            .write(GuestPtr(gd + 2), &0x77cdu16.to_be_bytes())
+            .unwrap();
+        let reserved = a.runtime.memory.read(GuestPtr(ct), 24).unwrap().to_vec();
+        call(&mut a, arch, 6, &[0, 1, BASE]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, -154);
+        assert_eq!(a.runtime.memory.read(GuestPtr(ct), 24).unwrap(), reserved);
+        a.runtime
+            .memory
+            .write(GuestPtr(gd + 2), &0x1256u16.to_be_bytes())
+            .unwrap();
+        call(&mut a, arch, 6, &[0, 1, BASE]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, 0);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(ct + 16)).unwrap(), 0x4056);
+        call(&mut a, arch, 4, &[1, 0]);
+        a.runtime
+            .memory
+            .write(GuestPtr(gd + 2), &0u16.to_be_bytes())
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(ct + 8), &1u16.to_be_bytes())
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(ct + 16), &0u16.to_be_bytes())
+            .unwrap();
+        call(&mut a, arch, 6, &[u32::MAX, 1, ct + 8]); // aliased index-mode input swaps entries.
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, 0);
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(ct + 10), 6).unwrap(),
+            &input[10..16]
+        );
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(ct + 18), 6).unwrap(),
+            &input[2..8]
+        );
+        let before = a.runtime.memory.read(GuestPtr(ct), 24).unwrap().to_vec();
+        let mut invalid = input.clone();
+        invalid[..2].copy_from_slice(&0u16.to_be_bytes());
+        invalid[8..10].copy_from_slice(&2u16.to_be_bytes());
+        a.runtime.memory.write(GuestPtr(BASE), &invalid).unwrap();
+        call(&mut a, arch, 6, &[u32::MAX, 1, BASE]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, -154);
+        assert_eq!(a.runtime.memory.read(GuestPtr(ct), 24).unwrap(), before);
+        assert_eq!(a.runtime.process.free_memory(), free);
+    }
 }
