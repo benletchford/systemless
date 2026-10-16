@@ -5922,3 +5922,38 @@ unverified. EV was not replayed and retains its previously recorded ProtectEntry
 boundary. Neither game is playable. Next: shared extended subtraction/addition
 with exact cancellation and correct rounding, then continue Marathon startup.
 Full rebuild stays active and PR remains draft.
+
+
+## Exact sums and square-root checkpoint (2026-10-16)
+
+FADDX/FSUBX now retain full-precision alignment and exact cancellation before a
+single nearest-even packing step. Subnormal destinations round directly from the
+exact result. Extended exponent bounds cap alignment storage at 33,024 bits.
+Signed zero, infinities, propagated NaNs, SANE NANADD code 2 and overflow are
+explicit. FSQRTX uses software 64-bit extended precision across the full canonical
+input range; exact roots do not add inexact, negative zero is preserved, and
+negative finite/infinite input produces NANSQRT code 1 with invalid status.
+Alternate modes, other source formats and noncanonical encodings remain open.
+
+Final acceptance: 77 checks passed, zero failed/ignored: 50 library, sixteen numeric
+integration, seven timer and four trap patch tests. Evidence:
+/tmp/systemless-sane-add-sqrt-acceptance.txt, terminal exit 0. Tests cover deep
+cancellation, a one-bit subnormal difference, halfway ties, widest exponent gaps,
+overflow, signed zero, exact/inexact roots, smallest-subnormal square root, native
+operand order, output bytes and frame/register preservation. The earlier 75-check
+addition-only run is preliminary and not added to this count. Strict Rust 1.99
+all-target lint and Rust 1.93 library checks pass:
+/tmp/systemless-sane-add-sqrt-lint.txt and /tmp/systemless-sane-add-sqrt-msrv.txt.
+Sequential formatting and whitespace checks pass. No new full/GPU/wasm suite or
+native-system conformance run is claimed.
+
+Original Marathon passes multiple sums/differences, square root, further arithmetic,
+and its real environment Get/Set/Exit sequence. Original ProcExit execution is now
+verified (earlier checkpoints only proved it with fixtures). It next requests
+FMULD ($A9EB/$0804), PC $0101DD5C: extended destination $0080FE1A, binary64 source
+$0080FDE6. Evidence: /tmp/systemless-marathon-sane-add-sqrt.txt, explicit unsupported-
+selector exit 1. Completed timer=1, sound=0, VBL=0. Title/menu/gameplay and native
+audio remain unverified. EV was not replayed and retains its prior ProtectEntry
+boundary. Neither game is playable. Next: typed mixed-source SANE arithmetic,
+starting with binary64 multiplication through the existing shared engine, then
+continue Marathon startup. Full rebuild stays active and PR remains draft.

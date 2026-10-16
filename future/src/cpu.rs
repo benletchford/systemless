@@ -29,6 +29,12 @@ pub enum Call {
         source: GuestPtr,
         destination: GuestPtr,
     },
+    SquareRootExtended(GuestPtr),
+    AddExtended {
+        source: GuestPtr,
+        destination: GuestPtr,
+        subtract: bool,
+    },
     CompareExtended {
         source: GuestPtr,
         destination: GuestPtr,

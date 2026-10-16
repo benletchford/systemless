@@ -2716,3 +2716,26 @@ equal and negative magnitude order reverses. Quiet comparisons raise invalid onl
 for signaling NaNs; signaling comparisons raise it for any unordered NaN pair.
 Neither input is quieted or rewritten. Primary: Apple Numerics Manual, chapter 20,
 pp. 151–152/table 20-1. Other operand-format variants remain unfinished.
+
+
+### Exact extended addition and subtraction
+
+FADDX/FSUBX ($0000/$0002) snapshot both canonical operands and use astro-float's
+full-precision alignment/sum/difference before one explicit nearest-even rounding
+step. The result is not first rounded to 64 bits and then rounded again for a
+subnormal destination. Raw-word quantization retains guard/sticky information;
+valid extended exponent bounds cap alignment at 33,024 bits. Zero cancellation,
+signed zero combinations, infinities, propagated NaNs, NANADD code 2 and overflow
+are explicit. Tests cover a one-bit subnormal cancellation, halfway ties and the
+maximum exponent separation. Native operand order, registers and ten-byte frame
+are checked. Other source formats and alternate environment controls remain open.
+
+
+FSQRTX ($0012) uses the shared software numeric engine at 64-bit significand
+precision. It accepts the full extended input range, so even the smallest
+subnormal has a normal nonzero square root. Perfect squares do not introduce
+inexact; rounded roots do. Negative zero is preserved, positive infinity is
+exact, NaN payloads quiet as required, and negative finite/infinite input produces
+SANE NANSQRT code 1 with invalid status. The native adapter checks ten writable
+operand bytes before popping its six-byte selector/address frame. Alternate
+rounding/precision and noncanonical representations remain unsupported explicitly.

@@ -37,6 +37,197 @@ pub struct Numerics {
     pub divide_by_zero: bool,
 }
 impl Numerics {
+    pub fn square_root_extended(&mut self, memory: &mut Memory, pointer: GuestPtr) -> Result<()> {
+        let bytes = memory.read(pointer, 10)?.try_into().unwrap();
+        memory.validate_write(pointer, 10)?;
+        let result = self.square_root(bytes)?;
+        memory.write(pointer, &result)
+    }
+    fn square_root(&mut self, input: [u8; 10]) -> Result<[u8; 10]> {
+        let se = u16::from_be_bytes(input[..2].try_into().unwrap());
+        let exponent = se & 0x7fff;
+        let mantissa = u64::from_be_bytes(input[2..].try_into().unwrap());
+        if (exponent != 0 && mantissa >> 63 == 0) || (exponent == 0 && mantissa >> 63 != 0) {
+            return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
+        }
+        if exponent == 0x7fff && mantissa != 1 << 63 {
+            self.invalid |= mantissa & (1 << 62) == 0;
+            let mut result = input;
+            result[2] |= 0x40;
+            return Ok(result);
+        }
+        if exponent == 0 && mantissa == 0 {
+            return Ok(input);
+        }
+        if se & 0x8000 != 0 {
+            self.invalid = true;
+            let mut result = [0; 10];
+            result[..2].copy_from_slice(&0x7fffu16.to_be_bytes());
+            result[2..].copy_from_slice(&0xc001_0000_0000_0000u64.to_be_bytes());
+            return Ok(result);
+        }
+        if exponent == 0x7fff {
+            return Ok(input);
+        }
+        #[cfg(target_pointer_width = "64")]
+        let words = [mantissa];
+        #[cfg(target_pointer_width = "32")]
+        let words = [mantissa as u32, (mantissa >> 32) as u32];
+        let value = BigFloat::from_words(&words, Sign::Pos, i32::from(exponent.max(1)) - 16382);
+        let result = value.sqrt(64, RoundingMode::ToEven);
+        let Some((words, bits, _, exp, inexact)) = result.as_raw_parts() else {
+            return Err(Error::Cpu("software square root failed".into()));
+        };
+        if bits != 64 || !(-8222..=8193).contains(&exp) {
+            return Err(Error::Cpu(
+                "invalid extended square root representation".into(),
+            ));
+        }
+        #[cfg(target_pointer_width = "64")]
+        let significand = words[0];
+        #[cfg(target_pointer_width = "32")]
+        let significand = u64::from(words[0]) | (u64::from(words[1]) << 32);
+        self.inexact |= inexact;
+        let mut bytes = [0; 10];
+        bytes[..2].copy_from_slice(&((exp + 16382) as u16).to_be_bytes());
+        bytes[2..].copy_from_slice(&significand.to_be_bytes());
+        Ok(bytes)
+    }
+    pub fn add_extended(
+        &mut self,
+        memory: &mut Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+        subtract: bool,
+    ) -> Result<()> {
+        let a = memory.read(destination, 10)?.try_into().unwrap();
+        let b = memory.read(source, 10)?.try_into().unwrap();
+        memory.validate_write(destination, 10)?;
+        let result = self.add(a, b, subtract)?;
+        memory.write(destination, &result)
+    }
+    fn add(&mut self, a: [u8; 10], b: [u8; 10], subtract: bool) -> Result<[u8; 10]> {
+        let decode = |bytes: [u8; 10]| -> Result<(u16, u64)> {
+            let e = u16::from_be_bytes(bytes[..2].try_into().unwrap());
+            let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
+            if (e & 0x7fff != 0 && m >> 63 == 0) || (e & 0x7fff == 0 && m >> 63 != 0) {
+                return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
+            }
+            Ok((e, m))
+        };
+        let (ae, am) = decode(a)?;
+        let (be, bm) = decode(b)?;
+        let encode = |e: u16, m: u64| {
+            let mut bytes = [0; 10];
+            bytes[..2].copy_from_slice(&e.to_be_bytes());
+            bytes[2..].copy_from_slice(&m.to_be_bytes());
+            bytes
+        };
+        let an = ae & 0x7fff == 0x7fff && am != 1 << 63;
+        let bn = be & 0x7fff == 0x7fff && bm != 1 << 63;
+        if an || bn {
+            self.invalid |= (an && am & (1 << 62) == 0) || (bn && bm & (1 << 62) == 0);
+            let (e, m) = if an { (ae, am) } else { (be, bm) };
+            return Ok(encode(e, m | 1 << 62));
+        }
+        let effective_be = be ^ if subtract { 0x8000 } else { 0 };
+        let ai = ae & 0x7fff == 0x7fff;
+        let bi = be & 0x7fff == 0x7fff;
+        if ai || bi {
+            if ai && bi && (ae ^ effective_be) & 0x8000 != 0 {
+                self.invalid = true;
+                return Ok(encode(0x7fff, 0xc002_0000_0000_0000));
+            }
+            return Ok(encode(if ai { ae } else { effective_be }, 1 << 63));
+        }
+        if am == 0 && bm == 0 {
+            return Ok(encode(ae & effective_be & 0x8000, 0));
+        }
+        #[cfg(target_pointer_width = "64")]
+        let (aw, bw) = ([am], [bm]);
+        #[cfg(target_pointer_width = "32")]
+        let (aw, bw) = (
+            [am as u32, (am >> 32) as u32],
+            [bm as u32, (bm >> 32) as u32],
+        );
+        let av = BigFloat::from_words(
+            &aw,
+            if ae & 0x8000 == 0 {
+                Sign::Pos
+            } else {
+                Sign::Neg
+            },
+            i32::from((ae & 0x7fff).max(1)) - 16382,
+        );
+        let bv = BigFloat::from_words(
+            &bw,
+            if be & 0x8000 == 0 {
+                Sign::Pos
+            } else {
+                Sign::Neg
+            },
+            i32::from((be & 0x7fff).max(1)) - 16382,
+        );
+        let exact = if subtract {
+            av.sub_full_prec(&bv)
+        } else {
+            av.add_full_prec(&bv)
+        };
+        if exact.is_zero() {
+            return Ok(encode(0, 0));
+        }
+        let Some((words, _, sign, exponent, _)) = exact.as_raw_parts() else {
+            return Err(Error::Cpu("exact SANE addition failed".into()));
+        };
+        let word_bits = std::mem::size_of_val(&words[0]) * 8;
+        let bits = words.len() * word_bits;
+        if bits > 33024 {
+            return Err(Error::Cpu(
+                "SANE addition exceeded bounded extended alignment".into(),
+            ));
+        }
+        let tiny = exponent < -16381;
+        let shift = if tiny {
+            bits as i32 - exponent - 16445
+        } else {
+            bits as i32 - 64
+        };
+        if shift < 0 {
+            return Err(Error::Cpu("invalid exact addition representation".into()));
+        }
+        let shift = shift as usize;
+        let bit = |i: usize| i < bits && words[i / word_bits] & (1 << (i % word_bits)) != 0;
+        let mut significand = 0u128;
+        for i in 0..64 {
+            if bit(shift + i) {
+                significand |= 1u128 << i;
+            }
+        }
+        let lost = (0..shift.min(bits)).any(bit);
+        let guard = shift != 0 && bit(shift - 1);
+        let sticky = shift > 1 && (0..(shift - 1).min(bits)).any(bit);
+        if guard && (sticky || significand & 1 != 0) {
+            significand += 1;
+        }
+        self.inexact |= lost;
+        let sign = if sign == Sign::Neg { 0x8000 } else { 0 };
+        let mut biased = if tiny {
+            u16::from(significand >= 1u128 << 63)
+        } else {
+            (exponent + 16382) as u16
+        };
+        if !tiny && significand == 1u128 << 64 {
+            significand >>= 1;
+            biased += 1;
+        }
+        if biased >= 0x7fff {
+            self.overflow = true;
+            self.inexact = true;
+            return Ok(encode(sign | 0x7fff, 1 << 63));
+        }
+        self.underflow |= biased == 0 && lost;
+        Ok(encode(sign | biased, significand as u64))
+    }
     pub fn compare_extended(
         &mut self,
         memory: &Memory,
@@ -611,6 +802,75 @@ mod tests {
         b[..2].copy_from_slice(&se.to_be_bytes());
         b[2..].copy_from_slice(&m.to_be_bytes());
         b
+    }
+    #[test]
+    fn square_root_retains_extended_range_exactness_signed_zero_and_invalid_status() {
+        let mut n = Numerics::default();
+        assert_eq!(
+            n.square_root(value(0x4001, 1 << 63)).unwrap(),
+            value(0x4000, 1 << 63)
+        );
+        assert!(!n.inexact);
+        assert_eq!(
+            n.square_root(value(1, 1 << 63)).unwrap(),
+            value(0x2000, 1 << 63)
+        );
+        assert!(!n.inexact);
+        assert_eq!(
+            n.square_root(value(0x4000, 1 << 63)).unwrap(),
+            value(0x3fff, 0xb504_f333_f9de_6484)
+        );
+        assert!(n.inexact);
+        assert_eq!(
+            n.square_root(value(0, 1)).unwrap(),
+            value(0x1fe0, 0xb504_f333_f9de_6484)
+        );
+        assert_eq!(n.square_root(value(0x8000, 0)).unwrap(), value(0x8000, 0));
+        assert_eq!(
+            n.square_root(value(0xbfff, 1 << 63)).unwrap(),
+            value(0x7fff, 0xc001_0000_0000_0000)
+        );
+        assert!(n.invalid);
+    }
+    #[test]
+    fn addition_and_subtraction_keep_cancellation_and_single_rounding_exact() {
+        let one = value(0x3fff, 1 << 63);
+        let mut n = Numerics::default();
+        assert_eq!(n.add(one, one, false).unwrap(), value(0x4000, 1 << 63));
+        assert_eq!(
+            n.add(one, value(0x3ffe, u64::MAX), true).unwrap(),
+            value(0x3fbf, 1 << 63)
+        );
+        assert_eq!(
+            n.add(value(1, 1 << 63), value(0, 0x7fff_ffff_ffff_ffff), true)
+                .unwrap(),
+            value(0, 1)
+        );
+        assert!(!n.inexact);
+        assert_eq!(n.add(one, value(0x3fbf, 1 << 63), false).unwrap(), one);
+        assert!(n.inexact);
+        assert_eq!(
+            n.add(one, value(0x3fc0, 0xc000_0000_0000_0000), false)
+                .unwrap(),
+            value(0x3fff, 0x8000_0000_0000_0002)
+        );
+        let mut n = Numerics::default();
+        let max = value(0x7ffe, u64::MAX);
+        assert_eq!(n.add(max, value(0, 1), false).unwrap(), max);
+        assert!(n.inexact && !n.overflow);
+        assert_eq!(n.add(max, max, false).unwrap(), value(0x7fff, 1 << 63));
+        assert!(n.overflow);
+        assert_eq!(
+            n.add(value(0x8000, 0), value(0x8000, 0), false).unwrap(),
+            value(0x8000, 0)
+        );
+        assert_eq!(n.add(one, one, true).unwrap(), value(0, 0));
+        assert_eq!(
+            n.add(value(0x7fff, 1 << 63), value(0x7fff, 1 << 63), true)
+                .unwrap(),
+            value(0x7fff, 0xc002_0000_0000_0000)
+        );
+        assert!(n.invalid);
     }
     #[test]
     fn trig_matches_independent_decimal_series_with_large_arguments_and_low_bits() {

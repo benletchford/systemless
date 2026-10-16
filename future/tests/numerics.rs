@@ -14,7 +14,7 @@ fn app(selector: u16, pointer: u32) -> LoadedApplication {
             GuestPtr(0x50000000),
             vec![
                 0xa9,
-                if [4, 6, 8, 10, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
+                if [0, 2, 4, 6, 8, 10, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
                     0xeb
                 } else {
                     0xec
@@ -546,5 +546,77 @@ fn native_comparison_returns_sane_condition_codes_without_writing_readonly_opera
             first
         );
         assert_eq!(a.runtime.memory.read(GuestPtr(source), 10).unwrap(), second);
+    }
+}
+
+#[test]
+fn native_extended_add_and_subtract_preserve_low_bits_operand_order_and_frame() {
+    for (selector, expected) in [
+        (0, [0x40, 0, 0x80, 0, 0, 0, 0, 0, 0, 0]),
+        (2, [0x3f, 0xbf, 0x80, 0, 0, 0, 0, 0, 0, 0]),
+    ] {
+        let source = STACK_BASE + 0x6100;
+        let destination = STACK_BASE + 0x6000;
+        let mut a = app(selector, destination);
+        a.runtime
+            .memory
+            .write(
+                GuestPtr(destination),
+                &[0x3f, 0xff, 0x80, 0, 0, 0, 0, 0, 0, 0],
+            )
+            .unwrap();
+        a.runtime
+            .memory
+            .write(
+                GuestPtr(source),
+                &[0x3f, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff],
+            )
+            .unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(STACK_BASE + 0x7006), &source.to_be_bytes())
+            .unwrap();
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(destination), 10).unwrap(),
+            expected
+        );
+        let Cpu::M68k(c) = &a.runtime.cpu else {
+            panic!()
+        };
+        assert_eq!(c.dar[15], STACK_BASE + 0x700a);
+        for i in 0..15 {
+            assert_eq!(c.dar[i], 0x12340000 + i as u32);
+        }
+    }
+}
+
+#[test]
+fn native_extended_square_root_uses_six_byte_frame_and_preserves_registers() {
+    let pointer = STACK_BASE + 0x6000;
+    let mut a = app(0x12, pointer);
+    a.runtime
+        .memory
+        .map(GuestPtr(0x54000000), vec![0xa9, 0xeb], Permissions::RX)
+        .unwrap();
+    let Cpu::M68k(c) = &mut a.runtime.cpu else {
+        panic!()
+    };
+    c.pc = 0x54000000;
+    a.runtime
+        .memory
+        .write(GuestPtr(pointer), &[0x40, 0, 0x80, 0, 0, 0, 0, 0, 0, 0])
+        .unwrap();
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(pointer), 10).unwrap(),
+        [0x3f, 0xff, 0xb5, 0x04, 0xf3, 0x33, 0xf9, 0xde, 0x64, 0x84]
+    );
+    let Cpu::M68k(c) = &a.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(c.dar[15], STACK_BASE + 0x7006);
+    for i in 0..15 {
+        assert_eq!(c.dar[i], 0x12340000 + i as u32);
     }
 }

@@ -789,6 +789,25 @@ impl Runtime {
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::SquareRootExtended(pointer) => {
+                            self.process
+                                .numerics
+                                .square_root_extended(&mut self.memory, pointer)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::AddExtended {
+                            source,
+                            destination,
+                            subtract,
+                        } => {
+                            self.process.numerics.add_extended(
+                                &mut self.memory,
+                                source,
+                                destination,
+                                subtract,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::CompareExtended {
                             source,
                             destination,
@@ -2233,6 +2252,8 @@ impl Runtime {
                         | Call::DoubleToExtended { .. }
                         | Call::ExtendedToDouble { .. }
                         | Call::MultiplyExtended { .. }
+                        | Call::SquareRootExtended(_)
+                        | Call::AddExtended { .. }
                         | Call::CompareExtended { .. }
                         | Call::NumericEnvironment { .. }
                         | Call::ClassifyExtended { .. }

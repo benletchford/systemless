@@ -1672,6 +1672,18 @@ impl Abi {
             }
             0xa9eb => {
                 let selector = memory.u16(GuestPtr(sp))?;
+                if selector == 0x12 {
+                    let pointer =
+                        GuestPtr(memory.u32(GuestPtr(sp.checked_add(2).ok_or_else(|| {
+                            Error::Cpu("SANE square root stack overflow".into())
+                        })?))?);
+                    memory.read(pointer, 10)?;
+                    memory.validate_write(pointer, 10)?;
+                    c.dar[15] = sp
+                        .checked_add(6)
+                        .ok_or_else(|| Error::Cpu("SANE square root stack overflow".into()))?;
+                    return Ok((Call::SquareRootExtended(pointer), Reply::None));
+                }
                 if [1, 3, 0x17, 0x19].contains(&selector) {
                     let pointer =
                         GuestPtr(memory.u32(GuestPtr(sp.checked_add(2).ok_or_else(|| {
@@ -1695,8 +1707,10 @@ impl Abi {
                 }
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let selector = u16::from_be_bytes(args[..2].try_into().unwrap());
-                if ![4, 6, 8, 10, 0x001c, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e]
-                    .contains(&selector)
+                if ![
+                    0, 2, 4, 6, 8, 10, 0x001c, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e,
+                ]
+                .contains(&selector)
                 {
                     return Err(Error::Cpu(format!(
                         "unsupported FP68K selector {selector:04x}"
@@ -1713,7 +1727,7 @@ impl Abi {
                         _ => 10,
                     },
                 )?;
-                if [4, 6, 8, 10].contains(&selector) {
+                if [0, 2, 4, 6, 8, 10].contains(&selector) {
                     memory.read(destination, 10)?;
                 }
                 if ![8, 10].contains(&selector) {
@@ -1730,7 +1744,13 @@ impl Abi {
                     .checked_add(10)
                     .ok_or_else(|| Error::Cpu("FP68K stack overflow".into()))?;
                 Ok((
-                    if [8, 10].contains(&selector) {
+                    if [0, 2].contains(&selector) {
+                        Call::AddExtended {
+                            source,
+                            destination,
+                            subtract: selector == 2,
+                        }
+                    } else if [8, 10].contains(&selector) {
                         Call::CompareExtended {
                             source,
                             destination,
