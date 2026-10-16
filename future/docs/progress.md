@@ -6678,3 +6678,39 @@ zero. Neither priority game is playable; Marathon was not replayed. Next:
 identify selector 000D from primary SANE documentation and implement its shared
 numeric operation with ABI and boundary tests, then replay EV. The full rebuild
 and complete wgpu text requirement remain active.
+
+
+## Shared nonarithmetic SANE sign operations (2026-10-16)
+
+FP68K selectors 000D (FNEGX) and 000F (FABSX) now invoke one shared numeric
+service. They modify only the sign bit of the ten-byte guest operand, preserving
+NaN payloads and all exception flags. Full operand read/write preflight precedes
+native stack mutation; the one-pointer frame pops six bytes. No host floating
+conversion is involved. No new PPC numeric import or 96-bit ABI is claimed.
+
+Primary: Apple Numerics Manual, second edition, ch. 20 p. 150 and appendix E
+p. 270 ([scanned manual transcription](https://manuals.plus/m/1f06cc272b1e59ae58f6379edca5b7829815540f233f0679c0f5f26cb9dbcbde)).
+The manual specifies exception-free sign manipulation even for signaling NaNs.
+
+Validation: /tmp/systemless-sign-tests.txt, terminal exit 0: 26 tests pass,
+none fail or skip (new sign 3, existing numerics 23). Sixty selected raw extended
+patterns cover both signs, zeros, normals/subnormals, infinity, quiet/signaling
+NaNs and noncanonical payloads. Shared tests verify sign laws, preserved payload
+bits, exception flags and adjacent guards; real 68K tests verify registers,
+unchanged frame bytes, six-byte pop and allocation state. Read-only and truncated
+operands fail without stack/memory/flag mutation. Strict library/fixture lint
+passes in /tmp/systemless-sign-lint.txt; tracer build passes in
+/tmp/systemless-sign-build.txt. Sequential formatting and whitespace checks pass.
+These are focused checks, not a new full-suite, native or browser acceptance.
+
+Original Escape Velocity passes negation and next faults in NumericCompare at
+PC 0001F3D6 with `unsupported unnormal SANE operand`. Evidence:
+/tmp/systemless-ev-sign.txt, terminal exit 1. The observed negative input has
+exponent FFFF and zero significand; the positive form has exponent 7FFF and zero
+significand. Apple Numerics Manual appendix E table E-5 permits either integer
+bit for infinity, so the current strict integer-bit check needs a shared format
+correction. Next: accept both documented extended infinity encodings throughout
+numeric consumers, verify equivalent arithmetic/comparison/classification and
+conversion behavior, then replay EV. Same original fork, one-million instruction
+budget, 640x480x8, no companion volume; callbacks remain zero. No gameplay/audio
+acceptance; Marathon not rerun. Full rebuild and complete wgpu text remain open.

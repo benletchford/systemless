@@ -21,6 +21,10 @@ pub enum Call {
         numerator: i16,
         denominator: i16,
     },
+    SignExtended {
+        pointer: GuestPtr,
+        absolute: bool,
+    },
     RoundIntegralExtended {
         pointer: GuestPtr,
         truncate: bool,

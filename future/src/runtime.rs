@@ -805,6 +805,14 @@ impl Runtime {
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::SignExtended { pointer, absolute } => {
+                            self.process.numerics.sign_extended(
+                                &mut self.memory,
+                                pointer,
+                                absolute,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::RoundIntegralExtended { pointer, truncate } => {
                             self.process.numerics.round_integral_extended(
                                 &mut self.memory,
@@ -2314,6 +2322,7 @@ impl Runtime {
                         | Call::ExtendedToInteger { .. }
                         | Call::ExtendedToDouble { .. }
                         | Call::MultiplyExtended { .. }
+                        | Call::SignExtended { .. }
                         | Call::RoundIntegralExtended { .. }
                         | Call::NumericBinary { .. }
                         | Call::SquareRootExtended(_)

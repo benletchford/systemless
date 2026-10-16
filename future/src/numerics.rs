@@ -62,6 +62,24 @@ pub struct Numerics {
     pub divide_by_zero: bool,
 }
 impl Numerics {
+    /// Nonarithmetic SANE sign manipulation: preserve payload and exception state,
+    /// including signaling NaNs (Apple Numerics Manual, ch. 20, p. 150).
+    pub fn sign_extended(
+        &mut self,
+        memory: &mut Memory,
+        pointer: GuestPtr,
+        absolute: bool,
+    ) -> Result<()> {
+        let mut bytes: [u8; 10] = memory.read(pointer, 10)?.try_into().unwrap();
+        memory.validate_write(pointer, 10)?;
+        if absolute {
+            bytes[0] &= 0x7f;
+        } else {
+            bytes[0] ^= 0x80;
+        }
+        memory.write(pointer, &bytes)
+    }
+
     pub fn round_integral_extended(
         &mut self,
         memory: &mut Memory,

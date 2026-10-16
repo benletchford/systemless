@@ -1848,7 +1848,7 @@ impl Abi {
                         Reply::None,
                     ));
                 }
-                if [0x12, 0x14, 0x16].contains(&selector) {
+                if [0x0d, 0x0f, 0x12, 0x14, 0x16].contains(&selector) {
                     let pointer =
                         GuestPtr(memory.u32(GuestPtr(sp.checked_add(2).ok_or_else(|| {
                             Error::Cpu("SANE square root stack overflow".into())
@@ -1859,7 +1859,12 @@ impl Abi {
                         .checked_add(6)
                         .ok_or_else(|| Error::Cpu("SANE square root stack overflow".into()))?;
                     return Ok((
-                        if selector == 0x12 {
+                        if selector == 0x0d || selector == 0x0f {
+                            Call::SignExtended {
+                                pointer,
+                                absolute: selector == 0x0f,
+                            }
+                        } else if selector == 0x12 {
                             Call::SquareRootExtended(pointer)
                         } else {
                             Call::RoundIntegralExtended {
