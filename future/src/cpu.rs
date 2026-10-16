@@ -12,6 +12,10 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    FixedRatio {
+        numerator: i16,
+        denominator: i16,
+    },
     RoundIntegralExtended {
         pointer: GuestPtr,
         truncate: bool,

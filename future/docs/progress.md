@@ -6562,3 +6562,45 @@ behavior, implement the shared arithmetic service and both ABI adapters, then
 replay. Full rebuild and text-library integration remain incomplete.
 
 Final strict fixture lint: /tmp/systemless-rgb-hsl-test-lint.txt, terminal exit 0.
+
+
+## Shared modern FixRatio (2026-10-16)
+
+68K A869 and the PPC FixRatio import now decode signed sixteen-bit numerator
+and denominator into one stateless integer service. A widened calculation
+produces Fixed 16.16, rounds to nearest, saturates signed overflow and returns
+signed endpoints for division by zero (including positive saturation for 0/0).
+This deliberately follows the later Macintosh rules rather than the legacy
+Systemless truncation/unconditional-positive-zero-divisor path or 64K ROM quirks.
+The native adapter preflights two word arguments and the full four-byte result
+before popping four bytes; PPC ignores argument-register upper halves and
+returns the full signed result. A869 has a readable installed trap veneer. The
+bounded, nonallocating service is permitted in the existing VBL-safe whitelist;
+nested VBL invocation is not a new acceptance result here.
+
+Primary reference: [Apple Mathematical and Logical Utilities](https://dev.os9.ca/techpubs/mac/pdf/Operating_System_Utilities/MLU.pdf),
+pp. 3-12 and 3-46–47. The old Toolbox chapter's truncated and negative-zero-divisor
+80000001 description belongs to earlier behavior; the later boundary rules are
+used for the rebuild's System 7/PPC target. No native System 7 comparison was run.
+
+Validation: /tmp/systemless-fixratio-acceptance.txt terminal exit 0 for all three
+suites: 7 passed / 0 failed / 0 ignored (fixed ratio 3, logical 2, words 2).
+The nearest-result invariant covers every signed-word numerator for 17 selected
+nonzero denominators: 1,114,112 cases, with the positive saturation edge tested
+explicitly. Both real CPU adapters cover signed/garbage-upper-word inputs,
+negative/zero/overflow cases, stack/return guards, unchanged allocation/error
+state and installed veneer bytes. Invalid argument/result frames preserve SP and
+memory. This is not an exhaustive four-billion-pair or native rounding oracle.
+Strict runtime/probe lint passes in /tmp/systemless-fixratio-runtime-lint.txt;
+strict fixture lint passes in /tmp/systemless-fixratio-test-lint.txt, terminal
+exit 0. Sequential formatting and whitespace checks pass.
+
+Original Escape Velocity now passes FixRatio(-1,-32768), producing Fixed value
+2, and stops at Long2Fix A83F, PC 0001A5F8. Evidence:
+/tmp/systemless-ev-fixratio.txt, terminal exit 1 at the explicit unsupported
+service; tracer build exit 0. Same original resource fork, one million instruction
+bound, 640x480x8 graphics, no companion volume. Sound/timer/VBL callbacks remain
+zero; playable title/menu/gameplay/audio acceptance remains open. Marathon was
+not replayed. Next: shared signed LongInt-to-Fixed conversion with documented
+saturation and both ABI adapters, then replay. Full rebuild and complete text
+rendering remain active requirements.

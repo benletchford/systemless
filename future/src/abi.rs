@@ -9,6 +9,7 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    FixedRatio,
     GetDateTime,
     ReadDateTime,
     Timer(u8),
@@ -503,6 +504,7 @@ impl Abi {
             b"TEGetStyleHandle" => Some(Service::TEGetStyleHandle),
             b"TEDispose" => Some(Service::TEDispose),
             b"Random" => Some(Service::Random),
+            b"FixRatio" => Some(Service::FixedRatio),
             b"BitAnd" => Some(Service::Logical(crate::integer::Logic::And)),
             b"BitOr" => Some(Service::Logical(crate::integer::Logic::Or)),
             b"BitXor" => Some(Service::Logical(crate::integer::Logic::Xor)),
@@ -1049,6 +1051,23 @@ impl Abi {
                 });
                 c.dar[15] = result;
                 Ok((call, Reply::StackLong(GuestPtr(result))))
+            }
+            0xa869 => {
+                let args = memory.read(GuestPtr(sp), 4)?;
+                let denominator = i16::from_be_bytes(args[..2].try_into().unwrap());
+                let numerator = i16::from_be_bytes(args[2..4].try_into().unwrap());
+                let next = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("FixRatio stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 4)?;
+                c.dar[15] = next;
+                Ok((
+                    Call::FixedRatio {
+                        numerator,
+                        denominator,
+                    },
+                    Reply::StackLong(GuestPtr(next)),
+                ))
             }
             0xa858..=0xa85b => {
                 use crate::integer::Logic;
@@ -3789,6 +3808,10 @@ impl Abi {
                 })
             }
             Service::Random => Call::Random,
+            Service::FixedRatio => Call::FixedRatio {
+                numerator: c.gpr[3] as i16,
+                denominator: c.gpr[4] as i16,
+            },
             Service::Logical(op) => Call::Logical {
                 op,
                 left: c.gpr[3],

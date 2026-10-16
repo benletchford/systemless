@@ -27,3 +27,22 @@ impl Logic {
         }
     }
 }
+
+/// Signed Integer/Integer to Fixed (16.16), using post-128K Macintosh
+/// nearest rounding and signed saturation. IM: OS Utilities, pp. 3-12, 3-46–47.
+pub fn fixed_ratio(numerator: i16, denominator: i16) -> i32 {
+    if denominator == 0 {
+        return if numerator < 0 { i32::MIN } else { i32::MAX };
+    }
+    let n = i64::from(numerator);
+    let d = i64::from(denominator);
+    let scaled = n.abs() * 65536;
+    let divisor = d.abs();
+    let magnitude = (scaled + divisor / 2) / divisor;
+    let result = if (n < 0) != (d < 0) {
+        -magnitude
+    } else {
+        magnitude
+    };
+    result.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}

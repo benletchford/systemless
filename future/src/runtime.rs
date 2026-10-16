@@ -299,6 +299,7 @@ impl Runtime {
                             Call::Ticks
                                 | Call::ReadDateTime(_)
                                 | Call::PostEvent { .. }
+                                | Call::FixedRatio { .. }
                                 | Call::Logical { .. }
                                 | Call::EmptyRect(_)
                                 | Call::PointInRect { .. }
@@ -1070,6 +1071,13 @@ impl Runtime {
                         Call::Cursor(op) => {
                             crate::cursor::call(&self.memory, &mut self.process, op)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::FixedRatio {
+                            numerator,
+                            denominator,
+                        } => {
+                            let value = crate::integer::fixed_ratio(numerator, denominator) as u32;
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
                         }
                         Call::Word { value, high } => {
                             let value = crate::integer::word(value, high) as i32 as u32;
@@ -2206,6 +2214,7 @@ impl Runtime {
                         | Call::Cursor(_)
                         | Call::MenuSelect(_)
                         | Call::HiliteMenu(_)
+                        | Call::FixedRatio { .. }
                         | Call::Word { .. }
                         | Call::MenuChoice
                         | Call::Menu(_)
