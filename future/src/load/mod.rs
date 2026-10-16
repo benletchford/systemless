@@ -56,6 +56,7 @@ impl LoadedApplication {
         self.runtime.memory.remove_mappings(&[screen.base.0]);
         self.runtime.memory.adopt(prepared)?;
         self.runtime.process.display = display;
+        self.runtime.process.drivers = crate::drivers::Manager::new(display);
         if display.depth() != 1 {
             let mut devices = std::mem::take(&mut self.runtime.process.devices);
             let result = devices.call(

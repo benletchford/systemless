@@ -65,6 +65,9 @@ fn record(memory: &Memory, process: &mut Process, handle: u32, size: u32) -> Res
     Ok(GuestPtr(memory.u32(GuestPtr(handle))?))
 }
 impl Manager {
+    pub(crate) fn is_main(&self, handle: u32) -> bool {
+        self.device == Some(handle)
+    }
     fn initialize(&mut self, memory: &mut Memory, process: &mut Process) -> Result<u32> {
         if let Some(device) = self.device {
             record(memory, process, device, 62)?;
@@ -138,6 +141,7 @@ impl Manager {
             memory.write(pixel_data, &map)?;
             let data = record(memory, process, device, 62)?;
             let mut gd = [0u8; 62];
+            gd[..2].copy_from_slice(&crate::drivers::VIDEO_REFERENCE.to_be_bytes());
             gd[10..12].copy_from_slice(&4u16.to_be_bytes());
             gd[20..22].copy_from_slice(&(0xe800u16 | u16::from(depth > 1)).to_be_bytes());
             gd[22..26].copy_from_slice(&pixels.to_be_bytes());

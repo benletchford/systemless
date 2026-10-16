@@ -91,6 +91,24 @@ impl Surface {
             }),
         })
     }
+    /// Physical presentation always has an explicit palette, including fixed
+    /// monochrome. Ordinary mono drawing keeps its bitwise transfer path.
+    pub(crate) fn physical(bitmap: Bitmap, depth: u16, rgb: Box<[[u16; 3]; 256]>) -> Result<Self> {
+        if ![1, 2, 4, 8].contains(&depth) {
+            return Err(bad("unsupported physical display depth"));
+        }
+        let mut defined = [false; 256];
+        defined[..1usize << depth].fill(true);
+        let mut surface = Self::indexed(bitmap, depth, rgb.clone(), defined)?;
+        if depth == 1 {
+            surface.colors = Some(Palette {
+                rgb,
+                defined,
+                matchable: defined,
+            });
+        }
+        Ok(surface)
+    }
     pub fn compatible(&self, other: &Self) -> bool {
         if self.depth != other.depth {
             return false;

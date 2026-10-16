@@ -17,6 +17,7 @@ pub mod decimal;
 pub mod devices;
 pub mod dialogs;
 pub mod display;
+pub mod drivers;
 pub mod environment;
 pub mod events;
 pub mod files;

@@ -84,6 +84,7 @@ fn setup(width: u16, height: u16) -> LoadedApplication {
             b"HideWindow",
             b"ShowWindow",
             b"RGBBackColor",
+            b"SetEntries",
         ],
         64,
     );
@@ -211,7 +212,7 @@ fn basic_and_color_screen_views_share_pixels_palette_copies_and_cursor_without_s
         &[PORT + 2, PORT + 2, PORT + 512, PORT + 520, 0, 0],
     );
     assert_eq!(pixel(&a, 20, 3), 31);
-    // A live table change affects refresh and cursor presentation, not canonical indices.
+    // Matching metadata alone does not reprogram the hardware CLUT.
     let pm = main_map(&a);
     let th = a.runtime.memory.u32(GuestPtr(pm + 42)).unwrap();
     let ct = a.runtime.memory.u32(GuestPtr(th)).unwrap();
@@ -219,6 +220,14 @@ fn basic_and_color_screen_views_share_pixels_palette_copies_and_cursor_without_s
         .memory
         .write(GuestPtr(ct + 10 + 31 * 8), &[0, 0, 0xff, 0xff, 0, 0])
         .unwrap();
+    a.runtime.refresh_screen().unwrap();
+    assert_eq!(rgba(&a, 20, 3), [255, 0, 0, 255]);
+    // High-level SetEntries updates both, even when the metadata is already green.
+    a.runtime
+        .memory
+        .write(GuestPtr(PORT + 720), &[0, 31, 0, 0, 255, 255, 0, 0])
+        .unwrap();
+    invoke(&mut a, 21, &[31, 0, PORT + 720]);
     a.runtime.refresh_screen().unwrap();
     assert_eq!(rgba(&a, 20, 3), [0, 255, 0, 255]);
     let mut cursor = vec![0; 68];

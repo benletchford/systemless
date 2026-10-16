@@ -62,9 +62,6 @@ impl Display {
             })
             .collect()
     }
-    pub(crate) fn surface(self, m: &Memory) -> Result<crate::surface::Surface> {
-        self.bitmap().surface(m)
-    }
 }
 /// Basic screen BitMaps describe the same physical storage as the main PixMap.
 /// Their local bounds may be translated; offscreen device selection is irrelevant.

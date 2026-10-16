@@ -25,6 +25,7 @@ pub struct ResourceInfo {
 }
 #[derive(Default)]
 pub struct Process {
+    pub drivers: crate::drivers::Manager,
     pub pixpats: crate::pixpat::Manager,
     pub cicons: crate::cicon::Manager,
     pub numerics: crate::numerics::Numerics,

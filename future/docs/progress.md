@@ -10237,3 +10237,77 @@ driver reference and correct driver/palette behavior before interpreting this
 original call as success; native reference0 behavior is not proved by legacy
 acceptance. Existing graphics.palette and live PixMap table paths need explicit
 ownership/synchronization if hardware palette control is added.
+
+
+### Video-driver control and physical palette ownership,2026-10-17
+
+The prior Marathon stop is Control reference0/code3. A real virtual display driver
+now has reference-128, published by its main GDevice and recognized by shared
+Control dispatch. It implements sequential/indexed VDSetEntryRecord updates with
+atomic staging and ordinary Device Manager error results. Sound-4 remains routed
+separately. Unknown0 is not treated as video success; both native and PPC fixtures
+verify signed D0/R3 and ioResult, preserved registers/errors, invalid parameters,
+late invalid indices, duplicate entries, source/result aliasing, no guest-heap
+allocation and read-only result preflight before bad payload reads.
+
+Physical RGB slots are separate from matching metadata. High-level main-device
+SetEntries updates both; direct video changes only physical colors. wgpu refresh
+reads physical framebuffer geometry/palette, while drawing still matches against
+live guest tables. Fixed mono presentation is also independent of matching tables
+and transient GPU palette state; unsupported programmable mono CLUT calls return
+controlErr. The old display test that expected raw matching-table edits to recolor
+hardware is strengthened: raw edit leaves the screen red, actual SetEntries turns
+it green, then all previous cursor/pixel assertions remain. This is a corrected
+contract, not a deleted pixel check.
+
+Initial compile fails on an ambiguous integer error result; explicit i16 fixes it.
+Initial strict lint requests an idiomatic range check; Range::contains retains the
+same validation. Logs retain both. The indexed driver CPU/GPU tests pass2/2,then
+the complete fixed-mono version passes3/3,0ignored(39.24s). Existing10indexed GPU
+checks pass(89.74s),4CTabChanged+14device+8inverse+3sound checks pass,0ignored.
+Cursor/display/mode regressions and final lint/build are tracked separately.
+
+First indexed implementation replays original Marathon successfully through
+Control(-128,3),ioResult0; the diagnostic captures actual ref/code/result rather
+than inferring success from progress. It now stops at MakeITable duplicate color
+values,CPU2,983,153,PC01035164,sourcehandle68656,destination68664,resolution3.
+Inspect source ctFlags/entries and documented inverse-table rules before changing
+this validation; do not merely ignore duplicate values to pass startup. Its screen
+and independently verified saved volume match the prior arrow-over-black stage.
+EV's same24M Enter Ship replay remains at budget007E6830,with PPM SHA256
+11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48,
+byte-identical to the prior idle frame; volume/pilot/alias/companion checks pass.
+Final replays after the monochrome extension continue independently. No gameplay,
+native invalid-driver parity or whole-rebuild acceptance is inferred.
+
+
+Final physical-palette checks pass54scoped tests,0ignored:3video-driver,
+10indexed destination,4CTabChanged,14device,8inverse,3sound,2cursor,5display and
+5display-mode tests. Real GPU cases are enabled, including both-CPU indexed
+palettes, fixed mono, cursor masks and unchanged screen padding. The complete
+presentation group passes; the corrected metadata/hardware assertion remains.
+Final strict lint (including tracer) passes2m33s; frozen-source tracer build
+passes13.58s. Full driver open/close/status/mode/gamma and native/browser/full
+text acceptance remain outside this verified slice. Fresh final original replays
+and an independent failing-source-handle watch are retained separately.
+
+
+Frozen-source original replays confirm the same outcomes: Marathon successfully
+programs Control(-128,3),ioResult0,and stops at MakeITable2,983,153/01035164;
+EV24M reaches unchanged budget007E6830. Both canonical screen hashes and all
+independent saved-volume/pilot/alias/companion verifications match the prior
+recorded values. Final source includes independent fixed-mono presentation; no
+later source changes are inferred from an earlier capture.
+
+Read-only MakeITable diagnostics locate sourcehandle00010C30→data00036AF8.
+The source initially copies a device CLUT with header(seed1,flags8000,size255)
+and first ColorSpec values0,1. After high-level SetEntries it copies header
+(seed00000403,flags8000,size255) with first values0,0 (RGB white andF7F7gray).
+Guest instruction0103514E clears the copied table's flags to0000 before MakeITable.
+That input now hits the parser's duplicate-value check. Current SetEntries writes
+the clientID into those value fields; whether native MakeITable normalizes/ignores
+them,or metadata writing needs correction,must be established from primary API
+rules/reference evidence. Do not convert this hypothesis into a fix by dropping
+validation. ACI-102 explicitly describes device value fields as matching/protection
+metadata with ordinal indices,so duplicate device metadata is not itself a bug.
+Private watch logs:2026-10-17-video-make-{master,header,values}.txt.

@@ -389,6 +389,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         for call in &app.runtime.services.calls[calls..] {
             println!("service {call:?}");
+            if display_diagnostics {
+                if let systemless_future::cpu::Call::DeviceControl(pointer) = call {
+                    let word = |offset| {
+                        pointer
+                            .0
+                            .checked_add(offset)
+                            .and_then(|p| {
+                                app.runtime
+                                    .memory
+                                    .u16(systemless_future::memory::GuestPtr(p))
+                                    .ok()
+                            })
+                            .map(|v| v as i16)
+                    };
+                    println!(
+                        "driver control pb={:08x} reference={:?} code={:?} ioResult={:?}",
+                        pointer.0,
+                        word(24),
+                        word(26),
+                        word(16)
+                    );
+                }
+            }
+
             if draw_diagnostics
                 .as_ref()
                 .is_some_and(|r| r.contains(&app.runtime.instructions))

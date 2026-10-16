@@ -265,7 +265,8 @@ impl Manager {
         let mut devices = std::mem::take(&mut p.devices);
         let device = devices.call(m, p, devices::Op::Current);
         p.devices = devices;
-        let gd = owned(m, p, device?, 62)?;
+        let device = device?;
+        let gd = owned(m, p, device, 62)?;
         if m.u16(GuestPtr(gd.0 + 4))? != 0 {
             return Ok(-155);
         }
@@ -287,6 +288,7 @@ impl Manager {
         owned(m, p, handle, length as u32)?;
         let mut replacement = m.read(table, length)?.to_vec();
         let client = m.u16(GuestPtr(gd.0 + 2))? & 255;
+        let mut physical = Vec::with_capacity(count as usize + 1);
         for (i, entry) in input.chunks_exact(8).enumerate() {
             let index = if start == -1 {
                 usize::from(u16::from_be_bytes(entry[..2].try_into().unwrap()))
@@ -303,11 +305,18 @@ impl Manager {
             }
             replacement[at..at + 2].copy_from_slice(&((metadata & 0xff00) | client).to_be_bytes());
             replacement[at + 2..at + 8].copy_from_slice(&entry[2..]);
+            physical.push((
+                index,
+                std::array::from_fn(|c| u16::from_be_bytes([entry[2 + c * 2], entry[3 + c * 2]])),
+            ));
         }
         let seed = self.next_seed(m.u32(table)?)?;
         replacement[..4].copy_from_slice(&seed.to_be_bytes());
         m.validate_write(table, length)?;
         m.write(table, &replacement)?;
+        if p.display.depth() > 1 && p.devices.is_main(device) {
+            p.drivers.patch(&physical);
+        }
         self.serial = seed;
         Ok(0)
     }

@@ -3920,3 +3920,50 @@ extended-range overflow check before narrowing the exponent. Gradual underflow,
 nearest-even rounding and range flags remain common. Mathematical inexactness can
 be conservatively accrued by elementary evaluation as allowed by the manual;
 ROM-specific last-bit/flag parity and alternate environments remain unverified.
+
+
+### Virtual driver control and physical palettes
+
+One process-owned driver manager serves both CPU adapters. The resident virtual
+main display has reference-128 (unit127); its owned main GDevice publishes that
+same reference. Sound retains-4. These are virtual identities, not ROM drivers or
+a populated Macintosh unit table. Driver open/close/status, other video controls,
+multiple physical displays and driver-backed NewGDevice initialization remain
+unimplemented. Synchronous/immediate Control and PBControlSync share dispatch.
+
+Video control3 reads VDSetEntryRecord(csTable pointer,csStart,csCount). Sequential
+mode ignores ColorSpec.value; start-1 uses its logical indices. Count is entries
+minus one; -1 is an explicit zero-entry no-op. Duplicates apply in order. Out-of-
+range/nil required parameters return paramErr-50 rather than clamping to an entire
+table. Unknown references return badUnitErr-21; unsupported resident controls
+return controlErr-17. These invalid-input policies are not newly measured native
+parity. ioResult is preflighted before driver-specific reads and published with
+signed D0/R3. Snapshots cover source/result aliases; invalid later entries leave
+the hardware palette unchanged. Existing Sound volume semantics are retained.
+
+The physical palette is initialized from host display policy and owns256u16RGB
+slots separately from guest QuickDraw matching tables. Direct video writes alter
+only this palette and ioResult: no ctSeed,ColorSpec metadata,selected GDevice,port
+or guest pixel bytes change. High-level SetEntries stages its existing matching-
+table/seed changes and patches the same physical entries only for the registered
+main device. Offscreen tables retain their matching role; low-level video control
+still targets the physical display when an offscreen device is selected. Binding
+is to the registered main owner, not an arbitrary copied PixMap/GDevice; live
+changes to driver associations in fabricated records remain outside this slice.
+
+Presentation uses configured physical framebuffer geometry and the hardware
+palette, independently of guest matching metadata. Fixed monochrome explicitly
+uses white/black even when the transient GPU drawing palette differs; its driver
+does not advertise a programmable CLUT. Ordinary mono drawing keeps its bitwise
+transfer path. Both depths present and compose cursors through wgpu, with no CPU
+destination renderer. Metadata copies and packed-pixel staging retain the existing
+synchronization boundary; the host refresh selects the physical screen, not the
+last offscreen drawing texture.
+
+Primary references: [Designing Cards and Drivers,p9-15](https://www.vintageapple.org/inside_o/pdf/Designing_Cards_and_Drivers_for_the_Macintiosh_II_and_SE_1987.pdf),
+[Device Manager parameters](https://dev.os9.ca/techpubs/mac/Devices/Devices-19.html),
+[PBControl result contract](https://dev.os9.ca/techpubs/mac/pdf/Devices/Device_Manager.pdf),
+and [Color Manager device CLUTs](https://dev.os9.ca/techpubs/mac/ACI/ACI-107.html).
+The preserved implementation additionally confirms that low-level video palette
+animation must not overwrite QuickDraw matching metadata; that is reference
+evidence, not new native System7 measurement.

@@ -175,11 +175,14 @@ impl Runtime {
             .as_ref()
             .ok_or_else(|| Error::Graphics("screen refresh requires GPU".into()))?;
         self.process.cursor.observe(self.process.input);
-        self.process.display.surface(&self.memory)?.present_draw(
-            gpu,
-            &self.memory,
-            self.process.cursor.draw(self.process.input),
-        )
+        self.process
+            .drivers
+            .presentation(self.process.display)?
+            .present_draw(
+                gpu,
+                &self.memory,
+                self.process.cursor.draw(self.process.input),
+            )
     }
     pub fn volume_flush_pending(&self) -> bool {
         self.volume_flush.is_some()
@@ -2271,7 +2274,11 @@ impl Runtime {
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
                         Call::DeviceControl(pointer) => {
-                            let error = crate::sound::control(&mut self.memory, pointer)?;
+                            let error = self.process.drivers.control(
+                                &mut self.memory,
+                                self.process.display,
+                                pointer,
+                            )?;
                             reply.apply(
                                 &mut self.cpu,
                                 &mut self.memory,

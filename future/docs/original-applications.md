@@ -4686,3 +4686,48 @@ driver reference and correct driver/palette behavior before interpreting this
 original call as success; native reference0 behavior is not proved by legacy
 acceptance. Existing graphics.palette and live PixMap table paths need explicit
 ownership/synchronization if hardware palette control is added.
+
+
+### Physical video palette and driver reference,2026-10-17
+
+The rebuild now owns hardware colors separately from guest QuickDraw matching
+metadata. Its resident virtual video reference-128 is published by the main
+GDevice. Direct Control3 programs the physical CLUT only; high-level SetEntries
+updates both roles. Fixed mono presentation also uses independent black/white.
+Both CPU adapters and actual GPU fixtures verify aliases, atomic range errors,
+readonly result preflight, offscreen-selection preservation and unchanged pixels.
+54scoped tests pass,0ignored; strict affected-target/tracer lint and build pass.
+This does not implement driver open/close/status or all video mode/gamma controls,
+and does not claim native invalid-input behavior.
+
+Original Marathon's first fresh8M run records Control(-128,3),ioResult0 at
+PB00790974,then advances to MakeITable duplicate-value rejection at
+2,983,153/01035164 (source68656,target68664,res3). This is actual successful
+video control,not a bad-reference fallback or success-only stub. Its inspected
+arrow-over-black frame and saved-volume verification remain unchanged. Inspect
+source table flags/values and primary MakeITable semantics before relaxing any
+validation. Original EV's first fresh24M Enter Ship replay ends at its unchanged
+budget PC007E6830; its screen is byte-identical to the prior idle control and its
+pilot/alias/companion checks pass. Final replays after the fixed-mono extension
+are being retained too. Both games and the whole rebuild remain unaccepted.
+
+
+Frozen-source original replays confirm the same outcomes: Marathon successfully
+programs Control(-128,3),ioResult0,and stops at MakeITable2,983,153/01035164;
+EV24M reaches unchanged budget007E6830. Both canonical screen hashes and all
+independent saved-volume/pilot/alias/companion verifications match the prior
+recorded values. Final source includes independent fixed-mono presentation; no
+later source changes are inferred from an earlier capture.
+
+Read-only MakeITable diagnostics locate sourcehandle00010C30→data00036AF8.
+The source initially copies a device CLUT with header(seed1,flags8000,size255)
+and first ColorSpec values0,1. After high-level SetEntries it copies header
+(seed00000403,flags8000,size255) with first values0,0 (RGB white andF7F7gray).
+Guest instruction0103514E clears the copied table's flags to0000 before MakeITable.
+That input now hits the parser's duplicate-value check. Current SetEntries writes
+the clientID into those value fields; whether native MakeITable normalizes/ignores
+them,or metadata writing needs correction,must be established from primary API
+rules/reference evidence. Do not convert this hypothesis into a fix by dropping
+validation. ACI-102 explicitly describes device value fields as matching/protection
+metadata with ordinal indices,so duplicate device metadata is not itself a bug.
+Private watch logs:2026-10-17-video-make-{master,header,values}.txt.
