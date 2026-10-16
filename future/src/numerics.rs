@@ -698,6 +698,17 @@ impl Numerics {
         *self = next;
         Ok(())
     }
+    pub fn extended_to_single(
+        &mut self,
+        memory: &mut Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+    ) -> Result<()> {
+        let bytes = memory.read(source, 10)?.try_into().unwrap();
+        memory.validate_write(destination, 4)?;
+        let result = self.convert_binary(bytes, 23, 8)? as u32;
+        memory.write(destination, &result.to_be_bytes())
+    }
     pub fn extended_to_double(
         &mut self,
         memory: &mut Memory,
@@ -710,17 +721,30 @@ impl Numerics {
         memory.write(destination, &result.to_be_bytes())
     }
     fn convert_double(&mut self, bytes: [u8; 10]) -> Result<u64> {
+        self.convert_binary(bytes, 52, 11)
+    }
+    fn convert_binary(
+        &mut self,
+        bytes: [u8; 10],
+        fraction_bits: u32,
+        exponent_bits: u32,
+    ) -> Result<u64> {
+        let bias = (1i32 << (exponent_bits - 1)) - 1;
+        let infinity = ((1u64 << exponent_bits) - 1) << fraction_bits;
+        let fraction_mask = (1u64 << fraction_bits) - 1;
         let bytes = canonical_extended(bytes);
         let se = u16::from_be_bytes(bytes[..2].try_into().unwrap());
         let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
         let e = se & 0x7fff;
-        let sign = u64::from(se & 0x8000) << 48;
+        let sign = u64::from(se & 0x8000) << (fraction_bits + exponent_bits - 15);
         if e == 0x7fff {
             if m == 1 << 63 {
-                return Ok(sign | 0x7ff0_0000_0000_0000);
+                return Ok(sign | infinity);
             }
             self.invalid |= m & (1 << 62) == 0;
-            return Ok(sign | 0x7ff8_0000_0000_0000 | ((m & 0x7fff_ffff_ffff_ffff) >> 11));
+            return Ok(sign
+                | (infinity | (1u64 << (fraction_bits - 1)))
+                | ((m & 0x7fff_ffff_ffff_ffff) >> (63 - fraction_bits)));
         }
         if m == 0 {
             return Ok(sign);
@@ -728,8 +752,12 @@ impl Numerics {
         let top = 63 - m.leading_zeros() as i32;
         let scale = i32::from(e) - 16446;
         let mut exponent = top + scale;
-        let tiny = exponent < -1022;
-        let shift = if tiny { -scale - 1074 } else { top - 52 };
+        let tiny = exponent < 1 - bias;
+        let shift = if tiny {
+            -scale - (bias + fraction_bits as i32 - 1)
+        } else {
+            top - fraction_bits as i32
+        };
         let (mut result, lost) = if shift <= 0 {
             (m << (-shift as u32), false)
         } else if shift > 64 {
@@ -748,22 +776,22 @@ impl Numerics {
             )
         };
         self.inexact |= lost;
-        if !tiny && result == 1 << 53 {
+        if !tiny && result == 1 << (fraction_bits + 1) {
             result >>= 1;
             exponent += 1;
         }
-        if exponent > 1023 {
+        if exponent > bias {
             self.inexact = true;
             self.overflow = true;
-            return Ok(sign | 0x7ff0_0000_0000_0000);
+            return Ok(sign | infinity);
         }
         let biased = if tiny {
-            u64::from(result >= 1 << 52)
+            u64::from(result >= 1 << fraction_bits)
         } else {
-            (exponent + 1023) as u64
+            (exponent + bias) as u64
         };
         self.underflow |= biased == 0 && lost;
-        Ok(sign | (biased << 52) | (result & 0x000f_ffff_ffff_ffff))
+        Ok(sign | (biased << fraction_bits) | (result & fraction_mask))
     }
     pub fn divide_extended(
         &mut self,

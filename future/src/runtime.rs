@@ -922,6 +922,17 @@ impl Runtime {
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::ExtendedToSingle {
+                            source,
+                            destination,
+                        } => {
+                            self.process.numerics.extended_to_single(
+                                &mut self.memory,
+                                source,
+                                destination,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::ExtendedToDouble {
                             source,
                             destination,
@@ -2788,6 +2799,7 @@ impl Runtime {
                         | Call::SingleToExtended { .. }
                         | Call::DoubleToExtended { .. }
                         | Call::ExtendedToInteger { .. }
+                        | Call::ExtendedToSingle { .. }
                         | Call::ExtendedToDouble { .. }
                         | Call::MultiplyExtended { .. }
                         | Call::SignExtended { .. }

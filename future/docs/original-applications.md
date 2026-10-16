@@ -4626,3 +4626,25 @@ audio or playability. Independent saved-volume verification passes with unchange
 pilot/preferences/alias/companions and e524aeff... output. Next EV acceptance should
 separate right-only/up-only inputs and inspect guest state/positions. Private
 2026-10-17-ctab-control.* captures retain this control.
+
+
+Paired single/extended milestone,2026-10-17: shared FS2X100E and FX2S1010 now
+complete in the unchanged original Marathon8M replay (two widening calls,one
+storage conversion). Next fault is Elems68K8012 at2,916,082/0103CDD2. Apple Numerics
+Manual2ndedition appendixE identifies this as FXPWRY,general exponentiation:
+DST←DST^SRC with extended arguments; special domain/NaN/zero/infinity behavior
+is documented in chapter8,p64. Next implement it with the pinned arbitrary-
+precision/shared numeric machinery, not host f64 power or an application-specific
+constant. The inspected arrow-over-black screen still hasPPM SHA256
+d5cee18abe289b1be11164e9eec2225db24784d65114d4b2239b2d46063079a3.
+Independent companion/catalog verification passes; saved-volume SHA256 remains
+e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42.
+No original menu,gameplay or new native SANE parity is established.
+
+Final paired-conversion tests pass49scoped checks,0ignored:17numeric units,
+3sign,25numeric integrations and4single-conversion tests. The widening-only
+stage previously passed30scoped integrations. Fixed nearest-even cases retain
+extended low bits that would be lost through a host double intermediate, alongside
+subnormal carry/underflow,overflow and NaN flags. Tracer probe build passes32.95s;
+subsequent validation build is an incremental0.25s,not a new full compile. Strict
+lint is tracked separately. Whole rebuild and full GPU text acceptance remain open.

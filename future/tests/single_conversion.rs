@@ -114,3 +114,157 @@ fn conversion_snapshots_overlaps_and_faults_before_flags_or_stack_changes() {
     assert!(Abi::trap(0xa9eb, c, &m).is_err());
     assert_eq!(c.dar[15], 0x4000);
 }
+
+#[test]
+fn single_storage_rounds_once_with_even_ties_subnormals_and_exception_flags() {
+    use systemless_future::numerics::Numerics;
+    let mut m = Memory::default();
+    m.map(GuestPtr(0x1000), vec![0xa5; 32], Permissions::RW)
+        .unwrap();
+    for (e, mantissa, expected, inexact, underflow, overflow, invalid) in [
+        (
+            0x3fffu16,
+            0x8000000000000000u64,
+            0x3f800000u32,
+            false,
+            false,
+            false,
+            false,
+        ),
+        (
+            0x3fff,
+            0x8000008000000000,
+            0x3f800000,
+            true,
+            false,
+            false,
+            false,
+        ),
+        (
+            0x3fff,
+            0x8000008000000001,
+            0x3f800001,
+            true,
+            false,
+            false,
+            false,
+        ),
+        (
+            0x3fff,
+            0x8000018000000000,
+            0x3f800002,
+            true,
+            false,
+            false,
+            false,
+        ),
+        (0x3f6a, 0x8000000000000000, 1, false, false, false, false),
+        (0x3f69, 0x8000000000000000, 0, true, true, false, false),
+        (0x3f69, 0x8000000000000001, 1, true, true, false, false),
+        (
+            0x3f80,
+            0xffffff0000000000,
+            0x00800000,
+            true,
+            false,
+            false,
+            false,
+        ),
+        (
+            0x407f,
+            0x8000000000000000,
+            0x7f800000,
+            true,
+            false,
+            true,
+            false,
+        ),
+        (0x8000, 0, 0x80000000, false, false, false, false),
+        (
+            0x7fff,
+            0x8000000000000001,
+            0x7fc00000,
+            false,
+            false,
+            false,
+            true,
+        ),
+        (
+            0xffff,
+            0xc123450000000000,
+            0xffc12345,
+            false,
+            false,
+            false,
+            false,
+        ),
+    ] {
+        let mut n = Numerics::default();
+        let mut bytes = e.to_be_bytes().to_vec();
+        bytes.extend(mantissa.to_be_bytes());
+        m.write(GuestPtr(0x1000), &bytes).unwrap();
+        m.write(GuestPtr(0x1010), &[0xa5; 8]).unwrap();
+        n.extended_to_single(&mut m, GuestPtr(0x1000), GuestPtr(0x1010))
+            .unwrap();
+        assert_eq!(
+            m.u32(GuestPtr(0x1010)).unwrap(),
+            expected,
+            "{e:04x}/{mantissa:016x}"
+        );
+        assert_eq!(m.read(GuestPtr(0x1014), 4).unwrap(), [0xa5; 4]);
+        assert_eq!(
+            (n.inexact, n.underflow, n.overflow, n.invalid),
+            (inexact, underflow, overflow, invalid)
+        );
+    }
+}
+#[test]
+fn native_single_storage_accepts_exact_four_byte_destination_and_preserves_frame() {
+    let f = support::pef_program(&[0x4e800020], &[], 32);
+    let mut a = LoadedApplication::pef(&f.bytes, None).unwrap();
+    a.runtime
+        .memory
+        .map(GuestPtr(0x50000000), vec![0xa9, 0xeb], Permissions::RX)
+        .unwrap();
+    a.runtime
+        .memory
+        .map(
+            GuestPtr(0x52000000),
+            vec![0x3f, 0xff, 0x80, 0, 0, 0x80, 0, 0, 0, 1],
+            Permissions::RX,
+        )
+        .unwrap();
+    a.runtime
+        .memory
+        .map(GuestPtr(0x53000000), vec![0xa5; 4], Permissions::RW)
+        .unwrap();
+    let mut frame = 0x1010u16.to_be_bytes().to_vec();
+    frame.extend(0x53000000u32.to_be_bytes());
+    frame.extend(0x52000000u32.to_be_bytes());
+    frame.extend([0xcc; 4]);
+    a.runtime.memory.write(GuestPtr(STACK), &frame).unwrap();
+    a.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000000, STACK);
+    let Cpu::M68k(c) = &mut a.runtime.cpu else {
+        panic!()
+    };
+    for i in 0..15 {
+        c.dar[i] = 0x12340000 + i as u32;
+    }
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    assert_eq!(
+        a.runtime.memory.u32(GuestPtr(0x53000000)).unwrap(),
+        0x3f800001
+    );
+    let Cpu::M68k(c) = &a.runtime.cpu else {
+        panic!()
+    };
+    for i in 0..15 {
+        assert_eq!(c.dar[i], 0x12340000 + i as u32);
+    }
+    assert_eq!(c.dar[15], STACK + 10);
+    assert_eq!(
+        a.runtime.memory.read(GuestPtr(STACK + 10), 4).unwrap(),
+        [0xcc; 4]
+    );
+    assert!(a.runtime.process.numerics.inexact);
+}

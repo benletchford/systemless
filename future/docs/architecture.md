@@ -3876,3 +3876,16 @@ The service reuses the already implemented exact integer-bit expansion rather
 than routing through host float arithmetic. New fixed bit-vector tests and
 existing numeric regressions are evidence for the supported profile, not a new
 native SANE parity claim.
+
+
+The immediately following Marathon call is FX2S1010, documented in the same
+manual,p157/appendixE. This now shares one integer-based narrowing implementation
+with FX2D: format precision/exponent widths select IEEE single or double storage.
+The original double method remains as a wrapper, preserving its supported profile.
+Direct extended→single rounding retains all64significand bits until its one
+nearest-even decision, avoiding an incorrect intermediate host-double tie.
+Subnormal/normal carry, overflow, signed zero, NaN quieting/payload and accrued
+exception flags use the common implementation. Single writes exactly4bytes,
+double8; both snapshot ten source bytes and preflight before changing flags.
+Rounding modes/precision/halts outside the existing supported SANE environment
+remain explicit gaps rather than implied native parity.
