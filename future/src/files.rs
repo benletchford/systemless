@@ -5,7 +5,9 @@ use crate::{
     Result,
 };
 use std::collections::BTreeMap;
+mod aliases;
 mod browse;
+pub use aliases::ResolveAliasFile;
 mod io;
 mod resource;
 mod volume;

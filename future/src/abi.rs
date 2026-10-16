@@ -252,6 +252,7 @@ pub enum Service {
     Get1NamedResource,
     FileIo(crate::files::Op),
     FileIoWithAsync(crate::files::Op),
+    ResolveAliasFile,
     FcbInfo,
     WorkingDirectory(crate::files::WorkingOp),
     CatalogInfo,
@@ -711,6 +712,7 @@ impl Abi {
             b"PBOpenWDSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Open)),
             b"PBCloseWDSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Close)),
             b"PBGetWDInfoSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Info)),
+            b"ResolveAliasFile" => Some(Service::ResolveAliasFile),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
             b"PBGetCatInfoSync" => Some(Service::CatalogInfo),
             b"PBGetFInfoSync" => Some(Service::FileInfo(false)),
@@ -1068,6 +1070,31 @@ impl Abi {
                 Ok((
                     Call::FixedMultiply { left, right },
                     Reply::StackLong(GuestPtr(next)),
+                ))
+            }
+            0xa823 => {
+                if c.dar[0] as u16 != 12 {
+                    return Err(Error::Cpu(format!(
+                        "unsupported AliasDispatch selector {:04x}",
+                        c.dar[0] as u16
+                    )));
+                }
+                let args = memory.read(GuestPtr(sp), 14)?;
+                let request = crate::files::ResolveAliasFile {
+                    spec: GuestPtr(u32::from_be_bytes(args[10..14].try_into().unwrap())),
+                    chains: args[8] != 0,
+                    folder: GuestPtr(u32::from_be_bytes(args[4..8].try_into().unwrap())),
+                    aliased: GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap())),
+                };
+                let next = sp
+                    .checked_add(14)
+                    .ok_or_else(|| Error::Cpu("ResolveAliasFile stack overflow".into()))?;
+                request.validate(memory)?;
+                memory.validate_write(GuestPtr(next), 2)?;
+                c.dar[15] = next;
+                Ok((
+                    Call::ResolveAliasFile(request),
+                    Reply::StackWord(GuestPtr(next)),
                 ))
             }
             0xa83f => {
@@ -4195,6 +4222,12 @@ impl Abi {
                 pointer: GuestPtr(c.gpr[3]),
                 op,
             },
+            Service::ResolveAliasFile => Call::ResolveAliasFile(crate::files::ResolveAliasFile {
+                spec: GuestPtr(c.gpr[3]),
+                chains: c.gpr[4] as u8 != 0,
+                folder: GuestPtr(c.gpr[5]),
+                aliased: GuestPtr(c.gpr[6]),
+            }),
             Service::FcbInfo => Call::FcbInfo(GuestPtr(c.gpr[3])),
             Service::CatalogInfo => Call::CatalogInfo(GuestPtr(c.gpr[3])),
             Service::FileInfo(hierarchical) => Call::FileInfo {

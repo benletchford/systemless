@@ -2031,6 +2031,18 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::ResolveAliasFile(request) => {
+                            let error = self
+                                .process
+                                .files
+                                .resolve_alias_file(&mut self.memory, request)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::FcbInfo(pointer) => {
                             let error = self.process.files.fcb_info(&mut self.memory, pointer)?;
                             reply.apply(
@@ -2334,6 +2346,7 @@ impl Runtime {
                         | Call::Elementary { .. }
                         | Call::AtanExtended(_)
                         | Call::Timer(_)
+                        | Call::ResolveAliasFile(_)
                         | Call::FcbInfo(_) => {
                             return Err(Error::Cpu("Macintosh service on fixture route".into()))
                         }

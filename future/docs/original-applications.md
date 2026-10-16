@@ -3091,3 +3091,50 @@ Next: identify the AliasDispatch selector/stack contract from primary file-syste
 references, implement the shared file service and both relevant adapters, then
 replay with the appropriate application-volume fixture. Full rebuild and complete
 wgpu text rendering remain open.
+
+
+## Catalog-backed ResolveAliasFile (2026-10-16)
+
+AliasDispatch A823 selector 000C and the PPC ResolveAliasFile import now reach
+one shared Files service. It looks up the live volume/directory/name catalog,
+leaves ordinary-target FSSpec bytes unchanged, and writes exact one-byte folder
+and aliased Booleans. Existing regular files, directories and the volume root
+are distinguished; missing volumes, parents and targets return catalog errors
+instead of success. Full FSSpec/output preflight precedes native stack mutation;
+Pascal arguments pop 14 bytes and leave a two-byte OSErr result. Both adapters
+use the same directory/working-reference model and filesystem state.
+
+Actual Finder alias files (kIsAlias flag) stop explicitly without changes; alias
+record decoding, target search, chains, mounts and UI are not implemented. This
+is the documented ordinary-target slice, not full Alias Manager compatibility.
+Primary: [ResolveAliasFile, Inside Macintosh Toolbox Essentials](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-470.html),
+Finder Interface p. 7-49. No native System 7 conformance run.
+
+Validation: /tmp/systemless-alias-tests.txt terminal exit 0: 62 pass, no failures
+or skips (library 54, alias adapters 2, working directories 6). New tests cover
+nested ordinary targets, removal, real alias rejection, volume root, missing
+volume/parent/target, both Boolean chain arguments and PPC upper-byte garbage,
+full native/PPC result conventions, spec/stack guards, unrelated registers,
+allocation/error state and installed veneer. Read-only/truncated mappings fail
+without native SP or output mutation. Strict library/fixture lint passes in
+/tmp/systemless-alias-lint.txt; tracer build passes in
+/tmp/systemless-alias-build.txt; sequential formatting/whitespace pass. No new
+full-integration, native, GPU-pixel or browser acceptance.
+
+Both ten-million-instruction EV replays pass ResolveAliasFile and reach
+SecondsToDate A9C6 at PC 0002C5C0:
+/tmp/systemless-ev-alias-no-assets.txt and /tmp/systemless-ev-alias-assets.txt,
+both expected unsupported-service exit 1. Sound/timer/VBL callbacks remain zero.
+The second mounts a disposable diagnostic volume at
+/tmp/systemless-ev-assets-alias.slv (7,238,921 bytes; initial SHA-256
+12fa5917d2a7c22dd21bdf5a5f8068800ca99d44a42ee95c0ac3c3ea9e0cc2f6).
+Directories Pilots and EV Plug-Ins are nodes 17/18; original EV Data, Graphics,
+Sounds, Titles and EV Tuner are nodes 19–23. Data forks are empty; resource
+lengths are 249132/2320085/902115/3766861/400, copied verbatim from AppleDouble
+entry 2; Finder metadata comes from entry 9. Application forks remain loader-owned.
+The assets do not change this stopping point, and this does not establish that
+all companion resources were consumed. Private originals/images remain outside
+Git. Original resource fork and 640x480x8 graphics are unchanged. Neither game
+is playable; Marathon not replayed. Next: shared Gregorian SecondsToDate with
+both ABIs, epoch/leap-year/range validation, then asset-backed EV replay. The
+full rebuild and complete wgpu text requirement remain active.
