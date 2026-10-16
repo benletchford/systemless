@@ -1,4 +1,5 @@
 //! Offscreen library compatibility probe, not a production text backend.
+mod masks;
 use glyphon::{
     Buffer, Cache, Color, ContentType, CustomGlyph, FontSystem, Metrics, RasterizedCustomGlyph,
     Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -14,6 +15,8 @@ const WIDTH: u32 = 16;
 const HEIGHT: u32 = 12;
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 struct Probe {
+    cache: Cache,
+    masks: masks::Masks,
     gpu: Graphics,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -64,6 +67,8 @@ impl Probe {
             view_formats: &[],
         });
         Ok(Self {
+            cache,
+            masks: masks::Masks::new(2, 1024),
             gpu,
             device,
             queue,
@@ -75,6 +80,24 @@ impl Probe {
             buffer,
             target,
         })
+    }
+    // Resolve before prepare: IDs are never reused within a live atlas.
+    fn cached_frame(&mut self, mut request: Draw<'_>) -> Result<(Vec<u8>, usize)> {
+        let (id, reset) = self
+            .masks
+            .resolve(request.width, request.height, request.mask)?;
+        if reset {
+            self.atlas = TextAtlas::new(
+                &self.device,
+                &self.queue,
+                &self.cache,
+                wgpu::TextureFormat::Rgba8Unorm,
+            );
+            self.renderer =
+                TextRenderer::new(&mut self.atlas, &self.device, Default::default(), None);
+        }
+        request.id = id;
+        self.frame(request)
     }
     fn frame(&mut self, request: Draw<'_>) -> Result<(Vec<u8>, usize)> {
         let Draw {
@@ -400,7 +423,39 @@ fn main() -> Result<()> {
         twice, black,
         "stock renderer unexpectedly implemented QuickDraw XOR"
     );
+    // Discard the atlas populated by deliberately unmanaged IDs above.
+    probe.atlas = TextAtlas::new(
+        &probe.device,
+        &probe.queue,
+        &probe.cache,
+        wgpu::TextureFormat::Rgba8Unorm,
+    );
+    probe.renderer = TextRenderer::new(&mut probe.atlas, &probe.device, Default::default(), None);
+    for (label, request, expected_uploads) in [
+        ("managed original", draw, 1),
+        ("managed edited FONT", stale, 1),
+        ("managed content reuse", draw, 0),
+    ] {
+        let (pixels, uploads) = probe.cached_frame(request)?;
+        check(label, &pixels, &expected(request));
+        assert_eq!(uploads, expected_uploads);
+    }
+    let blank = vec![0; mask.len()];
+    let third = Draw {
+        mask: &blank,
+        ..draw
+    };
+    let (pixels, uploads) = probe.cached_frame(third)?;
+    check(
+        "bounded cache rollover reuses ID without stale atlas pixels",
+        &pixels,
+        &expected(third),
+    );
+    assert_eq!(uploads, 1);
+    let (pixels, uploads) = probe.cached_frame(draw)?;
+    check("original restored after rollover", &pixels, &first);
+    assert_eq!(uploads, 1);
     transfer_probe(&probe, &first)?;
-    println!("RESULT GPU mask transfer seam verified; source-generation cache and text API integration remain required");
+    println!("RESULT GPU mask transfer seam verified; bounded content cache verified; text API integration remains required");
     Ok(())
 }

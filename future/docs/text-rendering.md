@@ -121,3 +121,24 @@ complete. Next: bounded source-generation cache IDs, text cells/metrics/pen
 updates and actual 68K/PPC text/UI entry points, followed by workload and platform
 acceptance. Current production text calls continue their existing GPU coverage
 path until that integration is tested.
+
+
+## Bounded Glyphon content identities (2026-10-16)
+
+The isolated probe now owns a bounded binary-mask identity cache. Exact source
+bytes and dimensions define identity, so font edits receive a fresh ID while
+unchanged masks reuse uploads. Entry and byte limits trigger a complete atlas
+reset before any ID is reused. Invalid masks are rejected before cache mutation.
+Placement and font metrics remain outside the cache. The probe deliberately uses
+a two-entry cache to exercise rollover on real M1/Metal GPU output.
+
+Validation: two cache tests pass in /tmp/systemless-glyph-cache-tests.txt and all
+21 GPU probe cases pass in /tmp/systemless-glyph-cache-gpu.txt (both terminal exit
+0). Five new GPU cases cover original/edited source, content reuse, rollover and
+restoring the original. The existing transfer and guest-write checks still pass.
+This adapter prepares one cell at a time; batching needs batch-wide identities to
+avoid resetting an atlas containing already-prepared cells. Linear lookup is a
+bounded prototype choice, not a measured production performance decision.
+Actual DrawString/TextEdit/UI integration, ordered overlapping glyph cells,
+workload measurements and platform acceptance remain open. No production
+library dependency has been added.
