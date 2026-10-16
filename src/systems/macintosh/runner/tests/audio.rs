@@ -181,6 +181,36 @@ fn legacy_sound_reaches_host_and_browser_outputs_at_guest_frame_boundaries() {
 }
 
 #[test]
+fn zero_first_legacy_frame_is_silent_in_host_and_browser_outputs() {
+    use crate::memory::globals::addr;
+    let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+    let (audio_backend, stereo_samples) = CapturingAudioBackend::new();
+    runner.set_audio(Box::new(audio_backend));
+    let sound_base = runner.bus.read_long(addr::SOUND_BASE);
+    let via = runner.bus.read_long(addr::VIA_BASE);
+    runner.bus.write_byte(via, 0);
+    runner
+        .bus
+        .write_byte(via + crate::memory::bus::LEGACY_SOUND_PORT_A_OFFSET, 15);
+    for offset in (0..740).step_by(2) {
+        runner.bus.write_word(sound_base + offset, 0x00ff);
+    }
+    runner.force_advance_guest_tick();
+    runner.force_advance_guest_tick(); // same zero RAM, now a valid later frame
+    runner.mix_audio(32);
+    let mut mono = runner.drain_audio();
+    runner.mix_audio(668);
+    mono.extend(runner.drain_audio());
+    let first_frame_outputs = (f64::from(crate::sound::OUTPUT_RATE) / DEFAULT_VBL_HZ).ceil() as usize;
+    assert_eq!(mono.len(), 700);
+    assert_eq!(&mono[..first_frame_outputs], vec![128; first_frame_outputs]);
+    assert_eq!(&mono[first_frame_outputs..], vec![0; 700 - first_frame_outputs]);
+    let expected_stereo: Vec<u8> = mono.iter().flat_map(|&sample| [sample; 2]).collect();
+    assert_eq!(*stereo_samples.borrow(), expected_stereo);
+    assert_eq!(runner.bus.read_word(sound_base), 0x00ff);
+}
+
+#[test]
 fn legacy_sound_api_mute_silences_the_device_stream() {
     use crate::memory::globals::addr;
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
