@@ -38,6 +38,7 @@ pub mod process;
 pub mod quickdraw;
 pub mod rectangles;
 pub mod region_geometry;
+pub mod region_recording;
 pub mod regions;
 pub mod retrace;
 pub mod rounded;

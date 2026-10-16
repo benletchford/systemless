@@ -599,6 +599,18 @@ impl Runtime {
                                 )?;
                             }
                         }
+                        Call::RegionRecording(op) => {
+                            let mut manager = std::mem::take(&mut self.process.region_recording);
+                            let result = manager.call(&mut self.memory, &mut self.process, op);
+                            self.process.region_recording = manager;
+                            result?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                0,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::Polygon(op) => {
                             let mut manager = std::mem::take(&mut self.process.polygons);
                             let result = manager.call(
@@ -2219,6 +2231,7 @@ impl Runtime {
                                 crate::dialogs::Op::Init(_) | crate::dialogs::Op::Param(_)
                             )
                             | Call::Menu(_)
+                            | Call::RegionRecording(_)
                             | Call::Polygon(_)
                             | Call::TextEdit(_)
                             | Call::TextDraw(_)
@@ -2372,6 +2385,7 @@ impl Runtime {
                         | Call::PenMode(_)
                         | Call::PenNormal
                         | Call::PenVisibility(_)
+                        | Call::RegionRecording(_)
                         | Call::Polygon(_)
                         | Call::WaitEvent { .. }
                         | Call::PostEvent { .. }

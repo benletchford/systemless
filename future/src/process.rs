@@ -38,6 +38,7 @@ pub struct Process {
     pub input: crate::events::Input,
     pub menus: crate::menus::Menus,
     pub polygons: crate::polygons::Manager,
+    pub region_recording: crate::region_recording::Manager,
     pub textedit: crate::textedit::Manager,
     pub fonts: crate::font::Manager,
     pub windows: crate::windows::Windows,

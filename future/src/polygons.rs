@@ -80,6 +80,9 @@ fn read(memory: &Memory, process: &mut Process, h: u32) -> Result<Record> {
     Ok((b, points))
 }
 impl Manager {
+    pub(crate) fn is_open(&self) -> bool {
+        self.active.is_some()
+    }
     pub fn call(
         &mut self,
         memory: &mut Memory,
@@ -89,8 +92,8 @@ impl Manager {
     ) -> Result<u32> {
         match op {
             Op::Open => {
-                if self.active.is_some() {
-                    return Err(bad("nested polygon recording is unsupported"));
+                if self.active.is_some() || process.region_recording.is_open() {
+                    return Err(bad("nested polygon/region recording is unsupported"));
                 }
                 let ports = process
                     .ports

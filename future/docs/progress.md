@@ -7235,3 +7235,80 @@ No fresh complete test-suite, browser, native presentation, GPU-pixel or GitHub
 CI acceptance. Next: shared OpenRgn/CloseRgn recording with exact region geometry
 and QuickDraw drawing semantics, then continue original EV UI startup. Complete
 wgpu text and the full rebuild remain active requirements.
+
+
+## Shared OpenRgn/CloseRgn outline recording (2026-10-16)
+
+Native A8DA/A8DB and PPC OpenRgn/CloseRgn now use one process recording manager.
+Open allocates a checked private guest edge buffer in rgnSave and hides the pen;
+Close replaces an existing owned destination region, restores visibility and frees
+the temporary handle. Saving/NIL/restoring rgnSave suspends recording, as does
+switching to another port. Region/polygon nesting across ports and custom/combined
+recording state fail explicitly.
+
+Shared Line/LineTo, framed rectangle/rounded-rectangle and polygon paths contribute
+mathematical boundaries, independent of pen dimensions/pattern/mode and clip/visible
+regions. Rational integer-coordinate even-odd scan conversion preserves negative
+coordinates, holes, overlapping boundaries and disjoint loops. Adjacent equal
+scanline spans coalesce before the existing inversion-region encoder. Hidden
+framing does not write destination pixels; visible pen drawing remains in wgpu.
+
+The temporary buffer is 32,760 bytes, bounded to 4,093 nonhorizontal edges, with
+explicit work/storage errors. Existing region storage remains limited to 32 KB;
+full Color QuickDraw 64-KB records, QDError/regionTooBigError, foreign custom
+procedures and remaining oval/arc/region APIs are incomplete. Private recording
+bytes are not presented as a ROM-layout match. This milestone expands the rebuild;
+it does not complete graphics or the full goal. Primary OpenRgn/CloseRgn references
+and ownership/synchronization details are in architecture.md.
+
+Initial tests pass: 62 core, 3 polygon and 3 region/real-ABI tests in
+/tmp/systemless-region-record-tests.txt; its two GPU cases were explicitly ignored
+in that initial run. Strict all-target lint passes in
+/tmp/systemless-region-record-lint.txt. Initial EV tracer replay now passes
+OpenRgn, framed WMgr rectangle, CloseRgn, union/difference/copy region work and
+FrontWindow, then stops at CalcVisBehind A90A, PC 01026A90. Evidence:
+/tmp/systemless-ev-region.txt, expected unsupported-service exit 1. Final GPU,
+cross-port guard and replay acceptance follows below. Full rebuild and complete
+wgpu text remain active; no playable-game or native/browser claim.
+
+
+Final acceptance: 71 distinct focused tests pass with no skipped/ignored cases in
+acceptance runs: core 62 (/tmp/systemless-region-record-acceptance.txt), polygon 4
+and region 5 (/tmp/systemless-region-record-final-gpu.txt). The two real-wgpu
+cases pass, including hidden recording with unchanged destination pixels, exact
+rectangular holes despite zero pen size, visible ShowPen frame output, and existing
+polygon fill/frame/XOR regression coverage. The new cross-port test rejects nested
+region/polygon recording in both directions. Core geometry also checks a tall
+full-signed-range rectangle coalesces to a compact region. Earlier default runs
+ignored GPU tests and are not additional GPU acceptance.
+
+Strict all-target lint and final tracer build pass in
+/tmp/systemless-region-record-final-lint.txt and
+/tmp/systemless-region-record-final-build.txt. Sequential formatting and diff
+whitespace pass. Earlier compile/format issues (cast parentheses and a borrowed
+line-input snapshot) were corrected and superseded by final output.
+
+The final original EV run passes OpenRgn, FrameRect and CloseRgn, combines the
+result with WMgr regions, and stops at CalcVisBehind A90A, PC 01026A90. Evidence:
+/tmp/systemless-ev-region-final.txt, terminal exit 1 (unsupported next service),
+10 million instructions, 640x480x8. The tracer explicitly acknowledges its
+memory-only volume flush. Sound/timer/VBL callbacks are zero. Native-window,
+normal writable-backed host, PPC originals and Marathon were not replayed in
+this milestone. No UI interaction, playable game, audio or browser acceptance.
+
+Independent CRC/catalog verification in /tmp/systemless-region-volume-final.txt
+confirms the separate output /tmp/systemless-ev-region-final-saved.slv remains
+7,239,400 bytes, SHA256
+ad05777204b2f60ec2c352b1f0c3a62e91567fad1311ff788b0a1b542eabf540,
+with preferences node 26 -> 27, unchanged metadata/both fork bytes and every
+companion entry unchanged. Input /tmp/systemless-ev-flush-saved.slv remains SHA256
+a34a4f72439d271464812ac5d768454b0ce767f132282ac0ff64bf5236d8eb7d.
+Initial and final output images are byte-identical. No originals enter Git.
+
+Next: shared CalcVisBehind/CalcVis through existing Window Manager visibility
+geometry, respecting the start window, clobbered region, front-to-back coverage,
+port coordinates and BeginUpdate state; exercise both ABIs and actual overlapping
+windows before replaying EV. The legacy helper that recalculates every tracked
+window is reference evidence, not sufficient implementation of that contract.
+Primary: https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-288.html. Full rebuild and
+complete wgpu text rendering remain active requirements.

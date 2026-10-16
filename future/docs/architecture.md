@@ -3113,3 +3113,34 @@ without changing timestamps, marks, reference identities or dirty Resource Manag
 handles. Resource Manager maps still require UpdateResFile/CloseResFile before
 those changes are file contents. Asynchronous completion, additional volumes,
 physical-drive details and full per-service File Manager durability remain open.
+
+
+### Region outline recording
+
+OpenRgn/CloseRgn are shared process services with void native/PPC ABIs. One active
+recording owns a temporary guest handle and its originating port; rgnSave exposes
+that handle using a private checked edge-buffer layout. Open hides the pen and
+close balances visibility, replaces an existing owned destination region and
+releases the temporary handle. SetPort naturally suspends collection when drawing
+into another port. Saving rgnSave, setting it to NIL and restoring it also suspends
+and resumes collection. Nested region/polygon/picture recording and custom
+procedures fail explicitly rather than combining incompatible state.
+
+Lines contribute mathematical endpoints; framed rectangles, round rectangles and
+polygons contribute boundaries independent of pen size/pattern and clip/visible
+regions. Integer-coordinate even-odd scan conversion preserves disjoint areas,
+holes and negative coordinates, using wide rational intersections. Vertical spans
+coalesce before the shared inversion-region encoder runs. This is source geometry
+preparation: visible pen drawing still uses wgpu and guest pixel synchronization.
+
+The temporary buffer is 32,760 bytes with at most 4,093 nonhorizontal edges;
+recording and scan-conversion work limits fail explicitly. The current shared
+region codec retains its 32-KB limit even for color ports. Full 64-KB color-region
+support, regionTooBigError/QDError publication, arbitrary custom procedures and
+remaining oval/arc/region APIs are not claimed. FrameArc is excluded from region
+outlines by the Macintosh contract. Close rejects foreign or resized recording handles;
+failed destination resize keeps the active recording for retry. Actual source
+recording bytes are private runtime metadata, not a ROM-layout parity claim.
+
+References: [OpenRgn](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-133.html)
+and [QuickDraw Drawing, CloseRgn p. 3-89](https://woofle.net/impdf/QD-03-Drawing.pdf).

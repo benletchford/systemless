@@ -352,6 +352,12 @@ impl Ports {
     ) -> Result<()> {
         use crate::polygons::Verb;
         let port = self.current(memory)?;
+        if verb == Verb::Frame && crate::region_recording::active(memory, port)? {
+            crate::region_recording::polygon(memory, port, vertices)?;
+            if (memory.u16(GuestPtr(port.0 + 66))? as i16) < 0 {
+                return Ok(());
+            }
+        }
         let bytes = memory.read(port, PORT_SIZE)?.to_vec();
         let word = |at| i16::from_be_bytes(bytes[at..at + 2].try_into().unwrap());
         let frame = if verb == Verb::Frame {
@@ -771,9 +777,11 @@ impl Ports {
         recording: bool,
     ) -> Result<()> {
         let port = self.current(memory)?;
-        let bytes = memory.read(port, PORT_SIZE)?;
+        let bytes = memory.read(port, PORT_SIZE)?.to_vec();
+        let region_recording = crate::region_recording::active(memory, port)?;
         for i in [92, 96, 100, 104] {
             if u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()) != 0
+                && !(i == 96 && region_recording)
                 && !(i == 100 && recording)
             {
                 return Err(Error::Graphics(
@@ -788,8 +796,16 @@ impl Ports {
         } else {
             (h, v)
         };
-        let geometry = crate::lines::geometry(from, to, word(54), word(52))?;
         memory.validate_write(offset(port, 48)?, 4)?;
+        if region_recording {
+            crate::region_recording::line(memory, port, from, to)?;
+            if word(66) < 0 {
+                let mut location = to.1.to_be_bytes().to_vec();
+                location.extend(to.0.to_be_bytes());
+                return memory.write(offset(port, 48)?, &location);
+            }
+        }
+        let geometry = crate::lines::geometry(from, to, word(54), word(52))?;
         if word(66) >= 0 && geometry.width != 0 && geometry.height != 0 {
             let (bitmap, _) = self.drawing_target_with_visibility(memory, false, recording)?;
             let bounds = crate::lines::bounds(geometry);
@@ -888,6 +904,13 @@ impl Ports {
         frame: bool,
     ) -> Result<()> {
         let p = self.current(memory)?;
+        if frame && crate::region_recording::active(memory, p)? {
+            let shape = crate::rounded::coverage(r, width, height, None)?;
+            crate::region_recording::shape(memory, p, &shape)?;
+            if (memory.u16(offset(p, 66)?)? as i16) < 0 {
+                return Ok(());
+            }
+        }
         let pen = if frame {
             Some((
                 memory.u16(offset(p, 54)?)? as i16,
@@ -918,10 +941,10 @@ impl Ports {
         let p = self.current(memory)?;
         let bytes = memory.read(p, PORT_SIZE)?;
         let word = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
-        if [92, 96, 100, 104]
-            .iter()
-            .any(|o| word(*o) != 0 && !(*o == 100 && recording_polygon))
-        {
+        let region_recording = crate::region_recording::active(memory, p)?;
+        if [92, 96, 100, 104].iter().any(|o| {
+            word(*o) != 0 && !(*o == 96 && region_recording) && !(*o == 100 && recording_polygon)
+        }) {
             return Err(Error::Graphics(
                 "QuickDraw recording or custom procedures are unsupported".into(),
             ));
@@ -1002,8 +1025,11 @@ impl Ports {
         let p = self.current(memory)?;
         let bytes = memory.read(p, PORT_SIZE)?;
         let word = |o| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
+        let region_recording = crate::region_recording::active(memory, p)?;
         if [92, 96, 100, 104].iter().any(|o| {
-            word(*o) != 0 && !(*o == 100 && matches!(coverage, Coverage::RecordingLine(_)))
+            word(*o) != 0
+                && !(*o == 96 && region_recording)
+                && !(*o == 100 && matches!(coverage, Coverage::RecordingLine(_)))
         }) {
             return Err(Error::Graphics(
                 "QuickDraw recording or custom procedures are unsupported".into(),

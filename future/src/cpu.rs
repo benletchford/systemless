@@ -235,6 +235,7 @@ pub enum Call {
         pointer: GuestPtr,
     },
     Polygon(crate::polygons::Op),
+    RegionRecording(crate::region_recording::Op),
     PenVisibility(i16),
     PenNormal,
     PenMode(i16),

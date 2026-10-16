@@ -172,6 +172,7 @@ pub enum Service {
     Region(crate::regions::Op),
     Port(crate::quickdraw::PortOp),
     Polygon(crate::polygons::Op),
+    RegionRecording(bool),
     PolygonDraw(crate::polygons::Verb),
     KillPoly,
     OffsetPoly,
@@ -570,6 +571,8 @@ impl Abi {
             b"MovePortTo" => Some(Service::MovePortTo),
             b"PortSize" => Some(Service::PortSize),
             b"PenSize" => Some(Service::PenSize),
+            b"OpenRgn" => Some(Service::RegionRecording(false)),
+            b"CloseRgn" => Some(Service::RegionRecording(true)),
             b"OpenPoly" => Some(Service::Polygon(crate::polygons::Op::Open)),
             b"ClosePoly" => Some(Service::Polygon(crate::polygons::Op::Close)),
             b"KillPoly" => Some(Service::KillPoly),
@@ -2750,6 +2753,20 @@ impl Abi {
                 c.dar[15] = result;
                 Ok((call, Reply::StackWord(GuestPtr(result))))
             }
+            0xa8da => Ok((
+                Call::RegionRecording(crate::region_recording::Op::Open),
+                Reply::None,
+            )),
+            0xa8db => {
+                let handle = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("CloseRgn stack overflow".into()))?;
+                Ok((
+                    Call::RegionRecording(crate::region_recording::Op::Close(handle)),
+                    Reply::None,
+                ))
+            }
             0xa8e4..=0xa8e7 => {
                 use crate::region_geometry::Boolean;
                 let args = memory.read(GuestPtr(sp), 12)?;
@@ -4082,6 +4099,11 @@ impl Abi {
                 width: c.gpr[3] as i16,
                 height: c.gpr[4] as i16,
             },
+            Service::RegionRecording(close) => Call::RegionRecording(if close {
+                crate::region_recording::Op::Close(c.gpr[3])
+            } else {
+                crate::region_recording::Op::Open
+            }),
             Service::Polygon(op) => Call::Polygon(op),
             Service::PolygonDraw(verb) => Call::Polygon(crate::polygons::Op::Draw {
                 handle: c.gpr[3],
@@ -4543,6 +4565,7 @@ impl Abi {
                         | Service::PenMode
                         | Service::PenNormal
                         | Service::PenVisibility(_)
+                        | Service::RegionRecording(_)
                         | Service::Polygon(crate::polygons::Op::Close)
                         | Service::PolygonDraw(_)
                         | Service::KillPoly
