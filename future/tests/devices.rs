@@ -24,6 +24,8 @@ fn app() -> LoadedApplication {
             b"SetGDevice",
             b"SetDeviceAttribute",
             b"GetMaxDevice",
+            b"NewGDevice",
+            b"DisposeGDevice",
         ],
         64,
     );
@@ -34,6 +36,7 @@ fn app() -> LoadedApplication {
             GuestPtr(0x50000000),
             [
                 0xaa32u16, 0xaa2a, 0xaa29, 0xaa2b, 0xaa2c, 0xaa34, 0xa8ec, 0xaa31, 0xaa2d, 0xaa27,
+                0xaa2f, 0xaa30,
             ]
             .into_iter()
             .flat_map(u16::to_be_bytes)
@@ -561,4 +564,87 @@ fn max_device_intersection_is_shared_by_both_cpus() {
     }
     assert!(call(&mut a, Op::Maximum(GuestPtr(0xfffffff0))).is_err());
     assert_eq!(call(&mut a, Op::Current).unwrap(), offscreen);
+}
+
+#[test]
+fn detached_devices_own_independent_storage_and_dispose_on_both_cpus() {
+    for architecture in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        let main = ppc(&mut a, 1, &[]);
+        let before = a.runtime.process.free_memory();
+        let create = |a: &mut LoadedApplication| match architecture {
+            Architecture::PowerPc => ppc(a, 13, &[0, u32::MAX]),
+            Architecture::M68k => {
+                let mut args = (-1i32).to_be_bytes().to_vec();
+                args.extend(0i16.to_be_bytes());
+                u32::from_be_bytes(native(a, 10, &args, 4).try_into().unwrap())
+            }
+        };
+        let first = create(&mut a);
+        let second = create(&mut a);
+        assert_ne!(first, 0);
+        assert_ne!(first, second);
+        let gd = a.runtime.memory.u32(GuestPtr(first)).unwrap();
+        let pm = a.runtime.memory.u32(GuestPtr(gd + 22)).unwrap();
+        let pm_data = a.runtime.memory.u32(GuestPtr(pm)).unwrap();
+        let ct = a.runtime.memory.u32(GuestPtr(pm_data + 42)).unwrap();
+        let inverse = a.runtime.memory.u32(GuestPtr(gd + 6)).unwrap();
+        assert_eq!(a.runtime.memory.u16(GuestPtr(gd + 20)).unwrap(), 0);
+        assert_eq!(a.runtime.memory.u32(GuestPtr(gd + 30)).unwrap(), 0);
+        assert_eq!(call(&mut a, Op::First).unwrap(), main);
+        assert_eq!(call(&mut a, Op::Current).unwrap(), main);
+        assert!(call(&mut a, Op::Dispose(main)).is_err());
+        for device in [first, second] {
+            match architecture {
+                Architecture::PowerPc => {
+                    ppc(&mut a, 14, &[device]);
+                }
+                Architecture::M68k => {
+                    native(&mut a, 11, &device.to_be_bytes(), 0);
+                }
+            }
+        }
+        for handle in [first, second, pm, ct, inverse] {
+            assert_eq!(a.runtime.memory.u32(GuestPtr(handle)).unwrap(), 0);
+        }
+        assert_eq!(a.runtime.process.free_memory(), before);
+        assert!(call(&mut a, Op::Dispose(first)).is_err());
+        assert!(call(
+            &mut a,
+            Op::New {
+                reference: -1,
+                mode: 128
+            }
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn detached_device_partial_allocation_failure_returns_nil_and_reclaims_storage() {
+    let mut a = app();
+    assert_ne!(
+        a.runtime
+            .process
+            .new_pointer(&mut a.runtime.memory, HEAP_SIZE - 80, false)
+            .unwrap(),
+        0
+    );
+    let before = a.runtime.process.free_memory();
+    assert_eq!(
+        call(
+            &mut a,
+            Op::New {
+                reference: 0,
+                mode: -1
+            }
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(a.runtime.process.mem_error, -108);
+    assert_eq!(a.runtime.process.free_memory(), before);
+    for pointer in [devices::MAIN, devices::FIRST, devices::CURRENT] {
+        assert_eq!(a.runtime.memory.u32(pointer).unwrap(), 0);
+    }
 }

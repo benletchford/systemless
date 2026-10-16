@@ -74,6 +74,8 @@ pub enum Service {
     ColorPort(crate::color_ports::Action),
     NextDevice,
     MaxDevice,
+    NewDevice,
+    DisposeDevice,
     SetDevice,
     HasDepth,
     SetDepth,
@@ -416,6 +418,8 @@ impl Abi {
             b"GetGDevice" => Some(Service::Device(crate::devices::Op::Current)),
             b"GetMainDevice" => Some(Service::Device(crate::devices::Op::Main)),
             b"GetDeviceList" => Some(Service::Device(crate::devices::Op::First)),
+            b"NewGDevice" => Some(Service::NewDevice),
+            b"DisposeGDevice" | b"DisposGDevice" => Some(Service::DisposeDevice),
             b"GetMaxDevice" => Some(Service::MaxDevice),
             b"GetNextDevice" => Some(Service::NextDevice),
             b"HasDepth" => Some(Service::HasDepth),
@@ -1649,6 +1653,29 @@ impl Abi {
                 };
                 c.dar[15] = next;
                 Ok((Call::Device(op), Reply::None))
+            }
+            0xaa2f => {
+                let args = memory.read(GuestPtr(sp), 6)?;
+                let op = crate::devices::Op::New {
+                    reference: i16::from_be_bytes(args[4..6].try_into().unwrap()),
+                    mode: i32::from_be_bytes(args[..4].try_into().unwrap()),
+                };
+                let next = sp
+                    .checked_add(6)
+                    .ok_or_else(|| Error::Cpu("NewGDevice stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 4)?;
+                c.dar[15] = next;
+                Ok((Call::Device(op), Reply::StackLong(GuestPtr(next))))
+            }
+            0xaa30 => {
+                let device = memory.u32(GuestPtr(sp))?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("DisposeGDevice stack overflow".into()))?;
+                Ok((
+                    Call::Device(crate::devices::Op::Dispose(device)),
+                    Reply::None,
+                ))
             }
             0xaa27 => {
                 let pointer = GuestPtr(memory.u32(GuestPtr(sp))?);
@@ -3135,6 +3162,11 @@ impl Abi {
             }),
             Service::Device(op) => Call::Device(op),
             Service::SetDevice => Call::Device(crate::devices::Op::Select(c.gpr[3])),
+            Service::NewDevice => Call::Device(crate::devices::Op::New {
+                reference: c.gpr[3] as i16,
+                mode: c.gpr[4] as i32,
+            }),
+            Service::DisposeDevice => Call::Device(crate::devices::Op::Dispose(c.gpr[3])),
             Service::MaxDevice => Call::Device(crate::devices::Op::Maximum(GuestPtr(c.gpr[3]))),
             Service::NextDevice => Call::Device(crate::devices::Op::Next(c.gpr[3])),
             Service::SetDeviceAttribute => Call::Device(crate::devices::Op::SetAttribute {

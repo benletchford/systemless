@@ -19,6 +19,11 @@ pub enum Op {
         flags: u16,
         set: bool,
     },
+    New {
+        reference: i16,
+        mode: i32,
+    },
+    Dispose(u32),
     Maximum(GuestPtr),
     Current,
     Select(u32),
@@ -42,6 +47,7 @@ pub enum Op {
 #[derive(Default)]
 pub struct Manager {
     device: Option<u32>,
+    detached: std::collections::BTreeMap<u32, [u32; 3]>,
 }
 fn invalid(message: &str) -> Error {
     Error::Graphics(message.into())
@@ -167,9 +173,91 @@ impl Manager {
         }
         self.initialize(memory, process)
     }
+    fn new_detached(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        reference: i16,
+        mode: i32,
+    ) -> Result<u32> {
+        if mode != -1 {
+            return Err(invalid("driver-backed NewGDevice modes are unsupported"));
+        }
+        let _ = reference; // No driver initialization in the documented -1 case.
+        let mut handles = Vec::new();
+        let result = (|| {
+            for size in [8, 50, 6, 62] {
+                let h = process.new_handle(memory, size, true)?;
+                if h == 0 {
+                    return Ok(0);
+                }
+                handles.push(h);
+            }
+            let [table, pixels, inverse, device] = handles[..] else {
+                unreachable!()
+            };
+            let ct = record(memory, process, table, 8)?;
+            memory.write(GuestPtr(ct.0 + 6), &(-1i16).to_be_bytes())?;
+            let pm = record(memory, process, pixels, 50)?;
+            memory.write(GuestPtr(pm.0 + 42), &table.to_be_bytes())?;
+            let gd = record(memory, process, device, 62)?;
+            memory.write(GuestPtr(gd.0 + 6), &inverse.to_be_bytes())?;
+            memory.write(GuestPtr(gd.0 + 22), &pixels.to_be_bytes())?;
+            self.detached.insert(device, [table, pixels, inverse]);
+            Ok(device)
+        })();
+        if !matches!(result, Ok(h) if h != 0) {
+            let error = process.mem_error;
+            for h in handles.into_iter().rev() {
+                process.dispose_handle(memory, h)?;
+            }
+            process.mem_error = error;
+        }
+        result
+    }
+    fn dispose_detached(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        device: u32,
+    ) -> Result<u32> {
+        let [table, pixels, inverse] = *self
+            .detached
+            .get(&device)
+            .ok_or_else(|| invalid("DisposeGDevice requires an owned detached device"))?;
+        let gd = record(memory, process, device, 62)?;
+        let pm = record(memory, process, pixels, 50)?;
+        record(memory, process, table, 8)?;
+        record(memory, process, inverse, 6)?;
+        if memory.u32(GuestPtr(gd.0 + 6))? != inverse
+            || memory.u32(GuestPtr(gd.0 + 22))? != pixels
+            || memory.u32(GuestPtr(pm.0 + 42))? != table
+        {
+            return Err(invalid("detached device supporting handles were replaced"));
+        }
+        if memory.u32(CURRENT)? == device {
+            return Err(invalid(
+                "select another device before disposing the current device",
+            ));
+        }
+        for h in [device, inverse, pixels, table] {
+            memory.validate_write(GuestPtr(h), 4)?;
+        }
+        for h in [device, inverse, pixels, table] {
+            process.dispose_handle(memory, h)?;
+        }
+        self.detached.remove(&device);
+        Ok(0)
+    }
     pub fn call(&mut self, memory: &mut Memory, process: &mut Process, op: Op) -> Result<u32> {
+        if let Op::New { reference, mode } = op {
+            return self.new_detached(memory, process, reference, mode);
+        }
         let saved = process.mem_error;
         let result = (|| {
+            if let Op::Dispose(device) = op {
+                return self.dispose_detached(memory, process, device);
+            }
             if let Op::Depth {
                 device,
                 depth,
@@ -287,7 +375,12 @@ impl Manager {
             };
             let data = record(memory, process, device, 62)?;
             match op {
-                Op::Maximum(_) | Op::Depth { .. } | Op::Select(_) | Op::Next(_) => unreachable!(),
+                Op::New { .. }
+                | Op::Dispose(_)
+                | Op::Maximum(_)
+                | Op::Depth { .. }
+                | Op::Select(_)
+                | Op::Next(_) => unreachable!(),
                 Op::Current | Op::Main | Op::First => {
                     let pointer = match op {
                         Op::Current => CURRENT,

@@ -2544,3 +2544,18 @@ unfinished. This follows Inside Macintosh's greatest pixel-depth rule and QD13's
 one-pixel intersection/nil rule, not a greatest-area heuristic:
 https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-288.html
 https://leopard-adc.pepas.com/technotes/qd/qd_13.html
+
+
+### Detached device ownership
+
+NewGDevice(-1 mode) allocates independent GDevice, PixMap, empty ColorTable and
+inverse-table handles in the shared allocator. The caller initializes the fields;
+no screen pixels/palette are cloned and the display list/current selection stay
+unchanged. Failed partial allocation returns nil, retains MemError and reclaims
+all handles. DisposeGDevice/DisposGDevice release the owned graph, preflight
+writable masters, and reject main/foreign/current devices or replaced supporting
+handles. General supporting-handle replacement/ownership transfer is unfinished.
+Driver-backed modes fail explicitly. The rebuild still has one application heap;
+the documented system-heap distinction and driver initialization remain open.
+Sources: Apple NewGDevice (QuickDraw-279), InitGDevice (QuickDraw-280),
+DisposeGDevice (QuickDraw-283), mirrored at leopard-adc.pepas.com/documentation/mac/QuickDraw/.

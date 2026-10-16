@@ -2092,3 +2092,32 @@ ProtectEntry boundary is unchanged by scope; it was not replayed this checkpoint
 Neither original game is playable. Next: shared owned NewGDevice/DisposeGDevice
 lifecycle with correct detached offscreen records and public ABI fixtures, then
 continue Marathon startup. Keep the full rebuild active.
+
+
+## Detached graphics-device checkpoint (2026-10-16)
+
+Both CPU adapters now share real no-driver NewGDevice(mode -1) and owned
+DisposeGDevice/DisposGDevice. Four independent handles retain a detached GDevice,
+PixMap, empty ColorTable and inverse table. Allocation rollback returns nil and
+MemError -108 without leaking storage; disposal frees the complete original graph.
+Main/foreign/current-device disposal and replaced supporting handles fail
+explicitly. Driver-backed modes, handle replacement/transfer and separate system
+heap allocation remain unfinished; no screen clone or false driver support is used.
+
+Final acceptance: 11 device integration checks (including real GPU readback) plus
+the updated pinned-SDK compiler fixture on both CPU engines pass: 12 distinct
+checks, zero failed/ignored. Logs: /tmp/systemless-newdevice-tests.txt and
+/tmp/systemless-newdevice-sdk-test.txt. Pinned compilation:
+/tmp/systemless-newdevice-sdk-build.txt. Strict final all-target Rust 1.99 lint
+passes (/tmp/systemless-newdevice-final-lint.txt); sequential changed-file format
+and whitespace checks pass. No full-suite or new minimum-version run is claimed.
+
+Original Marathon passes NewGDevice(0,-1), fills its offscreen records, then
+requests DisposeCTable ($AA24), PC $01034C96, argument $00010C30. Diagnostic exit 1:
+/tmp/systemless-marathon-newdevice.txt. Trap identity verified against the pinned
+SDK: /tmp/systemless-marathon-aa24-sdk.txt. No completed sound/timer/VBL callbacks
+precede this boundary. EV was not replayed; its previous ProtectEntry boundary is
+still the latest evidence. Neither original game is playable. Next executable
+slice: real ColorTable disposal/replacement ownership and subsequent Marathon
+setup, preserving main palettes and detached device cleanup. Full rebuild stays
+active; draft PR and no merge/release/deployment restrictions remain in force.
