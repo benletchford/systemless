@@ -444,6 +444,22 @@ fn find_vfs_file_does_not_discard_explicit_path_components() {
 }
 
 #[test]
+fn vfs_finders_match_hfs_basename_containing_slash() {
+    let disp = super::super::TrapDispatcher::new();
+    let key = "F\u{F02F}A-18 Hornet Folder/F\u{F02F}A-18 Data 2.0";
+    disp.vfs.insert(key.to_string(), vec![1]);
+    disp.vfs_rsrc.insert(key.to_string(), vec![2]);
+
+    assert_eq!(disp.find_vfs_file("F/A-18 Data 2.0"), Some(key.to_string()));
+    assert_eq!(
+        disp.find_vfs_rsrc_file("F/A-18 Data 2.0"),
+        Some(key.to_string())
+    );
+    assert_eq!(disp.find_vfs_file("F/A-18 Data"), None);
+    assert_eq!(disp.find_vfs_rsrc_file("F/A-18 Data"), None);
+}
+
+#[test]
 fn vfs_finders_resolve_absolute_boot_volume_paths() {
     let disp = super::super::TrapDispatcher::new();
     let key = "Demo/Data/Control Files/Game Control 2";

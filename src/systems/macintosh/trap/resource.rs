@@ -8720,7 +8720,10 @@ impl super::TrapDispatcher {
         // relative-path matching fail. For example, a request for
         // `:Data Files:Data CD` must not open `Character Files/Data CD`.
         // Basename-only requests retain the historical search-path fallback.
-        if !hfs_normalized.contains('/') && !normalized.contains('/') {
+        // A colon-free HFS name is a basename even when it contains a slash,
+        // which is a legal HFS filename character ("F/A-18 Data").
+        // Inside Macintosh: Files (1992), pp. 2-27 to 2-30.
+        if !hfs_normalized.contains('/') {
             let hfs_basename = hfs_normalized
                 .rsplit('/')
                 .next()
@@ -8731,6 +8734,8 @@ impl super::TrapDispatcher {
                     return Some((*key).clone());
                 }
             }
+        }
+        if !hfs_normalized.contains('/') && !normalized.contains('/') {
             let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
             for key in &sorted_keys {
                 let key_base = key.rsplit('/').next().unwrap_or(key);
