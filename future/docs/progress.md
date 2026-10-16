@@ -9951,3 +9951,45 @@ invalidation, and forbids interrupt-time use. Existing live palette reads and
 seed authority must stay coherent; no success-only stub or stale GPU cache. Full
 text/Glyphon integration, font fidelity, Mixed Mode and whole rebuild acceptance
 remain active.
+
+### Shared Munger for EV,2026-10-17
+
+The prior original EV replay stops at A9E0,15,136,642/0102C7CA. Munger now uses
+one Process service for both CPU backends and shared managed handles, with
+checked length/range/result frames, source snapshots, resize preflight and atomic
+payload replacement. It covers search/insert/replace/delete, nil-needle direct
+editing and tail lengths, raw binary bytes, aliases, retained flags/master
+identity, empty blocks, lock/padding behavior and explicit errors. Misses ignore
+unneeded replacement ranges; large/locked growth returns-1 and memFullErr.
+
+Policy clarification supersedes the earlier continuation suggestion to adopt
+Apple's partial-tail text literally: preserved Systemless rejects partial tails
+and permits both-NIL direct deletion, citing older native behavior in its source.
+No retained raw ROM comparison artifact was found. The user authorizes comparison
+against preserved Systemless; this slice follows that reference policy explicitly
+and does not call it authoritative new native proof. The source/documentation
+discrepancy and unsupported negative length combinations remain recorded.
+
+First run passes89core+2handle_copy+4handle_state+6heap tests,0ignored,with actual
+GPU cases enabled, plus4/5new Munger tests. The failing locked-growth fixture
+requested6→8bytes, which fits the existing eight-byte allocation and correctly
+succeeds. The corrected fixture asserts that in-place case, then requires6→10
+bytes to test locked failure and unlocked relocation with aliased inputs. No
+production resize behavior is weakened. The native reply now rejects an incorrect
+CPU kind before writing output, with a fault-preservation assertion.
+
+The selected corrected Munger rerun passes5/5,0ignored. Across the recorded
+scopes106tests pass (89core,2copy,4state,6heap,5Munger),not a fresh whole-suite
+run. Logs /tmp/systemless-munger-tests.txt and -tests-fixed.txt retain the initial
+fixture failure and actual correction. Tracer build passes11.65s. Strict all-target Clippy passes (7m03s). An isolated
+harness compares 56,154 offset/payload cases against the actual preserved
+Systemless evaluator, all equal. This does not infer native parity, pointer/flag
+behavior or undocumented invalid-length behavior.
+
+The unchanged Enter Ship input now executes13Munger calls and stops later at
+15,140,020/0100E416: TextBox reads a CGrafPort as a basic BitMap and rejects its
+geometry. The independent saved-volume verifier passes; the output SHA256 is
+e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80.
+Marathon still reaches CTabChanged/00040007 at2,915,975/0100864E. Neither replay
+proves playability. The next text slice uses the existing shared destination
+resolver rather than inventing game-specific geometry.

@@ -275,6 +275,7 @@ pub enum Service {
     GetMmuMode,
     SwapMmuMode,
     StripAddress,
+    Munger,
     MemError,
     FreeMemory,
     MaxMemory,
@@ -309,6 +310,7 @@ pub enum Reply {
     SaneCompare,
     None,
     StackLong(GuestPtr),
+    M68kMunger(GuestPtr),
     StackByte(GuestPtr),
     StackWord(GuestPtr),
     PpcR3,
@@ -733,6 +735,7 @@ impl Abi {
             b"Count1Resources" => Some(Service::Count1Resources),
             b"FreeMem" => Some(Service::FreeMemory),
             b"MaxMem" => Some(Service::MaxMemory),
+            b"Munger" => Some(Service::Munger),
             b"MemError" => Some(Service::MemError),
             b"PBOpenSync" | b"PBOpenDFSync" => Some(Service::FileIo(crate::files::Op::Open {
                 kind: crate::files::Fork::Data,
@@ -2836,6 +2839,24 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("DeleteMenu stack overflow".into()))?;
                 Ok((Call::Menu(crate::menus::Op::Delete(id)), Reply::None))
             }
+            0xa9e0 => {
+                let args = memory.read(GuestPtr(sp), 24)?;
+                let long = |at| u32::from_be_bytes(args[at..at + 4].try_into().unwrap());
+                let next = sp
+                    .checked_add(24)
+                    .ok_or_else(|| Error::Cpu("Munger stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 4)?;
+                let request = crate::process::munger::Request {
+                    handle: long(20),
+                    offset: long(16) as i32,
+                    needle: GuestPtr(long(12)),
+                    needle_len: long(8) as i32,
+                    replacement: GuestPtr(long(4)),
+                    replacement_len: long(0) as i32,
+                };
+                c.dar[15] = next;
+                Ok((Call::Munger(request), Reply::M68kMunger(GuestPtr(next))))
+            }
             0xa84e => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let destination = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
@@ -4897,6 +4918,14 @@ impl Abi {
                 memory.validate_write(grow, 4)?;
                 Call::MaxMemory(Some(grow))
             }
+            Service::Munger => Call::Munger(crate::process::munger::Request {
+                handle: c.gpr[3],
+                offset: c.gpr[4] as i32,
+                needle: GuestPtr(c.gpr[5]),
+                needle_len: c.gpr[6] as i32,
+                replacement: GuestPtr(c.gpr[7]),
+                replacement_len: c.gpr[8] as i32,
+            }),
             Service::MemError => Call::MemError,
             Service::ResError => Call::ResError,
             Service::CurResFile => Call::CurResFile,
@@ -5255,6 +5284,13 @@ impl Reply {
             Self::None => {}
             Self::StackByte(p) => memory.write(p, &[value as u8])?,
             Self::StackLong(p) => memory.write(p, &value.to_be_bytes())?,
+            Self::M68kMunger(p) => {
+                let Cpu::M68k(c) = cpu else {
+                    return Err(Error::Cpu("native Munger reply on PPC".into()));
+                };
+                memory.write(p, &value.to_be_bytes())?;
+                c.dar[0] = error as i32 as u32;
+            }
             Self::StackWord(p) => memory.write(p, &(value as u16).to_be_bytes())?,
             Self::M68kGestalt => {
                 let Cpu::M68k(c) = cpu else {

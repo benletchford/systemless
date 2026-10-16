@@ -2278,6 +2278,15 @@ impl Runtime {
                                 0,
                             )?;
                         }
+                        Call::Munger(request) => {
+                            let value = self.process.munger(&mut self.memory, request)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                value as u32,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::MemError => {
                             let value = self.memory.u16(GuestPtr(0x220))? as i16 as i32 as u32;
                             reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
@@ -2742,6 +2751,7 @@ impl Runtime {
                         | Call::GetMmuMode
                         | Call::SwapMmuMode(_)
                         | Call::StripAddress(_)
+                        | Call::Munger(_)
                         | Call::MemError
                         | Call::FreeMemory
                         | Call::MaxMemory(_)

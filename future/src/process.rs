@@ -8,6 +8,7 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 mod compaction;
+pub mod munger;
 mod pixels;
 pub mod resources;
 pub const HEAP_BASE: u32 = 0x1000_0000;

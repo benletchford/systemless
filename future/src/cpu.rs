@@ -404,6 +404,7 @@ pub enum Call {
     GetMmuMode,
     SwapMmuMode(u8),
     StripAddress(u32),
+    Munger(crate::process::munger::Request),
     MemError,
     FreeMemory,
     MaxMemory(Option<GuestPtr>),

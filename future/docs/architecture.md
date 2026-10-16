@@ -3799,3 +3799,37 @@ A935/A936 discovery entries are appended without changing prior identities.
 Primary references: [InsertMenu](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-120.html)
 and [DeleteMenu](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-121.html). Existing
 geometry remains reference-policy evidence, not new native pixel-parity proof.
+
+### Shared Munger handle editing
+
+Munger takes six32-bit arguments and edits one managed relocatable handle. Both
+CPU adapters invoke Process::munger; source/needle/replacement snapshots survive
+relocation and overlapping inputs. Search-only returns a match offset, edits
+return the first byte after the substitution, and a miss/failure returns-1.
+Direct NIL-needle overwrite, negative-length tail replacement, insertion, deletion
+and raw binary/extended bytes use the same path. No text decoding is performed.
+
+Compatibility policy deliberately follows the preserved Systemless evaluator: a
+partial tail is not a match, and both-NIL pointers permit direct deletion. Apple's
+general [Munger reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Text_Utilities/Reference/reference.html)
+describes partial-tail replacement and a broader NIL-second-pointer search-only
+rule. The old source cites a System7.5 ROM observation, but no retained raw oracle
+was located for this slice. This is authorized reference evidence, not new native
+parity proof; that discrepancy remains explicit. Other negative search/replacement
+lengths fail explicitly. Invalid offsets return-1 without editing.
+
+The service uses checked shared handle sizing/preflight and staged replacement,
+preserving handle identity/flags and resource associations. Growth inside current
+allocated padding is legal even when locked; relocation of locked/pinned storage
+fails with memFullErr and leaves bytes/allocation unchanged. Nil/purged destination
+masters fail with nilHandleErr. Needed input ranges are checked before mutation;
+misses do not read unused replacement data. No result-buffer or heap allocation
+is attempted after an invalid native output frame. VBL's no-allocation guard
+continues to exclude this operation.
+
+Native Pascal decoding reverses six longs, validates a four-byte result before
+popping24bytes, and returns the offset on stack with the Memory Manager error in
+D0. PPC uses six registers and returns the offset in R3. The separate native D0
+error channel follows [Apple PT14's glue convention](https://leopard-adc.pepas.com/technotes/pt/pt_14.html);
+its native values are not independently remeasured. The canonicalA9E0 discovery
+entry is appended without changing existing veneer addresses.
