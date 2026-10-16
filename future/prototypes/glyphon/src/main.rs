@@ -82,7 +82,10 @@ impl Probe {
         })
     }
     // Resolve before prepare: IDs are never reused within a live atlas.
-    fn cached_frame(&mut self, mut request: Draw<'_>) -> Result<(Vec<u8>, usize)> {
+    fn cached_frame(&mut self, request: Draw<'_>) -> Result<(Vec<u8>, usize)> {
+        self.cached(request, true)
+    }
+    fn cached(&mut self, mut request: Draw<'_>, read_pixels: bool) -> Result<(Vec<u8>, usize)> {
         let (id, reset) = self
             .masks
             .resolve(request.width, request.height, request.mask)?;
@@ -97,9 +100,12 @@ impl Probe {
                 TextRenderer::new(&mut self.atlas, &self.device, Default::default(), None);
         }
         request.id = id;
-        self.frame(request)
+        self.frame_impl(request, read_pixels)
     }
     fn frame(&mut self, request: Draw<'_>) -> Result<(Vec<u8>, usize)> {
+        self.frame_impl(request, true)
+    }
+    fn frame_impl(&mut self, request: Draw<'_>, read_pixels: bool) -> Result<(Vec<u8>, usize)> {
         let Draw {
             id,
             mask,
@@ -146,12 +152,6 @@ impl Probe {
             },
         )?;
         let view = self.target.create_view(&Default::default());
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("glyph probe readback"),
-            size: u64::from(256 * HEIGHT),
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         for pass in 0..passes {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -175,6 +175,16 @@ impl Probe {
             self.renderer
                 .render(&self.atlas, &self.viewport, &mut render)?;
         }
+        if !read_pixels {
+            self.queue.submit([encoder.finish()]);
+            return Ok((Vec::new(), uploads));
+        }
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("glyph probe readback"),
+            size: u64::from(256 * HEIGHT),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         encoder.copy_texture_to_buffer(
             self.target.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
@@ -256,7 +266,7 @@ fn check(label: &str, actual: &[u8], reference: &[u8]) {
     }
     println!("PASS {label}: {} exact bytes", actual.len());
 }
-fn transfer_probe(probe: &Probe, mask: &[u8]) -> Result<()> {
+fn transfer_probe(probe: &mut Probe, mask: &[u8], font: &Strike<'_>) -> Result<()> {
     let mut memory = Memory::default();
     memory.map(GuestPtr(0x1000), vec![0; 1024], Permissions::RW)?;
     memory.map(
@@ -346,6 +356,51 @@ fn transfer_probe(probe: &Probe, mask: &[u8]) -> Result<()> {
     expected[at / 8] = bit;
     assert_eq!(memory.read(GuestPtr(0x4000), expected.len())?, expected);
     println!("PASS direct guest pixel edit survives subsequent GPU mask XOR");
+    for mode in 0..8u16 {
+        memory.write(GuestPtr(0x4000), &initial)?;
+        memory.write(GuestPtr(0x1148), &mode.to_be_bytes())?;
+        systemless_future::text::move_to(&mut memory, ports, 3, 4)?;
+        systemless_future::text::draw_strike(&mut memory, ports, &probe.gpu, b"AAA", font)?;
+        let reference = memory.read(GuestPtr(0x4000), initial.len())?.to_vec();
+        let pen = memory.u16(GuestPtr(0x1132))?;
+        memory.write(GuestPtr(0x4000), &initial)?;
+        let (cells, end) = systemless_future::text::plan_cells(font, b"AAA", 3, 4)?;
+        assert_eq!(pen, end as u16);
+        for cell in cells {
+            let width = (cell.bounds.right - cell.bounds.left) as u16;
+            let height = (cell.bounds.bottom - cell.bounds.top) as u16;
+            let request = Draw {
+                id: 0,
+                mask: &cell.mask,
+                width,
+                height,
+                origin: (0.0, 0.0),
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: WIDTH as i32,
+                    bottom: HEIGHT as i32,
+                },
+                passes: 1,
+            };
+            probe.cached(request, false)?;
+            ports.copy_gpu_mask_region(
+                &mut memory,
+                &probe.gpu,
+                &probe.target,
+                (
+                    Rect::new(0, 0, i32::from(width), i32::from(height)),
+                    cell.bounds,
+                ),
+                mode as i16,
+            )?;
+        }
+        check(
+            &format!("ordered overlapping string mode {mode}"),
+            memory.read(GuestPtr(0x4000), initial.len())?,
+            &reference,
+        );
+    }
     Ok(())
 }
 fn main() -> Result<()> {
@@ -474,7 +529,7 @@ fn main() -> Result<()> {
         &pixels,
         &first,
     );
-    transfer_probe(&probe, &first)?;
+    transfer_probe(&mut probe, &first, &font)?;
     println!("RESULT GPU mask transfer seam verified; bounded content cache verified; text API integration remains required");
     Ok(())
 }

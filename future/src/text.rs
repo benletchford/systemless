@@ -202,7 +202,8 @@ pub fn draw(
     let font = crate::font::Strike::parse(&font_bytes)?;
     draw_strike(memory, ports, gpu, &bytes, &font)
 }
-pub(crate) fn draw_strike(
+/// Draw an already resolved strike through the shared production text path.
+pub fn draw_strike(
     memory: &mut Memory,
     ports: Ports,
     gpu: &crate::graphics::Graphics,

@@ -524,6 +524,27 @@ impl Ports {
         rect: Rect,
         mode: i16,
     ) -> Result<()> {
+        self.copy_gpu_mask_region(
+            memory,
+            gpu,
+            texture,
+            (
+                Rect::new(0, 0, texture.width() as i32, texture.height() as i32),
+                rect,
+            ),
+            mode,
+        )
+    }
+    /// Transfer a source subrectangle without stretching unused atlas-target pixels.
+    pub fn copy_gpu_mask_region(
+        &self,
+        memory: &mut Memory,
+        gpu: &Graphics,
+        texture: &wgpu::Texture,
+        rectangles: (Rect, Rect),
+        mode: i16,
+    ) -> Result<()> {
+        let (source, rect) = rectangles;
         if !(0..=7).contains(&mode) {
             return Err(Error::Graphics("unsupported GPU text transfer mode".into()));
         }
@@ -540,7 +561,7 @@ impl Ports {
                 mask: None,
                 rect,
                 clip: destination.bounds,
-                source: Rect::new(0, 0, texture.width() as i32, texture.height() as i32),
+                source,
                 width: texture.width(),
                 height: texture.height(),
                 foreground,

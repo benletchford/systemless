@@ -6241,3 +6241,24 @@ passes in /tmp/systemless-shared-cells-lint.txt. Sequential formatting and diff
 whitespace checks pass. These checks do not establish full text API/UI or platform
 acceptance. Next: ordered library cell transfers through actual guest text calls,
 followed by representative workload measurements before production selection.
+
+
+## Ordered library string transfers (2026-10-16)
+
+The Glyphon probe now transfers each shared cell in order into guest memory,
+using Ports::copy_gpu_mask_region to select the active cell inside a reusable
+GPU render target. All eight transfers of an overlapping three-character string
+match the production draw_strike path byte-for-byte, with matching final pen
+positions. The string path neither allocates a glyph readback buffer nor reads
+its mask back to the CPU; existing destination readback maintains guest coherence.
+This verifies the cell ordering/transfer bridge, not native guest ABI dispatch
+through Glyphon. Production DrawString/TextEdit/UI still use the coverage backend.
+
+All 32 GPU probe cases pass on M1/Metal in
+/tmp/systemless-ordered-text-final.txt; strict all-target lint passes in
+/tmp/systemless-ordered-text-lint.txt (both terminal exit 0). Earlier
+/tmp/systemless-ordered-text-probe.txt and /tmp/systemless-ordered-text-final.txt
+runs before the allocation cleanup are superseded by the final output. No
+production dependency changed. Next: compare complete workloads and integrate
+selected library rendering through runtime-owned text state, preserving the
+existing ABI/service boundary and all indexed formats and clipping behavior.
