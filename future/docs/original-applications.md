@@ -3380,3 +3380,71 @@ shared UpdateResFile using current handle payloads, atomic fork replacement,
 reservation accounting/changed flags and both adapters, then EV replay and
 preference save/reload verification. Full rebuild and complete wgpu text remain
 active requirements.
+
+
+## Shared UpdateResFile, dirty close and original preference round-trip (2026-10-16)
+
+A999 and PPC UpdateResFile now target the supplied resource reference independently
+of current search selection. Changed unprotected entries snapshot live owned
+handle contents and current sizes, not AddResource-time copies. A candidate fork
+is encoded and quota-checked before one catalog-fork replacement; only successful
+replacement publishes clean map/resource state and releases pending-growth
+reservations. Corrupt handles or quota failure retain the old fork and dirty
+state for retry. Data forks, catalog identity and Finder metadata remain intact;
+modification time uses the shared Macintosh clock. A retained EOF is padded when
+shrinking without mapCompact; explicit mapCompact alone triggers compaction.
+CloseResFile now updates dirty maps before releasing handles/access paths instead
+of rejecting all changed maps. This replaces the prior intentional close gap.
+
+Primary: [Resource Manager reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Resource_Manager/Reference/reference.html),
+UpdateResFile, CloseResFile and changed-resource rules, consistent with Apple
+More Macintosh Toolbox pp. 1-92–93 and 1-110. No native System 7 conformance run.
+Single-resource WriteResource/ChangedResource, broader removal/attribute APIs,
+purged/unowned dirty handles, duplicate-key maps, guest map exposure and
+application/System-file write support remain incomplete. Serialization compacts
+supported logical maps and retains EOF as documented; raw layout parity is not
+claimed.
+
+The diagnostic tracer gains an explicit --save-volume NEW_IMAGE option. It saves
+only committed Files state at guest stop/fault/budget completion, creates a new
+output file exclusively and never overwrites its input or an existing output.
+It does not flush dirty resource maps or bypass missing guest services.
+
+Validation: 85 distinct tests pass, no failures/skips across focused runs.
+/tmp/systemless-update-resource-tests.txt (exit 0) covers initial library 58,
+attachment 4, existing resource files/lifetime/maps 6/7/6 and initial update 2.
+/tmp/systemless-update-resource-final-tests.txt (exit 0) covers final library 59,
+attachment 4 and update 3; /tmp/systemless-update-resource-adapters-final.txt
+(exit 0) reruns the latest update cases. Repeats are excluded from 85. Final cases
+verify both actual CPU void ABIs, signed reference marshalling, frames/registers,
+ResError, update of a noncurrent file, live resized data, clean flags, automatic
+close, exported-volume restore and actual resource reload. Corrupt-master and
+full-disk cases preserve old fork/dirty state and recover on retry. A unit fixture
+verifies retained EOF and explicit compaction. Strict final library/fixture/tracer
+lint passes in /tmp/systemless-update-resource-final-lint.txt; tracer build passes
+in /tmp/systemless-update-resource-build.txt. Sequential formatting/whitespace
+pass. These are focused checks, not fresh full-suite/native/browser/pixel gates.
+
+Original EV now updates and closes its preferences resource file, then stops at
+PBFlushVol A013, PC 0001B644. /tmp/systemless-ev-update-resource.txt exits 1
+at that unsupported service and saves /tmp/systemless-ev-update-saved.slv:
+7,239,400 bytes, SHA-256
+1e321b69965601116735786e4dbd1df07ac5cedb5a3eeb081d792ada039bb9b5.
+Independent CRC/catalog/resource parsing finds node 24, parent 2, zero data fork,
+a 417-byte resource fork, type 4D70A8C4, ID 128, 98-byte data and clean map/
+resource flags. Payload SHA-256:
+01f3125e175f85049d0030520405f6688a17c5e67171016811c337dd40af7094.
+
+A fresh original EV replay using that saved volume opens the preferences map,
+gets type 4D70A8C4 ID 128 as nonzero handle 81756, locks/uses/unlocks it and closes
+the map. It then enters an existing-file rewrite path and stops at AA52 selector
+6 (FSpDelete), PC 0002C906. Evidence: /tmp/systemless-ev-update-reload.txt,
+exit 1. Its separate output /tmp/systemless-ev-update-reloaded.slv is byte-identical
+to the first saved volume. The original companion input remains 7,238,921 bytes
+with its original hash. This proves bounded preference-resource write/readback,
+not UI settings acceptance or a completed rewrite/game session. Both replays use
+10 million instructions and 640x480x8; sound/timer/VBL callbacks remain zero.
+No title/menu/gameplay/audio acceptance; Marathon not replayed. Next: shared
+FSpDelete and PBFlushVol semantics, then complete the existing-preferences rewrite
+path and continue original EV startup. Full rebuild and complete wgpu text remain
+active requirements.

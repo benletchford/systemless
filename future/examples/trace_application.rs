@@ -3,12 +3,13 @@ use systemless_future::{cpu::Cpu, load::LoadedApplication, runtime::Stop};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--elapse-waits]".into());
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--elapse-waits] [--save-volume NEW_IMAGE]".into());
     }
     let mut graphics = false;
     let mut services_only = false;
     let mut elapse_waits = false;
     let mut volume = None;
+    let mut save_volume = None;
     let mut display = None;
     let mut index = 3;
     while index < args.len() {
@@ -23,6 +24,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .ok_or("missing display")?
                         .parse::<systemless_future::display::Display>()?,
                 );
+            }
+            "--save-volume" if save_volume.is_none() => {
+                index += 1;
+                save_volume = Some(args.get(index).ok_or("missing save volume image")?);
             }
             "--volume" if volume.is_none() => {
                 index += 1;
@@ -136,6 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     app.runtime.services.completed_timer_callbacks,
                     app.runtime.services.completed_vbl_callbacks
                 );
+                save_snapshot(&app, save_volume)?;
                 return Err(error.into());
             }
         };
@@ -204,8 +210,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if stop != Stop::Budget {
             println!("{stop:?}");
+            save_snapshot(&app, save_volume)?;
             return Ok(());
         }
     }
+    save_snapshot(&app, save_volume)?;
     Err("trace instruction budget exhausted".into())
+}
+
+// Explicit diagnostic output: serialize only committed catalog/fork contents.
+// Never overwrite input or existing output images, including on guest faults.
+fn save_snapshot(
+    app: &LoadedApplication,
+    output: Option<&String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(path) = output {
+        use std::io::Write;
+        let bytes = app.runtime.process.files.export_volume()?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        println!("saved committed volume: {} bytes", bytes.len());
+    }
+    Ok(())
 }

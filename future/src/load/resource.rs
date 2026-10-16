@@ -32,6 +32,9 @@ impl ResourceFork {
     pub fn get(&self, kind: [u8; 4], id: i16) -> Option<&Resource> {
         self.entries.get(&(kind, id))
     }
+    pub(crate) fn entries_mut(&mut self) -> impl Iterator<Item = &mut Resource> {
+        self.entries.values_mut()
+    }
     pub fn entries(&self) -> impl Iterator<Item = &Resource> {
         self.entries.values()
     }

@@ -718,6 +718,9 @@ impl Abi {
             b"PBOpenWDSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Open)),
             b"PBCloseWDSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Close)),
             b"PBGetWDInfoSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Info)),
+            b"UpdateResFile" => Some(Service::ResourceFile(
+                crate::process::resources::Action::Update,
+            )),
             b"AddResource" => Some(Service::AddResource),
             b"FSpCreateResFile" => Some(Service::CreateSpecResource),
             b"FSMakeFSSpec" => Some(Service::MakeSpec),
@@ -3437,6 +3440,18 @@ impl Abi {
                     Reply::StackWord(GuestPtr(result)),
                 ))
             }
+            0xa999 => {
+                let reference = memory.u16(GuestPtr(sp))? as i16;
+                memory.validate_write(GuestPtr(0xa60), 2)?;
+                let next = sp
+                    .checked_add(2)
+                    .ok_or_else(|| Error::Cpu("UpdateResFile stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((
+                    Call::ResourceFile(crate::process::resources::Op::Update(reference)),
+                    Reply::None,
+                ))
+            }
             0xa998 | 0xa99a => {
                 let reference = memory.u16(GuestPtr(sp))? as i16;
                 let next = sp
@@ -4290,6 +4305,9 @@ impl Abi {
                 })
             }
             Service::ResourceFile(action) => Call::ResourceFile(match action {
+                crate::process::resources::Action::Update => {
+                    crate::process::resources::Op::Update(c.gpr[3] as i16)
+                }
                 crate::process::resources::Action::Use => {
                     crate::process::resources::Op::Use(c.gpr[3] as i16)
                 }
@@ -4509,6 +4527,7 @@ impl Abi {
                         | Service::ReleaseResource
                         | Service::ResourceFile(
                             crate::process::resources::Action::Use
+                                | crate::process::resources::Action::Update
                                 | crate::process::resources::Action::Close
                         )
                         | Service::SetSoundVol

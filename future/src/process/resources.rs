@@ -29,6 +29,7 @@ impl Default for Maps {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
+    Update,
     Use,
     Close,
     Home,
@@ -44,6 +45,7 @@ pub enum Op {
         volume: i16,
         permission: i8,
     },
+    Update(i16),
     Use(i16),
     Close(i16),
     Home(u32),
@@ -328,7 +330,7 @@ impl Process {
     }
     pub fn resource_file(&mut self, memory: &mut Memory, op: Op) -> Result<i16> {
         memory.validate_write(GuestPtr(0xa60), 2)?;
-        if !matches!(op, Op::Home(_)) {
+        if !matches!(op, Op::Home(_) | Op::Update(_)) {
             memory.validate_write(GuestPtr(0xa5a), 2)?;
         }
         self.res_error = 0;
@@ -347,6 +349,10 @@ impl Process {
                 volume,
                 permission,
             } => self.open_resource_file(memory, name, volume, permission),
+            Op::Update(reference) => {
+                self.update_resource_file(memory, reference)?;
+                Ok(0)
+            }
             Op::Use(reference) => {
                 if let Some(owner) = self.owner_for_reference(reference) {
                     self.resource_files.current = owner;
@@ -375,7 +381,7 @@ impl Process {
                 result
             }
         };
-        if result.is_ok() && !matches!(op, Op::Home(_)) {
+        if result.is_ok() && !matches!(op, Op::Home(_) | Op::Update(_)) {
             memory.write(GuestPtr(0xa5a), &self.current_resource_file().to_be_bytes())?;
         }
         result
@@ -518,6 +524,91 @@ impl Process {
         }
         Ok(())
     }
+    fn update_resource_file(&mut self, memory: &Memory, reference: i16) -> Result<()> {
+        let Some(owner) = self.owner_for_reference(reference) else {
+            self.res_error = -192;
+            return Ok(());
+        };
+        let Some(fork) = self.resource_map(owner) else {
+            self.res_error = -198;
+            return Ok(());
+        };
+        if fork.attributes & 0x80 != 0 {
+            self.res_error = -198;
+            return Ok(());
+        }
+        if fork.attributes & 0x60 == 0 && !fork.entries().any(|r| r.attributes & 2 != 0) {
+            self.res_error = 0;
+            return Ok(());
+        }
+        let Some(map) = self.resource_files.files.get(&owner) else {
+            self.res_error = -54;
+            return Ok(());
+        };
+        if !map.writable {
+            self.res_error = -54;
+            return Ok(());
+        }
+        let mut candidate = map.fork.clone();
+        for resource in candidate.entries_mut() {
+            if resource.attributes & 2 == 0 || resource.attributes & 8 != 0 {
+                continue;
+            }
+            let handle = self
+                .resource_handles
+                .get(&(owner, resource.kind, resource.id))
+                .ok_or_else(|| {
+                    Error::Load("changed resource has no resident owned handle".into())
+                })?;
+            let block = self
+                .handles
+                .get(handle)
+                .ok_or_else(|| Error::Load("changed resource handle was disposed".into()))?;
+            if memory.u32(GuestPtr(*handle))? != block.data {
+                return Err(Error::Cpu("guest-modified resource master pointer".into()));
+            }
+            resource.data = if block.size == 0 {
+                Vec::new()
+            } else {
+                memory
+                    .read(GuestPtr(block.data), block.size as usize)?
+                    .to_vec()
+            };
+            resource.attributes &= !2;
+        }
+        candidate.attributes &= !0x60;
+        let mut bytes = candidate.encode()?;
+        // Without mapCompact, shrinking resource data must not shrink fork EOF.
+        if map.fork.attributes & 0x40 == 0 {
+            let old_length = self.files.resource_bytes(map.node).unwrap().len();
+            bytes.resize(bytes.len().max(old_length), 0);
+        }
+        let size = bytes.len();
+        if self
+            .resource_files
+            .files
+            .values()
+            .map(|m| m.bytes)
+            .sum::<usize>()
+            - map.bytes
+            + size
+            > crate::load::IMAGE_LIMIT
+        {
+            self.res_error = -108;
+            return Ok(());
+        }
+        let modified = memory.u32(crate::calendar::TIME)?;
+        let error = self
+            .files
+            .replace_resource_file(reference, bytes, modified)?;
+        if error == 0 {
+            let map = self.resource_files.files.get_mut(&owner).unwrap();
+            map.fork = candidate;
+            map.bytes = size;
+        }
+        self.res_error = error;
+        Ok(())
+    }
     fn close_resource_file(&mut self, memory: &mut Memory, reference: i16) -> Result<i16> {
         if reference == 0 {
             return Ok(0);
@@ -528,11 +619,12 @@ impl Process {
         };
         if self
             .resource_map(owner)
-            .is_some_and(|m| m.attributes & 0x20 != 0 || m.entries().any(|r| r.attributes & 2 != 0))
+            .is_some_and(|m| m.attributes & 0x60 != 0 || m.entries().any(|r| r.attributes & 2 != 0))
         {
-            return Err(Error::Load(
-                "closing changed resource maps requires WriteResource/UpdateResFile".into(),
-            ));
+            self.update_resource_file(memory, reference)?;
+            if self.res_error != 0 {
+                return Ok(0);
+            }
         }
         self.remove_resource_map(memory, owner)?;
         Ok(0)
@@ -620,5 +712,82 @@ impl Process {
         }
         self.res_error = 0;
         Ok(())
+    }
+}
+#[cfg(test)]
+mod update_eof_tests {
+    use super::*;
+    use crate::{
+        files::{CreateSpecResource, Files},
+        memory::Permissions,
+    };
+    #[test]
+    fn update_preserves_existing_eof_until_map_compaction_is_requested() {
+        let mut p = Process::default();
+        p.files = Files::application(&[], None);
+        let mut m = Memory::default();
+        m.map(GuestPtr(0), vec![0; 4096], Permissions::RW).unwrap();
+        let spec = GuestPtr(0x100);
+        let mut bytes = [0; 70];
+        bytes[..2].copy_from_slice(&(-1i16).to_be_bytes());
+        bytes[2..6].copy_from_slice(&2u32.to_be_bytes());
+        bytes[6] = 5;
+        bytes[7..12].copy_from_slice(b"Prefs");
+        m.write(spec, &bytes).unwrap();
+        assert_eq!(
+            p.files
+                .create_spec_resource(
+                    &m,
+                    CreateSpecResource {
+                        spec,
+                        creator: *b"TEST",
+                        kind: *b"pref",
+                        script: 0
+                    }
+                )
+                .unwrap(),
+            0
+        );
+        let reference = p
+            .resource_file(
+                &mut m,
+                Op::OpenSpec {
+                    spec,
+                    permission: 3,
+                },
+            )
+            .unwrap();
+        let handle = p.new_handle(&mut m, 3, true).unwrap();
+        p.add_resource(
+            &m,
+            AddResource {
+                handle,
+                kind: *b"DATA",
+                id: 1,
+                name: GuestPtr(0),
+            },
+        )
+        .unwrap();
+        let node = p.resource_files.files[&reference].node;
+        let mut padded = p.files.resource_bytes(node).unwrap().to_vec();
+        let old = padded.len() + 1000;
+        padded.resize(old, 0);
+        assert_eq!(
+            p.files.replace_resource_file(reference, padded, 0).unwrap(),
+            0
+        );
+        p.resource_file(&mut m, Op::Update(reference)).unwrap();
+        assert_eq!(p.res_error, 0);
+        assert_eq!(p.files.resource_bytes(node).unwrap().len(), old);
+        p.resource_files
+            .files
+            .get_mut(&reference)
+            .unwrap()
+            .fork
+            .attributes |= 0x40;
+        p.resource_file(&mut m, Op::Update(reference)).unwrap();
+        assert_eq!(p.res_error, 0);
+        assert!(p.files.resource_bytes(node).unwrap().len() < old);
+        assert_eq!(p.resource_files.files[&reference].fork.attributes & 0x60, 0);
     }
 }

@@ -63,6 +63,41 @@ impl Files {
         self.resource_growth.insert(node, size);
         Ok(())
     }
+    pub(crate) fn replace_resource_file(
+        &mut self,
+        reference: i16,
+        bytes: Vec<u8>,
+        modified: u32,
+    ) -> Result<i16> {
+        self.validate_resource_access(reference)?;
+        let access = self.open[&reference];
+        if !access.writable {
+            return Ok(-54);
+        }
+        let Some(file) = self.files.get(&access.node) else {
+            return Ok(-45);
+        };
+        let old = file.resource.len();
+        let reserved = self
+            .resource_growth
+            .get(&access.node)
+            .copied()
+            .unwrap_or(old)
+            .saturating_sub(old);
+        let base = self.space_used() - old - reserved;
+        if base
+            .checked_add(bytes.len())
+            .is_none_or(|n| n > super::io::LIMIT)
+        {
+            return Ok(-34);
+        }
+        let file = self.files.get_mut(&access.node).unwrap();
+        file.resource = bytes;
+        file.modified = modified;
+        self.resource_growth.remove(&access.node);
+        self.changed();
+        Ok(0)
+    }
     /// Create a real empty resource map, retaining existing data and catalog identity.
     /// Only the runtime's Roman/system-Roman script is currently supported.
     pub fn create_spec_resource(

@@ -172,11 +172,13 @@ fn both_cpus_attach_the_original_handle_set_changed_state_and_preserve_void_abi(
             .unwrap();
         assert_eq!(a.runtime.process.res_error, -198);
         let reference = a.runtime.process.current_resource_file();
-        assert!(a
-            .runtime
-            .process
-            .resource_file(&mut a.runtime.memory, Op::Close(reference))
-            .is_err());
+        assert_eq!(
+            a.runtime
+                .process
+                .resource_file(&mut a.runtime.memory, Op::Close(reference))
+                .unwrap(),
+            0
+        );
         let node = a
             .runtime
             .process
@@ -199,7 +201,7 @@ fn both_cpus_attach_the_original_handle_set_changed_state_and_preserve_void_abi(
             .unwrap()
             .entries()
             .count(),
-            0
+            1
         );
     }
 }
