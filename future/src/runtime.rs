@@ -789,6 +789,17 @@ impl Runtime {
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::ClassifyExtended {
+                            source,
+                            destination,
+                        } => {
+                            self.process.numerics.classify_extended(
+                                &mut self.memory,
+                                source,
+                                destination,
+                            )?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::CopyExtended {
                             source,
                             destination,
@@ -2203,6 +2214,7 @@ impl Runtime {
                         | Call::DoubleToExtended { .. }
                         | Call::ExtendedToDouble { .. }
                         | Call::MultiplyExtended { .. }
+                        | Call::ClassifyExtended { .. }
                         | Call::CopyExtended { .. }
                         | Call::Elementary { .. }
                         | Call::AtanExtended(_)

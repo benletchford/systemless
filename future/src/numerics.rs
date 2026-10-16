@@ -22,6 +22,40 @@ pub struct Numerics {
     pub divide_by_zero: bool,
 }
 impl Numerics {
+    pub fn classify_extended(
+        &mut self,
+        memory: &mut Memory,
+        source: GuestPtr,
+        destination: GuestPtr,
+    ) -> Result<()> {
+        let bytes: [u8; 10] = memory.read(source, 10)?.try_into().unwrap();
+        memory.validate_write(destination, 2)?;
+        let se = u16::from_be_bytes(bytes[..2].try_into().unwrap());
+        let e = se & 0x7fff;
+        let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
+        if (e != 0 && m >> 63 == 0) || (e == 0 && m >> 63 != 0) {
+            return Err(Error::Cpu("unsupported unnormal SANE operand".into()));
+        }
+        let class: i16 = if e == 0x7fff {
+            if m == 1 << 63 {
+                3
+            } else if m & (1 << 62) != 0 {
+                2
+            } else {
+                1
+            }
+        } else if e == 0 {
+            if m == 0 {
+                4
+            } else {
+                6
+            }
+        } else {
+            5
+        };
+        let result = if se & 0x8000 != 0 { -class } else { class };
+        memory.write(destination, &result.to_be_bytes())
+    }
     pub fn copy_extended(
         &mut self,
         memory: &mut Memory,

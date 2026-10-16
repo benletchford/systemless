@@ -2674,3 +2674,16 @@ signaling NaN; it is not an unchecked BlockMove alias. Actual 10-byte bounds and
 frame/register preservation are exercised through the native adapter. Public SANE
 environment/alternate modes/halt APIs, noncanonical encodings, other operations
 and PPC math imports remain unfinished; no complete SANE capability is advertised.
+
+
+### Native SANE classification
+
+FP68K FCLASSX ($001C) reads the canonical ten-byte operand and writes a signed
+16-bit result: magnitude 1 signaling NaN, 2 quiet NaN, 3 infinity, 4 zero,
+5 normal, 6 subnormal; the source sign determines the result sign, including -4
+for negative zero. These are MC68000 trap codes, not SANE.h's high-level NumClass
+enum 0–5. The inquiry neither quiets a signaling NaN nor raises exceptions.
+Both pointers are checked before the native ten-byte frame is popped. Other
+source formats and noncanonical encodings remain unsupported explicitly.
+Primary reference: Apple Numerics Manual, chapter 20, p. 153/table 20-2;
+pinned SANEMacs.a FCLASSX and C SANE.h (the latter for the enum distinction).

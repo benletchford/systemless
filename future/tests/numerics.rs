@@ -324,3 +324,59 @@ fn native_extended_copy_preserves_payload_and_quiets_signaling_nan() {
         assert_eq!(c.dar[15], STACK_BASE + 0x700a);
     }
 }
+
+#[test]
+fn native_extended_classification_returns_signed_word_and_never_quiets_nan() {
+    for sign in [0u16, 0x8000] {
+        for (e, m, class) in [
+            (0x7fff, 0x8000_0000_0000_0001u64, 1i16),
+            (0x7fff, 0xc000_0000_0000_0001, 2),
+            (0x7fff, 0x8000_0000_0000_0000, 3),
+            (0, 0, 4),
+            (0x3fff, 0x8000_0000_0000_0000, 5),
+            (0, 1, 6),
+        ] {
+            let source = 0x52000000u32;
+            let destination = STACK_BASE + 0x6000;
+            let mut a = app(0x1c, destination);
+            a.runtime
+                .memory
+                .map(GuestPtr(0x53000000), vec![0xa9, 0xeb], Permissions::RX)
+                .unwrap();
+            let Cpu::M68k(c) = &mut a.runtime.cpu else {
+                panic!()
+            };
+            c.pc = 0x53000000;
+            let mut bytes = (e | sign).to_be_bytes().to_vec();
+            bytes.extend(m.to_be_bytes());
+            a.runtime
+                .memory
+                .map(GuestPtr(source), bytes.clone(), Permissions::RX)
+                .unwrap();
+            a.runtime
+                .memory
+                .write(GuestPtr(STACK_BASE + 0x7006), &source.to_be_bytes())
+                .unwrap();
+            a.runtime
+                .memory
+                .write(GuestPtr(destination), &[0xcc; 4])
+                .unwrap();
+            assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+            let expected = if sign == 0 { class } else { -class };
+            assert_eq!(
+                a.runtime.memory.u16(GuestPtr(destination)).unwrap(),
+                expected as u16
+            );
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(destination + 2), 2).unwrap(),
+                [0xcc; 2]
+            );
+            assert_eq!(a.runtime.memory.read(GuestPtr(source), 10).unwrap(), bytes);
+            assert!(!a.runtime.process.numerics.invalid && !a.runtime.process.numerics.inexact);
+            let Cpu::M68k(c) = &a.runtime.cpu else {
+                panic!()
+            };
+            assert_eq!(c.dar[15], STACK_BASE + 0x700a);
+        }
+    }
+}

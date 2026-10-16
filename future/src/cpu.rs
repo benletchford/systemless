@@ -29,6 +29,10 @@ pub enum Call {
         source: GuestPtr,
         destination: GuestPtr,
     },
+    ClassifyExtended {
+        source: GuestPtr,
+        destination: GuestPtr,
+    },
     CopyExtended {
         source: GuestPtr,
         destination: GuestPtr,

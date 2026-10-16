@@ -5849,3 +5849,34 @@ cosine/tangent execution, title/menu/gameplay and native audio remain unverified
 EV was not replayed and retains its recorded ProtectEntry boundary. Neither game
 is playable. Next: shared number classification and its real native result ABI,
 then continue Marathon startup. Full rebuild stays active and PR remains draft.
+
+
+## Native classification checkpoint (2026-10-16)
+
+FCLASSX ($A9EB/$001C) now invokes shared numeric inquiry and returns signed
+16-bit MC68000 class codes 1–6, rather than the C enum's 0–5. Negative zero
+returns -4. Signaling NaNs remain unchanged and do not raise invalid or inexact.
+The adapter validates the ten-byte source and two-byte destination before popping
+ten frame bytes. Other source formats and noncanonical encodings remain explicit
+unsupported cases; public SANE environment/modes/halts and PPC math access are open.
+
+Final acceptance: 70 checks pass, zero failed/ignored: 48 library, eleven numeric
+integration, seven timer and four trap patch tests. New native inquiry coverage
+exercises all six classes with both signs, exact two-byte output guards, readonly
+unaltered source (including signaling NaNs), exception status and stack cleanup.
+Evidence: /tmp/systemless-sane-classify-acceptance.txt, terminal exit 0.
+Strict Rust 1.99 all-target lint and Rust 1.93 library checks pass:
+/tmp/systemless-sane-classify-lint.txt and /tmp/systemless-sane-classify-msrv.txt.
+Sequential changed-file formatting and whitespace checks pass. No new full/GPU/
+wasm suite or native-system conformance run is claimed. Primary ABI evidence:
+Apple Numerics Manual, chapter 20, p. 153/table 20-2 and
+/tmp/systemless-sane-classify-sdk.txt.
+
+Original Marathon consumes the correct class and reaches FP68K ProcEntry
+($A9EB/$0017), PC $01002DFC, environment destination $0080FDA4. Evidence:
+/tmp/systemless-marathon-sane-classify.txt, explicit unsupported-selector exit 1.
+Completed timer=1, sound=0, VBL=0. Next executable slice is real SANE environment
+save/reset/restore and exception-state serialization, not a hardcoded success.
+Title/menu/gameplay and native audio remain unverified. EV was not replayed and
+retains its previously recorded ProtectEntry boundary. Neither game is playable.
+Full rebuild stays active; PR remains draft.

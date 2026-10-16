@@ -1672,7 +1672,7 @@ impl Abi {
             0xa9eb => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let selector = u16::from_be_bytes(args[..2].try_into().unwrap());
-                if ![4, 6, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
+                if ![4, 6, 0x001c, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e].contains(&selector) {
                     return Err(Error::Cpu(format!(
                         "unsupported FP68K selector {selector:04x}"
                     )));
@@ -1691,13 +1691,25 @@ impl Abi {
                 if [4, 6].contains(&selector) {
                     memory.read(destination, 10)?;
                 }
-                memory.validate_write(destination, if selector == 0x0810 { 8 } else { 10 })?;
+                memory.validate_write(
+                    destination,
+                    match selector {
+                        0x001c => 2,
+                        0x0810 => 8,
+                        _ => 10,
+                    },
+                )?;
                 c.dar[15] = sp
                     .checked_add(10)
                     .ok_or_else(|| Error::Cpu("FP68K stack overflow".into()))?;
                 Ok((
                     if selector == 4 {
                         Call::MultiplyExtended {
+                            source,
+                            destination,
+                        }
+                    } else if selector == 0x001c {
+                        Call::ClassifyExtended {
                             source,
                             destination,
                         }
