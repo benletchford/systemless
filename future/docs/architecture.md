@@ -2781,3 +2781,27 @@ Exceptional integer conversion encodings remain unverified for software MC68000
 SANE. NaN, infinity and rounded out-of-range inputs fail explicitly without
 changing numeric status or output; they do not claim compatible invalid-result
 semantics. Alternate rounding controls and PPC numeric imports remain open.
+
+
+### Basic data-fork opens and typed comparisons (2026-10-16)
+
+PBOpenDFSync ($A060, selector $001A) uses the same shared data-fork open service
+as PBOpenSync; PBHOpenDFSync ($A260/$001A) retains its hierarchical form. hfsBit
+selects the parameter-block contract: the basic call reads 28 bytes and follows
+the classic volume/working directory; the hierarchical call reads 52 bytes and
+uses ioDirID. The PPC PBOpenDFSync import resolves to the basic shared operation.
+Apple's Files.h in the pinned MPW image confirms both inline trap sequences;
+evidence: /tmp/systemless-opendf-sdk.txt. Async variants remain unsupported.
+
+Native FCMP/FCPX source format decoding now shares arithmetic's typed expansion
+for Extended/Double/Single/Integer/Long. A shared NumericCompare call returns a
+logical relation; only the ABI applies MC68000 condition codes. Both guest inputs
+can be readonly, with exact 10/8/4/2/4-byte source extents and no writeback. Native
+frames consume ten bytes and preserve unrelated registers and upper SR. Canonical
+extended precision survives mixed comparison, including the bit above 1.0 that a
+binary64 intermediate would discard. Quiet/signaling NaN rules and sticky status
+are staged until the comparison succeeds. Typed source expansion is now one
+helper shared by arithmetic and comparisons. Comp, 96-bit formats, alternate
+controls and PPC math imports remain explicit gaps. SDK macros for FCMPD/FCPXD
+are captured at /tmp/systemless-typed-compare-sdk.txt; Apple Numerics Manual,
+second edition, chapter 20 specifies relations and signaling behavior.

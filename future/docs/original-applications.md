@@ -2500,3 +2500,48 @@ EV was not replayed and retains its prior ProtectEntry boundary. Neither game is
 playable. Next: verify and implement Marathon's actual FSDispatch request, then
 continue original startup; complete exceptional integer conversions with primary
 or reference evidence. The full rebuild stays active and the PR remains draft.
+
+
+## Basic fork opens and typed comparison checkpoint (2026-10-16)
+
+PBOpenDFSync now resolves through both native $A060/$001A and PPC imports into
+the shared data-fork service. The hierarchical $A260 variant retains ioDirID;
+the basic form reads only 28 bytes and ignores offset 48. Both use real access
+paths, permissions and error results. Apple SDK trap evidence:
+/tmp/systemless-opendf-sdk.txt. Async dispatch remains unsupported.
+
+FCMP/FCPX now accept Extended/Double/Single/Integer/Long source formats through
+one typed shared NumericCompare service. Arithmetic and comparison share exact
+source expansion. Readonly operands, native ten-byte frames, extended low-bit
+relations, CCR/upper SR preservation and quiet/signaling NaN status are verified.
+Status changes roll back on rejected noncanonical operands. Comp, 96-bit source
+formats, alternate controls and PPC math imports remain explicit gaps.
+
+Final acceptance: 113 checks pass, zero failed/ignored: 51 library, 23 numeric,
+seven file I/O, nine file metadata, six resource-file, six working-directory,
+seven timer and four trap patch checks. Evidence:
+/tmp/systemless-opendf-compare-acceptance.txt, terminal exit 0. Native file tests
+exercise both basic/hierarchical routes on both CPUs, exact 28/52-byte mappings,
+shared fork lengths and ignored/used directory fields. The comparison matrix
+executes both operations across five formats with readonly exact-size sources;
+extra tests cover binary32/64 NaNs and transactional status. The initial file-only
+run exposed an undersized test PEF import area, corrected by allocating enough
+data storage. That failed run and the later preliminary run are superseded and
+not added to the final count. Strict Rust 1.99 all-target lint and Rust 1.93 library
+checks pass: /tmp/systemless-opendf-compare-lint.txt and
+/tmp/systemless-opendf-compare-msrv.txt. Sequential formatting and whitespace
+checks pass. No new full/GPU/wasm or native-system conformance run is claimed.
+
+Original Marathon now executes the basic open, repeated double comparisons and
+further resource loading, with 62 completed timer callbacks. Next is GetCTable
+$AA18, ID 130 ($0082), PC $01012E70. Evidence:
+/tmp/systemless-marathon-opendf-compare.txt, explicit Service(43544) exit 1.
+The original resource fork contains clut 130: 160 bytes, ctSize 18 (19 entries).
+The preceding open-only replay stopped at FCPXD $080A with 53 timer callbacks;
+that diagnostic is superseded by the final replay. Completed sound=0, VBL=0;
+the installed zero-count VBL remains dormant. Title/menu/gameplay and native
+audio remain unverified. EV was not replayed and retains its prior ProtectEntry
+boundary. Neither game is playable. Next: GetCTable resource lookup and independent
+table allocation/seed/lifetime semantics, then continue Marathon; finish EV's
+per-device palette protection and reservation. The full rebuild stays active and
+PR #4802 remains draft.

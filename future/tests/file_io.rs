@@ -27,8 +27,10 @@ fn app() -> LoadedApplication {
             b"PBHSetFInfoSync",
             b"PBDeleteSync",
             b"PBHDeleteSync",
+            b"PBOpenDFSync",
+            b"PBHOpenDFSync",
         ],
-        24,
+        40,
     );
     let mut app = LoadedApplication::pef(&fixture.bytes, Some(&support::code())).unwrap();
     app.runtime
@@ -37,7 +39,7 @@ fn app() -> LoadedApplication {
         .unwrap();
     let traps = [
         0xa208u16, 0xa200, 0xa003, 0xa002, 0xa001, 0xa011, 0xa012, 0xa018, 0xa044, 0xa20a, 0xa045,
-        0xa20d, 0xa009, 0xa209,
+        0xa20d, 0xa009, 0xa209, 0xa060, 0xa260,
     ];
     app.runtime
         .memory
@@ -94,7 +96,7 @@ fn native(app: &mut LoadedApplication, index: u32, arch: Architecture) -> i16 {
     match &mut app.runtime.cpu {
         Cpu::M68k(c) => {
             c.dar[8] = PB.0;
-            c.dar[0] = 0xa5a55a5a;
+            c.dar[0] = if index >= 14 { 0xa5a5001a } else { 0xa5a55a5a };
         }
         Cpu::PowerPc(c) => c.gpr[3] = PB.0,
     }
@@ -497,5 +499,95 @@ fn both_cpu_delete_routes_remove_both_forks_and_reject_busy_protected_and_refere
         fresh(&mut a, b"Saves", 2, 0);
         assert_eq!(native(&mut a, 13, arch), 0);
         assert!(a.runtime.process.files.directory_view(folder).is_err());
+    }
+}
+
+#[test]
+fn dispatched_data_fork_opens_share_state_and_respect_parameter_block_formats() {
+    for (arch, hierarchical) in [
+        (Architecture::M68k, false),
+        (Architecture::M68k, true),
+        (Architecture::PowerPc, false),
+        (Architecture::PowerPc, true),
+    ] {
+        let mut a = app();
+        a.runtime.process.files.set_name(b"Probe").unwrap();
+        let expected = a
+            .runtime
+            .process
+            .files
+            .fork_bytes(Fork::Data)
+            .unwrap()
+            .len();
+        fresh(&mut a, b"Probe", 2, 1);
+        let parameter = GuestPtr(0x56000000);
+        let size = if hierarchical { 52 } else { 28 };
+        let bytes = a.runtime.memory.read(PB, size).unwrap().to_vec();
+        a.runtime
+            .memory
+            .map(parameter, bytes, Permissions::RW)
+            .unwrap();
+        let index = if hierarchical { 15 } else { 14 };
+        let pc = if arch == Architecture::M68k {
+            0x51000000 + index * 2
+        } else {
+            let vector = a
+                .runtime
+                .memory
+                .u32(GuestPtr(a.info.toc_or_a5 + 8 + index * 4))
+                .unwrap();
+            a.runtime.memory.u32(GuestPtr(vector)).unwrap()
+        };
+        let stack = STACK_BASE + 0x8000;
+        a.runtime.cpu = Cpu::new(arch, pc, stack);
+        match &mut a.runtime.cpu {
+            Cpu::M68k(c) => {
+                c.dar[8] = parameter.0;
+                c.dar[0] = 0x1234001a;
+            }
+            Cpu::PowerPc(c) => c.gpr[3] = parameter.0,
+        }
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(parameter.0 + 16)).unwrap(), 0);
+        let reference = a.runtime.memory.u16(GuestPtr(parameter.0 + 24)).unwrap() as i16;
+        assert_ne!(reference, 0);
+        match &a.runtime.cpu {
+            Cpu::M68k(c) => {
+                assert_eq!(c.dar[0], 0);
+                assert_eq!(c.dar[8], parameter.0);
+                assert_eq!(c.dar[15], stack);
+                assert_eq!(c.get_sr() & 0xf, 4);
+            }
+            Cpu::PowerPc(c) => assert_eq!(c.gpr[3], 0),
+        }
+        io(&mut a, reference, 0, 0, 0);
+        assert_eq!(native(&mut a, 5, Architecture::PowerPc), 0);
+        assert_eq!(
+            a.runtime.memory.u32(GuestPtr(PB.0 + 28)).unwrap() as usize,
+            expected
+        );
+        // The basic form must not consume the unrelated bytes at offset 48.
+        fresh(&mut a, b"Probe", 0xdeadbeef, 1);
+        assert_eq!(native(&mut a, 14, arch), 0);
+        fresh(&mut a, b"Probe", 0xdeadbeef, 1);
+        if let Cpu::M68k(c) = &mut a.runtime.cpu {
+            c.dar[0] = 0x1a;
+        }
+        // Hierarchical lookup of the same bogus directory must fail.
+        if arch == Architecture::PowerPc {
+            assert_eq!(native(&mut a, 15, arch), -120);
+        } else {
+            a.runtime.cpu = Cpu::new(arch, 0x5100001e, stack);
+            let Cpu::M68k(c) = &mut a.runtime.cpu else {
+                unreachable!()
+            };
+            c.dar[0] = 0x1a;
+            c.dar[8] = PB.0;
+            assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+            assert_eq!(
+                a.runtime.memory.u16(GuestPtr(PB.0 + 16)).unwrap() as i16,
+                -120
+            );
+        }
     }
 }

@@ -629,7 +629,7 @@ impl Abi {
             b"Get1Resource" => Some(Service::Get1Resource),
             b"FreeMem" => Some(Service::FreeMemory),
             b"MemError" => Some(Service::MemError),
-            b"PBOpenSync" => Some(Service::FileIo(crate::files::Op::Open {
+            b"PBOpenSync" | b"PBOpenDFSync" => Some(Service::FileIo(crate::files::Op::Open {
                 kind: crate::files::Fork::Data,
                 hierarchical: false,
             })),
@@ -1672,7 +1672,7 @@ impl Abi {
             }
             0xa9eb => {
                 let selector = memory.u16(GuestPtr(sp))?;
-                if [0, 2, 4, 6].contains(&(selector & 0xff)) {
+                if [0, 2, 4, 6, 8, 10].contains(&(selector & 0xff)) {
                     let format = match selector & 0xff00 {
                         0 => crate::numerics::SourceFormat::Extended,
                         0x0800 => crate::numerics::SourceFormat::Double,
@@ -1681,7 +1681,7 @@ impl Abi {
                         0x2800 => crate::numerics::SourceFormat::Long,
                         _ => {
                             return Err(Error::Cpu(format!(
-                                "unsupported SANE arithmetic format {selector:04x}"
+                                "unsupported SANE binary format {selector:04x}"
                             )))
                         }
                     };
@@ -1690,10 +1690,24 @@ impl Abi {
                     let source = GuestPtr(u32::from_be_bytes(args[6..10].try_into().unwrap()));
                     memory.read(source, format.bytes())?;
                     memory.read(destination, 10)?;
-                    memory.validate_write(destination, 10)?;
+                    let comparison = [8, 10].contains(&(selector & 0xff));
+                    if !comparison {
+                        memory.validate_write(destination, 10)?;
+                    }
                     c.dar[15] = sp
                         .checked_add(10)
                         .ok_or_else(|| Error::Cpu("SANE binary stack overflow".into()))?;
+                    if comparison {
+                        return Ok((
+                            Call::NumericCompare {
+                                source,
+                                destination,
+                                format,
+                                signaling: selector & 0xff == 10,
+                            },
+                            Reply::SaneCompare,
+                        ));
+                    }
                     let op = match selector & 0xff {
                         0 => crate::numerics::Binary::Add,
                         2 => crate::numerics::Binary::Subtract,
@@ -1756,7 +1770,7 @@ impl Abi {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let selector = u16::from_be_bytes(args[..2].try_into().unwrap());
                 if ![
-                    8, 10, 0x001c, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e, 0x2010, 0x2810,
+                    0x001c, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e, 0x2010, 0x2810,
                 ]
                 .contains(&selector)
                 {
@@ -1775,31 +1789,20 @@ impl Abi {
                         _ => 10,
                     },
                 )?;
-                if [8, 10].contains(&selector) {
-                    memory.read(destination, 10)?;
-                }
-                if ![8, 10].contains(&selector) {
-                    memory.validate_write(
-                        destination,
-                        match selector {
-                            0x001c | 0x2010 => 2,
-                            0x2810 => 4,
-                            0x0810 => 8,
-                            _ => 10,
-                        },
-                    )?;
-                }
+                memory.validate_write(
+                    destination,
+                    match selector {
+                        0x001c | 0x2010 => 2,
+                        0x2810 => 4,
+                        0x0810 => 8,
+                        _ => 10,
+                    },
+                )?;
                 c.dar[15] = sp
                     .checked_add(10)
                     .ok_or_else(|| Error::Cpu("FP68K stack overflow".into()))?;
                 Ok((
-                    if [8, 10].contains(&selector) {
-                        Call::CompareExtended {
-                            source,
-                            destination,
-                            signaling: selector == 10,
-                        }
-                    } else if selector == 0x001c {
+                    if selector == 0x001c {
                         Call::ClassifyExtended {
                             source,
                             destination,
@@ -1832,11 +1835,7 @@ impl Abi {
                             destination,
                         }
                     },
-                    if [8, 10].contains(&selector) {
-                        Reply::SaneCompare
-                    } else {
-                        Reply::None
-                    },
+                    Reply::None,
                 ))
             }
             0xa9ec => {
@@ -2986,12 +2985,12 @@ impl Abi {
                 },
                 Reply::M68kFileError,
             )),
-            0xa260 if c.dar[0] as u16 == 0x1a => Ok((
+            0xa060 | 0xa260 if c.dar[0] as u16 == 0x1a => Ok((
                 Call::FileIo {
                     pointer: GuestPtr(c.dar[8]),
                     op: crate::files::Op::Open {
                         kind: crate::files::Fork::Data,
-                        hierarchical: true,
+                        hierarchical: opcode & 0x0200 != 0,
                     },
                 },
                 Reply::M68kFileError,

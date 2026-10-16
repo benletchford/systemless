@@ -50,9 +50,10 @@ pub enum Call {
         destination: GuestPtr,
         subtract: bool,
     },
-    CompareExtended {
+    NumericCompare {
         source: GuestPtr,
         destination: GuestPtr,
+        format: crate::numerics::SourceFormat,
         signaling: bool,
     },
     NumericEnvironment {

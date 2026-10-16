@@ -844,15 +844,17 @@ impl Runtime {
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
-                        Call::CompareExtended {
+                        Call::NumericCompare {
                             source,
                             destination,
+                            format,
                             signaling,
                         } => {
-                            let relation = self.process.numerics.compare_extended(
+                            let relation = self.process.numerics.compare(
                                 &self.memory,
                                 source,
                                 destination,
+                                format,
                                 signaling,
                             )?;
                             reply.apply(&mut self.cpu, &mut self.memory, relation as u32, 0)?;
@@ -2293,7 +2295,7 @@ impl Runtime {
                         | Call::NumericBinary { .. }
                         | Call::SquareRootExtended(_)
                         | Call::AddExtended { .. }
-                        | Call::CompareExtended { .. }
+                        | Call::NumericCompare { .. }
                         | Call::NumericEnvironment { .. }
                         | Call::ClassifyExtended { .. }
                         | Call::CopyExtended { .. }

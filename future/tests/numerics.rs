@@ -14,7 +14,7 @@ fn app(selector: u16, pointer: u32) -> LoadedApplication {
             GuestPtr(0x50000000),
             vec![
                 0xa9,
-                if ([0, 2, 4, 6].contains(&(selector & 0xff))
+                if ([0, 2, 4, 6, 8, 10].contains(&(selector & 0xff))
                     && [0, 0x0800, 0x1000, 0x2000, 0x2800].contains(&(selector & 0xff00)))
                     || [
                         0, 2, 4, 6, 8, 10, 0x000e, 0x0810, 0x080e, 0x200e, 0x280e, 0x2010, 0x2810,
@@ -922,5 +922,157 @@ fn exceptional_integer_conversions_preserve_output_and_status() {
         assert!(a.runtime.process.numerics.divide_by_zero);
         assert!(!a.runtime.process.numerics.invalid);
         assert!(!a.runtime.process.numerics.inexact);
+    }
+}
+
+#[test]
+fn typed_comparisons_preserve_readonly_operands_and_extended_low_bits() {
+    let formats = [
+        (0u16, vec![0x3f, 0xff, 0x80, 0, 0, 0, 0, 0, 0, 0]),
+        (0x0800, 1f64.to_bits().to_be_bytes().to_vec()),
+        (0x1000, 1f32.to_bits().to_be_bytes().to_vec()),
+        (0x2000, 1i16.to_be_bytes().to_vec()),
+        (0x2800, 1i32.to_be_bytes().to_vec()),
+    ];
+    for (format, source_bytes) in formats {
+        for op in [8, 10] {
+            for (se, m, ccr) in [
+                (0xbfffu16, 1u64 << 63, 0x19u16),
+                (0x3fff, 1 << 63, 4),
+                (0x3fff, (1 << 63) + 1, 0),
+            ] {
+                let destination = 0x55000000;
+                let source = 0x56000000;
+                let mut a = app(format | op, destination);
+                let mut destination_bytes = se.to_be_bytes().to_vec();
+                destination_bytes.extend(m.to_be_bytes());
+                for (pointer, bytes) in [(destination, &destination_bytes), (source, &source_bytes)]
+                {
+                    a.runtime
+                        .memory
+                        .map(
+                            GuestPtr(pointer),
+                            bytes.clone(),
+                            Permissions {
+                                read: true,
+                                write: false,
+                                execute: false,
+                            },
+                        )
+                        .unwrap();
+                }
+                a.runtime
+                    .memory
+                    .write(GuestPtr(STACK_BASE + 0x7006), &source.to_be_bytes())
+                    .unwrap();
+                let Cpu::M68k(c) = &mut a.runtime.cpu else {
+                    panic!()
+                };
+                let upper = (c.get_sr() & !0x1f) | 0x0300;
+                c.set_sr(upper | 0x1f);
+                assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+                assert!(!a.runtime.process.numerics.invalid);
+                assert!(!a.runtime.process.numerics.inexact);
+                let Cpu::M68k(c) = &a.runtime.cpu else {
+                    panic!()
+                };
+                assert_eq!(c.get_sr(), upper | ccr);
+                assert_eq!(c.dar[15], STACK_BASE + 0x700a);
+                for i in 0..15 {
+                    assert_eq!(c.dar[i], 0x12340000 + i as u32);
+                }
+                assert_eq!(
+                    a.runtime
+                        .memory
+                        .read(GuestPtr(source), source_bytes.len())
+                        .unwrap(),
+                    source_bytes
+                );
+                assert_eq!(
+                    a.runtime.memory.read(GuestPtr(destination), 10).unwrap(),
+                    destination_bytes
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn typed_comparison_nan_status_is_transactional_without_operand_changes() {
+    use systemless_future::numerics::SourceFormat;
+    for (format, bits) in [
+        (0x0800u16, 0x7ff8_0000_0000_0001u64),
+        (0x0800, 0x7ff0_0000_0000_0001),
+        (0x1000, 0x7fc0_0001),
+        (0x1000, 0x7f80_0001),
+    ] {
+        let is_single = format == 0x1000;
+        let source_bytes = if is_single {
+            (bits as u32).to_be_bytes().to_vec()
+        } else {
+            bits.to_be_bytes().to_vec()
+        };
+        let snan = if is_single {
+            bits & 0x0040_0000 == 0
+        } else {
+            bits & 0x0008_0000_0000_0000 == 0
+        };
+        for op in [8, 10] {
+            let destination = STACK_BASE + 0x6000;
+            let source = 0x56000000;
+            let mut a = app(format | op, destination);
+            a.runtime
+                .memory
+                .map(GuestPtr(source), source_bytes.clone(), Permissions::RX)
+                .unwrap();
+            let good = [0x3f, 0xff, 0x80, 0, 0, 0, 0, 0, 0, 0];
+            a.runtime
+                .memory
+                .write(GuestPtr(destination), &good)
+                .unwrap();
+            a.runtime
+                .memory
+                .write(GuestPtr(STACK_BASE + 0x7006), &source.to_be_bytes())
+                .unwrap();
+            assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+            assert_eq!(a.runtime.process.numerics.invalid, snan || op == 10);
+            let Cpu::M68k(c) = &a.runtime.cpu else {
+                panic!()
+            };
+            assert_eq!(c.get_sr() & 0x1f, 2);
+            assert_eq!(
+                a.runtime
+                    .memory
+                    .read(GuestPtr(source), source_bytes.len())
+                    .unwrap(),
+                source_bytes
+            );
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(destination), 10).unwrap(),
+                good
+            );
+            a.runtime.process.numerics.invalid = false;
+            a.runtime
+                .memory
+                .write(GuestPtr(destination), &[0x3f, 0xff, 0, 0, 0, 0, 0, 0, 0, 1])
+                .unwrap();
+            assert!(a
+                .runtime
+                .process
+                .numerics
+                .compare(
+                    &a.runtime.memory,
+                    GuestPtr(source),
+                    GuestPtr(destination),
+                    if is_single {
+                        SourceFormat::Single
+                    } else {
+                        SourceFormat::Double
+                    },
+                    true
+                )
+                .is_err());
+            assert!(!a.runtime.process.numerics.invalid);
+        }
     }
 }

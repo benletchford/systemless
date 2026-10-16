@@ -141,21 +141,7 @@ impl Numerics {
         let source = memory.read(source, format.bytes())?.to_vec();
         memory.validate_write(destination, 10)?;
         let mut next = self.clone();
-        let b = match format {
-            SourceFormat::Extended => source.as_slice().try_into().unwrap(),
-            SourceFormat::Double => {
-                next.expand_double(u64::from_be_bytes(source.as_slice().try_into().unwrap()))
-            }
-            SourceFormat::Single => {
-                next.expand_single(u32::from_be_bytes(source.as_slice().try_into().unwrap()))
-            }
-            SourceFormat::Integer => Self::expand_integer(i32::from(i16::from_be_bytes(
-                source.as_slice().try_into().unwrap(),
-            ))),
-            SourceFormat::Long => {
-                Self::expand_integer(i32::from_be_bytes(source.as_slice().try_into().unwrap()))
-            }
-        };
+        let b = next.expand_source(&source, format);
         let result = match op {
             Binary::Add => next.add(a, b, false)?,
             Binary::Subtract => next.add(a, b, true)?,
@@ -165,6 +151,23 @@ impl Numerics {
         memory.write(destination, &result)?;
         *self = next;
         Ok(())
+    }
+    fn expand_source(&mut self, source: &[u8], format: SourceFormat) -> [u8; 10] {
+        match format {
+            SourceFormat::Extended => source.try_into().unwrap(),
+            SourceFormat::Double => {
+                self.expand_double(u64::from_be_bytes(source.try_into().unwrap()))
+            }
+            SourceFormat::Single => {
+                self.expand_single(u32::from_be_bytes(source.try_into().unwrap()))
+            }
+            SourceFormat::Integer => {
+                Self::expand_integer(i32::from(i16::from_be_bytes(source.try_into().unwrap())))
+            }
+            SourceFormat::Long => {
+                Self::expand_integer(i32::from_be_bytes(source.try_into().unwrap()))
+            }
+        }
     }
     fn expand_single(&mut self, input: u32) -> [u8; 10] {
         let sign = ((input >> 16) as u16) & 0x8000;
@@ -387,15 +390,24 @@ impl Numerics {
         self.underflow |= biased == 0 && lost;
         Ok(encode(sign | biased, significand as u64))
     }
-    pub fn compare_extended(
+    pub fn compare(
         &mut self,
         memory: &Memory,
         source: GuestPtr,
         destination: GuestPtr,
+        format: SourceFormat,
         signaling: bool,
     ) -> Result<Relation> {
-        let decode = |p: GuestPtr| -> Result<(u16, u64)> {
-            let bytes = memory.read(p, 10)?;
+        let a = memory.read(destination, 10)?.try_into().unwrap();
+        let source = memory.read(source, format.bytes())?;
+        let mut next = self.clone();
+        let b = next.expand_source(source, format);
+        let relation = next.compare_values(a, b, signaling)?;
+        *self = next;
+        Ok(relation)
+    }
+    fn compare_values(&mut self, a: [u8; 10], b: [u8; 10], signaling: bool) -> Result<Relation> {
+        let decode = |bytes: [u8; 10]| -> Result<(u16, u64)> {
             let e = u16::from_be_bytes(bytes[..2].try_into().unwrap());
             let m = u64::from_be_bytes(bytes[2..].try_into().unwrap());
             if (e & 0x7fff != 0 && m >> 63 == 0) || (e & 0x7fff == 0 && m >> 63 != 0) {
@@ -403,8 +415,8 @@ impl Numerics {
             }
             Ok((e, m))
         };
-        let (ae, am) = decode(destination)?;
-        let (be, bm) = decode(source)?;
+        let (ae, am) = decode(a)?;
+        let (be, bm) = decode(b)?;
         let an = ae & 0x7fff == 0x7fff && am != 1 << 63;
         let bn = be & 0x7fff == 0x7fff && bm != 1 << 63;
         if an || bn {
