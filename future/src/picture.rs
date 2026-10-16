@@ -195,12 +195,13 @@ pub fn decode(bytes: &[u8]) -> Result<Picture> {
                 let mut palette = None;
                 let mut defined = [false; 256];
                 let mut pack_type = 0;
+                let mut depth = 1;
                 if indexed {
                     let version = r.word()?;
                     pack_type = r.word()?;
                     r.take(12)?; // packSize, horizontal and vertical resolution
                     let pixel_type = r.word()?;
-                    let depth = r.word()?;
+                    depth = r.word()?;
                     let components = r.word()?;
                     let component_size = r.word()?;
                     let plane = u32::from_be_bytes(r.take(4)?.try_into().unwrap());
@@ -208,9 +209,9 @@ pub fn decode(bytes: &[u8]) -> Result<Picture> {
                     if version != 0
                         || pack_type > 1
                         || pixel_type != 0
-                        || depth != 8
+                        || ![1, 2, 4, 8].contains(&depth)
                         || components != 1
-                        || component_size != 8
+                        || component_size != depth
                         || plane != 0
                     {
                         return Err(bad("unsupported indexed PixMap layout"));
@@ -241,7 +242,7 @@ pub fn decode(bytes: &[u8]) -> Result<Picture> {
                     || height <= 0
                     || width > 4096
                     || height > 4096
-                    || width as usize > stride * if indexed { 1 } else { 8 }
+                    || width as usize > stride * 8 / usize::from(depth)
                 {
                     return Err(bad("bitmap extent"));
                 }
@@ -312,7 +313,10 @@ pub fn decode(bytes: &[u8]) -> Result<Picture> {
                         r.take(stride)?.to_vec()
                     };
                     if indexed {
-                        for &value in &row[..width as usize] {
+                        for x in 0..width as usize {
+                            let bit = x * usize::from(depth);
+                            let value = (row[bit / 8] >> (8 - usize::from(depth) - bit % 8))
+                                & ((1u16 << depth) - 1) as u8;
                             if !defined[usize::from(value)] {
                                 return Err(bad("pixel references undefined color table index"));
                             }

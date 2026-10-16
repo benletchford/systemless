@@ -3693,3 +3693,19 @@ preferences catalog identity increments30->31; metadata and both fork bytes,
 all companions and directories remain identical. The tracer still acknowledges
 PBFlushVol as a memory-only barrier, not a writable host checkpoint. Next replay
 may use this snapshot; use a fresh save filename.
+
+### EV packed picture replay (2026-10-16)
+
+Original EV1.0.5 now passes drawing PICT128 from EV Titles and advances into
+sound initialization. It stops at PC00112CB4 on unsupported SoundDispatch
+selector0D000008, following SndNewChannel(synth5,init128). Trace
+/tmp/systemless-ev-packed.txt exits1, sound/timer/VBL completed callbacks0.
+This establishes startup service progress, without screenshot, interaction,
+gameplay or audio acceptance. The tracer's flush acknowledgment remains an
+explicit memory-only barrier.
+
+Input finfo-saved is unchanged. Output /tmp/systemless-ev-packed-saved.slv is
+7,239,400bytes SHA256 a947f1f336634d43d2f456379750d76e02eab03588810f9bab71c6ec97de2ec0.
+Independent CRC/catalog/fork verification passes: preferences node31->32, same
+metadata and fork bytes, all companion entries/directories identical. Use this
+snapshot and a fresh output filename for the next replay.

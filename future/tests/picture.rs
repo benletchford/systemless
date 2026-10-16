@@ -307,6 +307,15 @@ fn indexed_fixture(
     packed: bool,
     shaped_mask: bool,
 ) -> (Vec<u8>, usize, usize) {
+    indexed_depth_fixture(ordered, stride, packed, shaped_mask, 8)
+}
+fn indexed_depth_fixture(
+    ordered: bool,
+    stride: usize,
+    packed: bool,
+    shaped_mask: bool,
+    depth: u8,
+) -> (Vec<u8>, usize, usize) {
     let mut b = vec![0, 0];
     rect(&mut b, [10, 20, 12, 22]);
     b.extend([0, 0x11, 2, 0xff]);
@@ -319,7 +328,7 @@ fn indexed_fixture(
     let layout = b.len();
     b.extend([0, 0, 0, 0]);
     b.extend([0; 12]);
-    b.extend([0, 0, 0, 8, 0, 1, 0, 8]);
+    b.extend([0, 0, 0, depth, 0, 1, 0, depth]);
     b.extend([0; 12]);
     b.extend([0; 4]);
     b.extend((if ordered { 0x8000u16 } else { 0 }).to_be_bytes());
@@ -355,8 +364,24 @@ fn indexed_fixture(
         [[7, 255], [99, 42]]
     } {
         let mut row = vec![0xcc; stride];
-        row[..2].copy_from_slice(&pair);
-        if packed {
+        if depth == 8 {
+            row[..2].copy_from_slice(&pair);
+        } else {
+            assert!(ordered);
+            let values = if depth == 1 {
+                [pair[0] & 1, pair[1] & 1]
+            } else {
+                pair
+            };
+            row[0] = (values[0] << (8 - depth))
+                | (values[1] << (8 - 2 * depth))
+                | if depth < 4 {
+                    (1 << (8 - 2 * depth)) - 1
+                } else {
+                    0
+                };
+        }
+        if packed && stride >= 8 {
             let mut encoded = Vec::new();
             for chunk in row.chunks(128) {
                 encoded.push((chunk.len() - 1) as u8);
@@ -369,7 +394,9 @@ fn indexed_fixture(
             }
             b.extend(encoded);
         } else {
-            b[layout + 2..layout + 4].copy_from_slice(&1u16.to_be_bytes());
+            if !packed {
+                b[layout + 2..layout + 4].copy_from_slice(&1u16.to_be_bytes());
+            }
             b.extend(row);
         }
     }
@@ -434,12 +461,16 @@ fn indexed_truncation_tables_components_and_rendering_modes_are_checked() {
 #[test]
 #[ignore = "requires a real wgpu adapter"]
 fn indexed_gpu_palette_conversion_masks_and_mutable_resources_match_both_cpus() {
-    for (ordered, stride, packed, mask) in [
-        (false, 8, true, false),
-        (true, 252, true, true),
-        (false, 8, false, false),
+    for (ordered, stride, packed, mask, depth) in [
+        (false, 8, true, false, 8),
+        (true, 252, true, true, 8),
+        (false, 8, false, false, 8),
+        (true, 8, true, false, 1),
+        (true, 8, true, true, 2),
+        (true, 252, true, false, 4),
+        (true, 2, true, false, 4),
     ] {
-        let (b, _, count) = indexed_fixture(ordered, stride, packed, mask);
+        let (b, _, count) = indexed_depth_fixture(ordered, stride, packed, mask, depth);
         let mut app = app(b);
         let h = app
             .runtime
@@ -453,7 +484,9 @@ fn indexed_gpu_palette_conversion_masks_and_mutable_resources_match_both_cpus() 
             .unwrap()
             .to_vec();
         let initial = [0, 0x5a, 0, 0x5a, 0, 0x5a, 0, 0x5a];
-        let expected = if mask {
+        let expected = if depth == 1 {
+            [0x30, 0x5a, 0x30, 0x5a, 0x30, 0x5a, 0x30, 0x5a]
+        } else if mask {
             [0x30, 0x5a, 0x30, 0x5a, 0, 0x5a, 0, 0x5a]
         } else {
             [0x30, 0x5a, 0x30, 0x5a, 0x0c, 0x5a, 0x0c, 0x5a]
@@ -506,5 +539,36 @@ fn indexed_gpu_palette_conversion_masks_and_mutable_resources_match_both_cpus() 
             app.runtime.memory.read(GuestPtr(0x1200), 2).unwrap(),
             [0, 0x5a]
         );
+    }
+}
+
+#[test]
+fn packed_indexed_depths_preserve_pixel_order_and_ignore_row_padding() {
+    for depth in [1, 2, 4] {
+        for (stride, packed) in [(2, true), (8, true), (252, true), (8, false)] {
+            let (bytes, layout, _) = indexed_depth_fixture(true, stride, packed, false, depth);
+            let picture = decode(&bytes).unwrap();
+            assert_eq!(
+                picture.commands[0].indices,
+                if depth == 1 {
+                    vec![1, 0, 1, 0]
+                } else {
+                    vec![1, 0, 3, 2]
+                }
+            );
+            for n in 0..bytes.len() {
+                assert!(decode(&bytes[..n]).is_err(), "depth {depth} prefix {n}");
+            }
+            let mut too_wide = bytes.clone();
+            too_wide[layout - 2..layout]
+                .copy_from_slice(&((stride * 8 / usize::from(depth) + 1) as i16).to_be_bytes());
+            assert!(decode(&too_wide).is_err());
+            let mut bad = bytes.clone();
+            bad[layout + 23] = 8;
+            assert!(decode(&bad).is_err());
+            let mut bad = bytes.clone();
+            bad[layout + 19] = 3;
+            assert!(decode(&bad).is_err());
+        }
     }
 }

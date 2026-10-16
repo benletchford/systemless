@@ -7587,3 +7587,41 @@ Strict all-target lint session5340 completed exit0 in
 /tmp/systemless-finfo-lint.txt. Sequential stdin formatting checks for every
 changed Rust source/test and git diff whitespace checks also passed. Metadata
 milestone validation is complete; no full-runtime/gameplay acceptance is claimed.
+
+## Packed indexed PICT sources (2026-10-16, validation in progress)
+
+The shared picture decoder now accepts indexed1/2/4/8-bit layouts, requires one
+component of matching width, checks row capacity in bits and extracts high-bit
+first indices while ignoring unused padding. Existing color-table definitions,
+PackBits row limits and GPU destination transfers remain authoritative. No direct
+color, new transfer mode or silent unsupported-opcode fallback was introduced.
+Primary format sources: https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-461.html
+and https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-202.html.
+
+Initial full GPU picture run passed9 tests,0ignored in
+/tmp/systemless-packed-picture-gpu.txt (session54406 exit0). Both real CPU paths
+exercise indexed1/2/4/8, palettes, mutable resource colors, clipping and padding.
+Final test-only refinements additionally exercise short rows with default packing
+and explicit too-wide bounds. Final complete picture run is live session11835,
+/tmp/systemless-packed-picture-final.txt; scoped strict decoder/test lint is live
+session14049, /tmp/systemless-packed-picture-lint.txt. Poll these same handles.
+
+Tracer build passed /tmp/systemless-packed-tracer-build.txt. Original EV replay
+/tmp/systemless-ev-packed.txt (session70125 exit1) passes the EV Titles PICT128
+boundary and now stops at unsupported SoundDispatch selector0D000008,
+PC00112CB4, after SoundChannel New(synth5,init128). Callback counts remain0.
+No original screenshot/UI/gameplay/audio acceptance is established. Independent
+volume verifier passed: preferences identity31->32, identical metadata/forks and
+all companion catalog/fork bytes. Snapshot /tmp/systemless-ev-packed-saved.slv
+7,239,400bytes SHA256 a947f1f336634d43d2f456379750d76e02eab03588810f9bab71c6ec97de2ec0.
+Full rebuild and complete GPU text/library integration remain active requirements.
+
+Final validation sessions11835 and14049 completed exit0: all9 picture tests pass
+with GPU enabled and0ignored in /tmp/systemless-packed-picture-final.txt; strict
+library/picture-test Clippy passes in /tmp/systemless-packed-picture-lint.txt.
+Final short-row default-packing and oversized-bound refinements are included.
+Formatting and whitespace checks pass. Prior all-target strict lint was verified
+at metadata commit3b599c6e0; this change ran scoped decoder/test lint, not a fresh
+all-target/full integration suite. Next: identify SoundDispatch0D000008 against
+primary ABI evidence, then implement the actual shared sound service and test both
+CPU adapters. Neither priority game is playable; full rebuild remains active.

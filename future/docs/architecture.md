@@ -3247,3 +3247,13 @@ output bytes. Files return their stored Finder record; directories/root currentl
 have default zero DInfo because nondefault folder metadata import/mutation has
 not been implemented. That limitation remains explicit rather than returning a
 fabricated file type/creator for folders. See Inside Macintosh: Files p.2-160.
+
+### Packed indexed picture input (2026-10-16)
+
+PICT BitsRect/BitsRgn and PackBitsRect/PackBitsRgn decode indexed1/2/4/8-bit
+sources through one bounded parser. Single components must match pixel depth;
+row capacity uses bits, high-order pixels are extracted first, unused row bits
+are excluded from image indices and referenced palette entries must be defined.
+CPU work decodes source storage; existing shared GPU palette conversion,
+clipping, scaling and transfer operations still own destination drawing. This
+adds no direct-color picture path or unsupported-opcode fallback.
