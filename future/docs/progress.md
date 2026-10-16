@@ -10367,3 +10367,71 @@ Saved-volume SHA256 remains
 `e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`;
 independent catalog, pilot, preferences, alias, script and companion checks pass.
 Budget exhaustion remains unaccepted. Evidence: ev/evidence/2026-10-17-inverse-duplicates.*.
+
+
+### Live foreground/background RGB queries (2026-10-17)
+
+Original Marathon stops at GetForeColor/AA19 after the inverse-table milestone.
+GetForeColor and GetBackColor now enter one shared Ports::get_rgb service through
+native AA19/AA1A procedure frames or InterfaceLib imports. Both output six
+big-endian RGB bytes with no function return value. ABI output checks reject nil,
+unmapped, read-only and overflowing destinations before native stack consumption.
+The service snapshots all source bytes before writing, allowing overlapping output.
+
+[Apple Imaging With QuickDraw](https://www.vintageapple.org/inside_r/pdf/Imaging_With_QuickDraw_1994.pdf),
+pp. 4-79–4-80, specifies direct rgbFgColor/rgbBkColor for color ports and QDColors
+for basic ports. Table 4-4 (4-71) supplies eight ImageWriter-adjusted defaults;
+they are not pure modern RGB primaries. Apple's Universal Interfaces 3.4
+[Quickdraw.h](https://github.com/elliotnunn/UniversalInterfaces/blob/master/3.4/Universal/Interfaces/CIncludes/Quickdraw.h)
+confirms both trap words, void pointer ABI and QDColors low-memory address08B0.
+The loader publishes a real 72-byte ColorTable in a managed guest handle after
+heap initialization. Both loaders share that installation; queries allocate
+nothing and read the live global/master pointer/table every time.
+
+Color-port queries do not require usable PixMaps, matching palette indices,
+selected-device association or GPU access. They return stored requested RGB at
+full precision even when the drawing color is only an indexed approximation.
+Basic ports resolve all eight documented constants against the live table. Guest
+table edits and handle relocation are observed; nil/invalid tables or unknown
+basic constants fail explicitly before output publication. These malformed-input
+policies are runtime safety contracts, not native error-behavior claims.
+
+Four focused fixtures exercise both real CPU routes: eight defaults and live
+handle relocation, separate selected color ports and aliasing, output boundary
+faults before stack mutation, and malformed-source output/allocation atomicity.
+Existing basic RGB setters/drawing retain their prior supported subset; this
+getter milestone does not assert complete eight-color painting or native parity.
+Initial installation before CODE heap finalization was rejected by the existing
+live-allocation relocation guard: 15 CODE loading fixtures and original Marathon
+failed with "cannot relocate a live application heap". The guard is preserved.
+CODE now supplies its final A5-world heap boundary to shared finish_at; the heap
+is established there before any shared handles are published. No live pointers
+are relocated. The corrected final run passes 54 scoped checks, 0 ignored: 33 loading,
+4 new query, 6 color-port and 11 basic-port tests. All five real GPU port tests
+are included (color-port suite46.68s, basic-port suite35.10s). Intermediate logs
+are retained separately; their failures/skips are not counted as final passes.
+Strict final affected-target Clippy passes (30.69s), tracer build passes (11.73s).
+
+Fresh original Marathon 8M completes 7 foreground and 7 background queries, then
+stops at missing GetIndResource/A99D, CPU 3,864,642, PC0100A9FE. The inspected
+640x480 image shows the original Marathon main menu and copyright artwork.
+No menu action or gameplay has been exercised at this checkpoint. Frame SHA256:
+`71e3f89b35cc6c31e1e9e101be0a31bdd775a046a3dbb0caacfa91da636afff9`.
+Independent saved-volume verification passes: original companions/forks/metadata
+remain unchanged and only the same first-run preferences file is added, SHA256
+`e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+Private evidence: marathon/evidence/2026-10-17-getrgb-final.*. The new initial
+QDColors allocation shifts later guest handles; earlier absolute heap watches
+remain historical captures and must be relocated for new diagnostic runs.
+Next Marathon slice: real indexed Resource Manager enumeration through the
+resource-file search chain. Both priority games and the full rebuild remain
+unaccepted.
+
+
+Final-source EV 24M Enter Ship regression reaches unchanged budget PC007E6830.
+Its canonical frame is byte-identical to the preceding inverse-table milestone,
+SHA256`11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48`.
+Saved-volume SHA256 remains
+`e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`.
+Independent catalog/pilot/preferences/alias/script/companion checks pass. Budget
+exhaustion is not gameplay acceptance. Private evidence:ev/evidence/2026-10-17-getrgb-final.*.

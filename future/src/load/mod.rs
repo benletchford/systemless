@@ -131,7 +131,7 @@ pub(super) fn finish(
     abi: Abi,
 ) -> Result<LoadedApplication> {
     finish_at(
-        memory, arch, entry, context, resources, sections, abi, STACK_BASE,
+        memory, arch, entry, context, resources, sections, abi, STACK_BASE, None,
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -144,6 +144,7 @@ fn finish_at(
     sections: Vec<(u32, u32)>,
     abi: Abi,
     stack_base: u32,
+    code_heap_end: Option<u32>,
 ) -> Result<LoadedApplication> {
     let application_size = ApplicationSize::read(&resources)?;
     crate::traps::install(&mut memory)?;
@@ -199,9 +200,16 @@ fn finish_at(
         } else {
             runtime.process.initialize_heap(&mut runtime.memory)?;
         }
+    } else if let Some(end) = code_heap_end {
+        // Finalize the CODE heap below the A5 world before publishing any
+        // shared handles. No live application allocation may move between heaps.
+        runtime
+            .process
+            .initialize_code_heap(&mut runtime.memory, end)?;
     } else {
         runtime.process.initialize_heap(&mut runtime.memory)?;
     }
+    crate::quickdraw::install_colors(&mut runtime.memory, &mut runtime.process)?;
     runtime.process.install_application_resources(resources);
     Ok(LoadedApplication {
         runtime,
@@ -347,10 +355,8 @@ fn code(resources: ResourceFork) -> Result<LoadedApplication> {
         section_info,
         Abi::macintosh(),
         stack_base,
+        Some(world_base),
     )?;
-    app.runtime
-        .process
-        .initialize_code_heap(&mut app.runtime.memory, world_base)?;
     // Inside Macintosh: Memory, Memory Manager summary: CurStackBase is
     // the start of application globals. It is not our separate stack mapping.
     let memory = &mut app.runtime.memory;

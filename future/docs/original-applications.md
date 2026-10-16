@@ -4759,3 +4759,33 @@ Saved-volume SHA256 remains
 `e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`;
 independent catalog, pilot, preferences, alias, script and companion checks pass.
 Budget exhaustion remains unaccepted. Evidence: ev/evidence/2026-10-17-inverse-duplicates.*.
+
+
+### Original Marathon main-menu drawing (2026-10-17)
+
+Shared GetForeColor/GetBackColor now return live selected-port RGB through both
+real CPU adapters. Basic ports use a real guest QDColors handle with Apple's
+eight printer-adjusted defaults; color ports read requested RGB independently
+of pixel indexes. CODE heap finalization now precedes shared handle allocation,
+preserving the existing guard against moving live heaps. See progress.md for
+primary sources, intermediate ordering failure and focused validation.
+
+The unchanged Marathon 8M replay completes 7 foreground/background query pairs
+and draws its original main menu. It stops next at missing GetIndResource/A99D,
+CPU 3,864,642, PC0100A9FE. The inspected image includes the Marathon title,
+Begin New Game and other menu artwork; no menu interaction or gameplay has been
+verified. Canonical frame SHA256:
+`71e3f89b35cc6c31e1e9e101be0a31bdd775a046a3dbb0caacfa91da636afff9`.
+The independent saved-volume verifier again proves unchanged original companions
+and only the same first-run preferences addition, output SHA256
+`e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+Private captures: marathon/evidence/2026-10-17-getrgb-final.*.
+
+
+Final-source EV 24M Enter Ship regression reaches unchanged budget PC007E6830.
+Its canonical frame is byte-identical to the preceding inverse-table milestone,
+SHA256`11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48`.
+Saved-volume SHA256 remains
+`e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`.
+Independent catalog/pilot/preferences/alias/script/companion checks pass. Budget
+exhaustion is not gameplay acceptance. Private evidence:ev/evidence/2026-10-17-getrgb-final.*.

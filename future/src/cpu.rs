@@ -238,6 +238,10 @@ pub enum Call {
         background: bool,
         pointer: GuestPtr,
     },
+    GetRgbColor {
+        background: bool,
+        pointer: GuestPtr,
+    },
     PortColor {
         background: bool,
         color: u32,

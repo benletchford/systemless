@@ -169,6 +169,7 @@ pub enum Service {
     NewColorWindow,
     Window(crate::windows::Op),
     RgbColor(bool),
+    GetRgbColor(bool),
     PortColor(bool),
     FrameOval,
     PaintOval,
@@ -392,6 +393,8 @@ impl Abi {
             b"FillOval" => Some(Service::FillOval),
             b"FrameRoundRect" => Some(Service::RoundRect(true)),
             b"PaintRoundRect" => Some(Service::RoundRect(false)),
+            b"GetForeColor" => Some(Service::GetRgbColor(false)),
+            b"GetBackColor" => Some(Service::GetRgbColor(true)),
             b"RGBForeColor" => Some(Service::RgbColor(false)),
             b"RGBBackColor" => Some(Service::RgbColor(true)),
             b"ForeColor" => Some(Service::PortColor(false)),
@@ -3801,6 +3804,24 @@ impl Abi {
                 c.dar[15] = result;
                 Ok((call, Reply::StackWord(GuestPtr(result))))
             }
+            0xaa19 | 0xaa1a => {
+                let pointer = GuestPtr(memory.u32(GuestPtr(sp))?);
+                if pointer.0 == 0 {
+                    return Err(Error::Cpu("nil RGBColor output".into()));
+                }
+                memory.validate_write(pointer, 6)?;
+                let next = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("GetRGBColor stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((
+                    Call::GetRgbColor {
+                        background: opcode == 0xaa1a,
+                        pointer,
+                    },
+                    Reply::None,
+                ))
+            }
             0xaa14 | 0xaa15 => {
                 let pointer = GuestPtr(memory.u32(GuestPtr(sp))?);
                 if pointer.0 == 0 {
@@ -4056,6 +4077,17 @@ impl Abi {
                 height: c.gpr[5] as i16,
                 frame,
             },
+            Service::GetRgbColor(background) => {
+                let pointer = GuestPtr(c.gpr[3]);
+                if pointer.0 == 0 {
+                    return Err(Error::Cpu("nil RGBColor output".into()));
+                }
+                memory.validate_write(pointer, 6)?;
+                Call::GetRgbColor {
+                    background,
+                    pointer,
+                }
+            }
             Service::RgbColor(background) => Call::RgbColor {
                 background,
                 pointer: GuestPtr(c.gpr[3]),
@@ -5190,6 +5222,7 @@ impl Abi {
                         | Service::InitGraf
                         | Service::PortColor(_)
                         | Service::RgbColor(_)
+                        | Service::GetRgbColor(_)
                         | Service::Window(
                             crate::windows::Op::Init
                                 | crate::windows::Op::Close

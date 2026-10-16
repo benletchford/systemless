@@ -206,6 +206,42 @@ impl Ports {
         bytes[2..].copy_from_slice(&left.wrapping_add(width).to_be_bytes());
         memory.write(offset(port, 20)?, &bytes)
     }
+    /// IM: Imaging With QuickDraw 4-79–4-80. Snapshot before writing, since
+    /// the caller's output may overlap the selected port or QDColors itself.
+    pub fn get_rgb(&self, memory: &mut Memory, background: bool, pointer: GuestPtr) -> Result<()> {
+        if pointer.0 == 0 {
+            return Err(Error::Graphics("nil RGBColor output".into()));
+        }
+        let port = self.current(memory)?;
+        let source = if port_layout::color(memory, port)? {
+            offset(port, if background { 42 } else { 36 })?
+        } else {
+            let value = memory.u32(offset(port, if background { 84 } else { 80 })?)?;
+            let index = match value {
+                33 => 0,
+                69 => 1,
+                137 => 2,
+                205 => 3,
+                273 => 4,
+                341 => 5,
+                409 => 6,
+                30 => 7,
+                _ => return Err(Error::Graphics("invalid basic port color".into())),
+            };
+            let handle = memory.u32(QD_COLORS)?;
+            if handle == 0 {
+                return Err(Error::Graphics("nil QDColors handle".into()));
+            }
+            let table = GuestPtr(memory.u32(GuestPtr(handle))?);
+            if table.0 == 0 || memory.u16(offset(table, 6)?)? != 7 {
+                return Err(Error::Graphics("invalid QDColors table".into()));
+            }
+            memory.read(table, 72)?;
+            offset(table, 10 + index * 8)?
+        };
+        let bytes: [u8; 6] = memory.read(source, 6)?.try_into().unwrap();
+        memory.write(pointer, &bytes)
+    }
     pub fn set_rgb(&self, memory: &mut Memory, background: bool, pointer: GuestPtr) -> Result<()> {
         if pointer.0 == 0 {
             return Err(Error::Graphics("nil RGBColor".into()));
@@ -1262,6 +1298,42 @@ impl Ports {
 
 #[cfg(test)]
 const GLOBALS: GuestPtr = GuestPtr(0x7400_0000);
+/// Apple Universal Interfaces 3.4 Quickdraw.h LMGetQDColors inline address.
+pub const QD_COLORS: GuestPtr = GuestPtr(0x08b0);
+/// ROM-independent defaults from Imaging With QuickDraw, table 4-4 (4-71).
+/// Publish a real process-owned handle so guest edits and relocation remain live.
+pub(crate) fn install_colors(memory: &mut Memory, process: &mut Process) -> Result<()> {
+    memory.validate_write(QD_COLORS, 4)?;
+    let mut bytes = vec![0; 8];
+    bytes[6..8].copy_from_slice(&7u16.to_be_bytes());
+    for (index, rgb) in [
+        [0, 0, 0],
+        [0xfc00, 0xf37d, 0x052f],
+        [0xf2d7, 0x0856, 0x84ec],
+        [0xdd6b, 0x08c2, 0x06a2],
+        [0x0241, 0xab54, 0xeaff],
+        [0, 0x64af, 0x11b0],
+        [0, 0, 0xd400],
+        [0xffff; 3],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        bytes.extend((index as u16).to_be_bytes());
+        for component in rgb {
+            bytes.extend(u16::to_be_bytes(component));
+        }
+    }
+    let error = process.mem_error;
+    let handle = process.new_handle(memory, bytes.len() as u32, false)?;
+    process.mem_error = error;
+    if handle == 0 {
+        return Err(Error::Graphics("not enough memory for QDColors".into()));
+    }
+    let data = memory.u32(GuestPtr(handle))?;
+    memory.write(GuestPtr(data), &bytes)?;
+    memory.write(QD_COLORS, &handle.to_be_bytes())
+}
 pub const SCREEN: GuestPtr = GuestPtr(0x7410_0000);
 /// Host display policy, independent of the current port or application globals.
 pub fn screen_bitmap() -> Bitmap {

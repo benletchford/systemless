@@ -408,6 +408,15 @@ impl Runtime {
                             })?;
                             ports.set_rgb(&mut self.memory, background, pointer)?;
                         }
+                        Call::GetRgbColor {
+                            background,
+                            pointer,
+                        } => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("GetRGBColor requires InitGraf".into())
+                            })?;
+                            ports.get_rgb(&mut self.memory, background, pointer)?;
+                        }
                         Call::PortColor { background, color } => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("QuickDraw has not been initialized".into())
@@ -2664,6 +2673,7 @@ impl Runtime {
                         | Call::RoundRect { .. }
                         | Call::PortColor { .. }
                         | Call::RgbColor { .. }
+                        | Call::GetRgbColor { .. }
                         | Call::NewPointer { .. }
                         | Call::PointerSize(_)
                         | Call::SetPointerSize { .. }
