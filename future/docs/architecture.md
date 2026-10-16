@@ -3752,3 +3752,22 @@ interrupt time by the existing no-allocation service guard. CopyPixMap and
 SetPortPix remain explicit gaps rather than aliases of these operations.
 
 Primary reference: [Imaging With QuickDraw,4-85–4-87](https://www.vintageapple.org/inside_r/pdf/Imaging_With_QuickDraw_1994.pdf).
+
+### Live menu keyboard-equivalent queries
+
+GetItemCmd reads the same checked live MENU item used by SetItemCmd, including
+raw special markers1B–1E and extended bytes. It returns a zero-extended16-bit
+CharParameter through guest memory; it does not format/render the item or
+interpret special markers. Both ABI adapters validate the required two-byte
+output before dispatch, and the68K adapter preserves its stack on output faults.
+The shared service independently validates direct callers and snapshots the
+record before writing, permitting output aliases. It preserves MemErr and makes
+no guest allocation or menu installation. Relocated handles and direct guest
+edits are observed; invalid items, nil outputs and malformed records fail
+explicitly without publishing a value. Native behavior for invalid inputs is
+not claimed. PPC void registers and68K tail bytes are preserved.
+
+The canonicalA84E discovery veneer is appended without changing previous entry
+identities. References: [GetItemCmd](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-161.html),
+[Menu Manager C summary](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-187.html)
+and the observed Apple10.4u SDK Menus.h/MacTypes.h declarations.

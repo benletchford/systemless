@@ -339,3 +339,31 @@ pub(super) fn set_enabled(
     process.mem_error = error;
     result
 }
+
+/// GetItemCmd uses a 16-bit CharParameter output, including special item markers.
+pub(super) fn read_command(
+    memory: &mut Memory,
+    process: &mut Process,
+    handle: u32,
+    item: i16,
+    destination: GuestPtr,
+) -> Result<u32> {
+    let error = process.mem_error;
+    let result = (|| {
+        if destination.0 == 0 {
+            return Err(bad("nil menu command output"));
+        }
+        memory.validate_write(destination, 2)?;
+        let bytes = data(memory, process, handle)?;
+        let menu = Record::parse(&bytes)?;
+        let entry = usize::try_from(item)
+            .ok()
+            .and_then(|i| i.checked_sub(1))
+            .and_then(|i| menu.items.get(i))
+            .ok_or_else(|| bad("menu command item out of range"))?;
+        memory.write(destination, &u16::from(entry.command).to_be_bytes())?;
+        Ok(0)
+    })();
+    process.mem_error = error;
+    result
+}

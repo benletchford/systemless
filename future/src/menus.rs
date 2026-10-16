@@ -27,6 +27,11 @@ pub enum Op {
         handle: u32,
         source: GuestPtr,
     },
+    ReadCommand {
+        handle: u32,
+        item: i16,
+        destination: GuestPtr,
+    },
     ReadText {
         handle: u32,
         item: i16,
@@ -209,6 +214,14 @@ impl Menus {
                 process.dispose_handle(memory, handle)?;
             }
             return Ok(0);
+        }
+        if let Op::ReadCommand {
+            handle,
+            item,
+            destination,
+        } = op
+        {
+            return items::read_command(memory, process, handle, item, destination);
         }
         if let Op::ReadText {
             handle,
@@ -445,6 +458,7 @@ impl Menus {
                 Ok(0)
             }
             Op::Dispose(_)
+            | Op::ReadCommand { .. }
             | Op::ReadText { .. }
             | Op::Append { .. }
             | Op::New { .. }

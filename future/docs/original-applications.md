@@ -4486,3 +4486,23 @@ stage. Both independent saved-volume verifiers pass.18scoped tests pass across
 the recorded runs (14devices,4PixMap lifecycle),0ignored with GPU cases enabled.
 Next: shared GetItemCmd metadata retrieval for Marathon and generic Munger for
 EV. Full text and the entire rebuild remain unfinished.
+
+### Live menu command refresh, 2026-10-17
+
+Shared GetItemCmd reads raw live MENU command bytes into16-bit output on both
+CPU adapters, with output preflight and preserved void/stack state. Guest edits,
+relocation, special/high-byte values and alias/error paths have fixtures.
+Fresh original Marathon completes five calls on MENU128,items1–5, then stops at
+DeleteMenu/A936,219,110/01003FF0,with menuID128. The screen remains byte-identical
+to the previously inspected black snapshot; no menu presentation is established.
+Use the preceding1M indexed command with fresh
+/tmp/systemless-marathon-menu-command.{ppm,slv}; private2026-10-17-menu-command.*
+evidence and catalog checks confirm original companions intact and only the
+same first-run preferences file added.
+
+Fresh original EV uses the same16M Enter Ship sequence and reaches the unchanged
+Munger boundary at15,136,642/0102C7CA. Screen and saved volume match the preceding
+stage byte-for-byte; both independent saved-volume checks pass.28scoped tests
+pass with0ignored (3command,25menus),including actual GPU cases. Next: shared
+menu-list DeleteMenu/InsertMenu lifecycle and generic Munger. Full text rendering,
+font fidelity, Mixed Mode and the entire rebuild remain unfinished.

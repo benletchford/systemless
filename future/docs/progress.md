@@ -9804,3 +9804,68 @@ retain the validation and observed Apple SDK declarations. Next priorities:
 GetItemCmd on shared live menu data, generic Munger for EV, remaining PixMap
 operations and full text/Glyphon/Mixed Mode/platform acceptance. The entire
 rebuild goal remains active.
+
+### Shared GetItemCmd, 2026-10-17
+
+The pre-fix fixture fails at unresolved InterfaceLib:GetItemCmd, matching
+Marathon's A84E stop (/tmp/systemless-menu-command-before.txt). GetItemCmd now
+uses the shared live MENU record/command byte, without installing a menu,
+allocating guest storage or requiring a GPU. Raw0,keyboard equivalents,1B–1E
+special markers and extended80/FFbytes zero-extend to a16-bit CharParameter,
+following the primary C summary and SDK declaration. No marker interpretation
+or rendering support is implied by retrieving it.
+
+Both real CPU adapters validate a nonnil writable two-byte output before
+dispatch; native Pascal arguments are reversed4+2+4bytes and void replies
+preserve PPC registers. The shared service restores MemErr on success/error,
+resolves the current master pointer and snapshots the record before writing,
+including output aliases. Invalid index/null/output/record cases fail explicitly,
+without inventing native undefined-input results. A84E is appended to canonical
+trap discovery.
+
+Three new tests pass: real CPU frames, all marker/high-byte values and disabled
+menu data, odd-address output canaries, no allocation or source mutation; null/
+read-only/one-byte outputs fault before native stack changes or PPC replies;
+relocation, corrupt masters/custom records, invalid indices and aliased output
+retain precise checked behavior. A pointer literal type error in the initial
+new test build is corrected; /tmp/systemless-menu-command-tests-fixed.txt is the
+authoritative rerun. Existing menu/GPU regression checks follow in that chain.
+
+The scoped suite passes28tests,0ignored (3new command tests,25existing menus),
+with actual GPU menu cases enabled. It is not a fresh whole-suite result. The
+tracer build passes1m27s. Changed files use sequential stdin formatting; no
+recursive formatter is run. Strict lint continues separately.
+
+Fresh original Marathon, same1M budget,640x480x8, companion volume and77ffec
+watcher, saves /tmp/systemless-marathon-menu-command.{txt,slv,ppm}. It completes
+five GetItemCmd calls on live MENU128,items1–5,output007912CE, then stops at
+DeleteMenu/A936,CPU219,110,PC01003FF0. The fault argument is menuID128. Previous
+stop was218,979/01003FCE atGetItemCmd. No DrawMenuBar/presentation is established;
+the screen remains black. The independent volume verifier passes: original
+companions/forks/metadata unchanged, only the same first-run preferences added.
+Volume11,597,088B SHA256e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42;
+PPM SHA256a6087ec5178c7619d8136de2aa159dde7161d56f9e4c3b899b7165935d0353d8.
+Private2026-10-17-menu-command.* records retain outputs, trace and validation.
+
+Next menu-list reference: [DeleteMenu](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-121.html)
+removes a matching submenu before checking regular menus, removes all menu-color
+entries for that ID, retains the menu record, and leaves visible repaint to
+DrawMenuBar. Missing IDs are no-ops. Do not implement only the observed absent-ID
+case. [InsertMenu](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-120.html)
+inserts before a known ID or appends for0/missing IDs, uses-1 for the submenu
+partition, and does nothing for an already-installed menu or full list. These
+operations must use the existing live guest partition/color-table model with
+transactional growth and preserve records/pixels. EV's next operation remains
+generic Munger. Full text/library/Mixed Mode/platform acceptance stays open.
+
+Fresh original EV uses the same16M budget/script-reopen volume/real E down8M,
+up8,005,000. It still reaches Munger/A9E0 at15,136,642/0102C7CA. Saved volume
+and canonical screen are byte-identical to the preceding stages; independent
+v2 CRC/catalog/script/alias verification passes and original pilot/companions
+remain intact. Private2026-10-17-menu-command.* retains the replay evidence.
+Neither original is verified playable; full text and the full rebuild stay open.
+
+Strict all-target Clippy passes (5m46s,exit0); corrected test/build/lint chain
+exits0. Private2026-10-17-menu-command-lint.txt retains the log. The baseline
+checkout is verified clean at634c0e9120a695224d71c621fbbe33709670d707. Shared
+DeleteMenu/InsertMenu and generic Munger are next; the full rebuild stays active.

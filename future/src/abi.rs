@@ -126,6 +126,7 @@ pub enum Service {
     GetMenuItemText,
     SetMenuItemText,
     SetItemCommand,
+    GetItemCommand,
     SetItemMark,
     CheckItem,
     EnableItem(bool),
@@ -536,6 +537,7 @@ impl Abi {
             b"NewMenu" => Some(Service::NewMenu),
             b"GetItem" | b"GetMenuItemText" => Some(Service::GetMenuItemText),
             b"SetItem" | b"SetMenuItemText" => Some(Service::SetMenuItemText),
+            b"GetItemCmd" => Some(Service::GetItemCommand),
             b"SetItemCmd" => Some(Service::SetItemCommand),
             b"MenuSelect" => Some(Service::MenuSelect),
             b"HiliteMenu" => Some(Service::HiliteMenu),
@@ -2811,6 +2813,27 @@ impl Abi {
                     Reply::None,
                 ))
             }
+            0xa84e => {
+                let args = memory.read(GuestPtr(sp), 10)?;
+                let destination = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                let item = i16::from_be_bytes(args[4..6].try_into().unwrap());
+                let handle = u32::from_be_bytes(args[6..10].try_into().unwrap());
+                if destination.0 == 0 {
+                    return Err(Error::Cpu("nil menu command output".into()));
+                }
+                memory.validate_write(destination, 2)?;
+                c.dar[15] = sp
+                    .checked_add(10)
+                    .ok_or_else(|| Error::Cpu("menu command stack overflow".into()))?;
+                Ok((
+                    Call::Menu(crate::menus::Op::ReadCommand {
+                        handle,
+                        item,
+                        destination,
+                    }),
+                    Reply::None,
+                ))
+            }
             0xa946 | 0xa947 => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let source = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
@@ -4296,6 +4319,18 @@ impl Abi {
                 item: c.gpr[4] as i16,
                 source: GuestPtr(c.gpr[5]),
             }),
+            Service::GetItemCommand => {
+                let destination = GuestPtr(c.gpr[5]);
+                if destination.0 == 0 {
+                    return Err(Error::Cpu("nil menu command output".into()));
+                }
+                memory.validate_write(destination, 2)?;
+                Call::Menu(crate::menus::Op::ReadCommand {
+                    handle: c.gpr[3],
+                    item: c.gpr[4] as i16,
+                    destination,
+                })
+            }
             Service::SetItemCommand => Call::Menu(crate::menus::Op::Command {
                 handle: c.gpr[3],
                 item: c.gpr[4] as i16,
@@ -5039,6 +5074,7 @@ impl Abi {
                         | Service::AppendResMenu
                         | Service::SetItemMark
                         | Service::SetItemCommand
+                        | Service::GetItemCommand
                         | Service::SetMenuItemText
                         | Service::GetMenuItemText
                         | Service::HiliteMenu
