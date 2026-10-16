@@ -2938,3 +2938,41 @@ zero; playable title/menu/gameplay/audio acceptance remains open. Marathon was
 not replayed. Next: shared signed LongInt-to-Fixed conversion with documented
 saturation and both ABI adapters, then replay. Full rebuild and complete text
 rendering remain active requirements.
+
+
+## Shared LongInt-to-Fixed conversion (2026-10-16)
+
+Long2Fix now uses one stateless signed 32-bit-to-Fixed conversion from both the
+68K A83F trap and PPC import. The calculation widens before scaling and clamps
+to signed endpoints, preserving the complete -32768..32767 exact integer range
+without wrapping values outside it. Native Pascal frames retain their argument,
+pop four bytes and write a full four-byte result only after preflight. PPC retains
+all input bits rather than accidentally narrowing to a signed word. The native
+trap has a readable installed veneer; the bounded nonallocating call joins the
+existing interrupt-safe scalar whitelist. Nested interrupt invocation was not
+newly exercised here.
+
+Primary reference: [Apple Mathematical and Logical Utilities](https://dev.os9.ca/techpubs/mac/pdf/Operating_System_Utilities/MLU.pdf),
+Long2Fix, p. 3-43. No native System 7 conformance run was performed.
+
+Validation: /tmp/systemless-longfixed-acceptance.txt reports 9 passed, no failures
+or skips: conversion 2, fixed ratio 3, logical 2, word extraction 2. The new
+conversion test checks all 65,536 exactly representable integer inputs and
+explicit 32-bit extremes/overflow boundaries. Real CPU fixtures verify full-width
+signed values, native argument/result guards, PPC return/unrelated registers,
+unchanged allocation/error state and veneer bytes. Frame-fault preflight now
+covers both Long2Fix and FixRatio. Strict runtime/probe lint passes in
+/tmp/systemless-longfixed-runtime-lint.txt; strict fixture lint passes in
+/tmp/systemless-longfixed-test-lint.txt, terminal exit 0. Sequential formatting
+and whitespace checks pass.
+
+
+Final-source original Escape Velocity replay passes Long2Fix(65535), returning
+7FFFFFFF, and stops at FixMul A868, PC 0001A604. Evidence:
+/tmp/systemless-ev-longfixed.txt, terminal exit 1 at the explicit unsupported
+service; tracer build exit 0. Same original resource fork, one million instruction
+bound, 640x480x8 graphics, no companion volume. Sound/timer/VBL callbacks remain
+zero; playable title/menu/gameplay/audio acceptance remains open. Marathon was
+not replayed. Next: shared Fixed multiplication with documented rounding and
+saturation, both ABI adapters and a bounded replay. Full rebuild and complete
+text rendering remain active requirements.

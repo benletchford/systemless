@@ -46,3 +46,8 @@ pub fn fixed_ratio(numerator: i16, denominator: i16) -> i32 {
     };
     result.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
+
+/// Signed LongInt to Fixed with saturation (IM: OS Utilities, p. 3-43).
+pub fn long_to_fixed(value: i32) -> i32 {
+    (i64::from(value) * 65536).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}

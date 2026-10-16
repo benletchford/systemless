@@ -9,6 +9,7 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    LongToFixed,
     FixedRatio,
     GetDateTime,
     ReadDateTime,
@@ -504,6 +505,7 @@ impl Abi {
             b"TEGetStyleHandle" => Some(Service::TEGetStyleHandle),
             b"TEDispose" => Some(Service::TEDispose),
             b"Random" => Some(Service::Random),
+            b"Long2Fix" => Some(Service::LongToFixed),
             b"FixRatio" => Some(Service::FixedRatio),
             b"BitAnd" => Some(Service::Logical(crate::integer::Logic::And)),
             b"BitOr" => Some(Service::Logical(crate::integer::Logic::Or)),
@@ -1051,6 +1053,15 @@ impl Abi {
                 });
                 c.dar[15] = result;
                 Ok((call, Reply::StackLong(GuestPtr(result))))
+            }
+            0xa83f => {
+                let input = memory.u32(GuestPtr(sp))? as i32;
+                let next = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("Long2Fix stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 4)?;
+                c.dar[15] = next;
+                Ok((Call::LongToFixed(input), Reply::StackLong(GuestPtr(next))))
             }
             0xa869 => {
                 let args = memory.read(GuestPtr(sp), 4)?;
@@ -3808,6 +3819,7 @@ impl Abi {
                 })
             }
             Service::Random => Call::Random,
+            Service::LongToFixed => Call::LongToFixed(c.gpr[3] as i32),
             Service::FixedRatio => Call::FixedRatio {
                 numerator: c.gpr[3] as i16,
                 denominator: c.gpr[4] as i16,

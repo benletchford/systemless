@@ -157,8 +157,10 @@ fn native_ratio_validates_arguments_and_full_result_before_popping_anything() {
         let Cpu::M68k(mut c) = Cpu::new(Architecture::M68k, 0, address) else {
             unreachable!()
         };
-        assert!(Abi::trap(0xa869, &mut c, &memory).is_err());
-        assert_eq!(c.dar[15], address);
-        assert_eq!(memory.read(GuestPtr(address), size).unwrap(), before);
+        for opcode in [0xa869, 0xa83f] {
+            assert!(Abi::trap(opcode, &mut c, &memory).is_err());
+            assert_eq!(c.dar[15], address);
+            assert_eq!(memory.read(GuestPtr(address), size).unwrap(), before);
+        }
     }
 }

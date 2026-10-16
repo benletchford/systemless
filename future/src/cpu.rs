@@ -12,6 +12,7 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    LongToFixed(i32),
     FixedRatio {
         numerator: i16,
         denominator: i16,
