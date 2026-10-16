@@ -1,4 +1,4 @@
-//! Shared signed word extraction for Macintosh mathematical utilities.
+//! Shared fixed-point arithmetic and signed word extraction for Macintosh mathematical utilities.
 //! Inside Macintosh: Operating System Utilities, Mathematical and Logical
 //! Utilities, “Extracting a Word From a Long Word”, p. 3-18.
 pub fn word(value: u32, high: bool) -> i16 {
@@ -50,4 +50,13 @@ pub fn fixed_ratio(numerator: i16, denominator: i16) -> i32 {
 /// Signed LongInt to Fixed with saturation (IM: OS Utilities, p. 3-43).
 pub fn long_to_fixed(value: i32) -> i32 {
     (i64::from(value) * 65536).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+/// Signed Fixed multiplication, rounded to nearest (ties away from zero),
+/// saturating at the signed endpoints (IM: OS Utilities, pp. 3-12, 3-38).
+pub fn fixed_multiply(left: i32, right: i32) -> i32 {
+    let product = i64::from(left) * i64::from(right);
+    let magnitude = (product.abs() + 32768) / 65536;
+    let rounded = if product < 0 { -magnitude } else { magnitude };
+    rounded.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }

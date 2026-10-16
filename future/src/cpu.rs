@@ -12,6 +12,10 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    FixedMultiply {
+        left: i32,
+        right: i32,
+    },
     LongToFixed(i32),
     FixedRatio {
         numerator: i16,

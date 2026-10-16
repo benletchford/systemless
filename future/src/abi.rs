@@ -9,6 +9,7 @@ use crate::{
 use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    FixedMultiply,
     LongToFixed,
     FixedRatio,
     GetDateTime,
@@ -505,6 +506,7 @@ impl Abi {
             b"TEGetStyleHandle" => Some(Service::TEGetStyleHandle),
             b"TEDispose" => Some(Service::TEDispose),
             b"Random" => Some(Service::Random),
+            b"FixMul" => Some(Service::FixedMultiply),
             b"Long2Fix" => Some(Service::LongToFixed),
             b"FixRatio" => Some(Service::FixedRatio),
             b"BitAnd" => Some(Service::Logical(crate::integer::Logic::And)),
@@ -1053,6 +1055,20 @@ impl Abi {
                 });
                 c.dar[15] = result;
                 Ok((call, Reply::StackLong(GuestPtr(result))))
+            }
+            0xa868 => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let right = i32::from_be_bytes(args[..4].try_into().unwrap());
+                let left = i32::from_be_bytes(args[4..].try_into().unwrap());
+                let next = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("FixMul stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 4)?;
+                c.dar[15] = next;
+                Ok((
+                    Call::FixedMultiply { left, right },
+                    Reply::StackLong(GuestPtr(next)),
+                ))
             }
             0xa83f => {
                 let input = memory.u32(GuestPtr(sp))? as i32;
@@ -3819,6 +3835,10 @@ impl Abi {
                 })
             }
             Service::Random => Call::Random,
+            Service::FixedMultiply => Call::FixedMultiply {
+                left: c.gpr[3] as i32,
+                right: c.gpr[4] as i32,
+            },
             Service::LongToFixed => Call::LongToFixed(c.gpr[3] as i32),
             Service::FixedRatio => Call::FixedRatio {
                 numerator: c.gpr[3] as i16,

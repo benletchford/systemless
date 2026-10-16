@@ -299,6 +299,7 @@ impl Runtime {
                             Call::Ticks
                                 | Call::ReadDateTime(_)
                                 | Call::PostEvent { .. }
+                                | Call::FixedMultiply { .. }
                                 | Call::LongToFixed(_)
                                 | Call::FixedRatio { .. }
                                 | Call::Logical { .. }
@@ -1072,6 +1073,10 @@ impl Runtime {
                         Call::Cursor(op) => {
                             crate::cursor::call(&self.memory, &mut self.process, op)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::FixedMultiply { left, right } => {
+                            let value = crate::integer::fixed_multiply(left, right) as u32;
+                            reply.apply(&mut self.cpu, &mut self.memory, value, 0)?;
                         }
                         Call::LongToFixed(input) => {
                             let value = crate::integer::long_to_fixed(input) as u32;
@@ -2219,6 +2224,7 @@ impl Runtime {
                         | Call::Cursor(_)
                         | Call::MenuSelect(_)
                         | Call::HiliteMenu(_)
+                        | Call::FixedMultiply { .. }
                         | Call::LongToFixed(_)
                         | Call::FixedRatio { .. }
                         | Call::Word { .. }

@@ -2976,3 +2976,39 @@ zero; playable title/menu/gameplay/audio acceptance remains open. Marathon was
 not replayed. Next: shared Fixed multiplication with documented rounding and
 saturation, both ABI adapters and a bounded replay. Full rebuild and complete
 text rendering remain active requirements.
+
+
+## Shared Fixed multiplication (2026-10-16)
+
+FixMul now routes native A868 and the PPC import through one stateless signed
+16.16 multiplication service. A widened product rounds to nearest, with half
+magnitudes away from zero, and saturates at signed endpoints. The native adapter
+preflights both long arguments and the full result before popping eight bytes;
+PPC preserves full-width operands. The installed trap veneer is readable and the
+bounded call joins the existing scalar interrupt whitelist (nested interrupt
+invocation was not newly tested).
+
+Primary reference: [Apple Mathematical and Logical Utilities](https://dev.os9.ca/techpubs/mac/pdf/Operating_System_Utilities/MLU.pdf),
+pp. 3-12 and 3-38–39. No native System 7 conformance run was performed.
+
+Validation: /tmp/systemless-fixmul-tests.txt, terminal exit 0: 8 passed, no
+failures or skips (multiplication 3, conversion 2, ratio 3). Explicit cases cover
+signed half rounding, full-width operands and extreme overflow. The independent
+nearest-result error bound covers every signed-word left operand against nine
+selected right operands (589,824 nonsaturating pairs); this is not exhaustive
+32-bit-pair coverage. Actual 68K/PPC execution verifies results, stack guards,
+unchanged registers, allocation/error state and veneer bytes. Short arguments,
+read-only results and truncated results preserve SP and memory on fault.
+Strict library/fixture lint passes in /tmp/systemless-fixmul-lint.txt; tracer
+build passes in /tmp/systemless-fixmul-build.txt. Sequential formatting and
+whitespace checks pass. No fresh full-suite, native or browser acceptance.
+
+Original EV now executes repeated FixMul calls, including (2, 7FFFFFFF), and
+advances to unsupported FP68K selector 000D at PC 0001F3C8. Evidence:
+/tmp/systemless-ev-fixmul.txt, expected explicit unsupported-selector exit 1.
+The original resource fork, one-million instruction limit, 640x480x8 graphics
+and no-companion-volume setup are unchanged. Sound/timer/VBL callbacks remain
+zero. Neither priority game is playable; Marathon was not replayed. Next:
+identify selector 000D from primary SANE documentation and implement its shared
+numeric operation with ABI and boundary tests, then replay EV. The full rebuild
+and complete wgpu text requirement remain active.
