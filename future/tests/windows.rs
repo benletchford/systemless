@@ -2014,3 +2014,302 @@ fn calcvis_visibility_services_share_both_cpu_abis_and_leave_pixels_and_other_wi
         }
     }
 }
+fn repaint_app() -> (LoadedApplication, u32, u32, u32) {
+    let f = pef_program(
+        &[0x4e800020],
+        &[
+            b"InitGraf",
+            b"InitWindows",
+            b"NewWindow",
+            b"PaintOne",
+            b"PaintBehind",
+        ],
+        512,
+    );
+    let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
+    let data = app.info.toc_or_a5;
+    app.runtime
+        .memory
+        .map(
+            GuestPtr(0x50000000),
+            vec![0xa9, 0x0c, 0xa9, 0x0d],
+            Permissions::RX,
+        )
+        .unwrap();
+    invoke(&mut app, 0, &[data + 128 + 202]);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    app.runtime.graphics = Some(
+        pollster::block_on(Graphics::new(&instance, None, 512, 342, GuestPtr(0x4000))).unwrap(),
+    );
+    invoke(&mut app, 1, &[]);
+    app.runtime
+        .memory
+        .write(GuestPtr(data + 80), b"\x04test")
+        .unwrap();
+    rect(&mut app, data + 64, 40, 40, 100, 100);
+    let back = invoke(
+        &mut app,
+        2,
+        &[0, data + 64, data + 80, 1, 2, u32::MAX, 0, 0],
+    );
+    rect(&mut app, data + 64, 60, 60, 120, 120);
+    let front = invoke(
+        &mut app,
+        2,
+        &[0, data + 64, data + 80, 1, 2, u32::MAX, 0, 0],
+    );
+    let outer = new_rect_region(&mut app, Rect::new(0, 0, 180, 180));
+    let hole = new_rect_region(&mut app, Rect::new(45, 45, 55, 55));
+    systemless_future::regions::combine(
+        &mut app.runtime.memory,
+        &mut app.runtime.process,
+        systemless_future::region_geometry::Boolean::Difference,
+        outer,
+        hole,
+        outer,
+    )
+    .unwrap();
+    (app, back, front, outer)
+}
+fn new_rect_region(app: &mut LoadedApplication, r: Rect) -> u32 {
+    let h = systemless_future::regions::call(
+        &mut app.runtime.memory,
+        &mut app.runtime.process,
+        systemless_future::regions::Op::New,
+        0,
+        0,
+    )
+    .unwrap();
+    let data = app.info.toc_or_a5 + 64;
+    rect(
+        app,
+        data,
+        r.top as i16,
+        r.left as i16,
+        r.bottom as i16,
+        r.right as i16,
+    );
+    systemless_future::regions::call(
+        &mut app.runtime.memory,
+        &mut app.runtime.process,
+        systemless_future::regions::Op::Rect,
+        h,
+        data,
+    )
+    .unwrap();
+    h
+}
+fn clear_update(app: &mut LoadedApplication, w: u32) {
+    let h = app.runtime.memory.u32(GuestPtr(w + 122)).unwrap();
+    systemless_future::regions::call(
+        &mut app.runtime.memory,
+        &mut app.runtime.process,
+        systemless_future::regions::Op::Clear,
+        h,
+        0,
+    )
+    .unwrap();
+}
+fn repaint_call(
+    app: &mut LoadedApplication,
+    architecture: Architecture,
+    w: u32,
+    damage: u32,
+    behind: bool,
+) {
+    let stack = STACK_BASE + 0x8000;
+    let mut frame = [damage.to_be_bytes(), w.to_be_bytes()].concat();
+    frame.extend([0x5a; 4]);
+    app.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+    let data = app.info.toc_or_a5;
+    let index = if behind { 4 } else { 3 };
+    let vector = app
+        .runtime
+        .memory
+        .u32(GuestPtr(data + 8 + 4 * index))
+        .unwrap();
+    let gate = app.runtime.memory.u32(GuestPtr(vector)).unwrap();
+    app.runtime.cpu = Cpu::new(
+        architecture,
+        if architecture == Architecture::M68k {
+            0x50000000 + u32::from(behind) * 2
+        } else {
+            gate
+        },
+        stack,
+    );
+    match &mut app.runtime.cpu {
+        Cpu::M68k(c) => {
+            c.dar[0] = 0x12345678;
+            c.dar[1] = 0xfeedface;
+        }
+        Cpu::PowerPc(c) => {
+            c.gpr[3] = w;
+            c.gpr[4] = damage;
+            c.gpr[5] = 0xfeedface;
+        }
+    }
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    match &app.runtime.cpu {
+        Cpu::M68k(c) => assert_eq!(
+            (c.dar[0], c.dar[1], c.dar[15]),
+            (0x12345678, 0xfeedface, stack + 8)
+        ),
+        Cpu::PowerPc(c) => assert_eq!((c.gpr[3], c.gpr[4], c.gpr[5]), (w, damage, 0xfeedface)),
+    }
+    assert_eq!(app.runtime.memory.read(GuestPtr(stack), 12).unwrap(), frame);
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn repaint_window_and_desktop_clipping_flags_updates_and_both_abis_use_gpu_pixels() {
+    let (mut app, back, front, damage) = repaint_app();
+    let slot = app.runtime.process.ports.unwrap().current_slot;
+    let current = app.runtime.memory.u32(slot).unwrap();
+    let manager = app.runtime.memory.u32(GuestPtr(0x9de)).unwrap();
+    let manager_bytes = app
+        .runtime
+        .memory
+        .read(GuestPtr(manager), 108)
+        .unwrap()
+        .to_vec();
+    for architecture in [Architecture::M68k, Architecture::PowerPc] {
+        clear_update(&mut app, back);
+        clear_update(&mut app, front);
+        app.runtime
+            .memory
+            .write(SCREEN, &vec![255; 64 * 342])
+            .unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(0x9da), &[0, 1, 0, 1])
+            .unwrap();
+        repaint_call(&mut app, architecture, back, damage, false);
+        assert!(!pixel(&app, 56, 50));
+        assert!(pixel(&app, 50, 50));
+        assert!(pixel(&app, 90, 90));
+        assert!(pixel(&app, 200, 200));
+        assert!(contains(&region(&app, back, 122), 56, 50));
+        assert!(!contains(&region(&app, back, 122), 50, 50));
+        assert!(!contains(&region(&app, back, 122), 90, 90));
+        assert!(region(&app, front, 122).is_empty());
+        clear_update(&mut app, back);
+        app.runtime
+            .memory
+            .write(SCREEN, &vec![255; 64 * 342])
+            .unwrap();
+        app.runtime.memory.write(GuestPtr(0x9da), &[0; 4]).unwrap();
+        let before = app.runtime.memory.read(SCREEN, 64 * 342).unwrap().to_vec();
+        repaint_call(&mut app, architecture, back, damage, false);
+        assert_eq!(app.runtime.memory.read(SCREEN, 64 * 342).unwrap(), before);
+        assert!(region(&app, back, 122).is_empty());
+        // SaveUpdate and PaintWhite are independent controls.
+        app.runtime
+            .memory
+            .write(GuestPtr(0x9dc), &1u16.to_be_bytes())
+            .unwrap();
+        repaint_call(&mut app, architecture, back, damage, false);
+        assert!(!pixel(&app, 56, 50));
+        assert!(region(&app, back, 122).is_empty());
+        app.runtime
+            .memory
+            .write(GuestPtr(back + 32), &[255; 8])
+            .unwrap();
+        app.runtime
+            .memory
+            .write(SCREEN, &vec![0; 64 * 342])
+            .unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(0x9da), &[0, 1, 0, 0])
+            .unwrap();
+        app.runtime
+            .memory
+            .write(GuestPtr(0xa3c), &[255; 8])
+            .unwrap();
+        repaint_call(&mut app, architecture, back, damage, true);
+        assert!(!pixel(&app, 56, 50));
+        assert!(pixel(&app, 39, 50));
+        assert!(!pixel(&app, 90, 90));
+        assert!(pixel(&app, 10, 30));
+        assert!(!pixel(&app, 200, 200));
+        assert_eq!(app.runtime.memory.u16(GuestPtr(0x9dc)).unwrap(), 1);
+        assert!(contains(&region(&app, back, 122), 56, 50));
+        assert!(region(&app, front, 122).is_empty());
+        // NIL paints only exposed desktop, never the windows covering it.
+        app.runtime
+            .memory
+            .write(SCREEN, &vec![0; 64 * 342])
+            .unwrap();
+        repaint_call(&mut app, architecture, 0, damage, false);
+        assert!(pixel(&app, 10, 30));
+        assert!(!pixel(&app, 56, 50));
+        assert!(!pixel(&app, 90, 90));
+        assert!(!pixel(&app, 200, 200));
+        assert_eq!(app.runtime.memory.u32(slot).unwrap(), current);
+        assert_eq!(
+            app.runtime.memory.read(GuestPtr(manager), 108).unwrap(),
+            manager_bytes
+        );
+        app.runtime
+            .memory
+            .write(GuestPtr(back + 32), &[0; 8])
+            .unwrap();
+    }
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn repaint_update_allocation_failure_precedes_pixels_and_invalid_damage_preserves_flags() {
+    let (mut app, back, _, damage) = repaint_app();
+    clear_update(&mut app, back);
+    let update = app.runtime.memory.u32(GuestPtr(back + 122)).unwrap();
+    app.runtime
+        .process
+        .set_handle_lock(&app.runtime.memory, update, true)
+        .unwrap();
+    let before = app.runtime.memory.read(SCREEN, 64 * 342).unwrap().to_vec();
+    let windows = std::mem::take(&mut app.runtime.process.windows);
+    let request = systemless_future::windows::Repaint {
+        window: back,
+        clobbered: damage,
+        behind: true,
+    };
+    assert!(windows
+        .repaint(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            app.runtime.graphics.as_ref().unwrap(),
+            request
+        )
+        .is_err());
+    assert_eq!(app.runtime.process.mem_error, -108);
+    assert_eq!(app.runtime.memory.read(SCREEN, 64 * 342).unwrap(), before);
+    assert!(region(&app, back, 122).is_empty());
+    assert_eq!(app.runtime.memory.u16(GuestPtr(0x9dc)).unwrap(), 1);
+    app.runtime
+        .process
+        .set_handle_lock(&app.runtime.memory, update, false)
+        .unwrap();
+    windows
+        .repaint(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            app.runtime.graphics.as_ref().unwrap(),
+            request,
+        )
+        .unwrap();
+    let before = app.runtime.memory.read(SCREEN, 64 * 342).unwrap().to_vec();
+    let bad = systemless_future::windows::Repaint {
+        clobbered: 0,
+        ..request
+    };
+    assert!(windows
+        .repaint(
+            &mut app.runtime.memory,
+            &mut app.runtime.process,
+            app.runtime.graphics.as_ref().unwrap(),
+            bad
+        )
+        .is_err());
+    assert_eq!(app.runtime.memory.read(SCREEN, 64 * 342).unwrap(), before);
+    app.runtime.process.windows = windows;
+}

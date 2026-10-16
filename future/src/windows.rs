@@ -82,6 +82,15 @@ pub enum Op {
     Hide,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Repaint {
+    pub window: u32,
+    pub clobbered: u32,
+    pub behind: bool,
+}
+const SAVE_UPDATE: GuestPtr = GuestPtr(0x9da);
+const PAINT_WHITE: GuestPtr = GuestPtr(0x9dc);
+const DESK_PATTERN: GuestPtr = GuestPtr(0xa3c);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
     Window(u32),
     Behind { start: u32, clobbered: u32 },
@@ -414,6 +423,11 @@ impl Windows {
         memory.write(GuestPtr(0x9de), &manager.to_be_bytes())?;
         memory.write(GuestPtr(0x9ee), &gray.to_be_bytes())?;
         memory.write(LIST, &0u32.to_be_bytes())?;
+        memory.write(SAVE_UPDATE, &[0, 1, 0, 1])?;
+        memory.write(
+            DESK_PATTERN,
+            &[0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55],
+        )?;
         memory.write(GuestPtr(0xa64), &[0; 8])?;
         memory.write(ports.current_slot, &old.to_be_bytes())?;
         self.desktop(memory, process, gpu, &rect_bytes(desktop)?)
@@ -456,6 +470,7 @@ impl Windows {
         gpu: &Graphics,
         coverage: &[u8],
     ) -> Result<()> {
+        let pattern = memory.read(DESK_PATTERN, 8)?.try_into().unwrap();
         self.paint(
             memory,
             process,
@@ -463,7 +478,7 @@ impl Windows {
             coverage,
             Paint {
                 rgb: None,
-                pattern: [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55],
+                pattern,
                 foreground: 33,
                 background: 30,
             },
@@ -754,6 +769,17 @@ impl Windows {
         w: u32,
         dirty: &[u8],
     ) -> Result<()> {
+        self.paint_window_erase(memory, process, gpu, w, dirty, true)
+    }
+    fn paint_window_erase(
+        &self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &Graphics,
+        w: u32,
+        dirty: &[u8],
+        erase: bool,
+    ) -> Result<()> {
         let content = region(memory, process, handle(memory, w, 118)?)?;
         let structure = region(memory, process, handle(memory, w, 114)?)?;
         let border = region_geometry::combine(&structure, &content, Boolean::Difference)?;
@@ -779,26 +805,28 @@ impl Windows {
         let pattern = std::array::from_fn(|y| {
             pattern[((y as i32 + origin.top) & 7) as usize].rotate_right((-origin.left & 7) as u32)
         });
-        self.paint(
-            memory,
-            process,
-            gpu,
-            &content,
-            Paint {
-                rgb,
-                pattern,
-                foreground: if is_color {
-                    33
-                } else {
-                    memory.u32(GuestPtr(w + 80))?
+        if erase {
+            self.paint(
+                memory,
+                process,
+                gpu,
+                &content,
+                Paint {
+                    rgb,
+                    pattern,
+                    foreground: if is_color {
+                        33
+                    } else {
+                        memory.u32(GuestPtr(w + 80))?
+                    },
+                    background: if is_color {
+                        30
+                    } else {
+                        memory.u32(GuestPtr(w + 84))?
+                    },
                 },
-                background: if is_color {
-                    30
-                } else {
-                    memory.u32(GuestPtr(w + 84))?
-                },
-            },
-        )?;
+            )?;
+        }
         self.paint(
             memory,
             process,
@@ -822,6 +850,109 @@ impl Windows {
             self.chrome(memory, process, gpu, w, dirty)?;
         }
         Ok(())
+    }
+    /// PaintOne/PaintBehind share exact exposed geometry and the production GPU renderer.
+    pub fn repaint(
+        &self,
+        memory: &mut Memory,
+        process: &mut Process,
+        gpu: &Graphics,
+        request: Repaint,
+    ) -> Result<()> {
+        self.manager_port(memory)?;
+        let ports = process
+            .ports
+            .ok_or_else(|| fail("repaint requires InitGraf"))?;
+        memory.validate_write(ports.current_slot, 4)?;
+        memory.validate_write(GuestPtr(self.manager), 108)?;
+        let list = self.list(memory)?;
+        let start = if request.window == 0 {
+            list.len()
+        } else {
+            list.iter()
+                .position(|&w| w == request.window)
+                .ok_or_else(|| fail("unknown repaint window"))?
+        };
+        let damage = region(memory, process, request.clobbered)?;
+        let desktop = region(memory, process, self.gray)?;
+        let damage = region_geometry::combine(&damage, &desktop, Boolean::Intersection)?;
+        let save_update = memory.u16(SAVE_UPDATE)? != 0;
+        let erase = !request.behind && memory.u16(PAINT_WHITE)? != 0;
+        if request.behind {
+            memory.validate_write(PAINT_WHITE, 2)?;
+        }
+        let mut covered = rect_bytes(Rect::new(0, 0, 0, 0))?;
+        let mut paints = Vec::new();
+        let mut updates = Vec::new();
+        for (index, w) in list.into_iter().enumerate() {
+            if !request.behind && request.window != 0 && index > start {
+                break;
+            }
+
+            if memory.read(GuestPtr(w + 110), 1)?[0] == 0 {
+                continue;
+            }
+            let structure = region(memory, process, handle(memory, w, 114)?)?;
+            if index >= start && (request.behind || w == request.window) {
+                if memory.u32(GuestPtr(w + 126))? != 0 {
+                    return Err(fail("custom repaint WDEF callbacks are unsupported"));
+                }
+                let exposed = region_geometry::combine(&structure, &damage, Boolean::Intersection)?;
+                let exposed = region_geometry::combine(&exposed, &covered, Boolean::Difference)?;
+                if !region_geometry::decode(&exposed)?.is_empty() {
+                    let content = region(memory, process, handle(memory, w, 118)?)?;
+                    let content =
+                        region_geometry::combine(&content, &exposed, Boolean::Intersection)?;
+                    // Snapshot/validate patterns and color-port storage before publishing updates.
+                    crate::port_layout::pattern(
+                        memory,
+                        GuestPtr(w),
+                        crate::port_layout::Pattern::Background,
+                    )?;
+                    crate::port_layout::bitmap(memory, GuestPtr(w))?;
+                    if save_update && !region_geometry::decode(&content)?.is_empty() {
+                        let h = handle(memory, w, 122)?;
+                        let old = region(memory, process, h)?;
+                        updates
+                            .push((h, region_geometry::combine(&old, &content, Boolean::Union)?));
+                    }
+                    paints.push((w, exposed));
+                }
+            }
+            covered = region_geometry::combine(&covered, &structure, Boolean::Union)?;
+        }
+        let desktop_damage = if request.behind || request.window == 0 {
+            Some(region_geometry::combine(
+                &damage,
+                &covered,
+                Boolean::Difference,
+            )?)
+        } else {
+            None
+        };
+        // Stage every update allocation before any destination pixel operation.
+        if !updates.is_empty() {
+            process.replace_handles(memory, updates)?;
+            if process.mem_error != 0 {
+                return Err(fail("repaint update allocation failed"));
+            }
+        }
+        if request.behind {
+            memory.write(PAINT_WHITE, &0u16.to_be_bytes())?;
+        }
+        let result = (|| {
+            for (w, dirty) in paints {
+                self.paint_window_erase(memory, process, gpu, w, &dirty, erase)?;
+            }
+            if let Some(damage) = desktop_damage {
+                self.desktop(memory, process, gpu, &damage)?;
+            }
+            Ok(())
+        })();
+        if request.behind {
+            memory.write(PAINT_WHITE, &1u16.to_be_bytes())?;
+        }
+        result
     }
     fn recalculate(&self, memory: &mut Memory, process: &mut Process) -> Result<()> {
         self.calculate_visibility(memory, process, None)

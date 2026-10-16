@@ -599,6 +599,22 @@ impl Runtime {
                                 )?;
                             }
                         }
+                        Call::WindowRepaint(request) => {
+                            let gpu = self.graphics.as_ref().ok_or_else(|| {
+                                Error::Graphics("window repaint requires a GPU".into())
+                            })?;
+                            let windows = std::mem::take(&mut self.process.windows);
+                            let result =
+                                windows.repaint(&mut self.memory, &mut self.process, gpu, request);
+                            self.process.windows = windows;
+                            result?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                0,
+                                self.process.mem_error,
+                            )?;
+                        }
                         Call::WindowVisibility(request) => {
                             let windows = std::mem::take(&mut self.process.windows);
                             let result =
@@ -2244,6 +2260,7 @@ impl Runtime {
                                 crate::dialogs::Op::Init(_) | crate::dialogs::Op::Param(_)
                             )
                             | Call::Menu(_)
+                            | Call::WindowRepaint(_)
                             | Call::WindowVisibility(_)
                             | Call::RegionRecording(_)
                             | Call::Polygon(_)
@@ -2399,6 +2416,7 @@ impl Runtime {
                         | Call::PenMode(_)
                         | Call::PenNormal
                         | Call::PenVisibility(_)
+                        | Call::WindowRepaint(_)
                         | Call::WindowVisibility(_)
                         | Call::RegionRecording(_)
                         | Call::Polygon(_)

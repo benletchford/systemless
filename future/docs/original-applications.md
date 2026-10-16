@@ -3597,3 +3597,44 @@ https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-286.html. The baseline implement
 invalidates bounding boxes and is reference evidence, not proof of the documented
 PaintOne drawing contract. Keep Marathon's port initialization issue open. Full
 rebuild, complete wgpu text and library integration remain active requirements.
+
+
+## EV desktop repaint and offscreen color-copy boundary (2026-10-16)
+
+
+Final strict all-target lint passes in /tmp/systemless-repaint-final-lint.txt;
+tracer build passes in /tmp/systemless-repaint-build.txt. Scoped sequential
+formatting and diff whitespace pass. This is focused core/window acceptance,
+not a fresh complete integration suite or GitHub CI result.
+
+Original EV now passes WindowRepaint with a NIL desktop target, creates a hidden
+color window and several offscreen color ports, loads 8-bit blitter resources and
+reaches CopyBits. It stops at PC 000182F6 with "unsupported or invalid indexed
+PixMap source". The failing request uses source 219526, destination 212054,
+source/destination rectangle 8453824, mode 0 and NIL mask. The source is exactly
+CGrafPort 219524 + 2 (a preceding ColorPort Open), so inspect color-port bitmap
+alias/handle normalization before changing indexed palette validation. Destination
+is likewise current color port 212052 + 2. The current PixMap source decoder
+rejects row flag forms other than actual 0x8000 indexed PixMaps; this is a next
+investigation boundary, not proof that every alias field is valid.
+
+Evidence: /tmp/systemless-ev-repaint.txt, terminal exit 1 (unsupported source
+form), 10 million instructions and 640x480x8, with explicit memory-only volume
+flush. Sound/timer/VBL callbacks remain zero. No title/menu interaction, gameplay,
+audio, native-window or browser acceptance; Marathon/PPC originals not rerun.
+The hidden window/offscreen work is startup evidence, not a displayed game frame.
+
+Independent verification in /tmp/systemless-repaint-volume-check.txt confirms
+output /tmp/systemless-ev-repaint-saved.slv is 7,239,400 bytes, SHA256
+077a48e820e947cbfdb9346f105c737770dbca6288d690d47ecac0d3d597028e,
+with preferences node 28 -> 29 and unchanged metadata/fork bytes and all companion
+entries. Input /tmp/systemless-ev-calcvis-saved.slv remains SHA256
+ff1d7b960c7787f0016992809979eee85257cba2daf2488e00134c1a11d168f7.
+No original assets or snapshot files enter Git.
+
+Next: inspect live source/destination descriptors and implement shared validated
+CGrafPort/bitmap/PixMap reference normalization for CopyBits if confirmed, retaining
+all strict indexed formats, bounds, palettes and coherent GPU transfer semantics.
+Use both ABI fixtures and actual offscreen color-port copies, then replay EV.
+Marathon's font selection without a current port remains open. Full rebuild and
+complete wgpu text rendering/library integration remain active requirements.

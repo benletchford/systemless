@@ -3173,3 +3173,36 @@ interaction acceptance remain incomplete.
 
 Primary references: [CalcVis](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-287.html)
 and [CalcVisBehind](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-288.html).
+
+
+### Exposed window and desktop repainting
+
+PaintOne A90C / PaintBehind A90D and matching PPC imports use one typed Repaint
+request. The manager snapshots global damage, clips it to the desktop, subtracts
+visible structures above each selected window, and prepares exposed content and
+frame geometry. PaintOne selects one window; PaintBehind selects a list suffix.
+NIL denotes desktop repaint. Desktop drawing subtracts all visible window
+structures. All clipping uses inversion-region geometry, including holes.
+
+PaintOne uses the word controls SaveUpdate ($09DA) and PaintWhite ($09DC): exposed
+content is added to updateRgn only when SaveUpdate is set, and background erasure
+occurs only when PaintWhite is set. PaintBehind suppresses content erasure and
+sets PaintWhite after its drawing operation. It still repaints frames, schedules
+updates when enabled and paints exposed desktop. InitWindows initializes both
+controls and the eight-byte DeskPattern at $0A3C. Desktop paints read that live
+pattern rather than a separate renderer constant.
+
+Update-region growth is staged for every selected window before destination
+pixel operations. Invalid geometry, unsupported custom WDEFs and allocation
+failure are reported before drawing. The existing wgpu frame/chrome/background
+renderer performs the pixels; content erasure is now an explicit option shared
+with ordinary window creation/geometry changes. The current port and manager-port
+record are restored by the existing drawing boundary. GPU/runtime faults are
+terminal and are not claimed to roll back pixels or previously published updates.
+
+This supports the rebuild's managed standard window definitions and indexed
+surface path. Custom WDEF callbacks, window pictures, desktop hooks, broader
+layering/theme behavior and full native/browser UI acceptance remain unfinished.
+Primary [PaintOne](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-285.html) and
+[PaintBehind](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-286.html) describe the
+separate erase/update controls and clipped frame/content behavior.

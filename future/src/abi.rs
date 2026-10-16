@@ -174,6 +174,7 @@ pub enum Service {
     Polygon(crate::polygons::Op),
     RegionRecording(bool),
     WindowVisibility(bool),
+    WindowRepaint(bool),
     PolygonDraw(crate::polygons::Verb),
     KillPoly,
     OffsetPoly,
@@ -572,6 +573,8 @@ impl Abi {
             b"MovePortTo" => Some(Service::MovePortTo),
             b"PortSize" => Some(Service::PortSize),
             b"PenSize" => Some(Service::PenSize),
+            b"PaintOne" => Some(Service::WindowRepaint(false)),
+            b"PaintBehind" => Some(Service::WindowRepaint(true)),
             b"CalcVis" => Some(Service::WindowVisibility(false)),
             b"CalcVisBehind" => Some(Service::WindowVisibility(true)),
             b"OpenRgn" => Some(Service::RegionRecording(false)),
@@ -1464,6 +1467,18 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("GetWMgrPort stack overflow".into()))?;
                 c.dar[15] = next;
                 Ok((Call::GetWMgrPort(destination), Reply::None))
+            }
+            0xa90c | 0xa90d => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let request = crate::windows::Repaint {
+                    window: u32::from_be_bytes(args[4..8].try_into().unwrap()),
+                    clobbered: u32::from_be_bytes(args[..4].try_into().unwrap()),
+                    behind: opcode == 0xa90d,
+                };
+                c.dar[15] = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("repaint stack overflow".into()))?;
+                Ok((Call::WindowRepaint(request), Reply::None))
             }
             0xa909 | 0xa90a => {
                 let behind = opcode == 0xa90a;
@@ -3580,6 +3595,11 @@ impl Abi {
                     Call::NewWindow(request)
                 }
             }
+            Service::WindowRepaint(behind) => Call::WindowRepaint(crate::windows::Repaint {
+                window: c.gpr[3],
+                clobbered: c.gpr[4],
+                behind,
+            }),
             Service::WindowVisibility(behind) => Call::WindowVisibility(if behind {
                 crate::windows::Visibility::Behind {
                     start: c.gpr[3],
@@ -4593,6 +4613,7 @@ impl Abi {
                         | Service::PenMode
                         | Service::PenNormal
                         | Service::PenVisibility(_)
+                        | Service::WindowRepaint(_)
                         | Service::WindowVisibility(_)
                         | Service::RegionRecording(_)
                         | Service::Polygon(crate::polygons::Op::Close)
