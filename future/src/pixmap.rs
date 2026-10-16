@@ -89,7 +89,6 @@ fn indexed(memory: &Memory, address: GuestPtr) -> Result<Indexed> {
     if width * usize::from(depth) > bitmap.row_bytes * 8 || raw_len > crate::load::IMAGE_LIMIT {
         return Err(bad());
     }
-    memory.read(bitmap.base, raw_len)?;
     let table_handle = long(42);
     if table_handle == 0 {
         return Err(bad());
@@ -228,6 +227,15 @@ mod tests {
         }
         memory.map(GuestPtr(0x3000), data, Permissions::RX).unwrap();
         (memory, expected)
+    }
+    #[test]
+    fn default_color_metadata_does_not_require_attached_pixels_but_drawing_does() {
+        let (mut memory, _) = fixture(8, 0x8000);
+        let colors = default_colors(&memory, GuestPtr(0x1000)).unwrap();
+        memory.write(GuestPtr(0x1000), &0u32.to_be_bytes()).unwrap();
+        assert_eq!(default_colors(&memory, GuestPtr(0x1000)).unwrap(), colors);
+        assert!(source(&memory, GuestPtr(0x1000)).is_err());
+        assert!(destination(&memory, GuestPtr(0x1000)).is_err());
     }
     #[test]
     fn packed_depths_padding_negative_origins_and_entry_order_decode_exactly() {

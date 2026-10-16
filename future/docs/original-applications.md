@@ -2154,3 +2154,33 @@ validation for default color metadata. No callbacks complete before this boundar
 EV was not replayed and remains at its previously observed ProtectEntry boundary.
 Neither original is playable. Full rebuild stays active; next work is the actual
 color-port fault and subsequent Marathon startup.
+
+
+## Color-port metadata checkpoint (2026-10-16)
+
+Fixed the original Marathon ColorPort Open read-at-zero fault. Default color
+selection only needs PixMap geometry/format and palette metadata; indexed parsing
+no longer reads its pixel buffer. Actual source/destination drawing still unpacks
+checked storage and rejects a missing buffer. New tests exercise initialization
+before offscreen buffer attachment through both CPUs and explicitly assert drawing
+still fails with nil storage.
+
+Final acceptance: 63 checks pass, zero failed/ignored: 38 library, five color-port,
+13 device and seven indexed-destination tests. GPU cases were enabled and executed.
+Logs: /tmp/systemless-port-metadata-tests.txt and
+/tmp/systemless-port-metadata-drawing-tests.txt, both terminal exit 0. Strict
+Rust 1.99 all-target lint passes (/tmp/systemless-port-metadata-lint.txt).
+Sequential changed-file formatting and whitespace checks pass. This is focused
+acceptance, not a full-suite or new minimum-version result.
+
+Original Marathon passes color-port setup and completes its first real Timer
+Manager callback (completed timer=1, sound=0, VBL=0). It then requests Elems68K /
+Pack5 ($A9EC), PC $0103CE22, selector $001E with extended operand at $0080FDBA.
+The pinned SDK Traps.h confirms the package identity:
+/tmp/systemless-marathon-a9ec-sdk.txt. Evidence:
+/tmp/systemless-marathon-port-metadata.txt, explicit missing-service exit 1.
+No title/menu/gameplay or audible-output acceptance is inferred. EV was not
+replayed and remains at its previously verified ProtectEntry boundary. Neither
+original game is playable. Next: document and implement the actual SANE elementary
+operation, numeric representation/exception behavior and ABI, then continue
+Marathon. Keep the full rebuild active and PR in draft.

@@ -2570,3 +2570,13 @@ lifecycles remain unfinished. References: Apple QuickDraw Reference,
 https://leopard-adc.pepas.com/documentation/Carbon/Reference/QuickDraw_Ref/QuickDraw_Ref.pdf
 and QD13's offscreen table replacement example:
 https://leopard-adc.pepas.com/technotes/qd/qd_13.html
+
+
+### PixMap metadata before storage attachment
+
+Indexed PixMap parsing validates dimensions, row capacity, format and the live
+palette without reading pixels. Color-port default color selection uses that
+metadata view, so a caller can initialize a port before attaching its offscreen
+pixel buffer. Source/destination drawing still unpacks checked guest storage and
+fails on an inaccessible buffer. Both CPU adapters exercise this initialization
+order; a unit regression proves nil storage remains invalid for actual drawing.

@@ -585,3 +585,63 @@ fn color_port_drawing_uses_pixmap_and_attached_patterns_without_corrupting_graph
         assert_eq!(handles(&a, PORT), graph);
     }
 }
+
+#[test]
+fn both_cpus_open_color_ports_before_offscreen_pixels_are_attached() {
+    use systemless_future::devices::Op;
+    for architecture in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        let main = ppc(&mut a, 4, 0);
+        let gd = a.runtime.memory.u32(GuestPtr(main)).unwrap();
+        let pm = a.runtime.memory.u32(GuestPtr(gd + 22)).unwrap();
+        let pm_data = a.runtime.memory.u32(GuestPtr(pm)).unwrap();
+        let mut copied = a
+            .runtime
+            .memory
+            .read(GuestPtr(pm_data), 50)
+            .unwrap()
+            .to_vec();
+        copied[..4].fill(0);
+        let off_pm = a
+            .runtime
+            .process
+            .new_handle(&mut a.runtime.memory, 50, true)
+            .unwrap();
+        let off_pm_data = a.runtime.memory.u32(GuestPtr(off_pm)).unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(off_pm_data), &copied)
+            .unwrap();
+        let off = a
+            .runtime
+            .process
+            .new_handle(&mut a.runtime.memory, 62, true)
+            .unwrap();
+        let off_data = a.runtime.memory.u32(GuestPtr(off)).unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(off_data + 22), &off_pm.to_be_bytes())
+            .unwrap();
+        let mut manager = std::mem::take(&mut a.runtime.process.devices);
+        manager
+            .call(
+                &mut a.runtime.memory,
+                &mut a.runtime.process,
+                Op::Select(off),
+            )
+            .unwrap();
+        a.runtime.process.devices = manager;
+        match architecture {
+            Architecture::PowerPc => {
+                ppc(&mut a, 1, PORT);
+            }
+            Architecture::M68k => native(&mut a, 0, PORT),
+        }
+        let port_pm = handles(&a, PORT)[0];
+        let data = a.runtime.memory.u32(GuestPtr(port_pm)).unwrap();
+        assert_eq!(a.runtime.memory.u32(GuestPtr(data)).unwrap(), 0);
+        assert_eq!(a.runtime.memory.u32(GuestPtr(PORT + 80)).unwrap(), 1);
+        assert_eq!(a.runtime.memory.u32(GuestPtr(PORT + 84)).unwrap(), 0);
+        call(&mut a, Action::Close, PORT).unwrap();
+    }
+}
