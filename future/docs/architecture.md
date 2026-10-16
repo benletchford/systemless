@@ -3472,3 +3472,28 @@ MemErr/ResErr and does not allocate guest objects. Nil arguments and empty
 rectangles are inert; malformed supported inputs fail before pixel writes.
 Direct-color source/destination formats, full picture recording elsewhere,
 PlotCIconHandle transforms and broader Icon Utilities remain open.
+
+### Button polling and host MBState delivery
+
+Native Button ($A974) and the PPC import share a read of the high bit of guest
+MBState ($0172): zero means pressed, one means released. The event subsystem
+initializes that byte to $80. Host pointer transitions preflight the state byte,
+post the corresponding event when permitted, and update its high bit while
+preserving the other seven bits. Masked events still change physical state;
+focus loss releases a held button. Polling neither traverses nor consumes queue
+entries, so a queued old mouseDown cannot fabricate a currently held button.
+Guest driver writes to MBState remain observable through either CPU adapter.
+
+There is conflicting Apple prose. The [Toolbox Button page](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-73.html)
+says it searches the event queue, but the classic [Apple device-driver note DV520](https://leopard-adc.pepas.com/technotes/dv/dv_520.html)
+explicitly requires device drivers to update MBState for Button and defines its
+high-bit polarity. The [later Event Manager reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/EventManagerLegacyRef/event_mgr_legacy_ref.pdf)
+also describes current-state polling. This slice follows the explicit classic
+driver contract. The earlier experimental queue-only implementation was replaced
+before publication. The first original EV replay passed Button but exhausted its budget in the old
+queue-only StillDown implementation despite released MBState. StillDown now
+follows the preserved Systemless comparison contract: physical press plus no
+pending mouseUp. A queued original mouseDown does not end tracking; a pending
+release still ends it after a subsequent press. Neither query consumes events.
+This distinguishes a verified legacy comparison from native Macintosh parity;
+full mouse-driver and event-timing compatibility remain open.

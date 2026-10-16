@@ -20,6 +20,7 @@ pub enum Service {
     NumToString,
     StringToNum,
     Gestalt,
+    Button,
     StillDown,
     FindWindow,
     PtInRect,
@@ -445,6 +446,7 @@ impl Abi {
             b"BeginUpdate" => Some(Service::Window(crate::windows::Op::Begin)),
             b"EndUpdate" => Some(Service::Window(crate::windows::Op::End)),
             b"Gestalt" => Some(Service::Gestalt),
+            b"Button" => Some(Service::Button),
             b"StillDown" => Some(Service::StillDown),
             b"FindWindow" => Some(Service::FindWindow),
             b"EmptyRect" => Some(Service::EmptyRect),
@@ -1835,6 +1837,10 @@ impl Abi {
                 ))
             }
             0xa0ad | 0xa1ad => Ok((Call::Gestalt(c.dar[0]), Reply::M68kGestalt)),
+            0xa974 => {
+                memory.validate_write(GuestPtr(sp), 1)?;
+                Ok((Call::Button, Reply::StackByte(GuestPtr(sp))))
+            }
             0xa973 => {
                 memory.validate_write(GuestPtr(sp), 1)?;
                 Ok((Call::StillDown, Reply::StackByte(GuestPtr(sp))))
@@ -3896,6 +3902,7 @@ impl Abi {
                 })
             }
             Service::Gestalt => Call::Gestalt(c.gpr[3]),
+            Service::Button => Call::Button,
             Service::StillDown => Call::StillDown,
             Service::FindWindow => Call::FindWindow {
                 point: [(c.gpr[3] >> 16) as i16, c.gpr[3] as i16],

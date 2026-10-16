@@ -8657,3 +8657,82 @@ tests pass:88CPU cases from the regression log,3new PlotCIcon GPU cases and the
 include these5subsequently executed cases; the other8GPU cases remain unverified.
 No full-suite, native/browser, CI, priority-game interaction/audio/persistence or
 complete text-library integration acceptance is claimed.
+
+## Shared Button polling and corrected StillDown tracking (2026-10-16)
+
+Implemented native Button ($A974) and the PPC import through the shared event
+state. The byte result uses the existing checked Pascal result slot or PPC r3;
+nonresult registers, stack padding, allocator/error state and queued events remain
+unchanged. Both Button and StillDown now have readable trap veneers, appended so
+existing veneer addresses remain stable.
+
+Apple's Toolbox Button page describes a queue search, but classic driver note
+DV520 explicitly requires MBState ($0172) updates for Button and defines its high
+bit:1=released,0=pressed. The later Event Manager reference also describes current
+state. Followed that explicit classic driver contract; the initial experimental
+queue-only Button implementation/tests were superseded before publication.
+Events install MBState=$80. Host press/release preflights that byte before posting
+and updates only its high bit, including masked events and focus-loss release.
+Guest driver writes remain visible; old queued clicks do not fabricate a press.
+Primary URLs and the conflict resolution are in architecture.md.
+
+The first original EV replay with Button implemented
+(/tmp/systemless-ev-button.txt,terminal exit1) passed72Button calls but exhausted
+its10,000,000-boundary budget after904,555StillDown calls. The old rebuild modeled
+StillDown solely as the absence of queued mouse events. The preserved Systemless
+Toolbox StillDown implementation instead requires a physical press and no queued
+mouseUp; its own original mouseDown must not end tracking. Corrected the shared
+service accordingly, using the same canonical MBState as Button. This is an
+explicit preserved-Systemless comparison, not a native System7 parity claim.
+Tests cover released/pressed states, pending down/up/key events, release/repress,
+masked release, nonconsumption, corruption-independent Button polling and exact
+MBState write-fault preflight. The prior host-input test was extended to cover
+physical state rather than preserving its incorrect queue-only expectation.
+
+Validation totals93distinct scoped passes:76core+7Button/tracking+3events+4host_input
++3mouse_wait. /tmp/systemless-button-tracking-tests.txt exits0; the final veneer
+extension and stronger protected-state assertion are confirmed by all7cases in
+/tmp/systemless-button-veneer-final-tests.txt,exit0. Earlier5/6case exploratory runs
+are superseded, not added twice. Strict exact-source lint with both changed test
+targets (/tmp/systemless-button-verified-lint.txt) and tracer build
+(/tmp/systemless-button-verified-tracer-build.txt) exit0. Changed-file sequential
+format/whitespace checks pass. Three existing core GPU cases were ignored and
+remain unverified; no fresh GPU acceptance for this input-only slice.
+
+The final original EV replay (/tmp/systemless-ev-button-tracking.txt,exit1) uses
+the same app and input volume as the first run, without synthetic input. A read-only
+watch at$0172 reports$80 initially and no changes throughout. It completes27icon
+plots,72Button calls and just1StillDown call, then reaches missing GetKeys($A976),
+PC01022152, after menu drawing. The trace's latest decoded service is Menu(Draw),
+because the unknown GetKeys opcode cannot be dispatched. Completed callbacks:
+sound0,timer0,VBL0. No original visible frame, menu interaction, keyboard input,
+audio or gameplay acceptance is claimed. Next executable slice: shared keyboard
+state/GetKeys and bounded real interaction, alongside Marathon's port issue.
+
+EV app SHA256 remains
+d739c1d5bd0d5c7efddc55f34bfadd8f66a25c819a00bbed9523c7c56e3f716b.
+Input /tmp/systemless-ev-plotcicon-saved.slv is
+07c0ea3d74c3cfcc18ed79ed07ec7c4e1b05aeb5fa18fe751811f5db6eded5e1.
+Final /tmp/systemless-ev-button-tracking-saved.slv is7,239,400bytes,SHA256
+aa7b09d1b3ab4660f83616315fe9ddfaf0f07b2d232441cfca75fa215ccba32c.
+The independent verifier passes CRC/catalog/forks, preferences50->51 with identical
+metadata/fork bytes and unchanged companions. The initial budget-exhausted run's
+checkpoint has the same bytes/hash. Tracer flushes remain memory-only.
+
+A fresh original Marathon indexed replay
+(/tmp/systemless-marathon-button-indexed.txt,exit1) still reaches TextFont family4,
+PC01010E86, with no current QuickDraw port; callbacks:sound0,timer62,VBL0. The old
+temporary companion volume had disappeared. Reconstructed a new Git-ignored
+fixture from the existing original archive extraction: Map,Shapes,Sounds,Music
+at root2,nodes17–20, with original data/resource forks and AppleDouble Finder
+metadata. The application forks remain loader-owned. Verified fork lengths and
+SHA256s are recorded in /tmp/systemless-marathon-companions-recovered.txt. The new
+volume is not claimed byte-identical to the old catalog. Its CRC is valid and the
+Rust decoder accepts it:11,595,805bytes,SHA256
+3eb20478ac49df19a8a6015e2ab196366475042edbcb3e25f94474a75154f1d7,
+stored durably at future/target/private-originals/marathon/companions.slv.
+The unchanged app fork is625,479bytes,SHA256
+afa4e77d8b53c42062fe4b730472cfbb396aacf715c2181aeb5dd12ea60491a1.
+No original bytes/volumes enter Git. Neither priority game is playable. Full
+rebuild and complete wgpu text rendering remain active; full-suite,CI,native/browser,
+input timing/device parity and original-gameplay/persistence acceptance stay open.

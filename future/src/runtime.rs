@@ -753,8 +753,13 @@ impl Runtime {
                             let result = crate::decimal::call(&mut self.memory, op)?;
                             reply.apply(&mut self.cpu, &mut self.memory, result, 0)?;
                         }
+                        Call::Button => {
+                            // Apple TN DV520: polling reads the current MBState high bit.
+                            let pressed = crate::events::button(&self.memory)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, u32::from(pressed), 0)?;
+                        }
                         Call::StillDown => {
-                            let down = !crate::events::available(&self.memory, 0x0006)?;
+                            let down = crate::events::still_down(&self.memory)?;
                             reply.apply(&mut self.cpu, &mut self.memory, u32::from(down), 0)?;
                         }
                         Call::FindWindow { point, destination } => {
@@ -2521,6 +2526,7 @@ impl Runtime {
                         | Call::SecondsToDate { .. }
                         | Call::ReadDateTime(_)
                         | Call::Decimal(_)
+                        | Call::Button
                         | Call::StillDown
                         | Call::FindWindow { .. }
                         | Call::EmptyRect(_)

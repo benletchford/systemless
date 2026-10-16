@@ -62,7 +62,13 @@ impl Pointer {
         let mut next = *input;
         next.modifiers = (next.modifiers & !0x80) | if down { 0 } else { 0x80 };
         let ticks = memory.u32(GuestPtr(0x16a))?;
+        memory.validate_write(events::MB_STATE, 1)?;
+        let state = memory.read(events::MB_STATE, 1)?[0];
         events::post(memory, if down { 1 } else { 2 }, 0, ticks, next)?;
+        memory.write(
+            events::MB_STATE,
+            &[if down { state & !0x80 } else { state | 0x80 }],
+        )?;
         // A masked event still changes the physical button state.
         *input = next;
         self.down = down;

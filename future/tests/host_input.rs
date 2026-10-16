@@ -150,17 +150,24 @@ fn masked_button_changes_state_and_focus_loss_releases_it() {
 }
 
 #[test]
-fn still_down_reports_pending_mouse_events_without_consuming_them_on_both_cpus() {
+fn still_down_requires_pressed_state_and_no_queued_release_on_both_cpus() {
     use systemless_future::{
         cpu::{Architecture, Cpu},
         load::STACK_BASE,
     };
     let file = support::pef_program(&[0x4e800020], &[b"StillDown"], 16);
-    for pending in [None, Some(1u16), Some(2), Some(3)] {
+    for (pending, pressed) in [None, Some(1u16), Some(2), Some(3)]
+        .into_iter()
+        .flat_map(|event| [false, true].map(move |pressed| (event, pressed)))
+    {
         let mut app = LoadedApplication::pef(&file.bytes, None).unwrap();
         app.runtime
             .memory
             .map(GuestPtr(0x50000000), vec![0xa9, 0x73], Permissions::RX)
+            .unwrap();
+        app.runtime
+            .memory
+            .write(events::MB_STATE, &[if pressed { 0 } else { 0x80 }])
             .unwrap();
         if let Some(what) = pending {
             events::post(
@@ -200,7 +207,7 @@ fn still_down_reports_pending_mouse_events_without_consuming_them_on_both_cpus()
                 stack,
             );
             assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
-            let expected = !matches!(pending, Some(1 | 2));
+            let expected = pressed && pending != Some(2);
             match &app.runtime.cpu {
                 Cpu::M68k(c) => {
                     assert_eq!(c.dar[15], stack);

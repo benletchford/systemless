@@ -5,6 +5,16 @@ use crate::{
     memory::{GuestPtr, Memory, Permissions},
     Error, Result,
 };
+/// Apple TN DV520: high bit 1 means released; low bits are not the Boolean.
+pub const MB_STATE: GuestPtr = GuestPtr(0x172);
+pub fn button(memory: &Memory) -> Result<bool> {
+    Ok(memory.read(MB_STATE, 1)?[0] & 0x80 == 0)
+}
+/// Tracking continues only during the same physical press, without a queued release.
+/// Comparison contract: preserved Systemless Toolbox StillDown ($A973).
+pub fn still_down(memory: &Memory) -> Result<bool> {
+    Ok(button(memory)? && !available(memory, 0x0004)?)
+}
 pub const MOUSE: GuestPtr = GuestPtr(0x830);
 pub const SYSTEM_MASK: GuestPtr = GuestPtr(0x144);
 pub const QUEUE_HEADER: GuestPtr = GuestPtr(0x14a);
@@ -32,6 +42,7 @@ pub(crate) fn install(memory: &mut Memory) -> Result<()> {
         vec![0; COUNT * STRIDE as usize],
         Permissions::RW,
     )?;
+    memory.write(MB_STATE, &[0x80])?;
     memory.write(SYSTEM_MASK, &0xffefu16.to_be_bytes())?;
     memory.write(QUEUE_HEADER, &[0; 10])
 }

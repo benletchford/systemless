@@ -4000,3 +4000,55 @@ Tracer flushes remain memory-only. Next: mouse-button service and bounded input
 interaction. Marathon retains its last verified indexed TextFont/no-current-port
 boundary; it was not replayed here. Neither priority game is playable. Full rebuild
 and complete wgpu text rendering remain active.
+
+## Original games after Button/StillDown (2026-10-16)
+
+Both CPU adapters now share current button polling via MBState and tracking via
+physical press plus no pending mouseUp. Host delivery keeps the guest state byte
+and events coherent, including masked presses and focus loss. Primary-source
+conflicts and the preserved-Systemless tracking comparison are in architecture.md.
+
+Original EV first advanced past Button but exhausted its budget in the previous
+queue-only StillDown implementation. The corrected final replay, with no injected
+input and a read-only MBState watch, completes27PlotCIcon,72Button and1StillDown
+calls, then stops at GetKeys($A976),PC01022152, after menu drawing. MBState stays$80
+(released). Latest decoded service Menu(Draw) is not the failing operation.
+
+```sh
+future/target/debug/examples/trace_application code \
+  future/target/private-originals/ev/application.raw-rsrc 10000000 \
+  --graphics --display 640x480x8 \
+  --volume /tmp/systemless-ev-plotcicon-saved.slv \
+  --save-volume /tmp/systemless-ev-button-tracking-saved.slv \
+  --services-only --elapse-waits --watch-address 172
+```
+
+Output filename must be fresh. Log /tmp/systemless-ev-button-tracking.txt,exit1;
+callbacks all0. Independent volume verification passes, preferences50->51 while
+metadata/fork bytes and companions remain unchanged. Snapshot SHA256
+aa7b09d1b3ab4660f83616315fe9ddfaf0f07b2d232441cfca75fa215ccba32c,
+7,239,400bytes. Input/app hashes and the initial diagnostic budget exhaustion are
+in progress.md. Flushes are memory-only, not host persistence acceptance.
+
+Fresh Marathon replay uses a reconstructed Git-ignored companion catalog because
+the old temporary volume disappeared. Map/Shapes/Sounds/Music contain original
+forks and Finder metadata; this is a new catalog, not a byte-identical recovery of
+the old image. Volume:future/target/private-originals/marathon/companions.slv,
+11,595,805bytes,SHA256
+3eb20478ac49df19a8a6015e2ab196366475042edbcb3e25f94474a75154f1d7.
+
+```sh
+future/target/debug/examples/trace_application code \
+  future/target/private-originals/marathon/application.raw-rsrc 1000000 \
+  --graphics --display 640x480x8 \
+  --volume future/target/private-originals/marathon/companions.slv \
+  --services-only --elapse-waits
+```
+
+Log /tmp/systemless-marathon-button-indexed.txt,exit1:TextFont family4,
+PC01010E86,no current QuickDraw port,62timer callbacks,0sound/VBL. App hash unchanged.
+93scoped tests and strict lint pass;3existing core GPU tests are skipped, no fresh
+GPU rendering acceptance here. Next: GetKeys/keyboard state and bounded interaction,
+and Marathon's missing port initialization. Neither game is playable; no original
+visible frame, real menu/keyboard interaction, audio or gameplay acceptance.
+Full rebuild and complete wgpu text rendering remain active requirements.

@@ -103,6 +103,7 @@ pub enum Call {
     },
     ReadDateTime(GuestPtr),
     Gestalt(u32),
+    Button,
     StillDown,
     Random,
     Logical {
