@@ -6071,3 +6071,15 @@ boundary. Neither game is playable. Next: GetCTable resource lookup and independ
 table allocation/seed/lifetime semantics, then continue Marathon; finish EV's
 per-device palette protection and reservation. The full rebuild stays active and
 PR #4802 remains draft.
+
+
+## User-added rebuild requirement: complete wgpu text rendering (2026-10-16)
+
+The active rebuild now explicitly includes all guest/UI text through wgpu and a
+library evaluation before further custom extension. This requirement is open,
+not completed by the existing supported GPU text path. Glyphon's current upstream
+manifest uses wgpu 30 and offers custom snapped mask glyphs; Vello GPU offers
+GPU raster/composition with CPU preprocessing and glifo text. No dependency has
+yet been selected or added. See [text-rendering.md](text-rendering.md) for primary
+sources, the planned compatibility prototype and completion criteria. Full
+rebuild and original game compatibility requirements remain intact and active.

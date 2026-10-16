@@ -2805,3 +2805,13 @@ helper shared by arithmetic and comparisons. Comp, 96-bit formats, alternate
 controls and PPC math imports remain explicit gaps. SDK macros for FCMPD/FCPXD
 are captured at /tmp/systemless-typed-compare-sdk.txt; Apple Numerics Manual,
 second edition, chapter 20 specifies relations and signaling behavior.
+
+
+### Explicit wgpu text completion requirement (2026-10-16)
+
+The user added complete text rendering through wgpu to full-rebuild acceptance.
+The supported text path already composes destination pixels through wgpu, while
+font decoding/layout/source coverage remain CPU work. Complete API/UI coverage
+and an evidence-based library evaluation are now required before goal completion.
+See [text-rendering.md](text-rendering.md) for scope, Glyphon/Vello primary-source
+findings, implementation milestones and concrete pixel/CPU/platform acceptance.
