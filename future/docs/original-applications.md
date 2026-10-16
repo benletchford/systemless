@@ -3914,3 +3914,18 @@ change, metadata/fork bytes and companions identical. Continue using the ignored
 future/target/private-originals/ev/application.raw-rsrc fixture. Next work is
 GetPixPat resource loading and owned pixel-pattern state, with real drawing
 semantics rather than an empty success stub. Both original games remain unplayable.
+
+
+### EV: typed pixel-pattern loading
+
+The original now passes GetPixPat requests128–137 and200; all11resources exist
+in EV Graphics. The rebuild converts offsets into independent owned PixPat,
+PixMap, pixel, color-table and cache handles rather than returning raw resource
+bytes. Color-pattern installation/painting remains open. The next missing service
+is GetCIcon$AA1E/id10000, PC00017352. /tmp/systemless-ev-pixpat-final.txt exits1,
+callbacks0. No visible frame/UI/audio/gameplay acceptance is claimed.
+Saved /tmp/systemless-ev-pixpat-final-saved.slv (7,239,400bytes), SHA256
+74930f4351f5fba929ece70350ab5b2a98564a970e668627f21b0e2e70785160,
+passes independent CRC/catalog/fork checks against ev-pixpat-saved: preferences
+47->48 only identity change, metadata/fork bytes and companions unchanged. Use
+this checkpoint with the ignored original application fork for the color-icon slice.

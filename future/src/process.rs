@@ -24,6 +24,7 @@ pub struct ResourceInfo {
 }
 #[derive(Default)]
 pub struct Process {
+    pub pixpats: crate::pixpat::Manager,
     pub numerics: crate::numerics::Numerics,
     pub timers: crate::timers::Timers,
     pub retrace: crate::retrace::Retrace,
@@ -360,6 +361,9 @@ impl Process {
         self.heap.as_mut().unwrap().release(pointer);
         self.mem_error = 0;
     }
+    pub(crate) fn pixel_image_is_pinned(&self, handle: u32) -> bool {
+        self.pixel_pinned(handle)
+    }
     pub fn new_handle(&mut self, memory: &mut Memory, size: u32, clear: bool) -> Result<u32> {
         self.ensure_heap(memory)?;
         self.mem_error = MEM_FULL;
@@ -691,6 +695,7 @@ impl Process {
         }
         self.handle_size(memory, handle)?;
         self.pixel_locks.remove(&handle);
+        self.pixpats.forget(handle);
         let HandleBlock { data, .. } = self.handles.remove(&handle).unwrap();
         let heap = self.heap.as_mut().unwrap();
         heap.release(data);

@@ -3392,3 +3392,15 @@ large-image throughput and native pattern parity remain open. Existing geometry/
 color-work budgets and device storage-binding limits are checked before dispatch.
 The preserved Systemless GWorld algorithm is a comparison reference, not a second
 production backend or proof of native QuickDraw equivalence.
+
+
+### Typed pixel-pattern resource ownership
+
+GetPixPat resolves through the shared live Resource Manager, then constructs an
+independent handle graph from checked serialized offsets. The graph owns its
+record, PixMap, pixels, color table and empty invalidated caches; it is independent
+of resource-file lifetime and survives payload movement through stable masters.
+DisposePixPat preflights the complete graph before freeing it. Partial allocation
+failure rolls back new graph members. Both CPU adapters marshal into one manager.
+This is typed resource-object support; installation and GPU color-pattern painting
+remain separate requirements, alongside other PixPat constructors/copy operations.

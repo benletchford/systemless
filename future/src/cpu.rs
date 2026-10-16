@@ -153,6 +153,7 @@ pub enum Call {
     MoreMasters,
     Device(crate::devices::Op),
     Color(crate::color::Op),
+    PixPat(crate::pixpat::Op),
     PixelBase(u32),
     Pixels {
         pixmap: u32,

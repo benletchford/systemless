@@ -32,6 +32,7 @@ pub mod memory;
 pub mod menus;
 pub mod picture;
 mod pixmap;
+pub mod pixpat;
 pub mod polygons;
 mod port_layout;
 pub mod process;

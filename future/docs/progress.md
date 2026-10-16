@@ -8441,3 +8441,74 @@ Use this saved volume and the ignored original fork for the next resource slice.
 All tracked validation/replay handles are terminal. No full-suite/native/browser/
 CI, original frame/UI/audio/gameplay or large-workload throughput claim. The full
 rebuild, both original games and complete GPU text rendering remain active.
+
+
+## Typed GetPixPat resource graphs
+
+Primary contracts: IM Color QuickDraw's PixPat/compiled 'ppat' descriptions,
+https://spinsidemacintosh.neocities.org/im202, and Apple's QuickDraw Reference
+(PixPat), https://leopard-adc.pepas.com/documentation/Carbon/Reference/QuickDraw_Ref/QuickDraw_Ref.pdf.
+GetPixPat creates a new initialized structure, not a raw resource handle. The
+preserved implementation explicitly documents its raw-resource shortcut as a
+native divergence; the rebuild does not reproduce that shortcut.
+
+The original EV Graphics/ppat128 is686bytes, type1,32x32/depth4, row16, with
+record-relative PixMap/data/color-table offsets. The new shared loader resolves
+through the normal current resource chain and snapshots live cached resource
+bytes, so guest edits are observed. It validates offsets/non-overlap, indexed
+component layout,72dpi,power-of-two dimensions, row footprint, color tables and
+used pixel indices before publishing a graph. Supported source depths1/2/4/8;
+direct/relative pattern layouts remain explicitly unsupported.
+
+Each call creates an independent nonresource PixPat record, PixMap, pixel data,
+color table and two empty runtime cache handles, with patXValid=-1. Serialized
+relative offsets become guest handles. Source resource identity and bytes remain
+independent; typed patterns survive source release and heap compaction. Partial
+allocation failure rolls back all new graph members, returns nil/MemErr-108 and
+permits retry. The resource cache itself may already have loaded before a later
+parse/allocation failure, matching the service layering rather than pretending
+all Resource Manager activity rolled back.
+
+Native GetPixPat$AA0C pops a signed two-byte ID and writes a four-byte caller-slot
+handle; DisposePixPat$AA08 consumes a four-byte handle. PPC GetPixPat and both
+DisposePixPat/DisposPixPat spellings use the same manager. Disposal preflights the
+whole owned graph, modified pointers, minimum record sizes, writable masters and
+pixel pins before freeing children/root. Unknown/foreign graphs explicitly fault;
+nil disposal is inert. Generic raw DisposeHandle forgets root metadata but does
+not deep-free children, so callers still need the proper PixPat destructor.
+Get/Dispose error globals are preflighted/published through the shared runtime.
+
+Six new integration tests cover actual native/PPC frames/registers, fresh graph
+identity, live source palette edits, flags, source release, compaction, complete
+free-space recovery, OOM rollback/retry, missing IDs, all104truncated prefixes,
+malformed offsets/layouts/tables/indices and atomic disposal of modified or
+resized graphs. Full color-pattern installation/painting, NewPixPat/CopyPixPat,
+other pattern types and expanded rendering caches remain open; this checkpoint
+establishes real resource-object construction and disposal, not color drawing.
+
+Initial original replay35318 exits1 after GetPixPat128–137 and200, reaching
+GetCIcon$AA1E/resource10000 atPC00017352. No sound/timer/VBL callbacks. Snapshot
+/tmp/systemless-ev-pixpat-saved.slv7,239,400bytes, SHA256
+7b5f6bc5e3d14b725c41ef9dc963174374c8e3f869d41ac9c8c627c54aea27ff,
+passes independent CRC/catalog/fork verification: preferences46->47 only identity
+change, metadata/fork bytes and all companions unchanged. Log
+/tmp/systemless-ev-pixpat.txt. Exact final-source replay60609 remains live; poll it.
+Full rebuild, original gameplay and complete GPU text remain active.
+
+Final acceptance is terminal: core35133 exit0,76core+6PixPat; earlier resource
+regressions36674 exit0,3current-resource+8resource-map tests (the earlier5PixPat
+cases are duplicated by the final6). Total93distinct tests passed. Three existing
+core GPU cases were ignored and remain unverified in this checkpoint; no fresh
+GPU claim is made for this resource-only slice. Verified lint46289 and exact-source
+tracer87757 exit0. Sequential changed-file formatting and whitespace pass.
+
+Exact-source EV60609 exits1 at GetCIcon$AA1E/id10000/PC00017352 after pattern
+requests128–137 and200. The saved EV Graphics map independently contains all11
+requested ppat IDs. /tmp/systemless-ev-pixpat-final.txt. Independent saved-volume
+checks pass preferences47->48 only identity change, metadata/fork bytes and all
+companions unchanged. /tmp/systemless-ev-pixpat-final-saved.slv7,239,400bytes,
+SHA25674930f4351f5fba929ece70350ab5b2a98564a970e668627f21b0e2e70785160.
+Continue with typed color-icon resource loading; pixel-pattern installation and
+painting remain separate open work. No original frame/UI/audio/gameplay, full-suite,
+native/browser/CI or full rebuild acceptance is claimed. All tracked handles are
+terminal. Full rebuild, both games and complete wgpu text remain active.
