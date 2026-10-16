@@ -27,6 +27,7 @@ pub enum Op {
     DisposeTable(u32),
     GetTable(i16),
     Maximum(GuestPtr),
+    Client(i16),
     Current,
     Select(u32),
     Main,
@@ -488,7 +489,7 @@ impl Manager {
                 }
                 return Ok(next);
             }
-            let device = if matches!(op, Op::Current | Op::Index { .. }) {
+            let device = if matches!(op, Op::Current | Op::Index { .. } | Op::Client(_)) {
                 self.selected(memory, process)?
             } else {
                 self.initialize(memory, process)?
@@ -503,6 +504,10 @@ impl Manager {
                 | Op::Depth { .. }
                 | Op::Select(_)
                 | Op::Next(_) => unreachable!(),
+                Op::Client(id) => {
+                    memory.write(GuestPtr(data.0 + 2), &id.to_be_bytes())?;
+                    Ok(0)
+                }
                 Op::Current | Op::Main | Op::First => {
                     let pointer = match op {
                         Op::Current => CURRENT,

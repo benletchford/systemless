@@ -6301,3 +6301,30 @@ is not representative application performance: target is 16x12 monochrome, font
 is synthetic, and there is no native/browser presentation. Wider real fonts,
 indexed formats, editing/scrolling/UI workloads, atlas memory growth, cold uploads
 and dispatch/synchronization profiling remain before production selection.
+
+
+## Color client identity prerequisite (2026-10-16)
+
+SetClientID now reaches one shared device service from the 68K AA3C Pascal
+procedure and PPC InterfaceLib import. It writes the selected live GDevice's
+16-bit gdID field (+2), including signed/high-bit values and zero, without
+changing another device's identity. This is required groundwork for client-aware
+palette protection/reservation and matching; ProtectEntry itself remains
+unsupported, so Escape Velocity's last stop is unchanged and neither priority
+game is claimed playable.
+
+The [Apple Color Manager summary](https://dev.os9.ca/techpubs/mac/ACI/ACI-108.html)
+defines the client procedure; its
+[device CLUT discussion](https://dev.os9.ca/techpubs/mac/ACI/ACI-107.html)
+distinguishes protection against palette changes from reservation against color
+matching. The legacy implementation is comparison evidence, not authoritative
+proof of full protection behavior. Follow-up must implement live table metadata,
+client ownership, QDError, invalidation and effects on SetEntries/color matching.
+
+Validation: /tmp/systemless-client-id-tests-final.txt terminal exit 0, 13 passed,
+1 GPU-only test ignored. The new fixture invokes both real CPU adapters and
+checks main/detached device isolation and replacing/clearing IDs. Strict runtime
+and probe lint passes in /tmp/systemless-client-id-lint.txt exit 0. Formatting and
+whitespace checks pass. The earlier test run failed because its fixture requested
+unsupported driver mode 0; final uses the documented detached mode -1. This is
+not an original-game replay or full color-manager acceptance.

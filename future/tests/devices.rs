@@ -27,6 +27,7 @@ fn app() -> LoadedApplication {
             b"NewGDevice",
             b"DisposeGDevice",
             b"DisposeCTable",
+            b"SetClientID",
         ],
         64,
     );
@@ -37,7 +38,7 @@ fn app() -> LoadedApplication {
             GuestPtr(0x50000000),
             [
                 0xaa32u16, 0xaa2a, 0xaa29, 0xaa2b, 0xaa2c, 0xaa34, 0xa8ec, 0xaa31, 0xaa2d, 0xaa27,
-                0xaa2f, 0xaa30, 0xaa24,
+                0xaa2f, 0xaa30, 0xaa24, 0xaa3c,
             ]
             .into_iter()
             .flat_map(u16::to_be_bytes)
@@ -744,4 +745,36 @@ fn replacement_table_aliases_are_rejected_before_device_storage_is_freed() {
         .unwrap();
     call(&mut a, Op::Dispose(first)).unwrap();
     call(&mut a, Op::Dispose(second)).unwrap();
+}
+
+#[test]
+fn client_identity_is_shared_between_cpus_and_scoped_to_selected_device() {
+    let mut a = app();
+    let main = ppc(&mut a, 0, &[]);
+    native(&mut a, 13, &0x81a5u16.to_be_bytes(), 0);
+    let main_data = a.runtime.memory.u32(GuestPtr(main)).unwrap();
+    assert_eq!(
+        a.runtime.memory.u16(GuestPtr(main_data + 2)).unwrap(),
+        0x81a5
+    );
+    let other = ppc(&mut a, 13, &[0, u32::MAX]);
+    assert_ne!(other, 0);
+    ppc(&mut a, 10, &[other]);
+    ppc(&mut a, 16, &[0xffff1234]);
+    let other_data = a.runtime.memory.u32(GuestPtr(other)).unwrap();
+    assert_eq!(
+        a.runtime.memory.u16(GuestPtr(other_data + 2)).unwrap(),
+        0x1234
+    );
+    assert_eq!(
+        a.runtime.memory.u16(GuestPtr(main_data + 2)).unwrap(),
+        0x81a5
+    );
+    ppc(&mut a, 10, &[main]);
+    ppc(&mut a, 16, &[0]);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(main_data + 2)).unwrap(), 0);
+    assert_eq!(
+        a.runtime.memory.u16(GuestPtr(other_data + 2)).unwrap(),
+        0x1234
+    );
 }
