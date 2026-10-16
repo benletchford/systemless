@@ -81,6 +81,56 @@ impl Probe {
             target,
         })
     }
+    fn draw_cells(
+        &mut self,
+        memory: &mut Memory,
+        ports: Ports,
+        font: &Strike<'_>,
+        bytes: &[u8],
+        origin: (i16, i16),
+        mode: i16,
+    ) -> Result<(i16, usize)> {
+        let (cells, end) = systemless_future::text::plan_cells(font, bytes, origin.0, origin.1)?;
+        let mut uploads = 0;
+        for cell in cells {
+            let width = (cell.bounds.right - cell.bounds.left) as u16;
+            let height = (cell.bounds.bottom - cell.bounds.top) as u16;
+            if width == 0 || height == 0 {
+                continue;
+            }
+            if u32::from(width) > WIDTH || u32::from(height) > HEIGHT {
+                return Err("probe cell exceeds reusable render target".into());
+            }
+            let request = Draw {
+                id: 0,
+                mask: &cell.mask,
+                width,
+                height,
+                origin: (0.0, 0.0),
+                bounds: TextBounds {
+                    left: 0,
+                    top: 0,
+                    right: WIDTH as i32,
+                    bottom: HEIGHT as i32,
+                },
+                passes: 1,
+            };
+            uploads += self.cached(request, false)?.1;
+            ports.copy_gpu_mask_region(
+                memory,
+                &self.gpu,
+                &self.target,
+                (
+                    Rect::new(0, 0, i32::from(width), i32::from(height)),
+                    cell.bounds,
+                ),
+                mode,
+            )?;
+        }
+        let port = ports.current(memory)?;
+        memory.write(GuestPtr(port.0 + 50), &end.to_be_bytes())?;
+        Ok((end, uploads))
+    }
     // Resolve before prepare: IDs are never reused within a live atlas.
     fn cached_frame(&mut self, request: Draw<'_>) -> Result<(Vec<u8>, usize)> {
         self.cached(request, true)
@@ -364,42 +414,66 @@ fn transfer_probe(probe: &mut Probe, mask: &[u8], font: &Strike<'_>) -> Result<(
         let reference = memory.read(GuestPtr(0x4000), initial.len())?.to_vec();
         let pen = memory.u16(GuestPtr(0x1132))?;
         memory.write(GuestPtr(0x4000), &initial)?;
-        let (cells, end) = systemless_future::text::plan_cells(font, b"AAA", 3, 4)?;
+        let (end, _) = probe.draw_cells(&mut memory, ports, font, b"AAA", (3, 4), mode as i16)?;
         assert_eq!(pen, end as u16);
-        for cell in cells {
-            let width = (cell.bounds.right - cell.bounds.left) as u16;
-            let height = (cell.bounds.bottom - cell.bounds.top) as u16;
-            let request = Draw {
-                id: 0,
-                mask: &cell.mask,
-                width,
-                height,
-                origin: (0.0, 0.0),
-                bounds: TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: WIDTH as i32,
-                    bottom: HEIGHT as i32,
-                },
-                passes: 1,
-            };
-            probe.cached(request, false)?;
-            ports.copy_gpu_mask_region(
-                &mut memory,
-                &probe.gpu,
-                &probe.target,
-                (
-                    Rect::new(0, 0, i32::from(width), i32::from(height)),
-                    cell.bounds,
-                ),
-                mode as i16,
-            )?;
-        }
         check(
             &format!("ordered overlapping string mode {mode}"),
             memory.read(GuestPtr(0x4000), initial.len())?,
             &reference,
         );
+    }
+    if std::env::args().any(|a| a == "--benchmark") {
+        // Bounded warm microbenchmark; alternate order to expose ordering bias.
+        // Timings include destination synchronization, not just command submission.
+        for (workload, text) in [
+            ("overlap", b"AAA".as_slice()),
+            ("missing", b"AB?A".as_slice()),
+        ] {
+            for mode in [0u16, 2] {
+                memory.write(GuestPtr(0x1148), &mode.to_be_bytes())?;
+                probe.draw_cells(&mut memory, ports, font, text, (3, 4), mode as i16)?;
+                for round in 0..3 {
+                    let mut results = [Vec::new(), Vec::new()];
+                    for backend in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                        memory.write(GuestPtr(0x4000), &initial)?;
+                        let started = std::time::Instant::now();
+                        let mut uploads = 0;
+                        for _ in 0..16 {
+                            if backend == 0 {
+                                systemless_future::text::move_to(&mut memory, ports, 3, 4)?;
+                                systemless_future::text::draw_strike(
+                                    &mut memory,
+                                    ports,
+                                    &probe.gpu,
+                                    text,
+                                    font,
+                                )?;
+                            } else {
+                                systemless_future::text::move_to(&mut memory, ports, 3, 4)?;
+                                uploads += probe
+                                    .draw_cells(
+                                        &mut memory,
+                                        ports,
+                                        font,
+                                        text,
+                                        (3, 4),
+                                        mode as i16,
+                                    )?
+                                    .1;
+                            }
+                        }
+                        let elapsed = started.elapsed();
+                        results[backend] = memory.read(GuestPtr(0x4000), initial.len())?.to_vec();
+                        println!("BENCH mode={mode} round={round} backend={} workload={workload} strings=16 glyphs={} elapsed_us={} raster_uploads={uploads} profile={}",
+                        ["coverage", "glyphon"][backend], text.len()*16, elapsed.as_micros(), if cfg!(debug_assertions) { "debug" } else { "release" });
+                        if backend == 1 {
+                            assert_eq!(uploads, 0);
+                        }
+                    }
+                    assert_eq!(results[0], results[1]);
+                }
+            }
+        }
     }
     Ok(())
 }

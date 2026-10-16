@@ -6262,3 +6262,42 @@ runs before the allocation cleanup are superseded by the final output. No
 production dependency changed. Next: compare complete workloads and integrate
 selected library rendering through runtime-owned text state, preserving the
 existing ABI/service boundary and all indexed formats and clipping behavior.
+
+
+## Synchronized text microbenchmark (2026-10-16)
+
+Run `cargo run --release --manifest-path future/prototypes/glyphon/Cargo.toml
+--locked -- --benchmark` from the repository root. The optional benchmark compares
+complete source-cell planning/drawing and synchronous guest destination updates,
+with equivalent MoveTo and final pen writes. Each sample draws 16 strings, in
+three rounds with alternating backend order, in copy and XOR modes. Workloads
+are synthetic FONT-backed AAA (overlapping bearings, 48 cells/sample) and AB?A
+(missing-glyph fallback, 64 cells/sample). Pixels match after every sample.
+
+Final optimized M1/Metal measurements, after other builds/runs finished:
+
+| Workload | Mode | Coverage median ms | Glyphon median ms |
+|---|---|---:|---:|
+| overlap | 0 | 41.695 | 35.623 |
+| overlap | 2 | 48.159 | 31.367 |
+| missing | 0 | 85.497 | 60.366 |
+| missing | 2 | 56.870 | 42.437 |
+
+Times are per 16-string sample, not frame rates. All 24 timed samples finish;
+all 32 preceding GPU assertions pass. Warm Glyphon rasterization callbacks remain
+zero. The prototype cache retains at most two masks / 1024 source bytes; this is
+not an atlas or total host/GPU memory measurement. For these nonempty-ink/paper
+cells, coverage invokes two GPU paints per cell; Glyphon invokes one render plus
+one GPU transfer. Each destination operation synchronizes guest memory. These
+operation counts follow the exercised code, not hardware profiling counters.
+
+Evidence: /tmp/systemless-text-workload-release-final.txt terminal exit 0;
+strict all-target lint /tmp/systemless-text-workload-lint-final.txt exit 0.
+The debug run and first release run overlapped other work and are preliminary,
+not additional acceptance or uncontended performance evidence.
+
+Glyphon is faster in this bounded comparison, supporting integration work. This
+is not representative application performance: target is 16x12 monochrome, font
+is synthetic, and there is no native/browser presentation. Wider real fonts,
+indexed formats, editing/scrolling/UI workloads, atlas memory growth, cold uploads
+and dispatch/synchronization profiling remain before production selection.
