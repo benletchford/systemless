@@ -18,6 +18,8 @@ fn app() -> LoadedApplication {
             b"CloseResFile",
             b"HomeResFile",
             b"FSpOpenResFile",
+            b"CountResources",
+            b"Count1Resources",
         ],
         32,
     );
@@ -500,5 +502,143 @@ fn spec_open_native_preflight_preserves_frames_and_globals_on_fault() {
         assert_eq!(m.read(GuestPtr(0x1000), 6).unwrap(), frame);
         assert_eq!(m.read(GuestPtr(0xa5a), 2).unwrap(), [0x5a; 2]);
         assert_eq!(m.read(GuestPtr(0xa60), 2).unwrap(), [0x5a; 2]);
+    }
+}
+
+fn count(a: &mut LoadedApplication, arch: Architecture, current: bool, kind: [u8; 4]) -> u16 {
+    let stack = STACK_BASE + 0x8000;
+    a.runtime.process.res_error = -192;
+    a.runtime.process.mem_error = -108;
+    a.runtime
+        .memory
+        .write(GuestPtr(0xa60), &(-192i16).to_be_bytes())
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(0x220), &(-108i16).to_be_bytes())
+        .unwrap();
+    if arch == Architecture::M68k {
+        let mut frame = kind.to_vec();
+        frame.extend([0xa5; 6]);
+        a.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+        a.runtime.cpu = Cpu::new(arch, 0x52000000 + u32::from(current) * 2, stack);
+        let Cpu::M68k(c) = &mut a.runtime.cpu else {
+            panic!()
+        };
+        for i in 0..15 {
+            c.dar[i] = 0x12340000 + i as u32;
+        }
+    } else {
+        let index = if current { 6 } else { 5 };
+        let tv = a
+            .runtime
+            .memory
+            .u32(GuestPtr(a.info.toc_or_a5 + 8 + index * 4))
+            .unwrap();
+        let pc = a.runtime.memory.u32(GuestPtr(tv)).unwrap();
+        a.runtime.cpu = Cpu::new(arch, pc, stack);
+        let Cpu::PowerPc(c) = &mut a.runtime.cpu else {
+            panic!()
+        };
+        c.gpr[3] = u32::from_be_bytes(kind);
+        c.gpr[4] = 0x76543210;
+    }
+    let free = a.runtime.process.free_memory();
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    assert_eq!(a.runtime.process.free_memory(), free);
+    assert_eq!(a.runtime.process.res_error, 0);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0xa60)).unwrap(), 0);
+    assert_eq!(a.runtime.process.mem_error, -108);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0x220)).unwrap() as i16, -108);
+    match &a.runtime.cpu {
+        Cpu::M68k(c) => {
+            assert_eq!(c.dar[15], stack + 4);
+            for i in 0..15 {
+                assert_eq!(c.dar[i], 0x12340000 + i as u32);
+            }
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(stack + 6), 4).unwrap(),
+                [0xa5; 4]
+            );
+            a.runtime.memory.u16(GuestPtr(stack + 4)).unwrap()
+        }
+        Cpu::PowerPc(c) => {
+            assert_eq!(c.gpr[1], stack);
+            assert_eq!(c.gpr[4], 0x76543210);
+            c.gpr[3] as u16
+        }
+    }
+}
+
+#[test]
+fn count_all_open_maps_ignores_lookup_position_and_counts_duplicate_ids_per_file() {
+    let mut a = app();
+    a.runtime
+        .memory
+        .map(
+            GuestPtr(0x52000000),
+            vec![0xa9, 0x9c, 0xa8, 0x0d],
+            Permissions::RX,
+        )
+        .unwrap();
+    a.runtime.process.install_application_resources(
+        systemless_future::load::resource::ResourceFork::parse(&support::resource(vec![
+            (*b"DATA", 7, None, vec![1]),
+            (*b"DATA", 8, None, vec![2]),
+        ]))
+        .unwrap(),
+    );
+    file(
+        &mut a,
+        b"A",
+        &support::resource(vec![(*b"DATA", 7, None, vec![3])]),
+    );
+    file(
+        &mut a,
+        b"B",
+        &support::resource(vec![
+            (*b"DATA", 7, None, vec![4]),
+            (*b"STR ", 1, None, vec![]),
+        ]),
+    );
+    name(&mut a, b"A");
+    let lower = call(&mut a, Architecture::M68k, 0, 0);
+    name(&mut a, b"B");
+    let mut upper = call(&mut a, Architecture::PowerPc, 0, 0);
+    assert!(lower > 0 && upper > 0);
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        call(&mut a, arch, 1, lower as u16 as u32);
+        assert_eq!(count(&mut a, arch, false, *b"DATA"), 4);
+        assert_eq!(count(&mut a, arch, true, *b"DATA"), 1);
+        assert_eq!(count(&mut a, arch, false, *b"STR "), 1);
+        assert_eq!(count(&mut a, arch, true, *b"STR "), 0);
+        assert_eq!(count(&mut a, arch, false, *b"NONE"), 0);
+        call(&mut a, arch, 2, upper as u16 as u32);
+        assert_eq!(count(&mut a, arch, false, *b"DATA"), 3);
+        // Reopen for the next architecture, keeping the same process maps.
+        name(&mut a, b"B");
+        upper = call(&mut a, arch, 0, 0);
+        assert!(upper > 0);
+    }
+}
+
+#[test]
+fn count_frames_validate_the_word_result_before_consuming_type() {
+    use systemless_future::{abi::Abi, memory::Memory};
+    for opcode in [0xa99c, 0xa80d] {
+        for (length, permissions) in [(5, Permissions::RW), (6, Permissions::RX)] {
+            let mut memory = Memory::default();
+            memory
+                .map(GuestPtr(0x1000), vec![0xa5; length], permissions)
+                .unwrap();
+            let mut cpu = Cpu::new(Architecture::M68k, 0, 0x1000);
+            let Cpu::M68k(c) = &mut cpu else { panic!() };
+            assert!(Abi::trap(opcode, c, &memory).is_err());
+            assert_eq!(c.dar[15], 0x1000);
+            assert_eq!(
+                memory.read(GuestPtr(0x1000), length).unwrap(),
+                vec![0xa5; length]
+            );
+        }
     }
 }

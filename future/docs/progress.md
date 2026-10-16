@@ -8038,3 +8038,46 @@ integration =101passed,0ignored, /tmp/systemless-extended-verified-tests.txt.
 Strict scoped lint6773 exit0, /tmp/systemless-extended-final-lint.txt; tracer
 build exit0, /tmp/systemless-extended-tracer-build.txt. Sequential stdin formatting
 checks and git diff whitespace pass. No fresh full-suite/native/browser/CI claim.
+
+
+## Shared CountResources and Count1Resources
+
+Inside Macintosh: More Macintosh Toolbox (1993), p.1-98, specifies all open
+resource maps for CountResources and only the current map for Count1Resources:
+https://vintageapple.org/inside_r/pdf/More_Macintosh_TB_1993.pdf.
+The all-map operation must not use the ordinary current-to-end lookup slice.
+The new shared Process operation walks open parsed maps, counts matching type
+entries independently per file (including matching IDs in multiple files), and
+clears ResError without loading data/allocating guest handles or changing MemError.
+Synthetic fallback resources are not open maps and are not fabricated into this
+count. Resource-map compression/system-map support remain separate requirements.
+Counts exceeding the 16-bit ABI result explicitly fault rather than silently wrap.
+
+Native $A99C/$A80D consumes a four-byte type and writes a two-byte Pascal stack
+result; output storage is checked before consuming arguments. PPC CountResources
+and Count1Resources imports use the same operation with r3 type/result. Shared
+runtime validates ResErr storage before mutation, then publishes the cleared error.
+Regression fixtures open two resource files with duplicate DATA IDs, select the
+lower file, verify global counts still include the newer upper file, verify empty
+and missing types, close/reopen maps and preserve heap/error/register/frame guards.
+
+EV replay78243 terminates exit1 at unsupported Delay ($A03B), PC001125AE,
+after both CountResources calls and further shared device/color/rectangle drawing.
+Raw queried types are 73709a62 and 73d87374; unknown types legitimately count zero,
+but these calls do not establish real application resource enumeration correctness.
+No native frame/UI/audio/gameplay acceptance is claimed. All callback counts zero.
+Tracer build18938 and strict scoped lint67027 both exit0; resource tests36000
+are still live at this recording. Logs /tmp/systemless-count-tracer-build.txt,
+/tmp/systemless-count-lint.txt, /tmp/systemless-count-tests.txt. Retain their handle.
+Independent saved-volume validation passes: preferences38->39, all metadata/fork
+bytes and companions unchanged. /tmp/systemless-ev-count-saved.slv is7,239,400bytes,
+SHA256 c641fc677f625767a163d645d11a9c25e6838bf9a911615781de467fef9c17ec.
+Next executable game slice is Delay integrated with shared timing/callbacks,
+not a no-op or uncontrolled host sleep. Full rebuild and GPU text remain active.
+
+Final resource regression36000 is terminal exit0:4AddResource +3current-resource
++8resource-maps +3resource-update =18passed,0ignored. Includes both new count
+cases and prior open/selection/writeback/rollback behavior. Scoped lint67027,
+tracer build18938, sequential changed-file formatting and whitespace all pass.
+Original EV replay78243 is terminal at the documented Delay boundary. No live
+validation handles remain. Full rebuild, both games and GPU text stay active.

@@ -1917,6 +1917,11 @@ impl Runtime {
                             self.process.resource_info(&mut self.memory, request)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::CountResources { kind, current_only } => {
+                            self.memory.validate_write(GuestPtr(0xa60), 2)?;
+                            let count = self.process.count_resources(kind, current_only)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, u32::from(count), 0)?;
+                        }
                         Call::GetCurrentResource { kind, id } => {
                             let v =
                                 self.process
@@ -2382,6 +2387,7 @@ impl Runtime {
                             | Call::FontInfo(_)
                             | Call::ResourceInfo(_)
                             | Call::Dialog(crate::dialogs::Op::Resource { .. })
+                            | Call::CountResources { .. }
                             | Call::GetCurrentResource { .. }
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
@@ -2501,6 +2507,7 @@ impl Runtime {
                         | Call::HandleSize(_)
                         | Call::SetHandleSize { .. }
                         | Call::ResourceInfo(_)
+                        | Call::CountResources { .. }
                         | Call::GetCurrentResource { .. }
                         | Call::GetResource { .. }
                         | Call::SoundChannel(_)

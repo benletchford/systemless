@@ -3815,3 +3815,16 @@ Input /tmp/systemless-ev-integer-saved.slv remains unchanged. Saved output
 8a9584ae108f9baa55d47a58aa94718e86b4dcdfa06bb925f8fc7e2986cce859.
 Independent CRC/catalog/fork validation proves preferences37->38 is the only
 identity change, with metadata and fork bytes retained across all files.
+
+
+### EV: resource counting checkpoint
+
+Shared CountResources ($A99C) passes both observed calls (raw types73709a62 and
+73d87374); both are absent, so count zero. The original proceeds to more
+shared device/color/rectangle drawing and stops at missing Delay ($A03B),
+PC001125AE. /tmp/systemless-ev-count.txt terminates exit1 with zero callbacks.
+This does not prove correct application enumeration or visible/gameplay/audio UI.
+Saved volume /tmp/systemless-ev-count-saved.slv (7,239,400bytes),
+SHA256 c641fc677f625767a163d645d11a9c25e6838bf9a911615781de467fef9c17ec,
+passes independent CRC/catalog/fork validation against ev-extended-saved:
+preferences38->39 only identity change, all metadata/forks and companions intact.

@@ -172,6 +172,25 @@ impl Process {
             .position(|o| *o == current)
             .map_or_else(Vec::new, |at| self.resource_files.chain[at..].to_vec())
     }
+    /// More Macintosh Toolbox (1993), p. 1-98: count all open maps,
+    /// independently of the current lookup position, or just the current map.
+    pub fn count_resources(&mut self, kind: [u8; 4], current_only: bool) -> Result<u16> {
+        let owners = if current_only {
+            vec![self.resource_files.current]
+        } else {
+            self.resource_files.chain.clone()
+        };
+        let count = owners
+            .into_iter()
+            .filter_map(|o| self.resource_map(o))
+            .flat_map(|m| m.entries())
+            .filter(|r| r.kind == kind)
+            .count();
+        let count = u16::try_from(count)
+            .map_err(|_| Error::Cpu("resource count exceeds 16-bit result".into()))?;
+        self.res_error = 0;
+        Ok(count)
+    }
     pub fn resource_entries(&self) -> Vec<&Resource> {
         self.resource_owners(false)
             .into_iter()

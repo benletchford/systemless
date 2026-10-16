@@ -225,6 +225,8 @@ pub enum Service {
     CreateResFile,
     GetResource,
     Get1Resource,
+    CountResources,
+    Count1Resources,
     GetResInfo,
     GetPattern,
     GetCursor,
@@ -673,6 +675,8 @@ impl Abi {
             b"GetResInfo" => Some(Service::GetResInfo),
             b"GetResource" => Some(Service::GetResource),
             b"Get1Resource" => Some(Service::Get1Resource),
+            b"CountResources" => Some(Service::CountResources),
+            b"Count1Resources" => Some(Service::Count1Resources),
             b"FreeMem" => Some(Service::FreeMemory),
             b"MaxMem" => Some(Service::MaxMemory),
             b"MemError" => Some(Service::MemError),
@@ -3341,6 +3345,21 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("resource metadata stack overflow".into()))?;
                 Ok((Call::ResourceInfo(request), Reply::None))
             }
+            0xa99c | 0xa80d => {
+                let kind = memory.read(GuestPtr(sp), 4)?.try_into().unwrap();
+                let result = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("resource count stack overflow".into()))?;
+                memory.validate_write(GuestPtr(result), 2)?;
+                c.dar[15] = result;
+                Ok((
+                    Call::CountResources {
+                        kind,
+                        current_only: opcode == 0xa80d,
+                    },
+                    Reply::StackWord(GuestPtr(result)),
+                ))
+            }
             0xa9a0 | 0xa81f => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let id = i16::from_be_bytes(args[..2].try_into().unwrap());
@@ -4392,6 +4411,10 @@ impl Abi {
                 kind: GuestPtr(c.gpr[5]),
                 name: GuestPtr(c.gpr[6]),
             }),
+            Service::CountResources | Service::Count1Resources => Call::CountResources {
+                kind: c.gpr[3].to_be_bytes(),
+                current_only: service == Service::Count1Resources,
+            },
             Service::Get1Resource => Call::GetCurrentResource {
                 kind: c.gpr[3].to_be_bytes(),
                 id: c.gpr[4] as i16,
