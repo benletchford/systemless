@@ -1874,3 +1874,81 @@ fn height_cpu_routes_use_the_long_result_and_exact_selector_frame_without_graphi
         assert_eq!(c.dar[15], sp);
     }
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn text_box_draws_indexed_color_port_and_preserves_attached_patterns() {
+    use systemless_future::{graphics::Graphics, textedit::TextBox};
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let gpu = pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x4000))).unwrap();
+    let (mut m, mut p, mut manager) = setup();
+    m.map(GuestPtr(0x3000), vec![0; 512], Permissions::RW)
+        .unwrap();
+    m.map(GuestPtr(0x5000), vec![0; 40], Permissions::RW)
+        .unwrap();
+    m.write(GuestPtr(0x3000), b"A").unwrap();
+    m.write(GuestPtr(0x1040), &[0, 0, 0, 1, 0, 4, 0, 8])
+        .unwrap();
+    let mut map = [0u8; 50];
+    map[..4].copy_from_slice(&0x5000u32.to_be_bytes());
+    map[4..6].copy_from_slice(&0x800au16.to_be_bytes());
+    map[6..14].copy_from_slice(&[0, 0, 0, 0, 0, 4, 0, 8]);
+    for (at, value) in [(32, 8u16), (34, 1), (36, 8)] {
+        map[at..at + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    map[42..46].copy_from_slice(&0x30a0u32.to_be_bytes());
+    m.write(GuestPtr(0x3020), &0x3040u32.to_be_bytes()).unwrap();
+    m.write(GuestPtr(0x3040), &map).unwrap();
+    m.write(GuestPtr(0x30a0), &0x30b0u32.to_be_bytes()).unwrap();
+    let mut table = [0u8; 24];
+    table[7] = 1;
+    table[10..16].fill(255);
+    table[17] = 1;
+    m.write(GuestPtr(0x30b0), &table).unwrap();
+    for (field, handle, data, value) in [(32, 0x30d0u32, 0x30e0u32, 0u8), (58, 0x3100, 0x3110, 255)]
+    {
+        m.write(GuestPtr(0x1080 + field), &handle.to_be_bytes())
+            .unwrap();
+        m.write(GuestPtr(handle), &data.to_be_bytes()).unwrap();
+        m.write(GuestPtr(data), &[0; 28]).unwrap();
+        m.write(GuestPtr(data + 20), &[value; 8]).unwrap();
+    }
+    m.write(GuestPtr(0x1082), &0x3020u32.to_be_bytes()).unwrap();
+    m.write(GuestPtr(0x1086), &0xc000u16.to_be_bytes()).unwrap();
+    m.write(GuestPtr(0x1080 + 80), &1u32.to_be_bytes()).unwrap();
+    m.write(GuestPtr(0x1080 + 84), &0u32.to_be_bytes()).unwrap();
+    m.write(GuestPtr(0x1080 + 48), &[0; 6]).unwrap();
+    m.write(GuestPtr(0x1080 + 42), &[255; 6]).unwrap();
+    let port = m.read(GuestPtr(0x1080), 108).unwrap().to_vec();
+    let pattern = m.read(GuestPtr(0x3110), 28).unwrap().to_vec();
+    let mut pixels = [0u8; 40];
+    for row in pixels.chunks_exact_mut(10) {
+        row[8..].copy_from_slice(&[0xa5, 0x5a]);
+    }
+    m.write(GuestPtr(0x5000), &pixels).unwrap();
+    manager
+        .text_box(
+            &mut m,
+            &mut p,
+            &gpu,
+            TextBox {
+                text: GuestPtr(0x3000),
+                length: 1,
+                rectangle: GuestPtr(0x1040),
+                alignment: 0,
+            },
+            0,
+        )
+        .unwrap();
+    let expected = [0x60u8, 0x20, 0x40, 0];
+    for (y, bits) in expected.into_iter().enumerate() {
+        let row = m.read(GuestPtr(0x5000 + y as u32 * 10), 10).unwrap();
+        for (x, pixel) in row[..8].iter().enumerate() {
+            assert_eq!(*pixel, u8::from(bits & (0x80 >> x) != 0), "{x},{y}");
+        }
+        assert_eq!(&row[8..], &[0xa5, 0x5a]);
+    }
+    assert_eq!(m.read(GuestPtr(0x1080), 108).unwrap(), port);
+    assert_eq!(m.read(GuestPtr(0x3110), 28).unwrap(), pattern);
+    assert_eq!(m.u32(GuestPtr(0x1020)).unwrap(), 0x1080);
+}

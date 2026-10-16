@@ -344,3 +344,21 @@ text path. This adds no independent renderer and does not constitute Glyphon
 production integration. Nimbus Mono glyph advances/metrics and synthetic bold
 are explicit substitutes; classic Monaco hinting, artwork and layout equivalence
 remain unverified. The preserved historical widMax override is not imported.
+
+
+## TextEdit color-port destination (2026-10-17)
+
+Original EV reaches TextBox after13Munger calls, then faults because redraw reads
+CGrafPort.portPixMap as a basic BitMap. Redraw now resolves its destination through
+the existing shared port_layout::bitmap service. This preserves the actual indexed
+depth, palette, bounds and image pointer; drawing still uses shared wgpu coverage
+operations. No application-specific geometry or CPU destination renderer is added.
+
+The real GPU regression constructs an eight-bit offscreen CGrafPort with a live
+PixMap/ColorTable and attached PixPat handles, then verifies exact TextBox pixels,
+untouched row padding, restored port/current-slot state and restored pen pattern.
+All17TextEdit tests pass,0ignored,including existing mono drawing, selection,
+caret, erasure, complex clipping, fault restoration and real CPU adapter tests.
+The new indexed pixel fixture exercises the common service directly; it is not
+an independent indexed-pixel replay through both ABI adapters or native parity.
+Full text API/style/font/library and native/browser acceptance remain open.

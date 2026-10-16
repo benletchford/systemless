@@ -873,7 +873,7 @@ impl Manager {
         let clip = crate::regions::read(memory, process, memory.u32(GuestPtr(port.0 + 28))?)?;
         let clip = region_geometry::combine(&clip, &view, Boolean::Intersection)?;
         let clip = region_geometry::combine(&clip, &update_region, Boolean::Intersection)?;
-        let bitmap = crate::bitmap::Bitmap::read(memory, GuestPtr(port.0 + 2))?;
+        let bitmap = crate::port_layout::bitmap(memory, port)?;
         let port_bounds = read_rect(memory, GuestPtr(port.0 + 16))?;
         let clip = region_geometry::combine(
             &clip,

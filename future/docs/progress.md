@@ -9993,3 +9993,16 @@ e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80.
 Marathon still reaches CTabChanged/00040007 at2,915,975/0100864E. Neither replay
 proves playability. The next text slice uses the existing shared destination
 resolver rather than inventing game-specific geometry.
+
+
+### Shared TextEdit color destinations,2026-10-17
+
+EV's newly reached TextBox fault identifies an old mono-only metadata read in
+shared redraw. Destination resolution now uses port_layout::bitmap for both
+GrafPort and CGrafPort; actual depth/palette/bounds feed the existing shared wgpu
+text and pattern paths. A real eight-bit GPU fixture checks exact pixels, stride
+padding, restored port/current-slot and attached pen-pattern bytes. All17TextEdit
+tests pass,0ignored; affected lib/test Clippy passes14.19s and tracer build6.84s.
+The new indexed fixture uses the shared service directly; existing real CPU
+adapter tests remain in the suite. No new native or both-ABI indexed-pixel parity
+claim is made. Original EV replay with unchanged input is being checked next.
