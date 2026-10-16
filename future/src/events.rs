@@ -43,6 +43,7 @@ pub(crate) fn install(memory: &mut Memory) -> Result<()> {
         Permissions::RW,
     )?;
     memory.write(MB_STATE, &[0x80])?;
+    memory.write(crate::keyboard::KEY_MAP, &[0; 16])?;
     memory.write(SYSTEM_MASK, &0xffefu16.to_be_bytes())?;
     memory.write(QUEUE_HEADER, &[0; 10])
 }

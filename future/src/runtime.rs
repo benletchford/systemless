@@ -794,6 +794,10 @@ impl Runtime {
                             self.memory.write(destination, &port.to_be_bytes())?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::GetKeys(destination) => {
+                            crate::keyboard::get_keys(&mut self.memory, destination)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::GetMouse(destination) => {
                             let ports = self.process.ports.ok_or_else(|| {
                                 Error::Graphics("GetMouse requires InitGraf".into())
@@ -2534,6 +2538,7 @@ impl Runtime {
                         | Call::StandardGetFile(_)
                         | Call::StandardPutFile(_)
                         | Call::GetWMgrPort(_)
+                        | Call::GetKeys(_)
                         | Call::GetMouse(_)
                         | Call::SystemTask
                         | Call::SysEnvirons { .. }

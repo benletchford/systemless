@@ -4052,3 +4052,40 @@ GPU rendering acceptance here. Next: GetKeys/keyboard state and bounded interact
 and Marathon's missing port initialization. Neither game is playable; no original
 visible frame, real menu/keyboard interaction, audio or gameplay acceptance.
 Full rebuild and complete wgpu text rendering remain active requirements.
+
+
+## GetKeys and bounded keyboard diagnostics (2026-10-16)
+
+Shared native/PPC GetKeys now reads the canonical guest KeyMap. Host keyboard
+delivery updates that map and posts classic key events through one shared driver.
+102scoped tests pass;3existing GPU tests remain ignored. Driver Caps latch tests
+do not establish native macOS Caps delivery (the pinned Winit backend omits it).
+IME/KCHR/dead keys, non-US fallback and software repeat remain open.
+
+EV with the same original app and prior button-tracking volume now completes
+17,046GetKeys calls through a10,000,000-boundary trace budget. No unsupported-call
+fault occurs, but the terminal outcome is budget exhaustion, not application exit
+or gameplay acceptance. Log:/tmp/systemless-ev-getkeys.txt. Volume integrity passes
+with preferences51->52 and unchanged metadata/fork bytes/companions; output SHA256
+d1f1d500e1a44112766eb4e6fcecaef9d79c18001c1eca5fed8a209129db572b.
+
+The tracer now supports --save-screen NEW_PPM (real GPU readback after canonical
+display refresh) and --key-at INSTRUCTION:CODE:down|up[:TEXT]. Scheduled input uses
+the same Keyboard driver as the native window; it never forces a PC or GetKeys
+result. Outputs must be fresh; all original bytes and captures remain outside Git.
+
+A fresh no-input capture (/tmp/systemless-ev-keys-baseline-1.txt,exit1 for budget)
+ends at instruction10,000,000,PC00032FBC. The640x480GPU capture shows a white menu
+bar with File/Edit above a black game area. This is actual visual evidence of the
+menu bar, not a complete game screen. Neither priority game is verified playable.
+Marathon's latest boundary remains TextFont4/no current port atPC01010E86, as
+recorded above; it has not been replayed in this keyboard-only milestone.
+
+Bounded Return capture: /tmp/systemless-ev-keys-return-1.txt,exit1 for budget.
+The shared driver delivers code36 down at instruction8,000,000 and up at8,005,000.
+The subsequent trace includes WaitEvent then FindWindow/CursorInit/MenuSelect;
+this changed service path does not establish correct keyboard handling. Final
+PC000314A4 versus baseline00032FBC. The final GPU capture is byte-identical to
+baseline: PPM SHA2562993b33f4929130f24c427580c648d004d92c814fff74e16b64ef16b7bf04529.
+No visible interaction success is claimed. Next: verify event decoding/handling
+and diagnose the black game area, alongside Marathon's current-port boundary.

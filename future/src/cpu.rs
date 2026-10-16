@@ -140,6 +140,7 @@ pub enum Call {
         destination: GuestPtr,
     },
     GetMouse(GuestPtr),
+    GetKeys(GuestPtr),
     GetWMgrPort(GuestPtr),
     StandardPutFile(crate::standard_file::PutFile),
     StandardGetFile(crate::standard_file::GetFile),

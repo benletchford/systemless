@@ -3497,3 +3497,52 @@ pending mouseUp. A queued original mouseDown does not end tracking; a pending
 release still ends it after a subsequent press. Neither query consumes events.
 This distinguishes a verified legacy comparison from native Macintosh parity;
 full mouse-driver and event-timing compatibility remain open.
+
+### Shared keyboard map, GetKeys and host delivery
+
+Both CPU adapters dispatch GetKeys ($A976/PPC import) to one sixteen-byte snapshot
+of low-memory KeyMap ($0174). Events initialization clears this guest-owned map.
+The native procedure consumes one checked pointer argument; PPC preserves its
+procedure argument/result registers. Nil, short, unreadable-source and protected
+outputs fail explicitly; the complete result is preflighted before writes and a
+snapshot handles aliases without incremental corruption. Polling does not touch
+event queue entries, errors, allocation state or host-held state.
+
+The [GetKeys reference](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-77.html)
+describes 128 key states but its prose says to subtract one from the virtual key
+code. This rebuild uses the preserved Systemless byte contract instead:
+byte=code/8, mask=1<<(code%8), with code0 representing A and code38 J. This is also
+consistent with Apple's [keyboard-layout note TN2056](https://leopard-adc.pepas.com/technotes/tn2002/tn2056.html)
+defining A as virtual key0. Exact bytes are shared across 68K/PPC without treating
+the map as four host-endian words. Comparison evidence is the preserved
+process_context.rs key_is_down/set_key_down implementation and PPC GetKeys byte
+copy, not a new native Macintosh oracle run.
+
+The thin Winit adapter maps common Apple/ADB physical assignments, independent of
+character translation, and passes transitions to one host keyboard driver. It
+updates the canonical map even when events are masked. Representable character
+transitions post keyDown3, keyUp4 or host-supplied autoKey5 with virtual code in
+message bits8..15, character in bits0..7, current modifiers, location and TickCount.
+Queue dequeue/PostEvent never fabricates physical state. Map writability and
+queue failures are preflighted before committing driver-held state, allowing a
+failed delivery to be retried. Duplicate presses do not generate spurious events.
+
+Left/right modifiers maintain separate physical bits and aggregate the five
+classic modifier flags. Winit modifier-only notifications provide a fallback
+until side-specific events arrive; lock state is separate. Focus loss releases
+nonlocking keys without synthesizing text events; the Caps Lock latch remains.
+Unsupported host keys do not alias A. Navigation and function keys use classic
+character codes, including Return13 and keypad Enter3, while single host text
+characters use the same MacRoman mapping as fallback source fonts. The font table
+was moved unchanged into mac_roman.rs with a full256-byte round-trip test. This
+adds no CPU destination renderer; existing text drawing remains wgpu-backed.
+
+This is a supported host-input slice, not complete keyboard-driver emulation.
+The printable fallback is US; platform text wins when provided. Unsupported or
+multi-character/IME text and zero character results generate no fabricated text
+events while physical state remains visible. Guest KCHR/KeyTranslate, Script
+Manager/dead-key composition and emulated repeat timing remain open. Winit0.30.13's
+macOS flags_changed path forwards only Shift/Control/Option/Command, so actual
+macOS Caps Lock delivery/resynchronization needs additional integration; the
+latch is currently verified through the shared driver fixtures. Native window
+input, browser behavior and original-game interaction remain unverified.

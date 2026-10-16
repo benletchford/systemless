@@ -1,9 +1,15 @@
 //! Bounded instruction/service trace for diagnosing a file application's startup.
 use systemless_future::{cpu::Cpu, load::LoadedApplication, runtime::Stop};
+struct KeyAction {
+    instruction: u64,
+    code: u8,
+    down: bool,
+    text: Option<String>,
+}
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE]".into());
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--key-at INSTRUCTION:CODE:down|up[:TEXT]]".into());
     }
     let mut graphics = false;
     let mut services_only = false;
@@ -12,6 +18,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut watch_address = None;
     let mut volume = None;
     let mut save_volume = None;
+    let mut save_screen = None;
+    let mut keys = Vec::new();
+    let budget: u64 = args[2].parse()?;
     let mut display = None;
     let mut index = 3;
     while index < args.len() {
@@ -37,6 +46,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 index += 1;
                 save_volume = Some(args.get(index).ok_or("missing save volume image")?);
             }
+            "--save-screen" if save_screen.is_none() => {
+                index += 1;
+                save_screen = Some(args.get(index).ok_or("missing screen output")?);
+            }
+            "--key-at" if keys.len() < 64 => {
+                index += 1;
+                let fields: Vec<_> = args
+                    .get(index)
+                    .ok_or("missing key action")?
+                    .splitn(4, ':')
+                    .collect();
+                if fields.len() < 3 {
+                    return Err("key action requires INSTRUCTION:CODE:down|up[:TEXT]".into());
+                }
+                let instruction = fields[0].parse()?;
+                let code = fields[1].parse::<u8>()?;
+                if instruction >= budget || code >= 128 {
+                    return Err(
+                        "key action exceeds instruction budget or virtual code range".into(),
+                    );
+                }
+                let down = match fields[2] {
+                    "down" => true,
+                    "up" => false,
+                    _ => return Err("key action state must be down or up".into()),
+                };
+                keys.push(KeyAction {
+                    instruction,
+                    code,
+                    down,
+                    text: fields.get(3).map(|s| s.to_string()),
+                });
+            }
             "--volume" if volume.is_none() => {
                 index += 1;
                 volume = Some(args.get(index).ok_or("missing volume image")?);
@@ -45,6 +87,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         index += 1;
     }
+    if save_screen.is_some() && !graphics {
+        return Err("screen capture requires --graphics".into());
+    }
+    keys.sort_by_key(|action| action.instruction);
     let file = std::fs::File::open(&args[1])?;
     use std::io::Read;
     let mut data = Vec::new();
@@ -78,10 +124,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ),
         )?);
     }
-    let budget: u64 = args[2].parse()?;
+    let mut keyboard = systemless_future::host_input::Keyboard::default();
+    let mut next_key = 0;
     let mut watched = None;
     let mut previous_pc = None;
     for _ in 0..budget {
+        while let Some(action) = keys
+            .get(next_key)
+            .filter(|a| a.instruction <= app.runtime.instructions)
+        {
+            keyboard.key(
+                &mut app.runtime.memory,
+                &mut app.runtime.process.input,
+                action.code,
+                action.text.as_deref(),
+                action.down,
+                false,
+            )?;
+            println!(
+                "delivered host key instruction={} code={} down={}",
+                app.runtime.instructions, action.code, action.down
+            );
+            next_key += 1;
+        }
         if let Some(address) = watch_address {
             let current = app
                 .runtime
@@ -272,7 +337,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     app.runtime.services.completed_timer_callbacks,
                     app.runtime.services.completed_vbl_callbacks
                 );
-                save_snapshot(&app, save_volume)?;
+                save_snapshot(&mut app, save_volume, save_screen)?;
                 return Err(error.into());
             }
         };
@@ -346,19 +411,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if stop != Stop::Budget {
             println!("{stop:?}");
-            save_snapshot(&app, save_volume)?;
+            save_snapshot(&mut app, save_volume, save_screen)?;
             return Ok(());
         }
     }
-    save_snapshot(&app, save_volume)?;
+    save_snapshot(&mut app, save_volume, save_screen)?;
     Err("trace instruction budget exhausted".into())
 }
 
 // Explicit diagnostic output: serialize only committed catalog/fork contents.
 // Never overwrite input or existing output images, including on guest faults.
 fn save_snapshot(
-    app: &LoadedApplication,
+    app: &mut LoadedApplication,
     output: Option<&String>,
+    screen: Option<&String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = output {
         use std::io::Write;
@@ -371,5 +437,31 @@ fn save_snapshot(
         file.sync_all()?;
         println!("saved committed volume: {} bytes", bytes.len());
     }
+    if let Some(path) = screen {
+        use std::io::Write;
+        app.runtime.refresh_screen()?;
+        let gpu = app
+            .runtime
+            .graphics
+            .as_ref()
+            .ok_or("screen capture requires GPU")?;
+        let rgba = gpu.read_rgba()?;
+        let mut bytes = format!("P6\n{} {}\n255\n", gpu.width, gpu.height).into_bytes();
+        for pixel in rgba.as_chunks::<4>().0 {
+            bytes.extend_from_slice(&pixel[..3]);
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        println!("saved canonical screen: {}x{}", gpu.width, gpu.height);
+    }
+    println!(
+        "snapshot instructions={} pc={:08x}",
+        app.runtime.instructions,
+        app.runtime.cpu.pc()
+    );
     Ok(())
 }

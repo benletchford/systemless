@@ -26,6 +26,7 @@ pub enum Service {
     PtInRect,
     EmptyRect,
     GetMouse,
+    GetKeys,
     Random,
     Logical(crate::integer::Logic),
     TETextBox,
@@ -451,6 +452,7 @@ impl Abi {
             b"FindWindow" => Some(Service::FindWindow),
             b"EmptyRect" => Some(Service::EmptyRect),
             b"PtInRect" => Some(Service::PtInRect),
+            b"GetKeys" => Some(Service::GetKeys),
             b"GetMouse" => Some(Service::GetMouse),
             b"SystemTask" => Some(Service::SystemTask),
             b"SysEnvirons" => Some(Service::SysEnvirons),
@@ -1890,6 +1892,17 @@ impl Abi {
                     Call::PointInRect { point, rectangle },
                     Reply::StackByte(GuestPtr(result)),
                 ))
+            }
+            0xa976 => {
+                let destination = GuestPtr(memory.u32(GuestPtr(sp))?);
+                if destination.0 == 0 {
+                    return Err(Error::Cpu("nil GetKeys destination".into()));
+                }
+                memory.validate_write(destination, 16)?;
+                c.dar[15] = sp
+                    .checked_add(4)
+                    .ok_or_else(|| Error::Cpu("GetKeys stack overflow".into()))?;
+                Ok((Call::GetKeys(destination), Reply::None))
             }
             0xa972 => {
                 let point = GuestPtr(memory.u32(GuestPtr(sp))?);
@@ -3913,6 +3926,14 @@ impl Abi {
                 point: [(c.gpr[3] >> 16) as i16, c.gpr[3] as i16],
                 rectangle: GuestPtr(c.gpr[4]),
             },
+            Service::GetKeys => {
+                let destination = GuestPtr(c.gpr[3]);
+                if destination.0 == 0 {
+                    return Err(Error::Cpu("nil GetKeys destination".into()));
+                }
+                memory.validate_write(destination, 16)?;
+                Call::GetKeys(destination)
+            }
             Service::GetMouse => Call::GetMouse(GuestPtr(c.gpr[3])),
             Service::SystemTask => Call::SystemTask,
             Service::SysEnvirons => Call::SysEnvirons {
@@ -4752,6 +4773,7 @@ impl Abi {
                         | Service::CopyMask
                         | Service::NumToString
                         | Service::StringToNum
+                        | Service::GetKeys
                         | Service::GetMouse
                         | Service::SystemTask
                         | Service::InvalRect

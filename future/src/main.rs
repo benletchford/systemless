@@ -82,6 +82,7 @@ struct State {
     execution: Option<Execution>,
     clock: std::time::Instant,
     pointer: systemless_future::host_input::Pointer,
+    keyboard: systemless_future::host_input::Keyboard,
     #[cfg(not(target_arch = "wasm32"))]
     audio: Option<systemless_future::audio::Output>,
 }
@@ -194,6 +195,7 @@ impl State {
             execution,
             clock: std::time::Instant::now(),
             pointer: Default::default(),
+            keyboard: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             audio: None,
         })
@@ -510,15 +512,45 @@ impl ApplicationHandler for App {
                 state.pointer.leave();
                 state.rt.process.cursor.inside = false;
             }
+            WindowEvent::KeyboardInput { event, .. }
+                if state.execution.as_ref().is_some_and(|e| !e.finished) =>
+            {
+                let code = match event.physical_key {
+                    winit::keyboard::PhysicalKey::Code(code) => {
+                        systemless_future::host_input::virtual_key(code)
+                    }
+                    _ => None,
+                };
+                if let Some(code) = code {
+                    if let Err(error) = state.keyboard.key(
+                        &mut state.rt.memory,
+                        &mut state.rt.process.input,
+                        code,
+                        event.text.as_deref(),
+                        event.state == winit::event::ElementState::Pressed,
+                        event.repeat,
+                    ) {
+                        self.fail(event_loop, error);
+                        return;
+                    }
+                    window.request_redraw();
+                }
+            }
             WindowEvent::ModifiersChanged(modifiers)
                 if state.execution.as_ref().is_some_and(|e| !e.finished) =>
             {
                 let keys = modifiers.state();
-                state.rt.process.input.modifiers = (state.rt.process.input.modifiers & !0x1b00)
-                    | if keys.super_key() { 0x100 } else { 0 }
+                let mask = if keys.super_key() { 0x100 } else { 0 }
                     | if keys.shift_key() { 0x200 } else { 0 }
                     | if keys.alt_key() { 0x800 } else { 0 }
                     | if keys.control_key() { 0x1000 } else { 0 };
+                if let Err(error) = state.keyboard.modifiers(
+                    &mut state.rt.memory,
+                    &mut state.rt.process.input,
+                    mask,
+                ) {
+                    self.fail(event_loop, error);
+                }
             }
             WindowEvent::Focused(false)
                 if state.execution.as_ref().is_some_and(|e| !e.finished) =>
@@ -527,6 +559,11 @@ impl ApplicationHandler for App {
                 if let Err(error) = state
                     .pointer
                     .unfocus(&mut state.rt.memory, &mut state.rt.process.input)
+                    .and_then(|()| {
+                        state
+                            .keyboard
+                            .unfocus(&mut state.rt.memory, &mut state.rt.process.input)
+                    })
                 {
                     self.fail(event_loop, error);
                 }

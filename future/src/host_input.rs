@@ -1,9 +1,11 @@
 //! Host pointer conversion and delivery into the shared Macintosh OS queue.
+mod keyboard;
 use crate::{
     events::{self, Input},
     memory::{GuestPtr, Memory},
     Result,
 };
+pub use keyboard::{virtual_key, Keyboard};
 #[derive(Default)]
 pub struct Pointer {
     inside: bool,

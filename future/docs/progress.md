@@ -8736,3 +8736,56 @@ afa4e77d8b53c42062fe4b730472cfbb396aacf715c2181aeb5dd12ea60491a1.
 No original bytes/volumes enter Git. Neither priority game is playable. Full
 rebuild and complete wgpu text rendering remain active; full-suite,CI,native/browser,
 input timing/device parity and original-gameplay/persistence acceptance stay open.
+
+
+## Shared keyboard state and GetKeys (2026-10-16)
+
+Both CPU adapters now implement GetKeys through the canonical 16-byte KeyMap at
+$0174. The native procedure preflights its output before popping arguments; PPC
+preserves its procedure register contract. Nil, short, protected and unmapped
+outputs fail without partial writes; overlapping source/output copies snapshot
+the source first. Polling neither consumes events nor fabricates physical keys
+from PostEvent. The bit convention follows preserved Systemless (code/8, low bit
+first), distinguished from native Macintosh parity.
+
+The shared host Keyboard driver delivers physical key state and keyDown/keyUp/
+autoKey events, MacRoman characters, left/right modifiers, Caps latch, masked
+input and focus release. Winit input and diagnostic scheduling use this same
+driver. The existing fallback-font MacRoman table is now shared, unchanged.
+Unknown Unicode produces no fabricated character event. Guest KCHR/KeyTranslate,
+IME/dead keys, non-US fallback and software repeat timing remain unfinished.
+Winit0.30.13 macOS flagsChanged forwards Shift/Control/Alt/Super but not Caps Lock;
+the driver's Caps behavior is fixture-tested, not native macOS acceptance.
+
+Validation:102distinct passes (77core,7Button,3events,8GetKeys,4host_input,3mouse_wait),
+3existing GPU tests ignored. Final log:/tmp/systemless-getkeys-final-tests.txt,exit0.
+All-target check passes (/tmp/systemless-getkeys-check.txt); strict lib/bins/selected
+tests/tracer lint passes (/tmp/systemless-getkeys-capture-lint.txt). Native window
+input acceptance and full-suite/CI/browser checks remain open.
+
+Original EV now completes17,046GetKeys calls without an unsupported-call fault
+through its10,000,000-boundary replay budget. Log:/tmp/systemless-ev-getkeys.txt,
+terminal exit1 for budget exhaustion, not an application exit. It completes27
+PlotCIcon,72Button,1StillDown and45,274TickCount calls. Running an input loop is
+not proof of interaction or gameplay. Independent saved-volume verification
+passes CRC/catalog/forks; preferences51->52, unchanged metadata/fork bytes and
+companions. Output:/tmp/systemless-ev-getkeys-saved.slv,7,239,400bytes,SHA256
+d1f1d500e1a44112766eb4e6fcecaef9d79c18001c1eca5fed8a209129db572b.
+Input:/tmp/systemless-ev-button-tracking-saved.slv, SHA256
+aa7b09d1b3ab4660f83616315fe9ddfaf0f07b2d232441cfca75fa215ccba32c.
+
+The tracer adds optional bounded --key-at INSTRUCTION:CODE:down|up[:TEXT] actions
+and --save-screen NEW_PPM. Keys pass through the shared host driver before actual
+CPU execution, without forced PCs or service results. Screen capture refreshes
+the canonical display and reads the real GPU output; create-new output prevents
+accidental overwrite. Neither original game is verified playable. The full
+rebuild and complete wgpu text rendering remain active requirements.
+
+Bounded Return capture: /tmp/systemless-ev-keys-return-1.txt,exit1 for budget.
+The shared driver delivers code36 down at instruction8,000,000 and up at8,005,000.
+The subsequent trace includes WaitEvent then FindWindow/CursorInit/MenuSelect;
+this changed service path does not establish correct keyboard handling. Final
+PC000314A4 versus baseline00032FBC. The final GPU capture is byte-identical to
+baseline: PPM SHA2562993b33f4929130f24c427580c648d004d92c814fff74e16b64ef16b7bf04529.
+No visible interaction success is claimed. Next: verify event decoding/handling
+and diagnose the black game area, alongside Marathon's current-port boundary.
