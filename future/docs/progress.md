@@ -10311,3 +10311,59 @@ rules/reference evidence. Do not convert this hypothesis into a fix by dropping
 validation. ACI-102 explicitly describes device value fields as matching/protection
 metadata with ordinal indices,so duplicate device metadata is not itself a bug.
 Private watch logs:2026-10-17-video-make-{master,header,values}.txt.
+
+
+### Repeated image-table values: evidence and contract (2026-10-17)
+
+Apple's [QuickDraw Reference, pp.354–355](https://leopard-adc.pepas.com/documentation/Carbon/Reference/QuickDraw_Ref/QuickDraw_Ref.pdf)
+explicitly states that SetEntries assigns changed entries the current GDevice's
+client ID in both sequence and index modes. This resolves the earlier metadata
+question: repeated client IDs after SetEntries are expected. The existing shared
+SetEntries behavior is retained, including protection and reservation checks.
+The same reference, p.290, documents MakeITable defaults, excluded reserved colors
+and invalid-resolution QDError; it does not establish duplicate image-value policy.
+
+The frozen baseline 634c0e912's quickdraw.rs read_color_table_ptr_clut uses entry
+ordinals for device tables and ColorSpec.value for image tables. Repeated image
+values overwrite the same pixel slot in input order. make_inverse_table consumes
+that reader without duplicate rejection. This is authorized preserved-Systemless
+reference evidence, not native System 7 proof. Executor's public qColorMgr.c also
+accepts duplicates, but its propagation implementation differs and is not imported.
+
+The rebuild now canonicalizes repeated image values with the last RGB owning the
+pixel. It retains only explicitly provided pixels, without the baseline's fill
+from the unrelated current device palette. Device ordinals, reserved exclusion,
+source extent/ownership and invalid-value checks remain. A cleared device flag
+is honored: a table containing only repeated value 0 yields only pixel 0, rather
+than being guessed back into an ordinal device table. This removes an unsupported
+parser restriction without inventing palette entries or changing SetEntries.
+
+Focused real 68K/PPC fixtures check every cell of a 512-cell analytic inverse table,
+replacement of an earlier conflicting RGB, unchanged source bytes, and an all-zero
+repeated-value table. The malformed-input fixture now uses out-of-range value 256;
+its output/allocation atomicity assertions remain. All 9 inverse-table tests pass, 0 ignored, including both real
+CPU adapters in the new fixture. Strict affected library/test/tracer Clippy passes (1m 23s); the tracer
+build passes (18.95s). Changed-file formatting and whitespace checks pass.
+
+Fresh original Marathon 8M replay completes both MakeITable calls and advances to
+GetForeColor/AA19 at CPU 3,786,230, PC 010125E4 (previously 2,983,153 / 01035164).
+This is a missing service boundary, not a budget pass or application acceptance.
+The inspected 640x480 canonical frame is entirely black (all 307,200 pixels), SHA256
+`a6087ec5178c7619d8136de2aa159dde7161d56f9e4c3b899b7165935d0353d8`.
+Driver controls continue to return ioResult 0; 1,843 timer callbacks complete.
+The independent volume verifier passes: all input companions/forks/metadata
+unchanged, only the same 1,222-byte first-run preferences added. Output SHA256
+`e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+Private evidence: 2026-10-17-inverse-duplicates.{txt,ppm,png,slv} and matching
+test/lint/build logs. Next Marathon slice is shared GetForeColor/GetBackColor,
+including basic/color ports and actual CPU ABIs. Neither game is verified
+playable; text production integration and the entire rebuild remain active.
+
+
+The fresh EV 24M regression replay reaches the same budget boundary, PC007E6830.
+Its frame is byte-identical to the preceding physical-palette run, SHA256
+`11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48`.
+Saved-volume SHA256 remains
+`e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`;
+independent catalog, pilot, preferences, alias, script and companion checks pass.
+Budget exhaustion remains unaccepted. Evidence: ev/evidence/2026-10-17-inverse-duplicates.*.

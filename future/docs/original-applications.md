@@ -4731,3 +4731,31 @@ rules/reference evidence. Do not convert this hypothesis into a fix by dropping
 validation. ACI-102 explicitly describes device value fields as matching/protection
 metadata with ordinal indices,so duplicate device metadata is not itself a bug.
 Private watch logs:2026-10-17-video-make-{master,header,values}.txt.
+
+
+### Repeated image values and Marathon's next boundary (2026-10-17)
+
+Apple QuickDraw Reference pp. 354–355 confirms SetEntries copies client IDs into
+changed entries. The preserved Systemless baseline accepts repeated image-table
+values, later RGB entries replacing earlier ones. The rebuild now supports that
+explicit reference policy, retaining range/extent checks and no unrelated device
+palette fill. Native duplicate-input parity remains unverified; see progress.md
+for sources, distinction and analytic real 68K/PPC fixtures.
+
+Unchanged original Marathon 8M completes both MakeITable calls and stops next at
+missing GetForeColor/AA19, CPU 3,786,230, PC 010125E4. The inspected 640x480 frame is
+entirely black, SHA256 a6087ec5178c7619d8136de2aa159dde7161d56f9e4c3b899b7165935d0353d8.
+All companions/forks/metadata remain identical; only the same first-run preferences
+are added, output volume SHA256 e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42.
+1,843 timer callbacks complete; video Control continues succeeding. This is runtime
+progress and a new service boundary, not a working menu/gameplay claim.
+Private evidence: marathon/evidence/2026-10-17-inverse-duplicates.*.
+
+
+The fresh EV 24M regression replay reaches the same budget boundary, PC007E6830.
+Its frame is byte-identical to the preceding physical-palette run, SHA256
+`11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48`.
+Saved-volume SHA256 remains
+`e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`;
+independent catalog, pilot, preferences, alias, script and companion checks pass.
+Budget exhaustion remains unaccepted. Evidence: ev/evidence/2026-10-17-inverse-duplicates.*.

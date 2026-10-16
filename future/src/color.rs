@@ -97,8 +97,7 @@ fn palette(m: &Memory, p: &mut Process, h: u32) -> Result<Palette> {
         return Err(bad("palette-relative inverse tables are unsupported"));
     }
     let device = flags & 0x8000 != 0;
-    let mut used = [false; 256];
-    let mut entries = Vec::with_capacity(count);
+    let mut entries: Vec<(u8, [u16; 3])> = Vec::with_capacity(count);
     for ordinal in 0..count {
         let at = 8 + ordinal * 8;
         let value = u16::from_be_bytes(raw[at..at + 2].try_into().unwrap());
@@ -115,15 +114,18 @@ fn palette(m: &Memory, p: &mut Process, h: u32) -> Result<Palette> {
             return Err(bad("tagged/reserved color entries are unsupported"));
         }
         let index = if device { ordinal as u8 } else { value as u8 };
-        if used[index as usize] {
-            return Err(bad("duplicate color table pixel value"));
-        }
-        used[index as usize] = true;
         let rgb = std::array::from_fn(|i| {
             u16::from_be_bytes(raw[at + 2 + i * 2..at + 4 + i * 2].try_into().unwrap())
         });
         if !device || value & RESERVED == 0 {
-            entries.push((index, rgb));
+            // Image tables may repeat a pixel value. Match the preserved
+            // Systemless table reader: the last specification owns that pixel.
+            // Do not fill unspecified pixels from an unrelated device palette.
+            if let Some(entry) = entries.iter_mut().find(|entry| entry.0 == index) {
+                entry.1 = rgb;
+            } else {
+                entries.push((index, rgb));
+            }
         }
     }
     Ok(Palette {

@@ -324,7 +324,7 @@ fn resolution_and_allocation_errors_publish_qderror_without_partial_table_or_err
 #[test]
 fn malformed_tables_fault_before_output_resize_or_payload_mutation() {
     let mut a = app();
-    let source = palette(&mut a, false, &[(17, [0; 3]), (17, [65535; 3])]);
+    let source = palette(&mut a, false, &[(17, [0; 3]), (256, [65535; 3])]);
     let out = handle(&mut a, &[0xa5; 32]);
     let free = a.runtime.process.free_memory();
     let mut manager = std::mem::take(&mut a.runtime.process.color);
@@ -599,5 +599,34 @@ fn setentries_is_atomic_for_protection_reservations_ranges_and_aliased_index_req
         assert_eq!(call(&mut a, arch, 1, &[]) as i32, -154);
         assert_eq!(a.runtime.memory.read(GuestPtr(ct), 24).unwrap(), before);
         assert_eq!(a.runtime.process.free_memory(), free);
+    }
+}
+
+#[test]
+fn repeated_image_pixels_use_the_last_color_without_inventing_device_entries() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        let source = palette(
+            &mut a,
+            false,
+            &[(17, [65535; 3]), (23, [65535; 3]), (17, [0; 3])],
+        );
+        let before = bytes(&mut a, source);
+        let out = handle(&mut a, &[]);
+        call(&mut a, arch, 0, &[source, out, 3]);
+        assert_eq!(call(&mut a, arch, 1, &[]), 0);
+        let result = bytes(&mut a, out);
+        for (cell, &pixel) in result[6..518].iter().enumerate() {
+            let sum = cell / 64 + (cell / 8) % 8 + cell % 8;
+            assert_eq!(pixel, if 2 * sum <= 21 { 17 } else { 23 });
+        }
+        assert_eq!(bytes(&mut a, source), before);
+        // A copied device table whose flag was cleared can contain only one
+        // repeated client ID. It remains a one-pixel image palette, not an
+        // invitation to reinterpret values as ordinals or borrow device RGBs.
+        let source = palette(&mut a, false, &[(0, [65535; 3]), (0, [0; 3])]);
+        call(&mut a, arch, 0, &[source, out, 3]);
+        assert_eq!(call(&mut a, arch, 1, &[]), 0);
+        assert!(bytes(&mut a, out)[6..518].iter().all(|&pixel| pixel == 0));
     }
 }
