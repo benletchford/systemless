@@ -9,6 +9,7 @@ use crate::{
     Error, Result,
 };
 mod items;
+mod list;
 pub mod record;
 mod resources;
 mod tracking;
@@ -19,6 +20,11 @@ const HEIGHT: GuestPtr = GuestPtr(0xbaa);
 const EMPTY: [u8; 12] = [0; 12];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    Insert {
+        handle: u32,
+        before: i16,
+    },
+    Delete(i16),
     New {
         id: i16,
         title: GuestPtr,
@@ -207,6 +213,9 @@ impl Menus {
         gpu: Option<&Graphics>,
         op: Op,
     ) -> Result<u32> {
+        if matches!(op, Op::Insert { .. } | Op::Delete(_)) {
+            return self.edit_list(memory, process, op);
+        }
         if let Op::Dispose(handle) = op {
             if handle != 0 {
                 let bytes = data(memory, process, handle)?;
@@ -457,7 +466,9 @@ impl Menus {
                 )?;
                 Ok(0)
             }
-            Op::Dispose(_)
+            Op::Insert { .. }
+            | Op::Delete(_)
+            | Op::Dispose(_)
             | Op::ReadCommand { .. }
             | Op::ReadText { .. }
             | Op::Append { .. }

@@ -24,7 +24,7 @@ impl Menus {
         }
         Ok(())
     }
-    fn measure_menu(
+    pub(super) fn measure_menu(
         &self,
         memory: &mut Memory,
         process: &mut Process,

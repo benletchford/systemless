@@ -4506,3 +4506,32 @@ stage byte-for-byte; both independent saved-volume checks pass.28scoped tests
 pass with0ignored (3command,25menus),including actual GPU cases. Next: shared
 menu-list DeleteMenu/InsertMenu lifecycle and generic Munger. Full text rendering,
 font fidelity, Mixed Mode and the entire rebuild remain unfinished.
+
+### Menu-list lifecycle refresh,2026-10-17
+
+Shared InsertMenu/DeleteMenu now implement regular/submenu partitions, insertion
+ordering, submenu-first deletion, color-entry cleanup and retained records with
+transactional publication and no implicit drawing.33scoped tests pass,0ignored
+(5list,25menus,3commands),including actual GPU and both CPU adapters.
+
+Original Marathon completes sixteen command queries and two absent-ID deletions
+(MENU128/129). It does not call InsertMenu in this replay; actual insertion and
+nonempty deletion are fixture evidence. The1M run reaches a Shapes'.256'/138
+processing loop; a read-only200-instruction trace shows pointer/counter progress
+through a313,128-byte resource. A fresh bounded8M run then stops at CTabChanged,
+AB1D/D0=00040007,CPU2,915,975,PC0100864E,table00010BB4. Use the prior command with
+8M budget and fresh /tmp/systemless-marathon-menu-list-8m.{ppm,slv}; input volume,
+display and watcher are unchanged. No state override is used. The inspected screen now shows the arrow cursor over a black background; no game
+scene/menu is visible. All three new captures share hash
+d5cee18abe289b1be11164e9eec2225db24784d65114d4b2239b2d46063079a3,
+with25white cursor pixels in bounds0,0–9,15. This differs from the preceding
+all-black frame. Companions are intact; only the same
+first-run preferences file is added. This is further startup/data-processing
+evidence, not an application acceptance pass or gameplay proof.
+
+Fresh original EV with the existing16M Enter Ship sequence reaches the same
+Munger boundary at15,136,642/0102C7CA. Canonical screen and saved volume are
+byte-identical to the preceding stage. Both independent volume checks pass.
+Private2026-10-17-menu-list[-loop|-8m].* evidence retains these results. Strict
+all-target lint passes. Next: Munger and CTabChanged; both games, full text and
+the entire rebuild remain unfinished.

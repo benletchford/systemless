@@ -3771,3 +3771,31 @@ The canonicalA84E discovery veneer is appended without changing previous entry
 identities. References: [GetItemCmd](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-161.html),
 [Menu Manager C summary](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-187.html)
 and the observed Apple10.4u SDK Menus.h/MacTypes.h declarations.
+
+### Shared live menu-list insertion and deletion
+
+InsertMenu/DeleteMenu mutate the existing DynamicMenuList and MenuCInfo handles
+through one shared service. Both regular and submenu partitions retain handle
+identity and opaque trailing entry values. Insertion uses-1 for submenus, appends
+for0/missing IDs, and matches other signed before IDs in the regular partition.
+Already-installed handles and full target partitions are no-ops. The checked
+partition bound is1024entries, not a measured native capacity. Automatic ordering
+of system Help/Keyboard/Application menus remains outside this supported slice.
+
+Deletion searches submenus before regular entries, removes the first matching
+ID and all color entries for that ID, and retains every menu record. Missing IDs
+are no-ops, including orphan color entries. Existing title-width/spacing policy
+reflows regular entries; inserted records use the existing shared menu sizing
+path and guest font resources. Font source preparation can use its normal
+bounded caches; list/record/color publication is staged through replace_handles.
+Locked-growth failure leaves all staged target payloads unchanged. Saved tracking
+contexts are rejected before font preparation; that interaction remains open.
+
+No implicit bar drawing, image mutation or menu-record disposal occurs. Resource
+bar IDs, manager handles and unrelated color records are preserved. Both ABIs
+marshal void calls into this service: native Insert consumes2+4bytes and Delete
+consumes2; PPC truncates signed word IDs and preserves its void result register.
+A935/A936 discovery entries are appended without changing prior identities.
+Primary references: [InsertMenu](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-120.html)
+and [DeleteMenu](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-121.html). Existing
+geometry remains reference-policy evidence, not new native pixel-parity proof.

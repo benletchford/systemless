@@ -9869,3 +9869,85 @@ Strict all-target Clippy passes (5m46s,exit0); corrected test/build/lint chain
 exits0. Private2026-10-17-menu-command-lint.txt retains the log. The baseline
 checkout is verified clean at634c0e9120a695224d71c621fbbe33709670d707. Shared
 DeleteMenu/InsertMenu and generic Munger are next; the full rebuild stays active.
+
+### Shared InsertMenu/DeleteMenu, 2026-10-17
+
+The preceding original Marathon evidence stops at DeleteMenu/A936,ID128,
+219,110/01003FF0. Both list operations now work through the shared live guest
+DynamicMenuList/MenuCInfo model. Insert supports regular signed before-ID lookup,
+0/missing-ID append,-1 submenu append, installed-handle no-op and full checked
+partition no-op. Delete searches submenus first, removes all matching-ID color
+entries, retains the MENU record and does nothing for an absent ID. Existing
+source text sizing/reflow policy is reused; there is no implicit GPU drawing.
+
+List/color/candidate payloads commit together through checked replace_handles.
+Locked growth or malformed later records cannot publish partial state. A saved
+tracking context is rejected before font source preparation (inspection caught
+that ordering risk); a new regression uses an uncached font size to verify no
+allocation before that error. Native tracking mutation, system-menu ordering and
+geometry parity remain open. Both ABI adapters and appendedA935/A936 discovery
+entries reach the same service. No game-specific no-op is used for Marathon.
+
+The preliminary run passes3command+2list+25menu tests,0ignored,including real GPU
+setup/readback. Two more boundary fixtures and the tracking-preflight fix are
+added afterward, so /tmp/systemless-menu-list-final-tests.txt is the final
+authoritative rerun. New coverage includes both real CPU void/stack frames,
+negative IDs, same-ID regular/submenu priority, duplicate no-ops, all-ID color
+cleanup and retained records/pixels; locked growth and malformed later records
+retain published state. Full-partition and incomplete-frame checks are included
+in the final run, not counted as passed until its terminal result.
+
+Final scoped validation passes33tests,0ignored:3menu_commands,5menu_list and
+25menus, including actual GPU cases. Saved-tracking rejection and the full1024
+submenu boundary pass. Tracer build passes7.96s. These are scoped checks, not a
+fresh whole-suite result. Strict lint is tracked separately.
+
+Fresh original Marathon now completes DeleteMenu128/129 and sixteen total
+GetItemCmd calls (5items inMENU128,11inMENU129), releasing both MENU resources.
+No InsertMenu call is observed; insertion is verified by fixtures. It selects
+window00018414,configures the application's font and sound commands, loads
+Shapes resource'.256'/138 and allocates an8448-byte handle. The existing1M budget
+is exhausted at01022A00 with a black snapshot, not an unsupported call and not
+a successful app run. Fresh /tmp/systemless-marathon-menu-list-loop.* adds only
+--trace-range999800:1000000: A1 advances007418C1→007418DD and D1 decreases130→114
+(hex), demonstrating real processing progress. Independent parsing locates the
+313,128-byte resource in Shapes' resource fork, not the application fork.
+
+That evidence justifies a fresh bounded8M replay, using the same inputs and
+read-only watcher, saved as /tmp/systemless-marathon-menu-list-8m.*. No CPU/result
+override is used. Await its terminal result before claiming the next boundary.
+
+The8M Marathon replay reaches a new explicit boundary at CPU2,915,975,
+PC0100864E: QDExtensions/AB1D with fullD0=00040007,CTabChanged,table00010BB4.
+The palette master points0077B1E0,ctSize255,with live guest palette entries.
+It advances beyond the observed image-processing loop; this does not prove the
+complete Shapes collection or image presentation. Completed callbacks are
+1409timer,0sound,0VBL. InsertMenu is not called in this replay; both deletions
+are observed absent-ID operations, with full mutations proved by fixtures.
+
+Independent saved-volume checks pass at1M and at the new8M boundary: all original
+companions/metadata/forks unchanged, only expected first-run preferences added.
+All three new canonical Marathon screenshots match each other,hash
+d5cee18abe289b1be11164e9eec2225db24784d65114d4b2239b2d46063079a3.
+They differ from the preceding all-black frame: the guest's new Cursor(Set) call
+produces an arrow at the upper-left (25white pixels,bounds0,0–9,15),confirmed by
+actual PNG inspection and a pixel histogram. The underlying display remains
+black. No game scene or menu is visible. Do not report equality to the old frame.
+Saved volume remains11,597,088B,hashe8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42.
+Private2026-10-17-menu-list[-loop|-8m].* captures, trace tails, tests/build/lint
+and catalog checks retain the evidence. Neither budget exhaustion nor a missing
+call is an app acceptance pass; no visible menu, gameplay or native timing claim.
+
+Fresh EV with the same16M/real Enter Ship key sequence reaches unchanged Munger
+at15,136,642/0102C7CA. Screen and saved volume match the preceding stage byte-for-
+byte, and independent CRC/catalog/script/alias checks pass. Private EV
+2026-10-17-menu-list.* retains the regression. Strict all-target Clippy passes
+4m26s,exit0; the final test/build/lint chain exits0.
+
+Next: generic Munger handle/search/replace for EV and shared CTabChanged palette
+notification for Marathon. [Imaging With QuickDraw4-97–4-98](https://www.vintageapple.org/inside_r/pdf/Imaging_With_QuickDraw_1994.pdf)
+specifies a fresh GetCTSeed identifier and notification of inverse-table
+invalidation, and forbids interrupt-time use. Existing live palette reads and
+seed authority must stay coherent; no success-only stub or stale GPU cache. Full
+text/Glyphon integration, font fidelity, Mixed Mode and whole rebuild acceptance
+remain active.

@@ -125,6 +125,8 @@ pub enum Service {
     NewMenu,
     GetMenuItemText,
     SetMenuItemText,
+    InsertMenu,
+    DeleteMenu,
     SetItemCommand,
     GetItemCommand,
     SetItemMark,
@@ -537,6 +539,8 @@ impl Abi {
             b"NewMenu" => Some(Service::NewMenu),
             b"GetItem" | b"GetMenuItemText" => Some(Service::GetMenuItemText),
             b"SetItem" | b"SetMenuItemText" => Some(Service::SetMenuItemText),
+            b"InsertMenu" => Some(Service::InsertMenu),
+            b"DeleteMenu" => Some(Service::DeleteMenu),
             b"GetItemCmd" => Some(Service::GetItemCommand),
             b"SetItemCmd" => Some(Service::SetItemCommand),
             b"MenuSelect" => Some(Service::MenuSelect),
@@ -2813,6 +2817,25 @@ impl Abi {
                     Reply::None,
                 ))
             }
+            0xa935 => {
+                let args = memory.read(GuestPtr(sp), 6)?;
+                let before = i16::from_be_bytes(args[..2].try_into().unwrap());
+                let handle = u32::from_be_bytes(args[2..6].try_into().unwrap());
+                c.dar[15] = sp
+                    .checked_add(6)
+                    .ok_or_else(|| Error::Cpu("InsertMenu stack overflow".into()))?;
+                Ok((
+                    Call::Menu(crate::menus::Op::Insert { handle, before }),
+                    Reply::None,
+                ))
+            }
+            0xa936 => {
+                let id = memory.u16(GuestPtr(sp))? as i16;
+                c.dar[15] = sp
+                    .checked_add(2)
+                    .ok_or_else(|| Error::Cpu("DeleteMenu stack overflow".into()))?;
+                Ok((Call::Menu(crate::menus::Op::Delete(id)), Reply::None))
+            }
             0xa84e => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let destination = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
@@ -4319,6 +4342,11 @@ impl Abi {
                 item: c.gpr[4] as i16,
                 source: GuestPtr(c.gpr[5]),
             }),
+            Service::InsertMenu => Call::Menu(crate::menus::Op::Insert {
+                handle: c.gpr[3],
+                before: c.gpr[4] as i16,
+            }),
+            Service::DeleteMenu => Call::Menu(crate::menus::Op::Delete(c.gpr[3] as i16)),
             Service::GetItemCommand => {
                 let destination = GuestPtr(c.gpr[5]);
                 if destination.0 == 0 {
@@ -5075,6 +5103,8 @@ impl Abi {
                         | Service::SetItemMark
                         | Service::SetItemCommand
                         | Service::GetItemCommand
+                        | Service::InsertMenu
+                        | Service::DeleteMenu
                         | Service::SetMenuItemText
                         | Service::GetMenuItemText
                         | Service::HiliteMenu
