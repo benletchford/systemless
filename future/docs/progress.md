@@ -6989,3 +6989,60 @@ remain zero. No game preference save/reload, title/menu/gameplay/audio acceptanc
 Marathon not replayed. Next: AddResource with handle ownership, duplicate IDs,
 changed-resource state, permissions and both adapters, followed by real writeback
 and EV replay. Full rebuild and complete wgpu text rendering remain active.
+
+
+## Shared AddResource attachment and pending-growth reservation (2026-10-16)
+
+A9AB and PPC AddResource now attach an existing owned handle to the current
+writable resource map without copying or allocating a replacement guest handle.
+The entry has resChanged=2 and other resource attributes zero; the map gains
+mapChanged=32, and the original handle gains resource identity while retaining
+its memory lock/state. Names and four-byte types preserve raw Macintosh bytes,
+IDs are signed words, and zero-length data is supported. Nil/unknown/already
+attached handles return addResFailed (-194); read-only maps reject additions.
+GetResource/HomeResFile and existing changed-resource release/detach/close rules
+share this same ownership. Disk bytes remain unchanged until writeback.
+
+A candidate map is validated/encoded before publication. Initial pending fork
+growth reserves space in the shared file quota; ordinary fork resizing and both
+resource-file creation APIs now account for that reservation. Failed quota checks
+leave handle ownership, flags and map entries unchanged. Reservations are runtime
+state, not serialized disk content. Live payload edits/resizing and actual resource
+writeback remain the next slice; this is not complete persistence support.
+
+Primary: Apple More Macintosh Toolbox (1993), AddResource pp. 1-90–91
+([manual scan](https://vintageapple.org/inside_r/pdf/More_Macintosh_TB_1993.pdf));
+[Resource Manager reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/Resource_Manager/Reference/reference.html),
+AddResource and mapChanged. Older Apple documentation says AddResource does not
+check duplicate type/ID pairs. The current unique-key map cannot represent those;
+such collisions stop explicitly without overwriting rather than inventing a native
+error result. Duplicate-key map support remains open, as do unowned/purged handle
+forms, guest map exposure and application/System-file writes. No native System 7
+conformance run.
+
+Validation: 81 distinct tests pass, no failures/skips. Initial
+/tmp/systemless-add-resource-tests.txt terminal exit 0 covers library 57,
+attachment 2 and resource-file/lifetime/map regressions 6/7/6. Final-source
+/tmp/systemless-add-resource-final-tests.txt terminal exit 0 covers library 58
+and attachment/fault/quota tests 4. Repeated tests are counted once. Actual CPU
+cases verify original-handle lookup, raw named metadata, negative IDs/PPC upper
+bits, void ABI, frame/register guards, mirrored ResError and unchanged guest
+allocation/MemError. Changed entries remain resident and resist detach/unsafe
+close. Tests cover zero-length/nil/attached handles, explicit duplicate rejection,
+read-only maps, bad native frames/name/global mappings, disk-full nonattachment,
+and reservations blocking other file growth/creation. Strict final library/fixture
+lint succeeds in /tmp/systemless-add-resource-final-lint.txt; tracer build succeeds
+in /tmp/systemless-add-resource-build.txt. Sequential formatting/whitespace pass.
+No fresh full-integration/native/GPU-pixel/browser acceptance.
+
+Asset-backed original EV attaches its 98-byte preferences handle as type 4D70A8C4,
+ID 128, then restores application resource selection and changes handle flags.
+It stops at UpdateResFile A999, PC 0002CA9E. Evidence:
+/tmp/systemless-ev-add-resource.txt, expected unsupported-service exit 1. Same
+original resource fork, companion volume, ten-million instruction bound and
+640x480x8 graphics; sound/timer/VBL callbacks remain zero. No preferences
+save/reload, title/menu/gameplay/audio acceptance; Marathon not replayed. Next:
+shared UpdateResFile using current handle payloads, atomic fork replacement,
+reservation accounting/changed flags and both adapters, then EV replay and
+preference save/reload verification. Full rebuild and complete wgpu text remain
+active requirements.

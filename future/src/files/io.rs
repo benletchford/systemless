@@ -92,11 +92,7 @@ impl Files {
         if node == 16 {
             return Err(-45);
         }
-        let used: usize = self
-            .files
-            .values()
-            .map(|f| f.data.len() + f.resource.len())
-            .sum();
+        let used = self.space_used();
         let old = self.node_fork(node, kind).ok_or(-43i16)?.len();
         if length > LIMIT || used - old > LIMIT - length {
             return Err(-34);
@@ -379,5 +375,32 @@ impl Files {
             _ => unreachable!(),
         }
         Ok(0)
+    }
+}
+#[cfg(test)]
+mod resource_reservation_tests {
+    use super::*;
+    use crate::memory::Permissions;
+    #[test]
+    fn pending_resource_growth_excludes_other_fork_growth_and_resource_creation() {
+        let mut files = Files::application(&[], None);
+        let a = files.create_file(b"A", -1, 2, 0, [0; 16]).unwrap();
+        let b = files.create_file(b"B", -1, 2, 0, [0; 16]).unwrap();
+        files.reserve_resource_growth(a, 1000).unwrap();
+        files.resize_fork(b, Fork::Data, LIMIT - 1000).unwrap();
+        assert_eq!(files.space_used(), LIMIT);
+        assert_eq!(files.resize_fork(b, Fork::Data, LIMIT - 999), Err(-34));
+        assert_eq!(files.reserve_resource_growth(a, 1001), Err(-34));
+        assert_eq!(files.space_used(), LIMIT);
+        let mut m = Memory::default();
+        m.map(GuestPtr(0x1000), b"\x01B".to_vec(), Permissions::RX)
+            .unwrap();
+        assert_eq!(
+            files.create_resource_file(&m, GuestPtr(0x1000)).unwrap(),
+            -34
+        );
+        files.resize_fork(b, Fork::Data, LIMIT - 2000).unwrap();
+        files.reserve_resource_growth(a, 2000).unwrap();
+        assert_eq!(files.space_used(), LIMIT);
     }
 }

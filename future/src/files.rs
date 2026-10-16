@@ -68,6 +68,7 @@ pub struct Files {
     directories: BTreeMap<u32, Directory>,
     next_node: u32,
     revision: u64,
+    resource_growth: BTreeMap<u32, usize>,
     working: BTreeMap<i16, (u32, u32)>,
     default_directory: working::DefaultDirectory,
 }
@@ -90,6 +91,7 @@ impl Files {
             directories: BTreeMap::new(),
             next_node: 17,
             revision: 0,
+            resource_growth: BTreeMap::new(),
             working: BTreeMap::new(),
             default_directory: working::DefaultDirectory::default(),
         }

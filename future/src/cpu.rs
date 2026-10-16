@@ -93,6 +93,7 @@ pub enum Call {
     Timer(crate::timers::Op),
     Retrace(crate::retrace::Op),
     RetraceHeader,
+    AddResource(crate::process::resources::AddResource),
     CreateSpecResource(crate::files::CreateSpecResource),
     CreateResourceFile(GuestPtr),
     Decimal(crate::decimal::Op),

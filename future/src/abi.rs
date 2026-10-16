@@ -254,6 +254,7 @@ pub enum Service {
     Get1NamedResource,
     FileIo(crate::files::Op),
     FileIoWithAsync(crate::files::Op),
+    AddResource,
     CreateSpecResource,
     MakeSpec,
     ResolveAliasFile,
@@ -717,6 +718,7 @@ impl Abi {
             b"PBOpenWDSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Open)),
             b"PBCloseWDSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Close)),
             b"PBGetWDInfoSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Info)),
+            b"AddResource" => Some(Service::AddResource),
             b"FSpCreateResFile" => Some(Service::CreateSpecResource),
             b"FSMakeFSSpec" => Some(Service::MakeSpec),
             b"ResolveAliasFile" => Some(Service::ResolveAliasFile),
@@ -1086,6 +1088,21 @@ impl Abi {
                     Call::FixedMultiply { left, right },
                     Reply::StackLong(GuestPtr(next)),
                 ))
+            }
+            0xa9ab => {
+                let args = memory.read(GuestPtr(sp), 14)?;
+                let request = crate::process::resources::AddResource {
+                    name: GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap())),
+                    id: i16::from_be_bytes(args[4..6].try_into().unwrap()),
+                    kind: args[6..10].try_into().unwrap(),
+                    handle: u32::from_be_bytes(args[10..14].try_into().unwrap()),
+                };
+                request.validate(memory)?;
+                let next = sp
+                    .checked_add(14)
+                    .ok_or_else(|| Error::Cpu("AddResource stack overflow".into()))?;
+                c.dar[15] = next;
+                Ok((Call::AddResource(request), Reply::None))
             }
             0xaa52 if c.dar[0] as u16 == 13 => {
                 let args = memory.read(GuestPtr(sp), 6)?;
@@ -4307,6 +4324,12 @@ impl Abi {
                 pointer: GuestPtr(c.gpr[3]),
                 op,
             },
+            Service::AddResource => Call::AddResource(crate::process::resources::AddResource {
+                handle: c.gpr[3],
+                kind: c.gpr[4].to_be_bytes(),
+                id: c.gpr[5] as i16,
+                name: GuestPtr(c.gpr[6]),
+            }),
             Service::CreateSpecResource => {
                 Call::CreateSpecResource(crate::files::CreateSpecResource {
                     spec: GuestPtr(c.gpr[3]),
@@ -4361,6 +4384,7 @@ impl Abi {
                         | Service::DisposeDialog(_)
                         | Service::MakeITable
                         | Service::SetDeviceAttribute
+                        | Service::AddResource
                         | Service::CreateSpecResource
                         | Service::SecondsToDate
                         | Service::GetDateTime

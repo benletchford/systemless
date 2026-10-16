@@ -22,6 +22,47 @@ impl CreateSpecResource {
     }
 }
 impl Files {
+    pub(super) fn space_used(&self) -> usize {
+        self.files
+            .values()
+            .map(|f| f.data.len() + f.resource.len())
+            .sum::<usize>()
+            + self
+                .resource_growth
+                .iter()
+                .map(|(node, size)| {
+                    size.saturating_sub(
+                        self.node_fork(*node, super::Fork::Resource)
+                            .map_or(0, |b| b.len()),
+                    )
+                })
+                .sum::<usize>()
+    }
+    pub(crate) fn reserve_resource_growth(
+        &mut self,
+        node: u32,
+        size: usize,
+    ) -> std::result::Result<(), i16> {
+        let old = self
+            .node_fork(node, super::Fork::Resource)
+            .ok_or(-43i16)?
+            .len();
+        let previous = self
+            .resource_growth
+            .get(&node)
+            .copied()
+            .unwrap_or(old)
+            .saturating_sub(old);
+        let projected = self.space_used() - previous;
+        if projected
+            .checked_add(size.saturating_sub(old))
+            .is_none_or(|n| n > super::io::LIMIT)
+        {
+            return Err(-34);
+        }
+        self.resource_growth.insert(node, size);
+        Ok(())
+    }
     /// Create a real empty resource map, retaining existing data and catalog identity.
     /// Only the runtime's Roman/system-Roman script is currently supported.
     pub fn create_spec_resource(
@@ -69,11 +110,7 @@ impl Files {
             }
         }
         let bytes = ResourceFork::default().encode()?;
-        let used: usize = self
-            .files
-            .values()
-            .map(|f| f.data.len() + f.resource.len())
-            .sum();
+        let used = self.space_used();
         if used > super::io::LIMIT - bytes.len() {
             return Ok(-34);
         }
@@ -246,11 +283,7 @@ impl Files {
             Err(-43) => None,
             Err(error) => return Ok(error),
         };
-        let used: usize = self
-            .files
-            .values()
-            .map(|f| f.data.len() + f.resource.len())
-            .sum();
+        let used = self.space_used();
         if used > super::io::LIMIT - bytes.len() {
             return Ok(-34);
         }

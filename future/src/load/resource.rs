@@ -20,6 +20,15 @@ pub struct ResourceFork {
     entries: BTreeMap<([u8; 4], i16), Resource>,
 }
 impl ResourceFork {
+    pub(crate) fn insert_unique(&mut self, resource: Resource) -> Result<()> {
+        if self.entries.contains_key(&(resource.kind, resource.id)) {
+            return Err(invalid(
+                "duplicate resource type/ID mutation is not supported",
+            ));
+        }
+        self.entries.insert((resource.kind, resource.id), resource);
+        Ok(())
+    }
     pub fn get(&self, kind: [u8; 4], id: i16) -> Option<&Resource> {
         self.entries.get(&(kind, id))
     }

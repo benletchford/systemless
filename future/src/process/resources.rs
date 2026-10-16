@@ -48,7 +48,99 @@ pub enum Op {
     Close(i16),
     Home(u32),
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AddResource {
+    pub handle: u32,
+    pub kind: [u8; 4],
+    pub id: i16,
+    pub name: GuestPtr,
+}
+impl AddResource {
+    pub fn validate(self, memory: &Memory) -> Result<()> {
+        if self.name.0 != 0 {
+            let n = memory.read(self.name, 1)?[0] as usize;
+            memory.read(self.name, n + 1)?;
+        }
+        memory.validate_write(GuestPtr(0xa60), 2)
+    }
+}
 impl Process {
+    pub fn add_resource(&mut self, memory: &Memory, request: AddResource) -> Result<()> {
+        request.validate(memory)?;
+        if request.handle == 0
+            || self.resource_handles.values().any(|&h| h == request.handle)
+            || !self.handles.contains_key(&request.handle)
+        {
+            self.res_error = -194;
+            return Ok(());
+        }
+        let owner = self.resource_files.current;
+        let Some(map) = self.resource_files.files.get(&owner) else {
+            self.res_error = if owner == APPLICATION { -54 } else { -193 };
+            return Ok(());
+        };
+        if !map.writable || map.fork.attributes & 0x80 != 0 {
+            self.res_error = -54;
+            return Ok(());
+        }
+        let block = self.handles[&request.handle];
+        if memory.u32(GuestPtr(request.handle))? != block.data {
+            return Err(Error::Cpu("guest-modified resource master pointer".into()));
+        }
+        let data = if block.size == 0 {
+            Vec::new()
+        } else {
+            memory
+                .read(GuestPtr(block.data), block.size as usize)?
+                .to_vec()
+        };
+        let name = if request.name.0 == 0 {
+            None
+        } else {
+            let n = memory.read(request.name, 1)?[0] as usize;
+            if n == 0 {
+                None
+            } else {
+                Some(memory.read(request.name, n + 1)?[1..].to_vec())
+            }
+        };
+        let mut candidate = map.fork.clone();
+        candidate.insert_unique(Resource {
+            kind: request.kind,
+            id: request.id,
+            attributes: 2,
+            name,
+            data,
+        })?;
+        candidate.attributes |= 0x20;
+        let size = candidate.encode()?.len();
+        if self
+            .resource_files
+            .files
+            .values()
+            .map(|m| m.bytes)
+            .sum::<usize>()
+            - map.bytes
+            + size
+            > crate::load::IMAGE_LIMIT
+        {
+            self.res_error = -108;
+            return Ok(());
+        }
+        let node = map.node;
+        if let Err(error) = self.files.reserve_resource_growth(node, size) {
+            self.res_error = error;
+            return Ok(());
+        }
+        let map = self.resource_files.files.get_mut(&owner).unwrap();
+        map.fork = candidate;
+        map.bytes = size;
+        self.handles.get_mut(&request.handle).unwrap().attributes |= 0x20;
+        self.resource_handles
+            .insert((owner, request.kind, request.id), request.handle);
+        self.res_error = 0;
+        Ok(())
+    }
     fn resource_map(&self, owner: i16) -> Option<&ResourceFork> {
         if owner == APPLICATION {
             self.resource_files
