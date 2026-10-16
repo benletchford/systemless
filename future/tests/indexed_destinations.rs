@@ -879,3 +879,75 @@ fn gpu_text_masks_match_copybits_for_all_indexed_depths_modes_clips_and_padding(
         );
     }
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn reserved_colors_keep_physical_pixels_but_match_only_for_the_owning_client() {
+    use systemless_future::{color, devices};
+    for depth in [2, 4, 8] {
+        let (mut a, _, stride, colors) = setup(depth);
+        let gd_h = a.runtime.memory.u32(devices::CURRENT).unwrap();
+        let gd = a.runtime.memory.u32(GuestPtr(gd_h)).unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(gd + 2), &7u16.to_be_bytes())
+            .unwrap();
+        let mut manager = std::mem::take(&mut a.runtime.process.color);
+        manager
+            .call(
+                &mut a.runtime.memory,
+                &mut a.runtime.process,
+                color::Op::Reserve {
+                    index: 0,
+                    reserve: true,
+                },
+            )
+            .unwrap();
+        a.runtime.process.color = manager;
+        for (client, native_call) in [(7u16, true), (8, false)] {
+            a.runtime
+                .memory
+                .write(GuestPtr(gd + 2), &client.to_be_bytes())
+                .unwrap();
+            let closest = colors
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| client == 7 || *i != 0)
+                .min_by_key(|(i, c)| {
+                    (
+                        c.iter()
+                            .map(|v| {
+                                let d = 65535u64 - u64::from(*v);
+                                d * d
+                            })
+                            .sum::<u64>(),
+                        *i,
+                    )
+                })
+                .unwrap()
+                .0 as u8;
+            rgb(&mut a, [65535; 3], false, native_call);
+            assert_eq!(
+                a.runtime.memory.u32(GuestPtr(PORT + 80)).unwrap(),
+                u32::from(closest)
+            );
+            let black = nearest([0; 3], &colors);
+            let mut expected = vec![black; 21];
+            expected[20] = 0; // A preexisting reserved pixel is still valid and visible.
+            a.runtime
+                .memory
+                .write(GuestPtr(BITS), &packed(&expected, depth, stride))
+                .unwrap();
+            rectangle(&mut a, PORT + 128, Rect::new(-3, -2, 3, 1));
+            invoke(&mut a, 6, &[10]);
+            invoke(&mut a, 2, &[PORT + 128]);
+            for y in 0..3 {
+                for x in 0..6 {
+                    expected[y * 7 + x] = closest;
+                }
+            }
+            assert_eq!(unpack(&a, depth, stride), expected);
+            check_gpu(&a, &expected, &colors);
+        }
+    }
+}

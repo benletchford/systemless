@@ -17,6 +17,10 @@ pub enum Op {
         index: i16,
         protect: bool,
     },
+    Reserve {
+        index: i16,
+        reserve: bool,
+    },
     Error,
 }
 #[derive(Default)]
@@ -25,7 +29,8 @@ pub struct Manager {
 }
 // The device ColorSpec high byte is reserved to the Color/Palette Managers.
 // This runtime stores protection in bit 15; public pixel indices use ordinals.
-const PROTECTED: u16 = 0x8000;
+pub(crate) const PROTECTED: u16 = 0x8000;
+pub(crate) const RESERVED: u16 = 0x4000;
 fn bad(message: &str) -> Error {
     Error::Graphics(message.into())
 }
@@ -85,9 +90,16 @@ fn palette(m: &Memory, p: &mut Process, h: u32) -> Result<Palette> {
     for ordinal in 0..count {
         let at = 8 + ordinal * 8;
         let value = u16::from_be_bytes(raw[at..at + 2].try_into().unwrap());
-        // Protection does not hide colors from matching. Other tags remain
-        // unsupported until reservation-aware matching is implemented.
-        if value & !(if device { PROTECTED | 255 } else { 255 }) != 0 {
+        // Protection does not hide colors from matching. Reserved colors are excluded
+        // from generated inverse tables, independently of the current client.
+        if value
+            & !(if device {
+                PROTECTED | RESERVED | 255
+            } else {
+                255
+            })
+            != 0
+        {
             return Err(bad("tagged/reserved color entries are unsupported"));
         }
         let index = if device { ordinal as u8 } else { value as u8 };
@@ -98,7 +110,9 @@ fn palette(m: &Memory, p: &mut Process, h: u32) -> Result<Palette> {
         let rgb = std::array::from_fn(|i| {
             u16::from_be_bytes(raw[at + 2 + i * 2..at + 4 + i * 2].try_into().unwrap())
         });
-        entries.push((index, rgb));
+        if !device || value & RESERVED == 0 {
+            entries.push((index, rgb));
+        }
     }
     Ok(Palette {
         seed: u32::from_be_bytes(raw[..4].try_into().unwrap()),
@@ -138,6 +152,7 @@ impl Manager {
                 resolution,
             } => self.make(m, p, source, destination, resolution),
             Op::Protect { index, protect } => self.protect(m, p, index, protect),
+            Op::Reserve { index, reserve } => self.entry(m, p, index, reserve, RESERVED),
             Op::Error => unreachable!(),
         };
         (p.mem_error, p.res_error) = saved;
@@ -151,6 +166,16 @@ impl Manager {
         p: &mut Process,
         index: i16,
         protect: bool,
+    ) -> Result<i16> {
+        self.entry(m, p, index, protect, PROTECTED)
+    }
+    fn entry(
+        &mut self,
+        m: &mut Memory,
+        p: &mut Process,
+        index: i16,
+        enable: bool,
+        flag: u16,
     ) -> Result<i16> {
         if !(0..256).contains(&index) {
             return Ok(-153);
@@ -175,13 +200,17 @@ impl Manager {
         owned(m, p, table, 8 + (last as u32 + 1) * 8)?;
         let entry = GuestPtr(data.0 + 8 + index as u32 * 8);
         let old = m.u16(entry)?;
-        if protect && old & PROTECTED != 0 {
+        if enable && old & flag != 0 {
             return Ok(-154);
         }
-        let value = if protect {
-            old | PROTECTED
+        let value = if enable {
+            if flag == RESERVED {
+                (old & 0xff00) | flag | (m.u16(GuestPtr(gd.0 + 2))? & 255)
+            } else {
+                old | flag
+            }
         } else {
-            old & !PROTECTED
+            old & !flag
         };
         let seed = m.u32(data)?.wrapping_add(1);
         m.validate_write(data, 4)?;
@@ -232,6 +261,9 @@ impl Manager {
             let pm = owned(m, p, pixels, 50)?;
             palette(m, p, m.u32(GuestPtr(pm.0 + 42))?)?
         };
+        if colors.entries.is_empty() {
+            return Ok(-150);
+        }
         let bytes = table(&colors, resolution as u16);
         let field = current.map(|gd| GuestPtr(gd.0 + 6));
         let target = if destination != 0 {

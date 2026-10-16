@@ -99,8 +99,8 @@ impl Bitmap {
 
 fn basic_draw<'a>(surface: &crate::surface::Surface, mut draw: Draw<'a>) -> Result<Draw<'a>> {
     let color = |v: u8| match v {
-        0 => Ok(surface.nearest([65535; 3])),
-        1 => Ok(surface.nearest([0; 3])),
+        0 => surface.nearest([65535; 3]),
+        1 => surface.nearest([0; 3]),
         _ => Err(Error::Graphics(
             "basic bitmap colors must be bit values".into(),
         )),

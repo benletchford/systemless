@@ -10,6 +10,7 @@ use crate::{
 pub(crate) struct Palette {
     pub rgb: Box<[[u16; 3]; 256]>,
     pub defined: [bool; 256],
+    pub matchable: [bool; 256],
 }
 #[derive(Clone)]
 pub(crate) struct Surface {
@@ -77,7 +78,11 @@ impl Surface {
         Ok(Self {
             bitmap,
             depth,
-            colors: Some(Palette { rgb, defined }),
+            colors: Some(Palette {
+                rgb,
+                defined,
+                matchable: defined,
+            }),
         })
     }
     pub fn compatible(&self, other: &Self) -> bool {
@@ -110,17 +115,19 @@ impl Surface {
                 c.rgb[v as usize]
             }))
     }
-    pub fn nearest(&self, rgb: [u16; 3]) -> u8 {
+    pub fn nearest(&self, rgb: [u16; 3]) -> Result<u8> {
         let Some(c) = &self.colors else {
-            return u8::from(rgb.iter().map(|v| u32::from(*v)).sum::<u32>() < 98303);
+            return Ok(u8::from(
+                rgb.iter().map(|v| u32::from(*v)).sum::<u32>() < 98303,
+            ));
         };
         crate::color::nearest_color(
             rgb,
             (0..1usize << self.depth)
-                .filter(|i| c.defined[*i])
+                .filter(|i| c.matchable[*i])
                 .map(|i| (i as u8, c.rgb[i])),
         )
-        .unwrap()
+        .ok_or_else(|| bad("no matchable destination colors"))
     }
     pub fn unpack(&self, memory: &Memory) -> Result<Vec<u8>> {
         let pixels = unpack_pixels(memory, self.bitmap, self.depth)?;
@@ -154,7 +161,7 @@ impl Surface {
         self.colors.as_ref().map(|c| IndexedTarget {
             depth: self.depth,
             rgb: &c.rgb,
-            defined: &c.defined,
+            matchable: &c.matchable,
             direct_source,
         })
     }

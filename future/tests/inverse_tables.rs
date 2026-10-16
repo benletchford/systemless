@@ -10,7 +10,13 @@ const STACK: u32 = STACK_BASE + 0x8000;
 fn app() -> LoadedApplication {
     let f = support::pef_program(
         &[0x4e800020],
-        &[b"MakeITable", b"QDError", b"GetGDevice", b"ProtectEntry"],
+        &[
+            b"MakeITable",
+            b"QDError",
+            b"GetGDevice",
+            b"ProtectEntry",
+            b"ReserveEntry",
+        ],
         32,
     );
     let mut a = LoadedApplication::pef(&f.bytes, None).unwrap();
@@ -22,7 +28,7 @@ fn app() -> LoadedApplication {
         .memory
         .map(
             GuestPtr(BASE + 4096),
-            vec![0xaa, 0x39, 0xaa, 0x40, 0xaa, 0x32, 0xaa, 0x3d],
+            vec![0xaa, 0x39, 0xaa, 0x40, 0xaa, 0x32, 0xaa, 0x3d, 0xaa, 0x3e],
             Permissions::RX,
         )
         .unwrap();
@@ -41,7 +47,7 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, args: &[u32])
         .unwrap();
     let consumed = match index {
         0 => 10,
-        3 => 4,
+        3 | 4 => 4,
         _ => 0,
     };
     if arch == Architecture::M68k {
@@ -51,7 +57,7 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, args: &[u32])
             frame.extend(args[1].to_be_bytes());
             frame.extend(args[0].to_be_bytes());
         }
-        if index == 3 {
+        if index == 3 || index == 4 {
             frame.extend([args[1] as u8, 0x5a]);
             frame.extend((args[0] as u16).to_be_bytes());
         }
@@ -92,7 +98,7 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, args: &[u32])
                 a.runtime.memory.u16(GuestPtr(STACK)).unwrap() as i16 as i32 as u32
             } else if index == 2 {
                 a.runtime.memory.u32(GuestPtr(STACK)).unwrap()
-            } else if index == 3 {
+            } else if index == 3 || index == 4 {
                 assert_eq!(
                     a.runtime.memory.u32(GuestPtr(STACK + 4)).unwrap(),
                     0xa5a5a5a5
@@ -107,7 +113,7 @@ fn call(a: &mut LoadedApplication, arch: Architecture, index: u32, args: &[u32])
             }
         }
         Cpu::PowerPc(c) => {
-            if index == 0 || index == 3 {
+            if index == 0 || index == 3 || index == 4 {
                 assert_eq!(c.gpr[3], args[0]);
                 0
             } else {
@@ -417,5 +423,56 @@ fn protection_is_live_shared_and_invalidates_without_changing_rgb_or_client() {
         call(&mut a, other, 3, &[0, 1]);
         assert_eq!(call(&mut a, arch, 1, &[]) as i32, 0);
         assert_eq!(a.runtime.memory.read(GuestPtr(ct), 24).unwrap(), after);
+    }
+}
+
+#[test]
+fn reservation_retains_protection_copies_client_and_excludes_inverse_matches() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        let gd_handle = call(&mut a, arch, 2, &[]);
+        let gd = a.runtime.memory.u32(GuestPtr(gd_handle)).unwrap();
+        a.runtime
+            .memory
+            .write(GuestPtr(gd + 2), &0x1234u16.to_be_bytes())
+            .unwrap();
+        let pm_handle = a.runtime.memory.u32(GuestPtr(gd + 22)).unwrap();
+        let pm = a.runtime.memory.u32(GuestPtr(pm_handle)).unwrap();
+        let ct_handle = a.runtime.memory.u32(GuestPtr(pm + 42)).unwrap();
+        let ct = a.runtime.memory.u32(GuestPtr(ct_handle)).unwrap();
+        call(&mut a, arch, 3, &[1, 1]);
+        call(&mut a, arch, 4, &[1, 0x80]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, 0);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(ct + 16)).unwrap(), 0xc034);
+        let seed = a.runtime.memory.u32(GuestPtr(ct)).unwrap();
+        call(&mut a, arch, 4, &[1, 1]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, -154);
+        assert_eq!(a.runtime.memory.u32(GuestPtr(ct)).unwrap(), seed);
+        call(&mut a, arch, 0, &[0, 0, 3]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, 0);
+        let inverse = a.runtime.memory.u32(GuestPtr(gd + 6)).unwrap();
+        let data = a.runtime.memory.u32(GuestPtr(inverse)).unwrap();
+        assert!(a
+            .runtime
+            .memory
+            .read(GuestPtr(data + 6), 512)
+            .unwrap()
+            .iter()
+            .all(|v| *v == 0));
+        // The final eligible color being reserved yields a real match error,
+        // without corrupting the previously generated inverse table.
+        call(&mut a, arch, 4, &[0, 1]);
+        let saved = a.runtime.memory.read(GuestPtr(data), 518).unwrap().to_vec();
+        call(&mut a, arch, 0, &[0, 0, 3]);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, -150);
+        assert_eq!(a.runtime.memory.read(GuestPtr(data), 518).unwrap(), saved);
+        // Any client may dereserve; clearing reservation preserves protection.
+        a.runtime
+            .memory
+            .write(GuestPtr(gd + 2), &0x5678u16.to_be_bytes())
+            .unwrap();
+        call(&mut a, arch, 4, &[1, 0]);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(ct + 16)).unwrap(), 0x8034);
+        assert_eq!(call(&mut a, arch, 1, &[]) as i32, 0);
     }
 }

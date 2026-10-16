@@ -213,9 +213,9 @@ impl Ports {
                     "RGB color requires matching current-device and destination tables".into(),
                 ));
             }
-            selected.nearest(rgb)
+            selected.nearest(rgb)?
         } else {
-            target.nearest(rgb)
+            target.nearest(rgb)?
         };
         let field = GuestPtr(port.0 + if background { 84 } else { 80 });
         memory.validate_write(field, 4)?;
@@ -242,7 +242,7 @@ impl Ports {
                 _ => return Err(Error::Graphics("unsupported color constant".into())),
             };
             let wanted = std::array::from_fn(|i| u16::from_be_bytes([rgb[i * 2], rgb[i * 2 + 1]]));
-            let index = u32::from(target.nearest(wanted));
+            let index = u32::from(target.nearest(wanted)?);
             let rgb_field = offset(port, if background { 42 } else { 36 })?;
             memory.validate_write(field, 4)?;
             memory.validate_write(rgb_field, 6)?;
@@ -721,8 +721,8 @@ impl Ports {
         }
         let current = port_layout::bitmap(memory, port)?;
         let (fg, bg) = port_layout::colors(memory, port, &current)?;
-        let foreground = destination.nearest(current.rgb(fg)?);
-        let background = destination.nearest(current.rgb(bg)?);
+        let foreground = destination.nearest(current.rgb(fg)?)?;
+        let background = destination.nearest(current.rgb(bg)?)?;
         let clips = if current.base == destination.base {
             if current.row_bytes != destination.row_bytes || current.depth != destination.depth {
                 return Err(Error::Graphics(
@@ -1023,9 +1023,9 @@ impl Ports {
         }
         let target = port_layout::bitmap(memory, p)?;
         let (foreground, background) = if let Some((fg, bg)) = paint.and_then(|v| v.colors) {
-            (target.nearest(fg), target.nearest(bg))
+            (target.nearest(fg)?, target.nearest(bg)?)
         } else if paint.is_some_and(|v| v.monochrome) {
-            (target.nearest([0; 3]), target.nearest([65535; 3]))
+            (target.nearest([0; 3])?, target.nearest([65535; 3])?)
         } else {
             port_layout::colors(memory, p, &target)?
         };

@@ -115,8 +115,8 @@ pub(crate) fn colors(
             target.index(value)
         } else {
             match value {
-                33 => Ok(target.nearest([0; 3])),
-                30 => Ok(target.nearest([65535; 3])),
+                33 => target.nearest([0; 3]),
+                30 => target.nearest([65535; 3]),
                 _ => Err(Error::Graphics("unsupported basic port color".into())),
             }
         }

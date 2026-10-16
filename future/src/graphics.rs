@@ -107,7 +107,7 @@ pub enum Draw<'a> {
 pub(crate) struct IndexedTarget<'a> {
     pub depth: u16,
     pub rgb: &'a [[u16; 3]; 256],
-    pub defined: &'a [bool; 256],
+    pub matchable: &'a [bool; 256],
     pub direct_source: bool,
 }
 enum CopySource<'a> {
@@ -714,6 +714,14 @@ impl Graphics {
             let height = (rect.bottom.min(clip.bottom).min(self.height as i32)
                 - rect.top.max(clip.top).max(0))
             .max(0) as u64;
+            if expensive
+                && width * height != 0
+                && !target.matchable[..1usize << target.depth]
+                    .iter()
+                    .any(|v| *v)
+            {
+                return Err(Error::Graphics("no matchable destination colors".into()));
+            }
             if expensive && width * height * (1u64 << target.depth) > 128_000_000 {
                 return Err(Error::Graphics(
                     "indexed color matching work limit exceeded".into(),
@@ -723,7 +731,7 @@ impl Graphics {
             p.extend([i32::from(target.depth), i32::from(target.direct_source)]);
             for i in 0..256 {
                 p.extend(target.rgb[i].map(i32::from));
-                p.push(i32::from(target.defined[i]));
+                p.push(i32::from(target.matchable[i]));
             }
         }
         if gpu_mask.is_some() {

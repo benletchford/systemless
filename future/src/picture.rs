@@ -448,12 +448,12 @@ pub fn draw(
                 source: command.source,
                 width: command.width,
                 height: command.height,
-                foreground: command.foreground.map_or(foreground, |v| {
+                foreground: command.foreground.map_or(Ok(foreground), |v| {
                     bitmap.nearest(if v == 0 { [65535; 3] } else { [0; 3] })
-                }),
-                background: command.background.map_or(background, |v| {
+                })?,
+                background: command.background.map_or(Ok(background), |v| {
                     bitmap.nearest(if v == 0 { [65535; 3] } else { [0; 3] })
-                }),
+                })?,
                 invert: command.mode & 4 != 0,
                 mode: match command.mode & 3 {
                     0 => Transfer::Copy,

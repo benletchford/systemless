@@ -32,6 +32,7 @@ pub(crate) fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
         depth,
         palette,
         defined,
+        ..
     } = indexed(memory, address)?;
     let indices = crate::surface::unpack_pixels(memory, bitmap, depth)?;
     if indices.iter().any(|v| !defined[*v as usize]) {
@@ -49,6 +50,7 @@ struct Indexed {
     depth: u16,
     palette: Box<[[u16; 3]; 256]>,
     defined: [bool; 256],
+    matchable: [bool; 256],
 }
 fn indexed(memory: &Memory, address: GuestPtr) -> Result<Indexed> {
     let row = memory.u16(GuestPtr(address.0.checked_add(4).ok_or_else(bad)?))?;
@@ -111,6 +113,7 @@ fn indexed(memory: &Memory, address: GuestPtr) -> Result<Indexed> {
     let colors = memory.read(table, 8 + entries * 8)?;
     let mut palette = Box::new([[65535; 3]; 256]);
     let mut defined = [false; 256];
+    let mut matchable = [false; 256];
     for ordinal in 0..entries {
         let at = 8 + ordinal * 8;
         let value = usize::from(u16::from_be_bytes(colors[at..at + 2].try_into().unwrap()));
@@ -119,6 +122,21 @@ fn indexed(memory: &Memory, address: GuestPtr) -> Result<Indexed> {
             return Err(bad());
         }
         defined[index] = true;
+        matchable[index] = if flags & 0x8000 != 0
+            && value & usize::from(crate::color::RESERVED) != 0
+        {
+            let selected = memory.u32(crate::devices::CURRENT)?;
+            if selected == 0 {
+                return Err(bad());
+            }
+            let gd = memory.u32(GuestPtr(selected))?;
+            if gd == 0 {
+                return Err(bad());
+            }
+            memory.u16(GuestPtr(gd.checked_add(2).ok_or_else(bad)?))? & 255 == value as u16 & 255
+        } else {
+            true
+        };
         palette[index] = std::array::from_fn(|i| {
             u16::from_be_bytes([colors[at + 2 + i * 2], colors[at + 3 + i * 2]])
         });
@@ -128,6 +146,7 @@ fn indexed(memory: &Memory, address: GuestPtr) -> Result<Indexed> {
         depth,
         palette,
         defined,
+        matchable,
     })
 }
 /// Port initialization selects colors without interpreting or changing pixel bytes.
@@ -135,14 +154,14 @@ pub(crate) fn default_colors(memory: &Memory, address: GuestPtr) -> Result<(u32,
     let Indexed {
         depth,
         palette,
-        defined,
+        matchable,
         ..
     } = indexed(memory, address)?;
     let nearest = |rgb| {
         crate::color::nearest_color(
             rgb,
             (0..1usize << depth)
-                .filter(|i| defined[*i])
+                .filter(|i| matchable[*i])
                 .map(|i| (i as u8, palette[i])),
         )
         .map(u32::from)
@@ -160,8 +179,17 @@ pub(crate) fn destination(memory: &Memory, address: GuestPtr) -> Result<crate::s
         depth,
         palette,
         defined,
+        matchable,
     } = indexed(memory, address)?;
-    let surface = crate::surface::Surface::indexed(bitmap, depth, palette, defined)?;
+    if depth == 1 && matchable != defined {
+        return Err(Error::Graphics(
+            "reserved monochrome matching is unsupported".into(),
+        ));
+    }
+    let mut surface = crate::surface::Surface::indexed(bitmap, depth, palette, defined)?;
+    if let Some(colors) = &mut surface.colors {
+        colors.matchable = matchable;
+    }
     surface.unpack(memory)?;
     Ok(surface)
 }

@@ -2704,3 +2704,59 @@ instructions and the original resource fork with graphics at 640x480x8; no
 companion volume was mounted in this bounded startup run. No callbacks or
 playable title/menu/gameplay were observed. Marathon was not replayed and its
 last TextFont/no-current-port boundary remains unchanged.
+
+
+## Reservation-aware indexed matching (2026-10-16)
+
+ReserveEntry (68K AA3E / PPC import) now shares the same live device-entry
+service as protection. Reservation preserves the high byte, copies gdID's low
+byte into the entry, changes ctSeed, rejects duplicate reservation with -154,
+and permits any client to clear reservation while preserving protection/client
+metadata. Bit 14 is the rebuild's private reservation marker; no ROM-private
+byte-layout parity is claimed.
+
+Pixel validity and color-match eligibility are separate. Reserved physical
+indices remain usable for reading, packing and display; owner clients can match
+them, while other clients' RGB selection and GPU nearest-color operations skip
+them. Generated inverse tables omit reserved entries for all clients. With no
+eligible inverse entries, MakeITable reports cMatchErr (-150) before changing
+its destination. CPU nearest matching now reports no-match errors instead of
+unwrapping; GPU operations requiring matching reject empty eligible sets before
+submission. Presentation retains the full RGB table. Foreign-client reservation
+in monochrome drawing remains explicitly unsupported; custom search procedures,
+Color2Index/RealColor, SetEntries and palette animation remain incomplete.
+
+Semantics reference: [Apple's mirrored Color Manager chapter](https://spinsidemacintosh.neocities.org/im202),
+ReserveEntry, MakeITable and Color Table Management. The inverse matcher remains
+the rebuild's bounded exact-distance policy, not proven ROM inverse/hidden-color
+behavior. The wgpu compute path consumes a separate eligibility mask without
+removing valid pixel indices or adding a CPU destination renderer.
+
+
+Reservation validation: /tmp/systemless-reserve-acceptance.txt terminal exit 0,
+71 passed / 0 failed / 0 ignored: core 51, indexed destinations 9, inverse/color
+manager 6, text 5. Real GPU cases include 2/4/8-bit owner-versus-foreign RGB
+selection and XOR nearest matching, preexisting reserved pixels, packed guards,
+all existing indexed transfer modes and text/port preservation. Inverse tests
+exercise both actual CPU adapters, protection/reservation independence, copied
+client byte, duplicate errors, unrestricted dereservation and atomic no-match
+failure. Strict runtime/probe lint passes in
+/tmp/systemless-reserve-runtime-lint.txt; final fixture lint is recorded separately.
+Sequential changed-file formatting and whitespace checks pass.
+
+Original Escape Velocity 1.0.5 now passes reservation and stops at
+GetCTable(8), PC 010257AE: the standard system 8-bit color table is explicitly
+unimplemented. Evidence: /tmp/systemless-ev-reserve.txt, terminal exit 1 at this
+reported graphics error, final tracer build exit 0. Startup replay used the same
+original resource fork (SHA-256 d739c1d5bd0d5c7efddc55f34bfadd8f66a25c819a00bbed9523c7c56e3f716b),
+one million instructions, 640x480x8 graphics, and no companion volume. This
+supersedes the prior ReserveEntry AA3E / 0001AD04 boundary. No gameplay, audio,
+or visible title/menu acceptance follows. Marathon was not replayed.
+
+Next executable game boundary: documented standard system color tables through
+shared GetCTable, without substituting the host RGB332 display policy for the
+classic Macintosh palette. Resource ownership, copies and mutations must retain
+the existing GetCTable contracts. Text library integration and the full rebuild
+remain ongoing requirements; the goal is not complete.
+
+Final strict fixture lint: /tmp/systemless-reserve-test-lint.txt, terminal exit 0.

@@ -1142,7 +1142,7 @@ impl Windows {
         bytes.resize(SIZE, 0);
         if let Some(colors) = colors {
             let target = crate::port_layout::bitmap(memory, GuestPtr(w))?;
-            let background = u32::from(target.nearest(colors.0[0]));
+            let background = u32::from(target.nearest(colors.0[0])?);
             for (i, component) in colors.0[0].iter().enumerate() {
                 bytes[42 + i * 2..44 + i * 2].copy_from_slice(&component.to_be_bytes());
             }

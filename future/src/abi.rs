@@ -78,6 +78,7 @@ pub enum Service {
     DisposeDevice,
     DisposeColorTable,
     GetColorTable,
+    ReserveEntry,
     ProtectEntry,
     SetClientID,
     SetDevice,
@@ -419,6 +420,7 @@ impl Abi {
             b"OpenCPort" => Some(Service::ColorPort(crate::color_ports::Action::Open)),
             b"InitCPort" => Some(Service::ColorPort(crate::color_ports::Action::Init)),
             b"CloseCPort" => Some(Service::ColorPort(crate::color_ports::Action::Close)),
+            b"ReserveEntry" => Some(Service::ReserveEntry),
             b"ProtectEntry" => Some(Service::ProtectEntry),
             b"SetClientID" => Some(Service::SetClientID),
             b"SetGDevice" => Some(Service::SetDevice),
@@ -1630,11 +1632,19 @@ impl Abi {
                 c.dar[15] = next;
                 Ok((Call::Device(op), Reply::StackWord(GuestPtr(next))))
             }
-            0xaa3d => {
+            0xaa3d | 0xaa3e => {
                 let args = memory.read(GuestPtr(sp), 4)?;
-                let op = crate::color::Op::Protect {
-                    index: i16::from_be_bytes(args[2..4].try_into().unwrap()),
-                    protect: args[0] != 0,
+                let index = i16::from_be_bytes(args[2..4].try_into().unwrap());
+                let op = if opcode == 0xaa3d {
+                    crate::color::Op::Protect {
+                        index,
+                        protect: args[0] != 0,
+                    }
+                } else {
+                    crate::color::Op::Reserve {
+                        index,
+                        reserve: args[0] != 0,
+                    }
                 };
                 let next = sp
                     .checked_add(4)
@@ -3400,6 +3410,10 @@ impl Abi {
                 destination: c.gpr[4],
                 resolution: c.gpr[5] as i16,
             }),
+            Service::ReserveEntry => Call::Color(crate::color::Op::Reserve {
+                index: c.gpr[3] as i16,
+                reserve: c.gpr[4] as u8 != 0,
+            }),
             Service::ProtectEntry => Call::Color(crate::color::Op::Protect {
                 index: c.gpr[3] as i16,
                 protect: c.gpr[4] as u8 != 0,
@@ -4083,7 +4097,8 @@ impl Abi {
             if matches!(service, Service::Region(op) if !matches!(op, crate::regions::Op::New | crate::regions::Op::Contains | crate::regions::Op::Intersects | crate::regions::Op::Empty | crate::regions::Op::Equal))
                 || matches!(
                     service,
-                    Service::ProtectEntry
+                    Service::ReserveEntry
+                        | Service::ProtectEntry
                         | Service::SetClientID
                         | Service::SetDevice
                         | Service::GetDialogItem

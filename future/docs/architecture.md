@@ -2879,3 +2879,30 @@ XOR cancellation and intervening guest writes. Production DrawString/TextEdit/UI
 calls still use the prior GPU coverage path. Choosing the library-backed path
 requires a bounded source-generation cache, cell/layout integration, actual ABI
 acceptance and workload measurement. No second graphics backend is introduced.
+
+
+## Reservation-aware indexed matching (2026-10-16)
+
+ReserveEntry (68K AA3E / PPC import) now shares the same live device-entry
+service as protection. Reservation preserves the high byte, copies gdID's low
+byte into the entry, changes ctSeed, rejects duplicate reservation with -154,
+and permits any client to clear reservation while preserving protection/client
+metadata. Bit 14 is the rebuild's private reservation marker; no ROM-private
+byte-layout parity is claimed.
+
+Pixel validity and color-match eligibility are separate. Reserved physical
+indices remain usable for reading, packing and display; owner clients can match
+them, while other clients' RGB selection and GPU nearest-color operations skip
+them. Generated inverse tables omit reserved entries for all clients. With no
+eligible inverse entries, MakeITable reports cMatchErr (-150) before changing
+its destination. CPU nearest matching now reports no-match errors instead of
+unwrapping; GPU operations requiring matching reject empty eligible sets before
+submission. Presentation retains the full RGB table. Foreign-client reservation
+in monochrome drawing remains explicitly unsupported; custom search procedures,
+Color2Index/RealColor, SetEntries and palette animation remain incomplete.
+
+Semantics reference: [Apple's mirrored Color Manager chapter](https://spinsidemacintosh.neocities.org/im202),
+ReserveEntry, MakeITable and Color Table Management. The inverse matcher remains
+the rebuild's bounded exact-distance policy, not proven ROM inverse/hidden-color
+behavior. The wgpu compute path consumes a separate eligibility mask without
+removing valid pixel indices or adding a CPU destination renderer.
