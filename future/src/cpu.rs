@@ -230,6 +230,10 @@ pub enum Call {
         background: bool,
         color: u32,
     },
+    DrawOval {
+        rectangle: GuestPtr,
+        op: crate::quickdraw::OvalOp,
+    },
     RoundRect {
         pointer: GuestPtr,
         width: i16,

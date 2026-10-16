@@ -165,6 +165,11 @@ pub enum Service {
     Window(crate::windows::Op),
     RgbColor(bool),
     PortColor(bool),
+    FrameOval,
+    PaintOval,
+    EraseOval,
+    InvertOval,
+    FillOval,
     RoundRect(bool),
     GetMemFragment,
     CloseConnection,
@@ -371,6 +376,11 @@ impl Abi {
             b"StringToNum" => Some(Service::StringToNum),
             b"GetMemFragment" => Some(Service::GetMemFragment),
             b"CloseConnection" => Some(Service::CloseConnection),
+            b"FrameOval" => Some(Service::FrameOval),
+            b"PaintOval" => Some(Service::PaintOval),
+            b"EraseOval" => Some(Service::EraseOval),
+            b"InvertOval" => Some(Service::InvertOval),
+            b"FillOval" => Some(Service::FillOval),
             b"FrameRoundRect" => Some(Service::RoundRect(true)),
             b"PaintRoundRect" => Some(Service::RoundRect(false)),
             b"RGBForeColor" => Some(Service::RgbColor(false)),
@@ -868,6 +878,27 @@ impl Abi {
                     .checked_add(2)
                     .ok_or_else(|| Error::Cpu("decimal selector stack overflow".into()))?;
                 Ok((Call::Decimal(op), reply))
+            }
+            0xa8b7..=0xa8bb => {
+                use crate::quickdraw::OvalOp;
+                let size = if opcode == 0xa8bb { 8 } else { 4 };
+                let bytes = memory.read(GuestPtr(sp), size)?;
+                let pointer = |offset| {
+                    GuestPtr(u32::from_be_bytes(
+                        bytes[offset..offset + 4].try_into().unwrap(),
+                    ))
+                };
+                let (rectangle, op) = match opcode {
+                    0xa8b7 => (pointer(0), OvalOp::Frame),
+                    0xa8b8 => (pointer(0), OvalOp::Paint),
+                    0xa8b9 => (pointer(0), OvalOp::Erase),
+                    0xa8ba => (pointer(0), OvalOp::Invert),
+                    _ => (pointer(4), OvalOp::Fill(pointer(0))),
+                };
+                c.dar[15] = sp
+                    .checked_add(size as u32)
+                    .ok_or_else(|| Error::Cpu("oval stack overflow".into()))?;
+                Ok((Call::DrawOval { rectangle, op }, Reply::None))
             }
             0xa8b0 | 0xa8b1 => {
                 let bytes = memory.read(GuestPtr(sp), 8)?;
@@ -3871,6 +3902,23 @@ impl Abi {
     }
     pub fn import(service: Service, c: &ppc::PpcCpu, memory: &Memory) -> Result<(Call, Reply)> {
         let call = match service {
+            Service::FrameOval
+            | Service::PaintOval
+            | Service::EraseOval
+            | Service::InvertOval
+            | Service::FillOval => {
+                use crate::quickdraw::OvalOp;
+                Call::DrawOval {
+                    rectangle: GuestPtr(c.gpr[3]),
+                    op: match service {
+                        Service::FrameOval => OvalOp::Frame,
+                        Service::PaintOval => OvalOp::Paint,
+                        Service::EraseOval => OvalOp::Erase,
+                        Service::InvertOval => OvalOp::Invert,
+                        _ => OvalOp::Fill(GuestPtr(c.gpr[4])),
+                    },
+                }
+            }
             Service::RoundRect(frame) => Call::RoundRect {
                 pointer: GuestPtr(c.gpr[3]),
                 width: c.gpr[4] as i16,
@@ -5001,6 +5049,11 @@ impl Abi {
                         | Service::InitFonts
                         | Service::FontInfo
                         | Service::TextState(_)
+                        | Service::FrameOval
+                        | Service::PaintOval
+                        | Service::EraseOval
+                        | Service::InvertOval
+                        | Service::FillOval
                         | Service::RoundRect(_)
                         | Service::CombineRegions(_)
                         | Service::Port(_)

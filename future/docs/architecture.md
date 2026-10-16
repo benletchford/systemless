@@ -3643,3 +3643,32 @@ real host key delivery can occur while the guest instruction clock is paused.
 --key-at retains its original guest-instruction clock. Both call the same host
 Keyboard driver; neither changes PCs, return values or text handles directly.
 Read-only GetDialogItemText logging records actual guest-visible name outputs.
+
+
+## Shared oval drawing
+
+FrameOval, PaintOval, EraseOval, InvertOval and FillOval marshal into one DrawOval
+call and shared GrafPort implementation on both CPUs. Oval coverage reuses the
+checked fixed-point ellipse recurrence; destination pattern operations, palette
+handling, visibility/clip intersection and guest-memory synchronization use wgpu.
+Frame uses the current rectangular pen dimensions and leaves the interior alone.
+Paint uses pen pattern/mode, erase uses the background pattern with copy, invert
+uses bit inversion, and fill uses the supplied pattern with copy. Fill publishes
+the same live fill-pattern state as the rectangle path, including empty shapes.
+Pen location, pen pattern/mode, current port and unrelated fields stay unchanged.
+Hidden framing is suppressed before pen geometry; region recording first records
+the un-clipped mathematical outer boundary, independent of pen size or visibility.
+Hidden recording and empty nonpixel operations require no GPU destination access.
+
+Oval extents are i32 differences of checked guest endpoints: a valid rectangle can
+span65535 pixels even though each endpoint is i16. The public rounded-rectangle
+API retains its signed i16 corner diameters. Wide recurrence intermediates and
+nonoverlapping/coalesced spans avoid overflow and repeated XOR destination writes.
+Basic and color port patterns reuse existing validation; expanded PixPats, custom
+bottleneck procedures and picture/polygon recording through these calls remain
+explicit unsupported boundaries. No legacy module is linked by the runtime.
+
+Apple's [QuickDraw drawing description](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-59.html)
+provides the drawing semantics. A separate comparison harness links the new
+library to preserved Systemless's pure span function only for reference evidence;
+it is not a production dependency or native System7 verification.

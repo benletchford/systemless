@@ -312,3 +312,10 @@ acceptance checklist above.
 
 Cross-map font-suitcase association priority remains unverified; the original EV
 font evidence uses FOND and sfnt resources from the same application fork.
+
+
+The following shared oval milestone advances original EV beyond the embedded-font
+HUD stage: two FrameOval calls complete and more HUD labels/bars are visible.
+The next stop is SwapMMUMode/A05D,CPU8,572,693,PC00019304. Font semantics and the
+full acceptance checklist above remain unchanged and unfinished. See progress.md
+for fresh EV/Marathon evidence and the scoped geometry/GPU verification.

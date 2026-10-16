@@ -4360,3 +4360,37 @@ pilot/companions and flagged alias/script metadata pass the standalone verifier.
 See progress.md's embedded-font milestone for full hashes and104 scoped passes,
 and text-rendering.md for library use, cache ownership and remaining font fidelity.
 Next: implement shared FrameOval with both adapters and GPU checks, then retry.
+
+
+## Oval drawing and refreshed game boundaries (2026-10-17)
+
+Original EV now completes two FrameOval operations through shared wgpu services.
+The HUD shows shield/fuel bars, navigation/weapon labels and pilot details; the
+playfield remains black at this stop. Real E-key EnterShip input advances to
+CPU8,572,693,PC00019304,unsupported SwapMMUMode/A05D,D0=1. Flight remains
+unverified. Use the preceding final-font command with fresh output names
+/tmp/systemless-ev-oval-enter-ship.{ppm,slv}; trace is the matching .txt. Saved
+volume remains byte-identical to the font-stage result and passes the independent
+alias/script/pilot/companion verifier. New PPM SHA256
+4a03395c2b2f62818d8473554bf0a96893b290fb763214b61a2d1f52b229570d.
+
+Fresh Marathon command (choose fresh output names):
+
+```sh
+future/target/debug/examples/trace_application code \
+  future/target/private-originals/marathon/application.raw-rsrc 1000000 \
+  --graphics --display-diagnostics --display 640x480x8 \
+  --volume future/target/private-originals/marathon/companions.slv \
+  --save-screen /tmp/systemless-marathon-oval-refresh.ppm \
+  --save-volume /tmp/systemless-marathon-oval-refresh.slv \
+  --services-only --elapse-waits
+```
+
+It remains at TextFont4/no current port,CPU216,672,PC01010E86. All original
+companion records/forks/metadata remain unchanged; startup creates only the
+1222-byte Marathon Preferences file,node21,next22. Snapshot SHA256
+e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42.
+Neither priority game is verified playable. See progress.md's oval milestone for
+105scoped passes, private evidence/verifiers and46,080-shape preserved-Systemless
+comparison. Next: actual address-mode support and Marathon's initialization
+lifecycle, with full rebuild/text acceptance still open.

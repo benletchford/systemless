@@ -9423,3 +9423,75 @@ is byte-identical to the preceding full service trace, volume and PPM, including
 CPU8,218,226/PC0101FBB6 and FrameOval. Durable private2026-10-17-fond-reviewed
 .{slv,ppm,png}, -trace-tail.txt, -tests.txt and -volume-verification.txt preserve
 that reviewed result. The independent snapshot verifier passes again.
+
+
+## Shared GPU oval milestone (2026-10-17)
+
+The original EV FrameOval/A8B7 stop after embedded text is implemented as a real
+shared graphics operation. All five oval verbs (A8B7..A8BB and PPC imports) use
+one DrawOval call and GrafPort/wgpu destination path. Coverage reuses checked
+ellipse geometry, with i32 extents for full65535-pixel guest rectangles. Frame
+subtracts the inset oval, respects rectangular/zero/hidden pens and records the
+outer mathematical boundary before visibility/pen checks. Paint, erase, invert
+and fill retain distinct pattern/mode behavior. Fill snapshots its supplied
+pattern, preflights the destination fill field and publishes it after successful
+drawing, including empty nonpixel fills. Pattern failures preserve pixels/state.
+Custom procedures and unsupported recording/pixel patterns fail explicitly.
+
+Final scoped verification:105passes (88core,5ovals,4rectangle_drawing,
+5region_recording,3rounded), zero ignored; actual GPU cases execute.
+/tmp/systemless-oval-final-tests.txt. Both real CPU adapters draw every verb and
+check exact pixels, clip/pattern behavior, stride padding, pen/port fields, fill
+state and Pascal stack tails. No-GPU fixtures cover hidden/empty semantics and
+recorded outlines unaffected by clipping/zero pen sizes. Geometry checks include
+negative origins, nonoverlapping coverage, invalid/overflowing host rectangles and full
+guest extents. Existing rectangle/rounded/recording regressions pass. Tracer build
+passes in /tmp/systemless-oval-final-build.txt. Strict all-target lint passes
+in /tmp/systemless-oval-final-lint.txt (terminal exit0). Sequential changed-file
+format checks and whitespace checks pass; no recursive formatter is run.
+
+A standalone comparator checks46,080 filled/framed shapes and2,234,880 rows for
+sizes1..96 and pens(1,1),(2,1),(1,2),(7,3), all equal to preserved Systemless's
+compute_oval_spans. Reference checkout is clean for spans.rs at baseline
+634c0e9120a695224d71c621fbbe33709670d707. This is implementation comparison,
+not native Macintosh proof; full65535 extents additionally have bounds tests.
+/tmp/systemless-compare-ovals.rs and -oval-reference-comparison.txt preserve the
+method/result. The helper explicitly selects the new built rlib; an earlier
+attempt found an old cached rlib without the oval export, then selection by build
+mtime corrected that diagnostic-only linkage. No legacy dependency enters future.
+
+Original EV1.0.5 final-build replay uses the same v2 script-reopen input,16M
+budget,640x480x8 graphics and real E/code14 down8M/up8,005,000. Fresh outputs:
+/tmp/systemless-ev-oval-enter-ship.{txt,slv,ppm,png}. Two real DrawOval(Frame)
+calls pass; shield/fuel bars, navigation/weapon text and pilot status are visible
+in the HUD. The playfield remains black at the stop. It reaches CPU8,572,693,
+PC00019304,unsupported A05D/SwapMMUMode (D0=1), beyond the previous
+CPU8,218,226 FrameOval stop. Do not claim verified flight, steering or audio.
+The independent v2 CRC/catalog/alias/script verifier passes again: prefs57,
+pilot53,alias58,next59; all companion/pilot records unchanged. Saved volume
+7,259,094bytes SHA256e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80.
+PPM921,615bytes SHA2564a03395c2b2f62818d8473554bf0a96893b290fb763214b61a2d1f52b229570d.
+Private EV evidence2026-10-17-oval-enter-ship.{slv,ppm,png}, -trace-tail.txt,
+-oval-volume-verification.txt and -oval-reference-comparison.{rs,txt} is ignored.
+
+Fresh original Marathon1v1.2 replay uses1M budget,640x480x8, original companion
+volume SHA2563eb20478ac49df19a8a6015e2ab196366475042edbcb3e25f94474a75154f1d7,
+--services-only --elapse-waits --display-diagnostics and fresh
+/tmp/systemless-marathon-oval-refresh.{txt,slv,ppm}. It still stops at TextFont4,
+no current port, CPU216,672,PC01010E86. Its trace calls InitGraf, InitFonts and
+InitWindows, then saves/selects/restores nil around earlier temporary ports.
+Investigate that lifecycle; do not invent a port in TextFont or suppress its error.
+A standalone v1 CRC/catalog check confirms all existing companion records/forks/
+metadata identical. The only new file is Marathon Preferences,node21,data1222,
+resource0,next22; its preference payload is not native-validated. Output snapshot
+11,597,088bytes SHA256e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42.
+Private Marathon evidence2026-10-17-oval-refresh.{slv,ppm}, -trace-tail.txt,
+-oval-volume-verify.py and -oval-volume-verification.txt preserve this refresh.
+Original application forks still match their recorded hashes.
+
+Next: verify SwapMMUMode ABI/state semantics against primary documentation and
+model the actually supported address mode; do not return success for unsupported
+mode transitions. Then replay EV again and diagnose Marathon's initial current
+port lifecycle with equivalent shared behavior on both architectures. Neither
+priority game is verified playable. Full text/library integration, Mixed Mode,
+remaining shared runtime and platform/full-rebuild acceptance stay active.

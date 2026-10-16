@@ -67,6 +67,22 @@ pub fn coverage(
     oval_height: i16,
     pen: Option<(i16, i16)>,
 ) -> Result<Vec<Rect>> {
+    coverage_dimensions(r, i32::from(oval_width), i32::from(oval_height), pen)
+}
+/// Ovals use the full rectangle extent, which can span 65535 guest pixels.
+pub fn oval(r: Rect, pen: Option<(i16, i16)>) -> Result<Vec<Rect>> {
+    let extent = |end: i32, start: i32| {
+        end.checked_sub(start)
+            .ok_or_else(|| Error::Graphics("oval extent overflow".into()))
+    };
+    coverage_dimensions(r, extent(r.right, r.left)?, extent(r.bottom, r.top)?, pen)
+}
+fn coverage_dimensions(
+    r: Rect,
+    oval_width: i32,
+    oval_height: i32,
+    pen: Option<(i16, i16)>,
+) -> Result<Vec<Rect>> {
     if [r.left, r.top, r.right, r.bottom]
         .iter()
         .any(|v| i16::try_from(*v).is_err())
@@ -84,14 +100,10 @@ pub fn coverage(
     if pen.is_some() && (pw == 0 || ph == 0) {
         return Ok(vec![]);
     }
-    let outer = spans(r, i32::from(oval_width), i32::from(oval_height));
+    let outer = spans(r, oval_width, oval_height);
     let inner_rect = Rect::new(r.left + pw, r.top + ph, r.right - pw, r.bottom - ph);
     let inner = if pen.is_some() {
-        spans(
-            inner_rect,
-            i32::from(oval_width) - 2 * pw,
-            i32::from(oval_height) - 2 * ph,
-        )
+        spans(inner_rect, oval_width - 2 * pw, oval_height - 2 * ph)
     } else {
         vec![]
     };

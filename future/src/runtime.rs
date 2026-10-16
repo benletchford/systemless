@@ -372,6 +372,13 @@ impl Runtime {
                         return Err(Error::Cpu("service is unsupported at VBL interrupt time (no allocation or blocking)".into()));
                     }
                     match call {
+                        Call::DrawOval { rectangle, op } => {
+                            let ports = self.process.ports.ok_or_else(|| {
+                                Error::Graphics("oval drawing requires InitGraf".into())
+                            })?;
+                            let r = crate::quickdraw::read_rect(&self.memory, rectangle)?;
+                            ports.draw_oval(self.graphics.as_ref(), &mut self.memory, r, op)?;
+                        }
                         Call::RoundRect {
                             pointer,
                             width,
@@ -2594,7 +2601,8 @@ impl Runtime {
                 Outcome::Service(call) => {
                     self.services.calls.push(call);
                     match call {
-                        Call::RoundRect { .. }
+                        Call::DrawOval { .. }
+                        | Call::RoundRect { .. }
                         | Call::PortColor { .. }
                         | Call::RgbColor { .. }
                         | Call::NewPointer { .. }

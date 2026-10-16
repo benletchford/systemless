@@ -38,6 +38,14 @@ pub enum RectangleOp {
     Invert,
     Fill(GuestPtr),
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OvalOp {
+    Frame,
+    Paint,
+    Erase,
+    Invert,
+    Fill(GuestPtr),
+}
 #[derive(Clone, Copy)]
 struct PatternPaint {
     colors: Option<([u16; 3], [u16; 3])>,
@@ -940,6 +948,71 @@ impl Ports {
             crate::rounded::coverage(r, width, height, pen)?
         };
         self.paint_coverage(gpu, memory, r, Some(&coverage))
+    }
+    pub fn draw_oval(
+        &self,
+        gpu: Option<&Graphics>,
+        memory: &mut Memory,
+        r: Rect,
+        op: OvalOp,
+    ) -> Result<()> {
+        let port = self.current(memory)?;
+        let frame = op == OvalOp::Frame;
+        if frame && crate::region_recording::active(memory, port)? {
+            let shape = crate::rounded::oval(r, None)?;
+            crate::region_recording::shape(memory, port, &shape)?;
+        }
+        if frame && (memory.u16(offset(port, 66)?)? as i16) < 0 {
+            return Ok(());
+        }
+        let pen = if frame {
+            Some((
+                memory.u16(offset(port, 54)?)? as i16,
+                memory.u16(offset(port, 52)?)? as i16,
+            ))
+        } else {
+            None
+        };
+        let coverage = crate::rounded::oval(r, pen)?;
+        let paint = match op {
+            OvalOp::Frame | OvalOp::Paint => None,
+            OvalOp::Erase => Some(PatternPaint {
+                colors: None,
+                pattern: port_layout::pattern(memory, port, PortPattern::Background)?,
+                mode: 8,
+                monochrome: false,
+            }),
+            OvalOp::Invert => Some(PatternPaint {
+                colors: None,
+                pattern: [255; 8],
+                mode: 10,
+                monochrome: true,
+            }),
+            OvalOp::Fill(pattern) => {
+                memory.validate_write(
+                    port_layout::pattern_pointer(memory, port, PortPattern::Fill)?,
+                    8,
+                )?;
+                Some(PatternPaint {
+                    colors: None,
+                    pattern: memory.read(pattern, 8)?.try_into().unwrap(),
+                    mode: 8,
+                    monochrome: false,
+                })
+            }
+        };
+        if coverage.is_empty() {
+            if let (OvalOp::Fill(_), Some(paint)) = (op, paint) {
+                port_layout::write_pattern(memory, port, PortPattern::Fill, &paint.pattern)?;
+            }
+            return Ok(());
+        }
+        let gpu = gpu.ok_or_else(|| Error::Graphics("oval drawing requires a GPU".into()))?;
+        self.paint_geometry(gpu, memory, r, Coverage::Shape(Some(&coverage)), paint)?;
+        if let (OvalOp::Fill(_), Some(paint)) = (op, paint) {
+            port_layout::write_pattern(memory, port, PortPattern::Fill, &paint.pattern)?;
+        }
+        Ok(())
     }
     pub(crate) fn drawing_target(
         &self,
