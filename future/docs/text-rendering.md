@@ -319,3 +319,11 @@ HUD stage: two FrameOval calls complete and more HUD labels/bars are visible.
 The next stop is SwapMMUMode/A05D,CPU8,572,693,PC00019304. Font semantics and the
 full acceptance checklist above remain unchanged and unfinished. See progress.md
 for fresh EV/Marathon evidence and the scoped geometry/GPU verification.
+
+
+The addressing/startup milestone now advances EV past the mode-switch point to
+Munger/A9E0,CPU15,136,642,PC0102C7CA. Its snapshot includes planet/station imagery;
+font rendering remains the same supported slice. Correctness/playability and the
+full text checklist remain unverified. Marathon's initialization port remains nil
+in fresh read-only watch evidence. See progress.md for the149 scoped checks and
+exact game snapshots; this does not complete the text or full rebuild goal.

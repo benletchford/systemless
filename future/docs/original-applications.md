@@ -4394,3 +4394,32 @@ Neither priority game is verified playable. See progress.md's oval milestone for
 105scoped passes, private evidence/verifiers and46,080-shape preserved-Systemless
 comparison. Next: actual address-mode support and Marathon's initialization
 lifecycle, with full rebuild/text acceptance still open.
+
+
+## Correct 32-bit startup and new observed boundary (2026-10-17)
+
+EV now advances to Munger/A9E0,CPU15,136,642,PC0102C7CA, with planet/station
+imagery and the HUD in the snapshot. Correcting the startup MMU32Bit byte to1
+makes the unchanged guest take its existing 32-bit path; this replay contains no
+SwapMMUMode service calls. The newly added same-mode 32 API has independent
+real-CPU/veneer tests. Actual 24-bit switching is not implemented. The image does
+not establish correct placement, camera/motion, steering, audio or playability.
+
+Use the prior EV command with fresh /tmp/systemless-ev-mmu-enter-ship.{ppm,slv}
+outputs. Private2026-10-17-mmu-enter-ship.{slv,ppm,png} and -trace-tail.txt are in
+the ignored evidence folder. Independent saved-volume checks pass, with the same
+pilot/companions/alias/script data and volume hash as the oval-stage result.
+PPM SHA256d82210c6933ee86e43a0cd2905d57262c69cf61daca726c789d45cf1fd9a7650.
+
+The fresh Marathon command adds --watch-address 77ffec and uses fresh
+/tmp/systemless-marathon-mmu-port.{ppm,slv}. Its actual current-port slot at77fff8
+stays nil after initialization. Window/temp-port selections are later explicitly
+restored to nil. The same TextFont4 failure remains at216,672/01010E86. The
+read-only watch trace and independent catalog check are preserved privately as
+2026-10-17-mmu-port-watch.txt and2026-10-17-mmu-volume-verification.txt; the saved
+volume remains identical to the preceding Marathon refresh. Existing companions
+are untouched and first-run preferences are the only new file.
+
+149 scoped passes and strict all-target lint pass; details are in progress.md.
+Next: correct shared graphics initialization for Marathon and generic Munger
+semantics for EV. Both original games and the entire rebuild remain unfinished.

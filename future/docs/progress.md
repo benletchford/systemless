@@ -9495,3 +9495,78 @@ mode transitions. Then replay EV again and diagnose Marathon's initial current
 port lifecycle with equivalent shared behavior on both architectures. Neither
 priority game is verified playable. Full text/library integration, Mixed Mode,
 remaining shared runtime and platform/full-rebuild acceptance stay active.
+
+
+## Coherent address-mode milestone (2026-10-17)
+
+The runtime already executes full 32-bit memory accesses and defines StripAddress
+as an identity after 32-bit startup, but the newly mapped low-memory MMU32Bit byte
+at$0CB2 remained 0. Shared CODE/PEF launch now writes 1. A common addressing module
+checks that live flag against the existing flat 32 backing model. Gestalt 'addr'
+reports verified startup/capability bits0/2 (value 5), without inventing a distinct
+32-bit system-zone guarantee. GetMMUMode import and SwapMMUMode adapters follow
+IM:Memory pp4-26--4-27:68K D0 byte and PPC writable byte reference. Same-mode32
+returns the previous1; requested 24-bit/invalid modes or an inconsistent live flag
+raise a typed AddressMode error without caller/flag writes. Actual 24-bit
+translation remains unimplemented rather than being simulated by a metadata flip.
+
+A real GetOSTrapAddress/JSR fixture caught the missing discovery registration;
+A05D now has a callable A05D/RTS built-in veneer. The previously implemented five
+oval trap entries are registered too. Existing veneer identities remain stable.
+Both no-allocation addressing calls are allowed by the VBL guard. No guest PC or
+CPU result is overridden to bypass a game failure.
+
+Verification:149 passes, 0 ignored across two nonoverlapping target selections:
+45 (6 addressing,6 environment,33 loading) in /tmp/systemless-mmu-tests-fixed.txt;
+104 (88 core,5 ovals,7 retrace,4 trap_patches) in /tmp/systemless-mmu-regressions.txt,
+with actual GPU cases enabled. Fixtures exercise callable OS veneers, actual CODE
+high-address reads, both CPU query/swap conventions, byte-boundary permissions,
+adjacent canaries, invalid/24-bit requests, inconsistent flags, preserved results
+and existing loader/resource/lifecycle/callback/patch behavior. Expected faults
+use fresh runtimes because faults are terminal. Tracer build and strict all-target
+lint pass (/tmp/systemless-mmu-build.txt and -lint.txt, terminal exit0). Sequential
+changed-file formatting/whitespace checks pass; no recursive formatter is run.
+
+Original EV1.0.5 uses the same script-reopen volume,16M budget,640x480x8 and real
+E/code14 down8M/up8,005,000. Outputs /tmp/systemless-ev-mmu-enter-ship
+.{txt,slv,ppm,png}. With truthful startup state, the unmodified guest takes its
+existing 32-bit path: there are ZERO GetMmuMode/SwapMmuMode service calls in this
+replay. The added API itself is verified by the fixtures, not claimed as an
+observed original-game call. The old A05D stop is avoided because the prior flag
+was wrong for the actual backing model. It reaches CPU15,136,642,PC0102C7CA,
+unsupported Munger/A9E0, instead of CPU8,572,693 at the mode switch. The canonical
+snapshot contains planet/station imagery at the upper-left as well as the HUD.
+Placement/camera correctness, motion, steering, audio and gameplay remain
+unverified; this is not a playable-flight claim. Munger follows creation of a
+19-byte handle and string/resource reads; the fault stack is retained for ABI work.
+
+Independent EV v2 CRC/catalog/alias/script verification passes: prefs57,pilot53,
+alias58,next59, all pilot/companion records unchanged. Volume SHA256 remains
+e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80,
+7,259,094bytes. PPM SHA256
+d82210c6933ee86e43a0cd2905d57262c69cf61daca726c789d45cf1fd9a7650,
+921,615bytes. Private EV evidence2026-10-17-mmu-enter-ship.{slv,ppm,png},
+-trace-tail.txt,2026-10-17-mmu-volume-verification.txt, -tests-fixed.txt,
+-regressions.txt, -build.txt and -lint.txt preserve the stage under target.
+
+Fresh Marathon replay adds --watch-address 77ffec (16bytes, including the actual
+current-port slot at77fff8) to the preceding1M indexed command and saves fresh
+/tmp/systemless-marathon-mmu-port.{txt,slv,ppm}. The watcher is read-only.
+InitGraf returns a nil slot; no later initialization service leaves a selected
+port. First watched nonnil selection is window00018414 atPC01008108; caller
+restoresnil at01008114. OpenCPort selects00036A08 at01034CEC, then SetPort restores
+nil at01034FD2. TextFont4 still faults at CPU216,672,PC01010E86. Do not install a
+fallback port in TextFont. Inspect shared InitWindows/bootstrap ownership and
+its unconditional old-port restoration with authoritative/reference evidence.
+All original companions/metadata/forks remain identical; only the existing
+first-run Marathon Preferences creation occurs (node21,data1222,resource0,next22).
+Saved volume SHA256 remains
+e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42,
+11,597,088bytes. Private2026-10-17-mmu-port.{slv,ppm}, -trace-tail.txt,
+-watch.txt and2026-10-17-mmu-volume-verification.txt preserve that evidence.
+
+Next priorities: establish Marathon's correct initialized graphics-port lifecycle
+and implement shared Munger handle/search/replace semantics for EV with primary
+reference and transactional resize/alias tests. Neither priority game is verified
+playable. Full text/Glyphon integration, font fidelity, Mixed Mode, remaining
+services and platform/full-rebuild acceptance remain active.

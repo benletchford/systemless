@@ -360,6 +360,8 @@ impl Runtime {
                                 | Call::FixedMultiply { .. }
                                 | Call::LongToFixed(_)
                                 | Call::FixedRatio { .. }
+                                | Call::GetMmuMode
+                                | Call::SwapMmuMode(_)
                                 | Call::Logical { .. }
                                 | Call::EmptyRect(_)
                                 | Call::PointInRect { .. }
@@ -2244,6 +2246,14 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::GetMmuMode => {
+                            let mode = crate::addressing::current(&self.memory)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, u32::from(mode), 0)?;
+                        }
+                        Call::SwapMmuMode(requested) => {
+                            let previous = crate::addressing::swap(&self.memory, requested)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, u32::from(previous), 0)?;
+                        }
                         Call::StripAddress(address) => {
                             // This runtime starts in 32-bit mode. IM: Memory
                             // Utilities specifies an unchanged address in that mode.
@@ -2729,6 +2739,8 @@ impl Runtime {
                         | Call::SoundVolume(_)
                         | Call::GetSoundVolume(_)
                         | Call::DeviceControl(_)
+                        | Call::GetMmuMode
+                        | Call::SwapMmuMode(_)
                         | Call::StripAddress(_)
                         | Call::MemError
                         | Call::FreeMemory

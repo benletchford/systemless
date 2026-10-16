@@ -147,6 +147,7 @@ fn finish_at(
     let application_size = ApplicationSize::read(&resources)?;
     crate::traps::install(&mut memory)?;
     memory.map(GuestPtr(0), vec![0; 4096], Permissions::RW)?;
+    crate::addressing::install(&mut memory)?;
     crate::retrace::install(&mut memory)?;
     memory.write(
         crate::calendar::TIME,

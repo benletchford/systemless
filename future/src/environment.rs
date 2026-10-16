@@ -13,6 +13,7 @@ pub fn gestalt(selector: u32) -> std::result::Result<u32, i16> {
         b"sysv" => Ok(u32::from(SYSTEM_VERSION)),
         b"snd " => Ok(crate::sound::ATTRIBUTES),
         b"proc" => Ok(u32::from(PROCESSOR)),
+        b"addr" => Ok(crate::addressing::ATTRIBUTES),
         _ => Err(-5551),
     }
 }

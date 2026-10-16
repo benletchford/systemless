@@ -3672,3 +3672,30 @@ Apple's [QuickDraw drawing description](https://leopard-adc.pepas.com/documentat
 provides the drawing semantics. A separate comparison harness links the new
 library to preserved Systemless's pure span function only for reference evidence;
 it is not a production dependency or native System7 verification.
+
+
+## Address-mode startup and service contract
+
+The shared CODE/PEF launch path initializes MMU32Bit ($0CB2) to true32b (1),
+matching the existing flat 32 address space and startup-dependent StripAddress
+identity behavior. Previously the byte was zero even though instruction/data
+accesses already used full 32-bit addresses. Gestalt 'addr' exposes verified
+32-bit startup/capability bits (value 5); a distinct system-zone compatibility bit
+is not advertised. This remains one compatibility profile for both CPU backends.
+
+The shared addressing service reads and checks the live flag against the actual
+supported memory model. GetMMUMode is a PPC import; native 68K code can read the
+low-memory byte inline. SwapMMUMode receives/returns the low D0 byte on 68K and
+uses a checked writable byte reference on PPC, returning the previous mode. The
+current profile supports same-mode 32 requests. Requests for 24-bit translation,
+invalid modes and a flag inconsistent with the backing model fail explicitly
+before caller output changes. Real 24-bit translation, code/device aliases and
+related architecture-specific behavior remain unfinished; setting a flag alone
+would not implement them.
+
+[Inside Macintosh: Memory, pp.4-26--4-27](https://dev.os9.ca/techpubs/mac/pdf/Memory/Memory_Mgmt_Utilities.pdf)
+defines the parameter and register conventions. Supported query/same-mode calls
+perform no allocation or blocking and are permitted by the VBL service guard.
+The OS trap discovery table now exposes a readable executable A05D/RTS veneer;
+the five oval verbs also have their implemented canonical discovery entries.
+Entries are appended so existing built-in addresses retain their identity.

@@ -401,6 +401,8 @@ pub enum Call {
     },
     GetSoundVolume(GuestPtr),
     DeviceControl(GuestPtr),
+    GetMmuMode,
+    SwapMmuMode(u8),
     StripAddress(u32),
     MemError,
     FreeMemory,

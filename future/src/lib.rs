@@ -1,4 +1,5 @@
 pub mod abi;
+pub mod addressing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod audio;
 pub mod bitmap;
@@ -68,6 +69,8 @@ pub enum Error {
         symbol: String,
         library_bytes: Vec<u8>,
     },
+    #[error("unsupported guest addressing mode {0}")]
+    AddressMode(u8),
     #[error("application load: {0}")]
     Load(String),
     #[error("invalid/overlapping mapping at {0:#x}")]

@@ -268,6 +268,8 @@ pub enum Service {
     SndDisposeChannel,
     GetSoundVol,
     PBControlSync,
+    GetMmuMode,
+    SwapMmuMode,
     StripAddress,
     MemError,
     FreeMemory,
@@ -675,6 +677,8 @@ impl Abi {
             b"SetSoundVol" => Some(Service::SetSoundVol),
             b"GetSoundVol" => Some(Service::GetSoundVol),
             b"PBControlSync" => Some(Service::PBControlSync),
+            b"GetMMUMode" => Some(Service::GetMmuMode),
+            b"SwapMMUMode" => Some(Service::SwapMmuMode),
             b"StripAddress" => Some(Service::StripAddress),
             b"MoveHHi" => Some(Service::MoveHHi),
             b"HGetState" => Some(Service::HGetState),
@@ -3389,6 +3393,7 @@ impl Abi {
                 Call::DeviceControl(GuestPtr(c.dar[8])),
                 Reply::M68kFileError,
             )),
+            0xa05d => Ok((Call::SwapMmuMode(c.dar[0] as u8), Reply::M68kByte)),
             0xa055 => Ok((Call::StripAddress(c.dar[0]), Reply::M68kD0)),
             0xa064 => Ok((Call::MoveHandleHigh(c.dar[8]), Reply::M68kError)),
             0xa069 => Ok((
@@ -4790,6 +4795,13 @@ impl Abi {
             Service::SetSoundVol => Call::SoundVolume(c.gpr[3] as i16),
             Service::GetSoundVol => Call::GetSoundVolume(GuestPtr(c.gpr[3])),
             Service::PBControlSync => Call::DeviceControl(GuestPtr(c.gpr[3])),
+            Service::GetMmuMode => Call::GetMmuMode,
+            Service::SwapMmuMode => {
+                let pointer = GuestPtr(c.gpr[3]);
+                memory.validate_write(pointer, 1)?;
+                let mode = memory.read(pointer, 1)?[0];
+                return Ok((Call::SwapMmuMode(mode), Reply::StackByte(pointer)));
+            }
             Service::StripAddress => Call::StripAddress(c.gpr[3]),
             Service::FreeMemory => Call::FreeMemory,
             Service::MaxMemory => {
