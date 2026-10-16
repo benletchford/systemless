@@ -10665,3 +10665,95 @@ about the later header. The other four replays reproduce the known fault;
 their budgets are diagnostic bounds, not passes. No new test pass, GPU output
 acceptance, EV replay or performance measurement is claimed by this record.
 Full rebuild, complete GPU text/library integration and both games remain open.
+
+### Shared offscreen-world creation and selection (2026-10-17)
+
+The framebuffer diagnosis now has an executable shared ownership foundation:
+NewGWorld, DisposeGWorld, GetGWorld, SetGWorld, GetGWorldPixMap and GetGWorldDevice
+marshal through native QDExtensions and PPC imports into one process-owned
+manager. Indexed depths1/2/4/8, depth0 screen borrowing and noNewDevice are covered.
+New worlds copy color tables, retain separate port/device PixMaps, own aligned
+image storage, preserve the caller's drawing environment and compose existing
+pixel locks, Color Manager inverse tables and wgpu drawing. Device disposal now
+exposes its existing release preflight so world teardown can validate the entire
+graph before any release; pixel-pinned support handles are rejected beforehand.
+
+UpdateGWorld is the next required executable slice, followed by wider flags and
+direct-color support. AB03 remains uninstalled and the original Marathon feature
+probe must still select its prior fallback. Individual new services are not a
+claim of complete32-bit QuickDraw, a workaround that patches the guest, or game
+acceptance. Current-world disposal, locked disposal, direct color and temporary/
+purgeable allocations fail explicitly. Shared GPU text/library integration and
+the full rebuild remain active requirements.
+
+Initial compile passed. The first test compile used an obsolete wgpu descriptor
+constructor; it was corrected to the pinned wgpu30 API. A test command initially
+named a nonexistent graphics_devices target and ran no tests; the correct target
+is devices. The first scoped run found two old device fixtures assuming a fully
+free4MiB heap, although loading already owns QDColors. They now snapshot actual
+free memory; the80-byte detached-device case now reaches partial allocation,
+instead of accidentally leaving only4bytes. Original rollback assertions remain,
+and bad-output testing additionally checks unchanged free memory.
+
+Initial new fixtures incorrectly attempted CPU execution after intentional
+terminal faults and expected0 rather than the existing invalid-pointer error(-111) for a freed pointer.
+They now isolate fault cases in fresh processes and inspect unchanged state
+without resuming a stopped runtime. No runtime fault or pointer contract was
+relaxed. The new GPU drawing case, palette-copy cases, all five partial-allocation
+stages and handle-compaction/pinning cases already passed intermediate runs;
+final combined acceptance and lint must be recorded from terminal output below.
+
+
+### Shared GWorld creation regression (2026-10-17)
+
+The new shared indexed offscreen-world creation/selection/query/disposal services
+are available to both real CPU adapters. UpdateGWorld, direct color and wider
+allocation flags remain unfinished; AB03 is deliberately still unavailable.
+The original Marathon probe therefore follows exactly its previous fallback.
+A fresh23M replay reaches the same CPU22,890,015, PC0102605C invalid readFFFCC1AF.
+Its image SHA256 remains
+`7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e`.
+The independent volume verifier again preserves all existing companions/forks/
+metadata, adding only the same1222-byte preferences file. Output volume SHA256
+is `e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+This expected fault is regression evidence, not a passing game acceptance.
+
+Private captures/logs are retained as
+future/target/private-originals/marathon/evidence/2026-10-17-gworld-creation.*.
+The tracer build passes (9.54s). No fresh EV or PPC-original acceptance is claimed.
+Next: implement coherent shared GWorld updates and their failure/stride/pixel
+semantics, extend remaining capability requirements, then replay unchanged
+Marathon through this fault when the real feature path can be advertised.
+Full GPU text, both original games and the complete rebuild remain unfinished.
+
+Final scoped acceptance command:
+`cargo test --manifest-path future/Cargo.toml --test gworld --test devices --test color_ports --test pixel_locks -- --include-ignored --nocapture --test-threads=1`.
+Terminal exit0:38passed (12GWorld,14devices,6color ports,6pixel locks),0failed,
+0ignored. This explicitly ran all five adapter-dependent GPU checks on the real
+adapter, including the new direct-write/GWorld/QuickDraw drawing case. Existing
+port/device aliasing and packed-copy checks retain their byte-exact assertions.
+Strict library, four test targets and tracer Clippy passes (13.79s), with changed
+Rust files checked sequentially via stdin and whitespace validation passing.
+Logs: /tmp/systemless-gworld-acceptance.txt and
+/tmp/systemless-gworld-clippy-final.txt. The new GPU fixture is marked like the
+repository's other adapter-required checks; its final repeat explicitly enables
+ignored checks, rather than counting a default skip as success.
+
+Next implementation acceptance includes the observed448x272 to224x136 resize:
+image allocation extent, port/device PixMap bounds/stride, portRect and regions
+must stay coherent on both CPUs. Implement UpdateGWorld's return flags, unchanged
+world on failure and QDError reporting from Apple's documented contract. Preserve
+pixels through the shared GPU path for clipping/stretching or palette/depth
+conversion rather than introducing CPU destination rendering. Cover pinning,
+allocation failure, aliases and moved handles. UpdateGWorld depth0/device rules
+differ from NewGWorld and require their own checks. Keep AB03 unavailable until
+the corresponding real capability is supported; the unchanged original replay
+above is deliberately still failing. Native/browser/full-suite, complete GPU
+text and original-game acceptance are not established by these scoped checks.
+
+The final adapter-required annotation is verified by an explicit second
+`--test gworld -- --include-ignored --test-threads=1` run:12passed,0failed,
+0ignored (42.33s), terminal exit0. Strict lint on the final source/test metadata
+also exits0 (11.43s). Logs: /tmp/systemless-gworld-tagged-final.txt and
+/tmp/systemless-gworld-clippy-tagged.txt. All final validation logs are also
+retained in ignored future/target/validation/gworld-creation/.

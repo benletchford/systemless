@@ -4,7 +4,6 @@ use systemless_future::{
     devices::{self, Op},
     load::{LoadedApplication, STACK_BASE},
     memory::{GuestPtr, Permissions},
-    process::HEAP_SIZE,
     runtime::Stop,
 };
 fn app() -> LoadedApplication {
@@ -177,10 +176,11 @@ fn both_cpus_share_device_records_screen_storage_palette_and_live_attributes() {
 #[test]
 fn partial_initialization_failure_rolls_back_all_owned_storage_and_preserves_globals() {
     let mut a = app();
+    let free = a.runtime.process.free_memory();
     let fill = a
         .runtime
         .process
-        .new_pointer(&mut a.runtime.memory, HEAP_SIZE - 40, false)
+        .new_pointer(&mut a.runtime.memory, free - 40, false)
         .unwrap();
     assert_ne!(fill, 0);
     a.runtime.process.mem_error = -77;
@@ -200,6 +200,7 @@ fn partial_initialization_failure_rolls_back_all_owned_storage_and_preserves_glo
 #[test]
 fn bad_rgb_outputs_fault_before_stack_or_allocator_changes_and_corruption_is_explicit() {
     let mut a = app();
+    let free = a.runtime.process.free_memory();
     let stack = STACK_BASE + 0x8000;
     a.runtime
         .memory
@@ -211,10 +212,11 @@ fn bad_rgb_outputs_fault_before_stack_or_allocator_changes_and_corruption_is_exp
         panic!()
     };
     assert_eq!(c.dar[15], stack);
+    assert_eq!(a.runtime.process.free_memory(), free);
     assert_ne!(
         a.runtime
             .process
-            .new_pointer(&mut a.runtime.memory, HEAP_SIZE, false)
+            .new_pointer(&mut a.runtime.memory, free, false)
             .unwrap(),
         0
     );
@@ -625,10 +627,11 @@ fn detached_devices_own_independent_storage_and_dispose_on_both_cpus() {
 #[test]
 fn detached_device_partial_allocation_failure_returns_nil_and_reclaims_storage() {
     let mut a = app();
+    let free = a.runtime.process.free_memory();
     assert_ne!(
         a.runtime
             .process
-            .new_pointer(&mut a.runtime.memory, HEAP_SIZE - 80, false)
+            .new_pointer(&mut a.runtime.memory, free - 80, false)
             .unwrap(),
         0
     );

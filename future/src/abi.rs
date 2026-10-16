@@ -249,6 +249,12 @@ pub enum Service {
     DisposeCIcon,
     GetPixPat,
     DisposePixPat,
+    NewGWorld,
+    DisposeGWorld,
+    GetGWorld,
+    SetGWorld,
+    GetGWorldPixMap,
+    GetGWorldDevice,
     GetPixBaseAddr,
     LockPixels,
     UnlockPixels,
@@ -737,6 +743,12 @@ impl Abi {
             b"DisposeCIcon" | b"DisposCIcon" => Some(Service::DisposeCIcon),
             b"GetPixPat" => Some(Service::GetPixPat),
             b"DisposePixPat" | b"DisposPixPat" => Some(Service::DisposePixPat),
+            b"NewGWorld" => Some(Service::NewGWorld),
+            b"DisposeGWorld" => Some(Service::DisposeGWorld),
+            b"GetGWorld" => Some(Service::GetGWorld),
+            b"SetGWorld" => Some(Service::SetGWorld),
+            b"GetGWorldPixMap" => Some(Service::GetGWorldPixMap),
+            b"GetGWorldDevice" => Some(Service::GetGWorldDevice),
             b"GetPixBaseAddr" => Some(Service::GetPixBaseAddr),
             b"LockPixels" => Some(Service::LockPixels),
             b"UnlockPixels" => Some(Service::UnlockPixels),
@@ -2599,6 +2611,65 @@ impl Abi {
                     .checked_add(4)
                     .ok_or_else(|| Error::Cpu("DisposePixPat stack overflow".into()))?;
                 Ok((Call::PixPat(crate::pixpat::Op::Dispose(h)), Reply::None))
+            }
+            0xab1d if c.dar[0] == 0x00160000 => {
+                let args = memory.read(GuestPtr(sp), 22)?;
+                let long = |i| u32::from_be_bytes(args[i..i + 4].try_into().unwrap());
+                let op = crate::gworld::Op::New {
+                    output: GuestPtr(long(18)),
+                    depth: i16::from_be_bytes([args[16], args[17]]),
+                    bounds: GuestPtr(long(12)),
+                    table: long(8),
+                    device: long(4),
+                    flags: long(0),
+                };
+                let next = sp
+                    .checked_add(22)
+                    .ok_or_else(|| Error::Cpu("NewGWorld stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 2)?;
+                c.dar[15] = next;
+                Ok((Call::GWorld(op), Reply::StackWord(GuestPtr(next))))
+            }
+            0xab1d
+                if matches!(
+                    c.dar[0],
+                    0x00040004 | 0x00040012 | 0x00040017 | 0x00080005 | 0x00080006
+                ) =>
+            {
+                let selector = c.dar[0];
+                let size = if selector >> 16 == 8 { 8 } else { 4 };
+                let args = memory.read(GuestPtr(sp), size)?;
+                let first = u32::from_be_bytes(args[..4].try_into().unwrap());
+                let op = match selector {
+                    0x00040004 => crate::gworld::Op::Dispose(first),
+                    0x00040012 => crate::gworld::Op::Device(first),
+                    0x00040017 => crate::gworld::Op::PixMap(first),
+                    _ => {
+                        let second = u32::from_be_bytes(args[4..8].try_into().unwrap());
+                        if selector == 0x00080005 {
+                            crate::gworld::Op::Get {
+                                port: GuestPtr(second),
+                                device: GuestPtr(first),
+                            }
+                        } else {
+                            crate::gworld::Op::Set {
+                                port: second,
+                                device: first,
+                            }
+                        }
+                    }
+                };
+                let next = sp
+                    .checked_add(size as u32)
+                    .ok_or_else(|| Error::Cpu("GWorld stack overflow".into()))?;
+                let reply = if matches!(selector, 0x00040012 | 0x00040017) {
+                    memory.validate_write(GuestPtr(next), 4)?;
+                    Reply::StackLong(GuestPtr(next))
+                } else {
+                    Reply::None
+                };
+                c.dar[15] = next;
+                Ok((Call::GWorld(op), reply))
             }
             0xab1d if c.dar[0] == 0x00040007 => {
                 let handle = memory.u32(GuestPtr(sp))?;
@@ -4912,6 +4983,25 @@ impl Abi {
             Service::DisposeCIcon => Call::CIcon(crate::cicon::Op::Dispose(c.gpr[3])),
             Service::GetPixPat => Call::PixPat(crate::pixpat::Op::Get(c.gpr[3] as i16)),
             Service::DisposePixPat => Call::PixPat(crate::pixpat::Op::Dispose(c.gpr[3])),
+            Service::NewGWorld => Call::GWorld(crate::gworld::Op::New {
+                output: GuestPtr(c.gpr[3]),
+                depth: c.gpr[4] as i16,
+                bounds: GuestPtr(c.gpr[5]),
+                table: c.gpr[6],
+                device: c.gpr[7],
+                flags: c.gpr[8],
+            }),
+            Service::DisposeGWorld => Call::GWorld(crate::gworld::Op::Dispose(c.gpr[3])),
+            Service::GetGWorld => Call::GWorld(crate::gworld::Op::Get {
+                port: GuestPtr(c.gpr[3]),
+                device: GuestPtr(c.gpr[4]),
+            }),
+            Service::SetGWorld => Call::GWorld(crate::gworld::Op::Set {
+                port: c.gpr[3],
+                device: c.gpr[4],
+            }),
+            Service::GetGWorldPixMap => Call::GWorld(crate::gworld::Op::PixMap(c.gpr[3])),
+            Service::GetGWorldDevice => Call::GWorld(crate::gworld::Op::Device(c.gpr[3])),
             Service::GetPixBaseAddr => Call::PixelBase(c.gpr[3]),
             Service::LockPixels | Service::UnlockPixels => Call::Pixels {
                 pixmap: c.gpr[3],
@@ -5322,6 +5412,9 @@ impl Abi {
                         | Service::DisposeCIcon
                         | Service::DisposePixPat
                         | Service::DisposePixMap
+                        | Service::DisposeGWorld
+                        | Service::GetGWorld
+                        | Service::SetGWorld
                         | Service::UnlockPixels
                         | Service::Delay
                         | Service::SetEventMask

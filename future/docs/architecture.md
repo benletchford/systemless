@@ -3967,3 +3967,32 @@ and [Color Manager device CLUTs](https://dev.os9.ca/techpubs/mac/ACI/ACI-107.htm
 The preserved implementation additionally confirms that low-level video palette
 animation must not overwrite QuickDraw matching metadata; that is reference
 evidence, not new native System7 measurement.
+
+### Shared offscreen-world ownership (in progress, 2026-10-17)
+
+`gworld::Manager`, owned by Process, owns offscreen port pointers, pixel-image
+handles and associated graphics devices/tables. Native QDExtensions selectors
+and PPC imports marshal into one `Call::GWorld` and the same manager. It composes
+existing color-port, device, Color Manager and pixel-lock services rather than
+creating a second drawing runtime. Destination drawing remains the shared wgpu
+path; direct pixel writes use LockPixels/GetPixBaseAddr and existing synchronization.
+
+The first implementation covers NewGWorld, DisposeGWorld, GetGWorld, SetGWorld,
+GetGWorldPixMap and GetGWorldDevice for indexed worlds. Depth0 and noNewDevice
+borrow the selected screen/provided device; explicit indexed depth owns a detached
+device. Palettes are copied. Each port retains a separate owned PixMap, and each
+world owns image storage sized from its aligned stride and bounds. Creation
+preserves the caller's current port/device. Selection preflights both writes;
+an offscreen world's associated device overrides the caller's device argument.
+Disposal validates port attachments and detached-device releases before freeing
+anything. Current-world disposal, locked disposal, direct-color worlds and
+purgeable/temporary allocation remain explicit unsupported operations.
+
+NewGWorld/UpdateGWorld flags and signatures are checked against Apple's Universal
+Interfaces3.4 QDOffscreen.h and Inside Macintosh: Imaging With QuickDraw chapter6.
+[NewGWorld](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-311.html)
+and [SetGWorld](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-319.html)
+provide device borrowing/selection contracts. UpdateGWorld and wider flags remain
+unfinished. AB03 stays uninstalled: supporting individual offscreen APIs does
+not establish complete 32-bit QuickDraw capability or fix original Marathon yet.
+Test/build results are recorded separately after terminal verification.

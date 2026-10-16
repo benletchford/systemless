@@ -173,6 +173,7 @@ pub enum Call {
     Color(crate::color::Op),
     PixPat(crate::pixpat::Op),
     CIcon(crate::cicon::Op),
+    GWorld(crate::gworld::Op),
     PixelBase(u32),
     Pixels {
         pixmap: u32,

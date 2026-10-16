@@ -26,6 +26,7 @@ pub mod font;
 mod font_fallback;
 mod font_family;
 pub mod graphics;
+pub mod gworld;
 pub mod host_input;
 pub mod integer;
 mod jump;

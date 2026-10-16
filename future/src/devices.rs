@@ -386,12 +386,12 @@ impl Manager {
         }
         Ok(0)
     }
-    fn dispose_detached(
-        &mut self,
-        memory: &mut Memory,
+    pub(crate) fn disposal_handles(
+        &self,
+        memory: &Memory,
         process: &mut Process,
         device: u32,
-    ) -> Result<u32> {
+    ) -> Result<[u32; 4]> {
         let [table, pixels, inverse] = *self
             .detached
             .get(&device)
@@ -438,11 +438,20 @@ impl Manager {
             .filter(|h| *h != 0)
         {
             memory.validate_write(GuestPtr(h), 4)?;
+            if process.pixel_image_is_pinned(h) {
+                return Err(invalid("detached graphics device storage is pixel-locked"));
+            }
         }
-        for h in [device, inverse, pixels, table]
-            .into_iter()
-            .filter(|h| *h != 0)
-        {
+        Ok([device, inverse, pixels, table])
+    }
+    fn dispose_detached(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        device: u32,
+    ) -> Result<u32> {
+        let handles = self.disposal_handles(memory, process, device)?;
+        for h in handles.into_iter().filter(|h| *h != 0) {
             process.dispose_handle(memory, h)?;
         }
         self.detached.remove(&device);

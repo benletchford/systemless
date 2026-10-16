@@ -4906,3 +4906,26 @@ about the later header. The other four replays reproduce the known fault;
 their budgets are diagnostic bounds, not passes. No new test pass, GPU output
 acceptance, EV replay or performance measurement is claimed by this record.
 Full rebuild, complete GPU text/library integration and both games remain open.
+
+
+### Shared GWorld creation regression (2026-10-17)
+
+The new shared indexed offscreen-world creation/selection/query/disposal services
+are available to both real CPU adapters. UpdateGWorld, direct color and wider
+allocation flags remain unfinished; AB03 is deliberately still unavailable.
+The original Marathon probe therefore follows exactly its previous fallback.
+A fresh23M replay reaches the same CPU22,890,015, PC0102605C invalid readFFFCC1AF.
+Its image SHA256 remains
+`7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e`.
+The independent volume verifier again preserves all existing companions/forks/
+metadata, adding only the same1222-byte preferences file. Output volume SHA256
+is `e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+This expected fault is regression evidence, not a passing game acceptance.
+
+Private captures/logs are retained as
+future/target/private-originals/marathon/evidence/2026-10-17-gworld-creation.*.
+The tracer build passes (9.54s). No fresh EV or PPC-original acceptance is claimed.
+Next: implement coherent shared GWorld updates and their failure/stride/pixel
+semantics, extend remaining capability requirements, then replay unchanged
+Marathon through this fault when the real feature path can be advertised.
+Full GPU text, both original games and the complete rebuild remain unfinished.

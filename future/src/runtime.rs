@@ -2112,6 +2112,13 @@ impl Runtime {
                             self.process.pixpats = manager;
                             reply.apply(&mut self.cpu, &mut self.memory, result?, 0)?;
                         }
+                        Call::GWorld(op) => {
+                            self.memory.validate_write(GuestPtr(0x220), 2)?;
+                            let mut manager = std::mem::take(&mut self.process.gworlds);
+                            let result = manager.call(&mut self.memory, &mut self.process, op);
+                            self.process.gworlds = manager;
+                            reply.apply(&mut self.cpu, &mut self.memory, result?, 0)?;
+                        }
                         Call::PixelBase(pixmap) => {
                             let base = self.process.pixel_base(&self.memory, pixmap)?;
                             reply.apply(&mut self.cpu, &mut self.memory, base, 0)?;
@@ -2799,6 +2806,7 @@ impl Runtime {
                         | Call::ResourceInfo(_)
                         | Call::CIcon(_)
                         | Call::PixPat(_)
+                        | Call::GWorld(_)
                         | Call::PixelBase(_)
                         | Call::Pixels { .. }
                         | Call::CountResources { .. }
