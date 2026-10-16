@@ -98,7 +98,7 @@ impl Bitmap {
 }
 
 fn basic_draw<'a>(surface: &crate::surface::Surface, mut draw: Draw<'a>) -> Result<Draw<'a>> {
-    let color = |v: u8| match v {
+    let color = |v: u32| match v {
         0 => surface.nearest([65535; 3]),
         1 => surface.nearest([0; 3]),
         _ => Err(Error::Graphics(
@@ -126,8 +126,8 @@ fn basic_draw<'a>(surface: &crate::surface::Surface, mut draw: Draw<'a>) -> Resu
             background,
             ..
         } => {
-            *foreground = color(*foreground)?;
-            *background = color(*background)?;
+            *foreground = u32::from(color(*foreground)?);
+            *background = u32::from(color(*background)?);
         }
         _ => {}
     }

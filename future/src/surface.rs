@@ -354,8 +354,8 @@ impl Surface {
                 background,
                 ..
             } => {
-                self.index(u32::from(foreground))?;
-                self.index(u32::from(background))?;
+                self.index(foreground)?;
+                self.index(background)?;
             }
             _ => {}
         }

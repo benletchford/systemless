@@ -2922,7 +2922,7 @@ impl Runtime {
                                     rect,
                                     clip: Rect::new(0, 0, gpu.width as i32, gpu.height as i32),
                                     pattern: [255; 8],
-                                    foreground: b[8],
+                                    foreground: u32::from(b[8]),
                                     background: 0,
                                     mode,
                                 },

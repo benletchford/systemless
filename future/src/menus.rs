@@ -548,7 +548,7 @@ impl Menus {
                 clip: bounds,
                 pattern: [0; 8],
                 foreground: 1,
-                background,
+                background: u32::from(background),
                 mode: Transfer::Copy,
             },
         )?;
@@ -600,8 +600,8 @@ impl Menus {
                         } else {
                             [0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55]
                         },
-                        foreground,
-                        background,
+                        foreground: u32::from(foreground),
+                        background: u32::from(background),
                         mode: Transfer::Copy,
                     },
                     Some(&ink),

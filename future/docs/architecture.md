@@ -4061,3 +4061,28 @@ restore a lock on purged storage, fixed-address images and private icon backing
 storage are explicit diagnostics in this profile. Native edge/error/alias parity,
 temporary/hardware images, direct colour and remaining offscreen contracts are
 unfinished. AB03 remains unavailable and the full rebuild remains active.
+
+### Direct-colour GPU storage foundation
+
+The shared integer drawing pipeline accepts RGB555 and xRGB8888 destinations.
+`Graphics::execute_direct` decodes big-endian guest storage to canonical u32
+colour words, runs the existing WGSL commands, and repacks after successful GPU
+readback. CPU work encodes storage; destination pixel operations remain on wgpu.
+RGB555 uses bits 10/5/0 for five-bit R/G/B; xRGB8888 uses RGB bytes after the
+unused leading byte. Packing preserves that unused bit/byte and row padding.
+These are explicit supported storage contracts; exact native unused-bit and
+quantization behavior still need authoritative conformance evidence.
+
+Draw coordinates at this backend boundary are bitmap-local. The existing shader
+handles patterns, clipping, source-snapshot overlap, transfer modes and direct
+RGB quantization without an indexed palette search. Draw foreground/background
+values are now u32; indexed callers explicitly widen their validated indices.
+All entry paths reject scalar values outside the destination storage format.
+The direct wrapper publishes guest bytes only after successful validation and GPU
+readback, preserving writable-memory checks and synchronous guest visibility.
+
+This backend work does not yet extend `Surface`, guest PixMap parsing, screen
+profiles or NewGWorld/UpdateGWorld to direct colour. Those shared service changes,
+both ABI adapters, display presentation and original-game acceptance are next.
+Do not advertise AB03/complete 32-bit QuickDraw from this backend foundation.
+It also does not complete the separate text-library integration requirement.

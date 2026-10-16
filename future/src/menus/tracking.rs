@@ -80,8 +80,8 @@ impl Paint {
                 rect: self.rect,
                 clip: self.clip,
                 pattern: self.pattern,
-                foreground: self.foreground,
-                background: self.background,
+                foreground: u32::from(self.foreground),
+                background: u32::from(self.background),
                 mode: if self.xor {
                     Transfer::Xor
                 } else {

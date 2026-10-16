@@ -464,11 +464,15 @@ pub fn draw(
             source: command.source,
             width: command.width,
             height: command.height,
-            foreground: command.foreground.map_or(Ok(foreground), |v| {
-                bitmap.nearest(if v == 0 { [65535; 3] } else { [0; 3] })
+            foreground: command.foreground.map_or(Ok(u32::from(foreground)), |v| {
+                bitmap
+                    .nearest(if v == 0 { [65535; 3] } else { [0; 3] })
+                    .map(u32::from)
             })?,
-            background: command.background.map_or(Ok(background), |v| {
-                bitmap.nearest(if v == 0 { [65535; 3] } else { [0; 3] })
+            background: command.background.map_or(Ok(u32::from(background)), |v| {
+                bitmap
+                    .nearest(if v == 0 { [65535; 3] } else { [0; 3] })
+                    .map(u32::from)
             })?,
             invert: command.mode & 4 != 0,
             mode: match command.mode & 3 {

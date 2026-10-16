@@ -29,8 +29,16 @@ fn blit_bit(index:u32)->u32 {
 fn draw_kind()->i32{return p[2]&255;}
 fn color_target()->i32{if (p[2]&256)==0{return 0;}return i32(arrayLength(&p))-1026;}
 // Indexed destination colors keep their original sixteen-bit components.
-fn destination_rgb(index:u32)->vec3<u32>{let q=color_target()+2+4*i32(index);return vec3<u32>(u32(p[q]),u32(p[q+1]),u32(p[q+2]));}
+fn direct_depth()->i32{let q=color_target();if q!=0 && p[q]>8{return p[q];}return 0;}
+fn pixel_mask()->u32{if direct_depth()==16{return 32767u;}if direct_depth()==32{return 16777215u;}return 255u;}
+fn destination_rgb(index:u32)->vec3<u32>{
+    if direct_depth()==16{return vec3<u32>((index>>10u)&31u,(index>>5u)&31u,index&31u)*65535u/31u;}
+    if direct_depth()==32{return vec3<u32>((index>>16u)&255u,(index>>8u)&255u,index&255u)*257u;}
+    let q=color_target()+2+4*i32(index);return vec3<u32>(u32(p[q]),u32(p[q+1]),u32(p[q+2]));
+}
 fn closest(rgb:vec3<u32>)->u32 {
+    if direct_depth()==16{return ((rgb.x>>11u)<<10u)|((rgb.y>>11u)<<5u)|(rgb.z>>11u);}
+    if direct_depth()==32{return ((rgb.x>>8u)<<16u)|((rgb.y>>8u)<<8u)|(rgb.z>>8u);}
     let q=color_target();var best=0u;var best_hi=0xffffffffu;var best_lo=0xffffffffu;
     for(var i=0u;i<(1u<<u32(p[q]));i=i+1u){
         if p[q+2+4*i32(i)+3]==0{continue;}
@@ -182,7 +190,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             case 3: { value=value & (~src); }
             default: {}
         } }
-        value=value & 255u;
+        value=value & pixel_mask();
         pixels[at]=value;
     }
     // Cursor data/mask affect presentation only, never canonical pixel storage.
@@ -197,6 +205,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             else if data!=0u {value=closest(vec3<u32>(65535u)-destination_rgb(value));}
         }
     }
-    let rgba=palette[value];
-    textureStore(output,vec2<i32>(x,y),vec4<f32>(f32(rgba&255u),f32((rgba>>8u)&255u),f32((rgba>>16u)&255u),f32(rgba>>24u))/255.0);
+    if direct_depth()!=0 {
+        let rgb=destination_rgb(value)/256u;
+        textureStore(output,vec2<i32>(x,y),vec4<f32>(vec3<f32>(rgb),255.0)/255.0);
+    } else {
+        let rgba=palette[value];
+        textureStore(output,vec2<i32>(x,y),vec4<f32>(f32(rgba&255u),f32((rgba>>8u)&255u),f32((rgba>>16u)&255u),f32(rgba>>24u))/255.0);
+    }
 }

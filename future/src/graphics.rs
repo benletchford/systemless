@@ -4,7 +4,9 @@ use crate::{
 };
 use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
+mod direct;
 mod dither;
+pub use direct::DirectFormat;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
     pub left: i32,
@@ -57,8 +59,8 @@ pub enum Draw<'a> {
         origin_y: i32,
         frame: Option<(i16, i16)>,
         pattern: [u8; 8],
-        foreground: u8,
-        background: u8,
+        foreground: u32,
+        background: u32,
         mode: Transfer,
     },
     Present,
@@ -73,16 +75,16 @@ pub enum Draw<'a> {
         clip: Rect,
         line: PenLine,
         pattern: [u8; 8],
-        foreground: u8,
-        background: u8,
+        foreground: u32,
+        background: u32,
         mode: Transfer,
     },
     Fill {
         rect: Rect,
         clip: Rect,
         pattern: [u8; 8],
-        foreground: u8,
-        background: u8,
+        foreground: u32,
+        background: u32,
         mode: Transfer,
     },
     Blit {
@@ -92,8 +94,8 @@ pub enum Draw<'a> {
         source: Rect,
         width: u32,
         height: u32,
-        foreground: u8,
-        background: u8,
+        foreground: u32,
+        background: u32,
         invert: bool,
         mode: Transfer,
     },
@@ -372,6 +374,44 @@ impl Graphics {
             None => (None, None, None, None),
         };
         let has_rgb = rgb_source.is_some() || gpu_rgb.is_some();
+        let direct = target.as_ref().is_some_and(|t| matches!(t.depth, 16 | 32));
+        if let Some(t) = &target {
+            if !matches!(t.depth, 1 | 2 | 4 | 8 | 16 | 32) {
+                return Err(Error::Graphics("invalid GPU pixel depth".into()));
+            }
+        }
+        {
+            if let Draw::Fill {
+                foreground,
+                background,
+                ..
+            }
+            | Draw::Line {
+                foreground,
+                background,
+                ..
+            }
+            | Draw::Polygon {
+                foreground,
+                background,
+                ..
+            }
+            | Draw::Blit {
+                foreground,
+                background,
+                ..
+            } = draw
+            {
+                let mask = match target.as_ref().map(|t| t.depth) {
+                    Some(16) => 0x7fff,
+                    Some(32) => 0x00ff_ffff,
+                    _ => 0xff,
+                };
+                if (foreground | background) & !mask != 0 {
+                    return Err(Error::Graphics("draw color exceeds pixel format".into()));
+                }
+            }
+        }
         if let Some(texture) = gpu_mask {
             let valid = matches!(draw, Draw::Blit { mask: None, width, height, .. }
                 if width == texture.width() && height == texture.height());
@@ -519,8 +559,8 @@ impl Graphics {
                     return Err(Error::Graphics("GPU polygon work limit exceeded".into()));
                 }
                 p[2] = 6;
-                p[11] = foreground.into();
-                p[12] = background.into();
+                p[11] = foreground as i32;
+                p[12] = background as i32;
                 p[13] = mode as i32;
                 p[14] = origin_x;
                 p[15] = origin_y;
@@ -549,8 +589,8 @@ impl Graphics {
                     return Err(Error::Graphics("invalid line geometry".into()));
                 }
                 p[2] = 5;
-                p[11] = foreground.into();
-                p[12] = background.into();
+                p[11] = foreground as i32;
+                p[12] = background as i32;
                 p[13] = mode as i32;
                 p[14] = line.origin_x;
                 p[15] = line.origin_y;
@@ -568,8 +608,8 @@ impl Graphics {
                 mode,
             } => {
                 p[2] = 1;
-                p[11] = foreground.into();
-                p[12] = background.into();
+                p[11] = foreground as i32;
+                p[12] = background as i32;
                 p[13] = mode as i32;
                 for (i, b) in pattern.iter().enumerate() {
                     p[16 + i] = i32::from(*b);
@@ -589,8 +629,8 @@ impl Graphics {
                 mode,
             } => {
                 p[2] = 4;
-                p[11] = foreground.into();
-                p[12] = background.into();
+                p[11] = foreground as i32;
+                p[12] = background as i32;
                 p[13] = mode as i32;
                 p[14] = source.left;
                 p[15] = source.top;
@@ -724,33 +764,36 @@ impl Graphics {
             }
         }
         if let Some(target) = &target {
-            let expensive = match draw {
-                Draw::Fill { mode, .. } | Draw::Line { mode, .. } | Draw::Polygon { mode, .. } => {
-                    matches!(mode, Transfer::Xor)
-                }
-                Draw::Copy { mode, .. } => !matches!(mode, Transfer::Copy),
-                Draw::Blit {
-                    mode,
-                    invert,
-                    foreground,
-                    background,
-                    ..
-                } => {
-                    let identity = target.direct_source
-                        && !invert
-                        && (target.neutral_copy
-                            || (target.rgb[usize::from(foreground)] == [0; 3]
-                                && target.rgb[usize::from(background)] == [65535; 3]))
-                        && matches!(mode, Transfer::Copy);
-                    !identity
-                        && (matches!(mode, Transfer::Xor)
-                            || has_rgb
-                            || source_palette.is_some_and(|p| {
-                                p.iter().any(|rgb| *rgb != [0; 3] && *rgb != [65535; 3])
-                            }))
-                }
-                _ => false,
-            };
+            let expensive = !direct
+                && match draw {
+                    Draw::Fill { mode, .. }
+                    | Draw::Line { mode, .. }
+                    | Draw::Polygon { mode, .. } => {
+                        matches!(mode, Transfer::Xor)
+                    }
+                    Draw::Copy { mode, .. } => !matches!(mode, Transfer::Copy),
+                    Draw::Blit {
+                        mode,
+                        invert,
+                        foreground,
+                        background,
+                        ..
+                    } => {
+                        let identity = target.direct_source
+                            && !invert
+                            && (target.neutral_copy
+                                || (target.rgb[foreground as usize] == [0; 3]
+                                    && target.rgb[background as usize] == [65535; 3]))
+                            && matches!(mode, Transfer::Copy);
+                        !identity
+                            && (matches!(mode, Transfer::Xor)
+                                || has_rgb
+                                || source_palette.is_some_and(|p| {
+                                    p.iter().any(|rgb| *rgb != [0; 3] && *rgb != [65535; 3])
+                                }))
+                    }
+                    _ => false,
+                };
             let width = (rect.right.min(clip.right).min(self.width as i32)
                 - rect.left.max(clip.left).max(0))
             .max(0) as u64;
@@ -783,12 +826,22 @@ impl Graphics {
         if gpu_mask.is_some() {
             p[2] |= 512;
         }
-        let indices = words_bytes(
-            memory
-                .read(self.base, (self.width * self.height) as usize)?
-                .iter()
-                .map(|b| u32::from(*b)),
-        );
+        let count = (self.width * self.height) as usize;
+        if count as u64 * 4 > self.device.limits().max_storage_buffer_binding_size {
+            return Err(Error::Graphics(
+                "pixel storage exceeds device binding limit".into(),
+            ));
+        }
+        let indices = if direct {
+            words_bytes(
+                memory
+                    .read(self.base, count * 4)?
+                    .chunks_exact(4)
+                    .map(|v| u32::from_be_bytes(v.try_into().unwrap())),
+            )
+        } else {
+            words_bytes(memory.read(self.base, count)?.iter().map(|b| u32::from(*b)))
+        };
         let buffer = |label, bytes: &[u8], usage| {
             self.device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -888,12 +941,19 @@ impl Graphics {
         self.queue.submit([encoder.finish()]);
         let bytes = self.map_read(&readback)?;
         self.check_error()?;
-        let guest: Vec<_> = bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|v| u32::from_le_bytes(*v) as u8)
-            .collect();
+        let guest: Vec<_> = if direct {
+            bytes
+                .chunks_exact(4)
+                .flat_map(|v| u32::from_le_bytes(v.try_into().unwrap()).to_be_bytes())
+                .collect()
+        } else {
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|v| u32::from_le_bytes(*v) as u8)
+                .collect()
+        };
         memory.write(self.base, &guest)
     }
     fn map_read(&self, buffer: &wgpu::Buffer) -> Result<Vec<u8>> {

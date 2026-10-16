@@ -4977,3 +4977,23 @@ future/target/private-originals/marathon/evidence/2026-10-17-pixel-state.*.
 No fresh EV/PPC-original or playable-demo claim. Direct colour, the actual
 supported graphics capability, further offscreen contracts and complete GPU
 text/full-rebuild acceptance remain open.
+
+### Direct-colour backend foundation regression (2026-10-17)
+
+The shared wgpu shader now has RGB555/xRGB8888 storage and direct RGB matching,
+with dedicated packed-memory/readback tests. Guest PixMap/Surface/GWorld direct
+formats and their native/PPC service integration remain unfinished; AB03 remains
+unavailable. This is a GPU backend foundation, not a new original-game feature.
+
+A fresh unchanged23M Marathon replay reaches the same CPU22,890,015,
+PC0102605C readFFFCC1AF fault. Screen SHA256 remains
+`7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e`;
+committed volume SHA256 remains
+`e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+The independent verifier confirms existing catalog records, forks and metadata
+are identical, adding only the same1222-byte preferences file. Its contents are
+not native-validated. The replay still makes zero GWorld/pixel-state calls and
+does not exercise the new direct backend. Private captures are retained as
+future/target/private-originals/marathon/evidence/2026-10-17-direct-foundation.*.
+No fresh EV/PPC-original, playable-game, native/browser or performance acceptance
+is claimed. Complete GPU text/library integration and the full rebuild stay open.

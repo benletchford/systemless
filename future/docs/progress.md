@@ -10892,3 +10892,52 @@ future/target/validation/pixel-state/. The original captures are retained under
 future/target/private-originals/marathon/evidence/2026-10-17-pixel-state.*;
 original-applications.md records exact frame/volume hashes. Both worktrees must
 remain distinct, PR4802 stays draft, and the rebuild goal remains active.
+
+### Direct-colour shared GPU foundation (2026-10-17)
+
+The existing integer GPU pipeline now supports RGB555 and xRGB8888 storage.
+Draw foreground/background scalars widen to u32, with explicit format validation
+and indexed callers preserving their checked u8 indices at the boundary. The
+new direct wrapper decodes/repackages big-endian storage around the same shader;
+CPU work does not draw destination pixels. Row padding and unused high bits stay
+intact, guest writes precede draws, and successful readback publishes guest bytes
+synchronously. RGB matching/expansion uses direct components instead of palette
+searches; existing indexed/pattern/text transfer policies remain shared.
+
+Two new real-GPU tests exercise both formats: clipped fills, RGBA expansion,
+double-XOR restoration, overlapping snapshot copies, odd guest base addresses,
+negative bitmap bounds with local draw coordinates, padding, invalid colours and
+strides, read-only storage, short RGB sources and more than256distinct colours.
+These establish the supported backend contracts; native unused-bit/quantization
+parity and performance remain unverified.
+
+Final scoped acceptance passes60checks,0failed,0ignored:57integration checks
+(2direct pixels,25GWorld,10indexed destinations,15picture,5text) and3existing
+GPU-backend checks. Adapter-required tests were explicitly enabled. Commands:
+
+- cargo test --manifest-path future/Cargo.toml --test direct_pixels --test indexed_destinations --test text --test picture --test gworld -- --include-ignored --nocapture --test-threads=1
+- cargo test --manifest-path future/Cargo.toml --lib graphics:: -- --include-ignored --nocapture --test-threads=1
+- cargo clippy --manifest-path future/Cargo.toml --lib --test direct_pixels --test indexed_destinations --test text --test picture --test gworld --example trace_application -- -D warnings
+
+Full test-target compilation, tracer build, strict scoped lint, sequential
+changed-file stdin formatting and whitespace checks pass. Initial compilation
+identified remaining u8/u32 call sites; strict lint identified one redundant cast.
+Both were corrected before final acceptance. No test assertion was weakened.
+Logs, including intermediate checks, are retained under ignored
+future/target/validation/direct-colour/. Startup/compile waits are not benchmarks.
+This is scoped validation, not a full test-suite or whole-rebuild acceptance claim.
+
+The unchanged23M Marathon regression reproduces CPU22,890,015/PC0102605C,
+readFFFCC1AF with identical canonical screen and independently verified committed
+volume. It still makes zero GWorld/pixel-state calls and does not use the direct
+backend. Exact hashes and private evidence paths are in original-applications.md.
+No fresh EV/PPC-original or playable-game acceptance is inferred.
+
+Next: extend shared Surface/PixMap parsing and source images to direct formats,
+including port RGB values, CopyBits/text destinations and presentation; then
+extend NewGWorld/UpdateGWorld and both ABI fixtures with those formats. Preserve
+coherent image ownership, row strides, colour metadata and guest-memory/GPU
+synchronization. Do not advertise the unfinished graphics profile or install
+AB03 merely from backend support. Complete text-library integration, styles,
+native/browser verification, both priority games and the entire rebuild remain
+open; the goal stays active and PR4802 stays draft.
