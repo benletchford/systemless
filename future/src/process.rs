@@ -239,6 +239,15 @@ impl Process {
         Ok(())
     }
     /// Loaded applications reserve their complete fixed heap before execution.
+    pub(crate) fn initialize_sized_heap(&mut self, memory: &mut Memory, size: u32) -> Result<()> {
+        if self.heap.is_some() || size < 256 || size as usize > crate::load::IMAGE_LIMIT {
+            return Err(Error::Load(
+                "invalid initial application heap reservation".into(),
+            ));
+        }
+        self.reservation = Some((HEAP_BASE, size));
+        self.initialize_heap(memory)
+    }
     pub(crate) fn initialize_heap(&mut self, memory: &mut Memory) -> Result<()> {
         memory.validate_write(GuestPtr(0x114), 4)?;
         memory.validate_write(GuestPtr(0x130), 4)?;

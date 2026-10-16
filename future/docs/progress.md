@@ -7854,3 +7854,53 @@ terminal as recorded. No complete file-play/source-pinning, whole integration,
 original audio/gameplay, native/browser or CI acceptance is claimed. Source
 pinning/owned buffering across MaxMem remains explicit follow-up alongside SIZE
 loader policy. All live validation handles are terminal; full rebuild stays active.
+
+## Declared SIZE application memory (2026-10-16, final checks in progress)
+
+Primary SIZE reference https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-87.html
+specifies10bytes, flags/preferred/minimum, ID0 overriding ID-1. A shared parser
+now selects that resource, preserves flags/requirements in LoadInfo and rejects
+compressed, malformed, zero/reversed, too-small or above64MiB requests explicitly.
+The bounded launcher grants preferred size (aligned up to16bytes), not a fake
+free-memory value. It does not yet offer minimum-size fallback/launch dialogs.
+
+For declared CODE partitions, heap starts at10000, A5 globals and the64KiB stack
+fit at the top of the actual reservation, and eager CODE sections move beyond
+the stack if necessary. CurrentA5/CurStackBase/HeapEnd/ApplLimit and initial SP
+follow the new layout. PEF uses the same selected requirement and allocates a
+real preferred-minus-stack heap at its separate heap base. LoadInfo records the
+stack range. Existing no-SIZE host defaults remain explicit: this is not the
+System7 512KiB no-SIZE fallback. Flags scheduling/addressing modes, full Process
+Manager partition accounting, eager executable image storage outside the current
+heap/stack budget and absent-SIZE native fallback remain unfinished acceptance.
+
+Library check13578 passed /tmp/systemless-size-check.txt. Initial loader tests
+19280 failed only because the new test used tuple variant Stop::Exit without its
+status; fixed before final checks. Final tests67647 passed3 SIZE integration and
+33existing loading tests,0ignored, /tmp/systemless-size-loader-final.txt. Cases
+include executing moved CODE, partitions beyond the old8MiB stack/16MiB section
+boundaries, real heap capacities, SIZE0 preference, invalid authoritative overrides
+on both architectures and impossible world sizes. Strict scoped lint10482 passed
+/tmp/systemless-size-lint.txt. Tracer build61674 passed. Core/heap/FreeMem/MaxMem
+regression session68452 is live /tmp/systemless-size-memory-tests.txt; preserve
+and poll that handle before commit.
+
+Original EV replay92296 completed next-service exit1 in
+/tmp/systemless-ev-size.txt. It gets beyond the prior insufficient-memory/ModalDialog
+path, now stopping at ExtendedToInteger(bits32), PC00012076, with
+"unsupported exceptional SANE integer conversion". Determine actual numeric
+inputs/environment/ABI before adding exceptional-result behavior; don't substitute
+arbitrary clipped values to move the game forward. Original frame/UI/audio and
+gameplay remain unverified. Independent volume checks pass: prefs identity35->36,
+all metadata/forks and companions unchanged. Output /tmp/systemless-ev-size-saved.slv
+7,239,400bytes SHA256443473dfc972c08b900f877ce61a80c68103fda20bbd2bbf307cb20155ae2faf.
+Input pause-saved remains unchanged; tracer flushes are memory-only acknowledgments.
+Full rebuild, both priority games and complete GPU text integration remain active.
+
+Final regression68452 completed exit0:71core,2FreeMem,6heap and2MaxMem tests pass.
+Together with3SIZE/33loading,117distinct tests pass0ignored. Strict scoped lint,
+tracer build, formatting, whitespace, original EV replay and independent volume
+verification are terminal and complete as recorded. This is declared-SIZE loading,
+not complete Process Manager launch/accounting/native fallback acceptance. No
+original gameplay/audio, full integration/all-target/native/browser/CI acceptance
+is claimed. Full rebuild and complete GPU text integration remain active.

@@ -1,7 +1,9 @@
 //! Transactional application preparation: all parsing/relocation completes in
 //! owned staging state before a new Runtime can execute any guest instruction.
 mod exports;
+mod partition;
 pub use exports::Export;
+pub use partition::ApplicationSize;
 pub(crate) mod pef;
 mod reloc;
 pub mod resource;
@@ -26,6 +28,8 @@ pub struct LoadInfo {
     pub entry: u32,
     pub toc_or_a5: u32,
     pub sections: Vec<(u32, u32)>,
+    pub stack: (u32, u32),
+    pub application_size: Option<ApplicationSize>,
     /// PEF export table order, retained for CFM indexed symbol enumeration.
     pub exports: std::sync::Arc<[Export]>,
 }
@@ -117,7 +121,7 @@ pub(super) fn u32_at(b: &[u8], o: usize) -> Result<u32> {
     Ok(u32::from_be_bytes(bytes(b, o, 4)?.try_into().unwrap()))
 }
 pub(super) fn finish(
-    mut memory: Memory,
+    memory: Memory,
     arch: Architecture,
     entry: u32,
     context: u32,
@@ -125,6 +129,22 @@ pub(super) fn finish(
     sections: Vec<(u32, u32)>,
     abi: Abi,
 ) -> Result<LoadedApplication> {
+    finish_at(
+        memory, arch, entry, context, resources, sections, abi, STACK_BASE,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn finish_at(
+    mut memory: Memory,
+    arch: Architecture,
+    entry: u32,
+    context: u32,
+    resources: ResourceFork,
+    sections: Vec<(u32, u32)>,
+    abi: Abi,
+    stack_base: u32,
+) -> Result<LoadedApplication> {
+    let application_size = ApplicationSize::read(&resources)?;
     crate::traps::install(&mut memory)?;
     memory.map(GuestPtr(0), vec![0; 4096], Permissions::RW)?;
     crate::retrace::install(&mut memory)?;
@@ -136,11 +156,14 @@ pub(super) fn finish(
     crate::events::install(&mut memory)?;
     crate::quickdraw::install(&mut memory)?;
     memory.map(
-        GuestPtr(STACK_BASE),
+        GuestPtr(stack_base),
         vec![0; STACK_SIZE as usize],
         Permissions::RW,
     )?;
-    let sp = STACK_BASE + STACK_SIZE - 0x100;
+    let sp = stack_base
+        .checked_add(STACK_SIZE)
+        .and_then(|end| end.checked_sub(0x100))
+        .ok_or_else(|| invalid("application stack overflow"))?;
     let mut cpu = Cpu::new(arch, entry, sp);
     match &mut cpu {
         Cpu::M68k(c) => {
@@ -166,7 +189,17 @@ pub(super) fn finish(
     )?;
     let mut runtime = Runtime::new(memory, cpu, None);
     runtime.abi = abi;
-    runtime.process.initialize_heap(&mut runtime.memory)?;
+    if arch == Architecture::PowerPc {
+        if let Some(size) = application_size {
+            runtime
+                .process
+                .initialize_sized_heap(&mut runtime.memory, size.aligned_size()? - STACK_SIZE)?;
+        } else {
+            runtime.process.initialize_heap(&mut runtime.memory)?;
+        }
+    } else {
+        runtime.process.initialize_heap(&mut runtime.memory)?;
+    }
     runtime.process.install_application_resources(resources);
     Ok(LoadedApplication {
         runtime,
@@ -175,6 +208,8 @@ pub(super) fn finish(
             entry,
             toc_or_a5: context,
             sections,
+            stack: (stack_base, STACK_SIZE),
+            application_size,
             exports: std::sync::Arc::from([]),
         },
     })
@@ -205,11 +240,28 @@ fn code(resources: ResourceFork) -> Result<LoadedApplication> {
         .checked_add(below)
         .ok_or_else(|| invalid("A5 size overflow"))?;
     limit(world_len as usize)?;
-    let world_base = A5_BASE
+    let size = ApplicationSize::read(&resources)?;
+    let stack_base = if let Some(size) = size {
+        0x0001_0000u32
+            .checked_add(size.aligned_size()?)
+            .and_then(|end| end.checked_sub(STACK_SIZE))
+            .ok_or_else(|| invalid("CODE partition overflow"))?
+    } else {
+        STACK_BASE
+    };
+    let a5 = if size.is_some() {
+        stack_base
+            .checked_sub(above)
+            .map(|v| v & !3)
+            .ok_or_else(|| invalid("SIZE partition cannot fit A5 globals"))?
+    } else {
+        A5_BASE
+    };
+    let world_base = a5
         .checked_sub(below)
-        .filter(|v| *v >= 0x200000)
+        .filter(|v| *v >= 0x0001_0100)
         .ok_or_else(|| invalid("A5 globals exceed reserved region"))?;
-    if A5_BASE.checked_add(above).is_none_or(|v| v > STACK_BASE) {
+    if a5.checked_add(above).is_none_or(|v| v > stack_base) {
         return Err(invalid("A5 world overlaps stack reservation"));
     }
     let table = bytes(c, 16, jt_len as usize)?;
@@ -217,7 +269,11 @@ fn code(resources: ResourceFork) -> Result<LoadedApplication> {
     let mut memory = Memory::default();
     let mut segments = BTreeMap::new();
     let mut section_info = Vec::new();
-    let mut cursor = SECTION_BASE;
+    let mut cursor = SECTION_BASE.max(
+        stack_base
+            .checked_add(STACK_SIZE)
+            .ok_or_else(|| invalid("CODE section base overflow"))?,
+    );
     let mut total = world_len as usize;
     for (i, entry) in table.as_chunks::<8>().0.iter().enumerate() {
         if u16_at(entry, 2)? != 0x3f3c || u16_at(entry, 6)? != 0xa9f0 {
@@ -280,14 +336,15 @@ fn code(resources: ResourceFork) -> Result<LoadedApplication> {
     }
     // Classic jump tables are writable executable guest structures.
     memory.map(GuestPtr(world_base), world, Permissions::RWX)?;
-    let mut app = finish(
+    let mut app = finish_at(
         memory,
         Architecture::M68k,
-        A5_BASE + jt_offset + 2,
-        A5_BASE,
+        a5 + jt_offset + 2,
+        a5,
         resources,
         section_info,
         Abi::macintosh(),
+        stack_base,
     )?;
     app.runtime
         .process
@@ -295,7 +352,7 @@ fn code(resources: ResourceFork) -> Result<LoadedApplication> {
     // Inside Macintosh: Memory, Memory Manager summary: CurStackBase is
     // the start of application globals. It is not our separate stack mapping.
     let memory = &mut app.runtime.memory;
-    memory.write(GuestPtr(0x0904), &A5_BASE.to_be_bytes())?; // CurrentA5
+    memory.write(GuestPtr(0x0904), &a5.to_be_bytes())?; // CurrentA5
     memory.write(GuestPtr(0x0908), &world_base.to_be_bytes())?; // CurStackBase
     memory.write(GuestPtr(0x0934), &(jt_offset as u16).to_be_bytes())?; // CurJTOffset
     Ok(app)

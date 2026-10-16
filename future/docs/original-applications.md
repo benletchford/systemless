@@ -3761,3 +3761,20 @@ Independent CRC/catalog/fork checks pass: preferences identity34->35, all metada
 forks, companions and directories unchanged. Input remains unchanged. Tracer
 flushes are still explicit memory-only acknowledgments; no host checkpoint,
 original frame/UI, native audio or gameplay acceptance is established.
+
+### EV declared SIZE replay (2026-10-16)
+
+The loader now uses EV's SIZE(-1) preferred8,499,200/minimum6,656,000bytes, moving
+its actual heap/A5/stack reservations together. /tmp/systemless-ev-size.txt gets
+beyond the prior insufficient-memory/ModalDialog path and stops later at
+ExtendedToInteger(bits32), PC00012076: "unsupported exceptional SANE integer
+conversion" (expected exit1). Numeric source/environment/ABI evidence must be
+inspected before implementing that case. No original frame/UI/audio/gameplay
+acceptance is established; sound/timer/VBL completed callbacks remain0.
+
+Snapshot /tmp/systemless-ev-size-saved.slv is7,239,400bytes,
+SHA256443473dfc972c08b900f877ce61a80c68103fda20bbd2bbf307cb20155ae2faf.
+Independent CRC/catalog/fork checks pass against pause-saved: preferences identity
+35->36, all metadata/forks, companions and directories unchanged. Input is
+unchanged; tracer flushes remain memory-only acknowledgments. Use this snapshot
+with a fresh output filename for the next original replay.

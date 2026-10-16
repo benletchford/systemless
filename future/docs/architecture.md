@@ -3313,3 +3313,26 @@ file completion routines, caller buffers/selections and stop semantics are open.
 Resource source lifetime still follows the existing live SndPlay path; automatic
 file-play source pinning/owned buffering across compaction/purge must be finished
 before complete file-play compatibility or original music acceptance is claimed.
+
+### Declared application partition requests (2026-10-16)
+
+Application loaders share SIZE selection: ID0 overrides ID-1; the selected
+10-byte flags/preferred/minimum record is validated and retained in LoadInfo.
+Compressed/invalid/reversed or above64MiB requests fail before guest execution.
+The current bounded launcher grants preferred size aligned to16bytes; it has no
+minimum-size fallback/consent dialog yet. Scheduling/addressing flags are retained
+metadata, not implemented Process Manager behavior.
+
+Declared CODE partitions place the heap at10000, A5 world and64KiB stack at the
+top of the actual reservation. Eager executable sections start at16MiB or beyond
+the relocated stack, whichever is later. Checked arithmetic/mappings reject
+impossible worlds and overlaps; CurrentA5, CurStackBase, HeapEnd, ApplLimit and SP
+follow the layout. PEF uses the same request to reserve a real preferred-minus-
+stack application heap at its separate heap base, retaining its existing stack
+address. LoadInfo exposes the actual stack range and selected resource metadata.
+
+Unspecified-SIZE host defaults remain the existing runtime policy, not System7's
+512KiB default. Full partition accounting for the current eager executable images
+outside the heap/stack reservation, native absent-SIZE launch policy, user minimum
+fallback and all SIZE operating flags remain unfinished. No free-memory query is
+inflated to compensate for a loader layout; it reads actual allocator extents.
