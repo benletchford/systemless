@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.98.1](https://github.com/benletchford/systemless/compare/v0.98.0...v0.98.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **files:** open HFS basenames that contain a slash ([bd4c527](https://github.com/benletchford/systemless/commit/bd4c527778be2f5ffd1f8f35b7b37c932516a399))
+* **web:** forward Control modifier keys to the guest ([0f0c23d](https://github.com/benletchford/systemless/commit/0f0c23d4c8569780384fb0465693e3694f4af81f))
+* **web:** use the guest cursor image for the native browser pointer ([e49aec8](https://github.com/benletchford/systemless/commit/e49aec873e6eb30522c04091b79dc09832fa1e70))
+* **window:** paint content exposed by moves and resizes ([2ae1fdd](https://github.com/benletchford/systemless/commit/2ae1fdda05fad3ef1987d0a3a2548209b8f51c89))
+
 ## [0.98.0](https://github.com/benletchford/systemless/compare/v0.97.0...v0.98.0) (2026-10-13)
 
 
