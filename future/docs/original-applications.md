@@ -3638,3 +3638,41 @@ all strict indexed formats, bounds, palettes and coherent GPU transfer semantics
 Use both ABI fixtures and actual offscreen color-port copies, then replay EV.
 Marathon's font selection without a current port remains open. Full rebuild and
 complete wgpu text rendering/library integration remain active requirements.
+
+
+## EV color-port bitmap reference and plug-in inspection (2026-10-16)
+
+
+Final pixel-activity acceptance passes in /tmp/systemless-alias-pixels-final.txt:
+the mode-0 cases demonstrably change destination pixels, all modes preserve every
+pixel outside the region mask, and normalized references match direct PixMaps for
+both real CPU adapters (32 mode/overlap/CPU combinations). This repeat is counted
+once in the 83 distinct tests. Strict all-target lint passes in
+/tmp/systemless-alias-final-lint.txt; the tracer build passes in
+/tmp/systemless-alias-build.txt. A final scoped lint checks the late-added pixel
+assertions. Formatting and diff whitespace pass. No fresh full integration-suite
+or GitHub CI acceptance is claimed.
+
+Original EV passes the previously failing offscreen-to-screen CopyBits after
+showing its color window, then advances into plug-in file enumeration, catalog
+queries and ordinary-target ResolveAliasFile calls. It stops at FSpGetFInfo,
+HighLevelFSDispatch AA52 selector 7, PC 0001CF68, while inspecting EV Tuner.
+Evidence: /tmp/systemless-ev-alias.txt, terminal exit 1 (unsupported next selector),
+10 million instructions, 640x480x8, explicit memory-only volume flush. Its
+sound/timer/VBL callbacks remain zero. This is bounded service and pixel-path
+progress; no original-frame screenshot, UI interaction, gameplay, native-window,
+audio or browser acceptance. Marathon/PPC originals were not rerun.
+
+Independent CRC/catalog verification in /tmp/systemless-alias-volume-check.txt
+confirms /tmp/systemless-ev-alias-saved.slv is 7,239,400 bytes, SHA256
+b465c326dbf011df7512f1f4a6d0b397d1d6ce2c71f443998410afcd1416a389.
+Preferences node 29 -> 30, with identical metadata and both fork bytes; every
+companion entry is unchanged. Input /tmp/systemless-ev-repaint-saved.slv remains
+SHA256 077a48e820e947cbfdb9346f105c737770dbca6288d690d47ecac0d3d597028e.
+No private original assets or saved volumes enter Git.
+
+Next: shared FSpGetFInfo using the live FSSpec/catalog/Finder metadata model,
+including pointer/error/ABI checks and both CPU fixtures, then replay EV plug-in
+inspection. Keep actual Finder alias records distinct from these color-port
+bitmap references. Marathon's port initialization, actual gameplay/audio, complete
+text/library integration and the full rebuild remain active and unverified.

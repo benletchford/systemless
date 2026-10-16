@@ -3206,3 +3206,31 @@ layering/theme behavior and full native/browser UI acceptance remain unfinished.
 Primary [PaintOne](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-285.html) and
 [PaintBehind](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-286.html) describe the
 separate erase/update controls and clipped frame/content behavior.
+
+
+### CopyBits color-port bitmap references
+
+CopyBits accepts either direct BitMap/PixMap records or the documented
+GrafPtr(colorPort)^.portBits reference. In the latter form, both high bits of
+the apparent rowBytes word are set: it is actually portVersion, while the apparent
+baseAddr is a PixMapHandle. A shared checked descriptor resolver follows that
+handle once, requires mapped non-NIL handle/data and an actual 50-byte PixMap,
+then invokes the existing strict indexed decoder. Low portVersion bits are not
+mistaken for stride. Source and destination adapters preserve their input bytes.
+
+Normalization is specific to CopyBits reference entry points. Typed display,
+GDevice and port PixMap readers retain direct-record validation and reject aliases.
+No recursive alias chain is accepted. Underlying depth, packing, component,
+stride/bounds, palette definition/matching, storage permissions and size checks
+remain unchanged. Each call rereads the live master pointer; metadata is not cached
+across handle relocation or guest edits. Raw bitmap references remain supported.
+
+The same normalized surfaces reach the production wgpu transfer pipeline from
+both CPU ABIs. Masking, overlapping-copy snapshots, color transfer semantics and
+CPU/GPU synchronization use the existing shared implementation. Direct-color
+formats, dithering and broader CopyMask/CopyDeepMask expansion are not completed
+by this reference-form change. Diagnostic tracing now shows failing CopyBits
+headers and possible handle targets without changing guest execution or storage.
+
+Primary: [CopyBits](https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-166.html),
+which describes the two high portVersion bits and PixMapHandle indirection.

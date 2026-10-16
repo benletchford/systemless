@@ -10,6 +10,9 @@ use systemless_future::{
 const PORT: u32 = 0x50000000;
 const FIELDS: [u32; 7] = [2, 24, 28, 32, 58, 62, 8];
 fn app() -> LoadedApplication {
+    app_with_display(None)
+}
+fn app_with_display(display: Option<systemless_future::display::Display>) -> LoadedApplication {
     let fixture = support::pef_program(
         &[0x4e800020],
         &[
@@ -20,10 +23,16 @@ fn app() -> LoadedApplication {
             b"GetGDevice",
             b"OpenPort",
             b"PaintRect",
+            b"CopyBits",
         ],
         64,
     );
-    let mut a = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    let a = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    let mut a = if let Some(display) = display {
+        a.with_display(display).unwrap()
+    } else {
+        a
+    };
     a.runtime
         .memory
         .map(GuestPtr(PORT), vec![0xcc; 512], Permissions::RW)
@@ -644,4 +653,210 @@ fn both_cpus_open_color_ports_before_offscreen_pixels_are_attached() {
         assert_eq!(a.runtime.memory.u32(GuestPtr(PORT + 84)).unwrap(), 0);
         call(&mut a, Action::Close, PORT).unwrap();
     }
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn gpu_copybits_color_port_aliases_match_raw_pixmaps_for_both_cpus_modes_masks_and_overlap() {
+    use systemless_future::{
+        graphics::Graphics,
+        quickdraw::{CopyBits, SCREEN},
+    };
+    let mut a = app_with_display(Some("16x8x8".parse().unwrap()));
+    ppc(&mut a, 1, PORT);
+    ppc(&mut a, 1, PORT + 128);
+    let source_handle = a.runtime.memory.u32(GuestPtr(PORT + 2)).unwrap();
+    let source_map = a.runtime.memory.u32(GuestPtr(source_handle)).unwrap();
+    let destination_map = a
+        .runtime
+        .memory
+        .u32(GuestPtr(
+            a.runtime.memory.u32(GuestPtr(PORT + 130)).unwrap(),
+        ))
+        .unwrap();
+    a.runtime
+        .memory
+        .map(GuestPtr(0x52000000), (0u8..128).collect(), Permissions::RW)
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(source_map), &0x52000000u32.to_be_bytes())
+        .unwrap();
+    let source_record = a
+        .runtime
+        .memory
+        .read(GuestPtr(source_map), 50)
+        .unwrap()
+        .to_vec();
+    let ports = a.runtime.process.ports.unwrap();
+    let port_records = a.runtime.memory.read(GuestPtr(PORT), 236).unwrap().to_vec();
+    let mask = systemless_future::regions::call(
+        &mut a.runtime.memory,
+        &mut a.runtime.process,
+        systemless_future::regions::Op::New,
+        0,
+        0,
+    )
+    .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(0x320), &support::words(&[2, 3, 6, 11]))
+        .unwrap();
+    systemless_future::regions::call(
+        &mut a.runtime.memory,
+        &mut a.runtime.process,
+        systemless_future::regions::Op::Rect,
+        mask,
+        0x320,
+    )
+    .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(0x300), &support::words(&[0, 0, 6, 12]))
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(0x310), &support::words(&[1, 2, 7, 14]))
+        .unwrap();
+    a.runtime
+        .memory
+        .map(GuestPtr(0x53000000), vec![0xa8, 0xec], Permissions::RX)
+        .unwrap();
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    a.runtime.graphics =
+        Some(pollster::block_on(Graphics::new(&instance, None, 16, 8, SCREEN)).unwrap());
+    let initial: Vec<u8> = (0u8..128).map(|v| v.wrapping_mul(7)).collect();
+    for architecture in [Architecture::M68k, Architecture::PowerPc] {
+        for overlap in [false, true] {
+            for mode in 0i16..8 {
+                let request = CopyBits {
+                    source: GuestPtr(if overlap { destination_map } else { source_map }),
+                    destination: GuestPtr(destination_map),
+                    source_rect: GuestPtr(0x300),
+                    destination_rect: GuestPtr(0x310),
+                    mode,
+                    mask: GuestPtr(mask),
+                };
+                a.runtime.memory.write(SCREEN, &initial).unwrap();
+                ports
+                    .copy_bits(
+                        &mut a.runtime.memory,
+                        a.runtime.graphics.as_ref().unwrap(),
+                        request,
+                    )
+                    .unwrap();
+                let expected = a.runtime.memory.read(SCREEN, 128).unwrap().to_vec();
+                if mode == 0 {
+                    assert_ne!(
+                        expected, initial,
+                        "copy fixture must actually change pixels"
+                    );
+                }
+                for y in 0..8 {
+                    for x in 0..16 {
+                        if !(3..11).contains(&x) || !(2..6).contains(&y) {
+                            assert_eq!(
+                                expected[y * 16 + x],
+                                initial[y * 16 + x],
+                                "outside mask at {x},{y}"
+                            );
+                        }
+                    }
+                }
+                a.runtime.memory.write(SCREEN, &initial).unwrap();
+                let source = if overlap { PORT + 130 } else { PORT + 2 };
+                let destination = PORT + 130;
+                let stack = STACK_BASE + 0x8000;
+                if architecture == Architecture::M68k {
+                    let mut frame = mask.to_be_bytes().to_vec();
+                    frame.extend(mode.to_be_bytes());
+                    frame.extend(0x310u32.to_be_bytes());
+                    frame.extend(0x300u32.to_be_bytes());
+                    frame.extend(destination.to_be_bytes());
+                    frame.extend(source.to_be_bytes());
+                    frame.extend([0x5a; 4]);
+                    a.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+                    a.runtime.cpu = Cpu::new(architecture, 0x53000000, stack);
+                    let Cpu::M68k(c) = &mut a.runtime.cpu else {
+                        unreachable!()
+                    };
+                    c.dar[0] = 0x12345678;
+                    c.dar[1] = 0xfeedface;
+                } else {
+                    let vector = a
+                        .runtime
+                        .memory
+                        .u32(GuestPtr(a.info.toc_or_a5 + 8 + 7 * 4))
+                        .unwrap();
+                    let gate = a.runtime.memory.u32(GuestPtr(vector)).unwrap();
+                    a.runtime.cpu = Cpu::new(architecture, gate, stack);
+                    let Cpu::PowerPc(c) = &mut a.runtime.cpu else {
+                        unreachable!()
+                    };
+                    c.gpr[3] = source;
+                    c.gpr[4] = destination;
+                    c.gpr[5] = 0x300;
+                    c.gpr[6] = 0x310;
+                    c.gpr[7] = 0xabcd0000 | u32::from(mode as u16);
+                    c.gpr[8] = mask;
+                }
+                assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+                match &a.runtime.cpu {
+                    Cpu::M68k(c) => {
+                        assert_eq!(
+                            (c.dar[0], c.dar[1], c.dar[15]),
+                            (0x12345678, 0xfeedface, stack + 22)
+                        );
+                        assert_eq!(
+                            a.runtime.memory.read(GuestPtr(stack + 22), 4).unwrap(),
+                            [0x5a; 4]
+                        );
+                    }
+                    Cpu::PowerPc(c) => assert_eq!(
+                        (c.gpr[3], c.gpr[4], c.gpr[7], c.gpr[8]),
+                        (
+                            source,
+                            destination,
+                            0xabcd0000 | u32::from(mode as u16),
+                            mask
+                        )
+                    ),
+                }
+                assert_eq!(
+                    a.runtime.memory.read(SCREEN, 128).unwrap(),
+                    expected,
+                    "{architecture:?} mode {mode}, overlap={overlap}"
+                );
+                assert_eq!(
+                    a.runtime.memory.read(GuestPtr(PORT), 236).unwrap(),
+                    port_records
+                );
+                assert_eq!(
+                    a.runtime.memory.read(GuestPtr(source_map), 50).unwrap(),
+                    source_record
+                );
+            }
+        }
+    }
+    // Invalid alias targets must fault before any destination byte changes.
+    a.runtime
+        .memory
+        .write(GuestPtr(source_map + 4), &0xc000u16.to_be_bytes())
+        .unwrap();
+    let before = a.runtime.memory.read(SCREEN, 128).unwrap().to_vec();
+    let bad = CopyBits {
+        source: GuestPtr(PORT + 2),
+        destination: GuestPtr(PORT + 130),
+        source_rect: GuestPtr(0x300),
+        destination_rect: GuestPtr(0x310),
+        mode: 0,
+        mask: GuestPtr(0),
+    };
+    assert!(ports
+        .copy_bits(
+            &mut a.runtime.memory,
+            a.runtime.graphics.as_ref().unwrap(),
+            bad
+        )
+        .is_err());
+    assert_eq!(a.runtime.memory.read(SCREEN, 128).unwrap(), before);
 }

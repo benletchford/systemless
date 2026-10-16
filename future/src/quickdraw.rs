@@ -588,9 +588,9 @@ impl Ports {
         if request.source.0 == 0 || request.destination.0 == 0 {
             return Ok(());
         }
-        let source_data = crate::pixmap::source(memory, request.source)?;
+        let source_data = crate::pixmap::copy_source(memory, request.source)?;
         let source = source_data.bitmap;
-        let destination = crate::pixmap::destination(memory, request.destination)?;
+        let destination = crate::pixmap::copy_destination(memory, request.destination)?;
         let mut source_rect = read_rect(memory, request.source_rect)?;
         let rect = read_rect(memory, request.destination_rect)?;
         if !(0..=7).contains(&request.mode) {

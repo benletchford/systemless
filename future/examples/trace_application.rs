@@ -101,6 +101,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "latest service before fault: {:?}",
                     app.runtime.services.calls.last()
                 );
+                if let Some(systemless_future::cpu::Call::CopyBits(request)) =
+                    app.runtime.services.calls.last()
+                {
+                    for (name, pointer) in [
+                        ("source", request.source),
+                        ("destination", request.destination),
+                    ] {
+                        println!(
+                            "CopyBits {name} descriptor at {:08x}: {:02x?}",
+                            pointer.0,
+                            app.runtime.memory.read(pointer, 14)
+                        );
+                        if let Ok(handle) = app.runtime.memory.u32(pointer) {
+                            if let Ok(data) = app
+                                .runtime
+                                .memory
+                                .u32(systemless_future::memory::GuestPtr(handle))
+                            {
+                                println!("CopyBits {name} possible handle={handle:08x} data={data:08x}: {:02x?}",app.runtime.memory.read(systemless_future::memory::GuestPtr(data),50));
+                            }
+                        }
+                    }
+                }
                 if let Some(systemless_future::cpu::Call::Port {
                     op: systemless_future::quickdraw::PortOp::PaintRect,
                     pointer,

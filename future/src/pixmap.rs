@@ -14,7 +14,44 @@ pub(crate) struct Source {
 fn bad() -> Error {
     Error::Graphics("unsupported or invalid indexed PixMap source".into())
 }
-pub(crate) fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
+/// CopyBits accepts a BitMap-shaped CGrafPort alias: its rowBytes position is
+/// portVersion (high two bits set), and baseAddr is actually a PixMapHandle.
+/// IM QuickDraw Drawing, CopyBits: https://dev.os9.ca/techpubs/mac/QuickDraw/QuickDraw-166.html
+fn descriptor(memory: &Memory, address: GuestPtr) -> Result<GuestPtr> {
+    if address.0 == 0 {
+        return Err(bad());
+    }
+    let header = memory.read(address, 14)?;
+    let row = u16::from_be_bytes(header[4..6].try_into().unwrap());
+    if row & 0xc000 != 0xc000 {
+        return Ok(address);
+    }
+    let handle = u32::from_be_bytes(header[..4].try_into().unwrap());
+    if handle == 0 {
+        return Err(Error::Graphics("nil color-port PixMap handle".into()));
+    }
+    let data = GuestPtr(memory.u32(GuestPtr(handle))?);
+    if data.0 == 0 {
+        return Err(Error::Graphics("nil color-port PixMap data".into()));
+    }
+    let map = memory.read(data, 50)?;
+    if u16::from_be_bytes(map[4..6].try_into().unwrap()) & 0xc000 != 0x8000 {
+        return Err(Error::Graphics(
+            "color-port alias must reference an actual PixMap".into(),
+        ));
+    }
+    Ok(data)
+}
+pub(crate) fn copy_source(memory: &Memory, address: GuestPtr) -> Result<Source> {
+    source(memory, descriptor(memory, address)?)
+}
+pub(crate) fn copy_destination(
+    memory: &Memory,
+    address: GuestPtr,
+) -> Result<crate::surface::Surface> {
+    destination(memory, descriptor(memory, address)?)
+}
+fn source(memory: &Memory, address: GuestPtr) -> Result<Source> {
     let header = memory.read(address, 14)?;
     let row = u16::from_be_bytes(header[4..6].try_into().unwrap());
     if row & 0x8000 == 0 {
@@ -255,6 +292,97 @@ mod tests {
         }
         memory.map(GuestPtr(0x3000), data, Permissions::RX).unwrap();
         (memory, expected)
+    }
+    fn alias(memory: &mut Memory, version: u16) -> GuestPtr {
+        memory
+            .map(
+                GuestPtr(0x4000),
+                0x1000u32.to_be_bytes().to_vec(),
+                Permissions::RW,
+            )
+            .unwrap();
+        let mut bytes = vec![0x5a; 14];
+        bytes[..4].copy_from_slice(&0x4000u32.to_be_bytes());
+        bytes[4..6].copy_from_slice(&version.to_be_bytes());
+        memory
+            .map(GuestPtr(0x4100), bytes, Permissions::RX)
+            .unwrap();
+        GuestPtr(0x4100)
+    }
+    #[test]
+    fn color_port_aliases_decode_live_handles_across_packed_depths_and_preserve_descriptors() {
+        for depth in [1, 2, 4, 8] {
+            let (mut memory, expected) = fixture(depth, 0x8000);
+            if depth == 1 {
+                memory.write(GuestPtr(0x210a), &[255; 6]).unwrap();
+                memory.write(GuestPtr(0x2112), &[0; 6]).unwrap();
+            }
+            let address = alias(&mut memory, 0xc005);
+            assert!(source(&memory, address).is_err());
+            assert!(destination(&memory, address).is_err());
+            let before = memory.read(address, 14).unwrap().to_vec();
+            let decoded = copy_source(&memory, address).unwrap();
+            assert_eq!(decoded.indices, expected);
+            let direct = source(&memory, GuestPtr(0x1000)).unwrap();
+            assert_eq!(
+                (
+                    decoded.bitmap.base,
+                    decoded.bitmap.row_bytes,
+                    decoded.bitmap.bounds
+                ),
+                (
+                    direct.bitmap.base,
+                    direct.bitmap.row_bytes,
+                    direct.bitmap.bounds
+                )
+            );
+            assert_eq!(decoded.palette, direct.palette);
+            let wrapped = copy_destination(&memory, address).unwrap();
+            let direct = destination(&memory, GuestPtr(0x1000)).unwrap();
+            assert_eq!(
+                wrapped.unpack(&memory).unwrap(),
+                direct.unpack(&memory).unwrap()
+            );
+            let mut relocated = memory.read(GuestPtr(0x1000), 50).unwrap().to_vec();
+            relocated[6..14].copy_from_slice(&[0, 2, 0, 3, 0, 4, 0, 8]);
+            memory
+                .map(GuestPtr(0x4200), relocated, Permissions::RW)
+                .unwrap();
+            memory
+                .write(GuestPtr(0x4000), &0x4200u32.to_be_bytes())
+                .unwrap();
+            assert_eq!(
+                copy_source(&memory, address).unwrap().bitmap.bounds,
+                Rect::new(3, 2, 8, 4)
+            );
+            assert_eq!(memory.read(address, 14).unwrap(), before);
+        }
+    }
+    #[test]
+    fn aliases_reject_nil_faulting_cycles_and_malformed_underlying_pixmaps_without_writes() {
+        for target in [0, 0xfffffff0, 0x4100] {
+            let (mut memory, _) = fixture(8, 0x8000);
+            let address = alias(&mut memory, 0xc000);
+            memory
+                .write(GuestPtr(0x4000), &u32::to_be_bytes(target))
+                .unwrap();
+            let before = memory.read(GuestPtr(0x1000), 50).unwrap().to_vec();
+            assert!(copy_source(&memory, address).is_err());
+            assert!(copy_destination(&memory, address).is_err());
+            assert_eq!(memory.read(GuestPtr(0x1000), 50).unwrap(), before);
+        }
+        let (mut memory, _) = fixture(8, 0x8000);
+        let address = alias(&mut memory, 0xc000);
+        memory
+            .write(GuestPtr(0x1020), &16u16.to_be_bytes())
+            .unwrap();
+        assert!(copy_source(&memory, address).is_err());
+        assert!(copy_destination(&memory, address).is_err());
+        memory.write(GuestPtr(0x1020), &8u16.to_be_bytes()).unwrap();
+        memory.write(GuestPtr(0x102a), &0u32.to_be_bytes()).unwrap();
+        assert!(copy_source(&memory, address).is_err());
+        assert!(copy_destination(&memory, address).is_err());
+        assert!(source(&memory, GuestPtr(0)).is_err());
     }
     #[test]
     fn default_color_metadata_does_not_require_attached_pixels_but_drawing_does() {
