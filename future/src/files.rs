@@ -10,6 +10,8 @@ mod browse;
 pub use aliases::ResolveAliasFile;
 mod io;
 mod resource;
+mod spec;
+pub use spec::MakeSpec;
 mod volume;
 mod working;
 pub use browse::{CatalogEntry, DirectoryView};

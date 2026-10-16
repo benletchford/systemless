@@ -2043,6 +2043,15 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::MakeSpec(request) => {
+                            let error = self.process.files.make_spec(&mut self.memory, request)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::ResolveAliasFile(request) => {
                             let error = self
                                 .process
@@ -2359,6 +2368,7 @@ impl Runtime {
                         | Call::Elementary { .. }
                         | Call::AtanExtended(_)
                         | Call::Timer(_)
+                        | Call::MakeSpec(_)
                         | Call::ResolveAliasFile(_)
                         | Call::FcbInfo(_) => {
                             return Err(Error::Cpu("Macintosh service on fixture route".into()))

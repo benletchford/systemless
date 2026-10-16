@@ -383,6 +383,7 @@ pub enum Call {
         pointer: GuestPtr,
         op: crate::files::Op,
     },
+    MakeSpec(crate::files::MakeSpec),
     ResolveAliasFile(crate::files::ResolveAliasFile),
     FcbInfo(GuestPtr),
     WorkingDirectory {

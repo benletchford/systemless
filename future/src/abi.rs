@@ -253,6 +253,7 @@ pub enum Service {
     Get1NamedResource,
     FileIo(crate::files::Op),
     FileIoWithAsync(crate::files::Op),
+    MakeSpec,
     ResolveAliasFile,
     FcbInfo,
     WorkingDirectory(crate::files::WorkingOp),
@@ -714,6 +715,7 @@ impl Abi {
             b"PBOpenWDSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Open)),
             b"PBCloseWDSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Close)),
             b"PBGetWDInfoSync" => Some(Service::WorkingDirectory(crate::files::WorkingOp::Info)),
+            b"FSMakeFSSpec" => Some(Service::MakeSpec),
             b"ResolveAliasFile" => Some(Service::ResolveAliasFile),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
             b"PBGetCatInfoSync" => Some(Service::CatalogInfo),
@@ -1080,6 +1082,28 @@ impl Abi {
                     Call::FixedMultiply { left, right },
                     Reply::StackLong(GuestPtr(next)),
                 ))
+            }
+            0xaa52 => {
+                if c.dar[0] as u16 != 1 {
+                    return Err(Error::Cpu(format!(
+                        "unsupported HighLevelFSDispatch selector {:04x}",
+                        c.dar[0] as u16
+                    )));
+                }
+                let args = memory.read(GuestPtr(sp), 14)?;
+                let request = crate::files::MakeSpec {
+                    destination: GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap())),
+                    name: GuestPtr(u32::from_be_bytes(args[4..8].try_into().unwrap())),
+                    directory: u32::from_be_bytes(args[8..12].try_into().unwrap()),
+                    volume: i16::from_be_bytes(args[12..14].try_into().unwrap()),
+                };
+                let next = sp
+                    .checked_add(14)
+                    .ok_or_else(|| Error::Cpu("FSMakeFSSpec stack overflow".into()))?;
+                request.validate(memory)?;
+                memory.validate_write(GuestPtr(next), 2)?;
+                c.dar[15] = next;
+                Ok((Call::MakeSpec(request), Reply::StackWord(GuestPtr(next))))
             }
             0xa823 => {
                 if c.dar[0] as u16 != 12 {
@@ -4235,6 +4259,12 @@ impl Abi {
                 pointer: GuestPtr(c.gpr[3]),
                 op,
             },
+            Service::MakeSpec => Call::MakeSpec(crate::files::MakeSpec {
+                volume: c.gpr[3] as i16,
+                directory: c.gpr[4],
+                name: GuestPtr(c.gpr[5]),
+                destination: GuestPtr(c.gpr[6]),
+            }),
             Service::ResolveAliasFile => Call::ResolveAliasFile(crate::files::ResolveAliasFile {
                 spec: GuestPtr(c.gpr[3]),
                 chains: c.gpr[4] as u8 != 0,

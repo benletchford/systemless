@@ -6846,3 +6846,50 @@ sound/timer/VBL callbacks remain zero. No title/menu/gameplay/audio acceptance;
 Marathon not replayed. Next: shared FSMakeFSSpec catalog/path semantics with
 missing-leaf hints and both adapters, then asset-backed EV replay. Full rebuild
 and complete wgpu text rendering remain active.
+
+
+## Shared FSMakeFSSpec catalog/path construction (2026-10-16)
+
+HighLevelFSDispatch AA52 selector 1 and the PPC FSMakeFSSpec import now share
+one Files implementation. Existing file/directory targets return canonical
+catalog names and parent IDs with the real volume reference. Empty names identify
+the specified directory (including a canonical volume-root record), full paths
+override supplied references, and partial paths follow the current/working
+directory with explicit-directory overrides. A missing final leaf returns -43
+with a valid creation hint; other catalog errors clear all 70 output bytes.
+This reuses the current single-volume HFS path model, 31-byte leaf limit and
+ASCII-only case folding; broader HFS collation and multiple volumes remain open.
+Native frames preflight input name, complete output and stack result before
+popping 14 bytes; PPC narrows only the volume reference to its signed word.
+
+Primary: [FSMakeFSSpec, Inside Macintosh: Files](https://dev.os9.ca/techpubs/mac/Files/Files-59.html),
+Introduction to File Management p. 1-54. Directory canonicalization is also
+consistent with Apple's parent-walking example in [Supporting Window Proxy Icons](https://dev.os9.ca/techpubs/new/ProgWMacOS8.5WindowMgr/WindowMgr.13.html).
+No native System 7 conformance run.
+
+Validation: /tmp/systemless-fsspec-tests-final.txt terminal exit 0: 65 pass,
+none failed/skipped (library 55, file-spec adapters 2, alias adapters 2, working
+directories 6). New shared cases cover nested/case-insensitive paths, parent
+traversal, working-directory overrides, full-path reference override, root and
+empty-name directory identity, long/bad names, missing parents/volumes and
+missing-leaf hints. A returned hint creates a file that then resolves as existing.
+Both real CPUs verify complete records, signed/garbage-upper-word volume inputs,
+result/stack guards, preserved unrelated registers, allocation/error state and
+installed AA52 veneer. Frame/name/destination faults preserve SP and output.
+Initial fixture compilation needed an explicit u32 directory-ID annotation; the
+corrected fixtures pass. Strict library/fixture lint passes in
+/tmp/systemless-fsspec-lint.txt; tracer build passes in
+/tmp/systemless-fsspec-build.txt. Sequential formatting/whitespace pass. No fresh
+full-integration, native, GPU-pixel or browser acceptance.
+
+Asset-backed original EV executes FSMakeFSSpec twice, returning a missing-file
+hint for Escape Velocity Prefs, and stops at AA52 selector 000E
+(FSpCreateResFile), PC 0002C8DC. Evidence: /tmp/systemless-ev-fsspec.txt,
+expected explicit unsupported-selector exit 1. The fault stack contains volume
+FFFF, parent ID 2 and the original 21-byte preferences name. Same original
+resource fork, disposable original companion volume, ten-million instruction
+bound and 640x480x8 graphics. Completed sound/timer/VBL callbacks remain zero;
+no title/menu/gameplay/audio acceptance. Marathon not replayed. Next: implement
+FSpCreateResFile using shared catalog/resource-fork ownership, Finder metadata,
+ResError and both ABI adapters, then replay EV. Full rebuild and complete wgpu
+text rendering remain active requirements.
