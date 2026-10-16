@@ -11,7 +11,13 @@ const CODE: u32 = 0x51000000;
 fn app() -> LoadedApplication {
     let f = support::pef_program(
         &[0x4e800020],
-        &[b"InsTime", b"PrimeTime", b"RmvTime", b"WaitNextEvent"],
+        &[
+            b"InsTime",
+            b"PrimeTime",
+            b"RmvTime",
+            b"WaitNextEvent",
+            b"Delay",
+        ],
         32,
     );
     let mut a = LoadedApplication::pef(&f.bytes, None).unwrap();
@@ -20,6 +26,7 @@ fn app() -> LoadedApplication {
         .map(TASK, vec![0; 4096], Permissions::RW)
         .unwrap();
     let mut code = vec![0; 512];
+    code[8..12].copy_from_slice(&[0xa0, 0x3b, 0x60, 0xfe]);
     code[..8].copy_from_slice(&[0xa0, 0x58, 0xa0, 0x5a, 0xa0, 0x59, 0x60, 0xfe]);
     for (i, w) in [0x52a9u16, 24, 0x2349, 28, 0x7007, 0x7809, 0x4e75]
         .into_iter()
@@ -411,5 +418,188 @@ fn invalid_callback_entries_and_descriptors_fault_before_expiration_or_stack_wri
         assert_eq!(a.runtime.cpu.pc(), pc);
         assert_eq!(a.runtime.services.completed_timer_callbacks, 0);
         assert!(a.runtime.advance(1).is_err());
+    }
+}
+
+fn begin_delay(
+    a: &mut LoadedApplication,
+    arch: Architecture,
+    ticks: u32,
+    destination: GuestPtr,
+) -> systemless_future::Result<Stop> {
+    let stack = STACK_BASE + 0x8000;
+    if arch == Architecture::M68k {
+        a.runtime.cpu = Cpu::new(arch, CODE + 8, stack);
+        let Cpu::M68k(c) = &mut a.runtime.cpu else {
+            panic!()
+        };
+        for i in 0..15 {
+            c.dar[i] = 0xabc00000 + i as u32;
+        }
+        c.dar[8] = ticks;
+        c.set_sr(0x0715);
+    } else {
+        let tv = a
+            .runtime
+            .memory
+            .u32(GuestPtr(a.info.toc_or_a5 + 8 + 4 * 4))
+            .unwrap();
+        let pc = a.runtime.memory.u32(GuestPtr(tv)).unwrap();
+        a.runtime.cpu = Cpu::new(arch, pc, stack);
+        let Cpu::PowerPc(c) = &mut a.runtime.cpu else {
+            panic!()
+        };
+        for i in 2..32 {
+            c.gpr[i] = 0xabc00000 + i as u32;
+        }
+        c.gpr[3] = ticks;
+        c.gpr[4] = destination.0;
+        c.lr = CODE + 256;
+    }
+    a.runtime.advance(1)
+}
+
+#[test]
+fn delay_waits_without_spinning_returns_wrapped_final_ticks_and_preserves_caller_state() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        for ticks in [0, 5, 0x80000000, u32::MAX] {
+            let mut a = app();
+            let output = GuestPtr(TASK.0 + 512);
+            a.runtime.memory.write(output, &[0xa5; 8]).unwrap();
+            a.runtime
+                .memory
+                .write(GuestPtr(0x16a), &0xffff_fffeu32.to_be_bytes())
+                .unwrap();
+            let stop = begin_delay(&mut a, arch, ticks, output).unwrap();
+            if ticks == 0 {
+                assert_eq!(stop, Stop::Budget);
+            } else {
+                assert_eq!(stop, Stop::Waiting { ticks });
+                let instructions = a.runtime.instructions;
+                assert_eq!(a.runtime.advance(100).unwrap(), stop);
+                assert_eq!(a.runtime.instructions, instructions);
+                assert_eq!(a.runtime.memory.read(output, 8).unwrap(), [0xa5; 8]);
+                a.runtime.elapse_ticks(ticks - 1).unwrap();
+                assert_eq!(a.runtime.advance(100).unwrap(), Stop::Waiting { ticks: 1 });
+                a.runtime.elapse_ticks(1).unwrap();
+                assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+            }
+            let expected = 0xffff_fffeu32.wrapping_add(ticks);
+            match &a.runtime.cpu {
+                Cpu::M68k(c) => {
+                    assert_eq!(c.get_sr(), 0x0715);
+                    assert_eq!(c.dar[0], expected);
+                    for i in 1..15 {
+                        assert_eq!(c.dar[i], if i == 8 { ticks } else { 0xabc00000 + i as u32 });
+                    }
+                    assert_eq!(a.runtime.memory.read(output, 8).unwrap(), [0xa5; 8]);
+                }
+                Cpu::PowerPc(c) => {
+                    for i in 2..32 {
+                        assert_eq!(
+                            c.gpr[i],
+                            match i {
+                                3 => ticks,
+                                4 => output.0,
+                                _ => 0xabc00000 + i as u32,
+                            }
+                        );
+                    }
+                    assert_eq!(a.runtime.memory.u32(output).unwrap(), expected);
+                    assert_eq!(
+                        a.runtime.memory.read(GuestPtr(output.0 + 4), 4).unwrap(),
+                        [0xa5; 4]
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn delay_allows_timer_callbacks_and_keeps_the_original_deadline() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        callback(&mut a, arch);
+        call(&mut a, arch, Action::Insert);
+        call(&mut a, arch, Action::Prime(10));
+        assert_eq!(
+            begin_delay(&mut a, arch, 5, GuestPtr(TASK.0 + 512)).unwrap(),
+            Stop::Waiting { ticks: 1 }
+        );
+        a.runtime.elapse_ticks(1).unwrap();
+        assert_eq!(a.runtime.advance(100).unwrap(), Stop::Waiting { ticks: 4 });
+        assert_eq!(a.runtime.services.completed_timer_callbacks, 1);
+        assert_eq!(a.runtime.memory.u32(GuestPtr(TASK.0 + 24)).unwrap(), 1);
+        a.runtime.elapse_ticks(4).unwrap();
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+        assert_eq!(a.runtime.memory.u32(GuestPtr(0x16a)).unwrap(), 5);
+        if let Cpu::M68k(c) = &a.runtime.cpu {
+            assert_eq!(c.dar[0], 5);
+        } else {
+            assert_eq!(a.runtime.memory.u32(GuestPtr(TASK.0 + 512)).unwrap(), 5);
+        }
+    }
+}
+
+#[test]
+fn delay_in_a_timer_callback_suspends_and_ages_the_outer_wait() {
+    let mut a = app();
+    let code = GuestPtr(0x54000000);
+    a.runtime
+        .memory
+        .map(
+            code,
+            vec![
+                0x52, 0xa9, 0, 24, 0x20, 0x7c, 0, 0, 0, 2, 0xa0, 0x3b, 0x4e, 0x75,
+            ],
+            Permissions::RX,
+        )
+        .unwrap();
+    a.runtime
+        .memory
+        .write(GuestPtr(TASK.0 + 6), &code.0.to_be_bytes())
+        .unwrap();
+    call(&mut a, Architecture::M68k, Action::Insert);
+    call(&mut a, Architecture::M68k, Action::Prime(10));
+    assert_eq!(
+        begin_delay(&mut a, Architecture::M68k, 5, GuestPtr(0)).unwrap(),
+        Stop::Waiting { ticks: 1 }
+    );
+    a.runtime.elapse_ticks(1).unwrap();
+    assert_eq!(a.runtime.advance(100).unwrap(), Stop::Waiting { ticks: 2 });
+    assert_eq!(a.runtime.services.completed_timer_callbacks, 0);
+    a.runtime.elapse_ticks(2).unwrap();
+    assert_eq!(a.runtime.advance(100).unwrap(), Stop::Waiting { ticks: 2 });
+    assert_eq!(a.runtime.services.completed_timer_callbacks, 1);
+    a.runtime.elapse_ticks(2).unwrap();
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::M68k(c) = &a.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(c.dar[0], 5);
+    assert_eq!(c.dar[8], 5);
+}
+
+#[test]
+fn delay_rejects_invalid_ppc_output_before_waiting_or_writing() {
+    for destination in [
+        GuestPtr(0),
+        GuestPtr(0x53000000),
+        GuestPtr(0x53000002),
+        GuestPtr(0x55000000),
+    ] {
+        let mut a = app();
+        a.runtime
+            .memory
+            .map(GuestPtr(0x53000000), vec![0xa5; 4], Permissions::RX)
+            .unwrap();
+        let before = a.runtime.memory.u32(GuestPtr(0x16a)).unwrap();
+        assert!(begin_delay(&mut a, Architecture::PowerPc, 5, destination).is_err());
+        assert_eq!(a.runtime.memory.u32(GuestPtr(0x16a)).unwrap(), before);
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(0x53000000), 4).unwrap(),
+            [0xa5; 4]
+        );
     }
 }

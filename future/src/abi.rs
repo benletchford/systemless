@@ -199,6 +199,7 @@ pub enum Service {
     SetJump,
     LongJump,
     TickCount,
+    Delay,
     SetToolboxTrapAddress,
     GetOSTrapAddress,
     GetToolboxTrapAddress,
@@ -615,6 +616,7 @@ impl Abi {
             }
             b"NGetTrapAddress" => Some(Service::NGetTrapAddress),
             b"TickCount" => Some(Service::TickCount),
+            b"Delay" => Some(Service::Delay),
             b"ExitToShell" => Some(Service::ExitToShell),
             b"NewPtr" => Some(Service::NewPointer(false)),
             b"NewPtrClear" => Some(Service::NewPointer(true)),
@@ -2345,6 +2347,13 @@ impl Abi {
                 c.dar[15] = next;
                 Ok((Call::Device(crate::devices::Op::Client(id)), Reply::None))
             }
+            0xa03b => Ok((
+                Call::Delay {
+                    ticks: c.dar[8],
+                    final_ticks: None,
+                },
+                Reply::M68kD0,
+            )),
             0xa02d => Ok((Call::SetApplLimit(c.dar[8]), Reply::M68kD0)),
             0xa036 => Ok((Call::MoreMasters, Reply::M68kD0)),
             0xa063 => Ok((Call::MaxApplZone, Reply::M68kD0)),
@@ -4298,6 +4307,10 @@ impl Abi {
                     || (service == Service::NGetTrapAddress && c.gpr[4] as u16 != 0),
             },
             Service::TickCount => Call::Ticks,
+            Service::Delay => Call::Delay {
+                ticks: c.gpr[3],
+                final_ticks: Some(GuestPtr(c.gpr[4])),
+            },
             Service::ExitToShell => Call::Exit(0),
             Service::NewPointer(clear) => Call::NewPointer {
                 size: c.gpr[3],
@@ -4755,6 +4768,7 @@ impl Abi {
                         | Service::DisposeHandle
                         | Service::FlushEvents
                         | Service::SetToolboxTrapAddress
+                        | Service::Delay
                         | Service::SetEventMask
                 )
             {

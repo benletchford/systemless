@@ -72,7 +72,14 @@ struct SoundWait {
     command: [u8; 8],
     reply: crate::abi::Reply,
 }
+struct DelayWait {
+    saved_sr: Option<u16>,
+    remaining: u32,
+    final_ticks: Option<GuestPtr>,
+    reply: crate::abi::Reply,
+}
 struct SuspendedWaits {
+    delay: Option<DelayWait>,
     event: Option<EventWait>,
     control: Option<ControlWait>,
     menu: Option<MenuWait>,
@@ -108,6 +115,7 @@ pub struct Runtime {
     pub abi: crate::abi::Abi,
     pub process: crate::process::Process,
     continuations: Vec<Continuation>,
+    delay_wait: Option<DelayWait>,
     event_wait: Option<EventWait>,
     sound_wait: Option<SoundWait>,
     play_wait: Option<ResourcePlayWait>,
@@ -134,6 +142,7 @@ impl Runtime {
             abi: crate::abi::Abi::fixtures(),
             process: crate::process::Process::default(),
             continuations: Vec::new(),
+            delay_wait: None,
             event_wait: None,
             sound_wait: None,
             play_wait: None,
@@ -267,10 +276,16 @@ impl Runtime {
             | Resume::Timer { waits }
             | Resume::Retrace { waits, .. } = &mut continuation.resume
             {
+                if let Some(wait) = &mut waits.delay {
+                    wait.remaining = wait.remaining.saturating_sub(ticks);
+                }
                 if let Some(wait) = &mut waits.event {
                     wait.remaining = wait.remaining.saturating_sub(ticks);
                 }
             }
+        }
+        if let Some(wait) = &mut self.delay_wait {
+            wait.remaining = wait.remaining.saturating_sub(ticks);
         }
         if let Some(wait) = &mut self.event_wait {
             wait.remaining = wait.remaining.saturating_sub(ticks);
@@ -1627,6 +1642,33 @@ impl Runtime {
                             let p = ports.current(&self.memory)?;
                             self.memory.write(GuestPtr(p.0 + 56), &mode.to_be_bytes())?;
                         }
+                        Call::Delay { ticks, final_ticks } => {
+                            self.tick_count()?;
+                            if let Some(p) = final_ticks {
+                                if p.0 == 0 {
+                                    return Err(Error::Cpu(
+                                        "nil Delay finalTicks destination".into(),
+                                    ));
+                                }
+                                self.memory.validate_write(p, 4)?;
+                            }
+                            let saved_sr = if let Cpu::M68k(c) = &mut self.cpu {
+                                let sr = c.get_sr();
+                                c.set_sr(sr & !0x0700);
+                                Some(sr)
+                            } else {
+                                None
+                            };
+                            let wait = DelayWait {
+                                saved_sr,
+                                remaining: ticks,
+                                final_ticks,
+                                reply,
+                            };
+                            if let Some(stop) = self.poll_delay(wait)? {
+                                return Ok(stop);
+                            }
+                        }
                         Call::WaitEvent {
                             mask,
                             destination,
@@ -2483,6 +2525,7 @@ impl Runtime {
                         | Call::WindowVisibility(_)
                         | Call::RegionRecording(_)
                         | Call::Polygon(_)
+                        | Call::Delay { .. }
                         | Call::WaitEvent { .. }
                         | Call::PostEvent { .. }
                         | Call::OSEvent { .. }
@@ -2616,7 +2659,28 @@ impl Runtime {
         }
         Ok(Stop::Budget)
     }
+    fn poll_delay(&mut self, wait: DelayWait) -> Result<Option<Stop>> {
+        if wait.remaining != 0 {
+            let ticks = wait.remaining;
+            self.delay_wait = Some(wait);
+            return Ok(Some(Stop::Waiting { ticks }));
+        }
+        let now = self.tick_count()?;
+        if let Some(p) = wait.final_ticks {
+            self.memory.write(p, &now.to_be_bytes())?;
+        }
+        if let (Some(sr), Cpu::M68k(c)) = (wait.saved_sr, &mut self.cpu) {
+            c.set_sr(sr);
+        }
+        wait.reply.apply(&mut self.cpu, &mut self.memory, now, 0)?;
+        Ok(None)
+    }
     fn poll_waits(&mut self) -> Result<Option<Stop>> {
+        if let Some(wait) = self.delay_wait.take() {
+            if let Some(stop) = self.poll_delay(wait)? {
+                return Ok(Some(stop));
+            }
+        }
         if let Some(wait) = self.standard_file_wait.take() {
             if let Some(stop) = self.poll_standard_file(wait)? {
                 return Ok(Some(stop));
@@ -2689,6 +2753,7 @@ impl Runtime {
     }
     fn suspend_waits(&mut self) -> Box<SuspendedWaits> {
         Box::new(SuspendedWaits {
+            delay: self.delay_wait.take(),
             event: self.event_wait.take(),
             control: self.control_wait.take(),
             menu: self.menu_wait.take(),
@@ -2698,6 +2763,7 @@ impl Runtime {
         })
     }
     fn restore_waits(&mut self, waits: SuspendedWaits) {
+        self.delay_wait = waits.delay;
         self.event_wait = waits.event;
         self.control_wait = waits.control;
         self.menu_wait = waits.menu;

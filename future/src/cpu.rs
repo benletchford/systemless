@@ -263,6 +263,10 @@ pub enum Call {
         b: u32,
         destination: u32,
     },
+    Delay {
+        ticks: u32,
+        final_ticks: Option<GuestPtr>,
+    },
     WaitEvent {
         mask: u16,
         destination: GuestPtr,

@@ -3828,3 +3828,16 @@ Saved volume /tmp/systemless-ev-count-saved.slv (7,239,400bytes),
 SHA256 c641fc677f625767a163d645d11a9c25e6838bf9a911615781de467fef9c17ec,
 passes independent CRC/catalog/fork validation against ev-extended-saved:
 preferences38->39 only identity change, all metadata/forks and companions intact.
+
+
+### EV: resumable Delay checkpoint
+
+Original EV completes five Delay(2) calls with five advances of two virtual ticks,
+then proceeds through more picture/device/color drawing. It stops at unsupported
+QDExtensions $AB1D selector00040001 (LockPixels), PC0002FA34. Trace
+/tmp/systemless-ev-delay.txt exits1; no callbacks, visible UI/audio/gameplay claim.
+Input ev-count-saved remains intact. Output /tmp/systemless-ev-delay-saved.slv,
+7,239,400bytes, SHA256
+7cac08cecd3714a4d628cb3cb895ad4b594db28dfe1908ffba8ca876f9500e6e,
+passes independent CRC/catalog/fork verification: preferences39->40 is the only
+identity change, all metadata/fork bytes and companions remain identical.

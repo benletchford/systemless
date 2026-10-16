@@ -8081,3 +8081,57 @@ cases and prior open/selection/writeback/rollback behavior. Scoped lint67027,
 tracer build18938, sequential changed-file formatting and whitespace all pass.
 Original EV replay78243 is terminal at the documented Delay boundary. No live
 validation handles remain. Full rebuild, both games and GPU text stay active.
+
+
+## Shared resumable Delay
+
+Inside Macintosh Volume II, OS Utilities/Delay (II-384), specifies a tick-duration
+wait and completion TickCount, with interrupts enabled. Primary text:
+https://puyoman.net/documentation/Inside_Macintosh.pdf.
+The unsigned duration follows the OSUtils interface; full u32 durations are
+retained instead of treating high-bit values as negative/immediate. Native $A03B
+reads A0 and replies in D0 without consuming a Pascal stack frame. PPC Delay
+reads duration r3 and finalTicks pointer r4, validates four writable bytes before
+waiting and writes completion ticks; it is a procedure and preserves r3.
+Nil/unmapped/short/read-only output explicitly faults.
+
+The shared runtime now owns DelayWait, yielding Stop::Waiting without a CPU spin
+or host sleep. Host-driven elapse_ticks and the existing instruction clock age
+remaining duration, including copies suspended during timer/sound/VBL callbacks.
+Wait hints retain existing timer/retrace deadline clipping. The wait can resume
+across counter wrap; completion reports the actual shared TickCount, not a
+precomputed deadline. Native waits enable interrupt delivery and restore caller
+status on completion. Callback-local Delay has its own wait while the outer
+countdown ages, using the existing whole-CPU continuation model. CPU and memory
+fault semantics remain explicit; no default-port or game-specific bypass.
+
+New timer fixtures cover both CPU routes, zero/five/high-bit/max durations,
+no-spin polling, partial elapsed time, wrapped completion, result guards and
+caller registers; a timer interrupts masked native Delay; and a timer callback
+itself delays while the outer wait continues aging. Initial validation log
+/tmp/systemless-delay-tests.txt precedes the final interrupt-mask addition;
+final acceptance must use /tmp/systemless-delay-final-tests.txt. The first test
+command referenced nonexistent sound_callbacks and exited101 without compiling;
+corrected commands use the real sound_queue target.
+
+Original EV replay13151 terminates exit1 in /tmp/systemless-ev-delay.txt after
+five Delay(2) calls and five host advances of two virtual ticks. It passes the
+prior Delay trap and performs further picture/device/color operations, stopping
+at QDExtensions $AB1D selector00040001 (LockPixels), PC0002FA34. Callback counts
+remain0; this does not prove original-game audio, visible UI or gameplay.
+Final tracer84814 and scoped lint88285 exit0, logs
+/tmp/systemless-delay-final-tracer-build.txt and /tmp/systemless-delay-lint.txt.
+Independent volume verification passes preferences39->40, metadata/fork bytes and
+companions unchanged. /tmp/systemless-ev-delay-saved.slv7,239,400bytes,
+SHA256 7cac08cecd3714a4d628cb3cb895ad4b594db28dfe1908ffba8ca876f9500e6e.
+Initial regression93285 exit0 (30tests); final regression23264 must still be
+polled because it verifies the final interrupt-mask behavior. Next original-app
+slice is LockPixels/UnlockPixels and coherent offscreen pixel ownership.
+
+Final regression23264 completed exit0:7retrace +8sound-queue +11timers +4waiting
+=30passed,0ignored, /tmp/systemless-delay-final-tests.txt. All four new Delay
+cases pass against final source, including status restoration and nested waits.
+Final tracer build84814, scoped lint88285, sequential changed-file formatting,
+whitespace and original EV snapshot verification all pass. All tracked validation
+and replay handles are terminal. Full rebuild, both games, native/browser
+acceptance and complete GPU text/library integration remain active.
