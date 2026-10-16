@@ -10601,3 +10601,67 @@ source parser and result, and diagnostic build/lint/allocator logs. The old
 zero-test filter is not a pass. This milestone identifies and bounds the former
 processing region and exposes a concrete new failure; full rebuild, GPU text
 production integration and both games' playability remain unverified.
+
+
+### Original Marathon: framebuffer overrun precedes the shade fault (2026-10-17)
+
+The existing 23M diagnostic replays identify the producer of the bad lookup base.
+This is a diagnosis milestone, with no runtime behavior change or playability
+claim. Each replay uses the unchanged original resource fork and companions;
+watch/trace diagnostics observe execution without patching guest state.
+
+1. At PC0102516E, the guest writes FFFCC1A4 into the line record at000653AA.
+   Its ambient-light input at00790F86 is0D0D0D0D. The shift count5 and table
+   count32 remain correct. The arithmetic explains the pointer: shift right11,
+   narrow to signed16 bits (A1A1), sign extend and shift left8, then add005B20A4.
+   This does not establish a CPU shift or shading-algorithm defect.
+2. PC01020612 copies that ambient value from light1 at00026B2E. The light array
+   base is00026AFC, entries have stride32 and ambient is at entry+18.
+3. Earlier, PC01026096/98/9A/9C writes repeated pixel bytes0D through destination
+   A2, including00026B20 through00026B30. The live instruction window captures
+   these stores at CPU22,881,770 onward. Pixel rendering corrupts the light array
+   before its ambient value feeds the invalid shade lookup.
+4. The pixels handle00010C78 starts at448*272=121856 bytes. The game resizes it
+   to224*136=30464 bytes. Its backing range is00018E54..00020554 (end exclusive),
+   but the renderer's row pointers remain448 bytes apart: row125=00026914,
+   row126=00026AD4. Row126 plus x58 writes into the lighting allocation.
+
+Original CODE18 explains the conflicting state. The availability probe compares
+Toolbox trapAB03 with Unimplemented (A89F); AB03 is absent from the current shared
+trap table, so the game selects its custom pre-32-bit-QuickDraw world path.
+That path creates a device/PixMap and calls OpenCPort, which correctly creates a
+separate port PixMap. Its custom resize at01034FF0 updates the pixel handle,
+device rectangle, device PixMap bounds/rowBytes, visible region and portRect.
+Inspection through the function tail010351CC confirms no corresponding update
+of the separate port PixMap's rowBytes/bounds. The game's pixel-map accessor
+returns the port PixMap; its lock helper separately updates both base addresses.
+This explains how a newly smaller image retains the old port stride.
+
+Apple's [QD13](https://leopard-adc.pepas.com/technotes/qd/qd_13.html) documents
+OpenCPort's separate PixMap copy. Apple's develop article
+[Realistic Color for Real-World Applications](https://vintageapple.org/develop/pdf/develop-01_9001_January_1990.pdf)
+identifies AB03 as the 32-bit QuickDraw availability probe. These are primary
+Apple documentation, distinct from a preserved-Systemless comparison. Do not
+change OpenCPort to alias the device PixMap, pad image allocations to hide the
+write, clamp the bad shade index, patch original code, or advertise AB03 merely
+to force the game to choose an unimplemented GWorld path.
+
+Next executable slice: implement genuine shared offscreen-world ownership,
+creation/update/disposal, current-world/device selection and pixel-map queries,
+with existing pixel locking and wgpu synchronization. Verify native Pascal and
+PPC adapters, resized image extents/stride coherence, rollback and owned-object
+lifetime before advertising the corresponding capability. Use QDOffscreen.h
+from Universal Interfaces3.4 and Inside Macintosh chapter6 for exact contracts.
+Then replay unchanged Marathon through the established22.89M boundary and
+inspect the resulting image and original-companion verifier. Advancing beyond
+the fault alone will not prove playback or gameplay.
+
+Ignored private evidence is preserved under
+future/target/private-originals/marathon/evidence/2026-10-17- with suffixes
+lookup-writer.txt, shade-arithmetic.txt, shade-input-writer.txt,
+light-state-writer.txt and render-bitmap-init.txt. The early bitmap-init replay
+ends at its1M budget before the row-header initialization and provides no proof
+about the later header. The other four replays reproduce the known fault;
+their budgets are diagnostic bounds, not passes. No new test pass, GPU output
+acceptance, EV replay or performance measurement is claimed by this record.
+Full rebuild, complete GPU text/library integration and both games remain open.
