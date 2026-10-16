@@ -22,6 +22,7 @@ pub struct ResourceInfo {
 }
 #[derive(Default)]
 pub struct Process {
+    pub numerics: crate::numerics::Numerics,
     pub timers: crate::timers::Timers,
     pub retrace: crate::retrace::Retrace,
     pub(crate) display: crate::display::Display,

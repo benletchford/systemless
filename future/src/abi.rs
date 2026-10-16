@@ -1669,6 +1669,26 @@ impl Abi {
                 c.dar[15] = next;
                 Ok((Call::Device(op), Reply::StackLong(GuestPtr(next))))
             }
+            0xa9ec => {
+                let selector = memory.u16(GuestPtr(sp))?;
+                if selector != 0x001e {
+                    return Err(Error::Cpu(format!(
+                        "unsupported Elems68K selector {selector:04x}"
+                    )));
+                }
+                let pointer = GuestPtr(
+                    memory
+                        .u32(GuestPtr(sp.checked_add(2).ok_or_else(|| {
+                            Error::Cpu("Elems68K stack overflow".into())
+                        })?))?,
+                );
+                memory.read(pointer, 10)?;
+                memory.validate_write(pointer, 10)?;
+                c.dar[15] = sp
+                    .checked_add(6)
+                    .ok_or_else(|| Error::Cpu("Elems68K stack overflow".into()))?;
+                Ok((Call::AtanExtended(pointer), Reply::None))
+            }
             0xaa24 | 0xaa30 => {
                 let device = memory.u32(GuestPtr(sp))?;
                 c.dar[15] = sp

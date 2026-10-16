@@ -12,6 +12,7 @@ pub enum Architecture {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Call {
+    AtanExtended(GuestPtr),
     Timer(crate::timers::Op),
     Retrace(crate::retrace::Op),
     RetraceHeader,

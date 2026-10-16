@@ -2580,3 +2580,30 @@ metadata view, so a caller can initialize a port before attaching its offscreen
 pixel buffer. Source/destination drawing still unpacks checked guest storage and
 fails on an inaccessible buffer. Both CPU adapters exercise this initialization
 order; a unit regression proves nil storage remains invalid for actual drawing.
+
+
+### Shared software numerics
+
+Process owns a CPU-independent Numerics service. The native Elems68K adapter
+recognizes FATANX selector $001E, reads the destination by address, validates ten
+writable bytes before popping its six-byte frame and invokes shared extended
+arctangent. No CPU registers are part of numeric evaluation. Unsupported selectors
+fault explicitly. PPC math imports are not yet connected to this service.
+
+The initial operation uses the pinned MIT astro-float-num 0.3.7 library with
+optional random/serde features disabled (four added lock entries, no upgrades).
+It accepts the 10-byte sign/exponent plus explicit 64-bit significand directly,
+computes nearest-even at 64-bit precision, and retains low bits that f64 would
+lose. The dependency is pure Rust; no host C math or legacy runtime is used.
+Signed zeros, infinities, quiet/signaling NaN payloads and subnormals have explicit
+handling. Tiny inputs round back to themselves; noncanonical unnormal and
+pseudo-denormal operands fault. Process status retains inexact/underflow/invalid,
+but public SANE environment get/set, alternate rounding/precision, exception halt
+handlers, FP68K arithmetic/conversions and other elementary functions remain
+unfinished. This does not advertise complete SANE conformance or PPC math parity.
+The 32-bit word adapter is source-defined but a wasm target build is unverified.
+
+Primary interface: pinned MPW SANEMacs.a FATANX / FOATANX and Apple Numerics Manual,
+2nd edition, chapter 24, one-address elementary functions. Library API evaluation:
+https://docs.rs/astro-float-num/0.3.7/astro_float_num/struct.BigFloat.html
+https://github.com/stencillogic/astro-float

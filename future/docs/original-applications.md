@@ -2184,3 +2184,37 @@ replayed and remains at its previously verified ProtectEntry boundary. Neither
 original game is playable. Next: document and implement the actual SANE elementary
 operation, numeric representation/exception behavior and ABI, then continue
 Marathon. Keep the full rebuild active and PR in draft.
+
+
+## Extended arctangent checkpoint (2026-10-16)
+
+Implemented shared default-nearest SANE FATANX ($A9EC, selector $001E) with the
+pinned astro-float-num 0.3.7 pure-Rust engine. Native ABI marshals a ten-byte
+extended destination, preflights memory and pops six bytes. Numeric evaluation
+preserves all 64 significand bits; signed zero, infinity, NaN payload quieting and
+subnormal inputs are explicit. Process sticky status is retained, but public SANE
+environment/alternate rounding/precision/halt handlers, other selectors, FP68K
+and PPC math imports remain unfinished. Noncanonical operands fault explicitly.
+No complete SANE capability or CPU math parity is advertised.
+
+Final acceptance: 52 CPU/service checks pass, zero failed/ignored (39 library,
+two numeric integration, seven timer and four trap patch tests).
+/tmp/systemless-sane-acceptance.txt, terminal exit 0. The new numeric check proves
+atan(1) and atan(1 + 2^-63) differ in the correct lowest output bit. Signed and
+special cases, native register/frame preservation, bad destinations and unsupported
+selectors are tested. Strict Rust 1.99 all-target lint passes:
+/tmp/systemless-sane-lint-final.txt. Rust 1.93 library check passes:
+/tmp/systemless-sane-msrv.txt. Sequential changed-file formatting and whitespace
+checks pass. Initial compilation/lint errors were corrected and superseded; they
+are not acceptance results. No full-suite, GPU suite or wasm build is claimed.
+
+Original Marathon consumes the extended pi/4 arctangent and reaches FP68K /
+Pack4 ($A9EB), PC $0101DC00, selector $0004 (FMULX), destination $0080FE10,
+source $0080FE1A. Pinned SANEMacs.a confirms FATANX and FMULX:
+/tmp/systemless-sane-sdk-atan.txt and /tmp/systemless-sane-sdk-multiply.txt.
+Evidence: /tmp/systemless-marathon-sane-atan.txt, missing-service exit 1;
+completed timer=1, sound=0, VBL=0. Native title/menu/gameplay and audible output
+remain unverified. EV was not replayed and its last boundary is ProtectEntry.
+Neither original is playable. Next: shared FP68K extended arithmetic and conversion
+with correct rounding/range/exception state, then continue Marathon startup.
+Full rebuild remains active; PR stays draft.

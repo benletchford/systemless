@@ -732,6 +732,12 @@ impl Runtime {
                             result?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
+                        Call::AtanExtended(pointer) => {
+                            self.process
+                                .numerics
+                                .atan_extended(&mut self.memory, pointer)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
                         Call::Color(op) => {
                             let mut manager = std::mem::take(&mut self.process.color);
                             let result = manager.call(&mut self.memory, &mut self.process, op);
@@ -2118,6 +2124,7 @@ impl Runtime {
                         | Call::WorkingDirectory { .. }
                         | Call::Retrace(_)
                         | Call::RetraceHeader
+                        | Call::AtanExtended(_)
                         | Call::Timer(_)
                         | Call::FcbInfo(_) => {
                             return Err(Error::Cpu("Macintosh service on fixture route".into()))
