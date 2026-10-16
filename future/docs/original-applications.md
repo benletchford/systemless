@@ -4820,3 +4820,25 @@ catalog/pilot/preferences/alias/script/companion verifications. Neither game's
 playability or the complete rebuild/GPU text acceptance is proven.
 Private evidence:marathon/evidence/2026-10-17-indresource* and
  ev/evidence/2026-10-17-indresource.*.
+
+
+### Bitmap remapping is finite; original HUD and next lookup fault (2026-10-17)
+
+The earlier8M/16M region corresponds to the original game's bitmap remapping,
+corroborated by published MARATHON1 source. New opt-in CPU diagnostics reproduce
+both earlier frames/volumes and show different live collection/bitmap objects:
+collection132/bitmap17 at8M, collection144/bitmap12 at16M. An independent parser
+validates all1026original bitmap bounds and counts1,947,855pixel bytes in the
+twelve loaded collections. See progress.md for source revision and exact limits.
+This justifies one32M follow-up; instruction-mode timing is not gameplay speed.
+
+That follow-up reaches an in-game weapon/HUD and scanner, then faults at
+CPU22,890,015,PC0102605C, reading FFFCC1AF. The inspected frame SHA256 is
+`7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e`.
+It is not a verified3D scene or playable demo. Static code loads an invalid
+lookup base FFFCC1A4 from field000653AA before the byte read. The next concrete
+step is tracing that field's writer, not extending the execution budget.
+The committed volume independently preserves originals and the same first-run
+preferences addition, SHA256
+`e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+Private evidence:marathon/evidence/2026-10-17-remap-* and shape-bounds files.

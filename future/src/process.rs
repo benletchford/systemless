@@ -197,6 +197,17 @@ impl Process {
             |heap| heap.free.values().copied().sum(),
         )
     }
+    /// Read-only allocator extent for diagnostics. This physical extent can
+    /// include alignment padding; it does not establish a logical object size.
+    pub fn allocation_containing(&self, pointer: GuestPtr) -> Option<(GuestPtr, u32)> {
+        let (&base, &size) = self
+            .heap
+            .as_ref()?
+            .allocated
+            .range(..=pointer.0)
+            .next_back()?;
+        (pointer.0 - base < size).then_some((GuestPtr(base), size))
+    }
     fn heap_capacity(&self) -> u32 {
         self.reservation.map_or(HEAP_SIZE, |r| r.1)
     }

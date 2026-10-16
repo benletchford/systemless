@@ -10517,3 +10517,87 @@ progress counters before selecting further execution budgets or injecting input.
 Do not reinterpret instruction tracing as interactive performance evidence.
 Private evidence:2026-10-17-indresource-16m.{txt,ppm,slv}. The entire rebuild,
 full GPU text/library integration and both games remain unaccepted.
+
+
+### Identifying Marathon's bounded bitmap remapping (2026-10-17)
+
+The prior goal turn made implementation progress with ordered resource retrieval.
+This slice identifies the subsequent guest work instead of treating a black frame
+and repeated PCs as a hang. The unchanged original CODE13 segment loads at
+0101DB30; its010229E2 byte worker reads an8-bit pixel, indexes a256-byte table,
+writes the mapped byte and advances until the signed length is exhausted. Its
+caller walks either row addresses or Marathon1 signed-run streams, incrementing
+a row counter up to the bitmap's selected width/height.
+
+This disassembly matches the published engine's MARATHON1 remap_bitmap path:
+[pinned textures.cpp](https://github.com/Aleph-One-Marathon/alephone/blob/97c73d8f2892c542283ac79940cf732bb077624d/Source_Files/RenderMain/textures.cpp),
+[textures.h](https://github.com/Aleph-One-Marathon/alephone/blob/97c73d8f2892c542283ac79940cf732bb077624d/Source_Files/RenderMain/textures.h)
+and [collection_definition.h](https://github.com/Aleph-One-Marathon/alephone/blob/97c73d8f2892c542283ac79940cf732bb077624d/Source_Files/RenderMain/collection_definition.h).
+The function identification is a code/structure correspondence, not retained
+original debug-symbol evidence or independent native Macintosh execution.
+
+The tracer now supports opt-in --cpu-diagnostics at normal/fault/budget snapshots.
+It prints registers for either CPU architecture and up to256bytes for register
+values inside live physical allocator extents. The immutable extent query can
+include allocator alignment padding; it does not assert a logical object size.
+Checked reads cannot cross the reported extent. It invokes no guest service or
+callback and changes no guest state. No application-specific decoder or
+execution shortcut enters production.
+
+The repeated8M and16M runs reproduce prior instruction/PC stops, canonical frames
+and independently verified committed volumes. Live data establishes:
+
+- 8M: A2=0071F2D0, backing allocation00712128+110496; this is collection132,
+  bitmap17 at offset53672, size88x91, stride-1, column-major, depth8. The row
+  counter is5 of88 and first-row pointer0071F44E matches the original format.
+- 16M: A2=00648AC6, backing allocation00634FA4+207984 physical bytes; collection144
+  has207982logical bytes. Bitmap12 at offset80674 is129x156, stride-1,
+  column-major, depth8, row8 of129. This is a different collection and bitmap.
+
+An independent private parser checks all26original .256collections:1026bitmaps,
+4,870,553positive-run/raw pixel bytes and5,364,151encoded bytes. It validates
+collection sizes, offset tables, dimensions, depth, signed-run termination,
+row pixel limits and bounds against the next bitmap/collection end. Transparent
+rows may end without an explicit trailing skip. Bitmap data starts at
+sizeof(bitmap_definition)=30 plus four bytes per selected row, as in the published
+calculate_bitmap_origin; initial parser assumptions of26bytes and mandatory full
+row coverage were corrected against that source and the live row pointer.
+All final checks pass without modifying source assets.
+
+The twelve loaded collections contain556bitmaps and1,947,855pixel bytes. One
+byte remap uses seven guest instructions, before row/run/call overhead and the
+previous startup work. The16M limit cannot by itself establish a stall. Distinct
+live bitmaps and bounded source work justify a single32M follow-up below.
+
+Strict library/tracer Clippy passes (1m28s), tracer build passes (1m27s), and the
+existing process resize-preflight unit check passes. The initial process::tests
+filter matched zero tests and is not counted. Formatting/whitespace checks pass.
+Private parser, logs and original images remain ignored evidence; complete
+playback/gameplay, GPU text integration and the whole rebuild remain unverified.
+
+
+The quantified32M follow-up gets past bitmap remapping and faults at CPU22,890,015,
+PC0102605C, on a read atFFFCC1AF. The inspected image now contains a weapon/HUD,
+scanner and red/blue bars on a largely purple field; it is not a verified3D frame
+or playable demo. Canonical frame SHA256:
+`7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e`.
+Original companions/forks/metadata again verify unchanged with only the same
+first-run preferences, outputvolumeSHA256
+`e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+
+The fault lies in original CODE14 (base01022A10), outside the remapping routine.
+Disassembly at01026050 loads A0 from the stack, then A1 from18(A0), then reads a
+lookup byte indexed by a texel at01026058; PC reports the following instruction.
+The snapshot has A0=00065398 in a34816-byte physical allocation, and its field at
+000653AA contains FFFCC1A4, matching A1. The invalid read is11bytes beyond that
+bad base. The field's producer is not yet identified; do not guess this is a
+missing service, bad source asset, CPU bug or color-table bug without tracing it.
+Next diagnostic: watch16bytes at000653A2, capturing the writer of000653AA, with
+a23M bound around the established22.89M fault. Capture the preceding instruction
+window if needed. No larger budget or guest-state patch is justified by this fault.
+
+Private evidence:2026-10-17-remap-{8000000,16000000,32m} captures/logs, bounded
+source parser and result, and diagnostic build/lint/allocator logs. The old
+zero-test filter is not a pass. This milestone identifies and bounds the former
+processing region and exposes a concrete new failure; full rebuild, GPU text
+production integration and both games' playability remain unverified.
