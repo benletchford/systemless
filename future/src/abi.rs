@@ -256,6 +256,10 @@ pub enum Service {
     SetGWorld,
     GetGWorldPixMap,
     GetGWorldDevice,
+    GetPixelsState,
+    SetPixelsState,
+    AllowPurgePixels,
+    NoPurgePixels,
     GetPixBaseAddr,
     LockPixels,
     UnlockPixels,
@@ -751,6 +755,10 @@ impl Abi {
             b"SetGWorld" => Some(Service::SetGWorld),
             b"GetGWorldPixMap" => Some(Service::GetGWorldPixMap),
             b"GetGWorldDevice" => Some(Service::GetGWorldDevice),
+            b"GetPixelsState" => Some(Service::GetPixelsState),
+            b"SetPixelsState" => Some(Service::SetPixelsState),
+            b"AllowPurgePixels" => Some(Service::AllowPurgePixels),
+            b"NoPurgePixels" => Some(Service::NoPurgePixels),
             b"GetPixBaseAddr" => Some(Service::GetPixBaseAddr),
             b"LockPixels" => Some(Service::LockPixels),
             b"UnlockPixels" => Some(Service::UnlockPixels),
@@ -2699,6 +2707,38 @@ impl Abi {
                 };
                 c.dar[15] = next;
                 Ok((Call::GWorld(op), reply))
+            }
+            0xab1d if matches!(c.dar[0], 0x0004000b | 0x0004000c | 0x0004000d | 0x0008000e) => {
+                let selector = c.dar[0];
+                let size = if selector == 0x0008000e { 8 } else { 4 };
+                let args = memory.read(GuestPtr(sp), size)?;
+                let first = u32::from_be_bytes(args[..4].try_into().unwrap());
+                let (pixmap, action) = if selector == 0x0008000e {
+                    (
+                        u32::from_be_bytes(args[4..8].try_into().unwrap()),
+                        crate::process::PixelState::Set(first),
+                    )
+                } else {
+                    (
+                        first,
+                        match selector {
+                            0x0004000b => crate::process::PixelState::Purge(true),
+                            0x0004000c => crate::process::PixelState::Purge(false),
+                            _ => crate::process::PixelState::Get,
+                        },
+                    )
+                };
+                let next = sp
+                    .checked_add(size as u32)
+                    .ok_or_else(|| Error::Cpu("pixel state stack overflow".into()))?;
+                let reply = if selector == 0x0004000d {
+                    memory.validate_write(GuestPtr(next), 4)?;
+                    Reply::StackLong(GuestPtr(next))
+                } else {
+                    Reply::None
+                };
+                c.dar[15] = next;
+                Ok((Call::PixelState { pixmap, action }, reply))
             }
             0xab1d if c.dar[0] == 0x00040007 => {
                 let handle = memory.u32(GuestPtr(sp))?;
@@ -5041,6 +5081,18 @@ impl Abi {
             }),
             Service::GetGWorldPixMap => Call::GWorld(crate::gworld::Op::PixMap(c.gpr[3])),
             Service::GetGWorldDevice => Call::GWorld(crate::gworld::Op::Device(c.gpr[3])),
+            Service::GetPixelsState
+            | Service::SetPixelsState
+            | Service::AllowPurgePixels
+            | Service::NoPurgePixels => Call::PixelState {
+                pixmap: c.gpr[3],
+                action: match service {
+                    Service::GetPixelsState => crate::process::PixelState::Get,
+                    Service::SetPixelsState => crate::process::PixelState::Set(c.gpr[4]),
+                    Service::AllowPurgePixels => crate::process::PixelState::Purge(true),
+                    _ => crate::process::PixelState::Purge(false),
+                },
+            },
             Service::GetPixBaseAddr => Call::PixelBase(c.gpr[3]),
             Service::LockPixels | Service::UnlockPixels => Call::Pixels {
                 pixmap: c.gpr[3],
@@ -5454,6 +5506,9 @@ impl Abi {
                         | Service::DisposeGWorld
                         | Service::GetGWorld
                         | Service::SetGWorld
+                        | Service::SetPixelsState
+                        | Service::AllowPurgePixels
+                        | Service::NoPurgePixels
                         | Service::UnlockPixels
                         | Service::Delay
                         | Service::SetEventMask

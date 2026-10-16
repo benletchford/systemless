@@ -2124,6 +2124,12 @@ impl Runtime {
                             self.process.gworlds = manager;
                             reply.apply(&mut self.cpu, &mut self.memory, result?, 0)?;
                         }
+                        Call::PixelState { pixmap, action } => {
+                            let state =
+                                self.process
+                                    .pixels_state(&mut self.memory, pixmap, action)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, state, 0)?;
+                        }
                         Call::PixelBase(pixmap) => {
                             let base = self.process.pixel_base(&self.memory, pixmap)?;
                             reply.apply(&mut self.cpu, &mut self.memory, base, 0)?;
@@ -2812,6 +2818,7 @@ impl Runtime {
                         | Call::CIcon(_)
                         | Call::PixPat(_)
                         | Call::GWorld(_)
+                        | Call::PixelState { .. }
                         | Call::PixelBase(_)
                         | Call::Pixels { .. }
                         | Call::CountResources { .. }

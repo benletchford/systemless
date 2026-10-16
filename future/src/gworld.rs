@@ -218,9 +218,9 @@ impl Manager {
                 if !matches!(depth, 0 | 1 | 2 | 4 | 8 | 16 | 32) {
                     return Ok((-157i32) as u32);
                 }
-                if matches!(depth, 16 | 32) || flags & !10 != 0 {
+                if matches!(depth, 16 | 32) || flags & !11 != 0 {
                     return Err(bad(
-                        "direct-color and purgeable/temporary GWorld creation are not implemented",
+                        "direct-color and temporary/hardware GWorld creation are not implemented",
                     ));
                 }
                 m.validate_write(ports.current_slot, 4)?;
@@ -279,6 +279,9 @@ impl Manager {
                     image = p.new_handle(m, row * height as u32, true)?;
                     if image == 0 {
                         return Ok(None);
+                    }
+                    if flags & 1 != 0 {
+                        p.set_handle_attribute(m, image, false, true)?;
                     }
                     new_port = p.new_pointer(m, 108, true)?;
                     if new_port == 0 {

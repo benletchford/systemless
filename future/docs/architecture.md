@@ -3986,7 +3986,8 @@ preserves the caller's current port/device. Selection preflights both writes;
 an offscreen world's associated device overrides the caller's device argument.
 Disposal validates port attachments and detached-device releases before freeing
 anything. Current-world disposal, locked disposal, direct-color worlds and
-purgeable/temporary allocation remain explicit unsupported operations.
+temporary allocation remain explicit unsupported operations. Purgeable creation and
+pixel-state management are implemented by the later slice below.
 
 NewGWorld/UpdateGWorld flags and signatures are checked against Apple's Universal
 Interfaces3.4 QDOffscreen.h and Inside Macintosh: Imaging With QuickDraw chapter6.
@@ -4031,3 +4032,32 @@ alignment/reallocation-flag conformance and remaining offscreen/pixel-state APIs
 are unfinished. AB03 remains unavailable; this indexed slice does not establish
 complete32-bit QuickDraw or original Marathon compatibility. Validation evidence
 is recorded in progress.md, separately from native/browser/game acceptance.
+
+
+### Offscreen pixel-state lifecycle (2026-10-17)
+
+GetPixelsState, SetPixelsState, AllowPurgePixels and NoPurgePixels marshal through
+both CPU adapters into Process::pixels_state. Flags project from the existing
+image handle and public PixMap pins; no second cached flag authority is added.
+Set restores movement/purge policy and baseAddr representation while retaining
+unrelated handle attributes. NewGWorld's pixPurge option now marks its owned image
+purgeable. Purging, compaction, failed LockPixels and UpdateGWorld reconstruction
+therefore follow the same allocator and image ownership model.
+
+HGetState includes explicit pixel locks in its guest-visible lock bit. Private
+CIcon stability leases remain invisible as before; they cannot be managed through
+the new offscreen-state calls. A PixMap cannot release another owner's image pin.
+Mutation preflights any baseAddr write before changing handle policy. No state
+call allocates guest storage or changes MemErr/ResErr, port selection or geometry.
+The GPU drawing path is unchanged and reads the canonical current image.
+
+Apple's [AllowPurgePixels](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-325.html),
+[NoPurgePixels](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-326.html),
+[GetPixelsState](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-327.html)
+and [SetPixelsState](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-328.html)
+define the public calls; UI3.4 QDOffscreen.h confirms selectors/frame sizes.
+AllowPurgePixels requires an unlocked image. Unsupported flag bits, attempts to
+restore a lock on purged storage, fixed-address images and private icon backing
+storage are explicit diagnostics in this profile. Native edge/error/alias parity,
+temporary/hardware images, direct colour and remaining offscreen contracts are
+unfinished. AB03 remains unavailable and the full rebuild remains active.

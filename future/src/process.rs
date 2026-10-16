@@ -23,6 +23,12 @@ pub struct ResourceInfo {
     pub kind: GuestPtr,
     pub name: GuestPtr,
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelState {
+    Get,
+    Set(u32),
+    Purge(bool),
+}
 #[derive(Default)]
 pub struct Process {
     pub drivers: crate::drivers::Manager,
@@ -460,7 +466,12 @@ impl Process {
             return Ok(self.mem_error as i8 as u8);
         }
         let block = self.handles[&handle];
-        Ok(block.attributes | if block.locked { 0x80 } else { 0 })
+        Ok(block.attributes
+            | if block.locked || self.pixel_locked(handle) {
+                0x80
+            } else {
+                0
+            })
     }
     pub fn set_handle_state(&mut self, memory: &Memory, handle: u32, flags: u8) -> Result<()> {
         if self.check_handle_flags(memory, handle)? {

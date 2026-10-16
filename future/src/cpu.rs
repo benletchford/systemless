@@ -174,6 +174,10 @@ pub enum Call {
     PixPat(crate::pixpat::Op),
     CIcon(crate::cicon::Op),
     GWorld(crate::gworld::Op),
+    PixelState {
+        pixmap: u32,
+        action: crate::process::PixelState,
+    },
     PixelBase(u32),
     Pixels {
         pixmap: u32,

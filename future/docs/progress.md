@@ -10839,3 +10839,56 @@ future/target/validation/gworld-update/. Keep the full rebuild and complete GPU
 text/library requirement active. Next is the genuine supported graphics profile,
 remaining direct-colour/offscreen/pixel-state contracts and unchanged-original
 interaction verification, without patching feature probes or guest code.
+
+
+### Shared offscreen pixel states (2026-10-17)
+
+GetPixelsState/SetPixelsState/AllowPurgePixels/NoPurgePixels now use one shared
+Process service with native QDExtensions and PPC imports. They operate on actual
+image storage/pins, not a detached flag cache. State restoration preserves other
+handle flags and both error authorities, with checked native frames and no guest
+allocation or port/device changes. HGetState reports public pixel locks while
+retaining the established invisibility of private CIcon stability leases.
+NewGWorld now supports pixPurge creation; temporary/hardware creation remains
+unsupported. Existing invalid-creation coverage now checks useTempMem instead
+of treating the newly implemented pixPurge option as unsupported.
+
+Both CPUs save/restore all documented state bits, control purge protection and
+recover a lost image through UpdateGWorld. Alias pins cannot be released by a
+different PixMap owner. Real GPU readback covers drawing, purging, reconstruction
+and drawing again via PPC and68K, using the public state APIs. Unknown flags,
+locked AllowPurgePixels requests, missing-image lock restoration and malformed
+native32-bit result/argument frames reject before partial mutation. Supported
+state calls preserve MemErr/ResErr; native edge/error parity remains unproven.
+
+The first35-check state/lock run passed. Review then found that HGetState must
+not expose private CIcon leases as public locks; the final implementation projects
+only explicit pixel pins and separately rejects private icon state management.
+No icon assertion was weakened. Final combined acceptance exits0:42passed
+(25GWorld,7CIcon,4handle-state,6pixel-lock),0failed,0ignored. All four GPU checks
+were explicitly enabled on the real adapter. This is scoped acceptance, not a
+whole-suite/native/frontend or playable-game claim.
+
+Command: cargo test --manifest-path future/Cargo.toml --test gworld --test pixel_locks --test handle_state --test cicon -- --include-ignored --nocapture --test-threads=1.
+Strict library/four-target/tracer Clippy exits0. Sequential stdin formatting and
+whitespace checks pass. Logs: /tmp/systemless-pixel-state-final.txt,
+/tmp/systemless-pixel-state-clippy-final.txt and tracer build log. Relevant Apple
+API references and profile boundaries are in architecture.md; the preserved
+legacy handler confirms ABI selectors but its cached flags are not authority for
+actual allocator/purge behavior.
+
+The final23M unchanged Marathon replay again reaches CPU22,890,015/PC0102605C,
+readFFFCC1AF, with the same canonical image and independently verified committed
+volume. It makes0new pixel-state calls and0GWorld calls: the AB03 probe still
+selects its old fallback. Existing companions/forks/catalog records remain exact,
+with only the same1222-byte preferences addition. Preference contents are not
+native-validated. No fresh EV/PPC-original acceptance or performance claim.
+Full GPU text/library integration, both priority games and full rebuild remain
+open. Next: the genuine graphics profile/direct-colour and remaining offscreen
+contracts, then unchanged-original interaction verification without guest patches.
+
+Terminal logs and the initial35-check run are retained under ignored
+future/target/validation/pixel-state/. The original captures are retained under
+future/target/private-originals/marathon/evidence/2026-10-17-pixel-state.*;
+original-applications.md records exact frame/volume hashes. Both worktrees must
+remain distinct, PR4802 stays draft, and the rebuild goal remains active.

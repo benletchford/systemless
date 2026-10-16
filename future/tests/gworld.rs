@@ -28,6 +28,11 @@ fn app() -> LoadedApplication {
             b"PaintRect",
             b"UpdateGWorld",
             b"QDError",
+            b"GetPixelsState",
+            b"SetPixelsState",
+            b"AllowPurgePixels",
+            b"NoPurgePixels",
+            b"HGetState",
         ],
         64,
     );
@@ -38,7 +43,11 @@ fn app() -> LoadedApplication {
         .unwrap();
     a.runtime
         .memory
-        .map(GuestPtr(DATA + 0x1000), vec![0xab, 0x1d], Permissions::RX)
+        .map(
+            GuestPtr(DATA + 0x1000),
+            vec![0xab, 0x1d, 0xa0, 0x69, 0xa8, 0xa2],
+            Permissions::RX,
+        )
         .unwrap();
     ppc(&mut a, 0, &[0x600]).unwrap();
     ppc(&mut a, 1, &[DATA + 128]).unwrap();
@@ -70,7 +79,7 @@ fn ppc(a: &mut LoadedApplication, index: u32, args: &[u32]) -> systemless_future
         unreachable!()
     };
     assert_eq!(c.gpr[15], 0xabcdef01);
-    if matches!(index, 4..=6 | 11) {
+    if matches!(index, 4..=6 | 11 | 16..=18) {
         assert_eq!(c.gpr[3], args[0]);
     }
     Ok(c.gpr[3])
@@ -361,7 +370,7 @@ fn creation_rejects_invalid_inputs_before_allocating_or_selecting() {
             match case {
                 0 => assert_eq!(new(&mut a, arch, 3, 0, 0, 0).unwrap() as i32, -157),
                 1 => assert!(new(&mut a, arch, 16, 0, 0, 0).is_err()),
-                2 => assert!(new(&mut a, arch, 8, 0, 0, 1).is_err()),
+                2 => assert!(new(&mut a, arch, 8, 0, 0, 4).is_err()),
                 3 => assert!(new(&mut a, arch, 8, 0xdeadbeef, 0, 0).is_err()),
                 _ => {
                     rect(&mut a, [0, 0, 0, 4]);
@@ -966,4 +975,346 @@ fn purged_world_images_are_reallocated_and_reported_lost_even_for_unchanged_boun
         assert_eq!(ppc(&mut a, 14, &[]).unwrap(), 0);
         one(&mut a, arch, 4, world);
     }
+}
+
+fn pixel_state(
+    a: &mut LoadedApplication,
+    arch: Architecture,
+    index: u32,
+    pm: u32,
+    state: u32,
+) -> systemless_future::Result<u32> {
+    if arch == Architecture::PowerPc {
+        let result = ppc(a, index, &[pm, state]);
+        if result.is_ok() {
+            let Cpu::PowerPc(c) = &a.runtime.cpu else {
+                unreachable!()
+            };
+            assert_eq!(c.gpr[4], state);
+        }
+        return result;
+    }
+    let selector = match index {
+        15 => 0x4000d,
+        16 => 0x8000e,
+        17 => 0x4000b,
+        18 => 0x4000c,
+        _ => panic!(),
+    };
+    let mut args = Vec::new();
+    if index == 16 {
+        args.extend(state.to_be_bytes());
+    }
+    args.extend(pm.to_be_bytes());
+    native(a, selector, &args, if index == 15 { 4 } else { 0 })
+}
+fn handle_flags(a: &mut LoadedApplication, arch: Architecture, image: u32) -> u8 {
+    if arch == Architecture::PowerPc {
+        return ppc(a, 19, &[image]).unwrap() as u8;
+    }
+    a.runtime.cpu = Cpu::new(Architecture::M68k, DATA + 0x1002, STACK);
+    let Cpu::M68k(c) = &mut a.runtime.cpu else {
+        unreachable!()
+    };
+    c.dar[8] = image;
+    c.dar[0] = 0xaabbcc00;
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::M68k(c) = &a.runtime.cpu else {
+        unreachable!()
+    };
+    assert_eq!(c.dar[8], image);
+    assert_eq!(c.dar[15], STACK);
+    c.dar[0] as u8
+}
+#[test]
+fn pixel_state_save_restore_is_shared_by_both_cpus_and_preserves_other_handle_flags() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        assert_eq!(new(&mut a, arch, 8, 0, 0, 1).unwrap(), 0);
+        let world = data(&a, DATA);
+        let pm = one(&mut a, arch, 7, world);
+        let image = data(&a, data(&a, pm));
+        a.runtime
+            .process
+            .set_handle_attribute(&a.runtime.memory, image, true, true)
+            .unwrap();
+        assert_eq!(pixel_state(&mut a, arch, 15, pm, 0).unwrap(), 0x40);
+        let other = if arch == Architecture::M68k {
+            Architecture::PowerPc
+        } else {
+            Architecture::M68k
+        };
+        let free = a.runtime.process.free_memory();
+        let selected = selection(&a);
+        for state in [0, 0x40, 0x80, 0xc0, 0, 0xc0, 0x40] {
+            a.runtime.process.mem_error = -42;
+            a.runtime.process.res_error = -43;
+            pixel_state(&mut a, arch, 16, pm, state).unwrap();
+            assert_eq!(pixel_state(&mut a, other, 15, pm, 0).unwrap(), state);
+            assert_eq!(
+                (a.runtime.process.mem_error, a.runtime.process.res_error),
+                (-42, -43)
+            );
+            assert_eq!(handle_flags(&mut a, other, image), state as u8 | 0x20);
+            let stored = data(&a, data(&a, pm));
+            assert_eq!(
+                stored,
+                if state & 0x80 != 0 {
+                    data(&a, image)
+                } else {
+                    image
+                }
+            );
+            assert_eq!(a.runtime.process.free_memory(), free);
+            assert_eq!(selection(&a), selected);
+        }
+    }
+}
+#[test]
+fn public_pixel_purge_policy_controls_loss_and_update_recovery_without_losing_handle_identity() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        assert_eq!(new(&mut a, arch, 8, 0, 0, 1).unwrap(), 0);
+        let world = data(&a, DATA);
+        let pm = one(&mut a, arch, 7, world);
+        let image = data(&a, data(&a, pm));
+        pixel_state(&mut a, arch, 16, pm, 0xc0).unwrap();
+        a.runtime
+            .process
+            .purge_and_compact_memory(&mut a.runtime.memory)
+            .unwrap();
+        assert_ne!(one(&mut a, arch, 9, pm), 0);
+        pixel_state(&mut a, arch, 18, pm, 0).unwrap();
+        assert_eq!(pixel_state(&mut a, arch, 15, pm, 0).unwrap(), 0x80);
+        pixel_state(&mut a, arch, 16, pm, 0).unwrap();
+        pixel_state(&mut a, arch, 17, pm, 0).unwrap();
+        a.runtime
+            .process
+            .purge_and_compact_memory(&mut a.runtime.memory)
+            .unwrap();
+        assert_eq!(one(&mut a, arch, 9, pm), 0);
+        assert_eq!(one(&mut a, arch, 10, pm), 0);
+        assert_eq!(pixel_state(&mut a, arch, 15, pm, 0).unwrap(), 0x40);
+        pixel_state(&mut a, arch, 18, pm, 0).unwrap();
+        assert_eq!(pixel_state(&mut a, arch, 15, pm, 0).unwrap(), 0);
+        assert_eq!(update(&mut a, arch, 8, 0, 0, 0), 1 << 20);
+        assert_eq!(pixel_state(&mut a, arch, 15, pm, 0).unwrap(), 0);
+        assert_eq!(data(&a, data(&a, pm)), image);
+        assert_ne!(data(&a, image), 0);
+        one(&mut a, arch, 4, world);
+    }
+}
+#[test]
+fn state_restoration_does_not_release_another_pixmaps_image_pin() {
+    let mut a = app();
+    assert_eq!(new(&mut a, Architecture::PowerPc, 8, 0, 0, 0).unwrap(), 0);
+    let world = data(&a, DATA);
+    let pm = one(&mut a, Architecture::M68k, 7, world);
+    let gd = one(&mut a, Architecture::PowerPc, 8, world);
+    let alias = data(&a, data(&a, gd) + 22);
+    pixel_state(&mut a, Architecture::M68k, 16, pm, 0x80).unwrap();
+    pixel_state(&mut a, Architecture::PowerPc, 16, alias, 0x80).unwrap();
+    pixel_state(&mut a, Architecture::M68k, 16, pm, 0x40).unwrap();
+    assert_eq!(
+        pixel_state(&mut a, Architecture::PowerPc, 15, pm, 0).unwrap(),
+        0xc0
+    );
+    let before = one(&mut a, Architecture::M68k, 9, alias);
+    a.runtime
+        .process
+        .purge_and_compact_memory(&mut a.runtime.memory)
+        .unwrap();
+    assert_eq!(one(&mut a, Architecture::PowerPc, 9, pm), before);
+    pixel_state(&mut a, Architecture::PowerPc, 16, alias, 0x40).unwrap();
+    assert_eq!(
+        pixel_state(&mut a, Architecture::M68k, 15, pm, 0).unwrap(),
+        0x40
+    );
+    a.runtime
+        .process
+        .purge_and_compact_memory(&mut a.runtime.memory)
+        .unwrap();
+    assert_eq!(one(&mut a, Architecture::M68k, 9, pm), 0);
+}
+#[test]
+fn invalid_pixel_state_and_locked_purge_requests_do_not_partially_change_storage() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        for case in 0..3 {
+            let mut a = app();
+            assert_eq!(new(&mut a, arch, 8, 0, 0, 1).unwrap(), 0);
+            let world = data(&a, DATA);
+            let pm = one(&mut a, arch, 7, world);
+            let image = data(&a, data(&a, pm));
+            if case == 0 {
+                pixel_state(&mut a, arch, 16, pm, 0x80).unwrap();
+            }
+            if case == 2 {
+                a.runtime
+                    .process
+                    .purge_and_compact_memory(&mut a.runtime.memory)
+                    .unwrap();
+            }
+            let map = a
+                .runtime
+                .memory
+                .read(GuestPtr(data(&a, pm)), 50)
+                .unwrap()
+                .to_vec();
+            let master = data(&a, image);
+            let free = a.runtime.process.free_memory();
+            a.runtime.process.mem_error = -42;
+            a.runtime.process.res_error = -43;
+            let result = if case == 0 {
+                pixel_state(&mut a, arch, 17, pm, 0)
+            } else {
+                pixel_state(&mut a, arch, 16, pm, if case == 1 { 1 } else { 0x80 })
+            };
+            assert!(result.is_err());
+            assert_eq!(
+                (a.runtime.process.mem_error, a.runtime.process.res_error),
+                (-42, -43)
+            );
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(data(&a, pm)), 50).unwrap(),
+                map
+            );
+            assert_eq!(data(&a, image), master);
+            assert_eq!(a.runtime.process.free_memory(), free);
+        }
+    }
+}
+#[test]
+fn native_pixel_state_result_and_argument_frames_are_preflighted_before_stack_changes() {
+    for get in [true, false] {
+        let mut a = app();
+        assert_eq!(new(&mut a, Architecture::PowerPc, 8, 0, 0, 0).unwrap(), 0);
+        let world = data(&a, DATA);
+        let pm = one(&mut a, Architecture::PowerPc, 7, world);
+        let frame = if get {
+            let mut x = pm.to_be_bytes().to_vec();
+            x.extend([0x5a; 2]);
+            x
+        } else {
+            0xc0u32.to_be_bytes().to_vec()
+        };
+        let sp = 0x52000000;
+        a.runtime
+            .memory
+            .map(GuestPtr(sp), frame, Permissions::RW)
+            .unwrap();
+        let free = a.runtime.process.free_memory();
+        let old = a
+            .runtime
+            .memory
+            .read(GuestPtr(data(&a, pm)), 50)
+            .unwrap()
+            .to_vec();
+        a.runtime.cpu = Cpu::new(Architecture::M68k, DATA + 0x1000, sp);
+        let Cpu::M68k(c) = &mut a.runtime.cpu else {
+            unreachable!()
+        };
+        c.dar[0] = if get { 0x4000d } else { 0x8000e };
+        assert!(a.runtime.advance(1).is_err());
+        let Cpu::M68k(c) = &a.runtime.cpu else {
+            unreachable!()
+        };
+        assert_eq!(c.dar[15], sp);
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(data(&a, pm)), 50).unwrap(),
+            old
+        );
+        assert_eq!(a.runtime.process.free_memory(), free);
+    }
+}
+#[test]
+fn pixel_state_lock_reporting_is_coherent_with_explicit_handle_locks() {
+    let mut a = app();
+    assert_eq!(new(&mut a, Architecture::M68k, 8, 0, 0, 0).unwrap(), 0);
+    let world = data(&a, DATA);
+    let pm = one(&mut a, Architecture::PowerPc, 7, world);
+    let image = data(&a, data(&a, pm));
+    a.runtime
+        .process
+        .set_handle_lock(&a.runtime.memory, image, true)
+        .unwrap();
+    assert_eq!(
+        pixel_state(&mut a, Architecture::M68k, 15, pm, 0).unwrap(),
+        0x80
+    );
+    pixel_state(&mut a, Architecture::PowerPc, 16, pm, 0).unwrap();
+    assert_eq!(handle_flags(&mut a, Architecture::M68k, image), 0);
+    pixel_state(&mut a, Architecture::M68k, 16, pm, 0x80).unwrap();
+    assert_eq!(handle_flags(&mut a, Architecture::PowerPc, image), 0x80);
+    a.runtime
+        .process
+        .set_handle_lock(&a.runtime.memory, image, false)
+        .unwrap();
+    assert_eq!(
+        pixel_state(&mut a, Architecture::PowerPc, 15, pm, 0).unwrap(),
+        0x80
+    );
+    pixel_state(&mut a, Architecture::PowerPc, 16, pm, 0).unwrap();
+    assert_eq!(handle_flags(&mut a, Architecture::M68k, image), 0);
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn public_pixel_states_keep_gpu_drawing_coherent_across_purge_and_reconstruction() {
+    let mut a = app();
+    let old = get(&mut a, Architecture::PowerPc);
+    rect(&mut a, [0, 0, 4, 8]);
+    assert_eq!(new(&mut a, Architecture::M68k, 8, 0, 0, 1).unwrap(), 0);
+    let world = data(&a, DATA);
+    let pm = one(&mut a, Architecture::PowerPc, 7, world);
+    set(&mut a, Architecture::PowerPc, world, 0);
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    a.runtime.graphics = Some(
+        pollster::block_on(Graphics::new(
+            &instance,
+            None,
+            512,
+            342,
+            systemless_future::quickdraw::SCREEN,
+        ))
+        .unwrap(),
+    );
+    let mut expected = [0; 32];
+    expected[10..14].fill(255);
+    expected[18..22].fill(255);
+    for native_draw in [false, true] {
+        pixel_state(&mut a, Architecture::M68k, 16, pm, 0xc0).unwrap();
+        rect(&mut a, [1, 2, 3, 6]);
+        if native_draw {
+            a.runtime
+                .memory
+                .write(GuestPtr(STACK), &(DATA + 16).to_be_bytes())
+                .unwrap();
+            a.runtime.cpu = Cpu::new(Architecture::M68k, DATA + 0x1004, STACK);
+            assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+        } else {
+            ppc(&mut a, 12, &[DATA + 16]).unwrap();
+        }
+        let base = one(&mut a, Architecture::PowerPc, 9, pm);
+        assert_eq!(a.runtime.memory.read(GuestPtr(base), 32).unwrap(), expected);
+        assert_eq!(
+            pixel_state(&mut a, Architecture::PowerPc, 15, pm, 0).unwrap(),
+            0xc0
+        );
+        pixel_state(&mut a, Architecture::PowerPc, 16, pm, 0x40).unwrap();
+        if !native_draw {
+            a.runtime
+                .process
+                .purge_and_compact_memory(&mut a.runtime.memory)
+                .unwrap();
+            assert_eq!(one(&mut a, Architecture::M68k, 10, pm), 0);
+            rect(&mut a, [0, 0, 4, 8]);
+            assert_eq!(update(&mut a, Architecture::PowerPc, 8, 0, 0, 0), 1 << 20);
+            assert_eq!(
+                pixel_state(&mut a, Architecture::M68k, 15, pm, 0).unwrap(),
+                0x40
+            );
+        }
+    }
+    set(&mut a, Architecture::M68k, old.0, old.1);
+    one(&mut a, Architecture::PowerPc, 4, world);
 }

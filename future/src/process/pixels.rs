@@ -9,8 +9,11 @@ fn bad() -> Error {
     Error::Graphics("invalid owned pixel image or PixMap".into())
 }
 impl Process {
+    pub(super) fn pixel_locked(&self, handle: u32) -> bool {
+        self.pixel_locks.values().any(|lock| lock.image == handle)
+    }
     pub(super) fn pixel_pinned(&self, handle: u32) -> bool {
-        self.cicons.pins(handle) || self.pixel_locks.values().any(|lock| lock.image == handle)
+        self.cicons.pins(handle) || self.pixel_locked(handle)
     }
     fn pixel_record(&self, memory: &Memory, pixmap: u32) -> Result<(u32, u32, u32)> {
         let pm = self.handles.get(&pixmap).copied().ok_or_else(bad)?;
@@ -66,6 +69,71 @@ impl Process {
         }
         self.fixed_pixels(memory, base, extent)?;
         Ok(base)
+    }
+    /// Save/restore the image's actual purge/movement policy, not PixMap flags.
+    pub fn pixels_state(
+        &mut self,
+        memory: &mut Memory,
+        pixmap: u32,
+        action: PixelState,
+    ) -> Result<u32> {
+        self.pixel_base(memory, pixmap)?;
+        let (_, base, _) = self.pixel_record(memory, pixmap)?;
+        let image = self
+            .pixel_locks
+            .get(&pixmap)
+            .map_or(base, |held| held.image);
+        if image == pixmap {
+            return Err(bad());
+        }
+        let block =
+            self.handles.get(&image).copied().ok_or_else(|| {
+                Error::Graphics("pixel states require managed image storage".into())
+            })?;
+        if self.cicons.pins(image) {
+            return Err(Error::Graphics(
+                "pixel states cannot manage private icon storage".into(),
+            ));
+        }
+        let locked = block.locked || self.pixel_locked(image);
+        match action {
+            PixelState::Get => {
+                Ok(u32::from(block.attributes & 0x40) | if locked { 0x80 } else { 0 })
+            }
+            PixelState::Purge(purge) => {
+                // Apple requires UnlockPixels before AllowPurgePixels.
+                if purge && locked {
+                    return Err(Error::Graphics(
+                        "unlock the image before AllowPurgePixels".into(),
+                    ));
+                }
+                let block = self.handles.get_mut(&image).unwrap();
+                block.attributes = if purge {
+                    block.attributes | 0x40
+                } else {
+                    block.attributes & !0x40
+                };
+                Ok(0)
+            }
+            PixelState::Set(state) => {
+                if state & !0xc0 != 0 {
+                    return Err(Error::Graphics("unsupported pixel-state flags".into()));
+                }
+                let lock = state & 0x80 != 0;
+                if lock && block.data == 0 {
+                    return Err(Error::Graphics(
+                        "cannot restore a lock on purged pixels".into(),
+                    ));
+                }
+                // This preflights any baseAddr change before touching handle flags.
+                // Other PixMap/CIcon owners retain their independent image pins.
+                self.pixels(memory, pixmap, lock)?;
+                let block = self.handles.get_mut(&image).unwrap();
+                block.attributes = (block.attributes & !0x40) | (state as u8 & 0x40);
+                block.locked = false; // Requested lock ownership is now the PixMap pin.
+                Ok(0)
+            }
+        }
     }
     pub fn pixels(&mut self, memory: &mut Memory, pixmap: u32, lock: bool) -> Result<bool> {
         let (pm, base, extent) = self.pixel_record(memory, pixmap)?;

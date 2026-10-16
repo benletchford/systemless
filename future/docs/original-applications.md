@@ -4955,3 +4955,25 @@ Next is the actual supported graphics capability/profile, including unfinished
 direct colour and offscreen/pixel-state contracts, followed by unchanged-original
 interaction checks. Do not patch the guest availability probe or reinterpret a
 budget stop as success. Full GPU text and the entire rebuild remain unfinished.
+
+### Shared pixel-state lifecycle regression (2026-10-17)
+
+Managed offscreen images now support Get/SetPixelsState and Allow/NoPurgePixels
+through both CPU adapters, plus NewGWorld pixPurge creation. Public pixel locks
+are reflected in HGetState; private CIcon leases retain their previous hidden
+status. Final42-check coverage includes real GPU drawing through public state
+calls, loss/reconstruction and drawing again via PPC/68K. This extends shared
+service coverage; it is not original-game acceptance.
+
+The final23M original Marathon replay still makes0new pixel-state and0GWorld
+calls because its AB03 probe selects the prior fallback. It reproduces
+CPU22,890,015/PC0102605C readFFFCC1AF and exact canonical image SHA256
+`7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e`.
+The independent committed-volume verifier retains every original companion/fork/
+catalog record with only the same1222-byte preferences addition; output SHA256
+`e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+Preference contents remain native-unvalidated. Private artifacts are retained as
+future/target/private-originals/marathon/evidence/2026-10-17-pixel-state.*.
+No fresh EV/PPC-original or playable-demo claim. Direct colour, the actual
+supported graphics capability, further offscreen contracts and complete GPU
+text/full-rebuild acceptance remain open.
