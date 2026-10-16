@@ -2815,3 +2815,26 @@ font decoding/layout/source coverage remain CPU work. Complete API/UI coverage
 and an evidence-based library evaluation are now required before goal completion.
 See [text-rendering.md](text-rendering.md) for scope, Glyphon/Vello primary-source
 findings, implementation milestones and concrete pixel/CPU/platform acceptance.
+
+
+### Resource-backed GetCTable (2026-10-16)
+
+GetCTable ($AA18 and the PPC import) calls the shared device manager without
+requiring display initialization. It resolves clut IDs through the current
+Resource Manager search chain, validates the live owned handle and declared
+ColorSpec extent, then copies the payload through the shared allocator. Each
+result has independent master/data storage, cleared resource/lock/purge flags,
+and the source's seed, flags and ColorSpec values. Live guest edits to a loaded
+resource are visible to subsequent copies. Disposal uses existing DisposeCTable
+ownership checks; the resource and other copies remain independent.
+
+Apple's [Color QuickDraw reference](https://developer.apple.com/library/archive/documentation/mac/pdf/Imaging_With_QuickDraw/Color_QuickDraw.pdf),
+pp. 4-92–4-93 and 4-104, defines resource lookup/NIL, disposal and resource fields.
+Resource seeds are retained, unlike the legacy reference's unconditional fresh
+seed assignment. No native-System conformance claim is made. Malformed extents
+fault explicitly. Missing custom resources return NIL/ResError; allocation failure
+returns NIL/MemError. Error-global destinations and native output cells are checked
+before service allocation. Unbacked standard system tables remain explicitly
+unsupported, including enhanced/default tables; they are not reported as ordinary
+missing custom resources. A failed resource load due to allocation is preserved as
+an allocation failure even for an otherwise standard ID.

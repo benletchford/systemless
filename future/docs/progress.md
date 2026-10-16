@@ -6083,3 +6083,47 @@ GPU raster/composition with CPU preprocessing and glifo text. No dependency has
 yet been selected or added. See [text-rendering.md](text-rendering.md) for primary
 sources, the planned compatibility prototype and completion criteria. Full
 rebuild and original game compatibility requirements remain intact and active.
+
+
+## Resource-backed color tables checkpoint (2026-10-16)
+
+GetCTable now reaches one shared resource/allocator implementation from native
+$AA18 and the PPC import. It returns independent copies of live clut resources,
+preserving their seed, flags and ColorSpec values while clearing handle resource,
+lock and purge attributes. Existing DisposeCTable semantics dispose copies without
+freeing the resource or another copy. Missing custom IDs return NIL/ResError;
+malformed tables fault explicitly and copy allocation failure returns NIL with
+MemError -108. Unbacked standard system color tables remain explicitly unsupported.
+Seed retention follows Apple's primary resource documentation rather than the
+legacy implementation's unconditional reseeding.
+
+Final acceptance: 104 checks pass, zero failed, one GPU-marked device test ignored
+in the normal run: 51 library, three new color-table, twelve device, 23 numeric,
+four resource-map, seven timer and four trap patch checks. Evidence:
+/tmp/systemless-getctable-acceptance.txt, terminal exit 0. New tests cover both
+CPU adapters, signed IDs, independent allocations, seed/flags/content retention,
+live resource edits, release/disposal lifetimes, empty/malformed/missing tables
+and real heap exhaustion. The ignored device test was then explicitly executed
+on a real adapter, together with the existing GPU text test: both pass, zero
+failed/ignored, /tmp/systemless-getctable-text-gpu.txt, terminal exit 0. These are
+two distinct offscreen GPU checks, not a full GPU/native presentation suite. The
+text check verifies current glyph transfer modes, clipping and port preservation;
+it does not complete the new all-text/library requirement.
+
+Strict Rust 1.99 all-target lint and Rust 1.93 library checks pass:
+/tmp/systemless-getctable-lint.txt and /tmp/systemless-getctable-msrv.txt.
+Sequential formatting and whitespace checks pass. Initial commands naming absent
+color_manager/color test targets did not run tests and are not counted. No new
+full-suite, browser or native-system conformance claim is made.
+
+Original Marathon passes GetCTable(130), looks up finf 128, and next calls TextFont
+with family 4, PC $01010E86. It faults because the current QuickDraw port is NIL.
+Evidence: /tmp/systemless-marathon-getctable.txt, explicit graphics-error exit 1.
+Earlier GetPort/SetPort save/restore calls restore NIL; investigate Window Manager
+initial/current-port lifecycle against primary/reference behavior before changing
+it. Completed timer=62, sound=0, VBL=0. Title/menu/gameplay and native audio remain
+unverified. EV was not replayed and retains its prior ProtectEntry boundary.
+Neither game is playable. Next: resolve Marathon's current-port/text context and
+continue its startup, and prototype the library-backed GPU text path described in
+[text-rendering.md](text-rendering.md). The full rebuild, including the user-added
+complete wgpu text requirement, stays active and PR #4802 remains draft.

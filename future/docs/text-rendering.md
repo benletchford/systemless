@@ -73,3 +73,13 @@ primary documentation at implementation time.
 The next text milestone is a bounded Glyphon compatibility prototype and API audit,
 followed by the chosen integration and pixel-level acceptance. This is additional
 work alongside the current original Marathon/Escape Velocity compatibility slices.
+
+
+## Baseline GPU verification (2026-10-16)
+
+The existing offscreen text fixture passes on a real adapter, covering glyph
+transfer modes, clipping and port preservation. Evidence:
+/tmp/systemless-getctable-text-gpu.txt, terminal exit 0. The same run passes the
+real device PixMap CopyBits/readback check. This proves the currently supported
+GPU text slice; API/UI completeness, library prototype/selection, all formats and
+styles, native presentation and browser verification remain open.

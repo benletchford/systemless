@@ -77,6 +77,7 @@ pub enum Service {
     NewDevice,
     DisposeDevice,
     DisposeColorTable,
+    GetColorTable,
     SetDevice,
     HasDepth,
     SetDepth,
@@ -420,6 +421,7 @@ impl Abi {
             b"GetGDevice" => Some(Service::Device(crate::devices::Op::Current)),
             b"GetMainDevice" => Some(Service::Device(crate::devices::Op::Main)),
             b"GetDeviceList" => Some(Service::Device(crate::devices::Op::First)),
+            b"GetCTable" => Some(Service::GetColorTable),
             b"DisposeCTable" => Some(Service::DisposeColorTable),
             b"NewGDevice" => Some(Service::NewDevice),
             b"DisposeGDevice" | b"DisposGDevice" => Some(Service::DisposeDevice),
@@ -1870,6 +1872,18 @@ impl Abi {
                         }
                     },
                     Reply::None,
+                ))
+            }
+            0xaa18 => {
+                let id = memory.u16(GuestPtr(sp))? as i16;
+                let next = sp
+                    .checked_add(2)
+                    .ok_or_else(|| Error::Cpu("GetCTable stack overflow".into()))?;
+                memory.validate_write(GuestPtr(next), 4)?;
+                c.dar[15] = next;
+                Ok((
+                    Call::Device(crate::devices::Op::GetTable(id)),
+                    Reply::StackLong(GuestPtr(next)),
                 ))
             }
             0xaa24 | 0xaa30 => {
@@ -3371,6 +3385,7 @@ impl Abi {
             }),
             Service::Device(op) => Call::Device(op),
             Service::SetDevice => Call::Device(crate::devices::Op::Select(c.gpr[3])),
+            Service::GetColorTable => Call::Device(crate::devices::Op::GetTable(c.gpr[3] as i16)),
             Service::DisposeColorTable => Call::Device(crate::devices::Op::DisposeTable(c.gpr[3])),
             Service::NewDevice => Call::Device(crate::devices::Op::New {
                 reference: c.gpr[3] as i16,

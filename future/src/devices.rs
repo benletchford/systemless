@@ -25,6 +25,7 @@ pub enum Op {
     },
     Dispose(u32),
     DisposeTable(u32),
+    GetTable(i16),
     Maximum(GuestPtr),
     Current,
     Select(u32),
@@ -216,6 +217,32 @@ impl Manager {
         }
         result
     }
+    fn get_table(&mut self, memory: &mut Memory, process: &mut Process, id: i16) -> Result<u32> {
+        // Preflight error publication before resource loading or heap allocation.
+        memory.validate_write(GuestPtr(0x220), 2)?;
+        memory.validate_write(GuestPtr(0xa60), 2)?;
+        let source = process.get_resource(memory, *b"clut", id)?;
+        if source == 0 {
+            if process.res_error == -192
+                && matches!(id, 1 | 2 | 4 | 8 | 33 | 34 | 36 | 40 | 66 | 68 | 72 | 127)
+            {
+                return Err(invalid("standard system color tables are not implemented"));
+            }
+            return Ok(0);
+        }
+        let size = process.handle_size(memory, source)?;
+        if process.mem_error != 0 || size < 8 {
+            return Err(invalid("truncated color table resource header"));
+        }
+        let data = GuestPtr(memory.u32(GuestPtr(source))?);
+        let last = memory.u16(GuestPtr(data.0 + 6))? as i16;
+        if !(-1..=255).contains(&last) || size < 8 + (i32::from(last) + 1) as u32 * 8 {
+            return Err(invalid("invalid color table resource extent"));
+        }
+        // Resource-backed tables retain their seed, flags and ColorSpec values.
+        // copy_handle snapshots the live payload and clears resource identity.
+        process.copy_handle(memory, source)
+    }
     fn main_table(&self, memory: &Memory, process: &mut Process) -> Result<u32> {
         let Some(device) = self.device else {
             return Ok(0);
@@ -337,6 +364,9 @@ impl Manager {
         Ok(0)
     }
     pub fn call(&mut self, memory: &mut Memory, process: &mut Process, op: Op) -> Result<u32> {
+        if let Op::GetTable(id) = op {
+            return self.get_table(memory, process, id);
+        }
         if let Op::New { reference, mode } = op {
             return self.new_detached(memory, process, reference, mode);
         }
@@ -466,6 +496,7 @@ impl Manager {
             let data = record(memory, process, device, 62)?;
             match op {
                 Op::New { .. }
+                | Op::GetTable(_)
                 | Op::DisposeTable(_)
                 | Op::Dispose(_)
                 | Op::Maximum(_)

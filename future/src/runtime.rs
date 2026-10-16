@@ -2119,6 +2119,7 @@ impl Runtime {
                             | Call::SetHandleLock { .. }
                             | Call::HandleState { .. }
                             | Call::CopyHandle(_)
+                            | Call::Device(crate::devices::Op::GetTable(_))
                             | Call::MoveHandleHigh(_)
                             | Call::HandleAttribute { .. }
                             | Call::DisposeHandle(_)
@@ -2149,6 +2150,7 @@ impl Runtime {
                             | Call::GetCurrentResource { .. }
                             | Call::GetResource { .. }
                             | Call::GetNamedResource { .. }
+                            | Call::Device(crate::devices::Op::GetTable(_))
                             | Call::DetachResource(_)
                             | Call::ReleaseResource(_)
                     ) {
