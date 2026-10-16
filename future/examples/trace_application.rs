@@ -9,7 +9,7 @@ struct KeyAction {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--key-at INSTRUCTION:CODE:down|up[:TEXT]]".into());
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--key-at INSTRUCTION:CODE:down|up[:TEXT]] [--trace-range START:END]".into());
     }
     let mut graphics = false;
     let mut services_only = false;
@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut save_volume = None;
     let mut save_screen = None;
     let mut keys = Vec::new();
+    let mut trace_range = None;
     let budget: u64 = args[2].parse()?;
     let mut display = None;
     let mut index = 3;
@@ -49,6 +50,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--save-screen" if save_screen.is_none() => {
                 index += 1;
                 save_screen = Some(args.get(index).ok_or("missing screen output")?);
+            }
+            "--trace-range" if trace_range.is_none() => {
+                index += 1;
+                let (start, end) = args
+                    .get(index)
+                    .ok_or("missing trace range")?
+                    .split_once(':')
+                    .ok_or("trace range requires START:END")?;
+                let start = start.parse::<u64>()?;
+                let end = end.parse::<u64>()?;
+                if start >= end || end > budget {
+                    return Err("trace range must be nonempty and within the budget".into());
+                }
+                trace_range = Some(start..end);
             }
             "--key-at" if keys.len() < 64 => {
                 index += 1;
@@ -167,7 +182,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Cpu::PowerPc(c) => c.pc,
         });
 
-        if !services_only {
+        if !services_only
+            || trace_range
+                .as_ref()
+                .is_some_and(|r| r.contains(&app.runtime.instructions))
+        {
             match &app.runtime.cpu {
                 Cpu::M68k(c) => println!(
                 "{} pc={:08x} sp={:08x} a5={:08x} a0={:08x} d0={:08x} regs={:08x?} opcode={:04x?}",

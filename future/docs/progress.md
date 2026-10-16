@@ -8789,3 +8789,63 @@ PC000314A4 versus baseline00032FBC. The final GPU capture is byte-identical to
 baseline: PPM SHA2562993b33f4929130f24c427580c648d004d92c814fff74e16b64ef16b7bf04529.
 No visible interaction success is claimed. Next: verify event decoding/handling
 and diagnose the black game area, alongside Marathon's current-port boundary.
+
+
+## Original EV keyboard-handler diagnosis (2026-10-16)
+
+A read-only watch at the actual EventRecord$7EDE84 proves WaitNextEvent returns
+keyDown3,message$0000240D,mouse0,0,modifiers$0080 for the delivered Return.
+/tmp/systemless-ev-return-event-watch-corrected.txt exits1 only for its8,010,000
+budget. The first exploratory watch mistyped the address as$7EDF84 and was
+explicitly stopped (exit130); it is not acceptance evidence.
+
+Added --trace-range START:END to the diagnostic tracer: with --services-only it
+prints CPU state only within the requested half-open interval. Invalid/empty or
+out-of-budget ranges fail before loading. This changes logging only. Strict
+example lint and build exit0 (/tmp/systemless-event-tracer-lint.txt and
+/tmp/systemless-event-tracer-build.txt). The original replay confirms exactly1500
+instruction rows8000000..8001499 and no pre-range CPU rows.
+
+/tmp/systemless-ev-return-instruction-window.txt exits1 for budget atPC00032F8E.
+At instruction8000059 the actual guest reads event type3; branches atPC30AA4 to
+the key handler30ACC, extracts character$0D and calls30EF4. The original handler
+checks N/O/Q/E/P/A/X shortcuts, leaves unmatched Return's generated point1,1,
+and calls the ordinary hit-test handler30BB4. FindWindow/MenuSelect therefore
+follow guest code, not a runtime conversion of keyDown into mouseDown. This
+narrows the prior event-decoding suspicion; it does not establish complete event
+compatibility or any successful visible action. Original resource bytes were
+read privately to confirm compare immediates; none are added to Git.
+
+
+## Verified N shortcut reaches new-pilot dialog (2026-10-16)
+
+Replay uses the unchanged original EV application and the same button-tracking
+input volume. Repeat with a fresh screen-output filename:
+
+```sh
+future/target/debug/examples/trace_application code \
+  future/target/private-originals/ev/application.raw-rsrc 8100000 \
+  --graphics --display 640x480x8 \
+  --volume /tmp/systemless-ev-button-tracking-saved.slv \
+  --key-at 8000000:45:down --key-at 8005000:45:up \
+  --save-screen /tmp/systemless-ev-newpilot-1.ppm \
+  --services-only --elapse-waits
+```
+
+Log:/tmp/systemless-ev-newpilot-1.txt. The press is delivered; the application faults
+before the scheduled release, at instruction8,000,733,PC0003297E, while loading
+Dialog(Resource{id:3100,storage:0,behind:-1}). Error:unsupported dialog item type
+or data. No PC/result override and no synthetic Toolbox result.
+
+Actual GPU output now shows the green New Pilot button over the black game area
+under File/Edit: a visible shortcut response, not a completed pilot dialog or
+gameplay acceptance. Capture:/tmp/systemless-ev-newpilot-1.ppm, SHA256
+d3ee58de9012d7009d8df8c147c694377c022d3ac82bfdf41c9abe697e034cf3.
+Read-only original-resource inspection confirms DLOG3100 uses DITL3100 with seven
+items:button,checkbox,disabled static text,disabled picture,editText16,button,
+disabled picture. Item5 is the unsupported editText, bounds(top33,left60,bottom49,
+right260),nine initial bytes. No original payload bytes enter Git. Next executable
+slice: shared dialog edit-text ownership/TextEdit integration and GPU drawing,
+then actual pilot-name interaction and modal event handling; do not treat editText
+as static text or suppress this failure. Marathon's port issue remains separate.
+Full rebuild/complete wgpu text integration stay active. Neither game is playable.
