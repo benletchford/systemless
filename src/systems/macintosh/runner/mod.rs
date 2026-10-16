@@ -36,6 +36,31 @@ use ppc::{PpcException, PpcFetchHistogram, PpcMemory, PpcRunResult};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+/// Owned projection of a classic modal dialog for the comparison frontend.
+/// Unsupported layouts remain in the framebuffer; input still enters Event Manager.
+#[cfg(feature = "wgpu-demo")]
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ComparisonDialog {
+    pub guest_id: u32,
+    pub bounds: (i16,i16,i16,i16),
+    pub font: (i16,i16),
+    pub default_item: i16,
+    pub items: Vec<ComparisonDialogItem>,
+}
+#[cfg(feature = "wgpu-demo")]
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ComparisonDialogItem {
+    pub number: i16,
+    pub kind: u8,
+    pub bounds: (i16,i16,i16,i16),
+    pub text: String,
+    pub enabled: bool,
+    pub value: i16,
+    pub selection: Option<(i16,i16)>,
+    pub caret: bool,
+    pub pressed: bool,
+}
+
 /// Deterministic List Manager state for fixture and diagnostic assertions.
 #[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2995,6 +3020,18 @@ impl FixtureRunner {
     /// Return an immutable snapshot of the guest's current Menu Manager list.
     /// Native and web frontends can use this without exposing mutable Toolbox
     /// internals.
+    #[cfg(feature = "wgpu-demo")]
+    pub fn comparison_menu_snapshot(&mut self) -> Vec<crate::menu_model::ComparisonMenu> {
+        if self.native.application().is_some() {return Vec::new();}
+        self.dispatcher.comparison_menu_snapshot(&self.bus)
+    }
+
+    #[cfg(feature = "wgpu-demo")]
+    pub fn comparison_dialog_snapshot(&self) -> Option<ComparisonDialog> {
+        if self.native.application().is_some() { return None; }
+        self.dispatcher.comparison_dialog_snapshot(&self.bus)
+    }
+
     pub fn guest_menu_snapshot(&mut self) -> GuestMenuSnapshot {
         if let Some(ppc_app) = self.native.application_mut() {
             ppc_app.guest_menu_snapshot()

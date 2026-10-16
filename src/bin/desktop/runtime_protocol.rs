@@ -13,6 +13,8 @@ pub(super) enum GuiCommand {
     KeyDown { key: u8, character: u8 },
     KeyUp { key: u8, character: u8 },
     Menu { menu: i16, item: i16 },
+    #[cfg(feature = "wgpu-demo")]
+    ComparisonMenu { expected: systemless::menu_model::ComparisonMenu, item: i16 },
     AcknowledgeWarp { generation: u64, serial: u64 },
 }
 

@@ -702,6 +702,36 @@ impl super::TrapDispatcher {
         Some(bus.read_bytes(data_ptr, len))
     }
 
+    #[cfg(feature = "wgpu-demo")]
+    pub(crate) fn comparison_dialog_snapshot(&self, bus: &MacMemoryBus) -> Option<crate::runner::ComparisonDialog> {
+        let tracking = self.dialog_tracking.as_ref()?;
+        let id = tracking.dialog_ptr;
+        let items = self.dialog_items.get(&id)?;
+        let bounds = tracking.bounds;
+        let te_handle = bus.read_long(id + crate::dialog_manager::DIALOG_TEXT_HANDLE_OFFSET);
+        let te = if te_handle != 0 {bus.read_long(te_handle)} else {0};
+        let edit = bus.read_word(id + crate::dialog_manager::DIALOG_EDIT_FIELD_OFFSET) as i16;
+        let font = (self.tx_font, Self::font_lookup_size(self.tx_size));
+        Some(crate::runner::ComparisonDialog {
+            guest_id:id,bounds,font,default_item:tracking.default_item,
+            items:items.iter().enumerate().filter_map(|(index,item)| {
+                if item.is_hidden() {return None;}
+                let number=(index+1) as i16;
+                // Styled or multiline editors are deliberately left to the guest painter.
+                let editable=item.is_edit_text() && self.tx_face==0 && te!=0 && bus.read_word(te+0x5e)<=1;
+                Some(crate::runner::ComparisonDialogItem {
+                    number,kind:if item.is_edit_text() && !editable {0} else {item.base_type()},
+                    bounds:crate::dialog_manager::dialog_rect_to_global(bounds,item.rect),
+                    text:item.text.clone(),enabled:item.is_enabled(),
+                    value:self.dialog_control_values.get(&(id,number)).copied().unwrap_or(0),
+                    selection:editable.then_some((item.sel_start,item.sel_end)),
+                    caret:editable && edit==index as i16 && bus.read_word(te+0x38)==0,
+                    pressed:tracking.active_button.as_ref().is_some_and(|b|b.item_no==number && b.highlighted),
+                })
+            }).collect(),
+        })
+    }
+
     fn dialog_item_handle_addr(bus: &MacMemoryBus, dialog_ptr: u32, item_no: i16) -> Option<u32> {
         if item_no <= 0 {
             return None;

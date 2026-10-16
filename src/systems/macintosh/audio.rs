@@ -89,47 +89,47 @@ fn interpolate_u8_for_host_rate(first: u8, second: u8, phase: f32) -> u8 {
     (first + (second - first) * phase).round().clamp(0.0, 255.0) as u8
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 const HOST_AUDIO_PREFILL_MSEC: usize = 90;
 
 /// Maximum buffered audio in seconds. Larger = more latency but more
 /// resilience to host scheduling jitter; smaller = lower latency but
 /// more underruns under load.
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 const HOST_AUDIO_MAX_BUFFER_SECS: f32 = 0.25;
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 const HOST_AUDIO_ACTIVE_FRAME_ENERGY: f32 = 4.0;
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 const HOST_AUDIO_TRANSIENT_PRESERVE_RATIO: f32 = 1.25;
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 const HOST_AUDIO_TRANSIENT_PEAK_RATIO: f32 = 1.10;
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 const HOST_AUDIO_TRANSIENT_PRESERVE_BUDGET_FRAMES: usize = 64;
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 fn host_audio_prefill_samples() -> usize {
     (crate::sound::OUTPUT_RATE as usize * HOST_AUDIO_PREFILL_MSEC) / 1000
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 fn host_audio_max_buffered_samples() -> usize {
     (crate::sound::OUTPUT_RATE as f32 * HOST_AUDIO_MAX_BUFFER_SECS) as usize
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 static TRACE_AUDIO: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 fn trace_audio_enabled() -> bool {
     *TRACE_AUDIO.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_AUDIO").is_some())
 }
 
 /// cpal-based audio backend for native GUI mode.
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 pub struct CpalAudioBackend {
     /// Shared source buffer and resampler state between the emulator and cpal callback.
     state: std::sync::Arc<std::sync::Mutex<SharedAudioState>>,
@@ -137,7 +137,7 @@ pub struct CpalAudioBackend {
     _stream: cpal::Stream,
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 struct SharedAudioState {
     buffer: std::collections::VecDeque<[u8; 2]>,
     source_phase: f32,
@@ -153,14 +153,14 @@ struct SharedAudioState {
     transient_preserved_frames: usize,
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct FrameEnergyStats {
     mean: f32,
     peak: f32,
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 impl SharedAudioState {
     fn queue_frames(&mut self, frames: &[[u8; 2]], trace_added_frames: usize) {
         if frames.is_empty() {
@@ -336,7 +336,7 @@ impl SharedAudioState {
     }
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 fn fill_output_f32(
     data: &mut [f32],
     channels: usize,
@@ -356,7 +356,7 @@ fn fill_output_f32(
     }
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 fn fill_output_i16(
     data: &mut [i16],
     channels: usize,
@@ -379,7 +379,7 @@ fn fill_output_i16(
     }
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 fn fill_output_u16(
     data: &mut [u16],
     channels: usize,
@@ -402,7 +402,7 @@ fn fill_output_u16(
     }
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 impl CpalAudioBackend {
     /// Create a new cpal audio backend using the device's preferred output format.
     pub fn new() -> Option<Self> {
@@ -496,7 +496,7 @@ impl CpalAudioBackend {
     }
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 impl AudioBackend for CpalAudioBackend {
     fn queue_samples(&mut self, samples: &[u8]) {
         if samples.is_empty() {
@@ -531,7 +531,7 @@ impl AudioBackend for CpalAudioBackend {
     }
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "wgpu-demo"))]
 impl CpalAudioBackend {
     fn queue_frames(&mut self, frames: &[[u8; 2]], trace_added_frames: usize) {
         let mut shared = self.state.lock().unwrap();
@@ -539,7 +539,7 @@ impl CpalAudioBackend {
     }
 }
 
-#[cfg(all(test, feature = "gui"))]
+#[cfg(all(test, any(feature = "gui", feature = "wgpu-demo")))]
 mod tests {
     use super::*;
 
