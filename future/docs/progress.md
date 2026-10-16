@@ -9228,3 +9228,46 @@ indices/palette and active/offscreen port diagnostics, then real user interactio
 Saved-pilot alias loading/refresh now works through the observed sequence; neither
 priority game is verified playable. Marathon, complete wgpu text/library
 integration and all remaining full-rebuild acceptance stay active.
+
+
+## Black-screen diagnosis: canonical source data (2026-10-17)
+
+The tracer now accepts --display-diagnostics (requires --graphics), default off.
+At a snapshot/fault/budget boundary it reads the main device/PixMap, current port,
+visible/clip region prefixes and last CopyBits recorded pointers. It reports
+packed pixel histograms and raw CLUT entries. Address addition is checked and
+unavailable descriptors are reported without guest writes. Last-copy pointers
+are explicitly live snapshot data, not historical values from the earlier call.
+No production renderer/service behavior changed.
+
+Tracer final build and strict example lint pass:
+/tmp/systemless-display-diagnostics-final-build.txt and
+/tmp/systemless-display-diagnostics-lint.txt (terminal exit0). Changed-file
+sequential formatting and diff whitespace checks pass. No extra unit suite was
+run for this read-only diagnostic addition; the preceding98-case runtime suite
+remains the tested production checkpoint.
+
+Original EV no-input replay from flagged v1 setfinfo-first,10M instructions,
+ends at PC00032FDE/budget. New diagnostics establish:
+- Main PixMap base74100000, stride640,8-bit,640x480. Main full-frame indices:
+  0=12,019pixels,255=295,181pixels. Every pixel in rows20..479 is index255.
+- Main CLUT index0 is white65535/65535/65535, index255 black0/0/0. This is
+  consistent with the captured black content, not evidence of a final GPU upload
+  losing colored pixels.
+- Current port00033C54 points at the same screen storage. Its visible and clip
+  regions have nonempty bounding boxes top-20,left0,bottom480,right640.
+- Last CopyBits source bitmap at00035CC0 has base000B2BD4,stride640,8-bit,
+  640x480; its entire declared307,200pixels are already index255. Last destination
+  is the main bitmap. Live rectangle pointers show640x480 source/destination.
+  These live pointer values cannot prove earlier draw-time clipping state.
+
+The source buffer being black at snapshot moves the next investigation earlier:
+capture the offscreen port/clip state and indices immediately around DrawPicture
+and text calls, rather than changing final presentation speculatively. Canonical
+screen and saved v2 catalog are byte-identical to the preceding nondiagnostic run;
+the independent script/alias/companion verifier passes again. Volume SHA256
+09166806147fef3f40ba7edbdf41efc67d46f51d7d369b4b987961817173c476.
+Private extracted diagnostic output:
+future/target/private-originals/ev/evidence/2026-10-17-display-diagnostics.txt.
+Full trace /tmp/systemless-ev-display-diagnostics.txt. Neither game is playable;
+full rebuild and complete wgpu text/library integration remain active.

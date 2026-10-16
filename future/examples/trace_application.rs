@@ -1,4 +1,6 @@
 //! Bounded instruction/service trace for diagnosing a file application's startup.
+#[path = "trace_application/display_diagnostics.rs"]
+mod display_diagnostics;
 use systemless_future::{cpu::Cpu, load::LoadedApplication, runtime::Stop};
 struct KeyAction {
     instruction: u64,
@@ -9,9 +11,10 @@ struct KeyAction {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--key-at INSTRUCTION:CODE:down|up[:TEXT]] [--trace-range START:END] [--key-at-poll POLL:CODE:down|up[:TEXT]]".into());
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display-diagnostics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--key-at INSTRUCTION:CODE:down|up[:TEXT]] [--trace-range START:END] [--key-at-poll POLL:CODE:down|up[:TEXT]]".into());
     }
     let mut graphics = false;
+    let mut display_diagnostics = false;
     let mut services_only = false;
     let mut elapse_waits = false;
     let mut numeric_operands = false;
@@ -28,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while index < args.len() {
         match args[index].as_str() {
             "--graphics" if !graphics => graphics = true,
+            "--display-diagnostics" if !display_diagnostics => display_diagnostics = true,
             "--services-only" if !services_only => services_only = true,
             "--elapse-waits" if !elapse_waits => elapse_waits = true,
             "--numeric-operands" if !numeric_operands => numeric_operands = true,
@@ -105,8 +109,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         index += 1;
     }
-    if save_screen.is_some() && !graphics {
-        return Err("screen capture requires --graphics".into());
+    if (save_screen.is_some() || display_diagnostics) && !graphics {
+        return Err("screen capture/diagnostics require --graphics".into());
     }
     keys.sort_by_key(|action| action.instruction);
     poll_keys.sort_by_key(|action| action.instruction);
@@ -363,7 +367,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     app.runtime.services.completed_timer_callbacks,
                     app.runtime.services.completed_vbl_callbacks
                 );
-                save_snapshot(&mut app, save_volume, save_screen)?;
+                save_snapshot(&mut app, save_volume, save_screen, display_diagnostics)?;
                 return Err(error.into());
             }
         };
@@ -438,11 +442,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if stop != Stop::Budget {
             println!("{stop:?}");
-            save_snapshot(&mut app, save_volume, save_screen)?;
+            save_snapshot(&mut app, save_volume, save_screen, display_diagnostics)?;
             return Ok(());
         }
     }
-    save_snapshot(&mut app, save_volume, save_screen)?;
+    save_snapshot(&mut app, save_volume, save_screen, display_diagnostics)?;
     Err("trace instruction budget exhausted".into())
 }
 
@@ -452,7 +456,11 @@ fn save_snapshot(
     app: &mut LoadedApplication,
     output: Option<&String>,
     screen: Option<&String>,
+    diagnostics: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if diagnostics {
+        display_diagnostics::report(app);
+    }
     if let Some(path) = output {
         use std::io::Write;
         let bytes = app.runtime.process.files.export_volume()?;
