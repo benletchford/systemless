@@ -10757,3 +10757,85 @@ The final adapter-required annotation is verified by an explicit second
 also exits0 (11.43s). Logs: /tmp/systemless-gworld-tagged-final.txt and
 /tmp/systemless-gworld-clippy-tagged.txt. All final validation logs are also
 retained in ignored future/target/validation/gworld-creation/.
+
+### Shared indexed UpdateGWorld (2026-10-17)
+
+Native selector00160003 and the PPC UpdateGWorld import reach one shared service.
+It stages image/table/inverse-map/port-PixMap/device-PixMap/device/visible-region
+payloads, preflights the compound resize and only then publishes port geometry
+and colour indices. It supports indexed resize, origin realignment, clipping,
+stretching, dithering and palette/depth conversion through shared wgpu. Parameter
+and allocation failures return gwFlagErr and publish QDError; no world payload is
+committed on those failures. A supplied device overrides depth/table parameters;
+depth0 converts borrowed screen state into an owned offscreen device without
+rewriting screen records. RGB foreground/background values survive depth changes
+with their pixel indices rematched to the new table. Existing clip/pen/text state
+is retained. Purged images are reconstructed as lost storage and report reallocPix.
+
+The initial compile passed (1m16s). Initial resize coverage passed15/16checks but
+caught a real GPU copy bug: foreground/background index0 caused source image
+colours to be weighted toward white. Surface::copy_image now selects explicit
+neutral image transfer in the existing GPU command tail. Ordinary QuickDraw/text
+remain on their prior policy. The corrected intermediate GWorld run passes17,
+including direct writes, GPU clipping/stretch/depth conversion and exact
+448x272->224x136 stride/storage coherence on both real CPU adapters. Final tests
+also cover a palette without black/white, origin-only moves, dithering, parameter
+aliases, device precedence, purged-image reconstruction and related GPU/text/
+inverse-table regressions. Their terminal results must be recorded below.
+
+No new capability is advertised: AB03 is still uninstalled. Native flag/alignment
+parity, direct colour, wider creation flags, remaining pixel-state/offscreen APIs,
+both original games, full GPU text/library integration and complete rebuild
+acceptance remain open. Do not interpret the indexed fixture or a bounded game
+replay as native Macintosh conformance, performance or playability.
+
+The purged-image fixture exposed an existing allocator panic: resize_in_place
+indexed allocated[0] after the image was purged. The shared heap now returns a
+failed in-place attempt for absent storage, so preflight/replacement can allocate
+a new block. SetHandleSize also avoids a zero-length read through a nil data
+pointer. New allocator checks deliberately omit all low-memory mappings, cover
+purged-handle regrowth/attributes, and verify immutable preflight followed by
+complete transaction publication. The first18-check run passed17 and failed on
+this panic; it is not recorded as acceptance. Final checks below include the fix.
+
+Continuation evidence: Apple's Universal Interfaces3.4 MacMemory.h declares
+Translate24To32 as trapA091 (D0 argument/result), and as identity on non-68K;
+it must not be guessed to be AB03. AB03 is the documented32-bit QuickDraw
+availability probe discussed above, not a substitute address-translation ABI.
+Before installing that capability, establish the actual supported graphics
+profile and private entry contract; do not patch the guest probe. Direct-colour
+formats, wider offscreen/pixel-state support and full native flag conformance
+remain separate unfinished work. Header evidence is in
+/tmp/systemless-ui34-MacMemory.h, upstream
+https://github.com/elliotnunn/UniversalInterfaces/blob/master/3.4/Universal/Interfaces/CIncludes/MacMemory.h.
+
+
+Final acceptance is terminal and passing:58integration checks (18GWorld,
+14devices,6color ports,9inverse tables,6pixel locks,5text),3GPU-backend checks
+and3allocator preflight/regrowth checks:64total,0failed,0ignored. Adapter-required
+checks were explicitly enabled; these are scoped runs, not a whole-suite claim.
+Commands/results:
+
+- cargo test --manifest-path future/Cargo.toml --test gworld --test devices --test color_ports --test pixel_locks --test inverse_tables --test text -- --include-ignored --nocapture --test-threads=1
+  exits0; /tmp/systemless-gworld-update-verified.txt.
+- cargo test --manifest-path future/Cargo.toml --lib graphics:: -- --include-ignored --nocapture --test-threads=1
+  exits0; /tmp/systemless-gworld-update-graphics.txt.
+- cargo test --manifest-path future/Cargo.toml --lib process::resize_preflight_tests -- --nocapture --test-threads=1
+  exits0; /tmp/systemless-gworld-update-purged-allocator.txt.
+- Strict library/six-target/tracer Clippy exits0;
+  /tmp/systemless-gworld-update-verified-clippy.txt. Sequential changed-file
+  formatting and whitespace checks pass. Tracer build passes; startup/lock waits
+  in these wall times are not performance measurements.
+
+The final23M unchanged-original replay again reaches CPU22,890,015/PC0102605C,
+readFFFCC1AF, with exactly the prior canonical image and independently verified
+committed volume. Its trace makes0GWorld calls because AB03 remains unavailable;
+it does not exercise the new update service. Exact hashes and companion checks
+are in original-applications.md. No fresh EV/PPC-original replay, native flag
+conformance, portable frontend or playable-game acceptance is inferred.
+
+Final logs and intermediate GPU/purge failures are retained under ignored
+future/target/validation/gworld-update/. Keep the full rebuild and complete GPU
+text/library requirement active. Next is the genuine supported graphics profile,
+remaining direct-colour/offscreen/pixel-state contracts and unchanged-original
+interaction verification, without patching feature probes or guest code.

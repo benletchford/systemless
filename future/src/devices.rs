@@ -386,7 +386,7 @@ impl Manager {
         }
         Ok(0)
     }
-    pub(crate) fn disposal_handles(
+    pub(crate) fn storage_handles(
         &self,
         memory: &Memory,
         process: &mut Process,
@@ -428,11 +428,6 @@ impl Manager {
         {
             return Err(invalid("detached device supporting handles were replaced"));
         }
-        if memory.u32(CURRENT)? == device {
-            return Err(invalid(
-                "select another device before disposing the current device",
-            ));
-        }
         for h in [device, inverse, pixels, table]
             .into_iter()
             .filter(|h| *h != 0)
@@ -443,6 +438,20 @@ impl Manager {
             }
         }
         Ok([device, inverse, pixels, table])
+    }
+    pub(crate) fn disposal_handles(
+        &self,
+        memory: &Memory,
+        process: &mut Process,
+        device: u32,
+    ) -> Result<[u32; 4]> {
+        let handles = self.storage_handles(memory, process, device)?;
+        if memory.u32(CURRENT)? == device {
+            return Err(invalid(
+                "select another device before disposing the current device",
+            ));
+        }
+        Ok(handles)
     }
     fn dispose_detached(
         &mut self,

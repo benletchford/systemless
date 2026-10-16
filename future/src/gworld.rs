@@ -8,8 +8,19 @@ use crate::{
     Error, Result,
 };
 use std::collections::BTreeMap;
+mod update;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Update {
+    pub output: GuestPtr,
+    pub depth: i16,
+    pub bounds: GuestPtr,
+    pub table: u32,
+    pub device: u32,
+    pub flags: u32,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
+    Update(Update),
     New {
         output: GuestPtr,
         depth: i16,
@@ -99,11 +110,18 @@ impl Manager {
         owned(m, p, world.table, 8)?;
         Ok(world)
     }
-    pub fn call(&mut self, m: &mut Memory, p: &mut Process, op: Op) -> Result<u32> {
+    pub fn call(
+        &mut self,
+        m: &mut Memory,
+        p: &mut Process,
+        op: Op,
+        gpu: Option<&crate::graphics::Graphics>,
+    ) -> Result<u32> {
         let ports = p
             .ports
             .ok_or_else(|| bad("GWorld services require InitGraf"))?;
         match op {
+            Op::Update(request) => self.update(m, p, gpu, request),
             Op::Get {
                 port,
                 device: output,

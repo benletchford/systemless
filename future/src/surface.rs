@@ -10,7 +10,7 @@ type CpuSource<'a> = (
     Option<&'a [u8]>,
     Option<&'a [[u16; 3]; 256]>,
     Option<&'a [[u16; 3]]>,
-    bool,
+    u8,
 );
 #[derive(Clone)]
 pub(crate) struct Palette {
@@ -181,12 +181,13 @@ impl Surface {
         }
         memory.write(self.base, &bytes)
     }
-    fn config(&self, direct_source: bool) -> Option<IndexedTarget<'_>> {
+    fn config(&self, direct_source: bool, neutral_copy: bool) -> Option<IndexedTarget<'_>> {
         self.colors.as_ref().map(|c| IndexedTarget {
             depth: self.depth,
             rgb: &c.rgb,
             matchable: &c.matchable,
             direct_source,
+            neutral_copy,
         })
     }
     /// Refresh a presentation texture without changing guest bytes. Unlike a
@@ -203,7 +204,14 @@ impl Surface {
         }
         let mut staging = Memory::default();
         staging.map(gpu.base, self.unpack(memory)?, Permissions::RW)?;
-        gpu.execute_indexed(&mut staging, draw, None, None, None, self.config(false))
+        gpu.execute_indexed(
+            &mut staging,
+            draw,
+            None,
+            None,
+            None,
+            self.config(false, false),
+        )
     }
     /// Commands use bitmap-local QuickDraw coordinates. Temporary indices only
     /// encode storage; all pixel operations still execute through wgpu.
@@ -235,14 +243,7 @@ impl Surface {
         source: Option<&[u8]>,
         palette: Option<&[[u16; 3]; 256]>,
     ) -> Result<()> {
-        self.execute_inputs(
-            gpu,
-            memory,
-            draw,
-            clips,
-            (source, palette, None, false),
-            None,
-        )
+        self.execute_inputs(gpu, memory, draw, clips, (source, palette, None, 0), None)
     }
     pub(crate) fn execute_rgb(
         &self,
@@ -252,14 +253,7 @@ impl Surface {
         clips: Option<&[Rect]>,
         rgb: &[[u16; 3]],
     ) -> Result<()> {
-        self.execute_inputs(
-            gpu,
-            memory,
-            draw,
-            clips,
-            (None, None, Some(rgb), false),
-            None,
-        )
+        self.execute_inputs(gpu, memory, draw, clips, (None, None, Some(rgb), 0), None)
     }
     pub(crate) fn execute_dithered_rgb(
         &self,
@@ -269,14 +263,7 @@ impl Surface {
         clips: Option<&[Rect]>,
         rgb: &[[u16; 3]],
     ) -> Result<()> {
-        self.execute_inputs(
-            gpu,
-            memory,
-            draw,
-            clips,
-            (None, None, Some(rgb), true),
-            None,
-        )
+        self.execute_inputs(gpu, memory, draw, clips, (None, None, Some(rgb), 1), None)
     }
     pub(crate) fn execute_mask_texture(
         &self,
@@ -291,9 +278,41 @@ impl Surface {
             memory,
             draw,
             clips,
-            (None, None, None, false),
+            (None, None, None, 0),
             Some(texture),
         )
+    }
+    /// Image conversion keeps source RGB independent of QuickDraw port tinting.
+    pub(crate) fn copy_image(
+        &self,
+        gpu: &Graphics,
+        memory: &mut Memory,
+        draw: Draw,
+        source: &crate::pixmap::Source,
+        dither: bool,
+    ) -> Result<()> {
+        if dither {
+            let rgb: Vec<_> = source
+                .indices
+                .iter()
+                .map(|&i| {
+                    source
+                        .palette
+                        .as_ref()
+                        .map_or(if i == 0 { [65535; 3] } else { [0; 3] }, |p| p[i as usize])
+                })
+                .collect();
+            self.execute_inputs(gpu, memory, draw, None, (None, None, Some(&rgb), 3), None)
+        } else {
+            self.execute_inputs(
+                gpu,
+                memory,
+                draw,
+                None,
+                (Some(&source.indices), source.palette.as_deref(), None, 2),
+                None,
+            )
+        }
     }
     fn execute_inputs(
         &self,
@@ -304,7 +323,9 @@ impl Surface {
         cpu_source: CpuSource<'_>,
         texture: Option<&wgpu::Texture>,
     ) -> Result<()> {
-        let (source, palette, rgb, dither) = cpu_source;
+        let (source, palette, rgb, flags) = cpu_source;
+        let dither = flags & 1 != 0;
+        let neutral_copy = flags & 2 != 0;
         if palette.is_none()
             && rgb.is_none()
             && !matches!(draw, Draw::Copy { .. })
@@ -498,7 +519,7 @@ impl Surface {
                     draw,
                     translated.as_deref(),
                     rgb,
-                    self.config(false),
+                    self.config(false, neutral_copy),
                 )?;
             } else {
                 gpu.execute_rgb(
@@ -506,7 +527,7 @@ impl Surface {
                     draw,
                     translated.as_deref(),
                     rgb,
-                    self.config(false),
+                    self.config(false, neutral_copy),
                 )?;
             }
         } else if let Some(texture) = texture {
@@ -515,7 +536,7 @@ impl Surface {
                 draw,
                 translated.as_deref(),
                 texture,
-                self.config(false),
+                self.config(false, neutral_copy),
             )?;
         } else {
             gpu.execute_indexed(
@@ -524,7 +545,7 @@ impl Surface {
                 translated.as_deref(),
                 source,
                 palette,
-                self.config(direct_source),
+                self.config(direct_source, neutral_copy),
             )?;
         }
         self.pack(memory, staging.read(gpu.base, width * height)?)

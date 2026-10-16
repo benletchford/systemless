@@ -110,6 +110,7 @@ pub(crate) struct IndexedTarget<'a> {
     pub rgb: &'a [[u16; 3]; 256],
     pub matchable: &'a [bool; 256],
     pub direct_source: bool,
+    pub neutral_copy: bool,
 }
 enum CopySource<'a> {
     Cpu(&'a [u8]),
@@ -737,8 +738,9 @@ impl Graphics {
                 } => {
                     let identity = target.direct_source
                         && !invert
-                        && target.rgb[usize::from(foreground)] == [0; 3]
-                        && target.rgb[usize::from(background)] == [65535; 3]
+                        && (target.neutral_copy
+                            || (target.rgb[usize::from(foreground)] == [0; 3]
+                                && target.rgb[usize::from(background)] == [65535; 3]))
                         && matches!(mode, Transfer::Copy);
                     !identity
                         && (matches!(mode, Transfer::Xor)
@@ -769,7 +771,10 @@ impl Graphics {
                 ));
             }
             p[2] |= 256;
-            p.extend([i32::from(target.depth), i32::from(target.direct_source)]);
+            p.extend([
+                i32::from(target.depth),
+                i32::from(target.direct_source) | (i32::from(target.neutral_copy) << 1),
+            ]);
             for i in 0..256 {
                 p.extend(target.rgb[i].map(i32::from));
                 p.push(i32::from(target.matchable[i]));
@@ -975,6 +980,7 @@ mod direct_rgb_tests {
                 rgb: &colors,
                 matchable: &eligible,
                 direct_source: false,
+                neutral_copy: false,
             })
         };
         let bounds = Rect::new(0, 0, 512, 1);

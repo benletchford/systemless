@@ -2115,7 +2115,12 @@ impl Runtime {
                         Call::GWorld(op) => {
                             self.memory.validate_write(GuestPtr(0x220), 2)?;
                             let mut manager = std::mem::take(&mut self.process.gworlds);
-                            let result = manager.call(&mut self.memory, &mut self.process, op);
+                            let result = manager.call(
+                                &mut self.memory,
+                                &mut self.process,
+                                op,
+                                self.graphics.as_ref(),
+                            );
                             self.process.gworlds = manager;
                             reply.apply(&mut self.cpu, &mut self.memory, result?, 0)?;
                         }

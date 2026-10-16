@@ -4929,3 +4929,29 @@ Next: implement coherent shared GWorld updates and their failure/stride/pixel
 semantics, extend remaining capability requirements, then replay unchanged
 Marathon through this fault when the real feature path can be advertised.
 Full GPU text, both original games and the complete rebuild remain unfinished.
+
+### Indexed world-update foundation and original regression (2026-10-17)
+
+Shared native/PPC fixtures now exercise Marathon's observed448x272->224x136
+shrink through real UpdateGWorld: the image becomes30464bytes and both PixMaps
+use224-byte rows, with coherent regions, port geometry and device bounds. The
+same service preserves pixels through wgpu for clip/stretch, origin moves,
+dithering and indexed palette/depth conversion. This is a service fixture,
+not original-game use of that path. Purged-image coverage also exposed and fixed
+a shared allocator panic when attempting in-place resize of absent storage.
+
+The fresh23M original replay still selects its prior fallback because AB03 is
+unavailable. Its trace contains0GWorld service calls. It reaches the same
+CPU22,890,015/PC0102605C read fault atFFFCC1AF. Canonical screen SHA256 remains
+`7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e`.
+Independent verification retains every existing companion/fork/catalog record,
+adding only the same1222-byte first-run preferences file; output volume SHA256 is
+`e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+Preferences contents are not native-validated. Private evidence is retained as
+future/target/private-originals/marathon/evidence/2026-10-17-gworld-update.*.
+No fresh EV/PPC-original acceptance, playable demo or performance claim follows.
+
+Next is the actual supported graphics capability/profile, including unfinished
+direct colour and offscreen/pixel-state contracts, followed by unchanged-original
+interaction checks. Do not patch the guest availability probe or reinterpret a
+budget stop as success. Full GPU text and the entire rebuild remain unfinished.

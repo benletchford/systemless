@@ -3996,3 +3996,38 @@ provide device borrowing/selection contracts. UpdateGWorld and wider flags remai
 unfinished. AB03 stays uninstalled: supporting individual offscreen APIs does
 not establish complete 32-bit QuickDraw capability or fix original Marathon yet.
 Test/build results are recorded separately after terminal verification.
+
+### Indexed GWorld updates and GPU image conversion (2026-10-17)
+
+UpdateGWorld uses the shared native/PPC dispatch and stages image, table, inverse
+map, both PixMaps, GDevice and visible-region payloads before publishing a compound
+handle replacement. Port geometry and foreground/background index fields publish
+only after that replacement succeeds. CPU work validates/snapshots metadata and
+packs storage; clipping, stretching, palette/depth conversion and dithering use
+the shared wgpu Surface/Graphics path, with final synchronized readback to guest
+storage. No guest routine is replaced or skipped.
+
+Image conversion needs a neutral source-colour transfer, independent of a port's
+foreground/background weighting. Surface::copy_image selects that explicit GPU
+policy; ordinary QuickDraw and text keep their previous transfer policy. A bit
+in the existing indexed-target command tail carries the policy without changing
+its size. Shader matching and dithering still execute on the GPU. Source palettes
+without exact black/white must work; mapping to the nearest destination black/
+white before applying tint is not equivalent to image conversion.
+
+The [Apple UpdateGWorld contract](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-314.html)
+defines the selector, flags, device precedence, unchanged world on failure and
+QDError reporting. Depth0 updates copy device state rather than aliasing screen
+storage; an explicitly supplied device determines format over depth/table args.
+World pointers and owned master identities survive ordinary resize/compaction.
+Purged images are reallocated and reported lost, including unchanged bounds;
+there is no attempt to read source pixels from a missing image.
+
+Unpreserved size changes with flags0 report reallocPix and require reconstruction;
+clipPix/stretchPix select preserved pixels. Same-size origin changes preserve
+pixels through wgpu. Locked-image replacement is explicitly rejected with a
+failure flag/error. Direct-colour worlds, wider creation flags, exact native
+alignment/reallocation-flag conformance and remaining offscreen/pixel-state APIs
+are unfinished. AB03 remains unavailable; this indexed slice does not establish
+complete32-bit QuickDraw or original Marathon compatibility. Validation evidence
+is recorded in progress.md, separately from native/browser/game acceptance.

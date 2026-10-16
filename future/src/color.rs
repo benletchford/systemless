@@ -91,7 +91,17 @@ fn palette(m: &Memory, p: &mut Process, h: u32) -> Result<Palette> {
     }
     let count = last as usize + 1;
     owned(m, p, h, (8 + 8 * count) as u32)?;
-    let raw = m.read(data, 8 + 8 * count)?;
+    palette_bytes(m.read(data, 8 + 8 * count)?)
+}
+fn palette_bytes(raw: &[u8]) -> Result<Palette> {
+    if raw.len() < 8 {
+        return Err(bad("truncated color table"));
+    }
+    let last = i16::from_be_bytes([raw[6], raw[7]]);
+    if !(0..256).contains(&last) || raw.len() < 8 + (last as usize + 1) * 8 {
+        return Err(bad("invalid inverse-table color count"));
+    }
+    let count = last as usize + 1;
     let flags = u16::from_be_bytes(raw[4..6].try_into().unwrap());
     if flags & 0x4000 != 0 {
         return Err(bad("palette-relative inverse tables are unsupported"));
@@ -182,7 +192,21 @@ fn rgb_to_hsl(rgb: [u16; 3]) -> [u16; 3] {
     let saturation = round(delta, if sum <= 65535 { sum } else { 131070 - sum });
     [round(hue, 6 * delta), saturation, lightness]
 }
+pub(crate) fn match_staged(raw: &[u8], rgb: [u16; 3]) -> Result<u8> {
+    nearest_color(rgb, palette_bytes(raw)?.entries.into_iter())
+        .ok_or_else(|| bad("no staged matching colors"))
+}
+pub(crate) fn prepare_inverse(raw: &[u8], resolution: u16) -> Result<Vec<u8>> {
+    let colors = palette_bytes(raw)?;
+    if !(3..=5).contains(&resolution) || colors.entries.is_empty() {
+        return Err(bad("invalid staged inverse table"));
+    }
+    Ok(table(&colors, resolution))
+}
 impl Manager {
+    pub(crate) fn set_error(&mut self, error: i16) {
+        self.error = error;
+    }
     pub fn call(&mut self, m: &mut Memory, p: &mut Process, op: Op) -> Result<u32> {
         if let Op::RgbToHsl {
             source,

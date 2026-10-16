@@ -249,6 +249,7 @@ pub enum Service {
     DisposeCIcon,
     GetPixPat,
     DisposePixPat,
+    UpdateGWorld,
     NewGWorld,
     DisposeGWorld,
     GetGWorld,
@@ -743,6 +744,7 @@ impl Abi {
             b"DisposeCIcon" | b"DisposCIcon" => Some(Service::DisposeCIcon),
             b"GetPixPat" => Some(Service::GetPixPat),
             b"DisposePixPat" | b"DisposPixPat" => Some(Service::DisposePixPat),
+            b"UpdateGWorld" => Some(Service::UpdateGWorld),
             b"NewGWorld" => Some(Service::NewGWorld),
             b"DisposeGWorld" => Some(Service::DisposeGWorld),
             b"GetGWorld" => Some(Service::GetGWorld),
@@ -2612,7 +2614,7 @@ impl Abi {
                     .ok_or_else(|| Error::Cpu("DisposePixPat stack overflow".into()))?;
                 Ok((Call::PixPat(crate::pixpat::Op::Dispose(h)), Reply::None))
             }
-            0xab1d if c.dar[0] == 0x00160000 => {
+            0xab1d if matches!(c.dar[0], 0x00160000 | 0x00160003) => {
                 let args = memory.read(GuestPtr(sp), 22)?;
                 let long = |i| u32::from_be_bytes(args[i..i + 4].try_into().unwrap());
                 let op = crate::gworld::Op::New {
@@ -2626,9 +2628,36 @@ impl Abi {
                 let next = sp
                     .checked_add(22)
                     .ok_or_else(|| Error::Cpu("NewGWorld stack overflow".into()))?;
-                memory.validate_write(GuestPtr(next), 2)?;
+                let (op, reply) = if c.dar[0] == 0x00160003 {
+                    let crate::gworld::Op::New {
+                        output,
+                        depth,
+                        bounds,
+                        table,
+                        device,
+                        flags,
+                    } = op
+                    else {
+                        unreachable!()
+                    };
+                    memory.validate_write(GuestPtr(next), 4)?;
+                    (
+                        crate::gworld::Op::Update(crate::gworld::Update {
+                            output,
+                            depth,
+                            bounds,
+                            table,
+                            device,
+                            flags,
+                        }),
+                        Reply::StackLong(GuestPtr(next)),
+                    )
+                } else {
+                    memory.validate_write(GuestPtr(next), 2)?;
+                    (op, Reply::StackWord(GuestPtr(next)))
+                };
                 c.dar[15] = next;
-                Ok((Call::GWorld(op), Reply::StackWord(GuestPtr(next))))
+                Ok((Call::GWorld(op), reply))
             }
             0xab1d
                 if matches!(
@@ -4983,6 +5012,16 @@ impl Abi {
             Service::DisposeCIcon => Call::CIcon(crate::cicon::Op::Dispose(c.gpr[3])),
             Service::GetPixPat => Call::PixPat(crate::pixpat::Op::Get(c.gpr[3] as i16)),
             Service::DisposePixPat => Call::PixPat(crate::pixpat::Op::Dispose(c.gpr[3])),
+            Service::UpdateGWorld => {
+                Call::GWorld(crate::gworld::Op::Update(crate::gworld::Update {
+                    output: GuestPtr(c.gpr[3]),
+                    depth: c.gpr[4] as i16,
+                    bounds: GuestPtr(c.gpr[5]),
+                    table: c.gpr[6],
+                    device: c.gpr[7],
+                    flags: c.gpr[8],
+                }))
+            }
             Service::NewGWorld => Call::GWorld(crate::gworld::Op::New {
                 output: GuestPtr(c.gpr[3]),
                 depth: c.gpr[4] as i16,

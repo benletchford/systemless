@@ -111,7 +111,9 @@ impl Heap {
     }
     fn resize_in_place(&mut self, base: u32, size: u32) -> bool {
         let extent = (size.max(1) + 3) & !3;
-        let old = self.allocated[&base];
+        let Some(&old) = self.allocated.get(&base) else {
+            return false;
+        };
         if extent == old {
             return true;
         }
@@ -571,9 +573,13 @@ impl Process {
             self.mem_error = MEM_FULL;
             return Ok(());
         }
-        let preserved = memory
-            .read(GuestPtr(data), old_size.min(size) as usize)?
-            .to_vec();
+        let preserved = if old_size == 0 {
+            Vec::new()
+        } else {
+            memory
+                .read(GuestPtr(data), old_size.min(size) as usize)?
+                .to_vec()
+        };
         let Some(replacement) = heap.allocate(size) else {
             self.mem_error = MEM_FULL;
             return Ok(());
@@ -730,6 +736,53 @@ impl Process {
 #[cfg(test)]
 mod resize_preflight_tests {
     use super::*;
+    fn purged() -> (Memory, Process, u32) {
+        let mut m = Memory::default();
+        let mut p = Process::default();
+        let h = p.new_handle(&mut m, 32, true).unwrap();
+        p.set_handle_state(&m, h, 0x40).unwrap();
+        p.purge_and_compact_memory(&mut m).unwrap();
+        assert_eq!(m.u32(GuestPtr(h)).unwrap(), 0);
+        assert!(m.read(GuestPtr(0), 0).is_err());
+        (m, p, h)
+    }
+    #[test]
+    fn purged_handle_resize_reallocates_without_reading_nil_and_retains_attributes() {
+        let (mut m, mut p, h) = purged();
+        p.set_handle_size(&mut m, h, 64).unwrap();
+        assert_eq!(p.mem_error, 0);
+        assert_eq!(p.handle_size(&m, h).unwrap(), 64);
+        assert_eq!(p.handle_state(&m, h).unwrap(), 0x40);
+        let data = GuestPtr(m.u32(GuestPtr(h)).unwrap());
+        assert_ne!(data.0, 0);
+        m.write(data, &[0x5a; 64]).unwrap();
+        assert_eq!(m.read(data, 64).unwrap(), [0x5a; 64]);
+    }
+    #[test]
+    fn purged_handle_transaction_preflights_oom_and_publishes_complete_payload() {
+        let (mut m, mut p, h) = purged();
+        let before = m
+            .read(GuestPtr(HEAP_BASE), HEAP_SIZE as usize)
+            .unwrap()
+            .to_vec();
+        p.mem_error = -77;
+        assert!(!p.can_resize_handles(&m, &[(h, HEAP_SIZE)]).unwrap());
+        assert_eq!(p.mem_error, -77);
+        assert!(p.can_resize_handles(&m, &[(h, 40)]).unwrap());
+        assert_eq!(p.mem_error, -77);
+        assert_eq!(
+            m.read(GuestPtr(HEAP_BASE), HEAP_SIZE as usize).unwrap(),
+            before
+        );
+        p.replace_handles(&mut m, vec![(h, vec![0x91; 40])])
+            .unwrap();
+        assert_eq!(p.mem_error, 0);
+        let data = GuestPtr(m.u32(GuestPtr(h)).unwrap());
+        assert_ne!(data.0, 0);
+        assert_eq!(m.read(data, 40).unwrap(), [0x91; 40]);
+        assert_eq!(p.handle_size(&m, h).unwrap(), 40);
+    }
+
     #[test]
     fn sequential_resize_preflight_preserves_bytes_errors_locks_and_allocator() {
         fn setup() -> (Memory, Process, u32, u32) {

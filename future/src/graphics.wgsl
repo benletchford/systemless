@@ -59,7 +59,11 @@ fn color_result(src:u32,dst:u32,pattern_on:bool)->u32 {
     var fg=u32(p[11]);var bg=u32(p[12]);
     if draw_kind()==2{fg=closest(vec3<u32>(0u));bg=closest(vec3<u32>(65535u));}
     if mode==0 {
-        if draw_kind()==4 && p[color_target()+1]!=0 && p[20]==0 && all(destination_rgb(fg)==vec3<u32>(0u)) && all(destination_rgb(bg)==vec3<u32>(65535u)){return src;}
+        if draw_kind()==4 && (p[color_target()+1]&2)!=0 {
+            if (p[color_target()+1]&1)!=0 && p[21]!=2{return src;}
+            return closest(rgb);
+        }
+        if draw_kind()==4 && (p[color_target()+1]&1)!=0 && p[20]==0 && all(destination_rgb(fg)==vec3<u32>(0u)) && all(destination_rgb(bg)==vec3<u32>(65535u)){return src;}
         if all(rgb==vec3<u32>(0u)){return fg;}if all(rgb==vec3<u32>(65535u)){return bg;}
         return closest(weighted(rgb,destination_rgb(fg),destination_rgb(bg)));
     }

@@ -26,6 +26,8 @@ fn app() -> LoadedApplication {
             b"LockPixels",
             b"UnlockPixels",
             b"PaintRect",
+            b"UpdateGWorld",
+            b"QDError",
         ],
         64,
     );
@@ -606,4 +608,362 @@ fn world_handles_follow_compaction_while_locked_pixels_remain_pinned() {
     assert_eq!(one(&mut a, Architecture::PowerPc, 9, pm), after);
     one(&mut a, Architecture::PowerPc, 11, pm);
     one(&mut a, Architecture::M68k, 4, world);
+}
+
+fn update(
+    a: &mut LoadedApplication,
+    arch: Architecture,
+    depth: i16,
+    table: u32,
+    gd: u32,
+    flags: u32,
+) -> u32 {
+    if arch == Architecture::PowerPc {
+        ppc(
+            a,
+            13,
+            &[
+                DATA,
+                0xabcd0000 | u32::from(depth as u16),
+                DATA + 16,
+                table,
+                gd,
+                flags,
+            ],
+        )
+        .unwrap()
+    } else {
+        let mut args = Vec::new();
+        for v in [flags, gd, table, DATA + 16] {
+            args.extend(v.to_be_bytes());
+        }
+        args.extend(depth.to_be_bytes());
+        args.extend(DATA.to_be_bytes());
+        native(a, 0x160003, &args, 4).unwrap()
+    }
+}
+#[test]
+fn marathon_size_shrink_updates_both_pixmaps_image_region_and_port_on_both_cpus() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        let old = get(&mut a, arch);
+        rect(&mut a, [0, 0, 272, 448]);
+        assert_eq!(new(&mut a, arch, 8, 0, 0, 0).unwrap(), 0);
+        let world = data(&a, DATA);
+        let pm = one(&mut a, arch, 7, world);
+        let gd = one(&mut a, arch, 8, world);
+        let image = data(&a, data(&a, pm));
+        set(&mut a, arch, world, 0);
+        rect(&mut a, [0, 0, 136, 224]);
+        assert_eq!(update(&mut a, arch, 8, 0, 0, 0), (1 << 19) | (1 << 20));
+        assert_eq!(get(&mut a, arch), (world, gd));
+        assert_eq!(data(&a, DATA), world);
+        let map = data(&a, pm);
+        let device_map = data(&a, data(&a, gd) + 22);
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(map), 50).unwrap(),
+            a.runtime
+                .memory
+                .read(GuestPtr(data(&a, device_map)), 50)
+                .unwrap()
+        );
+        assert_eq!(data(&a, map), image);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(map + 4)).unwrap(), 0x80e0);
+        assert_eq!(
+            a.runtime
+                .process
+                .handle_size(&a.runtime.memory, image)
+                .unwrap(),
+            30464
+        );
+        for at in [
+            map + 6,
+            world + 16,
+            data(&a, data(&a, world + 24)) + 2,
+            data(&a, gd) + 34,
+        ] {
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(at), 8).unwrap(),
+                [0, 0, 0, 0, 0, 136, 0, 224]
+            );
+        }
+        assert_eq!(ppc(&mut a, 14, &[]).unwrap(), 0);
+        set(&mut a, arch, old.0, old.1);
+        one(&mut a, arch, 4, world);
+    }
+}
+#[test]
+fn failed_updates_publish_qderror_without_changing_world_or_allocator() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        for case in 0..4 {
+            let mut a = app();
+            assert_eq!(new(&mut a, arch, 8, 0, 0, 0).unwrap(), 0);
+            let world = data(&a, DATA);
+            let pm = one(&mut a, arch, 7, world);
+            if case == 2 {
+                one(&mut a, arch, 10, pm);
+            }
+            let port = a
+                .runtime
+                .memory
+                .read(GuestPtr(world), 108)
+                .unwrap()
+                .to_vec();
+            let map = a
+                .runtime
+                .memory
+                .read(GuestPtr(data(&a, pm)), 50)
+                .unwrap()
+                .to_vec();
+            let free = a.runtime.process.free_memory();
+            let selected = selection(&a);
+            let depth = if case == 1 { 3 } else { 8 };
+            rect(
+                &mut a,
+                if case == 0 {
+                    [0, 0, 0, 1]
+                } else if case == 3 {
+                    [0, 0, 2000, 2000]
+                } else {
+                    [0, 0, 20, 40]
+                },
+            );
+            if case == 3 {
+                let fill = a
+                    .runtime
+                    .process
+                    .new_pointer(&mut a.runtime.memory, free - 100, false)
+                    .unwrap();
+                assert_ne!(fill, 0);
+            }
+            let before = a.runtime.process.free_memory();
+            assert_eq!(update(&mut a, arch, depth, 0, 0, 0), 1 << 31);
+            assert_eq!(
+                ppc(&mut a, 14, &[]).unwrap() as i32,
+                match case {
+                    0 => -50,
+                    1 => -157,
+                    _ => -108,
+                }
+            );
+            assert_eq!(a.runtime.process.free_memory(), before);
+            assert_eq!(selection(&a), selected);
+            assert_eq!(a.runtime.memory.read(GuestPtr(world), 108).unwrap(), port);
+            assert_eq!(
+                a.runtime.memory.read(GuestPtr(data(&a, pm)), 50).unwrap(),
+                map
+            );
+        }
+    }
+}
+#[test]
+fn depth_zero_update_copies_device_without_mutating_screen_and_retains_owned_lifetime() {
+    let mut a = app();
+    let old = get(&mut a, Architecture::PowerPc);
+    let free = a.runtime.process.free_memory();
+    let screen = a
+        .runtime
+        .memory
+        .read(GuestPtr(data(&a, old.1)), 62)
+        .unwrap()
+        .to_vec();
+    assert_eq!(new(&mut a, Architecture::M68k, 0, 0, 0, 0).unwrap(), 0);
+    let world = data(&a, DATA);
+    set(&mut a, Architecture::PowerPc, world, 0);
+    rect(&mut a, [0, 0, 10, 32]);
+    update(&mut a, Architecture::M68k, 0, 0xdeadbeef, 0, 0);
+    let gd = one(&mut a, Architecture::PowerPc, 8, world);
+    assert_ne!(gd, old.1);
+    assert_eq!(selection(&a), (world, gd));
+    assert_eq!(
+        a.runtime
+            .memory
+            .read(GuestPtr(data(&a, old.1)), 62)
+            .unwrap(),
+        screen
+    );
+    set(&mut a, Architecture::M68k, old.0, old.1);
+    one(&mut a, Architecture::PowerPc, 4, world);
+    assert_eq!(a.runtime.process.free_memory(), free);
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn gpu_updates_clip_stretch_and_convert_indexed_depth_with_live_port_colors() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut gpu = Some(
+        pollster::block_on(Graphics::new(
+            &instance,
+            None,
+            512,
+            342,
+            systemless_future::quickdraw::SCREEN,
+        ))
+        .unwrap(),
+    );
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        for mode in 0..6 {
+            let flags = match mode {
+                0 | 5 => 1 << 28,
+                1 => 1 << 29,
+                4 => (1 << 28) | (1 << 30),
+                _ => 0,
+            };
+            let mut a = app();
+            rect(&mut a, [0, 0, 2, 4]);
+            assert_eq!(new(&mut a, arch, 8, 0, 0, 0).unwrap(), 0);
+            let world = data(&a, DATA);
+            let pm = one(&mut a, arch, 7, world);
+            let base = one(&mut a, arch, 9, pm);
+            a.runtime
+                .memory
+                .write(GuestPtr(base), &[0, 255, 0, 255, 255, 0, 255, 0])
+                .unwrap();
+            let table = if mode == 5 {
+                let table = a
+                    .runtime
+                    .process
+                    .new_handle(&mut a.runtime.memory, 24, true)
+                    .unwrap();
+                let at = data(&a, table);
+                let mut colors = vec![0; 24];
+                support::w32(&mut colors, 0, 0x1234);
+                support::w16(&mut colors, 6, 1);
+                support::w16(&mut colors, 10, 40000);
+                support::w16(&mut colors, 16, 1);
+                support::w16(&mut colors, 18, 60000);
+                a.runtime.memory.write(GuestPtr(at), &colors).unwrap();
+                a.runtime
+                    .memory
+                    .write(GuestPtr(base), &[72, 0, 255, 72, 0, 72, 255, 0])
+                    .unwrap();
+                table
+            } else {
+                0
+            };
+            a.runtime.graphics = gpu.take();
+            rect(
+                &mut a,
+                match mode {
+                    1 => [0, 0, 4, 8],
+                    3 => [5, 7, 7, 11],
+                    _ => [0, 0, 2, 2],
+                },
+            );
+            let depth = if mode == 2 { 4 } else { 8 };
+            let result = update(&mut a, arch, depth, table, 0, flags);
+            assert_eq!(result >> 31, 0);
+            let base = one(&mut a, arch, 9, pm);
+            match mode {
+                0 | 4 => {
+                    assert_eq!(a.runtime.memory.read(GuestPtr(base), 2).unwrap(), [0, 255]);
+                    assert_eq!(
+                        a.runtime.memory.read(GuestPtr(base + 4), 2).unwrap(),
+                        [255, 0]
+                    );
+                    assert_ne!(result & (1 << 28), 0);
+                }
+                1 => {
+                    assert_eq!(
+                        a.runtime.memory.read(GuestPtr(base), 8).unwrap(),
+                        [0, 0, 255, 255, 0, 0, 255, 255]
+                    );
+                    assert_eq!(
+                        a.runtime.memory.read(GuestPtr(base + 16), 8).unwrap(),
+                        [255, 255, 0, 0, 255, 255, 0, 0]
+                    );
+                    assert_ne!(result & (1 << 29), 0);
+                }
+                5 => {
+                    assert_eq!(a.runtime.memory.read(GuestPtr(base), 2).unwrap(), [0, 1]);
+                    assert_eq!(
+                        a.runtime.memory.read(GuestPtr(base + 4), 2).unwrap(),
+                        [1, 0]
+                    );
+                    assert_eq!(data(&a, world + 80), 0);
+                    assert_eq!(data(&a, world + 84), 1);
+                    assert_ne!(result & (1 << 16), 0);
+                }
+                3 => {
+                    assert_eq!(
+                        a.runtime.memory.read(GuestPtr(base), 8).unwrap(),
+                        [0, 255, 0, 255, 255, 0, 255, 0]
+                    );
+                    assert_eq!(result, 1 << 18);
+                }
+                _ => {
+                    assert_eq!(a.runtime.memory.read(GuestPtr(base), 1).unwrap(), [0x0f]);
+                    assert_eq!(
+                        a.runtime.memory.read(GuestPtr(base + 4), 1).unwrap(),
+                        [0xf0]
+                    );
+                    assert_eq!(data(&a, world + 80), 15);
+                    assert_eq!(data(&a, world + 84), 0);
+                    assert_ne!(result & (1 << 17), 0);
+                }
+            }
+            if mode == 4 {
+                assert_ne!(result & (1 << 30), 0);
+            }
+            gpu = a.runtime.graphics.take();
+        }
+    }
+}
+
+#[test]
+fn update_parameter_aliases_device_precedence_and_borrowed_noop_preserve_pixels() {
+    let mut a = app();
+    assert_eq!(new(&mut a, Architecture::M68k, 8, 0, 0, 0).unwrap(), 0);
+    let world = data(&a, DATA);
+    let pm = one(&mut a, Architecture::PowerPc, 7, world);
+    let gd = one(&mut a, Architecture::M68k, 8, world);
+    let map = data(&a, pm);
+    let free = a.runtime.process.free_memory();
+    assert_eq!(
+        ppc(&mut a, 13, &[DATA, 0xdeadffff, map + 6, 0xdeadbeef, gd, 0]).unwrap(),
+        0
+    );
+    assert_eq!(a.runtime.process.free_memory(), free);
+    assert_eq!(data(&a, DATA), world);
+    one(&mut a, Architecture::PowerPc, 4, world);
+    assert_eq!(new(&mut a, Architecture::PowerPc, 0, 0, 0, 0).unwrap(), 0);
+    let world = data(&a, DATA);
+    let pm = one(&mut a, Architecture::M68k, 7, world);
+    let base = one(&mut a, Architecture::PowerPc, 9, pm);
+    a.runtime.memory.write(GuestPtr(base), &[0x5a; 8]).unwrap();
+    assert_eq!(update(&mut a, Architecture::M68k, 0, 0, 0, 0), 0);
+    let base = one(&mut a, Architecture::PowerPc, 9, pm);
+    assert_eq!(a.runtime.memory.read(GuestPtr(base), 8).unwrap(), [0x5a; 8]);
+    one(&mut a, Architecture::M68k, 4, world);
+}
+
+#[test]
+fn purged_world_images_are_reallocated_and_reported_lost_even_for_unchanged_bounds() {
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        let mut a = app();
+        assert_eq!(new(&mut a, arch, 8, 0, 0, 0).unwrap(), 0);
+        let world = data(&a, DATA);
+        let pm = one(&mut a, arch, 7, world);
+        let image = data(&a, data(&a, pm));
+        a.runtime
+            .process
+            .set_handle_state(&a.runtime.memory, image, 0x40)
+            .unwrap();
+        a.runtime
+            .process
+            .purge_and_compact_memory(&mut a.runtime.memory)
+            .unwrap();
+        assert_eq!(one(&mut a, arch, 9, pm), 0);
+        assert_eq!(update(&mut a, arch, 8, 0, 0, 0), 1 << 20);
+        assert_ne!(one(&mut a, arch, 9, pm), 0);
+        assert_eq!(data(&a, data(&a, pm)), image);
+        assert_eq!(
+            a.runtime
+                .process
+                .handle_size(&a.runtime.memory, image)
+                .unwrap(),
+            680
+        );
+        assert_eq!(ppc(&mut a, 14, &[]).unwrap(), 0);
+        one(&mut a, arch, 4, world);
+    }
 }

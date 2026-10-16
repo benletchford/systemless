@@ -346,6 +346,7 @@ mod tests {
                     rgb: &palette,
                     matchable: &eligible,
                     direct_source: false,
+                    neutral_copy: false,
                 }),
             )
             .unwrap();
@@ -366,6 +367,7 @@ mod tests {
                 rgb: &palette,
                 matchable: &eligible,
                 direct_source: false,
+                neutral_copy: false,
             }),
         )
         .unwrap();
@@ -381,6 +383,7 @@ mod tests {
                 rgb: &palette,
                 matchable: &eligible,
                 direct_source: false,
+                neutral_copy: false,
             }),
         )
         .unwrap();
