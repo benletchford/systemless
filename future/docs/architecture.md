@@ -3727,3 +3727,28 @@ strikes, measurement, bold preparation and wgpu destination services stay shared
 The fixed-width substitute retains its own metrics; no historical Monaco metric
 override or Apple glyph artwork is introduced. Full classic font fidelity remains
 open. Asset provenance is in assets/fonts/README.md.
+
+### Standalone PixMap descriptor ownership
+
+NewPixMap and DisposePixMap/DisposPixMap use the shared device manager on both
+architectures. NewPixMap snapshots the current device's live50-byte descriptor,
+normalizes both resolutions to72dpi, and creates separate descriptor/table
+handles. Pixel storage is referenced, not allocated or copied. The new table
+has deterministic empty storage (8-byte header,ctSize=-1), not initialized
+colors; the caller must supply its palette before using indexed pixels.
+
+Device bootstrap precedes the independent two-handle allocation transaction.
+Failure returns NIL with memFullErr and reclaims any partial handle. Disposal
+validates descriptor/table ownership, protected device storage, live masters,
+write access and image pinning before freeing either handle. It frees the
+descriptor and its table, retaining the pixel image and current device. Existing
+DisposeCTable supports caller replacement of the initially empty table.
+
+Both ABI adapters reach this implementation; the68K no-argument long result is
+validated before dispatch and the void disposal consumes one handle. PPC void
+registers are preserved. CanonicalAA03/AA04 discovery veneers are appended, leaving
+existing veneer identities stable. These operations remain forbidden at VBL
+interrupt time by the existing no-allocation service guard. CopyPixMap and
+SetPortPix remain explicit gaps rather than aliases of these operations.
+
+Primary reference: [Imaging With QuickDraw,4-85–4-87](https://www.vintageapple.org/inside_r/pdf/Imaging_With_QuickDraw_1994.pdf).

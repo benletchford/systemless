@@ -9725,3 +9725,82 @@ chain exits0. Private2026-10-17-mono-lint.txt retains the log. Next executable
 priorities are shared NewPixMap lifecycle and generic Munger; production Glyphon,
 font fidelity, complete text/Mixed Mode/native/browser/full rebuild acceptance
 remain active.
+
+### Standalone PixMap lifecycle, 2026-10-17
+
+The pre-fix real-CPU fixture fails to load InterfaceLib:NewPixMap, matching
+Marathon's unsupportedAA03 boundary (/tmp/systemless-pixmap-before.txt). Shared
+NewPixMap/DisposePixMap/DisposPixMap now use device-manager state and the same
+owned handle model for both CPUs. New copies all50descriptor bytes from the
+currently selected device, replaces the table with independent8-byte empty
+storage (ctSize=-1), and sets both resolutions to72dpi per System7 semantics.
+The pixel base remains a shared reference; no image is allocated/copied.
+
+The separate two-handle transaction reclaims partial allocation and returnsNIL
+with memFullErr. Disposal preflights both handles, table extent, live masters,
+writable master storage, device protections and pixel-image pinning before
+freeing descriptor/table. It retains the actual pixel image, selected device and
+source descriptor/table. Existing DisposeCTable can discard the empty table
+before a caller installs its initialized replacement. No hidden PixMap registry
+or game-specific allocation/rendering branch is introduced.
+
+The four new tests exercise both real CPU adapters, selected offscreen descriptors
+with distinct144/96dpi inputs,72dpi outputs, independent table handles, shared
+image preservation, void/result frames and padding; three low-memory cases
+(first/partial allocation failures) restore exact free memory; protected, alias
+and corrupt table failures leave both handles intact; a read-only native result
+fault precedes allocation. RealAA03/AA04 discovery veneers are readable and
+callable. The first veneer test omitted its required JSR return word (three
+other new tests passed); its frame is corrected without a production change.
+
+Both canonical entries are appended, retaining previous trap addresses. Existing
+VBL no-allocation guard rejects these calls. CopyPixMap/SetPortPix remain explicit
+gaps. Architecture docs retain the primary4-85–4-87 reference and exact table
+policy; these descriptor operations do not themselves render any pixels.
+
+The corrected PixMap rerun passes4/4,0ignored. Together with14device tests from
+the first run (including actual GPU CopyBits/readback),18scoped tests pass across
+the two logs; this is not a fresh full-suite result. Logs are
+/tmp/systemless-pixmap-tests.txt and -tests-fixed.txt. Tracer build passes18.11s.
+Sequential changed-file formatting/whitespace checks pass; strict all-target lint
+is tracked separately in /tmp/systemless-pixmap-lint.txt.
+
+Fresh original Marathon, same1M budget,640x480x8, companion volume and77ffec
+watcher, saves /tmp/systemless-marathon-pixmap.{txt,slv,ppm}. It successfully calls
+NewPixMap once, then NewPtr16, two trap-address queries and GetMenu128. The new
+boundary is GetItemCmd/A84E, CPU218,979,PC01003FCE, compared to218,829/0100420A
+atNewPixMap. Original disposal is not observed; that API is proved by fixtures.
+The screen remains black. Independent volume checks pass: companions/forks and
+metadata unchanged; only the same preferences file is added. Volume11,597,088B
+SHA256e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42;
+PPM SHA256a6087ec5178c7619d8136de2aa159dde7161d56f9e4c3b899b7165935d0353d8.
+Private2026-10-17-pixmap.{slv,ppm}, trace tail, test/before/build/volume logs retain
+evidence. No menu presentation or playability follows from resource loading.
+
+GetItemCmd continuation: Apple's10.4u SDK Menus.h declares a MenuRef,
+MenuItemIndex and CharParameter* output; MacTypes.h defines CharParameter as
+short. Thus output storage is16bits, not a one-byte character write. The
+observed68K fault frame is output pointer007912CE,item1,menu00010C7C, matching
+reversed Pascal4+2+4bytes. Read the live shared MENU item data, validate output
+before publishing and preserve surrounding bytes/void registers. Existing
+menus::Op::Command sets the key-equivalent byte; its getter should share that
+record model. Source copies /tmp/systemless-pixmap-{Menus,MacTypes,Quickdraw}.h
+come from the public Apple SDK mirror in phracker/MacOSX-SDKs,MacOSX10.4u.sdk.
+Quickdraw.h also confirms DisposePixMap's void handle signature and DisposPixMap
+as its old-name alias. No original menu text/presentation is claimed here.
+
+Fresh original EV with the same16M budget,script-reopen input and real E down8M/
+up8,005,000 still reaches Munger/A9E0 at15,136,642/0102C7CA. Its canonical screen
+and saved volume are byte-identical to the preceding font/window/MMU stages.
+Independent v2 CRC/catalog/script/alias verification passes; pilot and all
+original companions remain unchanged. Private2026-10-17-pixmap.{slv,ppm}, trace
+tail and volume check retain the regression. Neither priority game is verified
+playable. Full text/Glyphon integration, fonts, Mixed Mode and platform/full
+rebuild acceptance remain open.
+
+Strict all-target Clippy finishes successfully (5m58s,exit0). The corrected
+test/build/lint chain exits0. Private2026-10-17-pixmap-lint.txt and -sdk-*.h
+retain the validation and observed Apple SDK declarations. Next priorities:
+GetItemCmd on shared live menu data, generic Munger for EV, remaining PixMap
+operations and full text/Glyphon/Mixed Mode/platform acceptance. The entire
+rebuild goal remains active.

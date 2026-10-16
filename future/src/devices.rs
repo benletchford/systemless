@@ -23,6 +23,8 @@ pub enum Op {
         reference: i16,
         mode: i32,
     },
+    NewPixMap,
+    DisposePixMap(u32),
     Dispose(u32),
     DisposeTable(u32),
     GetTable(i16),
@@ -175,6 +177,86 @@ impl Manager {
             return Err(invalid("nil current graphics device"));
         }
         self.initialize(memory, process)
+    }
+    fn new_pixmap(&mut self, memory: &mut Memory, process: &mut Process) -> Result<u32> {
+        // Bootstrap device ownership before beginning this independent allocation.
+        let device = self.selected(memory, process)?;
+        let gd = record(memory, process, device, 62)?;
+        let source = record(memory, process, memory.u32(GuestPtr(gd.0 + 22))?, 50)?;
+        let mut bytes = memory.read(source, 50)?.to_vec();
+        let mut allocated = Vec::new();
+        let result = (|| {
+            for size in [8, 50] {
+                let handle = process.new_handle(memory, size, true)?;
+                if handle == 0 {
+                    return Ok(0);
+                }
+                allocated.push(handle);
+            }
+            let [table, map] = allocated[..] else {
+                unreachable!()
+            };
+            // Deterministic empty storage, not a copy of the device palette.
+            let ct = record(memory, process, table, 8)?;
+            memory.write(GuestPtr(ct.0 + 6), &(-1i16).to_be_bytes())?;
+            bytes[22..26].copy_from_slice(&(72u32 << 16).to_be_bytes());
+            bytes[26..30].copy_from_slice(&(72u32 << 16).to_be_bytes());
+            bytes[42..46].copy_from_slice(&table.to_be_bytes());
+            let destination = record(memory, process, map, 50)?;
+            memory.write(destination, &bytes)?;
+            Ok(map)
+        })();
+        if !matches!(result, Ok(handle) if handle != 0) {
+            let error = process.mem_error;
+            for handle in allocated.into_iter().rev() {
+                process.dispose_handle(memory, handle)?;
+            }
+            process.mem_error = error;
+        }
+        result
+    }
+    fn dispose_pixmap(
+        &mut self,
+        memory: &mut Memory,
+        process: &mut Process,
+        map: u32,
+    ) -> Result<u32> {
+        // Device-owned descriptors cannot be detached by disposing their storage.
+        for device in self.device.into_iter().chain(self.detached.keys().copied()) {
+            let gd = record(memory, process, device, 62)?;
+            if [
+                device,
+                memory.u32(GuestPtr(gd.0 + 22))?,
+                memory.u32(GuestPtr(gd.0 + 6))?,
+            ]
+            .contains(&map)
+            {
+                return Err(invalid("cannot dispose device-owned PixMap storage"));
+            }
+        }
+        let pm = record(memory, process, map, 50)?;
+        let table = memory.u32(GuestPtr(pm.0 + 42))?;
+        if table == map {
+            return Err(invalid("PixMap aliases its own color table"));
+        }
+        // Validate the complete disposal before freeing either handle. The image
+        // is referenced by baseAddr, but is never owned by this operation.
+        if table != 0 {
+            self.validate_table(memory, process, table)?;
+        }
+        for handle in [map, table].into_iter().filter(|h| *h != 0) {
+            memory.validate_write(GuestPtr(handle), 4)?;
+            if process.pixel_image_is_pinned(handle) {
+                return Err(invalid(
+                    "disposing pixel-locked PixMap storage is unsupported",
+                ));
+            }
+        }
+        if table != 0 {
+            self.dispose_table(memory, process, table)?;
+        }
+        process.dispose_handle(memory, map)?;
+        Ok(0)
     }
     fn new_detached(
         &mut self,
@@ -363,6 +445,9 @@ impl Manager {
         Ok(0)
     }
     pub fn call(&mut self, memory: &mut Memory, process: &mut Process, op: Op) -> Result<u32> {
+        if op == Op::NewPixMap {
+            return self.new_pixmap(memory, process);
+        }
         if let Op::GetTable(id) = op {
             return self.get_table(memory, process, id);
         }
@@ -371,6 +456,9 @@ impl Manager {
         }
         let saved = process.mem_error;
         let result = (|| {
+            if let Op::DisposePixMap(map) = op {
+                return self.dispose_pixmap(memory, process, map);
+            }
             if let Op::DisposeTable(table) = op {
                 return self.dispose_table(memory, process, table);
             }
@@ -495,6 +583,8 @@ impl Manager {
             let data = record(memory, process, device, 62)?;
             match op {
                 Op::New { .. }
+                | Op::NewPixMap
+                | Op::DisposePixMap(_)
                 | Op::GetTable(_)
                 | Op::DisposeTable(_)
                 | Op::Dispose(_)

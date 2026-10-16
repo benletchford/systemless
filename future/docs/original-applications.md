@@ -4463,3 +4463,26 @@ Private2026-10-17-mono.* evidence records are retained for each original.
 and both CPU adapters. Next: shared NewPixMap ownership/lifecycle for Marathon
 and generic Munger semantics for EV. Both games/full rebuild/text acceptance
 remain unfinished.
+
+### Standalone PixMap refresh, 2026-10-17
+
+Shared NewPixMap creates a descriptor/table from the selected device, normalizes
+resolutions to72dpi and shares the image pointer; DisposePixMap/DisposPixMap
+validate/free descriptor/table without freeing pixels. Both CPU adapters and
+allocation/protection/ABI failure paths have fixtures. Original Marathon calls
+NewPixMap once, then loads MENU128 before stopping at GetItemCmd/A84E,
+218,979/01003FCE. It does not exercise disposal in this replay. The screen remains
+black (inspected); resource loading does not establish menu presentation.
+
+Use the preceding1M indexed Marathon command with fresh
+/tmp/systemless-marathon-pixmap.{ppm,slv}; private2026-10-17-pixmap.* records
+include the trace tail, screenshot and independent catalog check. Companions
+remain intact; first-run preferences are the only new file. Saved volume and
+screen hashes are unchanged from the preceding stage.
+
+Fresh EV with the same16M/key-event sequence reaches the same Munger boundary at
+15,136,642/0102C7CA, with screen and saved volume byte-identical to the preceding
+stage. Both independent saved-volume verifiers pass.18scoped tests pass across
+the recorded runs (14devices,4PixMap lifecycle),0ignored with GPU cases enabled.
+Next: shared GetItemCmd metadata retrieval for Marathon and generic Munger for
+EV. Full text and the entire rebuild remain unfinished.
