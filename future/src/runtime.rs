@@ -43,6 +43,10 @@ enum Resume {
         serial: u64,
         waits: Box<SuspendedWaits>,
     },
+    Modal {
+        wait: Box<ModalWait>,
+        result: crate::callback::BooleanResult,
+    },
     StandardFile {
         wait: Box<StandardFileWait>,
         result: crate::callback::BooleanResult,
@@ -84,8 +88,13 @@ struct SuspendedWaits {
     control: Option<ControlWait>,
     menu: Option<MenuWait>,
     file: Option<StandardFileWait>,
+    modal: Option<ModalWait>,
     sound: Option<SoundWait>,
     play: Option<ResourcePlayWait>,
+}
+struct ModalWait {
+    dialog: crate::dialogs::Modal,
+    reply: crate::abi::Reply,
 }
 struct StandardFileWait {
     dialog: crate::standard_file::Dialog,
@@ -122,6 +131,7 @@ pub struct Runtime {
     control_wait: Option<ControlWait>,
     menu_wait: Option<MenuWait>,
     standard_file_wait: Option<StandardFileWait>,
+    modal_wait: Option<ModalWait>,
     terminal: Option<Stop>,
     volume_flush: Option<(GuestPtr, crate::abi::Reply)>,
     pub(crate) lifecycle: Option<crate::lifecycle::Lifecycle>,
@@ -149,6 +159,7 @@ impl Runtime {
             control_wait: None,
             menu_wait: None,
             standard_file_wait: None,
+            modal_wait: None,
             terminal: None,
             volume_flush: None,
             lifecycle: None,
@@ -1066,6 +1077,23 @@ impl Runtime {
                         } => {
                             self.memory.move_bytes(source, destination, count)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+                        }
+                        Call::Dialog(crate::dialogs::Op::Modal { filter, item_hit }) => {
+                            if self.graphics.is_none() {
+                                return Err(Error::Graphics("ModalDialog requires a GPU".into()));
+                            }
+                            let manager = std::mem::take(&mut self.process.dialogs);
+                            let result = manager.begin_modal(
+                                &mut self.memory,
+                                &mut self.process,
+                                filter,
+                                item_hit,
+                            );
+                            self.process.dialogs = manager;
+                            let dialog = result?;
+                            if let Some(stop) = self.poll_modal(ModalWait { dialog, reply })? {
+                                return Ok(stop);
+                            }
                         }
                         Call::Dialog(op) => {
                             let value = if matches!(
@@ -2768,6 +2796,11 @@ impl Runtime {
                 return Ok(Some(stop));
             }
         }
+        if let Some(wait) = self.modal_wait.take() {
+            if let Some(stop) = self.poll_modal(wait)? {
+                return Ok(Some(stop));
+            }
+        }
         if let Some(wait) = self.standard_file_wait.take() {
             if let Some(stop) = self.poll_standard_file(wait)? {
                 return Ok(Some(stop));
@@ -2845,6 +2878,7 @@ impl Runtime {
             control: self.control_wait.take(),
             menu: self.menu_wait.take(),
             file: self.standard_file_wait.take(),
+            modal: self.modal_wait.take(),
             sound: self.sound_wait.take(),
             play: self.play_wait.take(),
         })
@@ -2855,6 +2889,7 @@ impl Runtime {
         self.control_wait = waits.control;
         self.menu_wait = waits.menu;
         self.standard_file_wait = waits.file;
+        self.modal_wait = waits.modal;
         self.sound_wait = waits.sound;
         self.play_wait = waits.play;
     }
@@ -3025,6 +3060,85 @@ impl Runtime {
             ticks,
             self.process.input,
         )
+    }
+    fn finish_modal(&mut self, wait: ModalWait, hit: i16) -> Result<Option<Stop>> {
+        wait.dialog
+            .finish(&mut self.memory, &mut self.process, hit)?;
+        wait.reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
+        Ok(None)
+    }
+    fn modal_event(&mut self, wait: &mut ModalWait) -> Result<Option<i16>> {
+        let ticks = self.tick_count()?;
+        let gpu = self
+            .graphics
+            .as_ref()
+            .ok_or_else(|| Error::Graphics("ModalDialog requires a GPU".into()))?;
+        let mut manager = std::mem::take(&mut self.process.dialogs);
+        let result = manager.modal_event(
+            &mut self.memory,
+            &mut self.process,
+            gpu,
+            &mut wait.dialog,
+            ticks,
+        );
+        self.process.dialogs = manager;
+        result
+    }
+    fn poll_modal(&mut self, mut wait: ModalWait) -> Result<Option<Stop>> {
+        self.memory.validate_write(wait.dialog.destination, 2)?;
+        if wait.dialog.tracking() {
+            let gpu = self
+                .graphics
+                .as_ref()
+                .ok_or_else(|| Error::Graphics("modal tracking requires GPU".into()))?;
+            if let Some(hit) =
+                wait.dialog
+                    .poll_tracking(&mut self.memory, &mut self.process, gpu)?
+            {
+                return self.finish_modal(wait, hit);
+            }
+            if wait.dialog.tracking() {
+                self.modal_wait = Some(wait);
+                return Ok(Some(Stop::Waiting { ticks: 1 }));
+            }
+        }
+        for _ in 0..20 {
+            let ticks = self.tick_count()?;
+            let found = self.receive_toolbox_event(0xff7f, wait.dialog.event(), true, ticks)?;
+            if wait.dialog.filter != 0 && !wait.dialog.outside_click(&self.memory, &self.process)? {
+                if self.continuations.len() >= 32 {
+                    return Err(Error::Cpu("callback depth exceeded".into()));
+                }
+                self.memory.write(wait.dialog.hit(), &[0; 2])?;
+                let (callee, result) = crate::callback::modal_filter(
+                    &self.cpu,
+                    &mut self.memory,
+                    wait.dialog.filter,
+                    [
+                        wait.dialog.dialog,
+                        wait.dialog.event().0,
+                        wait.dialog.hit().0,
+                    ],
+                )?;
+                let caller = std::mem::replace(&mut self.cpu, callee);
+                self.continuations.push(Continuation {
+                    caller,
+                    resume: Resume::Modal {
+                        wait: Box::new(wait),
+                        result,
+                    },
+                });
+                return Ok(None);
+            }
+            if let Some(hit) = self.modal_event(&mut wait)? {
+                return self.finish_modal(wait, hit);
+            }
+            if !found || wait.dialog.tracking() {
+                break;
+            }
+        }
+        self.modal_wait = Some(wait);
+        Ok(Some(Stop::Waiting { ticks: 1 }))
     }
     fn poll_standard_file(&mut self, mut wait: StandardFileWait) -> Result<Option<Stop>> {
         let ticks = self.tick_count()?;
@@ -3270,6 +3384,17 @@ impl Runtime {
                     .checked_add(1)
                     .ok_or_else(|| Error::Cpu("sound callback diagnostic count overflow".into()))?;
                 self.restore_waits(*waits);
+            }
+            Resume::Modal { mut wait, result } => {
+                if result.read(&self.memory, value)? {
+                    let hit = self.memory.u16(wait.dialog.hit())? as i16;
+                    return self.finish_modal(*wait, hit);
+                }
+                if let Some(hit) = self.modal_event(&mut wait)? {
+                    return self.finish_modal(*wait, hit);
+                }
+                self.modal_wait = Some(*wait);
+                return Ok(Some(Stop::Waiting { ticks: 1 }));
             }
             Resume::StandardFile { mut wait, result } => {
                 wait.dialog.filtered(result.read(&self.memory, value)?)?;

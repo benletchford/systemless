@@ -6,6 +6,7 @@ use crate::{
     Error, Result,
 };
 mod resources;
+pub(crate) use resources::modal::Modal;
 use std::collections::BTreeMap;
 const STRINGS: GuestPtr = GuestPtr(0xaa0);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,10 @@ pub enum Op {
         set: bool,
     },
     Draw(u32),
+    Modal {
+        filter: u32,
+        item_hit: GuestPtr,
+    },
     SelectText {
         dialog: u32,
         number: i16,
@@ -96,6 +101,7 @@ impl Dialogs {
             | Op::Item { .. }
             | Op::Dispose { .. }
             | Op::DefaultItem { .. }
+            | Op::Modal { .. }
             | Op::SelectText { .. }
             | Op::Draw(_)
             | Op::Text { .. } => Err(bad("dialog operation requires its record/value route")),

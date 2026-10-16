@@ -105,6 +105,7 @@ pub enum Service {
     InitDialogs,
     DialogItemText(bool),
     DrawDialog,
+    ModalDialog,
     SelectDialogItemText,
     SetDialogDefaultItem,
     GetNewDialog,
@@ -493,6 +494,7 @@ impl Abi {
             b"SetDialogItemText" | b"SetIText" => Some(Service::DialogItemText(true)),
             b"GetDialogItemText" | b"GetIText" => Some(Service::DialogItemText(false)),
             b"SelIText" | b"SelectDialogItemText" => Some(Service::SelectDialogItemText),
+            b"ModalDialog" => Some(Service::ModalDialog),
             b"DrawDialog" => Some(Service::DrawDialog),
             b"SetDialogDefaultItem" => Some(Service::SetDialogDefaultItem),
             b"GetNewDialog" => Some(Service::GetNewDialog),
@@ -3626,6 +3628,22 @@ impl Abi {
                 c.dar[15] = next;
                 Ok((Call::Dialog(crate::dialogs::Op::Draw(dialog)), Reply::None))
             }
+            0xa991 => {
+                let args = memory.read(GuestPtr(sp), 8)?;
+                let item_hit = GuestPtr(u32::from_be_bytes(args[..4].try_into().unwrap()));
+                if item_hit.0 == 0 {
+                    return Err(Error::Cpu("nil ModalDialog itemHit".into()));
+                }
+                memory.validate_write(item_hit, 2)?;
+                let filter = u32::from_be_bytes(args[4..].try_into().unwrap());
+                c.dar[15] = sp
+                    .checked_add(8)
+                    .ok_or_else(|| Error::Cpu("ModalDialog stack overflow".into()))?;
+                Ok((
+                    Call::Dialog(crate::dialogs::Op::Modal { filter, item_hit }),
+                    Reply::None,
+                ))
+            }
             0xa97e => {
                 let args = memory.read(GuestPtr(sp), 10)?;
                 let word = |i| i16::from_be_bytes(args[i..i + 2].try_into().unwrap());
@@ -4073,6 +4091,17 @@ impl Abi {
                 start: c.gpr[5] as i16,
                 end: c.gpr[6] as i16,
             }),
+            Service::ModalDialog => {
+                let item_hit = GuestPtr(c.gpr[4]);
+                if item_hit.0 == 0 {
+                    return Err(Error::Cpu("nil ModalDialog itemHit".into()));
+                }
+                memory.validate_write(item_hit, 2)?;
+                Call::Dialog(crate::dialogs::Op::Modal {
+                    filter: c.gpr[3],
+                    item_hit,
+                })
+            }
             Service::DrawDialog => Call::Dialog(crate::dialogs::Op::Draw(c.gpr[3])),
             Service::SetDialogDefaultItem => Call::Dialog(crate::dialogs::Op::DefaultItem {
                 dialog: c.gpr[3],
@@ -4783,6 +4812,7 @@ impl Abi {
                         | Service::SetDevice
                         | Service::GetDialogItem
                         | Service::SelectDialogItemText
+                        | Service::ModalDialog
                         | Service::DrawDialog
                         | Service::DialogItemText(_)
                         | Service::DisposeDialog(_)

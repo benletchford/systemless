@@ -2,6 +2,7 @@
 use super::*;
 mod drawing;
 mod editing;
+pub(crate) mod modal;
 mod text;
 use crate::{
     controls::{NewControl, Op as ControlOp},

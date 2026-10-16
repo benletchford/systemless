@@ -8918,3 +8918,78 @@ correction: /tmp/systemless-dialog-edit-hidden-final-lint.txt and
 checks pass. The original pending ModalDialog frame contains itemHit$0082A9F6
 and filterProc0: the next original slice needs the standard modal filter, while
 general guest-filter callbacks must retain their real continuation/ABI route.
+
+
+## Cooperative modal input, guest filters and original pilot creation (2026-10-17)
+
+ModalDialog is now shared by native $A991 and PPC import adapters. Both preflight
+itemHit before dispatch; native validates before popping its eight-byte frame.
+A cooperative wait keeps the pending procedure reply, receives real OS/window
+events, and uses existing TextEdit/control/wgpu services. No no-input item is
+fabricated. Nil filtering, enabled/disabled text reports, Tab/Shift-Tab, default
+Return/Enter, real button release/cancel, updates and activation are covered.
+Custom guest filters execute through real same-ISA callback frames with three
+pointers; FALSE dispatches the mutated EventRecord, TRUE returns the guest's
+item value. Outside clicks are rejected before filtering. Modal state participates
+in timer/VBL/sound wait suspension; a direct timer test exercises both CPUs.
+Editable-field mouse click/drag selection, external DialogSelect, custom sounds,
+edit-menu commands and Mixed-ISA filters remain explicitly unfinished.
+
+Final validation:141 distinct cases pass:80 core,18 dialog_resources,3 mouse_wait,
+7 retrace,6 standard_file,16 textedit,11 timers. All25 GPU cases in those scopes execute
+on a real adapter, none skipped. /tmp/systemless-modal-final-tests.txt exits0 for
+140 cases (17 dialog tests); /tmp/systemless-modal-timer-test.txt exits0 for the new
+timer/modal case,17 filtered out, counted once. The earlier modal helper attempted
+to replace a CPU while it was paused and was corrected; an exploratory fixture
+also used a private coordinate helper and was changed to the public API. Initial
+14 pass/1 fixture-fail and failed compile runs are superseded, not cumulative.
+Final strict lib/bins/dialog test/tracer lint exits0:
+/tmp/systemless-modal-pilot-final-lint.txt. All-target check exits0:
+/tmp/systemless-modal-all-targets.txt. Final tracer build exits0:
+/tmp/systemless-modal-pilot-tracer-build.txt. Sequential changed-file formatting/
+whitespace is checked separately. Full-suite/CI/native/browser remain unverified.
+
+The tracer adds --key-at-poll POLL:CODE:down|up[:TEXT], distinct from the existing
+guest-instruction clock. Both call the real shared Keyboard driver; polling-based
+actions can wake a blocked modal procedure. Read-only text logging now captures
+both SetDialogItemText and GetDialogItemText output. Original input is unchanged
+CODE plus the prior button-tracking volume; all outputs use create-new filenames.
+
+Three bounded original EV replays exercise N, b/e/n, Return, then (in later runs)
+a second Return accepting default shuttle name Journeyman. The original reads
+back "ben" twice, disposes the first dialog, opens DLOG3001 for shuttle naming,
+then reads back "Journeyman" twice and disposes that dialog. The first run stops
+at its8.1Mpoll budget in the shuttle modal; the second8.06Mrun stops at
+instruction8,048,873,PC01025C5E during subsequent guest arithmetic. Neither is an
+unsupported-call fault. Both volumes remain the prior identical preferences-only
+checkpoint. The extended10Mrun makes further real progress and stops at
+AliasDispatch selector$0002 (NewAlias),PC0002E7B2,instruction9,157,968. Latest
+decoded DeleteSpec is not the failing operation. It is building the Last Pilot
+reference after creating the pilot. Completed original sound/timer/VBL callbacks
+remain0; this is not original audio or gameplay acceptance.
+
+Independent Python verification passes CRC/catalog/framing and resource bounds.
+Only new file:parent17(Pilots),name ben,node53,empty data fork,resource fork18,952
+bytes. Finder bytes:4d70954c4d9172630000000000000000. Resources:type4d70954c,
+ID128=9,646bytes,ID129=8,958bytes. Resource SHA256
+c75ab0d0e07173942ef9a5aa0fd5d44f55e05c2967650838a5d3ddf001730f4c.
+All original directories and companion catalog/fork bytes remain unchanged;
+preferences51->52 with identical metadata/forks; next catalog node52->54. Output
+volume7,258,396bytes,SHA256
+0ba0173bc1a866864f8006e5266222a893df677817949e52bb6d9a143bc2f698.
+This verifies a committed resource-backed pilot in the diagnostic snapshot, not
+application re-open, native host persistence, payload gameplay correctness or flight.
+The tracer still acknowledges volume flushes as memory-only barriers.
+
+Private durable input/output volumes, screenshots, trace tail and standalone
+independent verifier are Git-ignored in future/target/private-originals/ev/evidence/
+with prefix2026-10-17-modal. Original command/readback/capture limits are in
+original-applications.md. The final fault capture has a cleared white rectangle
+over the mostly black game area; it is not a flight frame. The earlier capture
+shows the fully drawn shuttle-naming dialog.
+
+Next executable slice: real NewAlias records and Last Pilot reference handling
+through shared catalog/resource services, then actual re-open/flight interaction.
+Marathon's TextFont4/no-current-port boundary has not been replayed here. Neither
+priority game is playable. Full rebuild and complete wgpu text/library integration
+remain active, including modal mouse editing and all other unfinished acceptance.

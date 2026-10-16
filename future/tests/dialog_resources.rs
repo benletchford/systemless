@@ -156,6 +156,7 @@ fn setup(kind: u8) -> LoadedApplication {
             b"SelectDialogItemText",
             b"SelIText",
             b"TEKey",
+            b"ModalDialog",
         ],
         512,
     );
@@ -169,7 +170,7 @@ fn setup(kind: u8) -> LoadedApplication {
             GuestPtr(0x50000000),
             vec![
                 0xa9, 0x7c, 0xa9, 0x8d, 0xa9, 0x82, 0xa9, 0x83, 0xaa, 0x68, 0xa9, 0x81, 0xa9, 0x8f,
-                0xa9, 0x90, 0xa9, 0x7e,
+                0xa9, 0x90, 0xa9, 0x7e, 0xa9, 0x91, 0x4e, 0x71, 0x60, 0xfe,
             ],
             Permissions::RX,
         )
@@ -879,4 +880,451 @@ fn native_edit_selection_frame_is_read_before_pop_and_keeps_void_registers() {
     let Cpu::M68k(c) = &cpu else { unreachable!() };
     assert_eq!(c.dar[15], 0x100a);
     assert_eq!(c.dar[0], 0xaabbccdd);
+}
+
+fn modal_start(a: &mut LoadedApplication, native: bool, filter: u32) -> Stop {
+    let sp = STACK_BASE + 0x8000;
+    a.runtime
+        .memory
+        .write(GuestPtr(0x51000080), &[0x5a; 4])
+        .unwrap();
+    if native {
+        let mut frame = 0x51000080u32.to_be_bytes().to_vec();
+        frame.extend(filter.to_be_bytes());
+        a.runtime.memory.write(GuestPtr(sp), &frame).unwrap();
+        a.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000012, sp);
+        if let Cpu::M68k(c) = &mut a.runtime.cpu {
+            c.dar[0] = 0x12345678;
+        }
+    } else {
+        let tv = a
+            .runtime
+            .memory
+            .u32(GuestPtr(a.info.toc_or_a5 + 8 + 17 * 4))
+            .unwrap();
+        let pc = a.runtime.memory.u32(GuestPtr(tv)).unwrap();
+        a.runtime.cpu = Cpu::new(Architecture::PowerPc, pc, sp);
+        if let Cpu::PowerPc(c) = &mut a.runtime.cpu {
+            c.gpr[3] = filter;
+            c.gpr[4] = 0x51000080;
+            c.lr = 0x52000100;
+        }
+    }
+    a.runtime.advance(1).unwrap()
+}
+fn modal_setup(kind: u8) -> (LoadedApplication, u32) {
+    let mut a = setup(kind);
+    let w = invoke(&mut a, 2, &[128, 0, u32::MAX]);
+    a.runtime
+        .memory
+        .map(
+            GuestPtr(0x52000100),
+            0x48000000u32.to_be_bytes().to_vec(),
+            Permissions::RX,
+        )
+        .unwrap();
+    a.runtime
+        .process
+        .ports
+        .unwrap()
+        .set(&mut a.runtime.memory, GuestPtr(w))
+        .unwrap();
+    (a, w)
+}
+fn key(
+    a: &mut LoadedApplication,
+    k: &mut systemless_future::host_input::Keyboard,
+    code: u8,
+    down: bool,
+) {
+    k.key(
+        &mut a.runtime.memory,
+        &mut a.runtime.process.input,
+        code,
+        None,
+        down,
+        false,
+    )
+    .unwrap();
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn modal_keyboard_waits_edits_disabled_fields_tabs_and_returns_through_both_cpus() {
+    for native in [false, true] {
+        let (mut a, w) = modal_setup(0x90);
+        invoke(&mut a, 14, &[w, 2, 0, 32767]);
+        let (_, text, _) = item(&mut a, w, 2, false);
+        let (_, other, _) = item(&mut a, w, 3, false);
+        let mut k = systemless_future::host_input::Keyboard::default();
+        let free = a.runtime.process.free_memory();
+        assert!(matches!(
+            modal_start(&mut a, native, 0),
+            Stop::Waiting { .. }
+        ));
+        let paused = a.runtime.instructions;
+        assert!(matches!(
+            a.runtime.advance(1).unwrap(),
+            Stop::Waiting { .. }
+        ));
+        assert_eq!(a.runtime.instructions, paused);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(0x51000080)).unwrap(), 0x5a5a);
+        key(&mut a, &mut k, 0, true);
+        key(&mut a, &mut k, 0, false);
+        assert!(matches!(
+            a.runtime.advance(1).unwrap(),
+            Stop::Waiting { .. }
+        ));
+        assert_eq!(handle_data(&a, text, 1), b"a");
+        key(&mut a, &mut k, 48, true);
+        key(&mut a, &mut k, 48, false);
+        assert!(matches!(
+            a.runtime.advance(1).unwrap(),
+            Stop::Waiting { .. }
+        ));
+        assert_eq!(a.runtime.memory.u16(GuestPtr(w + 164)).unwrap(), 2);
+        key(&mut a, &mut k, 11, true);
+        key(&mut a, &mut k, 11, false);
+        assert!(matches!(
+            a.runtime.advance(1).unwrap(),
+            Stop::Waiting { .. }
+        ));
+        assert_eq!(handle_data(&a, other, 1), b"b");
+        key(&mut a, &mut k, 36, true);
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(0x51000080)).unwrap(), 1);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(0x51000082)).unwrap(), 0x5a5a);
+        assert!(a.runtime.process.free_memory() >= free); // update clipping may release storage
+        match &a.runtime.cpu {
+            Cpu::M68k(c) => {
+                assert_eq!(c.dar[0], 0x12345678);
+                assert_eq!(c.dar[15], STACK_BASE + 0x8008);
+            }
+            Cpu::PowerPc(c) => {
+                assert_eq!(c.gpr[3], 0);
+                assert_eq!(c.gpr[4], 0x51000080);
+            }
+        }
+    }
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn modal_real_guest_filters_receive_three_pointers_and_override_item_hit() {
+    for native in [false, true] {
+        let (mut a, w) = modal_setup(0x90);
+        let routine = if native {
+            // movea.l4(sp),a0; move.w#7,(a0); move.b#1,16(sp); rtd#12
+            let code = [0x206fu16, 4, 0x30bc, 7, 0x1f7c, 1, 16, 0x4e74, 12];
+            a.runtime
+                .memory
+                .map(
+                    GuestPtr(0x52000000),
+                    code.into_iter().flat_map(u16::to_be_bytes).collect(),
+                    Permissions::RX,
+                )
+                .unwrap();
+            0x52000000
+        } else {
+            // li r0,7; sth r0,0(r5); li r3,1; blr
+            a.runtime
+                .memory
+                .map(
+                    GuestPtr(0x52000000),
+                    [0x38000007u32, 0xb0050000, 0x38600001, 0x4e800020]
+                        .into_iter()
+                        .flat_map(u32::to_be_bytes)
+                        .collect(),
+                    Permissions::RX,
+                )
+                .unwrap();
+            let mut rd = vec![0; 40];
+            support::w16(&mut rd, 0, 0xaafe);
+            rd[2] = 7;
+            support::w32(&mut rd, 12, 0xfd0);
+            rd[17] = 1;
+            support::w32(&mut rd, 20, 0x52000220);
+            support::w32(&mut rd, 32, 0x52000000);
+            support::w32(&mut rd, 36, 0x11223344);
+            a.runtime
+                .memory
+                .map(GuestPtr(0x52000200), rd, Permissions::RX)
+                .unwrap();
+            0x52000200
+        };
+        systemless_future::events::post(
+            &mut a.runtime.memory,
+            1,
+            0,
+            0,
+            systemless_future::events::Input {
+                vertical: 1,
+                horizontal: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(modal_start(&mut a, native, routine), Stop::Budget);
+        let event = match &a.runtime.cpu {
+            Cpu::M68k(c) => a.runtime.memory.u32(GuestPtr(c.dar[15] + 8)).unwrap(),
+            Cpu::PowerPc(c) => c.gpr[4],
+        };
+        assert_ne!(
+            a.runtime.memory.u16(GuestPtr(event)).unwrap(),
+            1,
+            "outside click must not reach filter"
+        );
+        match &a.runtime.cpu {
+            Cpu::M68k(c) => {
+                assert_eq!(a.runtime.memory.u32(GuestPtr(c.dar[15] + 12)).unwrap(), w);
+            }
+            Cpu::PowerPc(c) => {
+                assert_eq!(c.gpr[3], w);
+                assert_eq!(c.gpr[2], 0x11223344);
+            }
+        }
+        for _ in 0..20 {
+            a.runtime.advance(1).unwrap();
+            if a.runtime.memory.u16(GuestPtr(0x51000080)).unwrap() == 7 {
+                break;
+            }
+        }
+        assert_eq!(a.runtime.memory.u16(GuestPtr(0x51000080)).unwrap(), 7);
+        if let Cpu::M68k(c) = &a.runtime.cpu {
+            assert_eq!(c.dar[0], 0x12345678);
+        } else if let Cpu::PowerPc(c) = &a.runtime.cpu {
+            assert_eq!(c.gpr[3], routine);
+        }
+    }
+}
+#[test]
+fn modal_native_destination_is_preflighted_before_stack_pop() {
+    use systemless_future::{abi::Abi, memory::Memory};
+    for destination in [0u32, 0x2000] {
+        let mut m = Memory::default();
+        let mut f = destination.to_be_bytes().to_vec();
+        f.extend([0; 4]);
+        m.map(GuestPtr(0x1000), f, Permissions::RW).unwrap();
+        m.map(GuestPtr(0x2000), vec![0; 1], Permissions::RW)
+            .unwrap();
+        let mut c = Cpu::new(Architecture::M68k, 0, 0x1000);
+        let Cpu::M68k(c) = &mut c else { unreachable!() };
+        assert!(Abi::trap(0xa991, c, &m).is_err());
+        assert_eq!(c.dar[15], 0x1000);
+    }
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn modal_filter_false_dispatches_its_modified_guest_event_through_textedit() {
+    for native in [false, true] {
+        let (mut a, w) = modal_setup(16);
+        invoke(&mut a, 14, &[w, 2, 0, 32767]);
+        let (_, text, _) = item(&mut a, w, 2, false);
+        let routine = if native {
+            // Rewrite the event as keyDown with character z, then decline it.
+            let code = [0x206fu16, 8, 0x30bc, 3, 0x117c, 0x7a, 5, 0x4e74, 12];
+            a.runtime
+                .memory
+                .map(
+                    GuestPtr(0x52000000),
+                    code.into_iter().flat_map(u16::to_be_bytes).collect(),
+                    Permissions::RX,
+                )
+                .unwrap();
+            0x52000000
+        } else {
+            let code = [
+                0x38000003u32,
+                0xb0040000,
+                0x3800007a,
+                0x98040005,
+                0x38600000,
+                0x4e800020,
+            ];
+            a.runtime
+                .memory
+                .map(
+                    GuestPtr(0x52000000),
+                    code.into_iter().flat_map(u32::to_be_bytes).collect(),
+                    Permissions::RX,
+                )
+                .unwrap();
+            let mut rd = vec![0; 40];
+            support::w16(&mut rd, 0, 0xaafe);
+            rd[2] = 7;
+            support::w32(&mut rd, 12, 0xfd0);
+            rd[17] = 1;
+            support::w32(&mut rd, 20, 0x52000220);
+            support::w32(&mut rd, 32, 0x52000000);
+            a.runtime
+                .memory
+                .map(GuestPtr(0x52000200), rd, Permissions::RX)
+                .unwrap();
+            0x52000200
+        };
+        assert_eq!(modal_start(&mut a, native, routine), Stop::Budget);
+        for _ in 0..24 {
+            a.runtime.advance(1).unwrap();
+            if a.runtime.memory.u16(GuestPtr(0x51000080)).unwrap() == 2 {
+                break;
+            }
+        }
+        assert_eq!(a.runtime.memory.u16(GuestPtr(0x51000080)).unwrap(), 2);
+        assert_eq!(handle_data(&a, text, 1), b"z");
+    }
+}
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn modal_control_tracks_real_press_release_and_cancels_release_outside() {
+    let (mut a, _w) = modal_setup(0x90);
+    assert!(matches!(
+        modal_start(&mut a, false, 0),
+        Stop::Waiting { .. }
+    ));
+    let mut pointer = systemless_future::host_input::Pointer::default();
+    let ports = a.runtime.process.ports.unwrap();
+    let point = ports
+        .point_coordinates(&a.runtime.memory, [0, 90, 0, 180], true)
+        .unwrap();
+    let y = i16::from_be_bytes(point[..2].try_into().unwrap());
+    let x = i16::from_be_bytes(point[2..].try_into().unwrap());
+    pointer
+        .motion(
+            &mut a.runtime.process.input,
+            &mut a.runtime.memory,
+            (f64::from(x), f64::from(y)),
+            (512, 342),
+            (512, 342),
+        )
+        .unwrap();
+    pointer
+        .button(&mut a.runtime.memory, &mut a.runtime.process.input, true)
+        .unwrap();
+    assert!(matches!(
+        a.runtime.advance(1).unwrap(),
+        Stop::Waiting { .. }
+    ));
+    assert!(matches!(
+        a.runtime.advance(1).unwrap(),
+        Stop::Waiting { .. }
+    ));
+    pointer
+        .motion(
+            &mut a.runtime.process.input,
+            &mut a.runtime.memory,
+            (1.0, 30.0),
+            (512, 342),
+            (512, 342),
+        )
+        .unwrap();
+    pointer
+        .button(&mut a.runtime.memory, &mut a.runtime.process.input, false)
+        .unwrap();
+    assert!(matches!(
+        a.runtime.advance(1).unwrap(),
+        Stop::Waiting { .. }
+    ));
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0x51000080)).unwrap(), 0x5a5a);
+    pointer
+        .motion(
+            &mut a.runtime.process.input,
+            &mut a.runtime.memory,
+            (f64::from(x), f64::from(y)),
+            (512, 342),
+            (512, 342),
+        )
+        .unwrap();
+    pointer
+        .button(&mut a.runtime.memory, &mut a.runtime.process.input, true)
+        .unwrap();
+    assert!(matches!(
+        a.runtime.advance(1).unwrap(),
+        Stop::Waiting { .. }
+    ));
+    pointer
+        .button(&mut a.runtime.memory, &mut a.runtime.process.input, false)
+        .unwrap();
+    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+    assert_eq!(a.runtime.memory.u16(GuestPtr(0x51000080)).unwrap(), 1);
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn modal_wait_survives_real_timer_callbacks_and_restores_each_cpu_before_reply() {
+    use systemless_future::timers::{Action, Op};
+    for native in [false, true] {
+        let (mut a, _) = modal_setup(0x90);
+        let task = GuestPtr(0x510000a0);
+        a.runtime.memory.write(task, &[0; 96]).unwrap();
+        let routine = if native {
+            a.runtime
+                .memory
+                .map(
+                    GuestPtr(0x52000000),
+                    [0x52a9u16, 24, 0x4e75]
+                        .into_iter()
+                        .flat_map(u16::to_be_bytes)
+                        .collect(),
+                    Permissions::RX,
+                )
+                .unwrap();
+            0x52000000
+        } else {
+            a.runtime
+                .memory
+                .map(
+                    GuestPtr(0x52000000),
+                    [0x80830018u32, 0x38840001, 0x90830018, 0x4e800020]
+                        .into_iter()
+                        .flat_map(u32::to_be_bytes)
+                        .collect(),
+                    Permissions::RX,
+                )
+                .unwrap();
+            let mut rd = [0; 40];
+            rd[..4].copy_from_slice(&[0xaa, 0xfe, 7, 0]);
+            support::w32(&mut rd, 12, 0xb802);
+            rd[17] = 1;
+            support::w32(&mut rd, 20, task.0 + 64);
+            support::w32(&mut rd, 32, 0x52000000);
+            a.runtime.memory.write(GuestPtr(task.0 + 32), &rd).unwrap();
+            task.0 + 32
+        };
+        a.runtime
+            .memory
+            .write(GuestPtr(task.0 + 6), &routine.to_be_bytes())
+            .unwrap();
+        for action in [Action::Insert, Action::Prime(1)] {
+            a.runtime
+                .process
+                .timers
+                .call(&mut a.runtime.memory, Op { task, action })
+                .unwrap();
+        }
+        assert!(matches!(
+            modal_start(&mut a, native, 0),
+            Stop::Waiting { .. }
+        ));
+        a.runtime.elapse_ticks(1).unwrap();
+        for _ in 0..16 {
+            a.runtime.advance(1).unwrap();
+            if a.runtime.services.completed_timer_callbacks == 1 {
+                break;
+            }
+        }
+        assert_eq!(a.runtime.services.completed_timer_callbacks, 1);
+        assert_eq!(a.runtime.memory.u32(GuestPtr(task.0 + 24)).unwrap(), 1);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(0x51000080)).unwrap(), 0x5a5a);
+        assert!(matches!(
+            a.runtime.advance(1).unwrap(),
+            Stop::Waiting { .. }
+        ));
+        let mut k = systemless_future::host_input::Keyboard::default();
+        key(&mut a, &mut k, 36, true);
+        assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+        assert_eq!(a.runtime.memory.u16(GuestPtr(0x51000080)).unwrap(), 1);
+        match &a.runtime.cpu {
+            Cpu::M68k(c) => assert_eq!(c.dar[0], 0x12345678),
+            Cpu::PowerPc(c) => assert_eq!(c.gpr[3], 0),
+        }
+    }
 }

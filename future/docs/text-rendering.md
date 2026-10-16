@@ -233,3 +233,14 @@ dialog with the pilot name selected before stopping at missing ModalDialog.
 This extends shared UI text coverage; it does not complete modal editing events,
 all text APIs/styles, Glyphon production integration or native/browser acceptance.
 Full scope and library evaluation above remain required.
+
+
+## Modal input through shared text (2026-10-17)
+
+Original EV now accepts real host keyboard entry through ModalDialog and TextEdit,
+reads back pilot name ben, and accepts the shuttle-name dialog. Text mutations,
+selection/caret and control feedback use existing wgpu services. Native/PPC
+fixtures also execute real guest modal filters and timer callbacks around a
+paused dialog. This extends event-driven GPU text coverage; editable-field mouse
+selection, full DialogSelect/edit commands, complete styles/APIs, library
+production integration and native/browser acceptance remain unfinished.

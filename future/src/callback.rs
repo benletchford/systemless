@@ -94,6 +94,58 @@ pub(crate) fn file_filter(
     }
 }
 
+/// Pascal Boolean(DialogPtr, EventRecord*, Integer*), same-ISA prepared UPP.
+pub(crate) fn modal_filter(
+    caller: &Cpu,
+    memory: &mut Memory,
+    routine: u32,
+    arguments: [u32; 3],
+) -> Result<(Cpu, BooleanResult)> {
+    let routine = resolve(caller, memory, routine, 0xfd0)?;
+    match caller {
+        Cpu::M68k(c) => {
+            memory.fetch(GuestPtr(routine), 2, 2)?;
+            let sp = c.dar[15]
+                .checked_sub(18)
+                .filter(|s| s.is_multiple_of(2))
+                .ok_or_else(|| Error::Cpu("invalid modal callback stack".into()))?;
+            memory.validate_write(GuestPtr(sp), 18)?;
+            let mut frame = Vec::new();
+            frame.extend(RETURN_GATE.to_be_bytes());
+            for arg in arguments.into_iter().rev() {
+                frame.extend(arg.to_be_bytes());
+            }
+            frame.extend([0; 2]);
+            let mut callee = Cpu::new(Architecture::M68k, routine, sp);
+            if let Cpu::M68k(next) = &mut callee {
+                next.dar = c.dar;
+                next.set_sr(c.get_sr());
+                next.dar[15] = sp;
+            }
+            memory.write(GuestPtr(sp), &frame)?;
+            Ok((callee, BooleanResult::Stack(GuestPtr(sp + 16))))
+        }
+        Cpu::PowerPc(c) => {
+            let descriptor = memory.read(GuestPtr(routine), 8)?;
+            let entry = u32::from_be_bytes(descriptor[..4].try_into().unwrap());
+            let toc = u32::from_be_bytes(descriptor[4..].try_into().unwrap());
+            memory.fetch(GuestPtr(entry), 4, 4)?;
+            let sp = crate::lifecycle::Lifecycle::validate_nested(caller, memory)?;
+            let mut frame = [0; 64];
+            frame[..4].copy_from_slice(&c.gpr[1].to_be_bytes());
+            let mut callee = Cpu::new(Architecture::PowerPc, entry, sp);
+            if let Cpu::PowerPc(next) = &mut callee {
+                next.gpr = c.gpr;
+                next.gpr[1] = sp;
+                next.gpr[2] = toc;
+                next.gpr[3..6].copy_from_slice(&arguments);
+            }
+            memory.write(GuestPtr(sp), &frame)?;
+            Ok((callee, BooleanResult::Register))
+        }
+    }
+}
+
 /// Pascal void(SndChannelPtr, SndCommandPtr). The caller's whole CPU is retained
 /// by Runtime; this adapter never runs from a native audio callback.
 pub(crate) fn sound(caller: &Cpu, memory: &mut Memory, routine: u32, channel: u32) -> Result<Cpu> {

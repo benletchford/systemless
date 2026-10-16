@@ -3581,3 +3581,45 @@ Primary contracts: [DialogRecord](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbo
 [SelectDialogItemText](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-420.html),
 [text access](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-416.html), and
 [disabled item meaning](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-381.html).
+
+
+### Cooperative ModalDialog slice
+
+Native$A991 and PPC ModalDialog decode the same filter/itemHit request and
+preflight the complete nonnil two-byte output before entering the shared service.
+The visible current dialog must be manager-owned. A bounded host wait retains
+the pending ABI reply and a private guest EventRecord/output scratch allocation;
+it never returns a fabricated item when no event is available. The OS queue and
+Window Manager remain authoritative, with disk-insertion events excluded by
+mask$FF7F. Input can wake the wait without advancing guest CPU instructions.
+
+The nil standard filter accepts Return/Enter through the live default button.
+Text entry, deletion/arrows supported by TextEdit, Tab/Shift-Tab, selection/caret
+and button tracking use the existing shared managers and wgpu. Enabled editable
+items report their number after editing; disabled editable items still edit but
+do not return an item report. Button/radio/checkbox tracking waits for an actual
+release and cancels releases outside; caller code remains responsible for changing
+control values. Updates use BeginUpdate/DrawDialog/EndUpdate and activation uses
+TextEdit. Outside-content mouse clicks are rejected before guest filtering; NIL
+DABeeper retains the existing explicit silent boundary.
+
+Real guest modal filters receive DialogPtr,EventRecord*,itemHit* through an
+18-byte 68K Pascal frame or prepared same-ISA PPC RoutineDescriptor (procInfo$FD0).
+The whole caller CPU is retained. TRUE returns the filter's signed item value;
+FALSE dispatches the possibly modified guest EventRecord. No host filter lambda
+replaces guest execution. Modal waits join the suspension graph used by timer,
+VBL and sound continuations. Mixed-ISA descriptors remain explicitly unsupported.
+
+This is a keyboard/default-button/filter/control-tracking slice, not complete
+Dialog Manager acceptance. Editable-field mouse click/drag/double-click selection
+currently fails explicitly; external DialogSelect, custom alert sounds, edit-menu
+commands and broader modal/modeless behavior remain open. Full native/browser,
+audio and original-gameplay acceptance remain separate.
+
+Primary contract: [ModalDialog](https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-426.html).
+
+The diagnostic tracer's --key-at-poll uses bounded host advance-call counts, so
+real host key delivery can occur while the guest instruction clock is paused.
+--key-at retains its original guest-instruction clock. Both call the same host
+Keyboard driver; neither changes PCs, return values or text handles directly.
+Read-only GetDialogItemText logging records actual guest-visible name outputs.

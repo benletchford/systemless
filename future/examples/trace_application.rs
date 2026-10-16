@@ -9,7 +9,7 @@ struct KeyAction {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--key-at INSTRUCTION:CODE:down|up[:TEXT]] [--trace-range START:END]".into());
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--key-at INSTRUCTION:CODE:down|up[:TEXT]] [--trace-range START:END] [--key-at-poll POLL:CODE:down|up[:TEXT]]".into());
     }
     let mut graphics = false;
     let mut services_only = false;
@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut save_volume = None;
     let mut save_screen = None;
     let mut keys = Vec::new();
+    let mut poll_keys = Vec::new();
     let mut trace_range = None;
     let budget: u64 = args[2].parse()?;
     let mut display = None;
@@ -65,7 +66,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 trace_range = Some(start..end);
             }
-            "--key-at" if keys.len() < 64 => {
+            "--key-at" | "--key-at-poll" if keys.len() + poll_keys.len() < 64 => {
+                let poll = args[index] == "--key-at-poll";
                 index += 1;
                 let fields: Vec<_> = args
                     .get(index)
@@ -87,7 +89,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "up" => false,
                     _ => return Err("key action state must be down or up".into()),
                 };
-                keys.push(KeyAction {
+                let actions = if poll { &mut poll_keys } else { &mut keys };
+                actions.push(KeyAction {
                     instruction,
                     code,
                     down,
@@ -106,6 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("screen capture requires --graphics".into());
     }
     keys.sort_by_key(|action| action.instruction);
+    poll_keys.sort_by_key(|action| action.instruction);
     let file = std::fs::File::open(&args[1])?;
     use std::io::Read;
     let mut data = Vec::new();
@@ -141,26 +145,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut keyboard = systemless_future::host_input::Keyboard::default();
     let mut next_key = 0;
+    let mut next_poll_key = 0;
     let mut watched = None;
     let mut previous_pc = None;
-    for _ in 0..budget {
-        while let Some(action) = keys
-            .get(next_key)
-            .filter(|a| a.instruction <= app.runtime.instructions)
-        {
-            keyboard.key(
-                &mut app.runtime.memory,
-                &mut app.runtime.process.input,
-                action.code,
-                action.text.as_deref(),
-                action.down,
-                false,
-            )?;
-            println!(
-                "delivered host key instruction={} code={} down={}",
-                app.runtime.instructions, action.code, action.down
-            );
-            next_key += 1;
+    for poll in 0..budget {
+        for (actions, next, clock) in [
+            (&keys, &mut next_key, app.runtime.instructions),
+            (&poll_keys, &mut next_poll_key, poll),
+        ] {
+            while let Some(action) = actions.get(*next).filter(|a| a.instruction <= clock) {
+                keyboard.key(
+                    &mut app.runtime.memory,
+                    &mut app.runtime.process.input,
+                    action.code,
+                    action.text.as_deref(),
+                    action.down,
+                    false,
+                )?;
+                println!(
+                    "delivered host key instruction={} poll={} code={} down={}",
+                    app.runtime.instructions, poll, action.code, action.down
+                );
+                *next += 1;
+            }
         }
         if let Some(address) = watch_address {
             let current = app
@@ -363,15 +370,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for call in &app.runtime.services.calls[calls..] {
             println!("service {call:?}");
             use systemless_future::{cpu::Call, dialogs::Op, memory::GuestPtr};
-            if let Call::Dialog(Op::Text {
-                pointer, set: true, ..
-            }) = call
-            {
+            if let Call::Dialog(Op::Text { pointer, set, .. }) = call {
                 let m = &app.runtime.memory;
                 if let Ok(n) = m.read(*pointer, 1) {
                     if let Some(start) = pointer.0.checked_add(1) {
                         if let Ok(bytes) = m.read(GuestPtr(start), usize::from(n[0])) {
-                            println!("dialog item text: {:?}", String::from_utf8_lossy(bytes));
+                            println!(
+                                "dialog item text {}: {:?}",
+                                if *set { "set" } else { "get" },
+                                String::from_utf8_lossy(bytes)
+                            );
                         }
                     }
                 }

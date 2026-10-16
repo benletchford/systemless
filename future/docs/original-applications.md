@@ -4173,3 +4173,79 @@ playable. The full rebuild and complete wgpu text/library integration stay activ
 The verified capture and90-line trace tail are also preserved privately under
 future/target/private-originals/ev/evidence/2026-10-17-new-pilot.{png,ppm}
 and2026-10-17-new-pilot-trace-tail.txt, all Git-ignored.
+
+
+## Real modal typing and resource-backed pilot creation (2026-10-17)
+
+ModalDialog now consumes actual shared host input, with guest filter execution
+and cooperative waits instead of fabricated results. The original reads back
+ben after b/e/n and Return, then opens DLOG3001, accepts its default shuttle name
+Journeyman on a second Return, and writes a pilot resource file. Reproduce with
+the same private CODE fork and durable copy of the original input volume:
+
+```sh
+future/target/debug/examples/trace_application code \
+  future/target/private-originals/ev/application.raw-rsrc 10000000 \
+  --graphics --display 640x480x8 \
+  --volume future/target/private-originals/ev/evidence/2026-10-17-modal-input.slv \
+  --key-at 8000000:45:down --key-at 8005000:45:up \
+  --key-at-poll 8044000:11:down --key-at-poll 8044001:11:up \
+  --key-at-poll 8044500:14:down --key-at-poll 8044501:14:up \
+  --key-at-poll 8045000:45:down --key-at-poll 8045001:45:up \
+  --key-at-poll 8045500:36:down --key-at-poll 8045501:36:up \
+  --key-at-poll 8050000:36:down --key-at-poll 8050001:36:up \
+  --trace-range 8060000:8060064 \
+  --save-screen /tmp/systemless-ev-modal-pilot-extended.ppm \
+  --save-volume /tmp/systemless-ev-modal-pilot-extended.slv \
+  --services-only --elapse-waits
+```
+
+Use fresh output names. The original run used the byte-identical temporary input
+/tmp/systemless-ev-button-tracking-saved.slv. Guest-instruction --key-at and host
+advance-call --key-at-poll clocks are distinct; the latter permits keys while a
+modal procedure blocks CPU execution. Every action uses the shared host Keyboard
+driver. No direct text-handle edits, forced PCs or fake return values occur.
+Actual GetDialogItemText readbacks are ben twice and Journeyman twice.
+
+Final log:/tmp/systemless-ev-modal-pilot-extended.txt,exit1. Stops at missing
+[NewAlias](https://dev.os9.ca/techpubs/mac/Files/Files-355.html),AliasDispatch
+selector$0002,PC0002E7B2,instruction9,157,968,while preparing the Last Pilot
+reference. Latest decoded DeleteSpec is not the failing call. Completed original
+sound/timer/VBL callbacks0. A preliminary8.1Mrun reached shuttle naming but did
+not confirm it; an8.06Mrun confirmed it and exhausted its budget in later guest
+arithmetic. The extended run passes that bounded initialization and writes the
+pilot. Those budget stops are not unsupported-call faults or gameplay evidence.
+
+Independent verification:/tmp/systemless-modal-volume-verification.txt. CRC,
+volume framing, directories and all original companion metadata/forks pass.
+Preferences51->52 is byte-identical apart from catalog identity. Only added file:
+Pilots/ben,parent17,node53,empty data fork,18,952-byte resource fork. Finder bytes
+4d70954c4d9172630000000000000000; type4d70954c resources128=9,646bytes,129=8,958
+bytes,each independently checked within the fork's data bounds. Resource SHA256
+c75ab0d0e07173942ef9a5aa0fd5d44f55e05c2967650838a5d3ddf001730f4c.
+Output volume7,258,396bytes,SHA256
+0ba0173bc1a866864f8006e5266222a893df677817949e52bb6d9a143bc2f698.
+Input SHA256 remains
+aa7b09d1b3ab4660f83616315fe9ddfaf0f07b2d232441cfca75fa215ccba32c.
+Earlier two volumes remain the unchanged preferences-only snapshot SHA256
+d1f1d500e1a44112766eb4e6fcecaef9d79c18001c1eca5fed8a209129db572b.
+
+Private durable evidence under future/target/private-originals/ev/evidence/:
+2026-10-17-modal-input.slv,2026-10-17-modal-pilot.slv,
+2026-10-17-ship-name.png,2026-10-17-modal-final.{png,ppm},
+2026-10-17-modal-trace-tail.txt and2026-10-17-modal-volume-verify.py. All are
+Git-ignored. The verifier takes the durable input and pilot-volume paths.
+Shuttle dialog capture PPM SHA256
+c48fc64e0d46a0067639baf2f0b55de74028042d4d8f23e1053eca878a8bddb9.
+Final fault capture PPM SHA256
+0c514d92e883ae6cb8e2f7682834938a01456c61988a4d565dcd991431283094;
+it shows a cleared rectangle over the mostly black game area, not a flight frame.
+
+141 distinct scoped cases pass, including25actual GPU cases and both CPU/filter/
+timer-wait paths; exact logs/counts are in progress.md. Modal editable-field
+mouse selection and external DialogSelect still fail explicitly/remain missing.
+Next:real NewAlias records and Last Pilot reference handling, followed by actual
+pilot re-open and flight interaction. The snapshot proves resource-backed file
+creation, not semantic pilot validity, re-open, host persistence, audio or gameplay.
+Flush acknowledgments are memory-only. Marathon has not been replayed here.
+Neither priority game is playable; full rebuild and complete GPU text remain active.
