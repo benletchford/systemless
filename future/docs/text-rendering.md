@@ -32,8 +32,9 @@ Primary upstream sources inspected on 2026-10-16:
   [custom glyph API](https://github.com/grovesNL/glyphon/blob/main/src/custom_glyph.rs)
   accepts single-channel masks and physical-pixel snapping. Evaluate it first for
   bitmap-strike adapters and batching, plus modern fallback text. Dependency/MSRV,
-  cache invalidation, exact masks and QuickDraw transfer semantics still need a
-  concrete prototype; no dependency has been selected or added yet.
+  cache invalidation, exact masks and QuickDraw transfer semantics require adapter
+  work. The isolated prototype below now verifies the first API fit; no production
+  dependency has been selected or added.
 - [Vello architecture](https://github.com/linebender/vello/blob/main/ARCHITECTURE.md):
   current Vello GPU preprocesses geometry on the CPU and rasterizes/composites on
   the GPU, with text/glyph runs through glifo. The original compute renderer is
@@ -45,9 +46,9 @@ Primary upstream sources inspected on 2026-10-16:
   services. Record the concrete API fit, versions, licenses, dependency cost,
   performance and any adapter work before choosing or rejecting a library.
 
-These are observations of upstream main, not a claim that releases have been
-integrated or tested. Pin any selected version and verify it against current
-primary documentation at implementation time.
+These initial observations of upstream main did not select a production backend.
+The pinned-release prototype below is separate executable evidence. Pin any
+production selection and verify its APIs against current primary documentation.
 
 ## Acceptance
 
@@ -70,9 +71,9 @@ primary documentation at implementation time.
 7. Measure representative text-heavy workloads before/after any library migration;
    include uploads, dispatches, cache/memory growth and synchronization costs.
 
-The next text milestone is a bounded Glyphon compatibility prototype and API audit,
-followed by the chosen integration and pixel-level acceptance. This is additional
-work alongside the current original Marathon/Escape Velocity compatibility slices.
+The first bounded Glyphon compatibility prototype is now verified below. Next is
+the GPU mask/QuickDraw transfer adapter and API audit, followed by integration and
+full pixel acceptance. Work continues alongside Marathon/Escape Velocity compatibility.
 
 
 ## Baseline GPU verification (2026-10-16)
@@ -83,3 +84,23 @@ transfer modes, clipping and port preservation. Evidence:
 real device PixMap CopyBits/readback check. This proves the currently supported
 GPU text slice; API/UI completeness, library prototype/selection, all formats and
 styles, native presentation and browser verification remain open.
+
+
+## Executable Glyphon evaluation (2026-10-16)
+
+[The isolated probe](../prototypes/glyphon/README.md) pins published Glyphon 0.12.0
+and wgpu 30.0.1, with a separate lockfile and no production dependency changes.
+It uses the shared classic FONT decoder, an empty host-font database and COSMIC
+Text's new_empty buffer. On M1/Metal, six exact-readback cases pass: bitmap mask
+and snapping, cache reuse, partial clipping, stale-key behavior after a source FONT
+edit, refresh with a new glyph ID, and stock composition's failure to perform XOR.
+The last two behaviors establish necessary adapter work, not completed compatibility.
+Rust 1.93, strict Rust 1.99 lint and the dependency-license gate pass. Evidence and
+repeatable commands are in the probe README. The test is an isolated one-glyph
+coverage experiment, not an integrated text API, native presentation, browser,
+all-font or performance acceptance result.
+
+Next: tie bounded glyph cache identities to source font generations and feed GPU
+coverage into exact GPU QuickDraw transfer/composition for real guest calls. Keep
+classic metrics in the shared runtime. Measure complete workloads before selecting
+Glyphon for production. Vello remains an alternative under consideration.

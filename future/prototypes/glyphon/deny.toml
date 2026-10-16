@@ -1,0 +1,14 @@
+[licenses]
+confidence-threshold = 0.8
+unused-allowed-license = "deny"
+unused-license-exception = "deny"
+# Subset of the repository allowlist present in this isolated graph. Only the
+# two local GPL packages receive scoped exceptions.
+allow = [
+    "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause",
+    "BSD-3-Clause", "ISC", "MIT", "Unicode-3.0", "Unlicense", "Zlib",
+]
+exceptions = [
+    { crate = "systemless-future", allow = ["GPL-3.0-or-later"] },
+    { crate = "systemless-glyphon-probe", allow = ["GPL-3.0-or-later"] },
+]

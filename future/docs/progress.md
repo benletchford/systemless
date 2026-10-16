@@ -6127,3 +6127,31 @@ Neither game is playable. Next: resolve Marathon's current-port/text context and
 continue its startup, and prototype the library-backed GPU text path described in
 [text-rendering.md](text-rendering.md). The full rebuild, including the user-added
 complete wgpu text requirement, stays active and PR #4802 remains draft.
+
+
+## Executable Glyphon probe checkpoint (2026-10-16)
+
+The requested library evaluation now includes an executable isolated Glyphon 0.12.0
+probe using shared classic FONT decoding and wgpu 30.0.1. Six readback cases pass
+on Apple M1/Metal, with an empty host font database: exact bitmap mask/snapping,
+cache reuse, clipping, stale-key characterization after FONT edits, refreshed
+source generation and stock non-XOR characterization. Evidence:
+/tmp/systemless-glyphon-probe-acceptance.txt, terminal exit 0. The last two cases
+prove required adapter work; they are not compatibility passes for edited guest
+fonts or XOR. Prototype Rust 1.93 and strict 1.99 lint pass:
+/tmp/systemless-glyphon-msrv-acceptance.txt and
+/tmp/systemless-glyphon-lint-acceptance.txt. The strict scoped license gate passes:
+/tmp/systemless-glyphon-licenses-acceptance.txt. Earlier exploratory API/constructor/
+lint failures are superseded. Sequential formatting and whitespace checks pass.
+Production manifests/lockfiles and runtime code are unchanged; no new production
+CPU/GPU/full-suite, original-game, native-window or browser run is claimed.
+
+The current-port investigation confirms Apple's Basic QuickDraw Table 2-1 sets
+InitGraf's thePort to NIL. The legacy implementation instead creates a default
+screen port, so that difference cannot establish the correct later Window Manager
+selection. No arbitrary fallback port was introduced. Marathon retains the prior
+TextFont/no-current-port boundary; investigate the later lifecycle with a bounded
+fixture/reference comparison. EV retains its prior ProtectEntry boundary. Neither
+is playable. Next text milestone: source-generation cache identities and GPU
+mask/QuickDraw transfer integration, then 68K/PPC API and workload acceptance.
+See text-rendering.md and prototypes/glyphon/README.md. Full rebuild remains active.

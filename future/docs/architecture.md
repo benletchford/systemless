@@ -2838,3 +2838,17 @@ before service allocation. Unbacked standard system tables remain explicitly
 unsupported, including enhanced/default tables; they are not reported as ordinary
 missing custom resources. A failed resource load due to allocation is preserved as
 an allocation failure even for an otherwise standard ID.
+
+
+### Executable Glyphon compatibility seam (2026-10-16)
+
+The isolated future/prototypes/glyphon executable pins Glyphon 0.12.0, wgpu 30.0.1
+and its own dependency graph. It decodes a synthetic classic FONT with the shared
+font service, supplies one-bit masks to Glyphon custom glyphs, and verifies exact
+GPU output without installed fonts or modern shaping. Production text APIs and
+dependencies are unchanged. An edited FONT with a reused custom key retains cached
+pixels; assigning a new ID refreshes them. Stock repeated composition is not
+QuickDraw XOR. A production integration therefore needs bounded source-generation
+cache identity and a GPU mask-to-QuickDraw transfer seam, not direct substitution
+of RGBA text painting for indexed guest semantics. Pixel/layout/platform/performance
+acceptance remains open. See text-rendering.md and the prototype README.
