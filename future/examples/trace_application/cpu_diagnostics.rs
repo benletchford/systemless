@@ -1,6 +1,13 @@
 //! Opt-in, read-only register and bounded live-allocation snapshots.
 use systemless_future::{cpu::Cpu, load::LoadedApplication, memory::GuestPtr};
 pub fn report(app: &LoadedApplication) {
+    println!(
+        "cpu diagnostic completed callbacks: sound={} timer={} vbl={} audio_work_pending={}",
+        app.runtime.services.completed_sound_callbacks,
+        app.runtime.services.completed_timer_callbacks,
+        app.runtime.services.completed_vbl_callbacks,
+        app.runtime.process.sound.playing(),
+    );
     match &app.runtime.cpu {
         Cpu::M68k(c) => {
             println!(

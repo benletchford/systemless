@@ -23,7 +23,8 @@ performance and native/browser acceptance remain open; the goal stays active.
 
 ## Evaluate libraries before extending the custom path
 
-Primary upstream sources inspected on 2026-10-16:
+Initial upstream evaluation on 2026-10-16 (historical observations; the later
+production integration below pins Glyphon 0.12.0):
 
 - [Glyphon manifest](https://github.com/grovesNL/glyphon/blob/main/Cargo.toml):
   upstream main declares 0.12.0, wgpu 30 and cosmic-text 0.19. This matches the
@@ -34,8 +35,9 @@ Primary upstream sources inspected on 2026-10-16:
   accepts single-channel masks and physical-pixel snapping. Evaluate it first for
   bitmap-strike adapters and batching, plus modern fallback text. Dependency/MSRV,
   cache invalidation, exact masks and QuickDraw transfer semantics require adapter
-  work. The isolated prototype below now verifies the first API fit; no production
-  dependency has been selected or added.
+  work. The isolated prototype below verified the first API fit before the later
+  production dependency and adapter were adopted. The current production status
+  is recorded above and in the integration section below.
 - [Vello architecture](https://github.com/linebender/vello/blob/main/ARCHITECTURE.md):
   current Vello GPU preprocesses geometry on the CPU and rasterizes/composites on
   the GPU, with text/glyph runs through glifo. The original compute renderer is
@@ -47,9 +49,10 @@ Primary upstream sources inspected on 2026-10-16:
   services. Record the concrete API fit, versions, licenses, dependency cost,
   performance and any adapter work before choosing or rejecting a library.
 
-These initial observations of upstream main did not select a production backend.
-The pinned-release prototype below is separate executable evidence. Pin any
-production selection and verify its APIs against current primary documentation.
+These initial observations preceded production selection. The pinned-release
+prototype and subsequent production integration below provide separate executable
+evidence. Future library changes still require pinned versions and verification
+against primary documentation.
 
 ## Acceptance
 

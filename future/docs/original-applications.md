@@ -5423,3 +5423,35 @@ actual E/code14/text e at24M after menu arrival, with a pre-input checkpoint and
 new immutable outputs. Inspect completion/frame/catalog before claiming entry or
 controls. Callback/audio, longer gameplay, original Marathon regression,
 native/browser, Mixed Mode and full wgpu-text/rebuild acceptance remain open.
+
+
+## Current original EV ship entry and callback diagnostics (2026-10-17)
+
+The actual E/code14/text e at24M is accepted by the original main menu: it maps
+to the Enter Ship button, stops menu audio, restores output volume, and reaches
+the space scene. The40M request completes40,000,000 retired / PC007E65A4 to
+budget, not an application exit. Final inspected frame SHA256:
+ab60ddcff2b03afff894b9f2744709b65e141679437ae2e6d5308a231377f799,
+identical to the earlier space-scene baseline. Saved catalog is byte-identical to
+the menu/output-volume state, SHA256634e760a54feb7579480885633bc964dd2f80c8e88a0bd67f9a25a86d5f9a72f.
+Evidence: /tmp/systemless-ev-equal-enter{.txt,.ppm,.png,.slv,-before.ppm,-before.png}.
+Ship entry is now verified on current services; current control response, sustained
+play, original audio callback execution and native presentation remain unverified.
+
+The opt-in --cpu-diagnostics report now includes completed sound/timer/VBL counts
+and audio_work_pending from actual Manager state, for every requested snapshot
+including budget/return stops. This does not imply audible output: pending work
+can include muted/stalled/queued audio. Tracer build, strict lint, Rust1.93 and
+sequential formatting pass. A matched1000-instruction original-EV probe/control
+has the same PC01000026 and byte-identical committed catalog; only the opted-in
+probe emits the expected zero counters and false work flag. Logs and snapshots:
+/tmp/systemless-callback-diagnostics-final-{probe,control}.{txt,slv}.
+
+Live matched48M EV trials (same media/Enter Ship24M, pre-input capture40M):
+/tmp/systemless-ev-current-{idle,right,forward}.txt. Right arrow124 or Up126 is
+held40–42M; all include final callback diagnostics. Do not infer outcomes before
+termination and comparison of pre-input/final frames and catalogs. Current original
+Marathon40M New Game/forward regression is also live:
+/tmp/systemless-marathon-current.txt; its short3.69M instruction trace verifies the
+real Command-N path despite new service discovery. Full rebuild/text/Mixed Mode/
+native/browser and sustained game acceptance remain active.
