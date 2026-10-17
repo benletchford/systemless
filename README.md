@@ -112,8 +112,10 @@ to force software presentation.
 
 Pass `--gpu` to opt into cross-platform wgpu desktop presentation (Metal,
 Vulkan, or DX12, depending on the host). This renders the complete Macintosh
-desktop, including system windows and text, through wgpu. This initial backend
-still rasterizes QuickDraw and text on the CPU before upload. It is experimental
+desktop, including system windows and text, through wgpu. Retained outline text
+and drawing coverage is resolved on the GPU with exact
+integer area sampling, including cropped and resized desktops. Guest QuickDraw
+drawing, glyph rasterization, and 3D still run on the CPU. It is experimental
 and reports initialization errors instead of silently selecting another backend.
 Without `--gpu`, existing platform presentation remains the default.
 

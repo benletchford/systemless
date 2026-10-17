@@ -14,12 +14,21 @@ pub struct WgpuPresenter {
     geometry: wgpu::Buffer,
     image: Option<(wgpu::Texture, wgpu::BindGroup)>,
     bytes: Vec<u8>,
+    compact: super::wgpu_compact::CompactRenderer,
 }
 
 fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+    pipeline_with_shader(device, format, include_str!("wgpu_present.wgsl"))
+}
+
+pub(super) fn pipeline_with_shader(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    source: &str,
+) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("desktop presentation"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("wgpu_present.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("desktop presentation"),
@@ -98,7 +107,9 @@ impl WgpuPresenter {
             adapter.get_info().backend,
             adapter.get_info().name
         );
+        let compact = super::wgpu_compact::CompactRenderer::new(&device, config.format);
         Ok(Self {
+            compact,
             surface,
             _window: window,
             display,
@@ -110,6 +121,72 @@ impl WgpuPresenter {
             image: None,
             bytes: Vec::new(),
         })
+    }
+
+    fn acquire(&mut self, output: (u32, u32)) -> Result<Option<wgpu::SurfaceTexture>, String> {
+        if output.0 == 0 || output.1 == 0 {
+            return Ok(None);
+        }
+        let limit = self.device.limits().max_texture_dimension_2d;
+        if output.0 > limit || output.1 > limit {
+            return Err(format!(
+                "GPU drawable exceeds the adapter texture limit of {limit}"
+            ));
+        }
+        if self.config.width != output.0 || self.config.height != output.1 {
+            self.config.width = output.0;
+            self.config.height = output.1;
+            self.surface.configure(&self.device, &self.config);
+        }
+        let frame = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.surface.configure(&self.device, &self.config);
+                return Ok(None);
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return Ok(None)
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                *self = Self::new(self._window.clone(), self.display.clone())?;
+                return Ok(None);
+            }
+            wgpu::CurrentSurfaceTexture::Validation => {
+                return Err("wgpu surface validation failed".into())
+            }
+        };
+        Ok(Some(frame))
+    }
+
+    pub fn present_compact(
+        &mut self,
+        image: &std::sync::Arc<systemless::memory::CompactPresentation>,
+        crop: (u32, u32, u32, u32),
+        output: (u32, u32),
+    ) -> Result<Option<bool>, String> {
+        let viewport = super::aspect_fit_dimensions(crop.2, crop.3, output.0, output.1);
+        if !super::wgpu_compact::CompactRenderer::supports(
+            image,
+            crop,
+            viewport,
+            &self.device.limits(),
+        ) {
+            return Ok(None);
+        }
+        let Some(frame) = self.acquire(output)? else {
+            return Ok(Some(false));
+        };
+        self.compact.encode(
+            &self.device,
+            &self.queue,
+            image,
+            crop,
+            viewport,
+            &frame.texture.create_view(&Default::default()),
+        );
+        self.queue.present(frame);
+        Ok(Some(true))
     }
 
     pub fn present(
@@ -138,28 +215,8 @@ impl WgpuPresenter {
         {
             return Err("invalid GPU frame geometry".into());
         }
-        if self.config.width != output.0 || self.config.height != output.1 {
-            self.config.width = output.0;
-            self.config.height = output.1;
-            self.surface.configure(&self.device, &self.config);
-        }
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&self.device, &self.config);
-                return Ok(false);
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(false)
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                *self = Self::new(self._window.clone(), self.display.clone())?;
-                return Ok(false);
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                return Err("wgpu surface validation failed".into())
-            }
+        let Some(frame) = self.acquire(output)? else {
+            return Ok(false);
         };
         if self
             .image

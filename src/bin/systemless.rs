@@ -14,6 +14,9 @@
 //! headless-only library and skip the `winit` / `softbuffer` / `cpal`
 //! link.
 
+#[path = "desktop/wgpu_compact.rs"]
+mod wgpu_compact;
+
 #[path = "desktop/wgpu_present.rs"]
 mod wgpu_present;
 
@@ -2056,22 +2059,26 @@ impl App {
 
         let mut retained = frame.retained.clone();
         #[cfg(target_os = "windows")]
-        let compact_ready = self.gpu.is_some()
+        let compact_ready = (self.gpu.is_some() || self.wgpu.is_some())
             && retained.is_some()
             && cursor.is_none()
             && !self.debug_overlay_visible;
         // Metal resolves retained text coverage on the GPU, like D3D11 above.
         // Host cursors and debug text still patch a CPU image first.
         #[cfg(target_os = "macos")]
-        let compact_ready = self
-            .surface
-            .as_ref()
-            .is_some_and(|surface| surface.supports_compact())
+        let compact_ready = (self.wgpu.is_some()
+            || self
+                .surface
+                .as_ref()
+                .is_some_and(|surface| surface.supports_compact()))
             && retained.is_some()
             && cursor.is_none()
             && !self.debug_overlay_visible;
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-        let compact_ready = false;
+        let compact_ready = self.wgpu.is_some()
+            && retained.is_some()
+            && cursor.is_none()
+            && !self.debug_overlay_visible;
         let mut frame_argb = std::mem::take(&mut self.frame_argb);
         if !compact_ready {
             frame.screen.render_argb(&mut frame_argb);
@@ -2100,8 +2107,35 @@ impl App {
             }
         }
 
+        if let (Some(gpu), Some(image)) = (self.wgpu.as_mut(), retained.as_ref()) {
+            #[cfg(target_os = "macos")]
+            let crop = (
+                presentation_rect.left,
+                presentation_rect.top,
+                presentation_rect.width,
+                presentation_rect.height,
+            );
+            #[cfg(not(target_os = "macos"))]
+            let crop = (0, 0, game_w, game_h);
+            if let Some(submitted) = gpu
+                .present_compact(image, crop, (buf_w, buf_h))
+                .expect("Failed to present retained wgpu coverage")
+            {
+                self.frame_argb = frame_argb;
+                self.force_next_render = !submitted;
+                if submitted {
+                    self.last_presented_guest_tick = Some(presented_tick);
+                }
+                self.render_headroom = GuiDriver::next_render_headroom(render_start.elapsed());
+                return;
+            }
+            if compact_ready {
+                frame.screen.render_argb(&mut frame_argb);
+            }
+        }
+
         #[cfg(target_os = "macos")]
-        if compact_ready {
+        if compact_ready && self.wgpu.is_none() {
             let (Some(surface), Some(image)) = (self.surface.as_mut(), retained.as_ref()) else {
                 unreachable!("compact presentation requires a surface and retained image");
             };
