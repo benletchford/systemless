@@ -262,6 +262,7 @@ impl Manager {
                 queue: 0,
                 length: 128,
                 playback: Playback::new(init),
+                double: None,
                 commands: Default::default(),
                 active: None,
                 head: 0,

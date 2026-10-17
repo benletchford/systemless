@@ -5,6 +5,7 @@ use crate::{
     Result,
 };
 use std::collections::BTreeMap;
+mod double;
 mod playback;
 mod queue;
 mod resource;
@@ -35,6 +36,7 @@ struct Channel {
     queue: u32,
     length: u16,
     playback: Playback,
+    double: Option<double::Double>,
     commands: std::collections::VecDeque<resource::Pending>,
     active: Option<resource::Pending>,
     head: u16,
@@ -172,6 +174,7 @@ impl Manager {
                 queue,
                 length,
                 playback: Playback::new(r.init),
+                double: None,
                 commands: Default::default(),
                 active: None,
                 head: 0,
@@ -221,7 +224,8 @@ impl Manager {
         if !self.valid(m, p, channel)? {
             return Ok(BAD_CHANNEL);
         }
-        if (self.channels[&channel].playback.command != [0; 8]
+        if (self.channels[&channel].double.is_some()
+            || self.channels[&channel].playback.command != [0; 8]
             || !self.channels[&channel].commands.is_empty())
             && !quiet_now
         {

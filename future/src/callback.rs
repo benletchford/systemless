@@ -146,13 +146,17 @@ pub(crate) fn modal_filter(
     }
 }
 
-/// Pascal void(SndChannelPtr, SndCommandPtr). The caller's whole CPU is retained
+/// Pascal void(SndChannelPtr, Ptr): command or exhausted double-buffer record.
+/// The caller's whole CPU is retained
 /// by Runtime; this adapter never runs from a native audio callback.
-pub(crate) fn sound(caller: &Cpu, memory: &mut Memory, routine: u32, channel: u32) -> Result<Cpu> {
+pub(crate) fn sound(
+    caller: &Cpu,
+    memory: &mut Memory,
+    routine: u32,
+    channel: u32,
+    command: u32,
+) -> Result<Cpu> {
     let routine = resolve(caller, memory, routine, 0x3c0)?;
-    let command = channel
-        .checked_add(20)
-        .ok_or_else(|| Error::Cpu("sound callback argument overflow".into()))?;
     match caller {
         Cpu::M68k(c) => {
             memory.fetch(GuestPtr(routine), 2, 2)?;

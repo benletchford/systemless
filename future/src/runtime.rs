@@ -41,6 +41,7 @@ enum Resume {
     Sound {
         channel: u32,
         serial: u64,
+        double_generation: Option<u64>,
         waits: Box<SuspendedWaits>,
     },
     Modal {
@@ -2198,6 +2199,23 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::SoundDouble { channel, header } => {
+                            let mut sound = std::mem::take(&mut self.process.sound);
+                            let result = sound.play_double(
+                                &mut self.memory,
+                                &mut self.process,
+                                channel,
+                                header,
+                            );
+                            self.process.sound = sound;
+                            let error = result?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::SoundPauseFile(channel) => {
                             let mut sound = std::mem::take(&mut self.process.sound);
                             let result = sound.pause_file(&self.memory, &mut self.process, channel);
@@ -2873,6 +2891,7 @@ impl Runtime {
                         | Call::SoundChannel(_)
                         | Call::SoundImmediate { .. }
                         | Call::SoundQueue { .. }
+                        | Call::SoundDouble { .. }
                         | Call::SoundPauseFile(_)
                         | Call::SoundStartFile(_)
                         | Call::SoundPlay { .. }
@@ -3186,14 +3205,15 @@ impl Runtime {
         let sound = std::mem::take(&mut self.process.sound);
         let pending = sound.pending_callback(&self.memory, &mut self.process);
         self.process.sound = sound;
-        let Some((channel, routine)) = pending? else {
+        let Some((channel, routine, argument)) = pending? else {
             return Ok(());
         };
         if self.continuations.len() >= 32 {
             return Err(Error::Cpu("sound callback depth exceeded".into()));
         }
-        let callee = crate::callback::sound(&self.cpu, &mut self.memory, routine, channel)?;
-        let serial = self.process.sound.begin_callback(channel);
+        let callee =
+            crate::callback::sound(&self.cpu, &mut self.memory, routine, channel, argument)?;
+        let (serial, double_generation) = self.process.sound.begin_callback(channel);
         let waits = self.suspend_waits();
         let caller = std::mem::replace(&mut self.cpu, callee);
         self.continuations.push(Continuation {
@@ -3201,6 +3221,7 @@ impl Runtime {
             resume: Resume::Sound {
                 channel,
                 serial,
+                double_generation,
                 waits,
             },
         });
@@ -3586,11 +3607,17 @@ impl Runtime {
             Resume::Sound {
                 channel,
                 serial,
+                double_generation,
                 waits,
             } => {
                 let mut sound = std::mem::take(&mut self.process.sound);
-                let result =
-                    sound.finish_callback(&mut self.memory, &mut self.process, channel, serial);
+                let result = sound.finish_callback(
+                    &mut self.memory,
+                    &mut self.process,
+                    channel,
+                    serial,
+                    double_generation,
+                );
                 self.process.sound = sound;
                 result?;
                 self.services.completed_sound_callbacks = self

@@ -430,14 +430,15 @@ fn caller_records_keep_user_data_guards_and_storage_and_unsupported_requests_do_
 fn allocation_failure_rolls_back_internal_queue_and_corrupt_records_cannot_free_live_storage() {
     for arch in [Architecture::M68k, Architecture::PowerPc] {
         let mut a = app();
+        let available = a
+            .runtime
+            .process
+            .compact_memory(&mut a.runtime.memory)
+            .unwrap();
         let large = a
             .runtime
             .process
-            .new_pointer(
-                &mut a.runtime.memory,
-                systemless_future::process::HEAP_SIZE - 1280,
-                true,
-            )
+            .new_pointer(&mut a.runtime.memory, available - 1280, true)
             .unwrap();
         assert_ne!(large, 0);
         a.runtime.memory.write(OUT, &0u32.to_be_bytes()).unwrap();

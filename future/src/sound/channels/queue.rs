@@ -61,6 +61,7 @@ fn clear(m: &mut Memory, channel: u32, c: &mut Channel) -> Result<()> {
     m.write(GuestPtr(channel + 20), &[0; 8])?;
     c.playback.command = [0; 8];
     c.playback.voice = None;
+    c.double = None;
     c.active = None;
     Ok(())
 }
@@ -111,7 +112,7 @@ pub(super) fn execute(
             m.write(GuestPtr(value), &volume.to_be_bytes())?;
         }
         81 => {
-            if c.playback.voice.is_some() || c.callback.is_some() {
+            if c.double.is_some() || c.playback.voice.is_some() || c.callback.is_some() {
                 return Ok(-209);
             }
             let next = super::playback::voice(m, value)?
@@ -128,6 +129,9 @@ pub(super) fn execute(
 pub(super) fn pump(m: &mut Memory, channel: u32, c: &mut Channel) -> Result<()> {
     if c.file_paused() {
         return Ok(());
+    }
+    if c.double.is_some() {
+        return super::double::pump(m, channel, c);
     }
     while c.playback.voice.is_none() && c.callback.is_none() {
         let Some(bytes) = c.commands.front().map(|p| p.bytes) else {
@@ -205,17 +209,25 @@ impl Manager {
         &self,
         m: &Memory,
         p: &mut Process,
-    ) -> Result<Option<(u32, u32)>> {
+    ) -> Result<Option<(u32, u32, u32)>> {
         let errors = (p.mem_error, p.res_error);
         let result = (|| {
             for &channel in &self.order {
+                if let Some(d) = &self.channels[&channel].double {
+                    if let Some(&(buffer, false)) = d.pending.front() {
+                        if !self.valid(m, p, channel)? {
+                            return Err(bad("corrupt doubleback channel"));
+                        }
+                        return Ok(Some((channel, d.routine, buffer)));
+                    }
+                }
                 if self.channels[&channel].callback == Some(false)
                     && !self.channels[&channel].file_paused()
                 {
                     if !self.valid(m, p, channel)? {
                         return Err(bad("corrupt callback sound channel"));
                     }
-                    return Ok(Some((channel, m.u32(GuestPtr(channel + 8))?)));
+                    return Ok(Some((channel, m.u32(GuestPtr(channel + 8))?, channel + 20)));
                 }
             }
             Ok(None)
@@ -224,10 +236,16 @@ impl Manager {
         result
     }
 
-    pub(crate) fn begin_callback(&mut self, channel: u32) -> u64 {
+    pub(crate) fn begin_callback(&mut self, channel: u32) -> (u64, Option<u64>) {
         let c = self.channels.get_mut(&channel).unwrap();
-        c.callback = Some(true);
-        c.serial
+        if let Some(d) = &mut c.double {
+            if let Some(pending) = d.pending.front_mut() {
+                pending.1 = true;
+            }
+        } else {
+            c.callback = Some(true);
+        }
+        (c.serial, c.double.as_ref().map(|d| d.generation))
     }
     pub(crate) fn finish_callback(
         &mut self,
@@ -235,6 +253,7 @@ impl Manager {
         p: &mut Process,
         channel: u32,
         serial: u64,
+        double_generation: Option<u64>,
     ) -> Result<()> {
         let errors = (p.mem_error, p.res_error);
         let result = (|| {
@@ -246,12 +265,27 @@ impl Manager {
             {
                 return Ok(());
             }
+            if double_generation.is_some()
+                && self.channels[&channel]
+                    .double
+                    .as_ref()
+                    .map(|d| d.generation)
+                    != double_generation
+            {
+                return Ok(());
+            }
             if !self.valid(m, p, channel)? {
                 return Err(bad("corrupt returned sound callback channel"));
             }
             let c = self.channels.get_mut(&channel).unwrap();
             m.validate_write(GuestPtr(channel + 20), 16)?;
             preflight(m, channel, c)?;
+            if let Some(d) = &mut c.double {
+                if d.pending.front().is_some_and(|p| p.1) {
+                    d.pending.pop_front();
+                }
+                return super::double::pump(m, channel, c);
+            }
             c.callback = None;
             clear(m, channel, c)?;
             pump(m, channel, c)

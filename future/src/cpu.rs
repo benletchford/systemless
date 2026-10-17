@@ -409,6 +409,10 @@ pub enum Call {
     SoundChannel(crate::sound::Op),
     SoundStartFile(crate::sound::StartFilePlay),
     SoundPauseFile(u32),
+    SoundDouble {
+        channel: u32,
+        header: GuestPtr,
+    },
     SoundVersion,
     SoundStatus(crate::sound::Status),
     SoundPlay {

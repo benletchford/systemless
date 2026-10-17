@@ -4392,3 +4392,37 @@ acceptance must verify actual successful folder and volume queries rather than
 accepting a fabricated volume reference after failed discovery.
 
 Primary contract: https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-472.html
+
+
+## Shared uncompressed sound double buffers
+
+SndPlayDoubleBuffer dispatches native SoundDispatch selector 00200008 (including
+its four-word argument-count modifier) and the PPC import into the same Manager.
+The manager validates both live guest buffers before publishing ownership, uses
+the existing PCM mixer for mono/stereo 8-bit offset and big-endian 16-bit samples,
+and carries fractional phase and division remainder across buffer boundaries.
+The uncompressed packet-size field is unused. Compressed/custom-codec headers
+remain unsupported; they do not claim playback. Gestalt snd bit 10 now identifies
+this implemented double-buffer path alongside existing stereo/multichannel/16-bit
+output capabilities. Sound input/recording and codecs remain unadvertised.
+
+Exhaustion clears only dbBufferReady and preserves other flags/user words. A
+bounded pending queue retains the actual exhausted-buffer pointers; buffers cannot
+be replayed before the pending guest callback has returned. dbLastBuffer ends the
+stream after consumption. An unready next buffer stalls with silence and retains
+ownership until guest refill or cancellation. The current mixer remains the only
+sample consumer for audible and silent host time. Guest callbacks execute only
+through budgeted Runtime continuations, never on the native audio callback.
+
+The two-pointer Pascal callback adapter serves both sound command and doubleback
+procedures (same 3C0 procedure info). 68K receives the exhausted pointer at 4(sp)
+and channel at 8(sp); PPC receives channel in r3 and buffer in r4 through a prepared
+same-ISA UPP. Caller CPU/waits are suspended whole. Channel generation plus a
+separate submission generation prevents late callback completion from affecting
+replacement playback. Quiet/disposal/process termination cancel owned state.
+
+Primary contracts: Inside Macintosh Sound, pp. 2-69, 2-111–113, 2-148, 2-153–154:
+https://dev.os9.ca/techpubs/mac/pdf/Sound/Sound_Manager.pdf
+Selector/count and UPP signatures also checked against Apple's Sound.h interface:
+https://www.cs.vu.nl/~eliens/research/media/lib-of-vs-libs-QTDevWin-CIncludes-Sound.h.html
+These are supported uncompressed semantics, not full Sound Manager acceptance.

@@ -11,14 +11,14 @@ pub(super) struct Playback {
 }
 pub(super) struct Voice {
     base: GuestPtr,
-    length: usize,
+    pub(super) length: usize,
     bytes: usize,
     channels: usize,
     width: usize,
     rate: u32,
-    phase: u64,
-    remainder: u64,
-    denominator: u32,
+    pub(super) phase: u64,
+    pub(super) remainder: u64,
+    pub(super) denominator: u32,
 }
 impl Voice {
     fn denominator(&mut self, denominator: u32) {
@@ -130,6 +130,32 @@ pub(super) fn voice(m: &Memory, header: u32) -> Result<std::result::Result<Voice
         denominator: 1,
     }))
 }
+pub(super) fn raw_voice(
+    m: &Memory,
+    base: GuestPtr,
+    frames: usize,
+    channels: usize,
+    width: usize,
+    rate: u32,
+) -> Result<Voice> {
+    let bytes = frames
+        .checked_mul(channels)
+        .and_then(|v| v.checked_mul(width))
+        .filter(|v| *v <= crate::load::IMAGE_LIMIT)
+        .ok_or_else(|| bad("double buffer sample size overflow"))?;
+    m.read(base, bytes)?;
+    Ok(Voice {
+        base,
+        length: frames,
+        bytes,
+        channels,
+        width,
+        rate,
+        phase: 0,
+        remainder: 0,
+        denominator: 1,
+    })
+}
 fn sample(v: &Voice, source: &[u8], frame: usize, channel: usize) -> i64 {
     let at = (frame * v.channels + channel.min(v.channels - 1)) * v.width;
     if v.width == 1 {
@@ -145,20 +171,27 @@ impl Manager {
     pub fn cancel(&mut self) {
         for c in self.channels.values_mut() {
             c.playback.voice = None;
+            c.double = None;
             c.commands.clear();
             c.active = None;
             c.callback = None;
         }
     }
     pub fn playing(&self) -> bool {
-        self.channels
-            .values()
-            .any(|c| c.playback.voice.is_some() || !c.commands.is_empty() || c.callback.is_some())
+        self.channels.values().any(|c| {
+            c.double.is_some()
+                || c.playback.voice.is_some()
+                || !c.commands.is_empty()
+                || c.callback.is_some()
+        })
     }
     pub fn busy(&self, channel: u32) -> Option<bool> {
-        self.channels
-            .get(&channel)
-            .map(|c| c.playback.voice.is_some() || !c.commands.is_empty() || c.callback.is_some())
+        self.channels.get(&channel).map(|c| {
+            c.double.is_some()
+                || c.playback.voice.is_some()
+                || !c.commands.is_empty()
+                || c.callback.is_some()
+        })
     }
     /// SndDoImmediate bypasses the queue. Unsupported command families return
     /// an OSErr; they never claim queued playback or callback completion.
@@ -196,7 +229,11 @@ impl Manager {
     /// Headless hosts can discard output while advancing virtual time. Work
     /// is bounded by channel count even for a very large requested wait.
     pub fn elapse_silently(&mut self, m: &mut Memory, p: &mut Process, ticks: u32) -> Result<()> {
-        if self.channels.values().any(|c| !c.commands.is_empty()) {
+        if self
+            .channels
+            .values()
+            .any(|c| c.double.is_some() || !c.commands.is_empty())
+        {
             return self.elapse_queued(m, p, ticks);
         }
         let errors = (p.mem_error, p.res_error);
@@ -222,10 +259,7 @@ impl Manager {
                     v.phase = (u128::from(v.phase) + numerator / 60).min(end) as u64;
                     v.remainder = (numerator % 60) as u64;
                     if u128::from(v.phase) >= end {
-                        m.write(GuestPtr(channel + 20), &[0; 8])?;
-                        c.playback.voice = None;
-                        c.playback.command = [0; 8];
-                        c.active = None;
+                        super::double::complete(m, channel, c)?;
                     }
                 }
             }
@@ -244,6 +278,7 @@ impl Manager {
                     return Err(bad("corrupt queued sound channel"));
                 }
                 super::queue::preflight(m, channel, &self.channels[&channel])?;
+                super::double::preflight(m, &self.channels[&channel])?;
                 if let Some(v) = &self.channels[&channel].playback.voice {
                     m.read(v.base, v.bytes)?;
                 }
@@ -265,16 +300,13 @@ impl Manager {
                         .saturating_sub(u128::from(v.remainder));
                     let consume = u128::from(frames).min(remaining.div_ceil(numerator)) as u64;
                     let elapsed = numerator * u128::from(consume) + u128::from(v.remainder);
-                    v.phase = (u128::from(v.phase) + elapsed / 48000).min(end) as u64;
+                    v.phase = (u128::from(v.phase) + elapsed / 48000) as u64;
                     v.remainder = (elapsed % 48000) as u64;
                     frames -= consume;
                     if u128::from(v.phase) < end {
                         break;
                     }
-                    m.write(GuestPtr(channel + 20), &[0; 8])?;
-                    c.playback.voice = None;
-                    c.playback.command = [0; 8];
-                    c.active = None;
+                    super::double::complete(m, channel, c)?;
                 }
             }
             Ok(())
@@ -307,6 +339,7 @@ impl Manager {
             }
             for &channel in &self.order {
                 super::queue::preflight(m, channel, &self.channels[&channel])?;
+                super::double::preflight(m, &self.channels[&channel])?;
             }
             let mut mixed = vec![[0i64; 2]; frames];
             let master = i64::from(super::super::volume(m)?);
@@ -317,6 +350,10 @@ impl Manager {
                 let mut offset = 0;
                 loop {
                     super::queue::pump(m, channel, c)?;
+                    let following = match super::double::following(m, c)? {
+                        Some(v) => Some((m.read(v.base, v.bytes)?, v)),
+                        None => None,
+                    };
                     let Some(v) = &mut c.playback.voice else {
                         break;
                     };
@@ -331,7 +368,13 @@ impl Manager {
                             *out = if c.init & 4 != 0 {
                                 first
                             } else {
-                                let second = sample(v, source, (index + 1).min(v.length - 1), side);
+                                let second = if index + 1 < v.length {
+                                    sample(v, source, index + 1, side)
+                                } else if let Some((source, next)) = &following {
+                                    sample(next, source, 0, side)
+                                } else {
+                                    first
+                                };
                                 first + (((second - first) * (v.phase & 0xffff_ffff) as i64) >> 32)
                             };
                         }
@@ -350,10 +393,7 @@ impl Manager {
                         offset += 1;
                     }
                     if v.phase >> 32 >= v.length as u64 {
-                        m.write(GuestPtr(channel + 20), &[0; 8])?;
-                        c.playback.voice = None;
-                        c.playback.command = [0; 8];
-                        c.active = None;
+                        super::double::complete(m, channel, c)?;
                     } else {
                         break;
                     }

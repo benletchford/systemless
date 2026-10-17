@@ -11819,3 +11819,83 @@ JSON, archived with all stage evidence under future/target/validation/folders.
 All game jobs are now terminal. Next executable slice is real SndPlayDoubleBuffer
 for EV, then original regression replay; complete game/audio/recording playback,
 native/browser, mixed mode and complete wgpu text/full rebuild remain open.
+
+
+## Shared double-buffered audio implementation in progress (2026-10-17)
+
+The original EV SoundDispatch 04200008 boundary is SndPlayDoubleBuffer. A shared
+implementation now connects both ABIs to real live guest sample consumption,
+ready/last flags, fractional buffer transitions, deferred doubleback callbacks,
+quiet cancellation and generation-guarded callback lifetime. Architecture details
+and primary references are in architecture.md. Eight new integration tests cover
+both CPU adapters, exact PCM, stereo 16-bit order, live edits, silent output,
+phase carry, refill stalls, last-buffer completion, real callback pointer/register
+contracts and atomic failures including a read-only second buffer. The combined
+core/audio/environment gate previously passed 158 tests; final-source gates after
+header/unused-field cleanup are active in /tmp/systemless-double-tests-verified.txt
+and /tmp/systemless-double-{tracer,clippy}-verified.txt. Do not infer their results.
+
+The existing channel allocation fixture failed at its assumed 1280-byte remainder.
+An archive of committed 3545b9082 independently reproduces the same failure
+(/tmp/systemless-double-channel-baseline.txt). A distinct baseline package name
+avoids the earlier shared-target fingerprint collision. The fixture now reserves
+available compacted heap minus 1280 bytes, preserving the allocation rollback test.
+
+An intermediate original EV run passes the former trap stop and reaches unsupported
+GetDefaultOutputVolume selector 022C0018 at 1,474,723 / PC 0001BE68 (previous stop
+1,474,569 / PC 0001BE16). Evidence /tmp/systemless-ev-double.{txt,ppm,slv}.
+No original doubleback callback executed before this boundary; callback/PCM proof
+is from fixtures. This run predates final Gestalt double-buffer capability
+advertisement. Next rebuild/replay final source, implement coherent default output
+volume state and gain through both ABIs, then replay EV. Do not return a fabricated
+constant or hide correct discovery. Keep original companions/pilot/alias records
+intact. Full game/native/browser/mixed-mode/wgpu-text acceptance remains open.
+
+
+Final-source double-buffer validation completes with 158 selected passes, zero
+failures/ignored (100 library including real GPU cases, 7 environment, 13 resource
+sound, 3 sound, 5 channels, 8 double-buffer, 6 sound-info, 8 playback, 8 queue).
+Strict affected-target Clippy, tracer build and declared Rust 1.93 pass:
+/tmp/systemless-double-{tests,tracer,clippy,msrv}-verified.txt. Final-source original
+EV with Gestalt bit 10 also reaches the same GetDefaultOutputVolume boundary,
+1,474,723 / PC 0001BE68, without an earlier unsupported double-buffer trap.
+Final replay logs/captures are /tmp/systemless-ev-double-final.{txt,ppm,slv}.
+Actual successful original-double submission must still be distinguished from
+merely returning an OSErr and continuing: a focused caller-return trace is running
+at /tmp/systemless-ev-double-return.txt (1.6M budget, range1474540:1474770).
+Next task remains shared default output volume query/set and actual gain, followed
+by original callbacks/longer EV replay. Do not mark the rebuild/text goal complete.
+
+
+Final double-buffer milestone evidence (2026-10-17): 159 selected tests pass,
+zero failed/ignored, including nine new double-buffer integration tests. The
+additional test verifies continuous linear interpolation against the next ready
+buffer instead of clamping at a nonfinal boundary. Fractional resampling and
+silent-clock division remainders survive switches; initial packet size is ignored
+for uncompressed samples. The current final test log is
+/tmp/systemless-double-tests-final-source.txt (supersedes earlier 158-case gate).
+
+The focused original EV return trace proves SndPlayDoubleBuffer returns noErr:
+at retired1474569 / PC0001BE16 the caller pops its Pascal result; at1474570 /
+PC0001BE18 D0's result word is0000 and its success branch follows. Live header:
+mono,8-bit,uncompressed, rate2B7745D1. It then faults at the real next unsupported
+GetDefaultOutputVolume request,1474723 / PC0001BE68. No original callback has
+executed before this next boundary; sound=0 diagnostic is explicit. This remains
+submission evidence, not audible game or sustained playback acceptance. The later
+interpolation-only correction cannot affect this pre-render return observation;
+fixtures establish actual sample/callback output. Captures stay private under
+future/target/validation/sound-double. Next implement shared default-output volume
+query/set and actual gain, verify both ABIs and replay EV beyond initialization.
+Keep full rebuild, text, games, native/browser and Mixed Mode acceptance active.
+
+
+Final-source tracer build, strict scoped Clippy, declared Rust 1.93, sequential
+stdin formatting and whitespace checks all pass. Logs are
+/tmp/systemless-double-{tracer,clippy,msrv}-final-source.txt. Independent EV catalog
+validation proves every input directory, companion, pilot, alias, metadata and both
+forks exact; additions are System Folder57, Preferences58 and Escape Velocity
+Prefs59 (417-byte resource fork), with no migration of the root preference file.
+Output catalog SHA2563592c6f086c67015f6ab780873b5a5a43d86d4d54ebbdb88cba27e48e9531be4.
+All original/test jobs are terminal. No dependency changes. Next: real shared
+default-output volume query/set/gain and EV continuation, with further callback
+lifetime/interrupt constraints and broader game acceptance still to be verified.

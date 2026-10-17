@@ -5344,3 +5344,25 @@ JSON, archived with all stage evidence under future/target/validation/folders.
 All game jobs are now terminal. Next executable slice is real SndPlayDoubleBuffer
 for EV, then original regression replay; complete game/audio/recording playback,
 native/browser, mixed mode and complete wgpu text/full rebuild remain open.
+
+
+Final double-buffer milestone evidence (2026-10-17): 159 selected tests pass,
+zero failed/ignored, including nine new double-buffer integration tests. The
+additional test verifies continuous linear interpolation against the next ready
+buffer instead of clamping at a nonfinal boundary. Fractional resampling and
+silent-clock division remainders survive switches; initial packet size is ignored
+for uncompressed samples. The current final test log is
+/tmp/systemless-double-tests-final-source.txt (supersedes earlier 158-case gate).
+
+The focused original EV return trace proves SndPlayDoubleBuffer returns noErr:
+at retired1474569 / PC0001BE16 the caller pops its Pascal result; at1474570 /
+PC0001BE18 D0's result word is0000 and its success branch follows. Live header:
+mono,8-bit,uncompressed, rate2B7745D1. It then faults at the real next unsupported
+GetDefaultOutputVolume request,1474723 / PC0001BE68. No original callback has
+executed before this next boundary; sound=0 diagnostic is explicit. This remains
+submission evidence, not audible game or sustained playback acceptance. The later
+interpolation-only correction cannot affect this pre-render return observation;
+fixtures establish actual sample/callback output. Captures stay private under
+future/target/validation/sound-double. Next implement shared default-output volume
+query/set and actual gain, verify both ABIs and replay EV beyond initialization.
+Keep full rebuild, text, games, native/browser and Mixed Mode acceptance active.

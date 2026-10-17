@@ -194,7 +194,7 @@ fn both_cpu_status_apis_report_registered_channels_real_busy_state_and_truthful_
         assert_eq!(invoke(&mut a, arch, 0, &[]), 0x03008000);
         assert_eq!(
             systemless_future::environment::gestalt(u32::from_be_bytes(*b"snd ")).unwrap(),
-            0x1801
+            0x1c01
         );
         assert_eq!(invoke(&mut a, arch, 2, &[8, BASE + 512]), 0);
         assert_eq!(
