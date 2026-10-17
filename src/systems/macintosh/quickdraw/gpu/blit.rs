@@ -9,7 +9,8 @@ pub struct QuickDrawGpuBlit {
     /// A singleton samples directly; larger groups reduce by maximum index.
     pub columns: Vec<[u32; 2]>,
     pub rows: Vec<[u32; 2]>,
-    pub palette: Option<[u8; 256]>,
+    /// Indexed source colors mapped into raw destination pixels.
+    pub palette: Option<[u32; 256]>,
 }
 impl QuickDrawGpuBlit {
     pub fn valid(&self) -> bool {
@@ -52,7 +53,7 @@ impl QuickDrawGpuBlit {
                 pixels.push(
                     self.palette
                         .as_ref()
-                        .map_or(maximum, |p| u32::from(p[maximum as usize])),
+                        .map_or(maximum, |p| p[maximum as usize]),
                 );
             }
         }

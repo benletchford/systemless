@@ -255,7 +255,7 @@ impl State {
         let height = command.rows.len() as u32;
         let palette: Vec<u32> = command.palette.as_ref().map_or_else(
             || (0..256).collect(),
-            |p| p.iter().map(|v| u32::from(*v)).collect(),
+            |p| p.to_vec(),
         );
         let columns: Vec<u32> = command.columns.iter().flatten().copied().collect();
         let rows: Vec<u32> = command.rows.iter().flatten().copied().collect();
@@ -773,7 +773,9 @@ mod tests {
                     }
                 })
                 .collect();
-            let palette = mapped.then(|| std::array::from_fn(|i| 255 - i as u8));
+            let palette = mapped.then(|| {
+                std::array::from_fn(|i| 0xff00_0000 | ((255 - i as u32) * 0x010101))
+            });
             let command = QuickDrawGpuBlit {
                 width: 23,
                 height: 17,
@@ -795,7 +797,7 @@ mod tests {
                         command
                             .palette
                             .as_ref()
-                            .map_or(value, |p| u32::from(p[value as usize])),
+                            .map_or(value, |p| p[value as usize]),
                     );
                 }
             }

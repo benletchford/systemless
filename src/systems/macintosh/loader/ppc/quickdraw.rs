@@ -1,5 +1,8 @@
 //! PowerPC QuickDraw 2D drawing primitives, text rendering, PixMap access, and blit transfers.
 
+#[path = "quickdraw_gpu_blit.rs"]
+mod gpu_blit;
+
 use super::graphics::*;
 use super::regions::*;
 use super::*;
@@ -4622,9 +4625,7 @@ pub(crate) fn ppc_copy_bits(
         // resolves records and masks; the shared operation owns pure
         // byte-aligned or packed srcCopy format, mode, and geometry eligibility.
         if mask_storage.is_none() {
-            use crate::copy_bits::{
-                BytePixmap, Indexed8ScalingSelection, RowCopy, RowCopyOutcome,
-            };
+            use crate::copy_bits::{BytePixmap, Indexed8ScalingSelection, RowCopy, RowCopyOutcome};
 
             let indexed8_scaling = Indexed8ScalingSelection::from_adapter_facts(
                 mask_rgn == 0,
@@ -4735,140 +4736,199 @@ pub(crate) fn ppc_copy_bits(
             )?,
             _ => return None,
         };
-        let mut writes = Vec::new();
         let mut details = crate::memory::SavedPixels::<()>::default();
-        for dst_y in copy_top..copy_bottom {
-            let rel_y = i64::from(dst_y) - i64::from(dst_top);
-            let src_y = i64::from(src_top) + (rel_y * src_height) / dst_height;
-            let Ok(src_y) = i32::try_from(src_y) else {
-                continue;
-            };
-            for dst_x in copy_left..copy_right {
-                let rel_x = i64::from(dst_x) - i64::from(dst_left);
-                let src_x = i64::from(src_left) + (rel_x * src_width) / dst_width;
-                let Ok(src_x) = i32::try_from(src_x) else {
-                    continue;
-                };
-                let Some(src_pixel) = ppc_read_pixmap_raw_pixel(memory, src_bits, src_x, src_y)
-                else {
-                    continue;
-                };
-                if mask_storage.as_ref().is_some_and(|storage| {
-                    !ppc_point_in_region_storage(storage, dst_y as i16, dst_x as i16)
-                }) {
-                    continue;
-                }
-                // The high byte of a classic 32-bit xRGB pixel is padding.
-                let transparent_source = if src_bits.depth == 32 {
-                    src_pixel & 0x00ff_ffff
-                } else {
-                    src_pixel
-                };
-                if transparent && transparent_source == transparent_back_pixel {
-                    continue;
-                }
-                let pixel = if dst_bits.depth == 1 && matches!(mode, 32 | 33 | 34 | 35 | 37 | 38 | 39) {
-                    // Arithmetic modes on a one-bit destination use the
-                    // Boolean fallbacks in Imaging With QuickDraw, Table 4-2.
-                    let destination = ppc_read_pixmap_raw_pixel(memory, dst_bits, dst_x, dst_y)?;
-                    match mode {
-                        32 => src_pixel,                        // srcCopy
-                        33 | 37 => destination & !src_pixel,  // srcBic
-                        34 | 38 => destination ^ src_pixel,   // srcXor
-                        35 | 39 => destination | src_pixel,   // srcOr
-                        _ => unreachable!(),
-                    }
-                } else if matches!(mode, 32 | 33 | 34 | 35 | 37 | 38 | 39) {
-                    // Color QuickDraw arithmetic modes convert both pixels to
-                    // their RGB components, combine each component, and assign
-                    // the destination the closest representable color.
-                    // Imaging With QuickDraw (1994), pp. 4-38--4-40.
-                    let dst_pixel = ppc_read_pixmap_raw_pixel(memory, dst_bits, dst_x, dst_y)?;
-                    let source_rgb = ppc_pixmap_pixel_rgb(src_bits, src_pixel, src_clut.as_ref())?;
-                    let destination_rgb =
-                        ppc_pixmap_pixel_rgb(dst_bits, dst_pixel, dst_clut.as_ref())?;
-                    let op = [op_color.red, op_color.green, op_color.blue];
-                    let transformed: [u16; 3] = std::array::from_fn(|channel| {
-                        if mode == 32 {
-                            let weight = u64::from(op[channel]);
-                            ((u64::from(source_rgb[channel]) * weight
-                                + u64::from(destination_rgb[channel]) * (65_536 - weight))
-                                >> 16) as u16
-                        } else {
-                            ppc_arithmetic_transfer_channel(
-                                mode,
-                                source_rgb[channel],
-                                destination_rgb[channel],
-                                op[channel],
-                            )
-                        }
-                    });
-                    ppc_rgb_to_pixmap_pixel(dst_bits, transformed, dst_clut.as_ref())?
-                } else if transparent && src_bits.depth == 1 {
-                    bitmap_fore_pixel
-                } else if src_bits.depth == 1 {
-                    if src_pixel == 0 {
+        // CLUT resolution remains on the host; sampling and destination color
+        // lookup happen in the GPU kernel, including monochrome expansion.
+        let gpu_palette =
+            if mode != 0 || mask_storage.is_some() || !memory.quickdraw_gpu_renderer().is_some() {
+                None
+            } else if src_bits.depth == 1 {
+                Some(std::array::from_fn(|i| {
+                    if i == 0 {
                         bitmap_back_pixel
                     } else {
                         bitmap_fore_pixel
                     }
-                } else if ppc_indexed_depth_entry_count(src_bits.depth).is_some()
-                    && src_bits.depth == dst_bits.depth
-                {
-                    u32::from(
-                        palette_map
-                            .as_ref()
-                            .map(|palette_map| palette_map[src_pixel as usize])
-                            .unwrap_or(src_pixel as u8),
-                    )
-                } else if ppc_indexed_depth_entry_count(src_bits.depth).is_some()
-                    && dst_bits.depth == 16
-                {
-                    let [red, green, blue] = src_clut.as_ref()?[src_pixel as usize];
-                    u32::from(ppc_rgb_color_to_rgb555(PpcRgbColor { red, green, blue }))
-                } else if src_bits.depth == 16
-                    && ppc_indexed_depth_entry_count(dst_bits.depth).is_some()
-                {
-                    let [red, green, blue] = ppc_rgb555_to_rgb16(src_pixel as u16);
-                    u32::from(ppc_rgb_color_to_index_in_clut(
-                        PpcRgbColor { red, green, blue },
-                        dst_clut.as_ref()?,
-                        ppc_indexed_depth_entry_count(dst_bits.depth)?,
-                    ))
-                } else if ppc_indexed_depth_entry_count(src_bits.depth).is_some()
-                    && ppc_indexed_depth_entry_count(dst_bits.depth).is_some()
-                {
-                    let [red, green, blue] = src_clut.as_ref()?[src_pixel as usize];
-                    u32::from(ppc_rgb_color_to_index_in_clut(
-                        PpcRgbColor { red, green, blue },
-                        dst_clut.as_ref()?,
-                        ppc_indexed_depth_entry_count(dst_bits.depth)?,
-                    ))
-                } else if src_bits.depth != dst_bits.depth
-                    && (src_bits.depth == 32 || dst_bits.depth == 32)
-                {
-                    let rgb = ppc_pixmap_pixel_rgb(src_bits, src_pixel, src_clut.as_ref())?;
-                    ppc_rgb_to_pixmap_pixel(dst_bits, rgb, dst_clut.as_ref())?
-                } else {
-                    src_pixel
-                };
-                if matches!(mode, 0 | 36)
-                    && src_bits.depth == dst_bits.depth
-                    && matches!(src_bits.depth, 8 | 16)
-                    && src_pixel == pixel
-                {
-                    let lanes = src_bits.depth / 8;
-                    let address = src_bits.base_addr
-                        + (src_y - i32::from(src_bits.top)) as u32 * src_bits.row_bytes
-                        + (src_x - i32::from(src_bits.left)) as u32 * lanes;
-                    memory.presentation().capture_detail(
-                        &mut details,
-                        writes.len() * lanes as usize,
-                        address,
-                        lanes as usize,
-                    );
+                }))
+            } else if let Some(entries) = ppc_indexed_depth_entry_count(src_bits.depth) {
+                let mut colors = [0u32; 256];
+                for i in 0..entries {
+                    colors[i] = if src_bits.depth == dst_bits.depth {
+                        u32::from(palette_map.as_ref().map_or(i as u8, |p| p[i]))
+                    } else {
+                        let [red, green, blue] = src_clut.as_ref()?[i];
+                        if let Some(count) = ppc_indexed_depth_entry_count(dst_bits.depth) {
+                            u32::from(ppc_rgb_color_to_index_in_clut(
+                                PpcRgbColor { red, green, blue },
+                                dst_clut.as_ref()?,
+                                count,
+                            ))
+                        } else {
+                            ppc_rgb_to_pixmap_pixel(dst_bits, [red, green, blue], None)?
+                        }
+                    };
                 }
-                writes.push((dst_x, dst_y, pixel));
+                Some(colors)
+            } else {
+                None
+            };
+        let gpu_writes = if mode == 0
+            && mask_storage.is_none()
+            && memory.quickdraw_gpu_renderer().is_some()
+            && (src_bits.depth <= 8 || src_bits.depth == dst_bits.depth)
+        {
+            gpu_blit::sample_copy(
+                memory,
+                src_bits,
+                dst_bits,
+                [src_top, src_left, src_bottom, src_right].map(i32::from),
+                [dst_top, dst_left, dst_bottom, dst_right].map(i32::from),
+                [copy_top, copy_left, copy_bottom, copy_right],
+                gpu_palette,
+                &mut details,
+            )
+        } else {
+            None
+        };
+        let mut writes = gpu_writes.unwrap_or_default();
+        if writes.is_empty() {
+            for dst_y in copy_top..copy_bottom {
+                let rel_y = i64::from(dst_y) - i64::from(dst_top);
+                let src_y = i64::from(src_top) + (rel_y * src_height) / dst_height;
+                let Ok(src_y) = i32::try_from(src_y) else {
+                    continue;
+                };
+                for dst_x in copy_left..copy_right {
+                    let rel_x = i64::from(dst_x) - i64::from(dst_left);
+                    let src_x = i64::from(src_left) + (rel_x * src_width) / dst_width;
+                    let Ok(src_x) = i32::try_from(src_x) else {
+                        continue;
+                    };
+                    let Some(src_pixel) = ppc_read_pixmap_raw_pixel(memory, src_bits, src_x, src_y)
+                    else {
+                        continue;
+                    };
+                    if mask_storage.as_ref().is_some_and(|storage| {
+                        !ppc_point_in_region_storage(storage, dst_y as i16, dst_x as i16)
+                    }) {
+                        continue;
+                    }
+                    // The high byte of a classic 32-bit xRGB pixel is padding.
+                    let transparent_source = if src_bits.depth == 32 {
+                        src_pixel & 0x00ff_ffff
+                    } else {
+                        src_pixel
+                    };
+                    if transparent && transparent_source == transparent_back_pixel {
+                        continue;
+                    }
+                    let pixel = if dst_bits.depth == 1
+                        && matches!(mode, 32 | 33 | 34 | 35 | 37 | 38 | 39)
+                    {
+                        // Arithmetic modes on a one-bit destination use the
+                        // Boolean fallbacks in Imaging With QuickDraw, Table 4-2.
+                        let destination =
+                            ppc_read_pixmap_raw_pixel(memory, dst_bits, dst_x, dst_y)?;
+                        match mode {
+                            32 => src_pixel,                     // srcCopy
+                            33 | 37 => destination & !src_pixel, // srcBic
+                            34 | 38 => destination ^ src_pixel,  // srcXor
+                            35 | 39 => destination | src_pixel,  // srcOr
+                            _ => unreachable!(),
+                        }
+                    } else if matches!(mode, 32 | 33 | 34 | 35 | 37 | 38 | 39) {
+                        // Color QuickDraw arithmetic modes convert both pixels to
+                        // their RGB components, combine each component, and assign
+                        // the destination the closest representable color.
+                        // Imaging With QuickDraw (1994), pp. 4-38--4-40.
+                        let dst_pixel = ppc_read_pixmap_raw_pixel(memory, dst_bits, dst_x, dst_y)?;
+                        let source_rgb =
+                            ppc_pixmap_pixel_rgb(src_bits, src_pixel, src_clut.as_ref())?;
+                        let destination_rgb =
+                            ppc_pixmap_pixel_rgb(dst_bits, dst_pixel, dst_clut.as_ref())?;
+                        let op = [op_color.red, op_color.green, op_color.blue];
+                        let transformed: [u16; 3] = std::array::from_fn(|channel| {
+                            if mode == 32 {
+                                let weight = u64::from(op[channel]);
+                                ((u64::from(source_rgb[channel]) * weight
+                                    + u64::from(destination_rgb[channel]) * (65_536 - weight))
+                                    >> 16) as u16
+                            } else {
+                                ppc_arithmetic_transfer_channel(
+                                    mode,
+                                    source_rgb[channel],
+                                    destination_rgb[channel],
+                                    op[channel],
+                                )
+                            }
+                        });
+                        ppc_rgb_to_pixmap_pixel(dst_bits, transformed, dst_clut.as_ref())?
+                    } else if transparent && src_bits.depth == 1 {
+                        bitmap_fore_pixel
+                    } else if src_bits.depth == 1 {
+                        if src_pixel == 0 {
+                            bitmap_back_pixel
+                        } else {
+                            bitmap_fore_pixel
+                        }
+                    } else if ppc_indexed_depth_entry_count(src_bits.depth).is_some()
+                        && src_bits.depth == dst_bits.depth
+                    {
+                        u32::from(
+                            palette_map
+                                .as_ref()
+                                .map(|palette_map| palette_map[src_pixel as usize])
+                                .unwrap_or(src_pixel as u8),
+                        )
+                    } else if ppc_indexed_depth_entry_count(src_bits.depth).is_some()
+                        && dst_bits.depth == 16
+                    {
+                        let [red, green, blue] = src_clut.as_ref()?[src_pixel as usize];
+                        u32::from(ppc_rgb_color_to_rgb555(PpcRgbColor { red, green, blue }))
+                    } else if src_bits.depth == 16
+                        && ppc_indexed_depth_entry_count(dst_bits.depth).is_some()
+                    {
+                        let [red, green, blue] = ppc_rgb555_to_rgb16(src_pixel as u16);
+                        u32::from(ppc_rgb_color_to_index_in_clut(
+                            PpcRgbColor { red, green, blue },
+                            dst_clut.as_ref()?,
+                            ppc_indexed_depth_entry_count(dst_bits.depth)?,
+                        ))
+                    } else if ppc_indexed_depth_entry_count(src_bits.depth).is_some()
+                        && ppc_indexed_depth_entry_count(dst_bits.depth).is_some()
+                    {
+                        let [red, green, blue] = src_clut.as_ref()?[src_pixel as usize];
+                        u32::from(ppc_rgb_color_to_index_in_clut(
+                            PpcRgbColor { red, green, blue },
+                            dst_clut.as_ref()?,
+                            ppc_indexed_depth_entry_count(dst_bits.depth)?,
+                        ))
+                    } else if src_bits.depth != dst_bits.depth
+                        && (src_bits.depth == 32 || dst_bits.depth == 32)
+                    {
+                        let rgb = ppc_pixmap_pixel_rgb(src_bits, src_pixel, src_clut.as_ref())?;
+                        ppc_rgb_to_pixmap_pixel(dst_bits, rgb, dst_clut.as_ref())?
+                    } else {
+                        src_pixel
+                    };
+                    if matches!(mode, 0 | 36)
+                        && src_bits.depth == dst_bits.depth
+                        && matches!(src_bits.depth, 8 | 16)
+                        && src_pixel == pixel
+                    {
+                        let lanes = src_bits.depth / 8;
+                        let address = src_bits.base_addr
+                            + (src_y - i32::from(src_bits.top)) as u32 * src_bits.row_bytes
+                            + (src_x - i32::from(src_bits.left)) as u32 * lanes;
+                        memory.presentation().capture_detail(
+                            &mut details,
+                            writes.len() * lanes as usize,
+                            address,
+                            lanes as usize,
+                        );
+                    }
+                    writes.push((dst_x, dst_y, pixel));
+                }
             }
         }
         if writes.is_empty() {
