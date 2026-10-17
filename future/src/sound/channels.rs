@@ -6,6 +6,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 mod double;
+mod output;
 mod playback;
 mod queue;
 mod resource;
@@ -51,11 +52,21 @@ impl Channel {
             .is_some_and(resource::FilePlay::paused)
     }
 }
-#[derive(Default)]
 pub struct Manager {
     channels: BTreeMap<u32, Channel>,
     order: Vec<u32>,
     next_serial: u64,
+    output_gain: [u16; 2],
+}
+impl Default for Manager {
+    fn default() -> Self {
+        Self {
+            channels: BTreeMap::new(),
+            order: Vec::new(),
+            next_serial: 0,
+            output_gain: [256; 2],
+        }
+    }
 }
 fn overlaps(a: u32, an: u32, b: u32, bn: u32) -> bool {
     u64::from(a) < u64::from(b) + u64::from(bn) && u64::from(b) < u64::from(a) + u64::from(an)

@@ -275,6 +275,8 @@ pub enum Service {
     SFGetFile,
     DrawPicture,
     SetSoundVol,
+    GetDefaultOutputVolume,
+    SetDefaultOutputVolume,
     SndNewChannel,
     SndDoImmediate,
     SndDoCommand,
@@ -708,6 +710,8 @@ impl Abi {
             b"SndNewChannel" => Some(Service::SndNewChannel),
             b"SndDisposeChannel" => Some(Service::SndDisposeChannel),
             b"SetSoundVol" => Some(Service::SetSoundVol),
+            b"GetDefaultOutputVolume" => Some(Service::GetDefaultOutputVolume),
+            b"SetDefaultOutputVolume" => Some(Service::SetDefaultOutputVolume),
             b"GetSoundVol" => Some(Service::GetSoundVol),
             b"PBControlSync" => Some(Service::PBControlSync),
             b"GetMMUMode" => Some(Service::GetMmuMode),
@@ -1499,6 +1503,27 @@ impl Abi {
             0xa800 => {
                 let selector = c.dar[0];
                 match selector & 0x00ff_ffff {
+                    0x002c0018 | 0x00300018 if matches!(selector >> 24, 0 | 2) => {
+                        let argument = memory.u32(GuestPtr(sp))?;
+                        let get = selector & 0x00ff_ffff == 0x002c0018;
+                        if get && argument != 0 {
+                            memory.validate_write(GuestPtr(argument), 4)?;
+                        }
+                        let result = sp
+                            .checked_add(4)
+                            .ok_or_else(|| Error::Cpu("output volume stack overflow".into()))?;
+                        memory.validate_write(GuestPtr(result), 2)?;
+                        c.dar[15] = result;
+                        Ok((
+                            if get {
+                                Call::GetOutputVolume(GuestPtr(argument))
+                            } else {
+                                Call::SetOutputVolume(argument)
+                            },
+                            Reply::StackWord(GuestPtr(result)),
+                        ))
+                    }
+
                     0x00200008 if matches!(selector >> 24, 0 | 4) => {
                         let bytes = memory.read(GuestPtr(sp), 8)?;
                         let header = GuestPtr(u32::from_be_bytes(bytes[..4].try_into().unwrap()));
@@ -5217,6 +5242,8 @@ impl Abi {
                 quiet_now: c.gpr[4] as u8 != 0,
             }),
             Service::SetSoundVol => Call::SoundVolume(c.gpr[3] as i16),
+            Service::GetDefaultOutputVolume => Call::GetOutputVolume(GuestPtr(c.gpr[3])),
+            Service::SetDefaultOutputVolume => Call::SetOutputVolume(c.gpr[3]),
             Service::GetSoundVol => Call::GetSoundVolume(GuestPtr(c.gpr[3])),
             Service::PBControlSync => Call::DeviceControl(GuestPtr(c.gpr[3])),
             Service::GetMmuMode => Call::GetMmuMode,

@@ -5366,3 +5366,32 @@ fixtures establish actual sample/callback output. Captures stay private under
 future/target/validation/sound-double. Next implement shared default-output volume
 query/set and actual gain, verify both ABIs and replay EV beyond initialization.
 Keep full rebuild, text, games, native/browser and Mixed Mode acceptance active.
+
+
+Final output-volume milestone (2026-10-17):165 selected tests pass, zero failed/
+ignored:100 library(real GPU cases enabled),7 environment,6 output-volume,
+13 resource-sound,3 sound,5 channels,9 double-buffer,6 sound-info,8 playback and
+8 queue. Final tracer build, strict scoped Clippy, declared Rust1.93, formatting
+and whitespace checks pass. Logs: /tmp/systemless-output-tests-final.txt,
+/tmp/systemless-output-clippy-final.txt, /tmp/systemless-output-{tracer,msrv}.txt.
+No dependencies change. All jobs are terminal.
+
+The original EV24M request now passes both former sound-init boundaries, issues
+GetOutputVolume, restores01000100 and mutes0, loads scene resources, and draws its
+visible title screen. It stops at12,981,332 retired / PC0001B5BE on unsupported
+A43C(CmpString family), not its requested budget. Diagnostic sound callbacks=0;
+no audible-game or original refill-callback acceptance is claimed. Current exact
+PCM/volume/callback evidence is fixture-based. Captures inspected and independently
+parsed: /tmp/systemless-ev-output.{txt,ppm,png,slv}. Output catalog SHA256:
+634e760a54feb7579480885633bc964dd2f80c8e88a0bd67f9a25a86d5f9a72f.
+
+All original companion, pilot and root-preference bytes/metadata stay exact except
+Last Pilot is actually deleted/recreated by the guest (node56 to60). Its parent,
+name, Finder/extended metadata/script and both forks are exact; creation/modification
+times change3029529703 to3029529808. Explicit NewAlias/CreateSpecResource and
+SetSpecInfo calls are present. New files beneath Preferences58 are Prefs59(417B
+resource), thaumaturgy.log61(284B data), Escape Velocity License62(514B data).
+Do not claim the output catalog is byte-identical or all node identities unchanged.
+Original input assets remain untouched. Next implement documented shared CmpString
+ABI/case/diacritic semantics and replay EV; continue actual audio callbacks, full
+gameplay, native/browser, Mixed Mode and complete GPU text. Goal remains active.

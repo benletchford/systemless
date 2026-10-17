@@ -406,6 +406,8 @@ pub enum Call {
         id: i16,
     },
     SoundVolume(i16),
+    GetOutputVolume(GuestPtr),
+    SetOutputVolume(u32),
     SoundChannel(crate::sound::Op),
     SoundStartFile(crate::sound::StartFilePlay),
     SoundPauseFile(u32),

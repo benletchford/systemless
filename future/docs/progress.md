@@ -11899,3 +11899,62 @@ Output catalog SHA2563592c6f086c67015f6ab780873b5a5a43d86d4d54ebbdb88cba27e48e95
 All original/test jobs are terminal. No dependency changes. Next: real shared
 default-output volume query/set/gain and EV continuation, with further callback
 lifetime/interrupt constraints and broader game acceptance still to be verified.
+
+
+## Shared output-device volume in progress (2026-10-17)
+
+Native SoundDispatch GetDefaultOutputVolume/SetDefaultOutputVolume and the PPC
+imports now use real shared stereo output gain applied after channel mixing and
+before final clipping. Queries include the live coarse legacy master; setters
+normalize that coarse master to full while retaining its high bits. The virtual
+policy, supported value bounds and primary-source distinction are documented in
+architecture.md. Independent system-beep volume, persistent host-device selection
+and native-volume parity remain open.
+
+Six new integration tests exercise both ABIs, cross-CPU state, live voice gain,
+mute/unmute, low-left/high-right layout, legacy attenuation, invalid values,
+read-only faults before native stack consumption/PPC result overwrite, atomic
+setter preflight and two-voice attenuation before saturation. The first five-case
+plus core/audio gate passed164 tests; the expanded six-case test passes. A final
+165-case consolidated run/lint is active in /tmp/systemless-output-tests-final.txt
+and /tmp/systemless-output-clippy-final.txt. Tracer build and declared Rust1.93
+already pass (/tmp/systemless-output-{tracer,msrv}.txt). The sole initial fixture
+failure attempted to execute a runtime after a terminal memory fault; it now
+inspects retained state without resuming the process. Production fault behavior
+was preserved.
+
+Original EV replay24M is live at /tmp/systemless-ev-output.txt, with immutable
+outputs /tmp/systemless-ev-output.{ppm,slv}. It has passed the former volume-query
+stop and calls GetOutputVolume followed by SetOutputVolume(01000100) and mute(0),
+then continues loading scene resources. No final game outcome, frame or callback
+count is claimed before the bounded run terminates and captures are inspected.
+Keep full rebuild, GPU text, games, native/browser and Mixed Mode acceptance open.
+
+
+Final output-volume milestone (2026-10-17):165 selected tests pass, zero failed/
+ignored:100 library(real GPU cases enabled),7 environment,6 output-volume,
+13 resource-sound,3 sound,5 channels,9 double-buffer,6 sound-info,8 playback and
+8 queue. Final tracer build, strict scoped Clippy, declared Rust1.93, formatting
+and whitespace checks pass. Logs: /tmp/systemless-output-tests-final.txt,
+/tmp/systemless-output-clippy-final.txt, /tmp/systemless-output-{tracer,msrv}.txt.
+No dependencies change. All jobs are terminal.
+
+The original EV24M request now passes both former sound-init boundaries, issues
+GetOutputVolume, restores01000100 and mutes0, loads scene resources, and draws its
+visible title screen. It stops at12,981,332 retired / PC0001B5BE on unsupported
+A43C(CmpString family), not its requested budget. Diagnostic sound callbacks=0;
+no audible-game or original refill-callback acceptance is claimed. Current exact
+PCM/volume/callback evidence is fixture-based. Captures inspected and independently
+parsed: /tmp/systemless-ev-output.{txt,ppm,png,slv}. Output catalog SHA256:
+634e760a54feb7579480885633bc964dd2f80c8e88a0bd67f9a25a86d5f9a72f.
+
+All original companion, pilot and root-preference bytes/metadata stay exact except
+Last Pilot is actually deleted/recreated by the guest (node56 to60). Its parent,
+name, Finder/extended metadata/script and both forks are exact; creation/modification
+times change3029529703 to3029529808. Explicit NewAlias/CreateSpecResource and
+SetSpecInfo calls are present. New files beneath Preferences58 are Prefs59(417B
+resource), thaumaturgy.log61(284B data), Escape Velocity License62(514B data).
+Do not claim the output catalog is byte-identical or all node identities unchanged.
+Original input assets remain untouched. Next implement documented shared CmpString
+ABI/case/diacritic semantics and replay EV; continue actual audio callbacks, full
+gameplay, native/browser, Mixed Mode and complete GPU text. Goal remains active.

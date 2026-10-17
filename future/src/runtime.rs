@@ -2337,6 +2337,30 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::GetOutputVolume(destination) => {
+                            let error = self
+                                .process
+                                .sound
+                                .get_output_volume(&mut self.memory, destination)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
+                        Call::SetOutputVolume(level) => {
+                            let error = self
+                                .process
+                                .sound
+                                .set_output_volume(&mut self.memory, level)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::SoundVolume(level) => {
                             crate::sound::set_volume(&mut self.memory, level)?;
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
@@ -2897,6 +2921,8 @@ impl Runtime {
                         | Call::SoundPlay { .. }
                         | Call::SoundVersion
                         | Call::SoundStatus(_)
+                        | Call::GetOutputVolume(_)
+                        | Call::SetOutputVolume(_)
                         | Call::SoundVolume(_)
                         | Call::GetSoundVolume(_)
                         | Call::DeviceControl(_)

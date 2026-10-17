@@ -4426,3 +4426,30 @@ https://dev.os9.ca/techpubs/mac/pdf/Sound/Sound_Manager.pdf
 Selector/count and UPP signatures also checked against Apple's Sound.h interface:
 https://www.cs.vu.nl/~eliens/research/media/lib-of-vs-libs-QTDevWin-CIncludes-Sound.h.html
 These are supported uncompressed semantics, not full Sound Manager acceptance.
+
+
+## Shared output-device volume
+
+GetDefaultOutputVolume / SetDefaultOutputVolume use one process-owned virtual
+output-device gain in the shared Sound Manager. Native SoundDispatch selectors
+002C0018 / 00300018 (including the two-word argument-count modifiers) and the PPC
+imports invoke the same methods. The low 16 bits are the left level, high 16 bits
+the right; the implemented range is 0 through 0100 per side. Unsupported values
+return paramErr without changing device or legacy state. The default is full gain.
+
+The mixer applies this device gain after summing channel samples and before final
+saturation. Existing channel amplitude/volume and the coarse SdVolume master
+continue to affect actual output. The query reports device gain multiplied by the
+live coarse master, rounded down to the representable level. A device setter
+normalizes that coarse master to seven while preserving its high bits, so a prior
+legacy mute does not defeat a new explicit output-volume request. This is the
+virtual profile's documented compatibility policy; no native-machine parity or
+host system-volume mutation is claimed. The getter/setter preflight writable
+storage before publication; MemErr and ResErr remain unchanged. Persisting output
+device settings across runtime instances and independent system-beep volume are
+not implemented by this slice.
+
+Primary range/layout contract: Inside Macintosh Sound, pp. 2-139–142:
+https://dev.os9.ca/techpubs/mac/pdf/Sound/Sound_Manager.pdf
+The actual 68K selector words are verified against Apple's Sound.h and original
+EV; printed assembly tables in the PDF contain inconsistent low selector words.

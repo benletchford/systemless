@@ -406,7 +406,14 @@ impl Manager {
             }
             Ok(mixed
                 .into_iter()
-                .map(|frame| frame.map(|sample| (sample * master / 7).clamp(-32768, 32767) as i16))
+                .map(|frame| {
+                    let mut output = [0; 2];
+                    for (i, sample) in frame.into_iter().enumerate() {
+                        output[i] = (sample * master * i64::from(self.output_gain[i]) / (7 * 256))
+                            .clamp(-32768, 32767) as i16;
+                    }
+                    output
+                })
                 .collect())
         })();
         (p.mem_error, p.res_error) = errors;
