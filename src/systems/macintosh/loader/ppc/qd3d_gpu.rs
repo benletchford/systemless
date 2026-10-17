@@ -1,17 +1,36 @@
 //! Routed GPU readback commits. Bit 15 identifies untouched background pixels.
-use super::{ppc_rgb555_to_clut_index, PpcFrontBuffer, PpcSectionMem};
+use super::{PpcFrontBuffer, PpcSectionMem};
 
 /// Preflight every painted span before publishing any. Untouched pixels must
 /// not notify guest write observers: even an identical store clears text detail.
 pub(crate) fn commit_pixels(
     memory: &mut PpcSectionMem,
     front: PpcFrontBuffer,
-    clut: Option<&[[u16; 3]; 256]>,
     pixels: &[u16],
 ) -> bool {
+    commit_pixels_impl(memory, front, pixels, false)
+}
+
+pub(crate) fn commit_indexed_pixels(
+    memory: &mut PpcSectionMem,
+    front: PpcFrontBuffer,
+    pixels: &[u16],
+) -> bool {
+    if front.depth != 8 || pixels.iter().any(|p| p & 0x8000 == 0 && *p > 255) {
+        return false;
+    }
+    commit_pixels_impl(memory, front, pixels, true)
+}
+
+fn commit_pixels_impl(
+    memory: &mut PpcSectionMem,
+    front: PpcFrontBuffer,
+    pixels: &[u16],
+    indexed: bool,
+) -> bool {
     let bytes_per_pixel = match front.depth {
-        8 if clut.is_some() => 1,
-        16 if clut.is_none() => 2,
+        8 if indexed => 1,
+        16 if !indexed => 2,
         _ => return false,
     };
     let Some(row_len) = front.width.checked_mul(bytes_per_pixel) else {
@@ -36,8 +55,8 @@ pub(crate) fn commit_pixels(
             let first = x;
             let start = bytes.len();
             while x < row.len() && row[x] & 0x8000 == 0 {
-                if let Some(clut) = clut {
-                    bytes.push(ppc_rgb555_to_clut_index(row[x], clut));
+                if indexed {
+                    bytes.push(row[x] as u8);
                 } else {
                     bytes.extend(row[x].to_be_bytes());
                 }
@@ -71,6 +90,44 @@ mod tests {
     use ppc::PpcMemory;
 
     #[test]
+    fn gpu_indexed_commits_preserve_indices_padding_and_reject_invalid_cells() {
+        let front = PpcFrontBuffer {
+            base_addr: 0x1000,
+            row_bytes: 6,
+            width: 4,
+            height: 2,
+            depth: 8,
+        };
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(front.base_addr, vec![200; 12]);
+        let token = PpcMemory::instruction_cache_token(&mut memory, front.base_addr).unwrap();
+        let mut pixels = vec![0x8000; 8];
+        assert!(commit_indexed_pixels(&mut memory, front, &pixels));
+        assert_eq!(
+            PpcMemory::instruction_cache_token(&mut memory, front.base_addr),
+            Some(token)
+        );
+        pixels[1] = 30;
+        pixels[5] = 256;
+        assert!(!commit_indexed_pixels(&mut memory, front, &pixels));
+        assert_eq!(memory.read_u8(0x1001), Some(200));
+        pixels[5] = 200;
+        assert!(commit_indexed_pixels(&mut memory, front, &pixels));
+        assert_eq!(memory.read_u8(0x1001), Some(30));
+        assert_eq!(memory.read_u8(0x1007), Some(200));
+        assert_eq!(memory.read_u8(0x1000), Some(200));
+        assert_eq!(memory.read_u8(0x1004), Some(200));
+        assert_ne!(
+            PpcMemory::instruction_cache_token(&mut memory, front.base_addr),
+            Some(token)
+        );
+        memory.add_readonly_region(0x1007, vec![200]);
+        pixels[1] = 42;
+        assert!(!commit_indexed_pixels(&mut memory, front, &pixels));
+        assert_eq!(memory.read_u8(0x1001), Some(30));
+    }
+
+    #[test]
     fn gpu_painted_spans_preserve_raw_background_padding_and_code_observers() {
         let front = PpcFrontBuffer {
             base_addr: 0x1000,
@@ -83,13 +140,13 @@ mod tests {
         memory.add_region(front.base_addr, vec![0xab; 20]);
         let token = PpcMemory::instruction_cache_token(&mut memory, front.base_addr).unwrap();
         let mut pixels = vec![0x8000; 8];
-        assert!(commit_pixels(&mut memory, front, None, &pixels));
+        assert!(commit_pixels(&mut memory, front, &pixels));
         assert_eq!(
             PpcMemory::instruction_cache_token(&mut memory, front.base_addr),
             Some(token)
         );
         pixels[1] = 0x1234;
-        assert!(commit_pixels(&mut memory, front, None, &pixels));
+        assert!(commit_pixels(&mut memory, front, &pixels));
         assert_eq!(memory.read_u16_be(0x1002), Some(0x1234));
         assert_eq!(memory.read_u16_be(0x1000), Some(0xabab));
         assert_eq!(memory.read_u16_be(0x1008), Some(0xabab));
@@ -114,10 +171,10 @@ mod tests {
         let mut pixels = vec![0x8000; 8];
         pixels[0] = 0x1234;
         pixels[4] = 0x4567;
-        assert!(!commit_pixels(&mut memory, front, None, &pixels));
+        assert!(!commit_pixels(&mut memory, front, &pixels));
         assert_eq!(memory.read_u16_be(0x1000), Some(0xabab));
         assert_eq!(memory.read_u16_be(0x100a), Some(0xabab));
-        assert!(!commit_pixels(&mut memory, front, None, &pixels[..7]));
+        assert!(!commit_pixels(&mut memory, front, &pixels[..7]));
         assert_eq!(memory.read_u16_be(0x1000), Some(0xabab));
     }
 }

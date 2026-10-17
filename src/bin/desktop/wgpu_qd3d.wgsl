@@ -7,6 +7,7 @@ struct Geometry { size: vec4<u32>, viewport: vec4<u32>, clear: vec4<u32> }
 @group(0) @binding(3) var<uniform> geometry: Geometry;
 struct Light { direction:vec4<f32>, color:vec4<f32>, location:vec4<f32>, parameters:vec4<f32> }
 @group(0) @binding(4) var<storage,read> lights:array<Light>;
+@group(0) @binding(5) var<storage,read> palette:array<u32>;
 fn unit(v:vec3<f32>) -> vec4<f32> {
     let length_squared=dot(v,v);
     if length_squared > 0. && length_squared <= 3.402823e38 { return vec4(v/sqrt(length_squared),1.); }
@@ -89,7 +90,10 @@ fn unpack555(value: u32) -> vec3<f32> {
     let index = xy.y*geometry.size.x+xy.x;
     var pixel = pixels[index];
     let in_viewport=all(xy>=geometry.viewport.xy)&&all(xy<=geometry.viewport.zw);
-    if in_viewport && geometry.clear.x != 0u { pixel = geometry.clear.y; }
+    if in_viewport && geometry.clear.x != 0u {
+        pixel = geometry.clear.y;
+        if geometry.clear.z != 0u { pixel = palette[pixel & 32767u]; }
+    }
     var depth = 3.402823e38;
     let point = vec2<f32>(xy);
     for(var i=0u; i<geometry.size.z; i++) {
@@ -181,6 +185,10 @@ fn unpack555(value: u32) -> vec3<f32> {
         }
         let alpha = clamp(color.a,0.,1.);
         pixel = rgb555(fma(color.rgb,vec3(alpha),unpack555(pixel)*(1.-alpha)));
+        if geometry.clear.z != 0u { pixel = palette[pixel]; }
+    }
+    if geometry.clear.z != 0u && (pixel & 32768u) == 0u {
+        pixel = pixel >> 16u;
     }
     pixels[index] = pixel;
 }

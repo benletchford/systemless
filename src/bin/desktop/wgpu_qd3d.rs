@@ -19,6 +19,7 @@ struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
+    palette: std::cell::RefCell<Option<([[u16; 3]; 256], wgpu::Buffer)>>,
 }
 
 impl Qd3dRenderer {
@@ -29,6 +30,33 @@ impl Qd3dRenderer {
             initialization_error: None,
             last_fallback: None,
         }
+    }
+
+    fn render_frame(
+        &mut self,
+        frame: &PpcQ3RasterFrame,
+        background: &[u16],
+        clut: Option<&[[u16; 3]; 256]>,
+    ) -> Result<Vec<u16>, String> {
+        if self.state.is_none() && self.initialization_error.is_none() {
+            match State::new() {
+                Ok(state) => self.state = Some(state),
+                Err(error) => self.initialization_error = Some(error),
+            }
+        }
+        let result = match self.state.as_ref() {
+            Some(state) => state.render_with_palette(frame, background, clut),
+            None => Err(self.initialization_error.as_ref().unwrap().clone()),
+        };
+        if let Err(error) = &result {
+            if self.last_fallback.as_ref() != Some(error) {
+                eprintln!("[GPU] QD3D software fallback: {error}");
+                self.last_fallback = Some(error.clone());
+            }
+        } else {
+            self.last_fallback = None;
+        }
+        result
     }
 }
 
@@ -68,14 +96,25 @@ impl State {
             device,
             queue,
             pipeline,
+            palette: Default::default(),
         })
     }
 
+    #[cfg(test)]
     fn render(&self, frame: &PpcQ3RasterFrame, background: &[u16]) -> Result<Vec<u16>, String> {
+        self.render_with_palette(frame, background, None)
+    }
+
+    fn render_with_palette(
+        &self,
+        frame: &PpcQ3RasterFrame,
+        background: &[u16],
+        clut: Option<&[[u16; 3]; 256]>,
+    ) -> Result<Vec<u16>, String> {
         let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
         let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let result = self.render_inner(frame, background);
+        let result = self.render_inner(frame, background, clut);
         let mut error = None;
         for scope in [validation, memory, internal] {
             if let Some(captured) = pollster::block_on(scope.pop()) {
@@ -92,6 +131,7 @@ impl State {
         &self,
         frame: &PpcQ3RasterFrame,
         background: &[u16],
+        clut: Option<&[[u16; 3]; 256]>,
     ) -> Result<Vec<u16>, String> {
         let count = u64::from(frame.width) * u64::from(frame.height);
         let pixel_bytes = count
@@ -428,6 +468,27 @@ impl State {
         let triangle_buffer = buffer(&triangles, wgpu::BufferUsages::STORAGE);
         let texture_buffer = buffer(&texture_bytes, wgpu::BufferUsages::STORAGE);
         let light_buffer = buffer(&light_bytes, wgpu::BufferUsages::STORAGE);
+        // Live guest palettes can change between frames. Cache by all components,
+        // avoiding 32K nearest-color searches on each indexed animation frame.
+        let mut palette_cache = self.palette.borrow_mut();
+        if let Some(clut) = clut {
+            if palette_cache
+                .as_ref()
+                .is_none_or(|(cached, _)| cached != clut)
+            {
+                let bytes: Vec<u8> = systemless::loader::ppc::ppc_q3_gpu_palette_lookup(clut)
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect();
+                *palette_cache = Some((*clut, buffer(&bytes, wgpu::BufferUsages::STORAGE)));
+            }
+        }
+        let empty_palette = buffer(&[0; 4], wgpu::BufferUsages::STORAGE);
+        let palette_buffer = if clut.is_some() {
+            &palette_cache.as_ref().unwrap().1
+        } else {
+            &empty_palette
+        };
         let bytes: Vec<u8> = background
             .iter()
             .flat_map(|p| u32::from(*p).to_le_bytes())
@@ -451,7 +512,7 @@ impl State {
             frame.viewport[3] as u32,
             u32::from(frame.clear_color.is_some()),
             clear,
-            0,
+            u32::from(clut.is_some()),
             0,
         ];
         let bytes: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
@@ -479,6 +540,10 @@ impl State {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: light_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: palette_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -549,6 +614,15 @@ fn vertex_valid(v: &PpcQ3RasterVertex) -> bool {
         && v.screen_y.abs() <= 32768.
 }
 impl PpcQ3GpuRenderer for Qd3dRenderer {
+    fn render_indexed(
+        &mut self,
+        frame: &PpcQ3RasterFrame,
+        background: &[u16],
+        clut: &[[u16; 3]; 256],
+    ) -> Result<Vec<u16>, String> {
+        self.render_frame(frame, background, Some(clut))
+    }
+
     fn render(&mut self, frame: &PpcQ3GpuFrame, background: &[u16]) -> Result<Vec<u16>, String> {
         self.render_native(&PpcQ3RasterFrame::from(frame), background)
     }
@@ -558,31 +632,14 @@ impl PpcQ3GpuRenderer for Qd3dRenderer {
         frame: &PpcQ3RasterFrame,
         background: &[u16],
     ) -> Result<Vec<u16>, String> {
-        if self.state.is_none() && self.initialization_error.is_none() {
-            match State::new() {
-                Ok(state) => self.state = Some(state),
-                Err(error) => self.initialization_error = Some(error),
-            }
-        }
-        let result = match self.state.as_ref() {
-            Some(state) => state.render(frame, background),
-            None => Err(self.initialization_error.as_ref().unwrap().clone()),
-        };
-        if let Err(error) = &result {
-            if self.last_fallback.as_ref() != Some(error) {
-                eprintln!("[GPU] QD3D software fallback: {error}");
-                self.last_fallback = Some(error.clone());
-            }
-        } else {
-            self.last_fallback = None;
-        }
-        result
+        self.render_frame(frame, background, None)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ppc::PpcMemory;
     use systemless::loader::ppc::*;
     use systemless::memory::GuestAddressSpace;
 
@@ -619,10 +676,21 @@ mod tests {
         }
     }
     fn cpu_render(frame: &PpcQ3RasterFrame, background: &[u16]) -> Vec<u16> {
+        cpu_render_target(frame, background, None)
+    }
+    fn cpu_render_target(
+        frame: &PpcQ3RasterFrame,
+        background: &[u16],
+        clut: Option<[[u16; 3]; 256]>,
+    ) -> Vec<u16> {
         let mut memory = GuestAddressSpace::new();
         let mut bytes = Vec::new();
         for row in background.chunks(frame.width as usize) {
-            bytes.extend(row.iter().flat_map(|p| p.to_be_bytes()));
+            if clut.is_some() {
+                bytes.extend(row.iter().map(|p| *p as u8));
+            } else {
+                bytes.extend(row.iter().flat_map(|p| p.to_be_bytes()));
+            }
             bytes.extend([0x55; 6]); // Row padding must never affect the image.
         }
         memory.add_region(0x100000, bytes);
@@ -630,10 +698,10 @@ mod tests {
             base_addr: 0x100000,
             width: frame.width,
             height: frame.height,
-            depth: 16,
-            row_bytes: frame.width * 2 + 6,
+            depth: if clut.is_some() { 8 } else { 16 },
+            row_bytes: frame.width * if clut.is_some() { 1 } else { 2 } + 6,
         };
-        let surface = PpcQ3SoftwareFrontBufferSurface::new(&mut memory, front, None);
+        let surface = PpcQ3SoftwareFrontBufferSurface::new(&mut memory, front, clut);
         let mut depth = PpcQ3SoftwareDepthBuffer::new(front);
         let viewport = PpcQ3ViewportRect {
             left: frame.viewport[0] as u32,
@@ -802,14 +870,85 @@ mod tests {
         let mut result = Vec::new();
         for y in 0..front.height {
             for x in 0..front.width {
-                result.push(
+                result.push(if clut.is_some() {
+                    u16::from(
+                        memory
+                            .read_u8(front.base_addr + y * front.row_bytes + x)
+                            .unwrap(),
+                    )
+                } else {
                     surface
                         .read_pixel(&mut memory, (x as i32, y as i32))
-                        .unwrap(),
-                );
+                        .unwrap()
+                });
             }
         }
         result
+    }
+
+    #[test]
+    fn gpu_indexed_blending_quantizes_each_primitive_and_preserves_exact_indices() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let mut clut = [[u16::MAX; 3]; 256];
+        clut[7] = [0; 3];
+        let frame = PpcQ3RasterFrame {
+            width: 32,
+            height: 24,
+            viewport: [0, 0, 31, 23],
+            clear_color: None,
+            textures: vec![],
+            draws: vec![
+                triangle(0.6, [1., 1., 1., 0.4]),
+                triangle(0.4, [1., 1., 1., 0.4]),
+            ],
+        };
+        let background = vec![0x8000; 32 * 24];
+        let indexed_background = vec![7; background.len()];
+        let expected = cpu_render_target(&frame, &indexed_background, Some(clut));
+        let old_rgb = state.render(&frame, &background).unwrap();
+        assert!(
+            old_rgb[4 * 32 + 4] & 31 > 15,
+            "old path accumulates gray past the palette midpoint"
+        );
+        let actual = state
+            .render_with_palette(&frame, &background, Some(&clut))
+            .unwrap();
+        assert_eq!(actual[4 * 32 + 4], 7);
+        for (actual, expected) in actual.iter().zip(&expected) {
+            assert_eq!(if actual & 0x8000 != 0 { 7 } else { *actual }, *expected);
+        }
+        // Use arbitrary 16-bit CLUT components, duplicate colors, and clear paths.
+        for i in 0..256 {
+            clut[i] = [
+                ((i * 251) % 65536) as u16,
+                ((i * 701) % 65536) as u16,
+                ((i * 997) % 65536) as u16,
+            ];
+        }
+        clut[7] = [0; 3];
+        clut[200] = clut[30];
+        for clear in [None, Some([0.23, 0.67, 0.45, 1.])] {
+            let mut frame = frame.clone();
+            frame.clear_color = clear;
+            frame.draws[0] = triangle(0.6, [0.35, 0.61, 0.82, 0.4]);
+            frame.draws[1] = triangle(0.4, [0.73, 0.22, 0.45, 0.4]);
+            let expected = cpu_render_target(&frame, &indexed_background, Some(clut));
+            let actual = state
+                .render_with_palette(&frame, &background, Some(&clut))
+                .unwrap();
+            for (actual, expected) in actual.iter().zip(&expected) {
+                assert_eq!(if actual & 0x8000 != 0 { 7 } else { *actual }, *expected);
+            }
+        }
     }
 
     #[test]
