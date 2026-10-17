@@ -4149,10 +4149,11 @@ mod tests {
         };
         let mut bus = bus();
         paint_detail(&mut bus, 0x101b);
-        bus.quickdraw_gpu_renderer = Some(Box::new(ReferenceRenderer {
-            calls: Default::default(),
-            failure: 0,
-        }));
+        bus.quickdraw_gpu_renderer =
+            crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(ReferenceRenderer {
+                calls: Default::default(),
+                failure: 0,
+            }));
         let mut command = QuickDrawGpuCommand {
             polygon_edges: None,
             clip_rows: None,

@@ -2164,7 +2164,8 @@ impl FixtureRunner {
         &mut self,
         renderer: Box<dyn crate::quickdraw::gpu::QuickDrawGpuRenderer>,
     ) {
-        self.bus.quickdraw_gpu_renderer = Some(renderer);
+        self.bus
+            .set_quickdraw_gpu_renderer(crate::quickdraw::gpu::QuickDrawGpuSlot::new(renderer));
     }
 
     /// Install synchronous 3D rasterization; no GPU backend exists by default.

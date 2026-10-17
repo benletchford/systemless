@@ -2158,6 +2158,64 @@ fn ppc_paint_rect_bounds_with_clip(
     let vis_storage = memory
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
+    if memory.quickdraw_gpu_renderer().is_some() {
+        // Clip in port coordinates, then convert to framebuffer coordinates.
+        // Ordinary and Window Manager painting differ only in clipRgn use.
+        let command = (|| {
+            let port_top = i16::try_from(top + i32::from(surface.top)).ok()?;
+            let port_bottom = i16::try_from(bottom + i32::from(surface.top)).ok()?;
+            let port_left = i16::try_from(left + i32::from(surface.left)).ok()?;
+            let port_right = i16::try_from(right + i32::from(surface.left)).ok()?;
+            let mut rows = vec![vec![port_left, port_right]; (bottom - top) as usize];
+            for storage in [vis_storage.as_deref(), clip_storage.as_deref()]
+                .into_iter()
+                .flatten()
+            {
+                let clips = ppc_region_rows_for_band(storage, port_top, port_bottom)?;
+                for (row, clip) in rows.iter_mut().zip(clips) {
+                    *row = ppc_region_intersect_rows(row, &clip);
+                }
+            }
+            Some(crate::quickdraw::gpu::QuickDrawGpuCommand {
+                area: [left, top, right, bottom],
+                rect: [left, top, right, bottom],
+                border: None,
+                pattern: [0xff; 8],
+                transfer: [[0, u32::from(color_pixel)]; 2],
+                polygon_edges: None,
+                clip_rows: Some(
+                    rows.into_iter()
+                        .map(|row| {
+                            row.into_iter()
+                                .map(|x| i32::from(x) - i32::from(surface.left))
+                                .collect()
+                        })
+                        .collect(),
+                ),
+            })
+        })();
+        if let Some(command) = command {
+            if command
+                .clip_rows
+                .as_ref()
+                .is_some_and(|rows| rows.iter().all(Vec::is_empty))
+            {
+                return false;
+            }
+            if crate::quickdraw::gpu::try_native_rectangle(
+                memory,
+                crate::quickdraw::gpu::RasterTarget {
+                    base: front_buffer.base_addr,
+                    row_bytes: front_buffer.row_bytes,
+                    depth: front_buffer.depth as u16,
+                    origin: [0, 0],
+                },
+                command,
+            ) {
+                return true;
+            }
+        }
+    }
     // Window Manager exposure painting uses visRgn without the application's
     // clipRgn; ordinary QuickDraw drawing uses their intersection.
     // Per-pixel writes preserve neighboring packed 1/2/4-bit PixMap fields.

@@ -936,7 +936,7 @@ pub struct MacMemoryBus {
     access_watch: Option<AccessWatch>,
     pub(crate) presentation: super::presentation::PresentationSlot,
     /// Installed by the runner only when GPU drawing is explicitly enabled.
-    pub(crate) quickdraw_gpu_renderer: Option<Box<dyn crate::quickdraw::gpu::QuickDrawGpuRenderer>>,
+    pub(crate) quickdraw_gpu_renderer: crate::quickdraw::gpu::QuickDrawGpuSlot,
     /// Mapped text cells for the current CopyBits colour table.
     pub(crate) copy_map_cache: super::presentation::CopyMapCache,
     /// Inline JIT store filter (`m68k::AddressBus::tracked_store_filter`):
@@ -1846,7 +1846,7 @@ impl MacMemoryBus {
             write_probe_original: None,
             access_watch: None,
             presentation: Default::default(),
-            quickdraw_gpu_renderer: None,
+            quickdraw_gpu_renderer: Default::default(),
             copy_map_cache: Default::default(),
             store_filter: None,
             store_filter_seen: 0,
@@ -1938,7 +1938,7 @@ impl MacMemoryBus {
             write_probe_original: None,
             access_watch: None,
             presentation: Default::default(),
-            quickdraw_gpu_renderer: None,
+            quickdraw_gpu_renderer: Default::default(),
             copy_map_cache: Default::default(),
             store_filter: None,
             store_filter_seen: 0,
@@ -1954,10 +1954,21 @@ impl MacMemoryBus {
         }
     }
 
+    pub(crate) fn set_quickdraw_gpu_renderer(
+        &mut self,
+        renderer: crate::quickdraw::gpu::QuickDrawGpuSlot,
+    ) {
+        self.quickdraw_gpu_renderer = renderer;
+        if let Some(memory) = &self.foreign_address_space {
+            memory.set_quickdraw_gpu_renderer(self.quickdraw_gpu_renderer.clone());
+        }
+    }
+
     /// Retain one native process's sparse mappings for serialized cross-ISA access.
     pub(crate) fn attach_guest_address_space(&mut self, memory: SharedGuestAddressSpace) {
         debug_assert!(self.foreign_address_space.is_none());
         memory.set_presentation(self.presentation.clone());
+        memory.set_quickdraw_gpu_renderer(self.quickdraw_gpu_renderer.clone());
         self.foreign_address_space = Some(memory);
     }
 
