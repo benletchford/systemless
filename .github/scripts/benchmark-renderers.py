@@ -61,7 +61,10 @@ def main():
                   flush=True)
     fixture = repo / "tests/toolbox-showcase/toolbox-showcase.sit"
     source_digest = hashlib.sha256()
-    sources = subprocess.check_output(["rg", "--files", "-g", "*.rs", "-g", "*.wgsl"], cwd=repo, text=True).splitlines()
+    sources = subprocess.check_output(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z",
+         "--", "*.rs", "*.wgsl"], cwd=repo, text=True).split("\0")
+    sources = [name for name in sources if name]
     for name in sorted(sources + ["Cargo.toml", "Cargo.lock"]):
         source_digest.update(name.encode() + b"\0" + (repo / name).read_bytes() + b"\0")
     report = dict(profile=args.profile, source_sha256=source_digest.hexdigest(), host=platform.platform(), machine=platform.machine(),
