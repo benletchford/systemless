@@ -172,6 +172,12 @@ and a `--play-output` directory. The script checks visible model and viewport
 pixels; omit `--gpu` to check the software path.
 The `tests/play/toolbox-showcase-ppc-sprites.json` play checks native bitmap masks
 and weighted CopyDeepMask sprite transfers in the same way.
+After building the GUI binary, `python3 .github/scripts/verify-gpu-play.py` runs
+classic UI/text, native 3D, and masked-sprite plays with both renderers and saves
+reports, screenshots, and GPU logs in a new `gpu-play-results` directory. Cross-platform CI runs
+these application checks and requires the shader/readback suite on Linux,
+macOS, and Windows. Linux uses Mesa's Vulkan adapter for headless qualification.
+
 
 The experimental desktop execution owner can be selected with
 `SYSTEMLESS_DESKTOP_RUNTIME=thread`. It constructs and runs the guest on a

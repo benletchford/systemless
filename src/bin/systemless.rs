@@ -246,7 +246,7 @@ struct Cli {
     #[arg(value_name = "GAME")]
     game: PathBuf,
 
-    /// Use wgpu for desktop presentation and supported QuickDraw 3D rasterization
+    /// Use wgpu for desktop presentation, drawing, text, and supported 3D rendering
     #[arg(long)]
     gpu: bool,
 
