@@ -148,8 +148,11 @@ The measured identity-palette 8-bit horizontal shrink and vertical scaling
 families use GPU maximum-index reductions with the existing clipping phase and
 guard-byte behavior. Eligible same-depth 2-bit and 4-bit rectangular `srcCopy`
 transfers also use wgpu, preserving adjacent packed pixels and row padding.
-Monochrome bitmap copies, packed palette conversions, converting, masked, and
-other bitmap transfer families still use software.
+Native PowerPC `srcCopy` also uses GPU sampling for rectangular scaling,
+monochrome foreground/background expansion, and indexed-color conversion into
+1, 2, 4, 8, 16, and 32-bit destinations. Other classic monochrome and packed
+palette copies, direct-color conversions, masked transfers, and other bitmap
+transfer families still use software.
 Without `--gpu`, existing platform presentation remains the default.
 `--headless --gpu` also enables guest rasterization in play scripts and timed runs
 without creating a window; desktop presentation is only used for windowed runs.

@@ -1,5 +1,112 @@
 use super::*;
 
+#[test]
+fn gpu_native_scaled_copies_match_format_expansion_clipping_aliases_and_fallback() {
+    for source_depth in [1u32, 2, 4, 8, 16, 32] {
+        for destination_depth in [1u32, 2, 4, 8, 16, 32] {
+            if source_depth > 8 && source_depth != destination_depth {
+                continue;
+            }
+            for [bottom, right] in [[9, 16], [2, 3], [4, 5]] {
+                for alias in [false, true] {
+                    let mut expected = None;
+                    for backend in [None, Some(0), Some(1), Some(2)] {
+                        let mut loaded =
+                            load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+                        let base = PPC_HEAP_BASE + 0x18000;
+                        loaded
+                            .memory
+                            .add_region(base, (0..0x2000).map(|i| (i * 73 + 0xa5) as u8).collect());
+                        let source = base;
+                        let destination = if alias { base + 9 } else { base + 0x400 };
+                        let records = base + 0x1000;
+                        let source_stride = (7 * source_depth).div_ceil(8) + 3;
+                        let destination_stride = (13 * destination_depth).div_ceil(8) + 5;
+                        ppc_write_pixmap(
+                            &mut loaded.memory,
+                            records,
+                            source,
+                            source_stride,
+                            0,
+                            0,
+                            5,
+                            7,
+                            source_depth,
+                        )
+                        .unwrap();
+                        ppc_write_pixmap(
+                            &mut loaded.memory,
+                            records + 0x40,
+                            destination,
+                            destination_stride,
+                            0,
+                            0,
+                            8,
+                            13,
+                            destination_depth,
+                        )
+                        .unwrap();
+                        ppc_write_rect(&mut loaded.memory, records + 0x80, 0, 0, 5, 7).unwrap();
+                        ppc_write_rect(&mut loaded.memory, records + 0x90, -1, -2, bottom, right)
+                            .unwrap();
+                        loaded.cpu.gpr[3] = records;
+                        loaded.cpu.gpr[4] = records + 0x40;
+                        loaded.cpu.gpr[5] = records + 0x80;
+                        loaded.cpu.gpr[6] = records + 0x90;
+                        loaded.cpu.gpr[7] = 0;
+                        loaded.cpu.gpr[8] = 0;
+                        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                        if let Some(failure) = backend {
+                            loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                    crate::quickdraw::gpu::ReferenceRenderer {
+                                        calls: calls.clone(),
+                                        failure,
+                                    },
+                                )),
+                            );
+                        }
+                        let clut = std::array::from_fn(|i| {
+                            [
+                                (i as u16) * 257,
+                                ((255 - i) as u16) * 257,
+                                ((i * 37 % 256) as u16) * 257,
+                            ]
+                        });
+                        let result = ppc_copy_bits(
+                            &mut loaded.cpu,
+                            &mut loaded.memory,
+                            &[],
+                            0,
+                            0,
+                            &loaded.toolbox_startup,
+                            &clut,
+                            PPC_RGB_BLACK,
+                            Some(3),
+                            PPC_RGB_WHITE,
+                            Some(1),
+                            PPC_RGB_BLACK,
+                        );
+                        assert!(
+                            result,
+                            "source={source_depth},destination={destination_depth}"
+                        );
+                        if backend.is_some() {
+                            assert_eq!(calls.get(), 1);
+                        }
+                        let mut pixels = vec![0; 0x800];
+                        loaded.memory.read_bytes_into(base, &mut pixels).unwrap();
+                        if let Some(expected) = &expected {
+                            assert_eq!(&pixels,expected,"source={source_depth},destination={destination_depth},alias={alias},backend={backend:?}");
+                        } else {
+                            expected = Some(pixels);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
     #[test]
     fn hle_import_runner_copybits_overlapping_rows_preserve_padding() {
         let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();

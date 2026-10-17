@@ -644,7 +644,7 @@ fn gpu_blit_bytes(
             .collect(),
         columns,
         rows,
-        palette: palette.copied(),
+        palette: palette.map(|p| p.map(u32::from)),
     };
     if !command.valid() {
         return None;
