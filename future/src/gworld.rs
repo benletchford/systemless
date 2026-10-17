@@ -81,6 +81,28 @@ fn attached(m: &Memory, p: &mut Process, pointer: u32) -> Result<[u32; 7]> {
     p.color_ports = manager;
     result
 }
+fn direct_colors(depth: u16) -> Vec<u8> {
+    let mut bytes = vec![0; 16];
+    let bits = if depth == 16 { 5u32 } else { 8 };
+    bytes[..4].copy_from_slice(&(3 * bits).to_be_bytes());
+    bytes
+}
+fn pixmap_format(pm: &mut [u8], depth: u16) {
+    pm[14..22].fill(0);
+    pm[30..32].copy_from_slice(&(if depth > 8 { 16u16 } else { 0 }).to_be_bytes());
+    pm[32..34].copy_from_slice(&depth.to_be_bytes());
+    pm[34..36].copy_from_slice(&(if depth > 8 { 3u16 } else { 1 }).to_be_bytes());
+    pm[36..38].copy_from_slice(
+        &(if depth == 16 {
+            5u16
+        } else if depth == 32 {
+            8
+        } else {
+            depth
+        })
+        .to_be_bytes(),
+    );
+}
 impl Manager {
     fn world(&self, m: &Memory, p: &mut Process, pointer: u32) -> Result<World> {
         let world = *self
@@ -259,10 +281,7 @@ impl Manager {
                     return Ok((-50i32) as u32);
                 }
                 let colors = if depth > 8 {
-                    let mut bytes = vec![0; 16];
-                    let bits = if depth == 16 { 5u32 } else { 8 };
-                    bytes[..4].copy_from_slice(&(3 * bits).to_be_bytes());
-                    bytes
+                    direct_colors(depth)
                 } else if shared || table != 0 {
                     let table = if shared {
                         m.u32(GuestPtr(source_pm.0 + 42))?
@@ -339,20 +358,7 @@ impl Manager {
                     pm[..4].copy_from_slice(&image.to_be_bytes());
                     pm[4..6].copy_from_slice(&((row as u16) | 0x8000).to_be_bytes());
                     pm[6..14].copy_from_slice(&rect);
-                    pm[14..22].fill(0);
-                    pm[30..32].copy_from_slice(&(if depth > 8 { 16u16 } else { 0 }).to_be_bytes());
-                    pm[32..34].copy_from_slice(&depth.to_be_bytes());
-                    pm[34..36].copy_from_slice(&(if depth > 8 { 3u16 } else { 1 }).to_be_bytes());
-                    pm[36..38].copy_from_slice(
-                        &(if depth == 16 {
-                            5u16
-                        } else if depth == 32 {
-                            8
-                        } else {
-                            depth
-                        })
-                        .to_be_bytes(),
-                    );
+                    pixmap_format(&mut pm, depth);
                     pm[38..42].fill(0);
                     pm[42..46].copy_from_slice(&ct.to_be_bytes());
                     pm[46..50].fill(0);

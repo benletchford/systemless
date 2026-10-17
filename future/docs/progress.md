@@ -11124,3 +11124,61 @@ changing Index2Color based on pixel-layout inference. Direct screen modes,
 complete GPU text/library integration, Mixed Mode, native/browser acceptance,
 both priority games and the entire rebuild remain unfinished. Keep the goal
 active, the baseline checkout unchanged and PR4802 draft; AB03 stays unavailable.
+
+### Atomic direct/indexed world updates (2026-10-17)
+
+The shared updater now handles16/32-bit worlds and indexed/direct conversions,
+with common creation/update component and dummy-table initialization. It stages
+all image/colour/inverse/PixMap/device/visibility payloads and port colour/geometry
+before publication. Both CPU adapters retain one implementation. Packed foreground/
+background values follow the new format while requested RGB remains exact.
+Direct inverse headers remain empty; indexed inverse generation is unchanged.
+
+The new real-GPU matrix exercises both adapters across8/16/32-bit source/target
+pairs with clipping and stretching, preserving RGB independently of nonneutral
+port colours. Indexed-destination dithering also accepts direct sources; those
+new routing checks use palette-exact swatches, with no claim of a fresh general
+native dither oracle. Direct destination dithering still rejects explicitly before
+mutation. Borrowed direct worlds detach without changing their parent and release
+that dependency so the parent can be disposed first. Owners reject depth/colour
+changes while borrowers remain. Direct purge recovery and post-GPU allocation
+failure checks preserve handle identity and all staged guest state.
+
+Final guest-service scope:71unique checks passed,0failed,0ignored. The combined
+run passed70checks with the then-current32GWorld cases; the final33-case GWorld
+run adds the post-GPU allocation-failure case and supersedes that subset. Unique
+scope is33GWorld,14devices,6colour ports,12indexed/direct destinations and6pixel
+locks. Duplicate executions are not counted twice. GPU-required cases were
+explicitly enabled. Final strict scoped lint, tracer build, sequential changed-file
+formatting and whitespace checks pass. The removed unsupported-direct-update
+expectation is replaced by positive cross-format fixtures; direct-dither rejection
+still has explicit atomicity coverage.
+
+Commands:
+
+- cargo test --manifest-path future/Cargo.toml --test gworld --test devices --test color_ports --test pixel_locks --test indexed_destinations -- --include-ignored --nocapture --test-threads=1
+- cargo test --manifest-path future/Cargo.toml --test gworld -- --include-ignored --nocapture --test-threads=1
+- cargo clippy --manifest-path future/Cargo.toml --lib --test gworld --test devices --test color_ports --test pixel_locks --test indexed_destinations --example trace_application -- -D warnings
+
+A separate native functional retry, cargo run --manifest-path future/Cargo.toml
+--bin systemless-future -- --window --smoke, exits1 after600paced attempts without
+completing acquisition/presentation/resize acceptance. A contemporaneous read-only
+host check reports CGSSessionScreenIsLocked=Yes. This is not counted as passed;
+native window acceptance remains unavailable/unverified while locked. No PPC native
+retry or actual OS minimize/device-loss acceptance is inferred. This is functional
+verification, not an interactive performance measurement.
+
+Final-source unchanged68K Marathon23M and EV24M replays preserve all prior frame
+and committed-volume hashes, with independent directories/companions/forks/metadata
+and pilot/alias/script checks. Marathon remains CPU22,890,015/PC0102605C/readFFFCC1AF
+and makes zero GWorld/pixel-state calls; EV remains PC007E6830 with the same key
+pair. Neither game is verified playable. Logs, preliminary checks and locked-host
+native evidence are retained under ignored future/target/validation/direct-update/;
+private captures and exact hashes are recorded in original-applications.md.
+
+Next: verify/document remaining direct-destination dither/profile semantics and the
+actual32-Bit QuickDraw capability contract, then test unchanged originals through
+the genuine supported path. Do not patch guest probes or infer native flag parity
+from these fixtures. Direct screen modes, complete GPU text/Glyphon integration,
+Mixed Mode, native/browser and full gameplay acceptance remain unfinished. Keep
+the rebuild goal active, the baseline checkout unchanged and PR4802 draft.

@@ -5080,3 +5080,31 @@ still makes zero GWorld/pixel-state calls, so its replay is not direct-world
 acceptance. Private final captures are retained in each game's ignored evidence
 directory as2026-10-17-direct-world.*. No fresh PPC-original, playable-game,
 full GPU text or native/browser acceptance claim. The full rebuild remains active.
+
+### Atomic direct-world update regression (2026-10-17)
+
+The shared update service now clips/stretches/converts8/16/32-bit worlds through
+wgpu on both CPU adapters, publishing image/colour/inverse/PixMap/device/visibility
+payloads coherently. New fixtures check RGB preservation/rematching, direct purge
+recovery, borrowed-device detachment and late allocation failure without partial
+publication. Direct-destination dithering and complete graphics-profile acceptance
+remain open; AB03 remains unavailable.
+
+The final-source unchanged68K captures retain the exact prior boundaries:
+Marathon CPU22,890,015/PC0102605C/readFFFCC1AF; EV24M/PC007E6830 with the same key
+pair. SHA256 values:
+
+- Marathon screen: `7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e`.
+- Marathon volume: `e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+- EV screen: `11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48`.
+- EV volume: `e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`.
+
+Independent verifiers preserve directories and existing companion records/forks/
+metadata, the same Marathon1222-byte preferences addition and EV pilot/flagged
+alias/script invariants. Preference contents remain native-unvalidated. Marathon
+still makes zero GWorld/pixel-state calls, so this replay does not exercise the new
+update path. Private captures are retained in each game's ignored evidence folder
+as2026-10-17-direct-update.*. Neither game is verified playable; no fresh PPC-original,
+complete GPU text or browser acceptance claim follows. A separate native-window
+smoke retry failed its600-attempt completion gate while the host reported a locked
+screen; native presentation remains unverified. The full rebuild stays active.

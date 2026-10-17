@@ -4180,11 +4180,9 @@ metadata; this does not add a second colour cache or weaken drawing validation.
 
 New allocations roll back on failure. A device owner cannot be disposed while
 another managed world borrows its device, preventing dangling child graphs. Current
-worlds/pinned images retain their existing disposal restrictions. Direct worlds
-reject UpdateGWorld before any mutation until the direct resize/conversion path is
-implemented, including requests to convert them to an indexed format. This also
-prevents a purged image from bypassing conversion and publishing inconsistent
-component metadata. Temporary/hardware flags, direct updates/component dithering,
+worlds/pinned images retain their existing disposal restrictions. Direct worlds now use the atomic update path below. Unsupported direct destination
+dithering still rejects before mutation. Temporary/hardware flags, direct
+destination dithering,
 complete device-query semantics and actual profile acceptance remain unfinished.
 
 Primary creation/type authority:
@@ -4193,3 +4191,31 @@ Primary creation/type authority:
 and [QuickDraw Reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/QuickDraw_Ref/QuickDraw_Ref.pdf)
 (device types, page151). Native allocation/error/edge parity is not established by
 the synthetic service fixtures. AB03 remains unavailable.
+
+
+### Atomic direct-world updates
+
+UpdateGWorld now stages indexed/direct conversions through the same manager and
+wgpu image-copy path. New/Update share dummy direct-table and PixMap component
+initialization. The image, table, inverse header/table, port PixMap, device PixMap,
+GDevice and visibility region are preflighted and replaced together before port
+geometry/colour publication. RGB requests remain unchanged while their packed
+foreground/background values are rematched for the new format. Device type,
+colour/noDriver attributes and mode stay coherent with the destination. Direct
+formats have empty inverse headers; indexed formats generate their existing table.
+
+Clipping/stretching, origin/size changes, direct/indexed conversion and purge
+recovery retain the shared update policies. CPU work decodes/encodes storage and
+stages unchanged or cleared bytes; pixel preservation/conversion uses wgpu.
+Image-copy policy remains independent of the caller's port tint. Existing indexed
+Floyd-Steinberg output accepts direct RGB input; dithering to direct destinations
+remains explicitly unsupported. The scoped dither-to-indexed fixture uses palette
+exact swatches; it is not a new general/native diffusion oracle.
+
+A borrowed-device world detaches to its own complete graph on update, preserving
+the source device and releasing the parent dependency only after publication.
+Owners with borrowers reject changes to depth/colour metadata before mutation.
+Allocation failure after GPU conversion leaves every guest payload unchanged.
+Purged direct images can be reallocated with complete matching component records.
+Flags and native edge/rounding parity still require broader conformance evidence;
+this is not complete graphics-profile, screen-mode or original-game acceptance.

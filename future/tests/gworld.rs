@@ -1543,31 +1543,34 @@ fn direct_creation_low_memory_preserves_environment_and_releases_partial_graphs(
 }
 
 #[test]
-fn direct_world_updates_reject_before_image_or_environment_mutation() {
+fn direct_world_dither_rejects_before_image_or_environment_mutation() {
     for depth in [16, 32] {
-        for requested in [0, 8] {
-            let mut a = app();
-            assert_eq!(new(&mut a, Architecture::M68k, depth, 0, 0, 0).unwrap(), 0);
-            let world = data(&a, DATA);
-            let pm = one(&mut a, Architecture::M68k, 7, world);
-            let before = a
-                .runtime
-                .memory
-                .read(GuestPtr(data(&a, pm)), 50)
-                .unwrap()
-                .to_vec();
-            let free = a.runtime.process.free_memory();
-            let selected = selection(&a);
-            let error = ppc(&mut a, 13, &[DATA, requested, DATA + 16, 0, 0, 0]).unwrap_err();
-            assert!(error.to_string().contains("direct-color GWorld update"));
-            assert_eq!(data(&a, DATA), world);
-            assert_eq!(
-                a.runtime.memory.read(GuestPtr(data(&a, pm)), 50).unwrap(),
-                before
-            );
-            assert_eq!(a.runtime.process.free_memory(), free);
-            assert_eq!(selection(&a), selected);
-        }
+        let mut a = app();
+        assert_eq!(new(&mut a, Architecture::M68k, depth, 0, 0, 0).unwrap(), 0);
+        let world = data(&a, DATA);
+        let pm = one(&mut a, Architecture::M68k, 7, world);
+        let before = a
+            .runtime
+            .memory
+            .read(GuestPtr(data(&a, pm)), 50)
+            .unwrap()
+            .to_vec();
+        let free = a.runtime.process.free_memory();
+        let selected = selection(&a);
+        let error = ppc(
+            &mut a,
+            13,
+            &[DATA, depth as u32, DATA + 16, 0, 0, 0x60000000],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("direct destination dithering"));
+        assert_eq!(data(&a, DATA), world);
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(data(&a, pm)), 50).unwrap(),
+            before
+        );
+        assert_eq!(a.runtime.process.free_memory(), free);
+        assert_eq!(selection(&a), selected);
     }
 }
 
@@ -1598,5 +1601,393 @@ fn borrowed_direct_devices_keep_their_world_owner_alive() {
         );
         assert_eq!(a.runtime.process.free_memory(), free);
         assert_eq!(selection(&a), old);
+    }
+}
+
+fn direct_sample(depth: i16, rgb: [u16; 3]) -> Vec<u8> {
+    if depth == 16 {
+        (((rgb[0] >> 11) << 10) | ((rgb[1] >> 11) << 5) | (rgb[2] >> 11))
+            .to_be_bytes()
+            .to_vec()
+    } else {
+        vec![
+            0,
+            (rgb[0] >> 8) as u8,
+            (rgb[1] >> 8) as u8,
+            (rgb[2] >> 8) as u8,
+        ]
+    }
+}
+fn table_rgb(a: &LoadedApplication, pm: u32) -> Vec<[u16; 3]> {
+    let ct = data(a, data(a, pm) + 42);
+    let ct = data(a, ct);
+    let count = usize::from(a.runtime.memory.u16(GuestPtr(ct + 6)).unwrap()) + 1;
+    (0..count)
+        .map(|i| {
+            std::array::from_fn(|c| {
+                a.runtime
+                    .memory
+                    .u16(GuestPtr(ct + 10 + i as u32 * 8 + c as u32 * 2))
+                    .unwrap()
+            })
+        })
+        .collect()
+}
+fn closest_color(rgb: [u16; 3], table: &[[u16; 3]]) -> u8 {
+    table
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, c)| {
+            (0..3)
+                .map(|i| {
+                    let d = i64::from(rgb[i]) - i64::from(c[i]);
+                    (d * d) as u64
+                })
+                .sum::<u64>()
+        })
+        .unwrap()
+        .0 as u8
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn gpu_world_updates_clip_stretch_and_convert_between_indexed_and_direct_formats() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut gpu =
+        Some(pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x4000))).unwrap());
+    for arch in [Architecture::M68k, Architecture::PowerPc] {
+        for from in [8i16, 16, 32] {
+            for to in [8i16, 16, 32] {
+                for flag in [1 << 28, 1 << 29, (1 << 29) | (1 << 30)] {
+                    if to > 8 && flag & (1 << 30) != 0 {
+                        continue;
+                    }
+                    let mut a = app();
+                    let old = get(&mut a, arch);
+                    rect(&mut a, [0, 0, 2, 3]);
+                    assert_eq!(new(&mut a, arch, from, 0, 0, 0).unwrap(), 0);
+                    let world = data(&a, DATA);
+                    let pm = one(&mut a, arch, 7, world);
+                    let gd = one(&mut a, arch, 8, world);
+                    let image = data(&a, data(&a, pm));
+                    let base = one(&mut a, arch, 9, pm);
+                    let src_row = usize::from(
+                        a.runtime.memory.u16(GuestPtr(data(&a, pm) + 4)).unwrap() & 0x3fff,
+                    );
+                    let mut input = vec![0; src_row * 2];
+                    let samples: Vec<[u16; 3]> = (0..6)
+                        .map(|i| {
+                            if from == 8 {
+                                if i % 2 == 0 {
+                                    [65535; 3]
+                                } else {
+                                    [0; 3]
+                                }
+                            } else {
+                                [
+                                    [65535, 0, 0],
+                                    [0, 65535, 0],
+                                    [0, 0, 65535],
+                                    [65535; 3],
+                                    [0; 3],
+                                    if flag & (1 << 30) != 0 {
+                                        [65535, 0, 0]
+                                    } else {
+                                        [0x8421; 3]
+                                    },
+                                ][i]
+                            }
+                        })
+                        .collect();
+                    let mut decoded = Vec::new();
+                    for (i, c) in samples.iter().enumerate() {
+                        let pixel = if from == 8 {
+                            vec![if i % 2 == 0 { 0 } else { 255 }]
+                        } else {
+                            direct_sample(from, *c)
+                        };
+                        let at = (i / 3) * src_row + (i % 3) * pixel.len();
+                        input[at..at + pixel.len()].copy_from_slice(&pixel);
+                        decoded.push(if from == 16 {
+                            c.map(|v| {
+                                let v = v >> 11;
+                                (v << 11) | (v << 6) | (v << 1) | (v >> 4)
+                            })
+                        } else if from == 32 {
+                            c.map(|v| (v >> 8) * 257)
+                        } else {
+                            *c
+                        });
+                    }
+                    a.runtime.memory.write(GuestPtr(base), &input).unwrap();
+                    set(&mut a, arch, world, 0);
+                    one(&mut a, arch, 10, pm);
+                    let wanted = [0x1234u16, 0x4567, 0x89ab];
+                    let wanted_bytes: Vec<_> =
+                        wanted.into_iter().flat_map(u16::to_be_bytes).collect();
+                    a.runtime
+                        .memory
+                        .write(GuestPtr(DATA + 64), &wanted_bytes)
+                        .unwrap();
+                    a.runtime
+                        .process
+                        .ports
+                        .unwrap()
+                        .set_rgb(&mut a.runtime.memory, false, GuestPtr(DATA + 64))
+                        .unwrap();
+                    one(&mut a, arch, 11, pm);
+                    a.runtime.graphics = gpu.take();
+                    rect(&mut a, [0, 0, 3, 5]);
+                    let flags = update(&mut a, arch, to, 0, 0, flag);
+                    assert_eq!(flags >> 31, 0, "{from}->{to}");
+                    assert_eq!(flags & (1 << 30), flag & (1 << 30));
+                    assert_eq!(flags & (1 << 17), if from == to { 0 } else { 1 << 17 });
+                    assert_eq!(get(&mut a, arch), (world, gd));
+                    assert_eq!(data(&a, data(&a, pm)), image);
+                    let row = usize::from(
+                        a.runtime.memory.u16(GuestPtr(data(&a, pm) + 4)).unwrap() & 0x3fff,
+                    );
+                    let colors = if to == 8 { table_rgb(&a, pm) } else { vec![] };
+                    let mut expected = vec![0; row * 3];
+                    for y in 0..3 {
+                        for x in 0..5 {
+                            let (sx, sy) = if flag & (1 << 29) != 0 {
+                                (x * 3 / 5, y * 2 / 3)
+                            } else {
+                                (x, y)
+                            };
+                            if sx >= 3 || sy >= 2 {
+                                continue;
+                            }
+                            let c = decoded[sy * 3 + sx];
+                            let pixel = if to == 8 {
+                                vec![closest_color(c, &colors)]
+                            } else {
+                                direct_sample(to, c)
+                            };
+                            let at = y * row + x * pixel.len();
+                            expected[at..at + pixel.len()].copy_from_slice(&pixel);
+                        }
+                    }
+                    let output = one(&mut a, arch, 9, pm);
+                    assert_eq!(
+                        a.runtime
+                            .memory
+                            .read(GuestPtr(output), expected.len())
+                            .unwrap(),
+                        expected,
+                        "{from}->{to} flag{flag:x}"
+                    );
+                    assert_eq!(
+                        a.runtime.memory.read(GuestPtr(world + 36), 6).unwrap(),
+                        wanted_bytes
+                    );
+                    let foreground = if to == 8 {
+                        u32::from(closest_color(wanted, &colors))
+                    } else {
+                        let v = direct_sample(to, wanted);
+                        if to == 16 {
+                            u32::from(u16::from_be_bytes(v.try_into().unwrap()))
+                        } else {
+                            u32::from_be_bytes(v.try_into().unwrap())
+                        }
+                    };
+                    assert_eq!(data(&a, world + 80), foreground);
+                    let gd_data = data(&a, gd);
+                    let device_pm = data(&a, gd_data + 22);
+                    assert_eq!(
+                        a.runtime.memory.read(GuestPtr(data(&a, pm)), 50).unwrap(),
+                        a.runtime
+                            .memory
+                            .read(GuestPtr(data(&a, device_pm)), 50)
+                            .unwrap()
+                    );
+                    assert_eq!(
+                        a.runtime.memory.u16(GuestPtr(gd_data + 4)).unwrap(),
+                        if to > 8 { 2 } else { 0 }
+                    );
+                    set(&mut a, arch, old.0, old.1);
+                    one(&mut a, arch, 4, world);
+                    gpu = a.runtime.graphics.take();
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn direct_purge_recovery_and_borrowed_format_protection_are_atomic() {
+    for depth in [16, 32] {
+        let mut a = app();
+        assert_eq!(new(&mut a, Architecture::M68k, depth, 0, 0, 0).unwrap(), 0);
+        let world = data(&a, DATA);
+        let pm = one(&mut a, Architecture::PowerPc, 7, world);
+        let image = data(&a, data(&a, pm));
+        a.runtime
+            .process
+            .set_handle_state(&a.runtime.memory, image, 0x40)
+            .unwrap();
+        a.runtime
+            .process
+            .purge_and_compact_memory(&mut a.runtime.memory)
+            .unwrap();
+        assert_eq!(one(&mut a, Architecture::M68k, 9, pm), 0);
+        assert_eq!(
+            update(&mut a, Architecture::PowerPc, depth, 0, 0, 0),
+            1 << 20
+        );
+        assert_ne!(one(&mut a, Architecture::M68k, 9, pm), 0);
+        let gd = one(&mut a, Architecture::M68k, 8, world);
+        assert_eq!(new(&mut a, Architecture::PowerPc, 8, 0, gd, 2).unwrap(), 0);
+        let borrower = data(&a, DATA);
+        a.runtime
+            .memory
+            .write(GuestPtr(DATA), &world.to_be_bytes())
+            .unwrap();
+        let saved = a
+            .runtime
+            .memory
+            .read(GuestPtr(data(&a, pm)), 50)
+            .unwrap()
+            .to_vec();
+        assert_eq!(
+            update(
+                &mut a,
+                Architecture::M68k,
+                if depth == 16 { 32 } else { 16 },
+                0,
+                0,
+                0
+            ),
+            1 << 31
+        );
+        assert_eq!(
+            a.runtime.memory.read(GuestPtr(data(&a, pm)), 50).unwrap(),
+            saved
+        );
+        one(&mut a, Architecture::M68k, 4, borrower);
+        one(&mut a, Architecture::PowerPc, 4, world);
+    }
+}
+
+#[test]
+fn direct_borrowed_world_updates_detach_without_mutating_or_retaining_the_parent() {
+    for depth in [16, 32] {
+        for arch in [Architecture::M68k, Architecture::PowerPc] {
+            let mut a = app();
+            let old = get(&mut a, arch);
+            let free = a.runtime.process.free_memory();
+            assert_eq!(new(&mut a, arch, depth, 0, 0, 0).unwrap(), 0);
+            let parent = data(&a, DATA);
+            let parent_gd = one(&mut a, arch, 8, parent);
+            let parent_data = data(&a, parent_gd);
+            let parent_pm = data(&a, parent_data + 22);
+            let saved = a
+                .runtime
+                .memory
+                .read(GuestPtr(data(&a, parent_pm)), 50)
+                .unwrap()
+                .to_vec();
+            assert_eq!(new(&mut a, arch, 8, 0, parent_gd, 2).unwrap(), 0);
+            let child = data(&a, DATA);
+            set(&mut a, arch, child, 0);
+            let flags = update(&mut a, arch, depth, 0, 0, 0);
+            assert_eq!(flags >> 31, 0);
+            let child_gd = one(&mut a, arch, 8, child);
+            assert_ne!(child_gd, parent_gd);
+            assert_eq!(get(&mut a, arch), (child, child_gd));
+            assert_eq!(
+                a.runtime
+                    .memory
+                    .read(GuestPtr(data(&a, parent_pm)), 50)
+                    .unwrap(),
+                saved
+            );
+            one(&mut a, arch, 4, parent);
+            set(&mut a, arch, old.0, old.1);
+            one(&mut a, arch, 4, child);
+            assert_eq!(a.runtime.process.free_memory(), free);
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn direct_to_indexed_update_allocation_failure_keeps_every_guest_payload() {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let mut gpu =
+        Some(pollster::block_on(Graphics::new(&instance, None, 8, 4, GuestPtr(0x4000))).unwrap());
+    for depth in [16, 32] {
+        for arch in [Architecture::M68k, Architecture::PowerPc] {
+            let mut a = app();
+            rect(&mut a, [0, 0, 1, 1]);
+            assert_eq!(new(&mut a, arch, depth, 0, 0, 0).unwrap(), 0);
+            let world = data(&a, DATA);
+            let pm = one(&mut a, arch, 7, world);
+            let gd = one(&mut a, arch, 8, world);
+            let base = one(&mut a, arch, 9, pm);
+            a.runtime
+                .memory
+                .write(GuestPtr(base), &direct_sample(depth, [65535, 0, 0]))
+                .unwrap();
+            let free = a.runtime.process.free_memory();
+            let filler = a
+                .runtime
+                .process
+                .new_pointer(&mut a.runtime.memory, free - 100, false)
+                .unwrap();
+            assert_ne!(filler, 0);
+            let pm_data = data(&a, pm);
+            let gd_data = data(&a, gd);
+            let handles = [
+                data(&a, pm_data),
+                data(&a, pm_data + 42),
+                pm,
+                gd,
+                data(&a, gd_data + 6),
+                data(&a, gd_data + 22),
+                data(&a, world + 24),
+            ];
+            let saved: Vec<_> = handles
+                .iter()
+                .map(|h| {
+                    let n = a
+                        .runtime
+                        .process
+                        .handle_size(&a.runtime.memory, *h)
+                        .unwrap();
+                    a.runtime
+                        .memory
+                        .read(GuestPtr(data(&a, *h)), n as usize)
+                        .unwrap()
+                        .to_vec()
+                })
+                .collect();
+            let port = a
+                .runtime
+                .memory
+                .read(GuestPtr(world), 108)
+                .unwrap()
+                .to_vec();
+            let selected = selection(&a);
+            a.runtime.graphics = gpu.take();
+            assert_eq!(update(&mut a, arch, 8, 0, 0, 0), 1 << 31);
+            assert_eq!(a.runtime.process.free_memory(), 100);
+            assert_eq!(selection(&a), selected);
+            assert_eq!(data(&a, DATA), world);
+            assert_eq!(a.runtime.memory.read(GuestPtr(world), 108).unwrap(), port);
+            for (h, bytes) in handles.into_iter().zip(saved) {
+                assert_eq!(
+                    a.runtime
+                        .memory
+                        .read(GuestPtr(data(&a, h)), bytes.len())
+                        .unwrap(),
+                    bytes
+                );
+            }
+            a.runtime.process.dispose_pointer(filler);
+            one(&mut a, arch, 4, world);
+            gpu = a.runtime.graphics.take();
+        }
     }
 }

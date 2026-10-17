@@ -129,14 +129,8 @@ impl Manager {
         if r.device == 0 && !matches!(r.depth, 0 | 1 | 2 | 4 | 8 | 16 | 32) {
             return Ok(failure(p, -157));
         }
-        if r.device == 0 && matches!(r.depth, 16 | 32) {
-            return Err(bad("direct-color GWorld update is not implemented"));
-        }
         let pm = owned(m, p, world.attached[0], 50)?;
         let old = m.read(pm, 50)?.to_vec();
-        if u16::from_be_bytes([old[32], old[33]]) > 8 {
-            return Err(bad("direct-color GWorld update is not implemented"));
-        }
         let old_colors = colors(m, p, world.table)?;
         let format = if r.device != 0 {
             Some(r.device)
@@ -153,20 +147,29 @@ impl Manager {
             let map = owned(m, p, m.u32(GuestPtr(data.0 + 22))?, 50)?;
             (
                 m.u16(GuestPtr(map.0 + 32))?,
-                colors(m, p, m.u32(GuestPtr(map.0 + 42))?)?,
+                if m.u16(GuestPtr(map.0 + 32))? > 8 {
+                    direct_colors(m.u16(GuestPtr(map.0 + 32))?)
+                } else {
+                    colors(m, p, m.u32(GuestPtr(map.0 + 42))?)?
+                },
             )
         } else {
             (
                 r.depth as u16,
-                if r.table == 0 {
+                if matches!(r.depth, 16 | 32) {
+                    direct_colors(r.depth as u16)
+                } else if r.table == 0 {
                     crate::color_tables::standard(r.depth).unwrap()
                 } else {
                     colors(m, p, r.table)?
                 },
             )
         };
-        if !matches!(depth, 1 | 2 | 4 | 8) {
+        if !matches!(depth, 1 | 2 | 4 | 8 | 16 | 32) {
             return Err(bad("unsupported GWorld update device depth"));
+        }
+        if depth > 8 && r.flags & DITHER != 0 {
+            return Err(bad("direct destination dithering is not implemented"));
         }
         let row = (width as u32 * u32::from(depth)).div_ceil(32) * 4;
         if row > 0x3fff {
@@ -185,27 +188,43 @@ impl Manager {
         let changed_bounds = old[6..14] != rect;
         let changed_depth = old_depth != depth;
         let changed_colors = old_colors != new_colors;
+        if (changed_depth || changed_colors)
+            && world.owns_device
+            && self
+                .worlds
+                .iter()
+                .any(|(&other, w)| other != pointer && w.device == world.device)
+        {
+            return Ok(failure(p, -108));
+        }
         let image_base = p.pixel_base(m, world.attached[0])?;
         let purged = image_base == 0;
         if !changed_bounds && !changed_depth && !changed_colors && world.owns_device && !purged {
             p.color.set_error(0);
             return Ok(0);
         }
-        let inverse = crate::color::prepare_inverse(&new_colors, 3)?;
+        let inverse = if depth > 8 {
+            vec![0; 6]
+        } else {
+            crate::color::prepare_inverse(&new_colors, 3)?
+        };
         let mut port_bytes = m.read(GuestPtr(pointer), 108)?.to_vec();
         port_bytes[16..24].copy_from_slice(&rect);
         for (rgb_at, index_at) in [(36, 80), (42, 84)] {
             let rgb = std::array::from_fn(|i| {
                 u16::from_be_bytes([port_bytes[rgb_at + i * 2], port_bytes[rgb_at + i * 2 + 1]])
             });
-            let index = crate::color::match_staged(&new_colors, rgb)?;
-            port_bytes[index_at..index_at + 4].copy_from_slice(&u32::from(index).to_be_bytes());
+            let index = if let Some(format) = crate::graphics::DirectFormat::from_depth(depth) {
+                format.pixel(rgb)
+            } else {
+                u32::from(crate::color::match_staged(&new_colors, rgb)?)
+            };
+            port_bytes[index_at..index_at + 4].copy_from_slice(&index.to_be_bytes());
         }
         let mut next = old.clone();
         next[4..6].copy_from_slice(&((row as u16) | 0x8000).to_be_bytes());
         next[6..14].copy_from_slice(&rect);
-        next[32..34].copy_from_slice(&depth.to_be_bytes());
-        next[36..38].copy_from_slice(&depth.to_be_bytes());
+        pixmap_format(&mut next, depth);
         let same_dimensions = i32::from(i16::from_be_bytes([old[12], old[13]]))
             - i32::from(i16::from_be_bytes([old[8], old[9]]))
             == width
@@ -270,7 +289,13 @@ impl Manager {
             updated.table = ct;
             let inverse_handle = m.u32(GuestPtr(gd.0 + 6))?;
             owned(m, p, inverse_handle, 6)?;
+            gd_bytes[4..6].copy_from_slice(&(if depth > 8 { 2u16 } else { 0 }).to_be_bytes());
             gd_bytes[10..12].copy_from_slice(&3u16.to_be_bytes());
+            let attributes = u16::from_be_bytes([gd_bytes[20], gd_bytes[21]]);
+            gd_bytes[20..22].copy_from_slice(
+                &((attributes & !1) | 0x4000 | u16::from(depth > 1)).to_be_bytes(),
+            );
+            gd_bytes[42..46].copy_from_slice(&(-1i32).to_be_bytes());
             gd_bytes[34..42].copy_from_slice(&rect);
             next[..4].copy_from_slice(&world.image.to_be_bytes());
             next[42..46].copy_from_slice(&ct.to_be_bytes());
