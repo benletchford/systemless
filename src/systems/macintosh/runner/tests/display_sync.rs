@@ -516,7 +516,14 @@ fn ppc_completed_q3_frame_renders_before_host_front_buffer_sync() {
     });
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     runner.init_app(&app);
-    let (steps, running) = runner.run_steps(8, None);
+    let (steps, running) = runner.run_gui_cpu_slice(8, u32::MAX);
+    let native = runner.native.application_mut().expect("PPC app stays loaded");
+    assert_eq!(
+        native.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
+        Some(0x4210)
+    );
+    assert!(native.q3_completed_frames.is_empty());
+    runner.sync_ppc_deferred_host_state();
 
     assert_eq!(steps, 1);
     assert!(!running);

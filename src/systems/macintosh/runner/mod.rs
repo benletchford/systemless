@@ -8215,11 +8215,9 @@ impl FixtureRunner {
         }
         let q3_frame_start = self.q3_completed_frame_index;
         let profile_render_start = profile_ppc.then(Instant::now);
-        let render_stats = if foreground && finish_frame != FrameFinalization::Deferred {
-            self.render_ppc_completed_frames(&mut ppc_app, pc)
-        } else {
-            PpcQ3SoftwareRenderStats::default()
-        };
+        // QD3D readback is guest-visible work. A deferred host presentation must
+        // not let the next guest slice dispose resources or read stale pixels.
+        let render_stats = self.render_ppc_completed_frames(&mut ppc_app, pc);
         let profile_render_us = elapsed_profile_micros(profile_render_start);
         let next_q3_frame_index = self.q3_completed_frame_index;
         let profile_sync_start = profile_ppc.then(Instant::now);

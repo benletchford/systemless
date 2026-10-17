@@ -131,6 +131,11 @@ Without `--gpu`, existing platform presentation remains the default.
 `--headless --gpu` also enables the 3D rasterizer in play scripts and timed runs
 without creating a window; desktop presentation is only used for windowed runs.
 
+To check the native PowerPC 3D scene, run Toolbox Showcase with
+`--headless --gpu --prefer-powerpc --play-script tests/play/toolbox-showcase-ppc-qd3d.json`
+and a `--play-output` directory. The script checks visible model and viewport
+pixels; omit `--gpu` to check the software path.
+
 The experimental desktop execution owner can be selected with
 `SYSTEMLESS_DESKTOP_RUNTIME=thread`. It constructs and runs the guest on a
 separate thread while the window consumes complete owned snapshots. Closing the

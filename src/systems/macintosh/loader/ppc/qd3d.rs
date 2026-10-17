@@ -13863,7 +13863,7 @@ pub fn ppc_q3_view_end_rendering(
 }
 
 pub fn dispatch_q3_view_end_rendering_import(
-    cpu: &PpcCpu,
+    cpu: &mut PpcCpu,
     q3_views: &mut Vec<PpcQ3ViewStateRecord>,
     q3_cameras: &[PpcQ3CameraRecord],
     q3_objects: &[PpcQ3ObjectRecord],
@@ -13875,22 +13875,12 @@ pub fn dispatch_q3_view_end_rendering_import(
     q3_retained_frames: &mut Vec<PpcQ3RetainedFrameRecord>,
     q3_state_only_completed_frame_batches: &mut Vec<PpcQ3StateOnlyCompletedFrameBatch>,
     q3_draw_contexts: &[PpcQ3DrawContextRecord],
-    q3_trimeshes: &[PpcQ3TriMeshRecord],
+    _q3_trimeshes: &[PpcQ3TriMeshRecord],
     gworlds: &[PpcGWorldRecord],
     current_gworld: u32,
     q3_error_state: &mut PpcQ3ErrorState,
     allow_idle_state_only_fast_forward: bool,
 ) -> PpcImportAction {
-    let view = cpu.gpr[3];
-    let idle_no_renderable_direct_trimesh_frame = allow_idle_state_only_fast_forward
-        && q3_submissions
-            .iter()
-            .any(|submission| submission.view == view)
-        && !ppc_q3_submissions_include_renderable_direct_trimesh(
-            q3_submissions,
-            q3_trimeshes,
-            view,
-        );
     let completed_frames_before = q3_completed_frames.len();
     let state_only_batches_before = q3_state_only_completed_frame_batches.len();
     let state_only_last_batch_frames_before = q3_state_only_completed_frame_batches
@@ -13914,17 +13904,22 @@ pub fn dispatch_q3_view_end_rendering_import(
         current_gworld,
         q3_error_state,
     );
+    if result == PPC_Q3_VIEW_STATUS_DONE && q3_completed_frames.len() > completed_frames_before {
+        // Complete the import, then let the host commit the frame before guest
+        // code can dispose its resources, reuse immediate arrays, or read pixels.
+        cpu.gpr[3] = result;
+        cpu.pc = cpu.lr;
+        return PpcImportAction::Yield(PPC_Q3_HOT_IMPORT_EXTRA_CYCLES + 1);
+    }
     let state_only_batch_added = q3_state_only_completed_frame_batches.len()
         > state_only_batches_before
         || q3_state_only_completed_frame_batches
             .last()
             .map(|batch| batch.frames > state_only_last_batch_frames_before)
             .unwrap_or(false);
-    let retained_idle_frame_added = idle_no_renderable_direct_trimesh_frame
-        && q3_completed_frames.len() > completed_frames_before;
     if allow_idle_state_only_fast_forward
         && result == PPC_Q3_VIEW_STATUS_DONE
-        && (state_only_batch_added || retained_idle_frame_added)
+        && state_only_batch_added
     {
         PpcImportAction::ReturnWithExtraCycles(result, PPC_Q3_IDLE_STATE_ONLY_FRAME_EXTRA_CYCLES)
     } else {
