@@ -12099,3 +12099,73 @@ the tracer advances sound during guest waits but is not a continuous host audio
 sink. Next exercise actual original buffer refill through explicit deterministic
 audio pulls (and retain that schedule distinction), then sustained gameplay/save/
 recording/native/browser, full text and Mixed Mode acceptance. Goal stays active.
+
+
+## Deterministic original-audio capture in progress (2026-10-17)
+
+The tracer now supports explicit --render-audio-at retired-instruction checkpoints
+using shared Runtime rendering and real WAV output. Bounds/order/error/overwrite
+semantics and the intentional clock distinction are documented in architecture.md.
+No runtime or mixer implementation is changed in this diagnostic slice.
+Final tracer build, strict example Clippy, declared Rust1.93 and sequential format/
+whitespace gates pass (/tmp/systemless-audio-checkpoint-{build,lint,msrv}-final.txt).
+Actual CLI checks validate PCM16/stereo/rate/frame count and exact silence, matched
+1000-instruction guest PC/catalog, seven invalid argument cases and existing-output
+protection. The final block writer emits byte-identical WAV/catalog to its control.
+No new unit-test count is claimed for this wrapper; existing mixer tests remain
+separate evidence. Validation:/tmp/systemless-audio-checkpoint-cli-validation.txt,
+/tmp/systemless-audio-checkpoint-{silence,control,final}.{txt,slv}, silence/final.wav.
+
+Original EV2M startup with pulls at1.5M and1.6M (8192 frames each,48kHz) completes
+three original Sound Manager callbacks without service fault, ending at2,000,000 /
+PC0001C24E by budget. Both independently decoded WAVs are silent; the original
+application has explicitly muted output during initialization. It remains active
+with pending audio work. The shared mixer schedules, and the actual original guest
+CPU procedures complete; these are not fixture callbacks. Every original input
+catalog/fork record remains exact, with the known folder/preferences additions;
+output SHA2563592c6f086c67015f6ab780873b5a5a43d86d4d54ebbdb88cba27e48e9531be4.
+Evidence:/tmp/systemless-ev-audio-startup.{txt,ppm,slv} and
+/tmp/systemless-ev-audio-{first,second}.wav. Silence at this muted stage is not a
+nonzero/original sound-quality pass.
+
+A separate current48M EV run is live:/tmp/systemless-ev-thrust-audio.txt. It enters
+ship at24M, holds Up40–42M and pulls four8192-frame quanta at41M,41.1M,41.2M,41.3M,
+with new WAV paths /tmp/systemless-ev-thrust-audio-{1,2,3,4}.wav. Inspect terminal
+state, PCM/nonzero counts, actual callbacks, frame and catalog before claiming
+sound output. Do not equate this discrete schedule with continuous native audio.
+Full rebuild/text/native/browser/Mixed Mode/sustained game acceptance stays open.
+
+
+## Original EV sample output verified with explicit audio pulls (2026-10-17)
+
+The current48M Enter Ship/Up trial with four scheduled8192-frame pulls completes
+48,000,000 retired / PC007E67C6 to budget with no service fault. Five actual
+original Sound Manager callbacks complete; audio_work_pending remains true.
+After the first silent quantum, the next three contain2780,2984,940 nonzero
+stereo frames, with signed-PCM peaks3596,3658,3442. Independent Python WAV decoding
+confirms each file is stereo PCM16/48kHz/8192frames, decoded nonzero/peak values
+match tracer logs, and left/right match the original mono source. These are
+actual samples from the shared runtime after original guest refill procedures,
+not generated placeholder tones or fixture audio. No original binary/media patch
+or output-volume override is used; Enter Ship restores the guest-selected level.
+
+Private audio artifacts:/tmp/systemless-ev-thrust-audio-{1,2,3,4}.wav.
+Log/screen/catalog:/tmp/systemless-ev-thrust-audio.{txt,ppm,png,slv}.
+Independent summary:/tmp/systemless-ev-thrust-audio-summary.json.
+The final inspected frame remains in the live space scene; saved catalog is
+byte-identical to the earlier matched no-pull controls,
+SHA256634e760a54feb7579480885633bc964dd2f80c8e88a0bd67f9a25a86d5f9a72f.
+The2M muted-startup probe separately completes three real callbacks with silent
+samples and preserves every original input record. Both cases are archived under
+future/target/validation/audio-checkpoints, including WAV hashes.
+
+These discrete pulls intentionally alter sample/callback scheduling and spend
+normal guest instruction budget on refill work. They do not establish seamless
+continuous playback, original-machine mixing fidelity, native device latency or
+performance. Large quanta can consume buffers before the CPU refills them. Native
+host audio, representative steady scheduling and Marathon sound effects remain
+open, as do sustained game/save/recording, native/browser, Mixed Mode and complete
+GPU text/full rebuild acceptance. All diagnostic jobs are terminal. This stage
+changes only tracing/capture and documentation, not the runtime/mixer/services.
+No new unit-test count is claimed; build/lint/Rust1.93/CLI and actual-original
+behavior are the verification scope. Keep the goal active and PR4802 draft.

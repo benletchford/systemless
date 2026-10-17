@@ -4487,3 +4487,31 @@ Primary sources inspected:
 https://vintageapple.org/inside_r/pdf/Text_1993.pdf (printed5-51–52, PDF561–562)
 https://vintageapple.org/inside_o/pdf/Inside_Macintosh_Volume_IV_1986.pdf
 (printedIV-235, PDF244, rendered table inspected). Local reference SHA256: 17bb3f9719523b18b4a3e70343c622b6c1a19e9d1c2c0ef0e2e409527ed17a50.
+
+
+## Explicit headless audio sample checkpoints
+
+The file-application tracer accepts up to64 --render-audio-at
+INSTRUCTION:FRAMES:RATE:NEW_WAV requests, sorted by retired instruction threshold.
+Each request is below the execution budget, pulls1–65536 frames at8000–192000Hz
+through Runtime::render_sound, and saves actual interleaved stereo PCM16 in a
+standard little-endian WAV. It uses the same Manager as native output; there is
+no guest-specific mixer or synthetic callback completion. At a shared boundary,
+ordering is screen capture, key delivery, audio pull, then normal budgeted CPU
+execution. The pull can clear guest ready flags and schedule callbacks; only
+subsequent CPU execution invokes the guest procedure and refills buffers.
+
+Unlike read-only CPU diagnostics, this option deliberately advances the audio
+sample clock. It does not advance calendar/timer time or emulate a continuous
+realtime host sink. Existing --elapse-waits remains an additional explicit time
+policy. Evidence from this schedule is kept separate from no-pull controls and
+native audio/latency/performance acceptance. Large discrete pulls can exhaust
+available buffers before the CPU runs again; no seamless playback claim follows
+from a captured WAV alone.
+
+Arguments are validated before loading an application. Files use create_new before
+consuming samples so existing outputs cannot be replaced. A failed mixer call can
+leave an empty diagnostic file; only completed pulls write a valid WAV and success
+log. Audio checkpoint errors preserve a final CPU/screen/catalog diagnostic
+snapshot before returning. The sample peak and nonzero-frame count describe actual
+output, not callback or audible-quality acceptance. Original media remains private.

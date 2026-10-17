@@ -1,4 +1,6 @@
 //! Bounded instruction/service trace for diagnosing a file application's startup.
+#[path = "trace_application/audio_checkpoint.rs"]
+mod audio_checkpoint;
 #[path = "trace_application/cpu_diagnostics.rs"]
 mod cpu_diagnostics;
 #[path = "trace_application/display_diagnostics.rs"]
@@ -13,7 +15,7 @@ struct KeyAction {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display-diagnostics] [--cpu-diagnostics] [--draw-diagnostics START:END] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--save-screen-at INSTRUCTION:NEW_PPM] [--key-at INSTRUCTION:CODE:down|up[:TEXT]] [--trace-range START:END] [--key-at-poll POLL:CODE:down|up[:TEXT]]".into());
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display-diagnostics] [--cpu-diagnostics] [--draw-diagnostics START:END] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--save-screen-at INSTRUCTION:NEW_PPM] [--render-audio-at INSTRUCTION:FRAMES:RATE:NEW_WAV] [--key-at INSTRUCTION:CODE:down|up[:TEXT]] [--trace-range START:END] [--key-at-poll POLL:CODE:down|up[:TEXT]]".into());
     }
     let mut graphics = false;
     let mut display_diagnostics = false;
@@ -26,6 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut save_volume = None;
     let mut save_screen = None;
     let mut screen_checkpoints = Vec::new();
+    let mut audio_checkpoints = Vec::new();
     let mut keys = Vec::new();
     let mut poll_keys = Vec::new();
     let mut trace_range = None;
@@ -61,6 +64,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--save-screen" if save_screen.is_none() => {
                 index += 1;
                 save_screen = Some(args.get(index).ok_or("missing screen output")?);
+            }
+            "--render-audio-at" if audio_checkpoints.len() < 64 => {
+                index += 1;
+                audio_checkpoints.push(audio_checkpoint::Checkpoint::parse(
+                    args.get(index).ok_or("missing audio checkpoint")?,
+                    budget,
+                )?);
             }
             "--save-screen-at" if screen_checkpoints.len() < 64 => {
                 index += 1;
@@ -151,6 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("screen capture/diagnostics require --graphics".into());
     }
     screen_checkpoints.sort_by_key(|(instruction, _)| *instruction);
+    audio_checkpoints.sort_by_key(|c| c.instruction);
     keys.sort_by_key(|action| action.instruction);
     poll_keys.sort_by_key(|action| action.instruction);
     let file = std::fs::File::open(&args[1])?;
@@ -189,6 +200,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut keyboard = systemless_future::host_input::Keyboard::default();
     let mut next_screen = 0;
+    let mut next_audio = 0;
     let mut next_key = 0;
     let mut next_poll_key = 0;
     let mut watched = None;
@@ -228,6 +240,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 *next += 1;
             }
+        }
+        // At a shared boundary: capture, deliver keys, pull audio, then run CPU.
+        // Pulling schedules guest callbacks; Runtime executes them under budget.
+        while let Some(checkpoint) = audio_checkpoints
+            .get(next_audio)
+            .filter(|c| c.instruction <= app.runtime.instructions)
+        {
+            if let Err(error) = checkpoint.render(&mut app, poll) {
+                println!("audio checkpoint failed: {error}");
+                save_snapshot(
+                    &mut app,
+                    save_volume,
+                    save_screen,
+                    display_diagnostics,
+                    cpu_diagnostics,
+                )?;
+                return Err(error);
+            }
+            next_audio += 1;
         }
         if let Some(address) = watch_address {
             let current = app

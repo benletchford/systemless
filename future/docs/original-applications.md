@@ -5497,3 +5497,38 @@ the tracer advances sound during guest waits but is not a continuous host audio
 sink. Next exercise actual original buffer refill through explicit deterministic
 audio pulls (and retain that schedule distinction), then sustained gameplay/save/
 recording/native/browser, full text and Mixed Mode acceptance. Goal stays active.
+
+
+## Original EV sample output verified with explicit audio pulls (2026-10-17)
+
+The current48M Enter Ship/Up trial with four scheduled8192-frame pulls completes
+48,000,000 retired / PC007E67C6 to budget with no service fault. Five actual
+original Sound Manager callbacks complete; audio_work_pending remains true.
+After the first silent quantum, the next three contain2780,2984,940 nonzero
+stereo frames, with signed-PCM peaks3596,3658,3442. Independent Python WAV decoding
+confirms each file is stereo PCM16/48kHz/8192frames, decoded nonzero/peak values
+match tracer logs, and left/right match the original mono source. These are
+actual samples from the shared runtime after original guest refill procedures,
+not generated placeholder tones or fixture audio. No original binary/media patch
+or output-volume override is used; Enter Ship restores the guest-selected level.
+
+Private audio artifacts:/tmp/systemless-ev-thrust-audio-{1,2,3,4}.wav.
+Log/screen/catalog:/tmp/systemless-ev-thrust-audio.{txt,ppm,png,slv}.
+Independent summary:/tmp/systemless-ev-thrust-audio-summary.json.
+The final inspected frame remains in the live space scene; saved catalog is
+byte-identical to the earlier matched no-pull controls,
+SHA256634e760a54feb7579480885633bc964dd2f80c8e88a0bd67f9a25a86d5f9a72f.
+The2M muted-startup probe separately completes three real callbacks with silent
+samples and preserves every original input record. Both cases are archived under
+future/target/validation/audio-checkpoints, including WAV hashes.
+
+These discrete pulls intentionally alter sample/callback scheduling and spend
+normal guest instruction budget on refill work. They do not establish seamless
+continuous playback, original-machine mixing fidelity, native device latency or
+performance. Large quanta can consume buffers before the CPU refills them. Native
+host audio, representative steady scheduling and Marathon sound effects remain
+open, as do sustained game/save/recording, native/browser, Mixed Mode and complete
+GPU text/full rebuild acceptance. All diagnostic jobs are terminal. This stage
+changes only tracing/capture and documentation, not the runtime/mixer/services.
+No new unit-test count is claimed; build/lint/Rust1.93/CLI and actual-original
+behavior are the verification scope. Keep the goal active and PR4802 draft.
