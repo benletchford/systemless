@@ -134,6 +134,9 @@ impl Manager {
         }
         let pm = owned(m, p, world.attached[0], 50)?;
         let old = m.read(pm, 50)?.to_vec();
+        if u16::from_be_bytes([old[32], old[33]]) > 8 {
+            return Err(bad("direct-color GWorld update is not implemented"));
+        }
         let old_colors = colors(m, p, world.table)?;
         let format = if r.device != 0 {
             Some(r.device)

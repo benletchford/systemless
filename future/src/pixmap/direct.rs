@@ -195,6 +195,7 @@ mod tests {
                 crate::pixmap::default_colors(&metadata, GuestPtr(0x1000)).unwrap(),
                 (0, mask)
             );
+            assert!(crate::pixmap::matching_surface(&metadata, GuestPtr(0x1000)).is_ok());
             assert!(crate::pixmap::destination(&metadata, GuestPtr(0x1000)).is_err());
             assert!(crate::pixmap::copy_source(&metadata, GuestPtr(0x1000)).is_err());
         }

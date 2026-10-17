@@ -5054,3 +5054,29 @@ native-unvalidated. Marathon makes zero GWorld/pixel-state calls in this replay.
 Private captures are retained under each game's ignored evidence directory as
 2026-10-17-direct-destination.*. No fresh PPC-original, playable-game, performance
 or full-text/native/browser acceptance claim. The full rebuild goal stays active.
+
+### Managed direct-world creation regression (2026-10-17)
+
+NewGWorld now creates managed16/32-bit worlds through both CPU adapters, with
+separate PixMaps, owned clear images and direct device/dummy-table metadata.
+Real GPU fixtures exercise lock/RGB selection/draw/disposal, borrowed-device
+isolation and cleanup. Direct updates remain explicitly unsupported before any
+image/device mutation. This does not establish complete graphics capability;
+AB03 remains unavailable and the unchanged originals still choose their prior path.
+
+Final-source unchanged68K replays retain the exact preceding instruction/PC and
+canonical captures: Marathon CPU22,890,015/PC0102605C/readFFFCC1AF; EV24M/PC007E6830
+with the same key pair. SHA256 values:
+
+- Marathon screen: `7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e`.
+- Marathon volume: `e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+- EV screen: `11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48`.
+- EV volume: `e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`.
+
+Independent verifiers preserve directories and existing companion records/forks/
+metadata, the same Marathon1222-byte preferences addition and EV pilot/flagged
+alias/script invariants. Preference contents remain native-unvalidated. Marathon
+still makes zero GWorld/pixel-state calls, so its replay is not direct-world
+acceptance. Private final captures are retained in each game's ignored evidence
+directory as2026-10-17-direct-world.*. No fresh PPC-original, playable-game,
+full GPU text or native/browser acceptance claim. The full rebuild remains active.

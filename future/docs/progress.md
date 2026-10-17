@@ -11060,3 +11060,67 @@ by the drawable-surface fixture. Direct screen mode creation, native edge/roundi
 conformance, complete GPU text/Glyphon integration, Mixed Mode and native/browser
 acceptance remain unfinished. Both priority games and the entire rebuild stay
 open. Preserve the baseline checkout and keep the goal active and PR4802 draft.
+
+### Managed RGB555/xRGB8888 world creation (2026-10-17)
+
+Shared NewGWorld now creates16/32-bit worlds with aligned clear image storage,
+owned dummy colour metadata and a direct GDevice with an empty inverse header.
+Port/device PixMaps stay separate. Both formats and CPU adapters use the same
+creation, locking, selection, GPU drawing and disposal services. The noNewDevice
+case inherits the supplied direct format, ignores depth/table parameters and
+preserves the borrowed device/parent PixMap. Low-memory attempts reclaim partial
+graphs and preserve output/environment. A new lifetime guard prevents disposal of
+a device-owning world while managed borrowers still reference it.
+
+Device RGB matching now uses metadata without reading image bytes. This matters
+for unlocked device PixMaps whose baseAddr contains an image handle. Drawing and
+source decoding still require valid image storage. The metadata-only decoder
+check is extended; no draw validation was weakened. Direct UpdateGWorld now rejects
+before mutation for both direct and indexed requested formats, until conversion
+and resize support is implemented. This prevents a purged image taking an indexed
+shortcut that would retain invalid direct component fields.
+
+Primary review refined the planned Index2Color change: Apple's published reference
+specifies a table index with a zero high word, not a packed24-bit pixel. No direct
+conversion has been invented or installed. Its32-Bit QuickDraw semantics need
+separate evidence. QD13 supplies the documented direct-world/dummy-table/device
+initialization implemented here. Current architecture notes cite those sources.
+
+Final scoped acceptance passes75unique checks,0failed,0ignored:67integration
+checks (29GWorld,6colour ports,14devices,12indexed/direct destinations,6pixel locks)
+and8PixMap metadata/decoder checks. GPU-required cases were explicitly enabled.
+The final29-check lifecycle run also passes separately; duplicate executions are
+not counted twice. Both CPUs create/use/dispose both direct formats; the GPU
+fixture checks separate PixMaps, dummy colour/inverse data, locks, actual RGB
+selection and exact pixels, borrowed-device isolation and total memory recovery.
+Additional checks cover low-memory partial graphs, owner lifetime protection and
+unsupported-update rejection without image/selection/heap changes.
+
+Commands:
+
+- cargo test --manifest-path future/Cargo.toml --test gworld --test color_ports --test devices --test pixel_locks --test indexed_destinations -- --include-ignored --nocapture --test-threads=1
+- cargo test --manifest-path future/Cargo.toml --test gworld -- --include-ignored --nocapture --test-threads=1
+- cargo test --manifest-path future/Cargo.toml --lib pixmap:: -- --nocapture
+- cargo clippy --manifest-path future/Cargo.toml --lib --test gworld --test color_ports --test devices --test pixel_locks --test indexed_destinations --example trace_application -- -D warnings
+
+Final strict scoped lint, final-source tracer build, sequential changed-file stdin
+formatting and whitespace checks pass. The prior invalid16-bit creation case now
+uses invalid24-bit depth, with positive16/32-bit lifecycle coverage added; no
+supported-format assertion was dropped without replacement. Preliminary checks
+and final logs are retained under ignored future/target/validation/direct-world/.
+These are scoped runs, not full-suite/native/browser or performance acceptance.
+
+The final-source23M Marathon and24M EV replays match all preceding canonical
+screen/volume hashes and independently preserve directories, companion forks/
+metadata and pilot/alias/script invariants. Marathon still faults at
+CPU22,890,015/PC0102605C/readFFFCC1AF and makes zero GWorld/pixel-state calls;
+EV reaches PC007E6830 with the same scheduled key pair. No playable-game or fresh
+PPC-original claim follows. Private captures/hashes are in original-applications.md.
+
+Next: implement direct UpdateGWorld with atomic component/device/port metadata,
+GPU preservation/conversion and purge recovery; add component dithering and verify
+the actual graphics profile. Verify32-Bit QuickDraw colour-query semantics before
+changing Index2Color based on pixel-layout inference. Direct screen modes,
+complete GPU text/library integration, Mixed Mode, native/browser acceptance,
+both priority games and the entire rebuild remain unfinished. Keep the goal
+active, the baseline checkout unchanged and PR4802 draft; AB03 stays unavailable.

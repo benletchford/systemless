@@ -4084,7 +4084,7 @@ readback, preserving writable-memory checks and synchronous guest visibility.
 
 Live direct PixMap sources are now parsed as described below. Direct destination
 `Surface` records are now implemented below; direct screen profiles and managed
-NewGWorld/UpdateGWorld remain unfinished.
+NewGWorld is implemented below; direct UpdateGWorld remains unfinished.
 Those shared service changes,
 both ABI adapters, display presentation and original-game acceptance are next.
 Do not advertise AB03/complete 32-bit QuickDraw from this backend foundation.
@@ -4146,13 +4146,50 @@ Read-only destinations reject before GPU/pixel mutation. Direct destination
 Floyd-Steinberg dithering is explicitly unsupported before any drawing; indexed
 dithering continues its existing shared service. Do not call the unfinished
 direct-dither path or advertise it through offscreen/profile flags. Direct screen
-mode creation, managed16/32-bit GWorld creation/update and complete native edge
+mode creation, managed16/32-bit GWorld updates and complete native edge
 conformance remain open. Source storage support and a checked drawable manual
 PixMap do not establish a complete 32-bit QuickDraw capability.
 
 Before declaring a complete direct-device profile, audit device colour queries
-as well as drawing: the existing Index2Color implementation still uses indexed
-tables and needs direct-format routing, and Color2Index/native inverse-table
-conformance remains unfinished. The direct drawable-surface fixtures do not
-establish those adjacent APIs. Extend them through the common format model before
-advertising complete capability or claiming original-game acceptance.
+as well as drawing. Index2Color currently implements indexed-table semantics.
+The published Apple reference (page257) specifies a table index with a zero high
+word; it does not establish a packed24-bit conversion contract. The earlier plan
+to route it directly through pixel unpacking was an unverified inference. Verify
+32-Bit QuickDraw's actual API rules before changing it. Color2Index/native inverse
+matching conformance also remains open. Drawable-surface fixtures do not establish
+these adjacent APIs or complete capability.
+
+
+### Managed direct-colour world creation
+
+NewGWorld now creates RGB555/xRGB8888 worlds through the existing shared manager.
+The image, port, separate port/device PixMaps, dummy colour table, inverse handle
+and ownership/disposal remain one graph for both CPU adapters. Direct table input
+is ignored; the owned16-byte dummy table has seed15/24, zero flags/size/specification.
+Direct devices use gdType2 and an empty six-byte inverse header, without generating
+an indexed matcher. Both indexed/direct owned offscreen devices now publish
+noDriver, the colour-device bit where appropriate, and mode-1. Row storage is
+four-byte aligned and initially clear. Creation preserves the selected port/device;
+noNewDevice inherits the supplied format and keeps its device/records borrowed.
+
+Device colour matching now resolves metadata separately from image access.
+An unlocked GWorld's device PixMap may contain an image handle; matching must not
+interpret that handle as pixel bytes. Actual drawing/source access still validates
+image storage. RGB colour selection and initialization use live format/table
+metadata; this does not add a second colour cache or weaken drawing validation.
+
+New allocations roll back on failure. A device owner cannot be disposed while
+another managed world borrows its device, preventing dangling child graphs. Current
+worlds/pinned images retain their existing disposal restrictions. Direct worlds
+reject UpdateGWorld before any mutation until the direct resize/conversion path is
+implemented, including requests to convert them to an indexed format. This also
+prevents a purged image from bypassing conversion and publishing inconsistent
+component metadata. Temporary/hardware flags, direct updates/component dithering,
+complete device-query semantics and actual profile acceptance remain unfinished.
+
+Primary creation/type authority:
+[Apple QD13](https://leopard-adc.pepas.com/technotes/qd/qd_13.html),
+[NewGWorld](https://leopard-adc.pepas.com/documentation/mac/QuickDraw/QuickDraw-311.html)
+and [QuickDraw Reference](https://leopard-adc.pepas.com/documentation/Carbon/Reference/QuickDraw_Ref/QuickDraw_Ref.pdf)
+(device types, page151). Native allocation/error/edge parity is not established by
+the synthetic service fixtures. AB03 remains unavailable.

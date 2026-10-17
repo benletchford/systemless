@@ -169,6 +169,13 @@ impl Manager {
             Op::Device(pointer) => Ok(self.world(m, p, pointer)?.device),
             Op::Dispose(pointer) => {
                 let world = self.world(m, p, pointer)?;
+                if world.owns_device
+                    && self.worlds.iter().any(|(&other, borrower)| {
+                        other != pointer && borrower.device == world.device
+                    })
+                {
+                    return Err(bad("dispose GWorld device borrowers before their owner"));
+                }
                 if m.u32(ports.current_slot)? == pointer || p.pixel_image_is_pinned(world.image) {
                     return Err(bad(
                         "select another port and unlock pixels before DisposeGWorld",
@@ -218,10 +225,8 @@ impl Manager {
                 if !matches!(depth, 0 | 1 | 2 | 4 | 8 | 16 | 32) {
                     return Ok((-157i32) as u32);
                 }
-                if matches!(depth, 16 | 32) || flags & !11 != 0 {
-                    return Err(bad(
-                        "direct-color and temporary/hardware GWorld creation are not implemented",
-                    ));
+                if flags & !11 != 0 {
+                    return Err(bad("temporary/hardware GWorld creation is not implemented"));
                 }
                 m.validate_write(ports.current_slot, 4)?;
                 m.validate_write(devices::CURRENT, 4)?;
@@ -246,14 +251,19 @@ impl Manager {
                 } else {
                     depth as u16
                 };
-                if !matches!(depth, 1 | 2 | 4 | 8) {
+                if !matches!(depth, 1 | 2 | 4 | 8 | 16 | 32) {
                     return Err(bad("unsupported GWorld device depth"));
                 }
                 let row = ((width as u32 * u32::from(depth)).div_ceil(32)) * 4;
                 if row > 0x3fff {
                     return Ok((-50i32) as u32);
                 }
-                let colors = if shared || table != 0 {
+                let colors = if depth > 8 {
+                    let mut bytes = vec![0; 16];
+                    let bits = if depth == 16 { 5u32 } else { 8 };
+                    bytes[..4].copy_from_slice(&(3 * bits).to_be_bytes());
+                    bytes
+                } else if shared || table != 0 {
                     let table = if shared {
                         m.u32(GuestPtr(source_pm.0 + 42))?
                     } else {
@@ -329,34 +339,55 @@ impl Manager {
                     pm[..4].copy_from_slice(&image.to_be_bytes());
                     pm[4..6].copy_from_slice(&((row as u16) | 0x8000).to_be_bytes());
                     pm[6..14].copy_from_slice(&rect);
-                    pm[30..32].fill(0);
+                    pm[14..22].fill(0);
+                    pm[30..32].copy_from_slice(&(if depth > 8 { 16u16 } else { 0 }).to_be_bytes());
                     pm[32..34].copy_from_slice(&depth.to_be_bytes());
-                    pm[34..36].copy_from_slice(&1u16.to_be_bytes());
-                    pm[36..38].copy_from_slice(&depth.to_be_bytes());
+                    pm[34..36].copy_from_slice(&(if depth > 8 { 3u16 } else { 1 }).to_be_bytes());
+                    pm[36..38].copy_from_slice(
+                        &(if depth == 16 {
+                            5u16
+                        } else if depth == 32 {
+                            8
+                        } else {
+                            depth
+                        })
+                        .to_be_bytes(),
+                    );
                     pm[38..42].fill(0);
                     pm[42..46].copy_from_slice(&ct.to_be_bytes());
                     pm[46..50].fill(0);
                     if !shared {
                         let map_data = owned(m, p, map, 50)?;
                         m.write(map_data, &pm)?;
+                        m.write(
+                            GuestPtr(gd_data.0 + 4),
+                            &(if depth > 8 { 2u16 } else { 0 }).to_be_bytes(),
+                        )?;
                         m.write(GuestPtr(gd_data.0 + 10), &3u16.to_be_bytes())?;
+                        m.write(
+                            GuestPtr(gd_data.0 + 20),
+                            &(0x4000u16 | u16::from(depth > 1)).to_be_bytes(),
+                        )?;
+                        m.write(GuestPtr(gd_data.0 + 42), &(-1i32).to_be_bytes())?;
                         m.write(GuestPtr(gd_data.0 + 34), &rect)?;
                         let inverse = m.u32(GuestPtr(gd_data.0 + 6))?;
-                        let mut color = std::mem::take(&mut p.color);
-                        let result = color.call(
-                            m,
-                            p,
-                            crate::color::Op::Make {
-                                source: ct,
-                                destination: inverse,
-                                resolution: 3,
-                            },
-                        );
-                        let error = color.call(m, p, crate::color::Op::Error);
-                        p.color = color;
-                        result?;
-                        if error? != 0 {
-                            return Ok(None);
+                        if depth <= 8 {
+                            let mut color = std::mem::take(&mut p.color);
+                            let result = color.call(
+                                m,
+                                p,
+                                crate::color::Op::Make {
+                                    source: ct,
+                                    destination: inverse,
+                                    resolution: 3,
+                                },
+                            );
+                            let error = color.call(m, p, crate::color::Op::Error);
+                            p.color = color;
+                            result?;
+                            if error? != 0 {
+                                return Ok(None);
+                            }
                         }
                     }
                     device(m, p, devices::Op::Select(gd))?;

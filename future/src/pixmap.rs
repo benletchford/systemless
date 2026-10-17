@@ -251,14 +251,16 @@ pub(crate) fn default_colors(memory: &Memory, address: GuestPtr) -> Result<(u32,
     };
     Ok((nearest([0; 3])?, nearest([65535; 3])?))
 }
-/// Destination metadata and live packed pixel bytes share the same checked view.
-pub(crate) fn destination(memory: &Memory, address: GuestPtr) -> Result<crate::surface::Surface> {
+/// Resolve PixMap matching metadata separately from live pixel validation.
+pub(crate) fn matching_surface(
+    memory: &Memory,
+    address: GuestPtr,
+) -> Result<crate::surface::Surface> {
     if memory.u16(GuestPtr(address.0.checked_add(4).ok_or_else(bad)?))? & 0x8000 == 0 {
         return Bitmap::read(memory, address)?.surface(memory);
     }
     if memory.u16(GuestPtr(address.0.checked_add(30).ok_or_else(bad)?))? == 16 {
         let (bitmap, format) = direct::layout(memory, address)?;
-        memory.read(bitmap.base, bitmap.byte_len()?)?;
         return crate::surface::Surface::direct(bitmap, format);
     }
     let Indexed {
@@ -277,7 +279,16 @@ pub(crate) fn destination(memory: &Memory, address: GuestPtr) -> Result<crate::s
     if let Some(colors) = &mut surface.colors {
         colors.matchable = matchable;
     }
-    surface.unpack(memory)?;
+    Ok(surface)
+}
+/// Drawing/source access also validates the attached packed image bytes.
+pub(crate) fn destination(memory: &Memory, address: GuestPtr) -> Result<crate::surface::Surface> {
+    let surface = matching_surface(memory, address)?;
+    if surface.depth > 8 {
+        memory.read(surface.base, surface.byte_len()?)?;
+    } else {
+        surface.unpack(memory)?;
+    }
     Ok(surface)
 }
 

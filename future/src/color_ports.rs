@@ -82,7 +82,7 @@ impl Manager {
         let source = owned(memory, process, pixels, 50)?;
         let pm = memory.read(source, 50)?.to_vec();
         if u16::from_be_bytes(pm[4..6].try_into().unwrap()) & 0xc000 != 0x8000 {
-            return Err(bad("current device requires an indexed PixMap"));
+            return Err(bad("current device requires a PixMap"));
         }
         let table = u32::from_be_bytes(pm[42..46].try_into().unwrap());
         let ct = owned(memory, process, table, 8)?;

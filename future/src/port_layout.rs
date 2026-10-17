@@ -184,7 +184,7 @@ pub(crate) fn selected_surface(memory: &Memory) -> Result<crate::surface::Surfac
     if map == 0 {
         return Err(bad());
     }
-    crate::pixmap::destination(memory, GuestPtr(map))
+    crate::pixmap::matching_surface(memory, GuestPtr(map))
 }
 
 #[cfg(test)]
