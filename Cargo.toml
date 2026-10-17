@@ -62,11 +62,15 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 # Pure-Rust math library for cross-platform deterministic transcendentals
 libm = "0.2"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "metal", "dx12", "vulkan", "gles", "wgsl"], optional = true }
+pollster = { version = "0.4", optional = true }
 
 [features]
 default = ["gui", "jit"]
 gui = [
     "winit",
+    "dep:wgpu",
+    "dep:pollster",
     "softbuffer",
     "cpal",
     "dep:objc2",

@@ -110,6 +110,13 @@ Windows uses D3D11 presentation by default, with automatic software fallback if
 GPU initialization or presentation fails. Set `SYSTEMLESS_D3D11=0` before launching
 to force software presentation.
 
+Pass `--gpu` to opt into cross-platform wgpu desktop presentation (Metal,
+Vulkan, or DX12, depending on the host). This renders the complete Macintosh
+desktop, including system windows and text, through wgpu. This initial backend
+still rasterizes QuickDraw and text on the CPU before upload. It is experimental
+and reports initialization errors instead of silently selecting another backend.
+Without `--gpu`, existing platform presentation remains the default.
+
 The experimental desktop execution owner can be selected with
 `SYSTEMLESS_DESKTOP_RUNTIME=thread`. It constructs and runs the guest on a
 separate thread while the window consumes complete owned snapshots. Closing the
