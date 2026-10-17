@@ -104,7 +104,8 @@ impl State {
         let output_bytes = (count as u64)
             .checked_mul(8)
             .ok_or("QuickDraw size overflow")?;
-        if background.len() != count
+        if !command.valid_clip_rows()
+            || background.len() != count
             || output_bytes > u64::from(limits.max_storage_buffer_binding_size)
             || output_bytes > limits.max_buffer_size
             || width.div_ceil(8) > limits.max_compute_workgroups_per_dimension
@@ -120,6 +121,25 @@ impl State {
         {
             return Err("unsupported QuickDraw GPU request".into());
         }
+        let mut clips = vec![0i32; command.clip_rows.as_ref().map_or(1, |rows| rows.len() * 2)];
+        if let Some(rows) = &command.clip_rows {
+            for (row, endpoints) in rows.iter().enumerate() {
+                clips[row * 2] = clips.len() as i32;
+                clips[row * 2 + 1] = endpoints.len() as i32;
+                clips.extend_from_slice(endpoints);
+            }
+        }
+        let clip_bytes: Vec<u8> = clips.into_iter().flat_map(i32::to_le_bytes).collect();
+        if clip_bytes.len() as u64 > u64::from(limits.max_storage_buffer_binding_size) {
+            return Err("QuickDraw clip storage exceeds GPU limits".into());
+        }
+        let clip_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("QuickDraw clip rows"),
+                contents: &clip_bytes,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         let input: Vec<u8> = background.iter().flat_map(|p| p.to_le_bytes()).collect();
         let input = self
             .device
@@ -147,7 +167,7 @@ impl State {
             border[0] as u32,
             border[1] as u32,
             u32::from(command.border.is_some()),
-            0,
+            u32::from(command.clip_rows.is_some()),
         ]);
         words.extend(command.transfer.into_iter().flatten());
         words.extend(command.pattern.map(u32::from));
@@ -174,6 +194,10 @@ impl State {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: clip_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -222,6 +246,88 @@ impl State {
 mod tests {
     use super::*;
     #[test]
+    fn gpu_quickdraw_complex_clips_preserve_holes_and_empty_rows() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        for origin in [[-11, -9], [-3, 2], [0, 0], [5, 7]] {
+            for border in [None, Some([1, 2])] {
+                let command = QuickDrawGpuCommand {
+                    area: [origin[0], origin[1], origin[0] + 17, origin[1] + 13],
+                    rect: [origin[0], origin[1], origin[0] + 17, origin[1] + 13],
+                    border,
+                    pattern: [0xff; 8],
+                    transfer: [[0, 3], [0, 7]],
+                    clip_rows: Some(
+                        (0..13)
+                            .map(|y| match y % 3 {
+                                0 => vec![],
+                                1 => vec![origin[0] + 2, origin[0] + 6],
+                                _ => vec![
+                                    origin[0] - 2,
+                                    origin[0] + 4,
+                                    origin[0] + 9,
+                                    origin[0] + 20,
+                                ],
+                            })
+                            .collect(),
+                    ),
+                };
+                let background = vec![0x123456; 17 * 13];
+                let pixels = state.render(&command, &background).unwrap();
+                for y in 0..13 {
+                    for x in 0..17 {
+                        let clipped = match y % 3 {
+                            0 => false,
+                            1 => (2..6).contains(&x),
+                            _ => x < 4 || x >= 9,
+                        };
+                        let covered =
+                            clipped && border.is_none_or(|_| x == 0 || x == 16 || y < 2 || y >= 11);
+                        assert_eq!(
+                            pixels[y * 17 + x],
+                            QuickDrawGpuPixel {
+                                value: if covered { 7 } else { 0x123456 },
+                                covered
+                            },
+                            "origin={origin:?},point={x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+        let command = QuickDrawGpuCommand {
+            area: [0, 0, 1, 1],
+            rect: [0, 0, 1, 1],
+            border: None,
+            pattern: [0; 8],
+            transfer: [[0; 2]; 2],
+            clip_rows: None,
+        };
+        for rows in [
+            vec![],
+            vec![vec![0]],
+            vec![vec![2, 1]],
+            vec![vec![0, 3, 2, 4]],
+        ] {
+            let mut invalid = command.clone();
+            invalid.clip_rows = Some(rows);
+            assert!(state.render(&invalid, &[0]).is_err());
+        }
+        let mut oversized = command;
+        oversized.area[2] = 32767;
+        oversized.clip_rows = Some(vec![(0..32768).collect()]);
+        assert!(state.render(&oversized, &vec![0; 32767]).is_err());
+    }
+
+    #[test]
     fn gpu_quickdraw_rectangles_match_patterns_transfers_frames_and_negative_origins() {
         let state = match State::new() {
             Ok(state) => state,
@@ -241,6 +347,7 @@ mod tests {
                     [[0x00ff_ffff, 0x0000_1234], [0x0000_ffff, 0x00ff_0000]],
                 ] {
                     let command = QuickDrawGpuCommand {
+                        clip_rows: None,
                         area: [origin[0], origin[1], origin[0] + 17, origin[1] + 13],
                         rect: [origin[0] + 1, origin[1] + 1, origin[0] + 16, origin[1] + 12],
                         border,
@@ -286,6 +393,7 @@ mod tests {
             }
         }
         let command = QuickDrawGpuCommand {
+            clip_rows: None,
             area: [0, 0, 1, 1],
             rect: [0, 0, 1, 1],
             border: None,

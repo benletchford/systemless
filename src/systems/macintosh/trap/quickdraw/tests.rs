@@ -2852,7 +2852,7 @@
     }
 
     #[test]
-    fn gpu_rectangles_match_classic_quickdraw_and_decline_complex_clips() {
+    fn gpu_rectangles_match_classic_quickdraw_with_complex_clips() {
         for op in [
             ShapeOp::Paint,
             ShapeOp::Frame,
@@ -2869,7 +2869,7 @@
                     let (actual, calls) = draw_rect_1bpp_route(op, pattern, complex, true);
                     let expected = draw_rect_1bpp(op, pattern, complex);
                     assert_eq!(actual, expected, "op={op:?},complex={complex}");
-                    assert_eq!(calls, usize::from(!complex));
+                    assert_eq!(calls, 1);
                 }
             }
         }

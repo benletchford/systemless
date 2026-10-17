@@ -80,6 +80,56 @@ fn fg_bg_low_contrast(fg: (u16, u16, u16), bg: (u16, u16, u16)) -> bool {
     dominant(fg) == dominant(bg)
 }
 
+fn gpu_rectangle_clip_rows(
+    area: [i16; 4],
+    vis: Option<&super::quickdraw::RegionMembershipCache>,
+    clip: Option<&super::quickdraw::RegionMembershipCache>,
+) -> Option<Vec<Vec<i32>>> {
+    let [left, top, right, bottom] = area;
+    let mut total = 0usize;
+    (i32::from(top)..i32::from(bottom))
+        .map(|y| {
+            let mut row = vec![left, right];
+            for cache in [vis, clip].into_iter().flatten() {
+                let endpoints = cache
+                    .rows
+                    .get(usize::try_from(y - i32::from(cache.top)).ok()?)?;
+                if endpoints.len() % 2 != 0 || endpoints.windows(2).any(|p| p[0] >= p[1]) {
+                    return None;
+                }
+                row = crate::quickdraw::raster::region_rows::intersect_rows(&row, endpoints);
+            }
+            total = total.checked_add(row.len())?;
+            if total > 1_048_576 {
+                return None;
+            }
+            Some(row.into_iter().map(i32::from).collect())
+        })
+        .collect()
+}
+
+#[test]
+fn gpu_rectangle_regions_intersect_and_decline_malformed_rows() {
+    use super::quickdraw::RegionMembershipCache;
+    let vis = RegionMembershipCache {
+        top: -1,
+        rows: vec![vec![-8, -2, 1, 9], vec![]],
+    };
+    let mut clip = RegionMembershipCache {
+        top: -1,
+        rows: vec![vec![-5, 4], vec![-10, 10]],
+    };
+    assert_eq!(
+        gpu_rectangle_clip_rows([-6, -1, 6, 1], Some(&vis), Some(&clip)),
+        Some(vec![vec![-5, -2, 1, 4], vec![]])
+    );
+    for malformed in [vec![-5], vec![4, -5], vec![-5, 2, 1, 4]] {
+        clip.rows[0] = malformed;
+        assert!(gpu_rectangle_clip_rows([-6, -1, 6, 1], Some(&vis), Some(&clip)).is_none());
+    }
+    assert!(gpu_rectangle_clip_rows([-6, -2, 6, 1], Some(&vis), None).is_none());
+}
+
 fn pen_dimensions_valid((height, width): (i16, i16), rect: &Rect) -> bool {
     height >= 0
         && width >= 0
@@ -1444,7 +1494,8 @@ impl super::TrapDispatcher {
 
         if bus.quickdraw_gpu_renderer.is_some()
             && full_rect_coverage
-            && !has_complex_port_clip
+            && (!vis_region_complex || vis_region_cache.is_some())
+            && (!clip_region_complex || clip_region_cache.is_some())
             && installed_raw_pixpat.is_none()
             && !matches!(op, ShapeOp::Glyph(_))
             && !(pixel_size == 8 && matches!(op, ShapeOp::Invert) && bus.presentation.is_some())
@@ -1510,41 +1561,54 @@ impl super::TrapDispatcher {
                     let zero = map(0);
                     *entry = [zero ^ map(mask), zero];
                 }
-                let command = crate::quickdraw::gpu::QuickDrawGpuCommand {
-                    area: [
-                        i32::from(left),
-                        i32::from(top),
-                        i32::from(right),
-                        i32::from(bottom),
-                    ],
-                    rect: [
-                        i32::from(r.left),
-                        i32::from(r.top),
-                        i32::from(r.right),
-                        i32::from(r.bottom),
-                    ],
-                    border: frame.then_some([i32::from(self.pn_size.1), i32::from(self.pn_size.0)]),
-                    pattern,
-                    transfer,
+                let gpu_clip = if has_complex_port_clip {
+                    gpu_rectangle_clip_rows(
+                        [left, top, right, bottom],
+                        vis_region_cache.as_ref(),
+                        clip_region_cache.as_ref(),
+                    )
+                    .map(Some)
+                } else {
+                    Some(None)
                 };
-                let target = crate::quickdraw::gpu::RasterTarget {
-                    base: pix_base,
-                    row_bytes: pix_row_bytes,
-                    depth: pixel_size,
-                    origin: [i32::from(bounds_left), i32::from(bounds_top)],
-                };
-                if crate::quickdraw::gpu::try_rectangle(bus, target, command) {
-                    if touched_screen {
-                        let rect = (
-                            touch_top.saturating_sub(bounds_top),
-                            touch_left.saturating_sub(bounds_left),
-                            touch_bottom.saturating_sub(bounds_top),
-                            touch_right.saturating_sub(bounds_left),
-                        );
-                        self.refresh_dialog_saved_pixels_after_screen_draw(bus, port, rect);
-                        self.refresh_visible_dialog_snapshot_region_for_port(bus, port, rect);
+                if let Some(clip_rows) = gpu_clip {
+                    let command = crate::quickdraw::gpu::QuickDrawGpuCommand {
+                        clip_rows,
+                        area: [
+                            i32::from(left),
+                            i32::from(top),
+                            i32::from(right),
+                            i32::from(bottom),
+                        ],
+                        rect: [
+                            i32::from(r.left),
+                            i32::from(r.top),
+                            i32::from(r.right),
+                            i32::from(r.bottom),
+                        ],
+                        border: frame.then_some([i32::from(self.pn_size.1), i32::from(self.pn_size.0)]),
+                        pattern,
+                        transfer,
+                    };
+                    let target = crate::quickdraw::gpu::RasterTarget {
+                        base: pix_base,
+                        row_bytes: pix_row_bytes,
+                        depth: pixel_size,
+                        origin: [i32::from(bounds_left), i32::from(bounds_top)],
+                    };
+                    if crate::quickdraw::gpu::try_rectangle(bus, target, command) {
+                        if touched_screen {
+                            let rect = (
+                                touch_top.saturating_sub(bounds_top),
+                                touch_left.saturating_sub(bounds_left),
+                                touch_bottom.saturating_sub(bounds_top),
+                                touch_right.saturating_sub(bounds_left),
+                            );
+                            self.refresh_dialog_saved_pixels_after_screen_draw(bus, port, rect);
+                            self.refresh_visible_dialog_snapshot_region_for_port(bus, port, rect);
+                        }
+                        return;
                     }
-                    return;
                 }
             }
         }

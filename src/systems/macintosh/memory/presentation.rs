@@ -4154,6 +4154,7 @@ mod tests {
             failure: 0,
         }));
         let mut command = QuickDrawGpuCommand {
+            clip_rows: None,
             area: [0, 0, 8, 8],
             rect: [0, 0, 8, 8],
             border: Some([1, 1]),
@@ -4175,6 +4176,27 @@ mod tests {
             "frame interior must not lose text detail"
         );
         command.border = None;
+        command.clip_rows = Some(
+            (0..8)
+                .map(|y| if y == 3 { vec![0, 3, 4, 8] } else { vec![0, 8] })
+                .collect(),
+        );
+        assert!(try_rectangle(
+            &mut bus,
+            RasterTarget {
+                base: 0x1000,
+                row_bytes: 8,
+                depth: 8,
+                origin: [0, 0]
+            },
+            command.clone()
+        ));
+        assert!(
+            bus.has_visible_outline_detail(),
+            "clip holes must preserve text detail"
+        );
+        command.clip_rows = None;
+
         assert!(try_rectangle(
             &mut bus,
             RasterTarget {

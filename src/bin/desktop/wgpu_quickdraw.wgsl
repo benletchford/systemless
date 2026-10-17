@@ -5,6 +5,7 @@ struct Geometry {
 @group(0) @binding(0) var<storage,read> background:array<u32>;
 @group(0) @binding(1) var<storage,read_write> result:array<vec2<u32>>;
 @group(0) @binding(2) var<uniform> geometry:Geometry;
+@group(0) @binding(3) var<storage,read> clips:array<i32>;
 @compute @workgroup_size(8,8) fn raster(@builtin(global_invocation_id) id:vec3<u32>) {
     if any(id.xy>=vec2<u32>(geometry.area.zw)) {return;}
     let index=id.y*u32(geometry.area.z)+id.x;
@@ -13,6 +14,12 @@ struct Geometry {
     if geometry.border.z!=0 {
         let inner=all(point>=geometry.rect.xy+geometry.border.xy)&&all(point<geometry.rect.zw-geometry.border.xy);
         covered=covered&&!inner;
+    }
+    if covered && geometry.border.w!=0 {
+        let offset=u32(clips[id.y*2u]);let count=u32(clips[id.y*2u+1u]);
+        var in_clip=false;
+        for(var i=0u;i<count;i+=2u) {if point.x>=clips[offset+i] && point.x<clips[offset+i+1u] {in_clip=true;break;}}
+        covered=in_clip;
     }
     var value=background[index];
     if covered {
