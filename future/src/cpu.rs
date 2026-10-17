@@ -460,6 +460,10 @@ pub enum Call {
         pointer: GuestPtr,
         op: crate::files::WorkingOp,
     },
+    VolumeInfo {
+        pointer: GuestPtr,
+        hierarchical: bool,
+    },
     CatalogInfo(GuestPtr),
     FileInfo {
         pointer: GuestPtr,

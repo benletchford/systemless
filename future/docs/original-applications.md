@@ -5251,3 +5251,21 @@ and companion/fork/metadata contents. Next implement synchronous volume informat
 from the shared writable-quota model and replay beyond this point. Exact schedules,
 call traces, screen hashes and remaining limits are in progress.md. Full rebuild
 and complete wgpu text acceptance remain active.
+
+
+### Volume-information replay boundary (2026-10-17)
+
+Shared synchronous volume information removes the unsupported-A207 host fault.
+Original Marathon's verified New Game/forward sequence now reaches a40M-poll
+budget stop at39,999,928/PC0102620A with13volume queries and a live rendered scene.
+The actual query returns nsvErr because the original has an invalid0808volume
+reference after failed Preferences-folder discovery. Valid-reference free-space
+behavior is verified separately on both CPUs against real quota/reservation
+changes; do not label the original's error as successful free-space acceptance.
+The next missing shared service is FindFolder, with coherent persistent folder
+identities and volume metadata, followed by recording/save/reopen checks.
+
+EV's fresh24M frame/PC/volume remain byte-identical. Saved-volume integrity checks
+pass for both games. See progress.md for exact traces, hashes,108-check scope and
+virtual-volume limitations. Sustained gameplay and the full rebuild/text goal
+remain unfinished.

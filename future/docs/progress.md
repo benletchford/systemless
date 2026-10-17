@@ -11631,3 +11631,71 @@ Primary continuation sources: [Apple File Manager chapter](https://developer.app
 [published candidate key definitions](https://github.com/Aleph-One-Marathon/alephone/blob/97c73d8f2892c542283ac79940cf732bb077624d/Source_Files/Misc/key_definitions.h).
 The printed assembly-summary offsets also need cross-checking against the typed
 HVolumeParam declaration; the source itself can contain table mistakes.
+
+
+## Shared synchronous volume information (2026-10-17)
+
+Files::volume_info now backs native A007/A207 and PPC PBGetVInfoSync/
+PBHGetVInfoSync through one Call::VolumeInfo service. It implements packed64/122
+byte outputs, index/name/ref/WD selection, optional canonical name output,
+normalized volume ref, real catalog valence/counts/next ID and conservative free
+allocation blocks from the existing64MiB writable quota and pending resource
+reservations. It preflights every output and preserves unrelated header/error
+fields. The architecture note documents the virtual2048byte allocation profile,
+unsigned32768block counts, epoch-zero volume timestamps, absent physical extents
+and remaining async/general-wrapper/metadata limitations. No host disk values,
+invented fixed free-space success, guest patches or new dependencies are used.
+
+Final exact-source gate passes108unique checks, zero failed/ignored:98library,
+4volume-info and6working-directory tests, with the3real-GPU library cases enabled.
+New cases exercise both CPU ABI layouts/returns, reserved bytes, output lengths,
+optional names, enumeration/name/default/WD selection, explicit missing-volume
+versus missing-default errors, late invalid outputs, partial-block free-space
+rounding, actual fork growth and pending Resource Manager reservations. An early
+run with3GPU cases skipped and the earlier pre-correction run are superseded, not
+added to the final count. Final tracer build, strict scoped Clippy, Rust1.93
+example check, sequential stdin formatting and whitespace gates pass.
+
+Fresh original68K Marathon repeats the verified Command-N New Game sequence and
+keypad8 forward hold28–30M. The40M-poll request now ends at39,999,928 retired /
+PC0102620A, budget exit1, beyond the old33,515,799 unsupported-A207 fault. It
+makes13VolumeInfo calls. The final image was visually inspected: the live close
+view of the initial room terminal/weapon/HUD is retained. Screen SHA-256
+`4cdadf3472073421b836740dc6b365c69a440c875e8d6112807550c732b2ee2a`;
+saved volume remains `e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+
+Important evidence limit: the trace at the former fault shows D0=ffffffdd/-35,
+not successful free-space output. This is the documented error for the original's
+invalid volume reference0808. A separate35M-poll watch observes the reference
+global0077C19E first taking0808 at original PC0100A7E2, copying a stack local after
+its folder helper failed, rather than a renderer writing over that global.
+The helper checks Gestalt fold (unavailable), tries an installed-System-file
+fallback using low-memory SysMap/FCB info, and exits before writing its volume/
+directory outputs when that lookup fails. The caller ignores the folder error
+and copies uninitialized output. FindFolder/AliasDispatch selector0 is not yet
+implemented or advertised. Keep volume selection strict: do not accept arbitrary
+0808 as the mounted volume merely to return success. The watch replay ends to
+budget at34,999,928/PC01014B20 with the same committed volume hash.
+
+Next executable milestone is real shared Folder Manager discovery and creation,
+including Preferences/System folder identities, catalog/persistence and volume
+metadata coherence, native A823 selector0 and PPC FindFolder ABI. Advertise the
+Gestalt fold capability only when that service exists. Then re-run New Game,
+verify a valid preference/recording location and successful volume queries, and
+exercise actual recording/save/reopen behavior. There is no installed System file
+to rely on and no native System7 comparison requirement. This is an application-
+driven continuation, not a reason to broaden invalid references or add a stub.
+
+Fresh originalEV24M/PC007E6C3A remains byte-identical to the established frame
+`ab60ddcff2b03afff894b9f2744709b65e141679437ae2e6d5308a231377f799`, volume
+`e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`, budget exit1.
+All three saved volumes pass independent CRC/catalog/companion/fork/metadata
+checks. Original media is unchanged. No game-success exit, exact physics,
+sustained play, combat/audio, native/browser or complete text acceptance is claimed.
+
+Evidence: /tmp/systemless-volumeinfo-{tests-verified,tracer,lint,msrv,summary}.*,
+/tmp/systemless-marathon-volumeinfo*, /tmp/systemless-marathon-volume-reference*,
+/tmp/systemless-ev-volumeinfo*. Logs are archived in ignored target/validation/
+volume-info and private-originals/<game>/evidence/2026-10-17-volume-info.
+All process handles are terminal; no job remains running. Keep the full rebuild
+and complete wgpu text goal active and PR draft.

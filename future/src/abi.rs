@@ -316,6 +316,7 @@ pub enum Service {
     ResolveAliasFile,
     FcbInfo,
     WorkingDirectory(crate::files::WorkingOp),
+    VolumeInfo(bool),
     CatalogInfo,
     FileInfo(bool),
     CreateDirectory,
@@ -845,6 +846,8 @@ impl Abi {
             b"ResolveAlias" => Some(Service::ResolveAlias),
             b"ResolveAliasFile" => Some(Service::ResolveAliasFile),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
+            b"PBGetVInfoSync" => Some(Service::VolumeInfo(false)),
+            b"PBHGetVInfoSync" => Some(Service::VolumeInfo(true)),
             b"PBGetCatInfoSync" => Some(Service::CatalogInfo),
             b"PBGetFInfoSync" => Some(Service::FileInfo(false)),
             b"PBHGetFInfoSync" => Some(Service::FileInfo(true)),
@@ -3904,6 +3907,13 @@ impl Abi {
                 },
                 Reply::M68kFileError,
             )),
+            0xa007 | 0xa207 => Ok((
+                Call::VolumeInfo {
+                    pointer: GuestPtr(c.dar[8]),
+                    hierarchical: opcode == 0xa207,
+                },
+                Reply::M68kFileError,
+            )),
             0xa00c | 0xa20c => Ok((
                 Call::FileInfo {
                     pointer: GuestPtr(c.dar[8]),
@@ -5312,6 +5322,10 @@ impl Abi {
                 aliased: GuestPtr(c.gpr[6]),
             }),
             Service::FcbInfo => Call::FcbInfo(GuestPtr(c.gpr[3])),
+            Service::VolumeInfo(hierarchical) => Call::VolumeInfo {
+                pointer: GuestPtr(c.gpr[3]),
+                hierarchical,
+            },
             Service::CatalogInfo => Call::CatalogInfo(GuestPtr(c.gpr[3])),
             Service::FileInfo(hierarchical) => Call::FileInfo {
                 pointer: GuestPtr(c.gpr[3]),

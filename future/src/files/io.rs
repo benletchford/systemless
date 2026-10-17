@@ -386,3 +386,37 @@ mod resource_reservation_tests {
         assert_eq!(files.space_used(), LIMIT);
     }
 }
+
+#[cfg(test)]
+mod volume_space_tests {
+    use super::*;
+    use crate::memory::Permissions;
+    #[test]
+    fn volume_free_blocks_follow_fork_growth_and_pending_resource_reservations() {
+        let mut f = Files::application(&[], None);
+        let mut m = Memory::default();
+        let p = GuestPtr(0x1000);
+        m.map(p, vec![0; 122], Permissions::RW).unwrap();
+        let a = f.create_file(b"A", -1, 2, 0, [0; 16]).unwrap();
+        let b = f.create_file(b"B", -1, 2, 0, [0; 16]).unwrap();
+        let free = |f: &Files, m: &mut Memory| {
+            f.volume_info(m, p, true).unwrap();
+            m.u16(GuestPtr(p.0 + 62)).unwrap()
+        };
+        assert_eq!(free(&f, &mut m), 32768);
+        f.reserve_resource_growth(a, 1).unwrap();
+        assert_eq!(free(&f, &mut m), 32767);
+        f.reserve_resource_growth(a, 4097).unwrap();
+        assert_eq!(free(&f, &mut m), 32765);
+        f.resize_fork(b, Fork::Data, 2048).unwrap();
+        assert_eq!(free(&f, &mut m), 32764);
+        f.reserve_resource_growth(a, LIMIT - 2048).unwrap();
+        assert_eq!(free(&f, &mut m), 0);
+        assert_eq!(f.reserve_resource_growth(a, LIMIT - 2047), Err(-34));
+        assert_eq!(free(&f, &mut m), 0);
+        f.resize_fork(b, Fork::Data, 0).unwrap();
+        assert_eq!(free(&f, &mut m), 1);
+        f.reserve_resource_growth(a, 0).unwrap();
+        assert_eq!(free(&f, &mut m), 32768);
+    }
+}

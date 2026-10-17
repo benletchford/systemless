@@ -15,6 +15,7 @@ pub use resource::CreateSpecResource;
 mod spec;
 pub use spec::{GetSpecInfo, MakeSpec, SetSpecInfo};
 mod volume;
+mod volume_info;
 mod working;
 pub use browse::{CatalogEntry, DirectoryView};
 pub use io::Op;

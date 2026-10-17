@@ -4315,3 +4315,48 @@ The TN21 page was rendered and visually inspected; PDF SHA-256
 `f2854e06001e91c438b8e029fd168bd05debcab2078bcf660e318874221a39f5`.
 Full PICT graphics/text opcodes and authoritative native color-picture parity
 remain outside this completed slice.
+
+
+### Shared synchronous virtual-volume information
+
+Files owns PBGetVInfo/PBHGetVInfo behavior. Native A007/A207 and the PPC
+PBGetVInfoSync/PBHGetVInfoSync imports marshal one pointer and a layout selector
+into Call::VolumeInfo; neither adapter computes catalog or capacity information.
+The basic output is64bytes, the packed HFS output122bytes. Preserve the common
+header, name pointer, reserved filler and enumeration index; publish normalized
+vRefNum-1 and synchronous completion/result fields using existing File Manager
+error conventions. Errors preserve other outputs. All successful PB/name outputs
+are preflighted before publication. Input/name aliases are snapshotted; as with
+existing file-info queries, PB fields take precedence on overlapping output.
+
+The one mounted Application Volume selects index1; later indices return nsvErr.
+Index0 ignores input name contents and uses vRefNum only. Negative indices use
+full volume-name prefixes or fall back to the default/WD reference. Explicit
+absent names yield nsvErr; an absent default yields paramErr. Name output is
+optional and canonical. WD/default-subdirectory queries return the real directory
+valence. Positive enumeration selects root. File/directory counts and next CNID
+come from the shared catalog; write count is the process's logical catalog revision.
+
+Capacity describes the existing64MiB writable fork/reservation pool, not host
+filesystem space. Immutable loaded application forks remain outside that existing
+write quota. The reported allocation unit is2048bytes, total32768unsigned blocks;
+free blocks floor (quota minus space_used)/2048. Pending Resource Manager growth
+is charged by the same space_used method as raw fork expansion, so a query cannot
+advertise bytes already reserved. A partial allocation unit is conservatively
+unavailable. This does not change the byte-level write quota or SLVOLUME format.
+
+This virtual profile reports HFS signatureBD and stable online drive1/reference-1,
+not physical disk extents or a callable ROM disk driver. Extent/bitmap fields,
+Finder/backup data and volume-level timestamps are zero; timestamp zero denotes
+the1904epoch and volume timestamp mutation/persistence is not implemented in this
+slice. Do not infer native HFS disk layout or metadata parity from these profile
+values. General GetVInfo wrappers, async calls, PBHSetVInfo, additional mounts and
+physical driver operations remain unsupported. The canonical OS table entry is
+A007; direct A207 dispatch retains its HFS modifier. Cached OS-entry modifier
+calling conventions are not newly verified.
+
+Primary contract: [Apple File Manager, pp.2-144–2-146](https://developer.apple.com/library/archive/documentation/mac/pdf/Files/File_Manager.pdf).
+Packed field offsets are derived from the typed HVolumeParam declaration (free
+blocks62, allocation-block size48); the printed assembly-summary offsets are
+inconsistent for some fields. Original Marathon's free-space routine independently
+reads these exact offsets. This is direct application evidence, not native parity.

@@ -2409,6 +2409,22 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::VolumeInfo {
+                            pointer,
+                            hierarchical,
+                        } => {
+                            let error = self.process.files.volume_info(
+                                &mut self.memory,
+                                pointer,
+                                hierarchical,
+                            )?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::CatalogInfo(pointer) => {
                             let error =
                                 self.process.files.catalog_info(&mut self.memory, pointer)?;
@@ -2864,6 +2880,7 @@ impl Runtime {
                         | Call::GetNamedResource { .. }
                         | Call::CreateDirectory(_)
                         | Call::FileInfo { .. }
+                        | Call::VolumeInfo { .. }
                         | Call::CatalogInfo(_)
                         | Call::FileIo { .. }
                         | Call::WorkingDirectory { .. }
