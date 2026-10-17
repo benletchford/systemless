@@ -253,10 +253,19 @@ impl State {
     ) -> Result<Vec<u32>, String> {
         let width = command.columns.len() as u32;
         let height = command.rows.len() as u32;
-        let palette: Vec<u32> = command.palette.as_ref().map_or_else(
-            || (0..256).collect(),
-            |p| p.to_vec(),
-        );
+        let palette: Vec<u32> = command
+            .direct
+            .as_ref()
+            .filter(|d| !d.palette.is_empty())
+            .map_or_else(
+                || {
+                    command
+                        .palette
+                        .as_ref()
+                        .map_or_else(|| (0..256).collect(), |p| p.to_vec())
+                },
+                |d| d.palette.clone(),
+            );
         let columns: Vec<u32> = command.columns.iter().flatten().copied().collect();
         let rows: Vec<u32> = command.rows.iter().flatten().copied().collect();
         let geometry = [
@@ -264,9 +273,12 @@ impl State {
             width,
             height,
             u32::from(command.palette.is_some()),
-            0,
-            0,
-            0,
+            command.direct.as_ref().map_or(0, |d| d.source_depth),
+            command.direct.as_ref().map_or(0, |d| d.destination_depth),
+            command
+                .direct
+                .as_ref()
+                .map_or(0, |d| d.palette.len() as u32),
             0,
         ];
         self.dispatch_blit(
@@ -747,8 +759,119 @@ mod tests {
             columns: vec![[0, 1]],
             rows: vec![[0, 1]],
             palette: None,
+            direct: None,
         };
         assert_eq!(state.render_blit(&raw).unwrap(), vec![u32::MAX]);
+    }
+
+    #[test]
+    fn gpu_direct_bitmap_conversions_match_cpu_colors_and_palette_ties() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        for source_depth in [16, 32] {
+            for destination_depth in [1, 2, 4, 8, 16, 32] {
+                if source_depth == destination_depth {
+                    continue;
+                }
+                let pixels = (0..65536u32)
+                    .map(|i| {
+                        if source_depth == 16 {
+                            i
+                        } else {
+                            i.wrapping_mul(2654435761)
+                        }
+                    })
+                    .collect();
+                let count = if destination_depth <= 8 {
+                    1usize << destination_depth
+                } else {
+                    0
+                };
+                let palette = (0..count)
+                    .map(|i| {
+                        // Repeated colors exercise the lowest-index tie rule.
+                        ((i / 2) as u32 * 1357) & 32767
+                    })
+                    .collect();
+                let command = QuickDrawGpuBlit {
+                    width: 256,
+                    height: 256,
+                    pixels,
+                    columns: (0..256).map(|x| [x, x + 1]).collect(),
+                    rows: (0..256).map(|y| [y, y + 1]).collect(),
+                    palette: None,
+                    direct: Some(systemless::quickdraw::gpu::QuickDrawGpuDirectColor {
+                        source_depth,
+                        destination_depth,
+                        palette,
+                    }),
+                };
+                let colors = &command.direct.as_ref().unwrap().palette;
+                let expected: Vec<u32> = command
+                    .pixels
+                    .iter()
+                    .map(|pixel| {
+                        let rgb = if source_depth == 16 {
+                            [pixel >> 10 & 31, pixel >> 5 & 31, pixel & 31]
+                                .map(|v| ((f64::from(v) * 65535.0 / 31.0).round() as u32) >> 8)
+                        } else {
+                            [pixel >> 16 & 255, pixel >> 8 & 255, pixel & 255]
+                        };
+                        match destination_depth {
+                            32 => (rgb[0] << 16) | (rgb[1] << 8) | rgb[2],
+                            16 => ((rgb[0] / 8) << 10) | ((rgb[1] / 8) << 5) | (rgb[2] / 8),
+                            1 if source_depth == 32 => {
+                                let black: u64 = rgb.iter().map(|c| u64::from(c * 257).pow(2)).sum();
+                                let white: u64 =
+                                    rgb.iter().map(|c| u64::from(65535 - c * 257).pow(2)).sum();
+                                u32::from(black <= white)
+                            }
+                            _ => {
+                                colors
+                                    .iter()
+                                    .enumerate()
+                                    .min_by_key(|(_, p)| {
+                                        let c = [
+                                            (*p >> 10 & 31) as i32,
+                                            (*p >> 5 & 31) as i32,
+                                            (*p & 31) as i32,
+                                        ];
+                                        (0..3)
+                                            .map(|i| (c[i] - (rgb[i] / 8) as i32).pow(2))
+                                            .sum::<i32>()
+                                    })
+                                    .unwrap()
+                                    .0 as u32
+                            }
+                        }
+                    })
+                    .collect();
+                assert_eq!(
+                    state.render_blit(&command).unwrap(),
+                    expected,
+                    "{source_depth}->{destination_depth}"
+                );
+                let mut invalid = command.clone();
+                invalid.direct.as_mut().unwrap().source_depth = 15;
+                assert!(state.render_blit(&invalid).is_err());
+                let mut invalid = command.clone();
+                invalid.columns[0] = [0, 2];
+                assert!(state.render_blit(&invalid).is_err());
+                if count > 0 {
+                    let mut invalid = command;
+                    invalid.direct.as_mut().unwrap().palette.pop();
+                    assert!(state.render_blit(&invalid).is_err());
+                }
+            }
+        }
     }
 
     #[test]
@@ -783,6 +906,7 @@ mod tests {
                 columns: vec![[0, 1], [1, 5], [3, 4], [22, 23], [22, 23]],
                 rows: vec![[0, 1], [1, 7], [9, 17], [16, 17]],
                 palette,
+                direct: None,
             };
             let mut expected = Vec::new();
             for row in &command.rows {

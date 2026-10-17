@@ -150,9 +150,11 @@ guard-byte behavior. Eligible same-depth 2-bit and 4-bit rectangular `srcCopy`
 transfers also use wgpu, preserving adjacent packed pixels and row padding.
 Native PowerPC `srcCopy` also uses GPU sampling for rectangular scaling,
 monochrome foreground/background expansion, and indexed-color conversion into
-1, 2, 4, 8, 16, and 32-bit destinations. Other classic monochrome and packed
-palette copies, direct-color conversions, masked transfers, and other bitmap
-transfer families still use software.
+1, 2, 4, 8, 16, and 32-bit destinations. Native RGB555 and xRGB sources also
+convert to each other or indexed destinations on the GPU, preserving inverse
+table matching and monochrome conversion rules. Other classic monochrome and
+packed palette copies, masked transfers, and other bitmap transfer families
+still use software.
 Without `--gpu`, existing platform presentation remains the default.
 `--headless --gpu` also enables guest rasterization in play scripts and timed runs
 without creating a window; desktop presentation is only used for windowed runs.

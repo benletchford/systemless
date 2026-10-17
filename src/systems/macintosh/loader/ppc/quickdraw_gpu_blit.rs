@@ -2,7 +2,7 @@
 use super::*;
 
 /// Returns only fully staged writes. A decline leaves the existing software
-/// path responsible for sparse/unreadable source pixels and unsupported colors.
+/// path responsible for sparse/unreadable source pixels and unsupported transfers.
 pub(super) fn sample_copy(
     memory: &mut PpcSectionMem,
     source: PpcPixMapBits,
@@ -11,6 +11,7 @@ pub(super) fn sample_copy(
     destination_rect: [i32; 4],
     clip: [i32; 4],
     palette: Option<[u32; 256]>,
+    direct: Option<crate::quickdraw::gpu::QuickDrawGpuDirectColor>,
     details: &mut crate::memory::SavedPixels<()>,
 ) -> Option<Vec<(i32, i32, u32)>> {
     let renderer = memory.quickdraw_gpu_renderer();
@@ -71,6 +72,7 @@ pub(super) fn sample_copy(
             .map(|y| [(y - y0) as u32, (y - y0 + 1) as u32])
             .collect(),
         palette,
+        direct,
     };
     if !command.valid() {
         return None;

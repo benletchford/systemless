@@ -11,6 +11,7 @@ pub struct QuickDrawGpuBlit {
     pub rows: Vec<[u32; 2]>,
     /// Indexed source colors mapped into raw destination pixels.
     pub palette: Option<[u32; 256]>,
+    pub direct: Option<QuickDrawGpuDirectColor>,
 }
 impl QuickDrawGpuBlit {
     pub fn valid(&self) -> bool {
@@ -29,6 +30,16 @@ impl QuickDrawGpuBlit {
             || !valid_groups(&self.columns, self.width)
             || !valid_groups(&self.rows, self.height)
             || (self.palette.is_some() && self.pixels.iter().any(|v| *v > 255))
+            || self.direct.as_ref().is_some_and(|d| {
+                !d.valid()
+                    || self.palette.is_some()
+                    || (d.source_depth == 16 && self.pixels.iter().any(|v| *v > 65535))
+                    || self
+                        .columns
+                        .iter()
+                        .chain(&self.rows)
+                        .any(|g| g[1] - g[0] != 1)
+            })
         {
             return false;
         }
@@ -50,11 +61,11 @@ impl QuickDrawGpuBlit {
                         maximum = maximum.max(self.pixels[(y * self.width + x) as usize]);
                     }
                 }
-                pixels.push(
-                    self.palette
-                        .as_ref()
-                        .map_or(maximum, |p| p[maximum as usize]),
-                );
+                let value = self
+                    .palette
+                    .as_ref()
+                    .map_or(maximum, |p| p[maximum as usize]);
+                pixels.push(self.direct.as_ref().map_or(value, |d| d.convert(value)));
             }
         }
         Some(pixels)
@@ -126,5 +137,56 @@ impl QuickDrawGpuPackedCopy {
             }
         }
         Some(output)
+    }
+}
+
+/// Direct source conversion using QuickDraw's five-bit inverse-table matching.
+#[derive(Clone, Debug)]
+pub struct QuickDrawGpuDirectColor {
+    pub source_depth: u32,
+    pub destination_depth: u32,
+    /// Destination colors as RGB555, in index order. Empty for direct output.
+    pub palette: Vec<u32>,
+}
+impl QuickDrawGpuDirectColor {
+    fn valid(&self) -> bool {
+        matches!(self.source_depth, 16 | 32)
+            && matches!(self.destination_depth, 1 | 2 | 4 | 8 | 16 | 32)
+            && self.source_depth != self.destination_depth
+            && self.palette.len()
+                == if self.destination_depth <= 8 {
+                    1usize << self.destination_depth
+                } else {
+                    0
+                }
+            && self.palette.iter().all(|p| *p <= 32767)
+    }
+    #[cfg(test)]
+    fn convert(&self, pixel: u32) -> u32 {
+        let rgb = if self.source_depth == 16 {
+            [pixel >> 10 & 31, pixel >> 5 & 31, pixel & 31].map(|v| ((v * 65535 + 15) / 31) >> 8)
+        } else {
+            [pixel >> 16 & 255, pixel >> 8 & 255, pixel & 255]
+        };
+        match self.destination_depth {
+            32 => (rgb[0] << 16) | (rgb[1] << 8) | rgb[2],
+            16 => ((rgb[0] >> 3) << 10) | ((rgb[1] >> 3) << 5) | (rgb[2] >> 3),
+            1 if self.source_depth == 32 => u32::from(rgb.iter().sum::<u32>() <= 382),
+            _ => {
+                let target = rgb.map(|v| (v >> 3) as i32);
+                self.palette
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, p)| {
+                        let color = [
+                            (*p >> 10 & 31) as i32,
+                            (*p >> 5 & 31) as i32,
+                            (*p & 31) as i32,
+                        ];
+                        (0..3).map(|i| (target[i] - color[i]).pow(2)).sum::<i32>()
+                    })
+                    .map_or(0, |(i, _)| i as u32)
+            }
+        }
     }
 }
