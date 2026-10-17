@@ -330,7 +330,7 @@ impl PpcLoadedApp {
         Some(stats)
     }
 
-    fn prepare_q3_gpu_frame(
+    pub(super) fn prepare_q3_gpu_frame(
         &mut self,
         commands: Vec<PpcQ3SceneCommand>,
         extended: bool,
@@ -362,15 +362,32 @@ impl PpcLoadedApp {
                 &self.q3_memory_storages,
                 &command.material,
             );
+            let lit = material.illumination_type != PPC_Q3_ILLUMINATION_TYPE_NULL;
             if (material.fog_style.is_some() && !extended)
-                || command
-                    .lights
-                    .lights
-                    .iter()
-                    .any(|light| light.data.is_on != 0)
+                || command.lights.lights.iter().any(|light| {
+                    light.data.is_on != 0
+                        && (!extended || (lit && !matches!(light.kind, PpcQ3LightKind::Ambient)))
+                })
             {
                 return None;
             }
+            // Ambient light is position independent; combine the light group once,
+            // retaining each vertex coefficient for shading and interpolation on GPU.
+            let ambient_light = (extended && lit && !command.lights.lights.is_empty()).then(|| {
+                let mut sum = [0.0; 3];
+                for light in command
+                    .lights
+                    .lights
+                    .iter()
+                    .filter(|light| light.data.is_on != 0)
+                {
+                    let value = ppc_q3_software_light_contribution(light, 1.0);
+                    sum[0] += value.0;
+                    sum[1] += value.1;
+                    sum[2] += value.2;
+                }
+                sum
+            });
             let transparency = material.transparency;
             if (transparency.0 - transparency.1).abs() > 0.001
                 || (transparency.0 - transparency.2).abs() > 0.001
@@ -389,6 +406,9 @@ impl PpcLoadedApp {
             };
             let vertex_diffuse =
                 self.q3_software_trimesh_vertex_diffuse_colors(&command, points.len());
+            let vertex_ambient =
+                self.q3_software_trimesh_vertex_ambient_coefficients(&command, points.len());
+            let triangle_ambient = self.q3_software_trimesh_triangle_ambient_coefficients(&command);
             let vertex_alpha = self.q3_software_trimesh_vertex_alphas(&command, points.len());
             let triangle_diffuse = self.q3_software_trimesh_triangle_diffuse_colors(&command);
             let triangle_alpha = self.q3_software_trimesh_triangle_alphas(&command);
@@ -402,6 +422,9 @@ impl PpcLoadedApp {
                 let Some(projected) = projected else {
                     continue;
                 };
+                projected.ambient_coefficient = vertex_ambient
+                    .as_ref()
+                    .and_then(|values| values.get(index).copied());
                 projected.uv = vertex_uvs.get(index).copied();
                 projected.diffuse = vertex_diffuse
                     .as_ref()
@@ -437,6 +460,16 @@ impl PpcLoadedApp {
                     projected.get(triangle.points[1]).copied().flatten()?,
                     projected.get(triangle.points[2]).copied().flatten()?,
                 ];
+                if let Some(coefficient) = triangle_ambient
+                    .as_ref()
+                    .and_then(|values| values.get(triangle.index).copied())
+                {
+                    for vertex in &mut triangle_vertices {
+                        if vertex.ambient_coefficient.is_none() {
+                            vertex.ambient_coefficient = Some(coefficient);
+                        }
+                    }
+                }
                 if let Some(diffuse) = triangle_diffuse
                     .as_ref()
                     .and_then(|colors| colors.get(triangle.index).copied())
@@ -531,6 +564,10 @@ impl PpcLoadedApp {
                         )?;
                         let (screen_x, screen_y) = ppc_q3_software_raster_position(point);
                         vertices.push(PpcQ3RasterVertex {
+                            ambient_coefficient: flat_sample
+                                .map(|sample| sample.ambient_coefficient)
+                                .unwrap_or(point.ambient_coefficient)
+                                .unwrap_or(material.ambient_coefficient),
                             fog_depth: point.fog_depth,
                             vertex_alpha: raw_alpha,
                             screen_x,
@@ -550,6 +587,8 @@ impl PpcLoadedApp {
             }
             if !vertices.is_empty() {
                 draws.push(PpcQ3RasterDraw {
+                    ambient_light,
+                    ambient_per_vertex: interpolation_style == PPC_Q3_INTERPOLATION_STYLE_VERTEX,
                     fog: material.fog_style,
                     texture: texture_index,
                     vertices,
