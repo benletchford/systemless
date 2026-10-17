@@ -261,6 +261,13 @@ impl Indexed8VerticalScale {
 }
 
 pub(crate) trait CopyBitsMemory {
+    fn render_gpu_packed_blit(
+        &mut self,
+        _command: &crate::quickdraw::gpu::QuickDrawGpuPackedCopy,
+    ) -> Option<Vec<u8>> {
+        None
+    }
+
     fn gpu_blits_enabled(&self) -> bool {
         false
     }
@@ -323,6 +330,15 @@ pub(crate) trait CopyBitsMemory {
 }
 
 impl CopyBitsMemory for GuestAddressSpace {
+    fn render_gpu_packed_blit(
+        &mut self,
+        command: &crate::quickdraw::gpu::QuickDrawGpuPackedCopy,
+    ) -> Option<Vec<u8>> {
+        self.quickdraw_gpu_renderer()
+            .render_packed_blit(command)
+            .ok()
+    }
+
     fn gpu_blits_enabled(&self) -> bool {
         self.quickdraw_gpu_renderer().is_some()
     }
@@ -395,6 +411,13 @@ impl CopyBitsMemory for GuestAddressSpace {
 }
 
 impl CopyBitsMemory for MacMemoryBus {
+    fn render_gpu_packed_blit(
+        &mut self,
+        command: &crate::quickdraw::gpu::QuickDrawGpuPackedCopy,
+    ) -> Option<Vec<u8>> {
+        self.quickdraw_gpu_renderer.render_packed_blit(command).ok()
+    }
+
     fn gpu_blits_enabled(&self) -> bool {
         self.quickdraw_gpu_renderer.is_some()
     }
@@ -1461,6 +1484,77 @@ impl RowCopy<'_> {
             spans.push((source, destination));
         }
 
+        if memory.gpu_blits_enabled() {
+            if let Some(((_, source_len, source_bit), (_, destination_len, destination_bit))) =
+                spans.first().copied()
+            {
+                let source_size = source_len.checked_mul(count);
+                let destination_size = destination_len.checked_mul(count);
+                if source_size.is_some_and(|n| n <= 4_194_304)
+                    && destination_size.is_some_and(|n| n <= 4_194_304)
+                    && spans.iter().all(|(s, d)| {
+                        s.1 == source_len
+                            && s.2 == source_bit
+                            && d.1 == destination_len
+                            && d.2 == destination_bit
+                    })
+                {
+                    let mut source = vec![0; source_size.unwrap()];
+                    let mut background = vec![0; destination_size.unwrap()];
+                    for (row, ((address, _, _), _)) in spans.iter().enumerate() {
+                        if memory
+                            .read_copy_row(
+                                *address,
+                                &mut source[row * source_len..(row + 1) * source_len],
+                            )
+                            .is_none()
+                        {
+                            return RowCopyOutcome::ReadOrGeometryFailure;
+                        }
+                    }
+                    for (row, (_, (address, _, _))) in spans.iter().enumerate() {
+                        if memory
+                            .read_copy_row(
+                                *address,
+                                &mut background[row * destination_len..(row + 1) * destination_len],
+                            )
+                            .is_none()
+                        {
+                            return RowCopyOutcome::ReadOrGeometryFailure;
+                        }
+                    }
+                    let command = crate::quickdraw::gpu::QuickDrawGpuPackedCopy {
+                        depth,
+                        width: width as u32,
+                        height: count as u32,
+                        source_stride: source_len as u32,
+                        source_bit,
+                        source,
+                        destination_stride: destination_len as u32,
+                        destination_bit,
+                        background,
+                        palette: None,
+                    };
+                    if command.valid() {
+                        if let Some(output) = memory
+                            .render_gpu_packed_blit(&command)
+                            .filter(|p| p.len() == destination_size.unwrap())
+                        {
+                            for (rows_written, ((_, (address, _, _)), row)) in spans
+                                .iter()
+                                .zip(output.chunks_exact(destination_len))
+                                .enumerate()
+                            {
+                                if memory.write_copy_row(*address, row).is_none() {
+                                    return RowCopyOutcome::WriteFailure { rows_written };
+                                }
+                            }
+                            return RowCopyOutcome::Completed;
+                        }
+                    }
+                }
+            }
+        }
         let mut pixels = vec![0; pixel_count];
         for (((source_address, source_len, source_bit), _), row) in
             spans.iter().zip(pixels.chunks_exact_mut(width))
@@ -1511,6 +1605,90 @@ impl RowCopy<'_> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn gpu_packed_copies_preserve_neighbors_aliases_padding_and_failures() {
+        for depth in [2, 4] {
+            for sx in [0, 1, 2, 3, 5] {
+                for dx in [0, 1, 2, 3] {
+                    for alias in [false, true] {
+                        for readonly in [false, true] {
+                            let source_stride = 32 * depth / 8 + 3;
+                            let destination_stride = if alias {
+                                source_stride
+                            } else {
+                                source_stride + 2
+                            };
+                            let mut expected = None;
+                            for backend in [None, Some(0), Some(1), Some(2)] {
+                                let mut memory = GuestAddressSpace::new();
+                                memory.add_region(
+                                    0x1000,
+                                    (0..source_stride * 8)
+                                        .map(|i| (i * 73 + 165) as u8)
+                                        .collect(),
+                                );
+                                let destination = if alias { 0x1000 } else { 0x3000 };
+                                if !alias {
+                                    memory.add_region(
+                                        destination,
+                                        vec![0xcc; (destination_stride * 8) as usize],
+                                    );
+                                }
+                                if readonly {
+                                    memory.add_readonly_region(
+                                        destination + 3 * destination_stride,
+                                        vec![0x5a; destination_stride as usize],
+                                    );
+                                }
+                                let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                                if let Some(failure) = backend {
+                                    memory.shared_view().set_quickdraw_gpu_renderer(
+                                        crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                            crate::quickdraw::gpu::ReferenceRenderer {
+                                                calls: calls.clone(),
+                                                failure,
+                                            },
+                                        )),
+                                    );
+                                }
+                                let outcome = RowCopy {
+                                    mode: 0,
+                                    source: BytePixmap {
+                                        base: 0x1000,
+                                        row_bytes: source_stride,
+                                        depth,
+                                        bounds: [0, 0, 8, 32],
+                                    },
+                                    destination: BytePixmap {
+                                        base: destination,
+                                        row_bytes: destination_stride,
+                                        depth,
+                                        bounds: [0, 0, 8, 32],
+                                    },
+                                    source_rect: [0, sx, 4, sx + 17],
+                                    destination_rect: [1, dx, 5, dx + 17],
+                                    clip: [1, dx + 1, 5, dx + 15],
+                                    palette: None,
+                                }
+                                .execute(&mut memory);
+                                if backend.is_some() {
+                                    assert_eq!(calls.get(), 1);
+                                }
+                                let mut bytes = vec![0; (destination_stride * 8) as usize];
+                                memory.read_bytes_into(destination, &mut bytes).unwrap();
+                                let result = (outcome, bytes);
+                                if let Some(expected) = &expected {
+                                    assert_eq!(&result,expected,"depth={depth},sx={sx},dx={dx},alias={alias},readonly={readonly},backend={backend:?}");
+                                } else {
+                                    expected = Some(result);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn gpu_byte_copies_match_software_aliases_palettes_padding_and_failures() {
         for depth in [8, 16, 24, 32] {

@@ -1,7 +1,7 @@
 //! Optional host rasterization with synchronous guest-memory writeback.
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 mod blit;
-pub use blit::QuickDrawGpuBlit;
+pub use blit::{QuickDrawGpuBlit, QuickDrawGpuPackedCopy};
 
 /// Glyph/bitmap coverage sampled in the same coordinates as the draw.
 #[derive(Clone, Debug)]
@@ -109,6 +109,10 @@ pub struct QuickDrawGpuPixel {
 
 /// An error or malformed result leaves guest pixels untouched for CPU fallback.
 pub trait QuickDrawGpuRenderer {
+    fn render_packed_blit(&mut self, _command: &QuickDrawGpuPackedCopy) -> Result<Vec<u8>, String> {
+        Err("QuickDraw backend does not support packed bitmap blits".into())
+    }
+
     fn render_blit(&mut self, _command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
         Err("QuickDraw backend does not support bitmap blits".into())
     }
@@ -141,6 +145,17 @@ impl QuickDrawGpuSlot {
     }
     pub(crate) fn is_none(&self) -> bool {
         self.0.is_none()
+    }
+    pub(crate) fn render_packed_blit(
+        &self,
+        command: &QuickDrawGpuPackedCopy,
+    ) -> Result<Vec<u8>, String> {
+        self.0
+            .as_ref()
+            .ok_or("QuickDraw GPU backend missing")?
+            .try_borrow_mut()
+            .map_err(|_| "QuickDraw GPU backend is busy")?
+            .render_packed_blit(command)
     }
     pub(crate) fn render_blit(&self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
         self.0
@@ -396,6 +411,14 @@ pub(crate) struct ReferenceRenderer {
 }
 #[cfg(test)]
 impl QuickDrawGpuRenderer for ReferenceRenderer {
+    fn render_packed_blit(&mut self, command: &QuickDrawGpuPackedCopy) -> Result<Vec<u8>, String> {
+        self.calls.set(self.calls.get() + 1);
+        match self.failure {
+            1 => Err("test packed blit failure".into()),
+            2 => Ok(vec![]),
+            _ => command.reference().ok_or("invalid packed blit".into()),
+        }
+    }
     fn render_blit(&mut self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
         self.calls.set(self.calls.get() + 1);
         match self.failure {
