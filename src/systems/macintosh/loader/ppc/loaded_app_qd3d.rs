@@ -363,16 +363,13 @@ impl PpcLoadedApp {
                 &command.material,
             );
             let lit = material.illumination_type != PPC_Q3_ILLUMINATION_TYPE_NULL;
-            if (material.fog_style.is_some() && !extended)
-                || command.lights.lights.iter().any(|light| {
-                    light.data.is_on != 0
-                        && (!extended
-                            || (lit
-                                && !matches!(
-                                    light.kind,
-                                    PpcQ3LightKind::Ambient | PpcQ3LightKind::Directional { .. }
-                                )))
-                })
+            if !extended
+                && (material.fog_style.is_some()
+                    || command
+                        .lights
+                        .lights
+                        .iter()
+                        .any(|light| light.data.is_on != 0))
             {
                 return None;
             }
@@ -666,20 +663,19 @@ impl PpcLoadedApp {
                 }
             }
             if !vertices.is_empty() {
-                let directional = command
+                let spatial_lights = command
                     .lights
                     .lights
                     .iter()
                     .filter(|light| {
-                        light.data.is_on != 0
-                            && matches!(light.kind, PpcQ3LightKind::Directional { .. })
+                        light.data.is_on != 0 && !matches!(light.kind, PpcQ3LightKind::Ambient)
                     })
                     .copied()
                     .collect::<Vec<_>>();
                 draws.push(PpcQ3RasterDraw {
-                    lighting: (extended && lit && !directional.is_empty()).then_some(
+                    lighting: (extended && lit && !spatial_lights.is_empty()).then_some(
                         PpcQ3RasterLighting {
-                            lights: directional,
+                            lights: spatial_lights,
                             interpolation_style,
                             illumination_type: material.illumination_type,
                         },

@@ -15329,9 +15329,32 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
         attenuation: 0,
         location: (0., 0., 1.),
     };
-    assert!(loaded
-        .prepare_q3_gpu_frame(commands.clone(), true)
-        .is_none());
+    let point = loaded.prepare_q3_gpu_frame(commands.clone(), true).unwrap();
+    assert!(matches!(
+        point.draws[0].lighting.as_ref().unwrap().lights[0].kind,
+        PpcQ3LightKind::Point { .. }
+    ));
+    let PpcQ3SceneCommand::TriMesh(command) = &mut commands[0] else {
+        unreachable!()
+    };
+    command.lights.lights[0].kind = PpcQ3LightKind::Spot {
+        casts_shadows: 0,
+        attenuation: 2,
+        location: (0., 0., 1.),
+        direction: (0., 0., -1.),
+        hot_angle: 0.2,
+        outer_angle: 0.8,
+        fall_off: 3,
+    };
+    let spot = loaded.prepare_q3_gpu_frame(commands.clone(), true).unwrap();
+    assert!(matches!(
+        spot.draws[0].lighting.as_ref().unwrap().lights[0].kind,
+        PpcQ3LightKind::Spot {
+            attenuation: 2,
+            fall_off: 3,
+            ..
+        }
+    ));
     let PpcQ3SceneCommand::TriMesh(command) = &mut commands[0] else {
         unreachable!()
     };
