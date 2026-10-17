@@ -75,3 +75,63 @@ fn direct_color(pixel:u32) -> u32 {
     output[index*2u]=value;
     output[index*2u+1u]=select(0u,1u,covered);
 }
+
+@group(0) @binding(7) var<storage,read> arithmetic:array<u32>;
+fn arithmetic_rgb(pixel:u32,clut:u32) -> vec3<u32> {
+    let depth=arithmetic[0];
+    if depth==16u {
+        return (vec3<u32>((pixel>>10u)&31u,(pixel>>5u)&31u,pixel&31u)*65535u+vec3<u32>(15u))/31u;
+    }
+    if depth==32u {return vec3<u32>((pixel>>16u)&255u,(pixel>>8u)&255u,pixel&255u)*257u;}
+    let offset=clut+pixel*3u;
+    return vec3<u32>(arithmetic[offset],arithmetic[offset+1u],arithmetic[offset+2u]);
+}
+fn arithmetic_channel(s:u32,d:u32,op:u32) -> u32 {
+    switch arithmetic[1] {
+        case 32u: {return (s*op+d*(65536u-op))>>16u;}
+        case 33u: {return min(min(s+d,65535u),op);}
+        case 34u: {return (s+d)&65535u;}
+        case 35u: {return max(s-min(s,d),op);}
+        case 37u: {return max(s,d);}
+        case 38u: {return (s+65536u-d)&65535u;}
+        default: {return min(s,d);}
+    }
+}
+fn arithmetic_pixel(s:u32,d:u32) -> u32 {
+    let depth=arithmetic[0];let mode=arithmetic[1];
+    if depth==1u {
+        if mode==32u {return s;}
+        if mode==33u || mode==37u {return d&~s;}
+        if mode==34u || mode==38u {return d^s;}
+        return d|s;
+    }
+    let clut=6u+arithmetic[2]*3u;
+    let source_rgb=arithmetic_rgb(s,6u);let destination_rgb=arithmetic_rgb(d,clut);
+    let rgb=vec3<u32>(arithmetic_channel(source_rgb.x,destination_rgb.x,arithmetic[3]),
+        arithmetic_channel(source_rgb.y,destination_rgb.y,arithmetic[4]),
+        arithmetic_channel(source_rgb.z,destination_rgb.z,arithmetic[5]));
+    if depth==16u {return ((rgb.x>>11u)<<10u)|((rgb.y>>11u)<<5u)|(rgb.z>>11u);}
+    if depth==32u {return ((rgb.x>>8u)<<16u)|((rgb.y>>8u)<<8u)|(rgb.z>>8u);}
+    let requested_color=vec3<i32>(rgb>>vec3<u32>(11u));
+    var best=0u;var best_distance=0xffffffffu;
+    for(var i=0u;i<arithmetic[2];i++) {
+        let base=clut+i*3u;
+        let color=vec3<i32>(i32(arithmetic[base]>>11u),i32(arithmetic[base+1u]>>11u),i32(arithmetic[base+2u]>>11u));
+        let delta=requested_color-color;
+        let distance=u32(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z);
+        if distance<best_distance {best=i;best_distance=distance;}
+    }
+    return best;
+}
+@compute @workgroup_size(8,8) fn blit_arithmetic(@builtin(global_invocation_id) id:vec3<u32>) {
+    if id.x>=geometry.size.y || id.y>=geometry.size.z {return;}
+    let xs=columns[id.x];let ys=rows[id.y];
+    let raw=source[ys.x*geometry.size.x+xs.x];
+    let index=id.y*geometry.size.y+id.x;
+    var covered=true;
+    if (coverage[0]&1u)!=0u {covered=coverage[index+3u]!=0u;}
+    if (coverage[0]&2u)!=0u && (raw&coverage[2])==coverage[1] {covered=false;}
+    let background=arithmetic[6u+arithmetic[2]*6u+index];
+    output[index*2u]=arithmetic_pixel(raw,background);
+    output[index*2u+1u]=select(0u,1u,covered);
+}
