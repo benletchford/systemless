@@ -208,7 +208,7 @@ pub(crate) fn try_native_rectangle(
     if memory.quickdraw_gpu_renderer().is_none() {
         return false;
     }
-    try_raster(memory, target, command)
+    try_raster(memory, target, command, |_| {})
 }
 
 pub(crate) struct RasterTarget {
@@ -225,16 +225,28 @@ pub(crate) fn try_rectangle(
     target: RasterTarget,
     command: QuickDrawGpuCommand,
 ) -> bool {
+    try_rectangle_with_prepare(bus, target, command, |_| {})
+}
+
+/// Register presentation metadata after successful rasterization and before
+/// stores. The callback must not alter guest bytes or the memory mapping.
+pub(crate) fn try_rectangle_with_prepare(
+    bus: &mut MacMemoryBus,
+    target: RasterTarget,
+    command: QuickDrawGpuCommand,
+    prepare: impl FnOnce(&mut MacMemoryBus),
+) -> bool {
     if bus.quickdraw_gpu_renderer.is_none() || !bus.presented_bytes_gates_open() {
         return false;
     }
-    try_raster(bus, target, command)
+    try_raster(bus, target, command, prepare)
 }
 
-fn try_raster(
-    bus: &mut impl RasterMemory,
+fn try_raster<M: RasterMemory>(
+    bus: &mut M,
     target: RasterTarget,
     command: QuickDrawGpuCommand,
+    prepare: impl FnOnce(&mut M),
 ) -> bool {
     let Some(count) = command.pixel_count().filter(|count| *count <= 4_194_304) else {
         return false;
@@ -325,6 +337,7 @@ fn try_raster(
     if pixels.len() != count {
         return false;
     }
+    prepare(bus);
     for (row, (address, mut bytes)) in addresses.into_iter().zip(rows).enumerate() {
         let mut touched = vec![false; row_len];
         for column in 0..width {
