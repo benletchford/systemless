@@ -4,6 +4,9 @@ use systemless::loader::ppc::{
 };
 use wgpu::util::DeviceExt;
 
+// Three 64-byte vertices, texture flags, fog state, and ambient light.
+const TRIANGLE_BYTES: usize = 256;
+
 pub(super) struct Qd3dRenderer {
     state: Option<State>,
     initialization_error: Option<String>,
@@ -129,6 +132,12 @@ impl State {
                 }
                 None => (0, 0, 0, 0),
             };
+            if draw
+                .ambient_light
+                .is_some_and(|light| !light.into_iter().all(f32::is_finite))
+            {
+                return Err("invalid GPU ambient light".into());
+            }
             let fog = draw.fog.filter(|fog| fog.state != 0);
             if let Some(fog) = fog {
                 if fog.state != 1
@@ -159,7 +168,7 @@ impl State {
                 if area == 0. || !area.is_finite() {
                     return Err("degenerate GPU triangle requires software line rendering".into());
                 }
-                let mut bytes = Vec::with_capacity(192);
+                let mut bytes = Vec::with_capacity(TRIANGLE_BYTES);
                 for v in triangle {
                     for value in [
                         v.screen_x,
@@ -174,6 +183,10 @@ impl State {
                         v.color[1],
                         v.color[2],
                         v.color[3],
+                        v.ambient_coefficient,
+                        0.,
+                        0.,
+                        0.,
                     ] {
                         bytes.extend_from_slice(&value.to_le_bytes());
                     }
@@ -198,6 +211,20 @@ impl State {
                 for value in fog_values {
                     bytes.extend_from_slice(&value.to_le_bytes());
                 }
+                let ambient = draw
+                    .ambient_light
+                    .map(|light| {
+                        [
+                            light[0],
+                            light[1],
+                            light[2],
+                            if draw.ambient_per_vertex { 1. } else { 2. },
+                        ]
+                    })
+                    .unwrap_or([0.; 4]);
+                for value in ambient {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
                 if draw.blend {
                     deferred.push((triangle.iter().map(|v| v.depth / 3.).sum::<f32>(), bytes));
                 } else {
@@ -209,14 +236,14 @@ impl State {
         for (_, bytes) in deferred {
             triangles.extend(bytes);
         }
-        let triangle_count = triangles.len() / 192;
+        let triangle_count = triangles.len() / TRIANGLE_BYTES;
         if triangles.len() as u64 > limits.max_storage_buffer_binding_size.into()
             || count.saturating_mul(triangle_count as u64) > 512_000_000
         {
             return Err("QD3D GPU frame exceeds raster work limits".into());
         }
         if triangles.is_empty() {
-            triangles.resize(192, 0);
+            triangles.resize(TRIANGLE_BYTES, 0);
         }
         if texture_bytes.is_empty() {
             texture_bytes.resize(4, 255);
@@ -320,6 +347,7 @@ impl State {
 }
 fn vertex_valid(v: &PpcQ3RasterVertex) -> bool {
     [
+        v.ambient_coefficient,
         v.screen_x,
         v.screen_y,
         v.depth,
@@ -381,6 +409,7 @@ mod tests {
 
     fn vertex(x: f32, y: f32, z: f32, color: [f32; 4]) -> PpcQ3RasterVertex {
         PpcQ3RasterVertex {
+            ambient_coefficient: 1.,
             fog_depth: 0.,
             vertex_alpha: None,
             screen_x: x,
@@ -393,6 +422,8 @@ mod tests {
     }
     fn triangle(z: f32, color: [f32; 4]) -> PpcQ3RasterDraw {
         PpcQ3RasterDraw {
+            ambient_light: None,
+            ambient_per_vertex: false,
             fog: None,
             texture: None,
             vertices: vec![
@@ -438,7 +469,7 @@ mod tests {
                 }
             }
         }
-        let lights = PpcQ3SubmissionLightRecord {
+        let mut lights = PpcQ3SubmissionLightRecord {
             view: 0,
             kind: PpcQ3SubmissionKind::TriMesh,
             primary: 0,
@@ -447,6 +478,21 @@ mod tests {
             lights: vec![],
         };
         for draw in &frame.draws {
+            lights.lights = draw
+                .ambient_light
+                .map(|color| {
+                    vec![PpcQ3LightRecord {
+                        light: 0,
+                        light_type: 0,
+                        data: PpcQ3LightData {
+                            is_on: 1,
+                            brightness: 1.,
+                            color: (color[0], color[1], color[2]),
+                        },
+                        kind: PpcQ3LightKind::Ambient,
+                    }]
+                })
+                .unwrap_or_default();
             let material = PpcQ3SoftwareMaterialSample {
                 diffuse: (1., 1., 1.),
                 ambient_coefficient: 1.,
@@ -459,7 +505,11 @@ mod tests {
                 } else {
                     (1., 1., 1.)
                 },
-                illumination_type: PPC_Q3_ILLUMINATION_TYPE_NULL,
+                illumination_type: if draw.ambient_light.is_some() {
+                    PPC_Q3_ILLUMINATION_TYPE_LAMBERT
+                } else {
+                    PPC_Q3_ILLUMINATION_TYPE_NULL
+                },
                 texture: None,
                 uv_transform: None,
                 shader_boundary: None,
@@ -479,7 +529,7 @@ mod tests {
                         fog_depth: v.fog_depth,
                         uv: None,
                         diffuse: Some((v.color[0], v.color[1], v.color[2])),
-                        ambient_coefficient: None,
+                        ambient_coefficient: Some(v.ambient_coefficient),
                         normal: None,
                         specular_color: None,
                         specular_control: None,
@@ -498,7 +548,11 @@ mod tests {
                     points,
                     &material,
                     &lights,
-                    PPC_Q3_INTERPOLATION_STYLE_PIXEL,
+                    if draw.ambient_per_vertex {
+                        PPC_Q3_INTERPOLATION_STYLE_VERTEX
+                    } else {
+                        PPC_Q3_INTERPOLATION_STYLE_PIXEL
+                    },
                     viewport,
                     draw.write_depth,
                 );
@@ -515,6 +569,63 @@ mod tests {
             }
         }
         result
+    }
+
+    #[test]
+    fn gpu_qd3d_ambient_lighting_matches_software_interpolation() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let background = vec![0x8000; 32 * 24];
+        for fog_enabled in [false, true] {
+            for ambient_per_vertex in [false, true] {
+                for light in [[0., 0., 0.], [0.8, 0.35, 0.6], [2., 1.5, 0.5]] {
+                    let mut draw = triangle(0.3, [1., 1., 1., 1.]);
+                    draw.fog = fog_enabled.then_some(PpcQ3FogStyleData {
+                        state: 1,
+                        mode: 0,
+                        fog_start: 0.,
+                        fog_end: 1.5,
+                        density: 0.2,
+                        color: (1., 0.2, 0.4, 0.6),
+                    });
+                    draw.ambient_light = Some(light);
+                    draw.ambient_per_vertex = ambient_per_vertex;
+                    for (i, vertex) in draw.vertices.iter_mut().enumerate() {
+                        vertex.fog_depth = [0.2, 0.6, 1.3][i];
+                        vertex.ambient_coefficient = [0.1, 0.65, 1.][i];
+                        vertex.color = [
+                            [0.9, 0.2, 0.1, 1.],
+                            [0.2, 0.8, 0.4, 1.],
+                            [0.1, 0.3, 0.9, 1.],
+                        ][i];
+                        vertex.reciprocal_w = [1., 0.5, 0.25][i];
+                    }
+                    let frame = PpcQ3RasterFrame {
+                        width: 32,
+                        height: 24,
+                        viewport: [0, 0, 31, 23],
+                        clear_color: None,
+                        textures: vec![],
+                        draws: vec![draw],
+                    };
+                    let actual = state.render(&frame, &background).unwrap();
+                    let expected = cpu_render(&frame, &background);
+                    for (index, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
+                        for shift in [0, 5, 10] {
+                            assert!((((actual>>shift)&31) as i32 - ((expected>>shift)&31) as i32).abs() <= 1, "pixel {index}, vertex={ambient_per_vertex}: {actual:04x} != {expected:04x}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -739,6 +850,12 @@ mod tests {
         assert!(state.render(&invalid, &background).is_err());
         invalid.draws[0].fog.as_mut().unwrap().mode = 0;
         invalid.draws[0].fog.as_mut().unwrap().density = f32::NAN;
+        assert!(state.render(&invalid, &background).is_err());
+        let mut invalid = frame.clone();
+        invalid.draws[0].ambient_light = Some([f32::NAN, 0., 0.]);
+        assert!(state.render(&invalid, &background).is_err());
+        invalid.draws[0].ambient_light = Some([1.; 3]);
+        invalid.draws[0].vertices[0].ambient_coefficient = f32::INFINITY;
         assert!(state.render(&invalid, &background).is_err());
         let mut invalid = frame;
         invalid.width = u32::MAX;

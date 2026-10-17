@@ -15285,6 +15285,39 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
     });
     assert!(loaded.take_completed_q3_gpu_frame().is_none());
     assert_eq!(loaded.q3_completed_frames.len(), 1);
+    let completed = loaded.q3_completed_frames[0].clone();
+    let commands = loaded.q3_scene_commands();
+    let native = loaded.prepare_q3_gpu_frame(commands.clone(), true).unwrap();
+    assert_eq!(native.draws[0].ambient_light, Some([1.; 3]));
+    assert!(!native.draws[0].ambient_per_vertex);
+    assert!(loaded
+        .render_completed_q3_frames_with_gpu(&mut LegacyRenderer)
+        .is_none());
+    assert_eq!(loaded.q3_completed_frames, vec![completed]);
+    let mut commands = commands;
+    let PpcQ3SceneCommand::TriMesh(command) = &mut commands[0] else {
+        panic!("expected mesh")
+    };
+    command.lights.lights[0].kind = PpcQ3LightKind::Directional {
+        casts_shadows: 0,
+        direction: (0., 0., -1.),
+    };
+    assert!(loaded
+        .prepare_q3_gpu_frame(commands.clone(), true)
+        .is_none());
+    let PpcQ3SceneCommand::TriMesh(command) = &mut commands[0] else {
+        unreachable!()
+    };
+    command.material.illumination_type = PPC_Q3_ILLUMINATION_TYPE_NULL;
+    let unlit = loaded.prepare_q3_gpu_frame(commands.clone(), true).unwrap();
+    assert_eq!(unlit.draws[0].ambient_light, None);
+    let PpcQ3SceneCommand::TriMesh(command) = &mut commands[0] else {
+        unreachable!()
+    };
+    command.material.illumination_type = PPC_Q3_ILLUMINATION_TYPE_PHONG;
+    command.lights.lights[0].data.is_on = 0;
+    let dark = loaded.prepare_q3_gpu_frame(commands, true).unwrap();
+    assert_eq!(dark.draws[0].ambient_light, Some([0.; 3]));
     let fallback_stats = loaded.render_completed_q3_frames_to_front_buffer_fast();
     assert_eq!(fallback_stats.frames, 1);
     assert!(fallback_stats.pixels > 0);

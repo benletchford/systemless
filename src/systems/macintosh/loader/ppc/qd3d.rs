@@ -629,8 +629,12 @@ pub trait PpcQ3GpuRenderer {
         frame: &PpcQ3RasterFrame,
         background: &[u16],
     ) -> Result<Vec<u16>, String> {
-        if frame.draws.iter().any(|draw| draw.fog.is_some()) {
-            return Err("host renderer does not support native fog packets".into());
+        if frame
+            .draws
+            .iter()
+            .any(|draw| draw.fog.is_some() || draw.ambient_light.is_some())
+        {
+            return Err("host renderer does not support native shading packets".into());
         }
         self.render(&frame.clone().into_transport(), background)
     }
@@ -689,6 +693,10 @@ pub struct PpcQ3RasterFrame {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PpcQ3RasterDraw {
+    /// Sum of enabled ambient light RGB intensities; None bypasses lighting.
+    pub ambient_light: Option<[f32; 3]>,
+    /// Shade before interpolation, rather than interpolating material attributes.
+    pub ambient_per_vertex: bool,
     pub fog: Option<PpcQ3FogStyleData>,
     pub texture: Option<usize>,
     pub vertices: Vec<PpcQ3RasterVertex>,
@@ -698,6 +706,7 @@ pub struct PpcQ3RasterDraw {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PpcQ3RasterVertex {
+    pub ambient_coefficient: f32,
     pub fog_depth: f32,
     pub vertex_alpha: Option<f32>,
     pub screen_x: f32,
@@ -720,6 +729,8 @@ impl From<&PpcQ3GpuFrame> for PpcQ3RasterFrame {
                 .draws
                 .iter()
                 .map(|draw| PpcQ3RasterDraw {
+                    ambient_light: None,
+                    ambient_per_vertex: false,
                     fog: None,
                     texture: draw.texture,
                     blend: draw.blend,
@@ -728,6 +739,7 @@ impl From<&PpcQ3GpuFrame> for PpcQ3RasterFrame {
                         .vertices
                         .iter()
                         .map(|v| PpcQ3RasterVertex {
+                            ambient_coefficient: 1.,
                             fog_depth: 0.,
                             vertex_alpha: None,
                             screen_x: v.screen_x,
@@ -747,7 +759,10 @@ impl From<&PpcQ3GpuFrame> for PpcQ3RasterFrame {
 impl PpcQ3RasterFrame {
     /// Used only after preparation with the external transport's state guard.
     pub(super) fn into_transport(self) -> PpcQ3GpuFrame {
-        debug_assert!(self.draws.iter().all(|draw| draw.fog.is_none()));
+        debug_assert!(self
+            .draws
+            .iter()
+            .all(|draw| draw.fog.is_none() && draw.ambient_light.is_none()));
         PpcQ3GpuFrame {
             width: self.width,
             height: self.height,

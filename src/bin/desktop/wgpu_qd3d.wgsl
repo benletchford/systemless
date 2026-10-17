@@ -1,5 +1,5 @@
-struct Vertex { position: vec4<f32>, uv: vec4<f32>, color: vec4<f32> }
-struct Triangle { vertices: array<Vertex,3>, info: vec4<u32>, fog_color: vec4<f32>, fog_parameters: vec4<f32> }
+struct Vertex { position: vec4<f32>, uv: vec4<f32>, color: vec4<f32>, lighting: vec4<f32> }
+struct Triangle { vertices: array<Vertex,3>, info: vec4<u32>, fog_color: vec4<f32>, fog_parameters: vec4<f32>, ambient: vec4<f32> }
 struct Geometry { size: vec4<u32>, viewport: vec4<u32>, clear: vec4<u32> }
 @group(0) @binding(0) var<storage, read> triangles: array<Triangle>;
 @group(0) @binding(1) var<storage, read> textures: array<u32>;
@@ -37,7 +37,13 @@ fn unpack555(value: u32) -> vec3<f32> {
         if (triangle.info.w & 1u) != 0u { depth = z; }
         var perspective = affine*vec3(a.position.w,b.position.w,c.position.w);
         perspective /= dot(perspective,vec3(1.));
-        var color = a.color+(b.color-a.color)*perspective.y+(c.color-a.color)*perspective.z;
+        var ca=a.color; var cb=b.color; var cc=c.color;
+        if triangle.ambient.w == 1. {
+            ca=vec4(ca.rgb*triangle.ambient.rgb*a.lighting.x,ca.a);
+            cb=vec4(cb.rgb*triangle.ambient.rgb*b.lighting.x,cb.a);
+            cc=vec4(cc.rgb*triangle.ambient.rgb*c.lighting.x,cc.a);
+        }
+        var color = ca+(cb-ca)*perspective.y+(cc-ca)*perspective.z;
         if triangle.info.y != 0u {
             var uv = a.uv.xy+(b.uv.xy-a.uv.xy)*perspective.y+(c.uv.xy-a.uv.xy)*perspective.z;
             uv = select(clamp(uv,vec2(0.),vec2(1.)), uv-floor(uv), vec2((triangle.info.w&2u)!=0u,(triangle.info.w&4u)!=0u));
@@ -45,6 +51,10 @@ fn unpack555(value: u32) -> vec3<f32> {
             let texel = min(vec2<u32>(vec2(uv.x,1.-uv.y)*vec2<f32>(size)),size-vec2(1u));
             let rgba = textures[triangle.info.x+texel.y*size.x+texel.x];
             color *= vec4<f32>((vec4(rgba)>>vec4(0u,8u,16u,24u))&vec4(255u))/255.;
+        }
+        if triangle.ambient.w == 2. {
+            let coefficient=a.lighting.x+(b.lighting.x-a.lighting.x)*perspective.y+(c.lighting.x-a.lighting.x)*perspective.z;
+            color=vec4(color.rgb*triangle.ambient.rgb*coefficient,color.a);
         }
         let fog_mode = u32(triangle.fog_color.w);
         if fog_mode != 0u {
