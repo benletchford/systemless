@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "clock": "frontend_ticks",
+  "max_ticks": 160,
+  "actions": [
+    {
+      "type": "run_until_pixel",
+      "x": 305,
+      "y": 145,
+      "rgb": [
+        255,
+        33,
+        33
+      ],
+      "timeout_ticks": 120
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_move",
+      "v": 235,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_up",
+      "v": 235,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 20
+    },
+    {
+      "type": "assert_pixel",
+      "x": 80,
+      "y": 245,
+      "rgb": [
+        0,
+        49,
+        99
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 303,
+      "y": 184,
+      "rgb": [
+        255,
+        156,
+        0
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 302,
+      "y": 200,
+      "rgb": [
+        255,
+        49,
+        49
+      ]
+    },
+    {
+      "type": "assert_pixel",
+      "x": 297,
+      "y": 203,
+      "rgb": [
+        255,
+        255,
+        255
+      ]
+    },
+    {
+      "type": "screenshot",
+      "name": "sprite-deep-mask"
+    }
+  ]
+}

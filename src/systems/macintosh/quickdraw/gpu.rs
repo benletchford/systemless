@@ -1,5 +1,7 @@
 //! Optional host rasterization with synchronous guest-memory writeback.
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
+mod deep_mask;
+pub use deep_mask::QuickDrawGpuDeepMask;
 mod arithmetic;
 pub use arithmetic::QuickDrawGpuArithmetic;
 mod blit;
@@ -117,7 +119,7 @@ pub trait QuickDrawGpuRenderer {
         &mut self,
         command: &QuickDrawGpuBlit,
     ) -> Result<Vec<QuickDrawGpuPixel>, String> {
-        if command.clip.is_some() || command.arithmetic.is_some() {
+        if command.clip.is_some() || command.arithmetic.is_some() || command.deep_mask.is_some() {
             return Err("QuickDraw backend does not support clipped bitmap blits".into());
         }
         self.render_blit(command).map(|pixels| {

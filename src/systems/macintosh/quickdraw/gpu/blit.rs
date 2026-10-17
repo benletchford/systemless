@@ -14,6 +14,7 @@ pub struct QuickDrawGpuBlit {
     pub direct: Option<QuickDrawGpuDirectColor>,
     pub clip: Option<QuickDrawGpuBlitClip>,
     pub arithmetic: Option<super::QuickDrawGpuArithmetic>,
+    pub deep_mask: Option<super::QuickDrawGpuDeepMask>,
 }
 impl QuickDrawGpuBlit {
     pub fn valid(&self) -> bool {
@@ -39,6 +40,17 @@ impl QuickDrawGpuBlit {
                     || clip
                         .transparent
                         .is_some_and(|[key, mask]| mask == 0 || key & !mask != 0)
+            })
+            || self.deep_mask.as_ref().is_some_and(|d| {
+                self.palette.is_some()
+                    || self.direct.is_some()
+                    || self.arithmetic.is_some()
+                    || !d.valid(self.columns.len(), self.rows.len(), &self.pixels)
+                    || self
+                        .columns
+                        .iter()
+                        .chain(&self.rows)
+                        .any(|g| g[1] - g[0] != 1)
             })
             || self.arithmetic.as_ref().is_some_and(|a| {
                 self.palette.is_some()
@@ -83,12 +95,13 @@ impl QuickDrawGpuBlit {
                             source = source.max(self.pixels[(y * self.width + x) as usize]);
                         }
                     }
-                    let covered = self.clip.as_ref().is_none_or(|clip| {
-                        clip.coverage.as_ref().is_none_or(|mask| mask[i] != 0)
-                            && clip
-                                .transparent
-                                .is_none_or(|[key, mask]| source & mask != key)
-                    });
+                    let covered = self.deep_mask.as_ref().is_none_or(|d| d.covered(i))
+                        && self.clip.as_ref().is_none_or(|clip| {
+                            clip.coverage.as_ref().is_none_or(|mask| mask[i] != 0)
+                                && clip
+                                    .transparent
+                                    .is_none_or(|[key, mask]| source & mask != key)
+                        });
                     super::QuickDrawGpuPixel { value, covered }
                 })
                 .collect(),
@@ -116,6 +129,10 @@ impl QuickDrawGpuBlit {
                     || self.direct.as_ref().map_or(value, |d| d.convert(value)),
                     |a| a.reference(maximum, a.background[pixels.len()]),
                 );
+                let value = self
+                    .deep_mask
+                    .as_ref()
+                    .map_or(value, |d| d.reference(maximum, pixels.len()));
                 pixels.push(value);
             }
         }

@@ -158,8 +158,10 @@ table matching and monochrome conversion rules. Native CopyBits region masks
 and transparent transfers, plus scaled one-bit CopyMask masks, use GPU coverage
 and source-color keys before conversion. Native blend, pinned/wrapping
 add/subtract, minimum, and maximum transfers also run on the GPU with full
-16-bit color components and one-bit Boolean fallbacks. Other classic monochrome
-and packed palette copies and deep masks still use software.
+16-bit color components and one-bit Boolean fallbacks. Native CopyDeepMask
+also samples independently scaled masks and blends their RGB weights on the GPU,
+including Boolean source transforms and mixed pixel depths. Other classic
+monochrome and packed palette copies still use software.
 Without `--gpu`, existing platform presentation remains the default.
 `--headless --gpu` also enables guest rasterization in play scripts and timed runs
 without creating a window; desktop presentation is only used for windowed runs.
@@ -168,6 +170,8 @@ To check the native PowerPC 3D scene, run Toolbox Showcase with
 `--headless --gpu --prefer-powerpc --play-script tests/play/toolbox-showcase-ppc-qd3d.json`
 and a `--play-output` directory. The script checks visible model and viewport
 pixels; omit `--gpu` to check the software path.
+The `tests/play/toolbox-showcase-ppc-sprites.json` play checks native bitmap masks
+and weighted CopyDeepMask sprite transfers in the same way.
 
 The experimental desktop execution owner can be selected with
 `SYSTEMLESS_DESKTOP_RUNTIME=thread`. It constructs and runs the guest on a
