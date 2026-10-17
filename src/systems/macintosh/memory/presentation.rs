@@ -4217,6 +4217,56 @@ mod tests {
     }
 
     #[test]
+    fn gpu_copybits_palette_transfers_preserve_retained_source_detail() {
+        use crate::copy_bits::{BytePixmap, RowCopy, RowCopyOutcome};
+        for mapped in [false, true] {
+            let mut expected = None;
+            for gpu in [false, true] {
+                let mut bus = bus();
+                paint_detail(&mut bus, 0x1002);
+                let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                if gpu {
+                    bus.quickdraw_gpu_renderer = crate::quickdraw::gpu::QuickDrawGpuSlot::new(
+                        Box::new(crate::quickdraw::gpu::ReferenceRenderer {
+                            calls: calls.clone(),
+                            failure: 0,
+                        }),
+                    );
+                }
+                let bitmap = BytePixmap {
+                    base: 0x1000,
+                    row_bytes: 8,
+                    depth: 8,
+                    bounds: [0, 0, 8, 8],
+                };
+                let palette = std::array::from_fn(|i| 255 - i as u8);
+                let result = RowCopy {
+                    mode: 0,
+                    source: bitmap,
+                    destination: bitmap,
+                    source_rect: [0, 0, 4, 8],
+                    destination_rect: [4, 0, 8, 8],
+                    clip: [0, 0, 8, 8],
+                    palette: mapped.then_some(&palette),
+                }
+                .execute(&mut bus);
+                assert_eq!(result, RowCopyOutcome::Completed);
+                assert_eq!(calls.get(), usize::from(gpu));
+                assert!(bus.save_pixel_bytes(0x1022, 1).has_detail_at(0));
+                let result = (
+                    bus.read_bytes(0x1000, 64),
+                    bus.outline_presentation_rgb().unwrap(),
+                );
+                if let Some(expected) = &expected {
+                    assert_eq!(&result, expected);
+                } else {
+                    expected = Some(result);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn gpu_readback_preserves_untouched_retained_text() {
         let mut bus = bus();
         paint_detail(&mut bus, 0x1002);
