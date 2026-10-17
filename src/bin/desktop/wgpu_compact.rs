@@ -3,11 +3,18 @@ use std::sync::Arc;
 use systemless::memory::CompactPresentation;
 
 pub(super) struct CompactRenderer {
-    pipeline: wgpu::RenderPipeline,
+    pipelines: [Option<wgpu::RenderPipeline>; 8],
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    layout: wgpu::BindGroupLayout,
     geometry: wgpu::Buffer,
     resources: Option<Resources>,
     source: Option<Arc<CompactPresentation>>,
-    bytes: Vec<u8>,
+    previous: Option<Arc<CompactPresentation>>,
+    geometry_words: Option<[u32; 12]>,
+    staging: wgpu::util::StagingBelt,
+    primary: Option<wgpu::util::StagingBelt>,
 }
 
 struct Resources {
@@ -18,6 +25,35 @@ struct Resources {
 
 impl CompactRenderer {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let entries: Vec<_> = (0..3)
+            .map(|binding| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: if binding == 2 {
+                        wgpu::BufferBindingType::Uniform
+                    } else {
+                        wgpu::BufferBindingType::Storage { read_only: true }
+                    },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            })
+            .collect();
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("retained coverage"),
+            entries: &entries,
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("retained coverage"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("retained coverage"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("wgpu_compact.wgsl").into()),
+        });
         Self {
             geometry: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("retained geometry"),
@@ -25,14 +61,26 @@ impl CompactRenderer {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
+            staging: wgpu::util::StagingBelt::new(device.clone(), 64 * 1024),
+            primary: device
+                .features()
+                .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
+                .then(|| {
+                    wgpu::util::StagingBelt::new_with_buffer_usages(
+                        device.clone(),
+                        64 * 1024,
+                        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::UNIFORM,
+                    )
+                }),
             resources: None,
             source: None,
-            bytes: Vec::new(),
-            pipeline: super::wgpu_present::pipeline_with_shader(
-                device,
-                format,
-                include_str!("wgpu_compact.wgsl"),
-            ),
+            previous: None,
+            geometry_words: None,
+            pipelines: std::array::from_fn(|_| None),
+            shader,
+            pipeline_layout,
+            format,
+            layout,
         }
     }
 
@@ -79,6 +127,106 @@ impl CompactRenderer {
             .all(|n| (n as u64) * 4 <= u64::from(limits.max_storage_buffer_binding_size))
     }
 
+    fn encode_shared(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        image: &Arc<CompactPresentation>,
+        crop: (u32, u32, u32, u32),
+        viewport: (u32, u32, u32, u32),
+        target: &wgpu::TextureView,
+    ) -> bool {
+        let limits = device.limits();
+        let alignment = u64::from(
+            limits
+                .min_storage_buffer_offset_alignment
+                .max(limits.min_uniform_buffer_offset_alignment),
+        );
+        let align = |offset: u64| offset.div_ceil(alignment) * alignment;
+        let cells_size = wgpu::BufferSize::new(image.cells.len().max(1) as u64 * 4).unwrap();
+        let detail_size = wgpu::BufferSize::new(image.detail.len().max(1) as u64 * 4).unwrap();
+        let detail_offset = align(cells_size.get());
+        let geometry_offset = align(detail_offset + detail_size.get());
+        let total = geometry_offset + 48;
+        if total > limits.max_buffer_size {
+            return false;
+        }
+        let _ = device.poll(wgpu::PollType::Poll);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let belt = self.primary.as_mut().unwrap();
+        // One mapped allocation and completion callback for the whole packet.
+        // Each binding still exposes only its own validated, aligned range.
+        let slice = belt.allocate(
+            wgpu::BufferSize::new(total).unwrap(),
+            wgpu::BufferSize::new(alignment).unwrap(),
+        );
+        let buffer = slice.buffer().clone();
+        let base = slice.offset();
+        let upload = |offset: u64, size: wgpu::BufferSize, words: &[u32]| {
+            let offset = base + offset;
+            let mut bytes = buffer
+                .slice(offset..offset + size.get())
+                .get_mapped_range_mut()
+                .unwrap();
+            if words.is_empty() {
+                bytes.copy_from_slice(&[0; 4]);
+            } else {
+                bytes.copy_from_slice(super::wgpu_buffers::word_bytes(words));
+            }
+            (buffer.clone(), offset, size)
+        };
+        let cells = upload(0, cells_size, &image.cells);
+        let detail = upload(detail_offset, detail_size, &image.detail);
+        let geometry = upload(
+            geometry_offset,
+            wgpu::BufferSize::new(48).unwrap(),
+            &[
+                image.width,
+                image.height,
+                image.scale,
+                0,
+                crop.0,
+                crop.1,
+                crop.2,
+                crop.3,
+                viewport.0,
+                viewport.1,
+                viewport.2,
+                viewport.3,
+            ],
+        );
+        let entries: Vec<_> = [&cells, &detail, &geometry]
+            .into_iter()
+            .enumerate()
+            .map(|(binding, (buffer, offset, size))| wgpu::BindGroupEntry {
+                binding: binding as u32,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer,
+                    offset: *offset,
+                    size: Some(*size),
+                }),
+            })
+            .collect();
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shared retained coverage"),
+            layout: &self.layout,
+            entries: &entries,
+        });
+        draw(
+            &mut encoder,
+            self.pipelines
+                [(image.scale - 1) as usize + if image.detail.is_empty() { 0 } else { 4 }]
+            .as_ref()
+            .unwrap(),
+            &group,
+            target,
+            viewport,
+        );
+        belt.finish_and_recall_on_submit(&encoder);
+        queue.submit([encoder.finish()]);
+        true
+    }
+
     pub fn encode(
         &mut self,
         device: &wgpu::Device,
@@ -88,6 +236,39 @@ impl CompactRenderer {
         viewport: (u32, u32, u32, u32),
         target: &wgpu::TextureView,
     ) {
+        let index = (image.scale - 1) as usize + if image.detail.is_empty() { 0 } else { 4 };
+        if self.pipelines[index].is_none() {
+            self.pipelines[index] = Some(super::wgpu_present::pipeline_with_module(
+                device,
+                self.format,
+                &self.shader,
+                Some(&self.pipeline_layout),
+                &[
+                    ("sample_scale", f64::from(image.scale)),
+                    (
+                        "uniform_fast_path",
+                        if image.detail.is_empty() { 1. } else { 0. },
+                    ),
+                ],
+            ));
+        }
+        let cells_changed = changed_words(
+            self.previous.as_ref().map(|p| p.cells.as_slice()),
+            &image.cells,
+        );
+        let detail_changed = changed_words(
+            self.previous.as_ref().map(|p| p.detail.as_slice()),
+            &image.detail,
+        );
+        let full_upload = cells_changed.len() + detail_changed.len()
+            > (image.cells.len() + image.detail.len()) / 2;
+        if self.primary.is_some()
+            && full_upload
+            && self.encode_shared(device, queue, image, crop, viewport, target)
+        {
+            self.previous = Some(image.clone());
+            return;
+        }
         if self.resources.as_ref().is_none_or(|resources| {
             resources.cells.size() < image.cells.len() as u64 * 4
                 || resources.detail.size() < image.detail.len().max(1) as u64 * 4
@@ -104,7 +285,7 @@ impl CompactRenderer {
             let detail = storage(image.detail.len());
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("retained coverage"),
-                layout: &self.pipeline.get_bind_group_layout(0),
+                layout: &self.layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -127,22 +308,46 @@ impl CompactRenderer {
             });
             self.source = None;
         }
+        // Return completed transfer buffers to the belt without waiting on GPU
+        // work. Queue::write_buffer otherwise allocates fresh staging per upload.
+        let _ = device.poll(wgpu::PollType::Poll);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let mut upload = |target: &wgpu::Buffer, words: &[u32], changed: std::ops::Range<usize>| {
+            if let Some(size) = wgpu::BufferSize::new(changed.len() as u64 * 4) {
+                self.staging
+                    .write_buffer(&mut encoder, target, changed.start as u64 * 4, size)
+                    .copy_from_slice(super::wgpu_buffers::word_bytes(&words[changed]));
+            }
+        };
         let resources = self.resources.as_ref().unwrap();
         if self
             .source
             .as_ref()
             .is_none_or(|source| !Arc::ptr_eq(source, image))
         {
-            self.bytes.clear();
-            self.bytes
-                .extend(image.cells.iter().flat_map(|word| word.to_ne_bytes()));
-            queue.write_buffer(&resources.cells, 0, &self.bytes);
-            self.bytes.clear();
-            self.bytes
-                .extend(image.detail.iter().flat_map(|word| word.to_ne_bytes()));
-            if !self.bytes.is_empty() {
-                queue.write_buffer(&resources.detail, 0, &self.bytes);
-            }
+            let same_previous = self
+                .source
+                .as_ref()
+                .zip(self.previous.as_ref())
+                .is_some_and(|(source, previous)| Arc::ptr_eq(source, previous));
+            let cells = if same_previous {
+                cells_changed
+            } else {
+                changed_words(
+                    self.source.as_ref().map(|p| p.cells.as_slice()),
+                    &image.cells,
+                )
+            };
+            let detail = if same_previous {
+                detail_changed
+            } else {
+                changed_words(
+                    self.source.as_ref().map(|p| p.detail.as_slice()),
+                    &image.detail,
+                )
+            };
+            upload(&resources.cells, &image.cells, cells);
+            upload(&resources.detail, &image.detail, detail);
             self.source = Some(image.clone());
         }
         let geometry = [
@@ -159,45 +364,197 @@ impl CompactRenderer {
             viewport.2,
             viewport.3,
         ];
-        self.bytes.clear();
-        self.bytes
-            .extend(geometry.into_iter().flat_map(u32::to_ne_bytes));
-        queue.write_buffer(&self.geometry, 0, &self.bytes);
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("retained coverage"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &resources.group, &[]);
-            pass.set_viewport(
-                viewport.0 as f32,
-                viewport.1 as f32,
-                viewport.2 as f32,
-                viewport.3 as f32,
-                0.,
-                1.,
-            );
-            pass.draw(0..3, 0..1);
+        if self.geometry_words != Some(geometry) {
+            upload(&self.geometry, &geometry, 0..geometry.len());
+            self.geometry_words = Some(geometry);
         }
+        draw(
+            &mut encoder,
+            self.pipelines
+                [(image.scale - 1) as usize + if image.detail.is_empty() { 0 } else { 4 }]
+            .as_ref()
+            .unwrap(),
+            &resources.group,
+            target,
+            viewport,
+        );
+        self.staging.finish_and_recall_on_submit(&encoder);
         queue.submit([encoder.finish()]);
+        self.previous = Some(image.clone());
+    }
+}
+
+/// Find the smallest upload containing all changed words. Binary slice
+/// comparisons use vectorized equality over large spans, avoiding one branch
+/// and bounds check per guest pixel (or thousands of tiny memcmp calls).
+fn changed_words(previous: Option<&[u32]>, words: &[u32]) -> std::ops::Range<usize> {
+    let Some(previous) = previous.filter(|previous| previous.len() == words.len()) else {
+        return 0..words.len();
+    };
+    if previous == words {
+        return 0..0;
+    }
+    let mut low = 0;
+    let mut high = words.len();
+    if previous[0] == words[0] {
+        while high - low > 1 {
+            let middle = low + (high - low) / 2;
+            if previous[low..middle] == words[low..middle] {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+    }
+    let start = low;
+    high = words.len();
+    if previous[high - 1] != words[high - 1] {
+        return start..high;
+    }
+    while high - low > 1 {
+        let middle = low + (high - low) / 2;
+        if previous[middle..high] == words[middle..high] {
+            high = middle;
+        } else {
+            low = middle;
+        }
+    }
+    start..high
+}
+
+fn draw(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &wgpu::RenderPipeline,
+    group: &wgpu::BindGroup,
+    target: &wgpu::TextureView,
+    viewport: (u32, u32, u32, u32),
+) {
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("retained coverage"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, group, &[]);
+        pass.set_viewport(
+            viewport.0 as f32,
+            viewport.1 as f32,
+            viewport.2 as f32,
+            viewport.3 as f32,
+            0.,
+            1.,
+        );
+        pass.draw(0..3, 0..1);
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
+    #[test]
+    fn changed_uploads_cover_block_boundaries_and_resized_packets() {
+        let original: Vec<u32> = (0..10_000).collect();
+        assert_eq!(changed_words(Some(&original), &original), 0..0);
+        assert_eq!(changed_words(None, &original), 0..original.len());
+        assert_eq!(
+            changed_words(Some(&original[..100]), &original),
+            0..original.len()
+        );
+        for position in [0, 63, 64, 65, 5000, 9998, 9999] {
+            let mut changed = original.clone();
+            changed[position] ^= 1;
+            assert_eq!(
+                changed_words(Some(&original), &changed),
+                position..position + 1
+            );
+            changed[42] ^= 1;
+            assert_eq!(
+                changed_words(Some(&original), &changed),
+                position.min(42)..position.max(42) + 1
+            );
+        }
+    }
+
+    pub(crate) fn benchmark_wgpu_presentation(text: bool) {
+        let instance = wgpu::Instance::default();
+        let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
+        eprintln!("[RENDER-BENCH] adapter={:?}", adapter.get_info());
+        let (device, queue) = super::super::wgpu_present::request_device(&adapter).unwrap();
+        let mut renderer = CompactRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("presentation benchmark"),
+            size: wgpu::Extent3d {
+                width: 800,
+                height: 600,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        {
+            let image = Arc::new(crate::renderer_bench::presentation_fixture(text));
+            // Alternate owned packets so each sample includes the upload cost
+            // of a newly exported frame, like the default Metal measurement.
+            let mut alternate = (*image).clone();
+            alternate.cells[0] ^= 0x010101;
+            let images = [image.clone(), Arc::new(alternate)];
+            let mut samples = Vec::new();
+            let mut submitted = Vec::new();
+            for iteration in 0..420 {
+                let image = &images[iteration % 2];
+                let start = std::time::Instant::now();
+                assert!(CompactRenderer::supports(
+                    image,
+                    (0, 0, 640, 480),
+                    (0, 0, 800, 600),
+                    &device.limits()
+                ));
+                renderer.encode(
+                    &device,
+                    &queue,
+                    image,
+                    (0, 0, 640, 480),
+                    (0, 0, 800, 600),
+                    &view,
+                );
+                let submit_elapsed = start.elapsed();
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                if iteration >= 120 {
+                    samples.push(start.elapsed());
+                    submitted.push(submit_elapsed);
+                }
+            }
+            crate::renderer_bench::report(
+                if text { "present-text" } else { "present-ui" },
+                "gpu",
+                &mut samples,
+            );
+            crate::renderer_bench::report(
+                if text {
+                    "present-text-submit"
+                } else {
+                    "present-ui-submit"
+                },
+                "gpu",
+                &mut submitted,
+            );
+        }
+    }
     #[test]
     fn gpu_retained_coverage_matches_cpu_at_fractional_scales_and_crops() {
         let instance = wgpu::Instance::default();
@@ -212,117 +569,151 @@ mod tests {
                 return;
             }
         };
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        for shared in [false, true] {
+            if shared
+                && !adapter
+                    .features()
+                    .contains(wgpu::Features::MAPPABLE_PRIMARY_BUFFERS)
+            {
+                continue;
+            }
+            let (device, queue) =
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                    required_features: if shared {
+                        wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
+                    } else {
+                        wgpu::Features::empty()
+                    },
+                    ..Default::default()
+                }))
+                .unwrap();
+            check_retained_coverage(device, queue);
+        }
+    }
+
+    fn check_retained_coverage(device: wgpu::Device, queue: wgpu::Queue) {
         let mut renderer = CompactRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm);
         for scale in 1..=4 {
-            let mut image = CompactPresentation {
-                width: 7,
-                height: 5,
-                scale,
-                cells: Vec::new(),
-                detail: Vec::new(),
-            };
-            for i in 0..35u32 {
-                if i % 3 == 0 {
-                    image.cells.push(0x80000000 | image.detail.len() as u32);
-                    image.detail.extend(
-                        (0..scale * scale).map(|sample| (i * 819121 + sample * 123799) & 0xffffff),
-                    );
-                } else {
-                    image.cells.push((i * 987131) & 0xffffff);
-                }
-            }
-            let image = Arc::new(image);
-            for crop in [(0, 0, 7, 5), (1, 1, 5, 3)] {
-                for size in [(1, 1), (3, 2), (13, 9), (28, 21), (3, 17), (19, 2)] {
-                    let viewport = (2, 3, size.0, size.1);
-                    assert!(CompactRenderer::supports(
-                        &image,
-                        crop,
-                        viewport,
-                        &device.limits()
-                    ));
-                    let target = device.create_texture(&wgpu::TextureDescriptor {
-                        label: None,
-                        size: wgpu::Extent3d {
-                            width: size.0 + 4,
-                            height: size.1 + 6,
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                            | wgpu::TextureUsages::COPY_SRC,
-                        view_formats: &[],
-                    });
-                    renderer.encode(
-                        &device,
-                        &queue,
-                        &image,
-                        crop,
-                        viewport,
-                        &target.create_view(&Default::default()),
-                    );
-                    let row_bytes = 256u32;
-                    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-                        label: None,
-                        size: u64::from(row_bytes) * u64::from(target.height()),
-                        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-                        mapped_at_creation: false,
-                    });
-                    let mut encoder = device.create_command_encoder(&Default::default());
-                    encoder.copy_texture_to_buffer(
-                        target.as_image_copy(),
-                        wgpu::TexelCopyBufferInfo {
-                            buffer: &readback,
-                            layout: wgpu::TexelCopyBufferLayout {
-                                offset: 0,
-                                bytes_per_row: Some(row_bytes),
-                                rows_per_image: Some(target.height()),
-                            },
-                        },
-                        target.size(),
-                    );
-                    queue.submit([encoder.finish()]);
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    readback
-                        .slice(..)
-                        .map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
-                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-                    rx.recv().unwrap().unwrap();
-                    let bytes = readback.slice(..).get_mapped_range().unwrap();
-                    let mut cropped = image.as_ref().clone();
-                    cropped.width = crop.2;
-                    cropped.height = crop.3;
-                    cropped.cells.clear();
-                    for y in crop.1..crop.1 + crop.3 {
-                        let start = (y * image.width + crop.0) as usize;
-                        cropped
-                            .cells
-                            .extend_from_slice(&image.cells[start..start + crop.2 as usize]);
+            for retained in [false, true] {
+                let mut image = CompactPresentation {
+                    width: 7,
+                    height: 5,
+                    scale,
+                    cells: Vec::new(),
+                    detail: Vec::new(),
+                };
+                for i in 0..35u32 {
+                    if retained && i % 3 == 0 {
+                        image.cells.push(0x80000000 | image.detail.len() as u32);
+                        image.detail.extend(
+                            (0..scale * scale)
+                                .map(|sample| (i * 819121 + sample * 123799) & 0xffffff),
+                        );
+                    } else {
+                        image.cells.push((i * 987131) & 0xffffff);
                     }
-                    let mut expected = Vec::new();
-                    assert!(cropped.render_argb_resized(size, &mut expected));
-                    for y in 0..target.height() {
-                        for x in 0..target.width() {
-                            let offset = (y * row_bytes + x * 4) as usize;
-                            let rgba = &bytes[offset..offset + 4];
-                            let actual = 0xff000000
-                                | (u32::from(rgba[0]) << 16)
-                                | (u32::from(rgba[1]) << 8)
-                                | u32::from(rgba[2]);
-                            let expected = if x >= 2 && x < 2 + size.0 && y >= 3 && y < 3 + size.1 {
-                                expected[((y - 3) * size.0 + x - 2) as usize]
-                            } else {
-                                0xff000000
-                            };
-                            assert_eq!(
-                                actual, expected,
-                                "scale={scale} crop={crop:?} size={size:?} pixel=({x},{y})"
+                }
+                let image = Arc::new(image);
+                let mut changed = (*image).clone();
+                *changed.cells.last_mut().unwrap() ^= 1;
+                if let Some(word) = changed.detail.last_mut() {
+                    *word ^= 0xabcdef;
+                }
+                for image in [image, Arc::new(changed)] {
+                    for crop in [(0, 0, 7, 5), (1, 1, 5, 3)] {
+                        for size in [(1, 1), (3, 2), (13, 9), (28, 21), (3, 17), (19, 2)] {
+                            let viewport = (2, 3, size.0, size.1);
+                            assert!(CompactRenderer::supports(
+                                &image,
+                                crop,
+                                viewport,
+                                &device.limits()
+                            ));
+                            let target = device.create_texture(&wgpu::TextureDescriptor {
+                                label: None,
+                                size: wgpu::Extent3d {
+                                    width: size.0 + 4,
+                                    height: size.1 + 6,
+                                    depth_or_array_layers: 1,
+                                },
+                                mip_level_count: 1,
+                                sample_count: 1,
+                                dimension: wgpu::TextureDimension::D2,
+                                format: wgpu::TextureFormat::Rgba8Unorm,
+                                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                                    | wgpu::TextureUsages::COPY_SRC,
+                                view_formats: &[],
+                            });
+                            renderer.encode(
+                                &device,
+                                &queue,
+                                &image,
+                                crop,
+                                viewport,
+                                &target.create_view(&Default::default()),
                             );
+                            let row_bytes = 256u32;
+                            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                                label: None,
+                                size: u64::from(row_bytes) * u64::from(target.height()),
+                                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                                mapped_at_creation: false,
+                            });
+                            let mut encoder = device.create_command_encoder(&Default::default());
+                            encoder.copy_texture_to_buffer(
+                                target.as_image_copy(),
+                                wgpu::TexelCopyBufferInfo {
+                                    buffer: &readback,
+                                    layout: wgpu::TexelCopyBufferLayout {
+                                        offset: 0,
+                                        bytes_per_row: Some(row_bytes),
+                                        rows_per_image: Some(target.height()),
+                                    },
+                                },
+                                target.size(),
+                            );
+                            queue.submit([encoder.finish()]);
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            readback
+                                .slice(..)
+                                .map_async(wgpu::MapMode::Read, move |result| {
+                                    tx.send(result).unwrap()
+                                });
+                            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                            rx.recv().unwrap().unwrap();
+                            let bytes = readback.slice(..).get_mapped_range().unwrap();
+                            let mut cropped = image.as_ref().clone();
+                            cropped.width = crop.2;
+                            cropped.height = crop.3;
+                            cropped.cells.clear();
+                            for y in crop.1..crop.1 + crop.3 {
+                                let start = (y * image.width + crop.0) as usize;
+                                cropped.cells.extend_from_slice(
+                                    &image.cells[start..start + crop.2 as usize],
+                                );
+                            }
+                            let mut expected = Vec::new();
+                            assert!(cropped.render_argb_resized(size, &mut expected));
+                            for y in 0..target.height() {
+                                for x in 0..target.width() {
+                                    let offset = (y * row_bytes + x * 4) as usize;
+                                    let rgba = &bytes[offset..offset + 4];
+                                    let actual = 0xff000000
+                                        | (u32::from(rgba[0]) << 16)
+                                        | (u32::from(rgba[1]) << 8)
+                                        | u32::from(rgba[2]);
+                                    let expected =
+                                        if x >= 2 && x < 2 + size.0 && y >= 3 && y < 3 + size.1 {
+                                            expected[((y - 3) * size.0 + x - 2) as usize]
+                                        } else {
+                                            0xff000000
+                                        };
+                                    assert_eq!(
+                                        actual, expected,
+                                        "scale={scale} crop={crop:?} size={size:?} pixel=({x},{y})"
+                                    );
+                                }
+                            }
                         }
                     }
                 }

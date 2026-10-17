@@ -115,6 +115,21 @@ pub struct QuickDrawGpuPixel {
 
 /// An error or malformed result leaves guest pixels untouched for CPU fallback.
 pub trait QuickDrawGpuRenderer {
+    /// Whether to build CPU coverage atlases/spans for a GPU submission.
+    fn prefers_precomputed_raster(&self) -> bool {
+        true
+    }
+    /// Advisory dispatch selection before guest-memory snapshots are staged.
+    /// Backends may retain CPU execution when synchronous readback costs more
+    /// than the operation. Existing renderers keep their previous selection.
+    fn prefers_raster(&self, _command: &QuickDrawGpuCommand) -> bool {
+        true
+    }
+
+    fn prefers_blit(&self, _destination_pixels: usize, _expensive_color: bool) -> bool {
+        true
+    }
+
     fn render_blit_cells(
         &mut self,
         command: &QuickDrawGpuBlit,
@@ -160,6 +175,30 @@ impl std::fmt::Debug for QuickDrawGpuSlot {
     }
 }
 impl QuickDrawGpuSlot {
+    pub(crate) fn prefers_precomputed_raster(&self) -> bool {
+        self.0.as_ref().is_some_and(|renderer| {
+            renderer
+                .try_borrow()
+                .is_ok_and(|renderer| renderer.prefers_precomputed_raster())
+        })
+    }
+
+    pub(crate) fn prefers_raster(&self, command: &QuickDrawGpuCommand) -> bool {
+        self.0.as_ref().is_some_and(|renderer| {
+            renderer
+                .try_borrow()
+                .is_ok_and(|renderer| renderer.prefers_raster(command))
+        })
+    }
+
+    pub(crate) fn prefers_blit(&self, destination_pixels: usize, expensive_color: bool) -> bool {
+        self.0.as_ref().is_some_and(|renderer| {
+            renderer
+                .try_borrow()
+                .is_ok_and(|renderer| renderer.prefers_blit(destination_pixels, expensive_color))
+        })
+    }
+
     pub(crate) fn new(renderer: Box<dyn QuickDrawGpuRenderer>) -> Self {
         Self(Some(std::rc::Rc::new(std::cell::RefCell::new(renderer))))
     }
@@ -268,7 +307,7 @@ pub(crate) fn try_native_rectangle(
     target: RasterTarget,
     command: QuickDrawGpuCommand,
 ) -> bool {
-    if memory.quickdraw_gpu_renderer().is_none() {
+    if !memory.quickdraw_gpu_renderer().prefers_raster(&command) {
         return false;
     }
     try_raster(memory, target, command, |_| {})
@@ -299,7 +338,7 @@ pub(crate) fn try_rectangle_with_prepare(
     command: QuickDrawGpuCommand,
     prepare: impl FnOnce(&mut MacMemoryBus),
 ) -> bool {
-    if bus.quickdraw_gpu_renderer.is_none() || !bus.presented_bytes_gates_open() {
+    if !bus.quickdraw_gpu_renderer.prefers_raster(&command) || !bus.presented_bytes_gates_open() {
         return false;
     }
     try_raster(bus, target, command, prepare)

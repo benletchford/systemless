@@ -15095,6 +15095,10 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
         mode: u8,
     }
     impl PpcQ3GpuRenderer for HostRenderer {
+        fn prefers_native(&self, _: &PpcQ3RasterFrame) -> bool {
+            self.mode != 5
+        }
+
         fn render_indexed(
             &mut self,
             frame: &PpcQ3RasterFrame,
@@ -15155,7 +15159,7 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
         .render_completed_q3_frames_with_gpu(&mut LegacyRenderer)
         .is_some());
     loaded.q3_completed_frames = completed.clone();
-    for mode in [0, 1] {
+    for mode in [0, 1, 5] {
         assert!(loaded
             .render_completed_q3_frames_with_gpu(&mut HostRenderer { mode })
             .is_none());

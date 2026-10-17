@@ -121,7 +121,9 @@ pub(super) fn ppc_gpu_pattern_rect(
     ink: &Ink,
 ) -> Option<bool> {
     use crate::quickdraw::gpu::{try_native_rectangle, QuickDrawGpuCommand, RasterTarget};
-    if memory.quickdraw_gpu_renderer().is_none() || ink.mode != TransferMode::PatCopy {
+    if !memory.quickdraw_gpu_renderer().prefers_precomputed_raster()
+        || ink.mode != TransferMode::PatCopy
+    {
         return None;
     }
     let rows = clip.clipped_rows(area)?;

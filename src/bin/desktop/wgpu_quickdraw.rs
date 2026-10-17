@@ -1,9 +1,9 @@
 //! Guest-visible QuickDraw rasterization, enabled only by --gpu.
+use super::wgpu_buffers::ScratchBuffers;
 use systemless::quickdraw::gpu::{
     QuickDrawGpuBlit, QuickDrawGpuCommand, QuickDrawGpuPackedCopy, QuickDrawGpuPixel,
     QuickDrawGpuRenderer,
 };
-use wgpu::util::DeviceExt;
 
 pub(super) struct QuickDrawRenderer {
     state: Option<State>,
@@ -12,6 +12,7 @@ pub(super) struct QuickDrawRenderer {
 }
 impl QuickDrawRenderer {
     pub fn new() -> Self {
+        eprintln!("[GPU] QuickDraw adaptive dispatch enabled");
         Self {
             state: None,
             initialization_error: None,
@@ -20,6 +21,26 @@ impl QuickDrawRenderer {
     }
 }
 impl QuickDrawGpuRenderer for QuickDrawRenderer {
+    fn prefers_precomputed_raster(&self) -> bool {
+        false
+    }
+    fn prefers_raster(&self, command: &QuickDrawGpuCommand) -> bool {
+        // Rectangles, pre-tessellated spans and glyph atlases already have
+        // their coverage on the CPU. A GPU round trip cannot amortize that
+        // work. Keep GPU evaluation for substantial polygon edge work.
+        command.polygon_edges.as_ref().is_some_and(|edges| {
+            command
+                .pixel_count()
+                .unwrap_or(0)
+                .saturating_mul(edges.len())
+                >= 131_072
+        })
+    }
+
+    fn prefers_blit(&self, destination_pixels: usize, expensive_color: bool) -> bool {
+        expensive_color && destination_pixels >= 16_384
+    }
+
     fn render_blit_cells(
         &mut self,
         command: &QuickDrawGpuBlit,
@@ -105,6 +126,7 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
     }
 }
 struct State {
+    buffers: ScratchBuffers,
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
@@ -144,6 +166,7 @@ impl State {
         });
         eprintln!("[GPU] QuickDraw rasterization: {}", adapter.get_info().name);
         Ok(Self {
+            buffers: Default::default(),
             device,
             queue,
             pipeline,
@@ -450,27 +473,39 @@ impl State {
         {
             return Err("QuickDraw bitmap exceeds GPU limits".into());
         }
+        const INPUT_ROLES: [&str; 10] = [
+            "blit-source",
+            "blit-palette",
+            "blit-columns",
+            "blit-rows",
+            "unused",
+            "blit-geometry",
+            "blit-coverage",
+            "blit-arithmetic",
+            "blit-mask",
+            "blit-extra",
+        ];
         let mut buffers: Vec<(u32, wgpu::Buffer)> = inputs
             .iter()
             .map(|(binding, words, usage)| {
-                let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
                 (
                     *binding,
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("QuickDraw bitmap data"),
-                            contents: &bytes,
-                            usage: *usage,
-                        }),
+                    self.buffers.upload(
+                        &self.device,
+                        &self.queue,
+                        INPUT_ROLES[*binding as usize],
+                        &super::wgpu_buffers::little_endian_word_bytes(words),
+                        *usage,
+                    ),
                 )
             })
             .collect();
-        let output = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("QuickDraw bitmap result"),
-            size: output_bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let output = self.buffers.get(
+            &self.device,
+            "blit-output",
+            output_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
         buffers.push((4, output));
         let entries: Vec<_> = buffers
             .iter()
@@ -484,12 +519,12 @@ impl State {
             layout: &pipeline.get_bind_group_layout(0),
             entries: &entries,
         });
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("QuickDraw bitmap readback"),
-            size: output_bytes,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let readback = self.buffers.get(
+            &self.device,
+            "QuickDraw bitmap readback",
+            output_bytes,
+            wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        );
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -501,7 +536,7 @@ impl State {
         self.queue.submit([encoder.finish()]);
         let (tx, rx) = std::sync::mpsc::channel();
         readback
-            .slice(..)
+            .slice(..output_bytes)
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = tx.send(result);
             });
@@ -512,13 +547,16 @@ impl State {
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
         let bytes = readback
-            .slice(..)
+            .slice(..output_bytes)
             .get_mapped_range()
             .map_err(|e| e.to_string())?;
-        Ok(bytes
+        let result = bytes
             .chunks_exact(4)
             .map(|p| u32::from_le_bytes(p.try_into().unwrap()))
-            .collect())
+            .collect();
+        drop(bytes);
+        readback.unmap();
+        Ok(result)
     }
     fn render(
         &self,
@@ -583,13 +621,13 @@ impl State {
         if clip_bytes.len() as u64 > u64::from(limits.max_storage_buffer_binding_size) {
             return Err("QuickDraw clip storage exceeds GPU limits".into());
         }
-        let clip_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("QuickDraw clip rows"),
-                contents: &clip_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+        let clip_buffer = self.buffers.upload(
+            &self.device,
+            &self.queue,
+            "QuickDraw clip rows",
+            &clip_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
         let edges = command.polygon_edges.as_deref().unwrap_or(&[]);
         let edge_bytes: Vec<u8> = if edges.is_empty() {
             vec![0; 16]
@@ -600,13 +638,13 @@ impl State {
                 .flat_map(|v| v.to_le_bytes())
                 .collect()
         };
-        let edge_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("QuickDraw polygon edges"),
-                contents: &edge_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+        let edge_buffer = self.buffers.upload(
+            &self.device,
+            &self.queue,
+            "QuickDraw polygon edges",
+            &edge_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
         let product_bytes = (height as u64)
             .checked_mul(edges.len() as u64)
             .and_then(|n| n.checked_mul(4))
@@ -617,12 +655,12 @@ impl State {
         {
             return Err("QuickDraw polygon products exceed GPU limits".into());
         }
-        let products = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("QuickDraw rounded polygon products"),
-            size: product_bytes,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
+        let products = self.buffers.get(
+            &self.device,
+            "QuickDraw rounded polygon products",
+            product_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
         let mask_bytes: Vec<u8> = command.mask.as_ref().map_or_else(
             || vec![0; 4],
             |mask| {
@@ -635,27 +673,27 @@ impl State {
         if mask_bytes.len() as u64 > u64::from(limits.max_storage_buffer_binding_size) {
             return Err("QuickDraw mask exceeds GPU limits".into());
         }
-        let mask_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("QuickDraw glyph coverage"),
-                contents: &mask_bytes,
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-        let input: Vec<u8> = background.iter().flat_map(|p| p.to_le_bytes()).collect();
-        let input = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("QuickDraw background"),
-                contents: &input,
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-        let output = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("QuickDraw result"),
-            size: output_bytes,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let mask_buffer = self.buffers.upload(
+            &self.device,
+            &self.queue,
+            "QuickDraw glyph coverage",
+            &mask_bytes,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let input = super::wgpu_buffers::little_endian_word_bytes(background);
+        let input = self.buffers.upload(
+            &self.device,
+            &self.queue,
+            "QuickDraw background",
+            &input,
+            wgpu::BufferUsages::STORAGE,
+        );
+        let output = self.buffers.get(
+            &self.device,
+            "QuickDraw result",
+            output_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        );
         let border = command.border.unwrap_or([0, 0]);
         let mut words = Vec::with_capacity(32);
         words.extend([
@@ -697,13 +735,13 @@ impl State {
         });
         words.extend(mask_geometry.map(|v| v as u32));
         let uniform: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
-        let uniform = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("QuickDraw geometry"),
-                contents: &uniform,
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+        let uniform = self.buffers.upload(
+            &self.device,
+            &self.queue,
+            "QuickDraw geometry",
+            &uniform,
+            wgpu::BufferUsages::UNIFORM,
+        );
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.pipeline.get_bind_group_layout(0),
@@ -738,12 +776,12 @@ impl State {
                 },
             ],
         });
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("QuickDraw readback"),
-            size: output_bytes,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let readback = self.buffers.get(
+            &self.device,
+            "QuickDraw readback",
+            output_bytes,
+            wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        );
         let mut encoder = self.device.create_command_encoder(&Default::default());
         if !edges.is_empty() {
             let product_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -780,7 +818,7 @@ impl State {
         self.queue.submit([encoder.finish()]);
         let (tx, rx) = std::sync::mpsc::channel();
         readback
-            .slice(..)
+            .slice(..output_bytes)
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = tx.send(result);
             });
@@ -791,16 +829,19 @@ impl State {
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
         let bytes = readback
-            .slice(..)
+            .slice(..output_bytes)
             .get_mapped_range()
             .map_err(|e| e.to_string())?;
-        Ok(bytes
+        let result = bytes
             .chunks_exact(8)
             .map(|p| QuickDrawGpuPixel {
                 value: u32::from_le_bytes(p[..4].try_into().unwrap()),
                 covered: u32::from_le_bytes(p[4..].try_into().unwrap()) != 0,
             })
-            .collect())
+            .collect();
+        drop(bytes);
+        readback.unmap();
+        Ok(result)
     }
 }
 
@@ -1066,7 +1107,8 @@ mod tests {
                 .map(|i| {
                     let raw = pixels[(rows[i / 4][0] * 4 + columns[i % 4][0]) as usize];
                     let dst = d.background[i];
-                    let mask = d.mask_pixels[(d.mask_rows[i / 4] * 3 + d.mask_columns[i % 4]) as usize];
+                    let mask =
+                        d.mask_pixels[(d.mask_rows[i / 4] * 3 + d.mask_columns[i % 4]) as usize];
                     let s = rgb(source_depth, raw, &d.source_clut);
                     let target = rgb(destination_depth, dst, &d.destination_clut);
                     let value = if mask_depth == 1 {

@@ -1,14 +1,16 @@
 //! GPU rasterization with synchronous RGB555 readback for guest memory coherence.
+use super::wgpu_buffers::ScratchBuffers;
 use systemless::loader::ppc::{
     ppc_q3_vector3d_normalized_value, PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3LightKind,
     PpcQ3RasterFrame, PpcQ3RasterPrimitive, PpcQ3RasterVertex, PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
     PPC_Q3_ILLUMINATION_TYPE_PHONG,
 };
-use wgpu::util::DeviceExt;
 
 // Three 128-byte vertices and five 16-byte state vectors.
 const TRIANGLE_BYTES: usize = 464;
 const LIGHT_BYTES: usize = 64;
+const MAX_RASTER_WORK: u64 = 512_000_000;
+const MIN_NATIVE_WORK: u64 = 200_000;
 
 pub(super) struct Qd3dRenderer {
     state: Option<State>,
@@ -16,6 +18,7 @@ pub(super) struct Qd3dRenderer {
     last_fallback: Option<String>,
 }
 struct State {
+    buffers: ScratchBuffers,
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
@@ -25,6 +28,7 @@ struct State {
 impl Qd3dRenderer {
     /// Adapter/device creation is deferred until a supported 3D frame arrives.
     pub fn new() -> Self {
+        eprintln!("[GPU] QD3D adaptive dispatch enabled");
         Self {
             state: None,
             initialization_error: None,
@@ -93,6 +97,7 @@ impl State {
         }
         eprintln!("[GPU] QD3D rasterization: {}", adapter.get_info().name);
         Ok(Self {
+            buffers: Default::default(),
             device,
             queue,
             pipeline,
@@ -441,7 +446,7 @@ impl State {
             || count
                 .saturating_mul(triangle_count as u64)
                 .saturating_mul(lighting_work)
-                > 512_000_000
+                > MAX_RASTER_WORK
         {
             return Err("QD3D GPU frame exceeds raster work limits".into());
         }
@@ -457,17 +462,13 @@ impl State {
         if texture_bytes.is_empty() {
             texture_bytes.resize(4, 255);
         }
-        let buffer = |bytes: &[u8], usage| {
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("QD3D frame"),
-                    contents: bytes,
-                    usage,
-                })
+        let buffer = |role, bytes: &[u8], usage| {
+            self.buffers
+                .upload(&self.device, &self.queue, role, bytes, usage)
         };
-        let triangle_buffer = buffer(&triangles, wgpu::BufferUsages::STORAGE);
-        let texture_buffer = buffer(&texture_bytes, wgpu::BufferUsages::STORAGE);
-        let light_buffer = buffer(&light_bytes, wgpu::BufferUsages::STORAGE);
+        let triangle_buffer = buffer("3d-triangles", &triangles, wgpu::BufferUsages::STORAGE);
+        let texture_buffer = buffer("3d-textures", &texture_bytes, wgpu::BufferUsages::STORAGE);
+        let light_buffer = buffer("3d-lights", &light_bytes, wgpu::BufferUsages::STORAGE);
         // Live guest palettes can change between frames. Cache by all components,
         // avoiding 32K nearest-color searches on each indexed animation frame.
         let mut palette_cache = self.palette.borrow_mut();
@@ -480,10 +481,13 @@ impl State {
                     .into_iter()
                     .flat_map(u32::to_le_bytes)
                     .collect();
-                *palette_cache = Some((*clut, buffer(&bytes, wgpu::BufferUsages::STORAGE)));
+                *palette_cache = Some((
+                    *clut,
+                    buffer("3d-palette", &bytes, wgpu::BufferUsages::STORAGE),
+                ));
             }
         }
-        let empty_palette = buffer(&[0; 4], wgpu::BufferUsages::STORAGE);
+        let empty_palette = buffer("3d-empty-palette", &[0; 4], wgpu::BufferUsages::STORAGE);
         let palette_buffer = if clut.is_some() {
             &palette_cache.as_ref().unwrap().1
         } else {
@@ -494,6 +498,7 @@ impl State {
             .flat_map(|p| u32::from(*p).to_le_bytes())
             .collect();
         let pixels = buffer(
+            "3d-pixels",
             &bytes,
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         );
@@ -516,7 +521,7 @@ impl State {
             0,
         ];
         let bytes: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
-        let geometry = buffer(&bytes, wgpu::BufferUsages::UNIFORM);
+        let geometry = buffer("3d-geometry", &bytes, wgpu::BufferUsages::UNIFORM);
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("QD3D frame"),
             layout: &self.pipeline.get_bind_group_layout(0),
@@ -547,12 +552,12 @@ impl State {
                 },
             ],
         });
-        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("QD3D guest readback"),
-            size: pixel_bytes,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let readback = self.buffers.get(
+            &self.device,
+            "3d-readback",
+            pixel_bytes,
+            wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        );
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -564,7 +569,7 @@ impl State {
         self.queue.submit([encoder.finish()]);
         let (tx, rx) = std::sync::mpsc::channel();
         readback
-            .slice(..)
+            .slice(..pixel_bytes)
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = tx.send(result);
             });
@@ -575,13 +580,16 @@ impl State {
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
         let bytes = readback
-            .slice(..)
+            .slice(..pixel_bytes)
             .get_mapped_range()
             .map_err(|e| e.to_string())?;
-        Ok(bytes
+        let result = bytes
             .chunks_exact(4)
             .map(|p| u32::from_le_bytes(p.try_into().unwrap()) as u16)
-            .collect())
+            .collect();
+        drop(bytes);
+        readback.unmap();
+        Ok(result)
     }
 }
 fn vertex_valid(v: &PpcQ3RasterVertex) -> bool {
@@ -614,6 +622,84 @@ fn vertex_valid(v: &PpcQ3RasterVertex) -> bool {
         && v.screen_y.abs() <= 32768.
 }
 impl PpcQ3GpuRenderer for Qd3dRenderer {
+    fn prefers_native(&self, frame: &PpcQ3RasterFrame) -> bool {
+        // Estimate CPU raster work, rather than using framebuffer size: a tiny
+        // triangle in a large window still loses to GPU submission/readback.
+        let threshold = (u64::from(frame.width) * u64::from(frame.height) / 4).max(MIN_NATIVE_WORK);
+        let primitives: u64 = frame
+            .draws
+            .iter()
+            .map(|draw| (draw.vertices.len() / 3) as u64)
+            .sum();
+        let lighting = frame
+            .draws
+            .iter()
+            .map(|draw| 1 + draw.lighting.as_ref().map_or(0, |light| light.lights.len()) as u64)
+            .max()
+            .unwrap_or(1);
+        let gpu_work = u64::from(frame.width)
+            .saturating_mul(u64::from(frame.height))
+            .saturating_mul(primitives.max(1))
+            .saturating_mul(lighting);
+        if gpu_work > MAX_RASTER_WORK {
+            return false;
+        }
+        let left = (frame.viewport[0].max(0) as u32).min(frame.width);
+        let top = (frame.viewport[1].max(0) as u32).min(frame.height);
+        let right = (frame.viewport[2].saturating_add(1).max(0) as u32).min(frame.width);
+        let bottom = (frame.viewport[3].saturating_add(1).max(0) as u32).min(frame.height);
+        let mut work = if frame.clear_color.is_some() {
+            u64::from(right.saturating_sub(left)) * u64::from(bottom.saturating_sub(top))
+        } else {
+            0
+        };
+        for draw in &frame.draws {
+            let (x0, y0, x1, y1) = if draw.primitive == PpcQ3RasterPrimitive::Triangles {
+                (left, top, right, bottom)
+            } else {
+                (0, 0, frame.width, frame.height)
+            };
+            let cost = 1 + draw
+                .lighting
+                .as_ref()
+                .map_or(0, |lighting| lighting.lights.len()) as u64;
+            for vertices in draw.vertices.chunks_exact(3) {
+                let min_x = vertices
+                    .iter()
+                    .map(|v| v.screen_x)
+                    .fold(f32::INFINITY, f32::min)
+                    .max(x0 as f32);
+                let max_x = vertices
+                    .iter()
+                    .map(|v| v.screen_x)
+                    .fold(f32::NEG_INFINITY, f32::max)
+                    .min(x1 as f32);
+                let min_y = vertices
+                    .iter()
+                    .map(|v| v.screen_y)
+                    .fold(f32::INFINITY, f32::min)
+                    .max(y0 as f32);
+                let max_y = vertices
+                    .iter()
+                    .map(|v| v.screen_y)
+                    .fold(f32::NEG_INFINITY, f32::max)
+                    .min(y1 as f32);
+                let width = (max_x - min_x).max(0.).ceil() as u64;
+                let height = (max_y - min_y).max(0.).ceil() as u64;
+                let samples = match draw.primitive {
+                    PpcQ3RasterPrimitive::Triangles => width.saturating_mul(height),
+                    PpcQ3RasterPrimitive::Lines => width.max(height) + 1,
+                    PpcQ3RasterPrimitive::Points => 1,
+                };
+                work = work.saturating_add(samples.saturating_mul(cost));
+            }
+        }
+        // The compute kernel visits every primitive at every framebuffer cell.
+        // Sparse meshes instead benefit from the CPU's primitive bounds; do
+        // not send them to a quadratic GPU scan merely because they are large.
+        work >= threshold && gpu_work <= work.saturating_mul(4)
+    }
+
     fn render_indexed(
         &mut self,
         frame: &PpcQ3RasterFrame,
@@ -642,6 +728,184 @@ mod tests {
     use ppc::PpcMemory;
     use systemless::loader::ppc::*;
     use systemless::memory::GuestAddressSpace;
+
+    #[test]
+    fn gpu_readback_reuses_buffers_without_stale_pixels_after_resizing() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        for (index, width) in [64, 16, 128, 8].into_iter().enumerate() {
+            let height = width * 3 / 4;
+            let frame = PpcQ3RasterFrame {
+                width,
+                height,
+                viewport: [0, 0, width as i32 - 1, height as i32 - 1],
+                clear_color: (index == 2).then_some([0., 1., 0., 1.]),
+                textures: vec![],
+                draws: if index % 2 == 0 {
+                    vec![triangle(0.5, [1., 0., 0., 1.])]
+                } else {
+                    vec![]
+                },
+            };
+            let background: Vec<_> = (0..width * height)
+                .map(|i| 0x8000 | (i % 32768) as u16)
+                .collect();
+            assert_eq!(
+                state.render(&frame, &background).unwrap(),
+                cpu_render(&frame, &background)
+            );
+        }
+    }
+
+    #[test]
+    fn adaptive_dispatch_avoids_tiny_3d_work_in_large_framebuffers() {
+        let renderer = Qd3dRenderer::new();
+        let mut frame = PpcQ3RasterFrame {
+            width: 640,
+            height: 480,
+            viewport: [0, 0, 639, 479],
+            clear_color: None,
+            textures: vec![],
+            draws: vec![triangle(0.5, [1., 0., 0., 1.])],
+        };
+        assert!(!renderer.prefers_native(&frame));
+        for v in &mut frame.draws[0].vertices {
+            v.screen_x *= 20.;
+            v.screen_y *= 20.;
+        }
+        assert!(renderer.prefers_native(&frame));
+        frame.draws.clear();
+        frame.clear_color = Some([0., 0., 0., 1.]);
+        assert!(renderer.prefers_native(&frame));
+        frame.viewport = [1, 1, 30, 20];
+        assert!(!renderer.prefers_native(&frame));
+        frame.width = 32;
+        frame.height = 24;
+        frame.viewport = [0, 0, 31, 23];
+        assert!(!renderer.prefers_native(&frame));
+    }
+
+    fn sparse_mesh() -> PpcQ3RasterFrame {
+        let mut draw = triangle(0.5, [1., 0., 0., 1.]);
+        draw.vertices.clear();
+        for y in 0..8 {
+            for x in 0..8 {
+                draw.vertices.extend([
+                    vertex(
+                        (x * 80 + 1) as f32,
+                        (y * 60 + 1) as f32,
+                        0.5,
+                        [1., 0., 0., 1.],
+                    ),
+                    vertex(
+                        (x * 80 + 79) as f32,
+                        (y * 60 + 2) as f32,
+                        0.5,
+                        [1., 0., 0., 1.],
+                    ),
+                    vertex(
+                        (x * 80 + 4) as f32,
+                        (y * 60 + 58) as f32,
+                        0.5,
+                        [1., 0., 0., 1.],
+                    ),
+                ]);
+            }
+        }
+        PpcQ3RasterFrame {
+            width: 640,
+            height: 480,
+            viewport: [0, 0, 639, 479],
+            clear_color: None,
+            textures: vec![],
+            draws: vec![draw],
+        }
+    }
+
+    #[test]
+    fn adaptive_dispatch_keeps_sparse_and_excessive_meshes_on_cpu() {
+        let renderer = Qd3dRenderer::new();
+        let mut frame = sparse_mesh();
+        assert!(!renderer.prefers_native(&frame));
+        let point = frame.draws[0].vertices[0];
+        frame.draws[0].vertices.resize(3 * 2048, point);
+        assert!(!renderer.prefers_native(&frame));
+    }
+
+    #[test]
+    #[ignore = "optimized synchronous 3D benchmark; run alone"]
+    fn benchmark_qd3d_kernels() {
+        let state = State::new().expect("benchmark requires a GPU");
+        let mut cases = Vec::new();
+        for (width, height) in [(64, 48), (320, 240), (640, 480)] {
+            let mut draw = triangle(0.5, [1., 0., 0., 1.]);
+            for v in &mut draw.vertices {
+                v.screen_x *= width as f32 / 32.;
+                v.screen_y *= height as f32 / 24.;
+            }
+            let frame = PpcQ3RasterFrame {
+                width,
+                height,
+                viewport: [0, 0, width as i32 - 1, height as i32 - 1],
+                clear_color: None,
+                textures: vec![],
+                draws: vec![draw],
+            };
+            cases.push((format!("3d-kernel-{width}x{height}"), frame));
+        }
+        cases.push(("3d-sparse-64".into(), sparse_mesh()));
+        let mut overdraw = PpcQ3RasterFrame {
+            width: 640,
+            height: 480,
+            viewport: [0, 0, 639, 479],
+            clear_color: None,
+            textures: vec![],
+            draws: vec![],
+        };
+        for layer in 0..8 {
+            let mut draw = triangle(0.9 - layer as f32 * 0.1, [1., 0., 0., 1.]);
+            for v in &mut draw.vertices {
+                v.screen_x *= 20.;
+                v.screen_y *= 20.;
+            }
+            overdraw.draws.push(draw);
+        }
+        cases.push(("3d-overdraw-8".into(), overdraw));
+        for (name, frame) in cases {
+            let (width, height) = (frame.width, frame.height);
+            let background = vec![0; (width * height) as usize];
+            let expected = cpu_render(&frame, &background);
+            assert!(
+                state.render(&frame, &background).unwrap() == expected,
+                "3D benchmark {name} differs from CPU"
+            );
+            for backend in ["default", "gpu", "gpu-adaptive"] {
+                let gpu = backend == "gpu"
+                    || (backend == "gpu-adaptive" && Qd3dRenderer::new().prefers_native(&frame));
+                let mut samples = Vec::new();
+                for iteration in 0..33 {
+                    let start = std::time::Instant::now();
+                    std::hint::black_box(if gpu {
+                        state.render(&frame, &background).unwrap()
+                    } else {
+                        cpu_render(&frame, &background)
+                    });
+                    if iteration >= 3 {
+                        samples.push(start.elapsed());
+                    }
+                }
+                crate::renderer_bench::report(&name, backend, &mut samples);
+            }
+        }
+    }
 
     fn vertex(x: f32, y: f32, z: f32, color: [f32; 4]) -> PpcQ3RasterVertex {
         PpcQ3RasterVertex {

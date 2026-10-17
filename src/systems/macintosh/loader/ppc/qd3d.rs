@@ -634,6 +634,11 @@ pub fn ppc_q3_gpu_palette_lookup(clut: &[[u16; 3]; 256]) -> Vec<u32> {
 /// Preserve background bit 15 on untouched pixels and clear it on painted
 /// pixels; indexed targets use this coverage marker to preserve exact indices.
 pub trait PpcQ3GpuRenderer {
+    /// Select CPU execution before staging a synchronous guest-memory frame.
+    fn prefers_native(&self, _frame: &PpcQ3RasterFrame) -> bool {
+        true
+    }
+
     fn render(&mut self, frame: &PpcQ3GpuFrame, background: &[u16]) -> Result<Vec<u16>, String>;
 
     /// Indexed rendering must quantize after each paint. Returned painted cells
