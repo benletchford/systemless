@@ -619,8 +619,25 @@ impl PpcLoadedApp {
                 None
             };
             let mut vertices = Vec::with_capacity(triangles.len().saturating_mul(3));
-            let mut blend =
-                transparency.0 < 0.999 || ppc_q3_software_texture_may_blend(material.texture);
+            let mut batch_blend = None;
+            let emit_batch =
+                |draws: &mut Vec<PpcQ3RasterDraw>, vertices: &mut Vec<PpcQ3RasterVertex>, blend: bool| {
+                    if vertices.is_empty() {
+                        return;
+                    }
+                    draws.push(PpcQ3RasterDraw {
+                        primitive: PpcQ3RasterPrimitive::Triangles,
+                        test_depth: true,
+                        lighting: native_lighting.clone(),
+                        ambient_light,
+                        ambient_per_vertex: interpolation_style == PPC_Q3_INTERPOLATION_STYLE_VERTEX,
+                        fog: material.fog_style,
+                        texture: texture_index,
+                        vertices: std::mem::take(vertices),
+                        blend,
+                        write_depth: !blend,
+                    });
+                };
 
             for triangle in triangles {
                 let mut triangle_vertices = [
@@ -775,6 +792,16 @@ impl PpcLoadedApp {
                     .flatten();
                 for index in 1..clipped.len().saturating_sub(1) {
                     let triangle = [clipped[0], clipped[index], clipped[index + 1]];
+                    // Software defers each clipped primitive independently.
+                    // One translucent face must not disable opaque depth writes.
+                    let blend =
+                        ppc_q3_software_primitive_deferred_for_transparency(&material, &triangle);
+                    if let Some(previous) = batch_blend {
+                        if previous != blend {
+                            emit_batch(&mut draws, &mut vertices, previous);
+                        }
+                    }
+                    batch_blend = Some(blend);
                     let flat_sample = (extended
                         && interpolation_style == PPC_Q3_INTERPOLATION_STYLE_NONE)
                         .then(|| {
@@ -799,9 +826,6 @@ impl PpcLoadedApp {
                             } else {
                                 raw_alpha.unwrap_or(1.0)
                             };
-                        if vertex_alpha < 0.999 {
-                            blend = true;
-                        }
                         let uv = ppc_q3_software_transform_uv(
                             point.uv.unwrap_or((0.0, 0.0)),
                             material.uv_transform,
@@ -851,19 +875,8 @@ impl PpcLoadedApp {
                     }
                 }
             }
-            if !vertices.is_empty() {
-                draws.push(PpcQ3RasterDraw {
-                    primitive: PpcQ3RasterPrimitive::Triangles,
-                    test_depth: true,
-                    lighting: native_lighting,
-                    ambient_light,
-                    ambient_per_vertex: interpolation_style == PPC_Q3_INTERPOLATION_STYLE_VERTEX,
-                    fog: material.fog_style,
-                    texture: texture_index,
-                    vertices,
-                    blend,
-                    write_depth: !blend,
-                });
+            if let Some(blend) = batch_blend {
+                emit_batch(&mut draws, &mut vertices, blend);
             }
         }
         if draws.is_empty() {

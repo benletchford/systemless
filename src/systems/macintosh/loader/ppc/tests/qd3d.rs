@@ -17356,6 +17356,107 @@ fn q3_software_renderer_respects_backfacing_remove_style() {
     );
 }
 
+#[test]
+fn q3_gpu_mixed_mesh_preserves_per_primitive_opacity_and_depth() {
+    for vertex_attributes in [false, true] {
+        for alphas in [[1., 0.5, 1.], [0.5, 1., 0.5], [1.; 3], [0.5; 3]] {
+            let mut fixture = ImmediateTriMeshFixture::new();
+            let mesh = fixture.trimesh_data;
+            let triangle_attrs = PPC_DATA_BASE + 0x1180;
+            let alpha_data = PPC_DATA_BASE + 0x1200;
+            let vertex_attrs = PPC_DATA_BASE + 0x1280;
+            let vertex_alpha_data = PPC_DATA_BASE + 0x1300;
+            let memory = &mut fixture.loaded.memory;
+            memory
+                .write_u32_be(mesh + PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET, 3)
+                .unwrap();
+            memory
+                .write_u32_be(mesh + PPC_Q3_TRIMESH_NUM_POINTS_OFFSET, 9)
+                .unwrap();
+            let triangles = memory
+                .read_u32_be(mesh + PPC_Q3_TRIMESH_TRIANGLES_OFFSET)
+                .unwrap();
+            for triangle in 0..3usize {
+                for (corner, point) in ImmediateTriMeshFixture::LEFT.into_iter().enumerate() {
+                    let index = triangle * 3 + corner;
+                    ppc_write_q3_vector3d(memory, fixture.points_ptr + index as u32 * 12, point)
+                        .unwrap();
+                    memory
+                        .write_u32_be(triangles + index as u32 * 4, index as u32)
+                        .unwrap();
+                    let a = alphas[triangle];
+                    ppc_write_q3_color_rgb(
+                        memory,
+                        vertex_alpha_data + index as u32 * 12,
+                        (a, a, a),
+                    )
+                    .unwrap();
+                }
+                let a = alphas[triangle];
+                ppc_write_q3_color_rgb(memory, alpha_data + triangle as u32 * 12, (a, a, a))
+                    .unwrap();
+                ppc_write_q3_color_rgb(
+                    memory,
+                    fixture.colors_ptr + triangle as u32 * 12,
+                    (1., 0., 0.),
+                )
+                .unwrap();
+            }
+            let (count_offset, types_offset, attrs, data) = if vertex_attributes {
+                (
+                    PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET,
+                    PPC_Q3_TRIMESH_VERTEX_ATTRIBUTE_TYPES_OFFSET,
+                    vertex_attrs,
+                    vertex_alpha_data,
+                )
+            } else {
+                memory
+                    .write_u32_be(mesh + PPC_Q3_TRIMESH_NUM_TRIANGLE_ATTRIBUTE_TYPES_OFFSET, 2)
+                    .unwrap();
+                (
+                    PPC_Q3_TRIMESH_NUM_TRIANGLE_ATTRIBUTE_TYPES_OFFSET,
+                    PPC_Q3_TRIMESH_TRIANGLE_ATTRIBUTE_TYPES_OFFSET,
+                    triangle_attrs + PPC_Q3_TRIMESH_ATTRIBUTE_DATA_SIZE,
+                    alpha_data,
+                )
+            };
+            if vertex_attributes {
+                memory.write_u32_be(mesh + count_offset, 1).unwrap();
+                memory.write_u32_be(mesh + types_offset, attrs).unwrap();
+            }
+            memory
+                .write_u32_be(attrs, PPC_Q3_ATTRIBUTE_TYPE_TRANSPARENCY_COLOR)
+                .unwrap();
+            memory.write_u32_be(attrs + 4, data).unwrap();
+            memory.write_u32_be(attrs + 8, 0).unwrap();
+            fixture.submit();
+            let commands = fixture.loaded.q3_scene_commands();
+            let frame = fixture.loaded.prepare_q3_gpu_frame(commands, true).unwrap();
+            let states = frame
+                .draws
+                .iter()
+                .flat_map(|draw| {
+                    draw.vertices
+                        .chunks_exact(3)
+                        .map(move |v| (v[0].color[3], draw.blend, draw.write_depth))
+                })
+                .collect::<Vec<_>>();
+            let expected = alphas
+                .into_iter()
+                .map(|a| (a, a < 0.999, a >= 0.999))
+                .collect::<Vec<_>>();
+            assert_eq!(states, expected, "vertex_attributes={vertex_attributes}");
+            if alphas.iter().all(|a| *a == alphas[0]) {
+                assert_eq!(
+                    frame.draws.len(),
+                    1,
+                    "uniform meshes should retain batching"
+                );
+            }
+        }
+    }
+}
+
 /// One-triangle immediate trimesh fixture for the submit-time copy tests: a
 /// 16x16 direct-color front buffer and a camera on +z looking at the origin.
 struct ImmediateTriMeshFixture {

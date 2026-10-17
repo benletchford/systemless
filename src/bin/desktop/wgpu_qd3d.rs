@@ -813,6 +813,46 @@ mod tests {
     }
 
     #[test]
+    fn gpu_mixed_opacity_batches_preserve_slanted_opaque_depth_occlusion() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let mut opaque = triangle(0.1, [1., 0., 0., 1.]);
+        opaque.vertices[1].depth = 0.9;
+        opaque.vertices[2].depth = 0.9;
+        // Avoid RGB555 half-step rounding ties in this depth/order regression.
+        let translucent = triangle(0.51, [0., 1., 0., 0.4]);
+        let background_mesh = triangle(0.99, [0., 0., 1., 1.]);
+        let frame = PpcQ3RasterFrame {
+            width: 32,
+            height: 24,
+            viewport: [0, 0, 31, 23],
+            clear_color: None,
+            textures: vec![],
+            draws: vec![opaque.clone(), translucent.clone(), background_mesh.clone()],
+        };
+        let background = vec![0x8000; 32 * 24];
+        let actual = state.render(&frame, &background).unwrap();
+        // Software renders opaque primitives first, then sorted translucent ones.
+        let mut software_frame = frame;
+        software_frame.draws = vec![opaque, background_mesh, translucent];
+        let expected = cpu_render(&software_frame, &background);
+        assert_eq!(
+            expected[4 * 32 + 4],
+            0x7c00,
+            "the near part of the red face must occlude green"
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn gpu_qd3d_lines_match_bresenham_in_every_octant() {
         let state = match State::new() {
             Ok(state) => state,
