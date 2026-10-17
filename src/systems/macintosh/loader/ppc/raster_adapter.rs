@@ -96,6 +96,11 @@ fn ppc_fill_rect_with_core(
         mode: TransferMode::PatCopy,
         pat_origin: (0, 0),
     };
+    if let Some(wrote) = ppc_gpu_pattern_rect(memory, surface, area, &clip, &ink) {
+        return Some(DrawOutcome::Drawn {
+            touched: if wrote { area } else { EMPTY_RECT },
+        });
+    }
     let mut scratch = Vec::new();
     Some(paint_rect(
         memory,
@@ -105,6 +110,64 @@ fn ppc_fill_rect_with_core(
         area,
         &mut scratch,
     ))
+}
+
+/// `None` leaves the original software path in charge, including GPU errors.
+pub(super) fn ppc_gpu_pattern_rect(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    area: Rect,
+    clip: &ClipRows,
+    ink: &Ink,
+) -> Option<bool> {
+    use crate::quickdraw::gpu::{try_native_rectangle, QuickDrawGpuCommand, RasterTarget};
+    if memory.quickdraw_gpu_renderer().is_none() || ink.mode != TransferMode::PatCopy {
+        return None;
+    }
+    let rows = clip.clipped_rows(area)?;
+    if rows.iter().all(Vec::is_empty) {
+        return Some(false);
+    }
+    // The shader's pattern origin is (0,0); rotate the tile to retain the
+    // caller's coordinate convention, including negative port origins.
+    let pattern = std::array::from_fn(|y| {
+        ink.pattern[(y as i32 - i32::from(ink.pat_origin.1)).rem_euclid(8) as usize]
+            .rotate_left((-i32::from(ink.pat_origin.0)).rem_euclid(8) as u32)
+    });
+    let command = QuickDrawGpuCommand {
+        area: [
+            i32::from(area.left),
+            i32::from(area.top),
+            i32::from(area.right),
+            i32::from(area.bottom),
+        ],
+        rect: [
+            i32::from(area.left),
+            i32::from(area.top),
+            i32::from(area.right),
+            i32::from(area.bottom),
+        ],
+        border: None,
+        pattern,
+        transfer: [[0, ink.bg], [0, ink.fg]],
+        polygon_edges: None,
+        clip_rows: Some(
+            rows.into_iter()
+                .map(|row| row.into_iter().map(i32::from).collect())
+                .collect(),
+        ),
+    };
+    try_native_rectangle(
+        memory,
+        RasterTarget {
+            base: surface.front_buffer.base_addr,
+            row_bytes: surface.front_buffer.row_bytes,
+            depth: u16::try_from(surface.front_buffer.depth).ok()?,
+            origin: [i32::from(surface.left), i32::from(surface.top)],
+        },
+        command,
+    )
+    .then_some(true)
 }
 
 /// The pixel image's extent in port coordinates. Its far edges are capped

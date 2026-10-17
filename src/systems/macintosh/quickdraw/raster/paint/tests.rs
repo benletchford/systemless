@@ -4,6 +4,36 @@
 use super::*;
 use crate::quickdraw::raster::region_rows::endpoints_contain_point;
 
+#[test]
+fn gpu_clip_rows_preserve_empty_bands_and_decline_malformed_intervals() {
+    let area = Rect {
+        top: -2,
+        left: -4,
+        bottom: 3,
+        right: 9,
+    };
+    let clip = ClipRows::from_rows(-1, vec![vec![-8, 0, 3, 8], vec![], vec![0, 12]]);
+    assert_eq!(
+        clip.clipped_rows(area),
+        Some(vec![vec![], vec![-4, 0, 3, 8], vec![], vec![0, 9], vec![]])
+    );
+    let clip = ClipRows::rectangular(Rect {
+        top: 0,
+        left: -1,
+        bottom: 2,
+        right: 5,
+    });
+    assert_eq!(
+        clip.clipped_rows(area),
+        Some(vec![vec![], vec![], vec![-1, 5], vec![-1, 5], vec![]])
+    );
+    for row in [vec![0, 3, 5], vec![3, 0], vec![0, 3, 2, 4]] {
+        assert!(ClipRows::from_rows(0, vec![row])
+            .clipped_rows(area)
+            .is_none());
+    }
+}
+
 /// A pixel image in host memory that records each `write_row` call.
 struct RecordingImage {
     base: u32,

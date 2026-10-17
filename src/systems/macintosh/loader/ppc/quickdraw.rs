@@ -2058,6 +2058,30 @@ pub(crate) fn ppc_paint_rect(
     let top = top.max(0).min(front_buffer.height as i32);
     let right = right.max(0).min(front_buffer.width as i32);
     let bottom = bottom.max(0).min(front_buffer.height as i32);
+    if memory.quickdraw_gpu_renderer().is_some() {
+        let area = (|| {
+            Some(crate::trap::types::Rect {
+                top: i16::try_from(top + i32::from(surface.top)).ok()?,
+                left: i16::try_from(left + i32::from(surface.left)).ok()?,
+                bottom: i16::try_from(bottom + i32::from(surface.top)).ok()?,
+                right: i16::try_from(right + i32::from(surface.left)).ok()?,
+            })
+        })();
+        if let Some(area) = area {
+            if let Some(clip) = ppc_port_clip_rows(memory, current_gworld, area.top, area.bottom) {
+                let ink = crate::quickdraw::raster::paint::Ink {
+                    fg: u32::from(fore_pixel),
+                    bg: u32::from(back_pixel),
+                    pattern: *pattern,
+                    mode: crate::quickdraw::raster::paint::TransferMode::PatCopy,
+                    pat_origin: (surface.left, surface.top),
+                };
+                if let Some(wrote) = ppc_gpu_pattern_rect(memory, surface, area, &clip, &ink) {
+                    return wrote;
+                }
+            }
+        }
+    }
     let clip_storage = memory
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
         .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
