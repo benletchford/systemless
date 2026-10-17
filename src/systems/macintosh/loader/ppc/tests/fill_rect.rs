@@ -317,6 +317,64 @@ fn gpu_native_glyph_masks_match_software_text_modes_and_explicit_clips() {
 }
 
 #[test]
+fn gpu_native_styled_text_matches_software_transfers_clips_and_fallback() {
+    let pixels = initial_pixels();
+    for depth in [1, 2, 4, 8, 16] {
+        for (vis, clip) in [CLIPS[0], CLIPS[3]] {
+            let fixture = fixture(&pixels, vis, clip);
+            for style in [1, 2, 4, 8, 16, 31] {
+                for mode in [0, 1, 2, 3] {
+                    let mut expected = None;
+                    for backend in [None, Some(0), Some(1), Some(2)] {
+                        let mut loaded =
+                            load_pef_application(&synthetic_pef_with_import(b"DrawString"))
+                                .unwrap();
+                        install_port(&mut loaded, &fixture, depth);
+                        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                        if let Some(failure) = backend {
+                            loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                    crate::quickdraw::gpu::ReferenceRenderer {
+                                        calls: calls.clone(),
+                                        failure,
+                                    },
+                                )),
+                            );
+                        }
+                        let advance = ppc_draw_text_bytes_styled_clipped(
+                            &mut loaded.memory,
+                            &loaded.gworlds,
+                            PORT,
+                            (-4, 7),
+                            PPC_QD_TEXT_FONT_DEFAULT,
+                            12,
+                            mode,
+                            PPC_RGB_WHITE,
+                            Some(fixture.fg_index),
+                            style,
+                            Some((-2, -3, 9, 12)),
+                            b"Ag",
+                        );
+                        if backend.is_some() {
+                            assert!(calls.get() > 0, "styled text must reach GPU: depth={depth}, style={style}, mode={mode}");
+                        }
+                        let result = (advance, read_pixels(&mut loaded, pixels.len()));
+                        if let Some(expected) = &expected {
+                            assert_eq!(
+                                &result, expected,
+                                "depth={depth},style={style},mode={mode},backend={backend:?}"
+                            );
+                        } else {
+                            expected = Some(result);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn gpu_native_rounded_fills_and_frames_match_software_at_every_depth() {
     let pixels = initial_pixels();
     for depth in [1, 2, 4, 8, 16] {
