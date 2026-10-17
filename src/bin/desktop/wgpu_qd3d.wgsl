@@ -5,8 +5,8 @@ struct Geometry { size: vec4<u32>, viewport: vec4<u32>, clear: vec4<u32> }
 @group(0) @binding(1) var<storage, read> textures: array<u32>;
 @group(0) @binding(2) var<storage, read_write> pixels: array<u32>;
 @group(0) @binding(3) var<uniform> geometry: Geometry;
-struct Directional { direction:vec4<f32>, color:vec4<f32> }
-@group(0) @binding(4) var<storage,read> lights:array<Directional>;
+struct Light { direction:vec4<f32>, color:vec4<f32>, location:vec4<f32>, parameters:vec4<f32> }
+@group(0) @binding(4) var<storage,read> lights:array<Light>;
 fn unit(v:vec3<f32>) -> vec4<f32> {
     let length_squared=dot(v,v);
     if length_squared > 0. && length_squared <= 3.402823e38 { return vec4(v/sqrt(length_squared),1.); }
@@ -17,21 +17,47 @@ fn shade(v:Vertex, diffuse:vec3<f32>, t:Triangle) -> vec3<f32> {
     if t.ambient.w != 0. { factor=t.ambient.rgb*v.lighting.x; }
     for(var i=0u;i<t.light_info.y;i++) {
         let light=lights[t.light_info.x+i];
+        var direction=light.direction;
+        var scale=1.;
+        if light.location.w != 0. {
+            let offset=v.world.xyz-light.location.xyz;
+            let squared=dot(offset,offset);
+            if !(squared > 0. && squared <= 3.402823e38) { continue; }
+            let distance=sqrt(squared);
+            direction=vec4(offset/distance,1.);
+            if light.parameters.x == 1. { scale=1./distance; }
+            else if light.parameters.x == 2. { scale=1./(distance*distance); }
+            if !(scale >= 0. && scale <= 3.402823e38) { continue; }
+            if light.location.w == 2. {
+                if light.direction.w == 0. { continue; }
+                let angle=acos(clamp(dot(direction.xyz,light.direction.xyz),-1.,1.));
+                if angle > light.parameters.z { continue; }
+                if angle > light.parameters.y {
+                    let span=light.parameters.z-light.parameters.y;
+                    if span <= 0. { continue; }
+                    let falloff=clamp((light.parameters.z-angle)/span,0.,1.);
+                    if light.parameters.w == 1. { scale*=falloff; }
+                    else if light.parameters.w == 2. { scale*=falloff*falloff; }
+                    else if light.parameters.w == 3. { scale*=0.5-0.5*cos(3.141592653589793*falloff); }
+                }
+                if scale <= 0. { continue; }
+            }
+        }
         var intensity=1.;
-        if v.normal.w != 0. && light.direction.w != 0. {
-            intensity=max(-dot(v.normal.xyz,light.direction.xyz),0.);
+        if v.normal.w != 0. && direction.w != 0. {
+            intensity=max(-dot(v.normal.xyz,direction.xyz),0.);
             if t.light_info.w != 0u && v.lighting.y != 0. && intensity > 0. && v.specular.w >= 0. && v.view.w != 0. {
                 let view=unit(v.view.xyz);
-                let reflection=unit(fma(vec3(2.*intensity),v.normal.xyz,light.direction.xyz));
+                let reflection=unit(fma(vec3(2.*intensity),v.normal.xyz,direction.xyz));
                 if view.w != 0. && reflection.w != 0. {
                     let cosine=max(dot(reflection.xyz,view.xyz),0.);
                     var power=1.;
                     if v.specular.w != 0. { power=pow(cosine,v.specular.w); }
-                    if power > 0. && power <= 3.402823e38 { specular+=light.color.rgb*light.color.w*v.specular.rgb*power; }
+                    if power > 0. && power <= 3.402823e38 { specular+=light.color.rgb*light.color.w*v.specular.rgb*power*scale; }
                 }
             }
         }
-        factor+=light.color.rgb*light.color.w*intensity;
+        factor+=light.color.rgb*light.color.w*(intensity*scale);
     }
     return fma(diffuse,factor,specular);
 }
@@ -79,13 +105,13 @@ fn unpack555(value: u32) -> vec3<f32> {
         var perspective = affine*vec3(a.position.w,b.position.w,c.position.w);
         perspective /= dot(perspective,vec3(1.));
         var ca=a.color; var cb=b.color; var cc=c.color;
-        let directional=triangle.light_info.y != 0u;
-        let vertex_lighting=directional && triangle.light_info.z != 2u;
+        let spatial_lighting=triangle.light_info.y != 0u;
+        let vertex_lighting=spatial_lighting && triangle.light_info.z != 2u;
         if vertex_lighting {
             ca=vec4(shade(a,ca.rgb,triangle),ca.a);
             cb=vec4(shade(b,cb.rgb,triangle),cb.a);
             cc=vec4(shade(c,cc.rgb,triangle),cc.a);
-        } else if !directional && triangle.ambient.w == 1. {
+        } else if !spatial_lighting && triangle.ambient.w == 1. {
             ca=vec4(ca.rgb*triangle.ambient.rgb*a.lighting.x,ca.a);
             cb=vec4(cb.rgb*triangle.ambient.rgb*b.lighting.x,cb.a);
             cc=vec4(cc.rgb*triangle.ambient.rgb*c.lighting.x,cc.a);
@@ -99,9 +125,9 @@ fn unpack555(value: u32) -> vec3<f32> {
             let rgba = textures[triangle.info.x+texel.y*size.x+texel.x];
             color *= vec4<f32>((vec4(rgba)>>vec4(0u,8u,16u,24u))&vec4(255u))/255.;
         }
-        if directional && !vertex_lighting {
+        if spatial_lighting && !vertex_lighting {
             color=vec4(shade(interpolate_shading(a,b,c,perspective),color.rgb,triangle),color.a);
-        } else if !directional && triangle.ambient.w == 2. {
+        } else if !spatial_lighting && triangle.ambient.w == 2. {
             let coefficient=a.lighting.x+(b.lighting.x-a.lighting.x)*perspective.y+(c.lighting.x-a.lighting.x)*perspective.z;
             color=vec4(color.rgb*triangle.ambient.rgb*coefficient,color.a);
         }

@@ -117,15 +117,13 @@ and drawing coverage is resolved on the GPU with exact integer area sampling,
 including cropped and resized desktops. Supported QuickDraw 3D TriMesh frames
 use a wgpu compute rasterizer for 8-bit indexed and 16-bit RGB555 targets,
 with depth, perspective-correct color/texture interpolation, texture wrapping,
-alpha blending, ambient and directional lighting with Lambert/Phong shading
-and flat, vertex, or pixel interpolation, and linear,
-exponential, squared exponential, and alpha fog.
-Results are read back into
-the guest framebuffer before execution resumes, preserving CopyBits and
-subsequent drawing. Point and spot lighting, non-filled geometry,
-and frames beyond the
-GPU resource/work limits currently use the software renderer. Guest QuickDraw
-shape drawing and glyph rasterization still run on the CPU. It is experimental
+alpha blending, ambient, directional, point, and spot lighting with attenuation
+and spot falloff, Lambert/Phong shading with flat, vertex, or pixel interpolation,
+and linear, exponential, squared exponential, and alpha fog. Results are read
+back into the guest framebuffer before execution resumes, preserving CopyBits
+and subsequent drawing. Non-filled geometry and frames beyond the GPU
+resource/work limits currently use the software renderer. Guest QuickDraw shape
+drawing and glyph rasterization still run on the CPU. It is experimental
 and reports initialization errors instead of silently selecting another backend.
 Without `--gpu`, existing platform presentation remains the default.
 `--headless --gpu` also enables the 3D rasterizer in play scripts and timed runs

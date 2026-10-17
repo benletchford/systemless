@@ -8,6 +8,7 @@ use wgpu::util::DeviceExt;
 
 // Three 128-byte vertices and five 16-byte state vectors.
 const TRIANGLE_BYTES: usize = 464;
+const LIGHT_BYTES: usize = 64;
 
 pub(super) struct Qd3dRenderer {
     state: Option<State>,
@@ -142,8 +143,8 @@ impl State {
             {
                 return Err("invalid GPU ambient light".into());
             }
-            let light_offset =
-                u32::try_from(light_bytes.len() / 32).map_err(|_| "GPU light offset overflow")?;
+            let light_offset = u32::try_from(light_bytes.len() / LIGHT_BYTES)
+                .map_err(|_| "GPU light offset overflow")?;
             let mut light_info = [light_offset, 0, 0, 0];
             if let Some(lighting) = &draw.lighting {
                 if lighting.interpolation_style > 2
@@ -162,8 +163,38 @@ impl State {
                     u32::from(lighting.illumination_type == PPC_Q3_ILLUMINATION_TYPE_PHONG);
                 lighting_work = lighting_work.max(1 + lighting.lights.len() as u64);
                 for light in &lighting.lights {
-                    let PpcQ3LightKind::Directional { direction, .. } = light.kind else {
-                        return Err("unsupported GPU light kind".into());
+                    let (direction, location, kind, parameters) = match light.kind {
+                        PpcQ3LightKind::Directional { direction, .. } => {
+                            (direction, (0., 0., 0.), 0., [0.; 4])
+                        }
+                        PpcQ3LightKind::Point {
+                            attenuation,
+                            location,
+                            ..
+                        } if attenuation <= 2 => {
+                            ((0., 0., 0.), location, 1., [attenuation as f32, 0., 0., 0.])
+                        }
+                        PpcQ3LightKind::Spot {
+                            attenuation,
+                            location,
+                            direction,
+                            hot_angle,
+                            outer_angle,
+                            fall_off,
+                            ..
+                        } if attenuation <= 2
+                            && fall_off <= 3
+                            && hot_angle >= 0.
+                            && outer_angle >= hot_angle =>
+                        {
+                            (
+                                direction,
+                                location,
+                                2.,
+                                [attenuation as f32, hot_angle, outer_angle, fall_off as f32],
+                            )
+                        }
+                        _ => return Err("unsupported GPU light kind or parameters".into()),
                     };
                     let values = [
                         direction.0,
@@ -174,7 +205,13 @@ impl State {
                         light.data.color.1,
                         light.data.color.2,
                     ];
-                    if !values.into_iter().all(f32::is_finite) || light.data.is_on == 0 {
+                    if !values
+                        .into_iter()
+                        .chain([location.0, location.1, location.2])
+                        .chain(parameters)
+                        .all(f32::is_finite)
+                        || light.data.is_on == 0
+                    {
                         return Err("invalid GPU light".into());
                     }
                     let direction = ppc_q3_vector3d_normalized_value(direction);
@@ -188,6 +225,14 @@ impl State {
                         light.data.color.1,
                         light.data.color.2,
                         light.data.brightness,
+                        location.0,
+                        location.1,
+                        location.2,
+                        kind,
+                        parameters[0],
+                        parameters[1],
+                        parameters[2],
+                        parameters[3],
                     ] {
                         light_bytes.extend_from_slice(&value.to_le_bytes());
                     }
@@ -327,7 +372,7 @@ impl State {
             return Err("GPU light storage exceeds limits".into());
         }
         if light_bytes.is_empty() {
-            light_bytes.resize(32, 0);
+            light_bytes.resize(LIGHT_BYTES, 0);
         }
         if triangles.is_empty() {
             triangles.resize(TRIANGLE_BYTES, 0);
@@ -775,6 +820,159 @@ mod tests {
     }
 
     #[test]
+    fn gpu_qd3d_point_and_spot_lights_match_software() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let background = vec![0x801f; 32 * 24];
+        for interpolation_style in [0, 1, 2] {
+            for illumination_type in [
+                PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
+                PPC_Q3_ILLUMINATION_TYPE_PHONG,
+            ] {
+                for attenuation in 0..=2 {
+                    for kind in 0..=4 {
+                        for missing_normal in [false, true] {
+                            let mut draw = triangle(0.3, [0.6, 0.5, 0.4, 1.]);
+                            draw.ambient_light = Some([0.08, 0.05, 0.03]);
+                            let location = (0.2, -0.1, 2.);
+                            let light_kind = if kind == 0 {
+                                PpcQ3LightKind::Point {
+                                    casts_shadows: 0,
+                                    attenuation,
+                                    location,
+                                }
+                            } else {
+                                PpcQ3LightKind::Spot {
+                                    casts_shadows: 0,
+                                    attenuation,
+                                    location,
+                                    direction: (0., 0., -1.),
+                                    hot_angle: 0.2,
+                                    outer_angle: 0.55,
+                                    fall_off: kind - 1,
+                                }
+                            };
+                            draw.lighting = Some(PpcQ3RasterLighting {
+                                interpolation_style,
+                                illumination_type,
+                                lights: vec![PpcQ3LightRecord {
+                                    light: 0,
+                                    light_type: 0,
+                                    kind: light_kind,
+                                    data: PpcQ3LightData {
+                                        is_on: 1,
+                                        brightness: 0.65,
+                                        color: (0.7, 0.4, 0.9),
+                                    },
+                                }],
+                            });
+                            for (i, v) in draw.vertices.iter_mut().enumerate() {
+                                let j = if interpolation_style == 0 { 0 } else { i };
+                                v.shading.world =
+                                    [[-0.8, -0.5, 0.], [1.8, -0.3, 0.2], [0.3, 1.1, -0.4]][j];
+                                v.shading.normal = (!missing_normal).then_some([0., 0., 1.]);
+                                v.shading.view_direction = Some([0.1, 0.2, 1.]);
+                                v.shading.highlight = true;
+                                v.shading.specular_color = [0.4, 0.5, 0.6];
+                                v.shading.specular_control = 8.;
+                                v.reciprocal_w = [1., 0.5, 0.25][i];
+                            }
+                            let mut back = draw.clone();
+                            back.lighting.as_mut().unwrap().lights[0].data.color = (0.2, 0.7, 0.3);
+                            for v in &mut back.vertices {
+                                v.screen_x += 7.;
+                                v.screen_y += 5.;
+                                v.depth = 0.6;
+                            }
+                            let frame = PpcQ3RasterFrame {
+                                width: 32,
+                                height: 24,
+                                viewport: [0, 0, 31, 23],
+                                clear_color: None,
+                                textures: vec![],
+                                draws: vec![draw, back],
+                            };
+                            let actual = state.render(&frame, &background).unwrap();
+                            let expected = cpu_render(&frame, &background);
+                            for (index, (&actual, &expected)) in
+                                actual.iter().zip(&expected).enumerate()
+                            {
+                                for shift in [0, 5, 10] {
+                                    assert!((((actual>>shift)&31) as i32-((expected>>shift)&31) as i32).abs()<=1,"pixel={index}, style={interpolation_style}, attenuation={attenuation}, kind={kind}, missing_normal={missing_normal}: {actual:04x} != {expected:04x}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Coincident/overflowing positions and a zero spot axis contribute no
+        // light, matching the CPU's undefined-direction handling.
+        for (world, location, kind) in [
+            ([0.; 3], (0., 0., 0.), 0),
+            ([f32::MAX; 3], (0., 0., 0.), 0),
+            ([0.; 3], (0., 0., 2.), 1),
+        ] {
+            let mut draw = triangle(0.3, [0.6, 0.5, 0.4, 1.]);
+            let light_kind = if kind == 0 {
+                PpcQ3LightKind::Point {
+                    casts_shadows: 0,
+                    attenuation: 0,
+                    location,
+                }
+            } else {
+                PpcQ3LightKind::Spot {
+                    casts_shadows: 0,
+                    attenuation: 0,
+                    location,
+                    direction: (0., 0., 0.),
+                    hot_angle: 0.2,
+                    outer_angle: 0.55,
+                    fall_off: 1,
+                }
+            };
+            draw.lighting = Some(PpcQ3RasterLighting {
+                interpolation_style: 2,
+                illumination_type: PPC_Q3_ILLUMINATION_TYPE_PHONG,
+                lights: vec![PpcQ3LightRecord {
+                    light: 0,
+                    light_type: 0,
+                    kind: light_kind,
+                    data: PpcQ3LightData {
+                        is_on: 1,
+                        brightness: 1.,
+                        color: (1., 1., 1.),
+                    },
+                }],
+            });
+            for v in &mut draw.vertices {
+                v.shading.world = world;
+            }
+            let frame = PpcQ3RasterFrame {
+                width: 32,
+                height: 24,
+                viewport: [0, 0, 31, 23],
+                clear_color: None,
+                textures: vec![],
+                draws: vec![draw],
+            };
+            let actual = state.render(&frame, &background).unwrap();
+            let expected = cpu_render(&frame, &background);
+            for (actual, expected) in actual.iter().zip(&expected) {
+                assert_eq!(actual & 0x7fff, expected & 0x7fff);
+            }
+        }
+    }
+
+    #[test]
     fn gpu_qd3d_specular_texture_fog_and_alpha_order() {
         let state = match State::new() {
             Ok(state) => state,
@@ -1158,6 +1356,53 @@ mod tests {
             illumination_type: PPC_Q3_ILLUMINATION_TYPE_PHONG,
         });
         assert!(state.render(&invalid, &background).is_err());
+        for kind in [
+            PpcQ3LightKind::Point {
+                casts_shadows: 0,
+                attenuation: 3,
+                location: (0., 0., 1.),
+            },
+            PpcQ3LightKind::Point {
+                casts_shadows: 0,
+                attenuation: 0,
+                location: (f32::NAN, 0., 1.),
+            },
+            PpcQ3LightKind::Spot {
+                casts_shadows: 0,
+                attenuation: 0,
+                location: (0., 0., 1.),
+                direction: (0., 0., -1.),
+                hot_angle: 0.8,
+                outer_angle: 0.2,
+                fall_off: 0,
+            },
+            PpcQ3LightKind::Spot {
+                casts_shadows: 0,
+                attenuation: 0,
+                location: (0., 0., 1.),
+                direction: (0., 0., -1.),
+                hot_angle: 0.2,
+                outer_angle: 0.8,
+                fall_off: 4,
+            },
+        ] {
+            let mut invalid = frame.clone();
+            invalid.draws[0].lighting = Some(PpcQ3RasterLighting {
+                interpolation_style: 2,
+                illumination_type: PPC_Q3_ILLUMINATION_TYPE_PHONG,
+                lights: vec![PpcQ3LightRecord {
+                    light: 0,
+                    light_type: 0,
+                    kind,
+                    data: PpcQ3LightData {
+                        is_on: 1,
+                        brightness: 1.,
+                        color: (1., 1., 1.),
+                    },
+                }],
+            });
+            assert!(state.render(&invalid, &background).is_err());
+        }
         let mut invalid = frame;
         invalid.width = u32::MAX;
         invalid.height = u32::MAX;
