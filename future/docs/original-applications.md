@@ -5455,3 +5455,45 @@ Marathon40M New Game/forward regression is also live:
 /tmp/systemless-marathon-current.txt; its short3.69M instruction trace verifies the
 real Command-N path despite new service discovery. Full rebuild/text/Mixed Mode/
 native/browser and sustained game acceptance remain active.
+
+
+## Current original-game controls verified (2026-10-17)
+
+All three matched EV trials terminate at exactly48,000,000 retired instructions
+by their requested budget, with no service fault. Their40M pre-input frames are
+byte-identical to each other and the verified Enter Ship scene (all PC007E65A4).
+Idle ends PC007E6828, Right PC007E778A, Up PC01023C40. Holding Right124 or Up126
+from40–42M causes bounded visible response: Right changes133 pixels solely in the
+centered ship bounds[242,229,254,249); Up changes6463 pixels and scrolls the world
+while the ship stays centered. Images inspected. Final screen hashes:
+idle4877fb32b5ed000c6706248c51b2ab27c3e61351380563535c44b7f3f21a64c9;
+right7fa66fa0489a8b319ebc32cb1de42d8f923905417541bc105f39b29620c60802;
+up377cd5372147005636cf7b7501ea483c30f74bd8b7570f9ba3c7ba9d1c2b9c92.
+All three saved catalogs are byte-identical to the preceding verified catalog
+634e760a54feb7579480885633bc964dd2f80c8e88a0bd67f9a25a86d5f9a72f,
+including its previously documented guest alias/new-file deltas. No input assets
+were edited. Current counters:sound0,timer0,VBL0,audio_work_pending=true in every
+trial. This confirms current ship entry/turn/thrust responses under a bounded
+headless schedule, not exact physics, native timing or original audio acceptance.
+
+Current Marathon also completes its40M-poll request at39,999,926 retired /
+PC0102605C to budget, after its confirmed original New Game callback and held
+keypad8 forward input28–30M. Inspected frame is the live close-terminal scene,
+SHA25665e3391467034ad53dc864b4f19c29b35c55eb47945bad23918eef3902d7cd6b.
+19,816 original timer callbacks completed; sound/VBL0 and audio_work_pending=false.
+The independently parsed saved catalog is byte-identical to the prior corrected
+folder run, SHA256769a25349f918ac91230fd0cb3decd2fb6664a7377e62a9e74fe540f070df6ee.
+Original companions/forks remain exact; actual Preferences1222B and Recording360B
+persist below the real Preferences directory. Recording playback remains unverified.
+
+Evidence and comparison summary:
+/tmp/systemless-ev-current-{idle,right,forward}{.txt,.ppm,.png,.slv,-before.ppm};
+/tmp/systemless-current-controls-summary.json;
+/tmp/systemless-marathon-current.{txt,ppm,png,slv}.
+Archived privately under future/target/validation/current-game-controls.
+All four original jobs are terminal. No runtime changes/new unit-test counts are
+included in this evidence-only update. Pending audio does not imply audible output;
+the tracer advances sound during guest waits but is not a continuous host audio
+sink. Next exercise actual original buffer refill through explicit deterministic
+audio pulls (and retain that schedule distinction), then sustained gameplay/save/
+recording/native/browser, full text and Mixed Mode acceptance. Goal stays active.
