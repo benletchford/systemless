@@ -260,7 +260,6 @@ impl PpcLoadedApp {
         if row_len > front.row_bytes {
             return None;
         }
-        let mut row_addresses = Vec::new();
         for y in 0..front.height {
             let address = front
                 .base_addr
@@ -268,27 +267,16 @@ impl PpcLoadedApp {
             if !self.memory.is_writable_range(address, row_len) {
                 return None;
             }
-            row_addresses.push(address);
         }
         let count = (front.width as usize).checked_mul(front.height as usize)?;
         let mut background = Vec::new();
         background.try_reserve_exact(count).ok()?;
-        let mut original_indices = Vec::new();
+        // Tag all background cells, including RGB555 targets. The shader
+        // clears bit 15 only where it paints; untouched cells cause no stores.
         for y in 0..front.height {
             for x in 0..front.width {
-                let rgb = surface.read_pixel(&mut self.memory, (x as i32, y as i32))?;
-                if front.depth == 8 {
-                    original_indices.push(ppc_quickdraw_read_pixel(
-                        &mut self.memory,
-                        front,
-                        (x as i32, y as i32),
-                    )? as u8);
-                    // The shader preserves bit 15 for untouched pixels and
-                    // clears it whenever it paints a new RGB555 result.
-                    background.push(rgb | 0x8000);
-                } else {
-                    background.push(rgb);
-                }
+                background
+                    .push(surface.read_pixel(&mut self.memory, (x as i32, y as i32))? | 0x8000);
             }
         }
         let pixels = match renderer.render(&packet, &background) {
@@ -302,27 +290,8 @@ impl PpcLoadedApp {
                 return None;
             }
         };
-        let mut row = Vec::with_capacity(row_len as usize);
-        for (y, address) in row_addresses.into_iter().enumerate() {
-            row.clear();
-            let start = y * front.width as usize;
-            for (x, &pixel) in pixels[start..start + front.width as usize]
-                .iter()
-                .enumerate()
-            {
-                if let Some(clut) = indexed_clut.as_ref() {
-                    row.push(if pixel & 0x8000 != 0 {
-                        original_indices[start + x]
-                    } else {
-                        ppc_rgb555_to_clut_index(pixel, clut)
-                    });
-                } else {
-                    row.extend(pixel.to_be_bytes());
-                }
-            }
-            self.memory
-                .write_bytes(address, &row)
-                .expect("preflighted GPU target remains writable");
+        if !qd3d_gpu::commit_pixels(&mut self.memory, front, indexed_clut.as_ref(), &pixels) {
+            return None;
         }
         let mut stats = PpcQ3SoftwareRenderStats::default();
         stats.record_target(target);
