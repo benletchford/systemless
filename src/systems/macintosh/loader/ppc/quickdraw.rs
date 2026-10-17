@@ -1482,6 +1482,7 @@ fn ppc_gpu_text_glyph(
         ),
         color,
         text_mode,
+        false,
     )
 }
 
@@ -1495,6 +1496,7 @@ fn ppc_gpu_text_mask(
     pen: (i32, i32),
     color: u16,
     text_mode: i16,
+    repeat_transfer: bool,
 ) -> bool {
     use crate::quickdraw::gpu::{
         try_native_rectangle, QuickDrawGpuCommand, QuickDrawGpuMask, RasterTarget,
@@ -1540,10 +1542,11 @@ fn ppc_gpu_text_mask(
         };
         let command = QuickDrawGpuCommand {
             mask: Some(QuickDrawGpuMask {
+                repeat_transfer,
                 origin: [port_x(left)?, port_y(top)?],
                 size: [width, height],
                 coverage: source.to_vec(),
-                threshold: 128,
+                threshold: if repeat_transfer { 1 } else { 128 },
             }),
             area: [
                 i32::from(area.left),
@@ -1590,33 +1593,65 @@ fn ppc_gpu_text_points(
     pen: (i32, i32),
     color: u16,
     text_mode: i16,
+    scale: (i32, i32),
 ) -> bool {
     if memory.quickdraw_gpu_renderer().is_none() {
         return false;
     }
     let fb = surface.front_buffer;
-    let points: Vec<_> = points
+    let (numerator, denominator) = scale;
+    if numerator <= 0 || denominator <= 0 {
+        return false;
+    }
+    let rectangles: Vec<_> = points
         .into_iter()
         .filter_map(|(x, y)| {
-            let x = x.checked_add(pen.0)?;
-            let y = y.checked_add(pen.1)?;
-            (x >= 0 && y >= 0 && x < fb.width as i32 && y < fb.height as i32).then_some((x, y))
+            let sx = ppc_scale_font_floor(x, numerator, denominator);
+            let sy = ppc_scale_font_floor(y, numerator, denominator);
+            let left = pen.0.checked_add(sx)?.max(0);
+            let top = pen.1.checked_add(sy)?.max(0);
+            let right = pen
+                .0
+                .checked_add(
+                    ppc_scale_font_floor(x.checked_add(1)?, numerator, denominator)
+                        .max(sx.checked_add(1)?),
+                )?
+                .min(fb.width as i32);
+            let bottom = pen
+                .1
+                .checked_add(
+                    ppc_scale_font_floor(y.checked_add(1)?, numerator, denominator)
+                        .max(sy.checked_add(1)?),
+                )?
+                .min(fb.height as i32);
+            (left < right && top < bottom).then_some([left, top, right, bottom])
         })
         .collect();
-    let Some(left) = points.iter().map(|p| p.0).min() else {
+    let Some(left) = rectangles.iter().map(|r| r[0]).min() else {
         return true;
     };
-    let right = points.iter().map(|p| p.0).max().unwrap();
-    let top = points.iter().map(|p| p.1).min().unwrap();
-    let bottom = points.iter().map(|p| p.1).max().unwrap();
-    let size = [(right - left + 1) as u32, (bottom - top + 1) as u32];
+    let top = rectangles.iter().map(|r| r[1]).min().unwrap();
+    let right = rectangles.iter().map(|r| r[2]).max().unwrap();
+    let bottom = rectangles.iter().map(|r| r[3]).max().unwrap();
+    let size = [(right - left) as u32, (bottom - top) as u32];
     let count = u64::from(size[0]) * u64::from(size[1]);
-    if count > 4_000_000 {
+    let work: u64 = rectangles
+        .iter()
+        .map(|r| (r[2] - r[0]) as u64 * (r[3] - r[1]) as u64)
+        .sum();
+    if count > 4_000_000 || work > 64_000_000 {
         return false;
     }
     let mut coverage = vec![0; count as usize];
-    for (x, y) in points {
-        coverage[(y - top) as usize * size[0] as usize + (x - left) as usize] = 255;
+    for r in rectangles {
+        for y in r[1]..r[3] {
+            for x in r[0]..r[2] {
+                let cell =
+                    &mut coverage[(y - top) as usize * size[0] as usize + (x - left) as usize];
+                // Keep zero distinct from even positive counts to retain write observers.
+                *cell = if *cell == 0 { 1 } else { 3 - *cell };
+            }
+        }
     }
     ppc_gpu_text_mask(
         memory,
@@ -1628,6 +1663,7 @@ fn ppc_gpu_text_points(
         (left, top),
         color,
         text_mode,
+        true,
     )
 }
 
@@ -1946,8 +1982,8 @@ pub(crate) fn ppc_draw_text_chars(
                     None,
                 );
             }
-            let gpu_glyph = numerator == denominator
-                && ppc_gpu_text_glyph(
+            let gpu_glyph = if numerator == denominator {
+                ppc_gpu_text_glyph(
                     memory,
                     surface,
                     vis_storage.as_deref(),
@@ -1957,7 +1993,30 @@ pub(crate) fn ppc_draw_text_chars(
                     (local_h + base_advance, local_v),
                     color_pixel,
                     text_mode,
-                );
+                )
+            } else {
+                let width = usize::from(glyph.width);
+                let points = (0..usize::from(glyph.height)).flat_map(|row| {
+                    (0..width).filter_map(move |col| {
+                        let index = glyph.data_offset + row * width + col;
+                        (data.get(index).copied().unwrap_or(0) >= 128).then_some((
+                            base_advance + i32::from(glyph.origin_x) + col as i32,
+                            i32::from(glyph.origin_y) + row as i32,
+                        ))
+                    })
+                });
+                ppc_gpu_text_points(
+                    memory,
+                    surface,
+                    vis_storage.as_deref(),
+                    clip_storage.as_deref(),
+                    points,
+                    (local_h, local_v),
+                    color_pixel,
+                    text_mode,
+                    (numerator, denominator),
+                )
+            };
             if !gpu_glyph {
                 let width = glyph.width as usize;
                 let height = glyph.height as usize;
@@ -2220,17 +2279,17 @@ pub(crate) fn ppc_draw_text_chars_styled(
                 paint_pixels.push((source_x, source_y));
             }
         }
-        let gpu_painted = numerator == denominator
-            && ppc_gpu_text_points(
-                memory,
-                surface,
-                vis_storage.as_deref(),
-                clip_storage.as_deref(),
-                paint_pixels.iter().copied(),
-                (local_h, local_v),
-                color_pixel,
-                text_mode,
-            );
+        let gpu_painted = ppc_gpu_text_points(
+            memory,
+            surface,
+            vis_storage.as_deref(),
+            clip_storage.as_deref(),
+            paint_pixels.iter().copied(),
+            (local_h, local_v),
+            color_pixel,
+            text_mode,
+            (numerator, denominator),
+        );
         if !gpu_painted {
             for (source_x, source_y) in paint_pixels {
                 ppc_apply_scaled_text_source_pixel(
@@ -2257,17 +2316,17 @@ pub(crate) fn ppc_draw_text_chars_styled(
 
     if style.underline() && style.smear_max().is_none() && source_advance > 0 {
         let thickness = get_underline_thickness(text_font, face.size).max(1);
-        let gpu_painted = numerator == denominator
-            && ppc_gpu_text_points(
-                memory,
-                surface,
-                vis_storage.as_deref(),
-                clip_storage.as_deref(),
-                (1..=i32::from(thickness)).flat_map(|y| (0..source_advance).map(move |x| (x, y))),
-                (local_h, local_v),
-                color_pixel,
-                text_mode,
-            );
+        let gpu_painted = ppc_gpu_text_points(
+            memory,
+            surface,
+            vis_storage.as_deref(),
+            clip_storage.as_deref(),
+            (1..=i32::from(thickness)).flat_map(|y| (0..source_advance).map(move |x| (x, y))),
+            (local_h, local_v),
+            color_pixel,
+            text_mode,
+            (numerator, denominator),
+        );
         if !gpu_painted {
             for dy in 1..=i32::from(thickness) {
                 for source_x in 0..source_advance {

@@ -8,6 +8,9 @@ pub struct QuickDrawGpuMask {
     pub size: [u32; 2],
     pub coverage: Vec<u8>,
     pub threshold: u8,
+    /// Coverage stores nonzero repetition counts; even counts compose the
+    /// transfer twice, preserving painted cells whose XOR writes cancel.
+    pub repeat_transfer: bool,
 }
 
 /// A clipped shape draw in port coordinates. Bounds use
@@ -32,6 +35,7 @@ impl QuickDrawGpuCommand {
     pub fn valid_mask(&self) -> bool {
         self.mask.as_ref().is_none_or(|mask| {
             mask.threshold != 0
+                && (!mask.repeat_transfer || mask.threshold == 1)
                 && mask.size.iter().all(|v| (1..=32767).contains(v))
                 && mask.size[0]
                     .checked_mul(mask.size[1])
@@ -424,7 +428,18 @@ impl QuickDrawGpuRenderer for ReferenceRenderer {
                     });
                 let black =
                     command.pattern[y.rem_euclid(8) as usize] & (0x80 >> x.rem_euclid(8)) != 0;
-                let [pass, xor] = command.transfer[usize::from(black)];
+                let [pass, mut xor] = command.transfer[usize::from(black)];
+                if covered
+                    && command.mask.as_ref().is_some_and(|mask| {
+                        mask.repeat_transfer
+                            && mask.coverage[(y - mask.origin[1]) as usize * mask.size[0] as usize
+                                + (x - mask.origin[0]) as usize]
+                                % 2
+                                == 0
+                    })
+                {
+                    xor ^= xor & pass;
+                }
                 QuickDrawGpuPixel {
                     value: if covered { (old & pass) ^ xor } else { old },
                     covered,
@@ -491,6 +506,50 @@ mod tests {
             },
             command
         ));
+    }
+
+    #[test]
+    fn gpu_even_repeated_xor_notifies_guest_code_observers() {
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x1000, vec![0xa5; 4]);
+        memory
+            .shared_view()
+            .set_quickdraw_gpu_renderer(QuickDrawGpuSlot::new(Box::new(ReferenceRenderer {
+                calls: Rc::new(Cell::new(0)),
+                failure: 0,
+            })));
+        let token = PpcMemory::instruction_cache_token(&mut memory, 0x1000);
+        let command = QuickDrawGpuCommand {
+            mask: Some(QuickDrawGpuMask {
+                origin: [0, 0],
+                size: [4, 1],
+                coverage: vec![0, 2, 0, 0],
+                threshold: 1,
+                repeat_transfer: true,
+            }),
+            clip_rows: None,
+            polygon_edges: None,
+            area: [0, 0, 4, 1],
+            rect: [0, 0, 4, 1],
+            border: None,
+            pattern: [255; 8],
+            transfer: [[255, 103]; 2],
+        };
+        assert!(try_native_rectangle(
+            &mut memory,
+            RasterTarget {
+                base: 0x1000,
+                row_bytes: 4,
+                depth: 8,
+                origin: [0, 0]
+            },
+            command
+        ));
+        assert_eq!(memory.read_u32_be(0x1000), Some(0xa5a5a5a5));
+        assert_ne!(
+            PpcMemory::instruction_cache_token(&mut memory, 0x1000),
+            token
+        );
     }
 
     #[test]
@@ -635,6 +694,7 @@ mod tests {
             }
             if failure == 5 {
                 command.mask = Some(QuickDrawGpuMask {
+                    repeat_transfer: false,
                     origin: [0, 0],
                     size: [2, 2],
                     coverage: vec![255; 3],
