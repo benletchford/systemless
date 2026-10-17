@@ -4771,7 +4771,7 @@ pub(crate) fn ppc_copy_bits(
         } else {
             None
         };
-        let gpu_writes = if matches!(mode, 0 | 36)
+        let gpu_writes = if matches!(mode, 0 | 32..=39)
             && memory.quickdraw_gpu_renderer().is_some()
             && i64::from(copy_right - copy_left) * i64::from(copy_bottom - copy_top) <= 4_194_304
         {
@@ -4822,6 +4822,25 @@ pub(crate) fn ppc_copy_bits(
                                 u32::MAX
                             },
                         ]),
+                    }
+                }),
+                (!matches!(mode, 0 | 36)).then(|| {
+                    let entries = if matches!(src_bits.depth, 2 | 4 | 8) {
+                        1usize << src_bits.depth
+                    } else {
+                        0
+                    };
+                    crate::quickdraw::gpu::QuickDrawGpuArithmetic {
+                        depth: src_bits.depth,
+                        mode: u32::from(mode),
+                        op: [op_color.red, op_color.green, op_color.blue],
+                        source_clut: src_clut
+                            .as_ref()
+                            .map_or_else(Vec::new, |c| c[..entries].to_vec()),
+                        destination_clut: dst_clut
+                            .as_ref()
+                            .map_or_else(Vec::new, |c| c[..entries].to_vec()),
+                        background: Vec::new(),
                     }
                 }),
                 &mut details,
@@ -5175,6 +5194,7 @@ pub(crate) fn ppc_copy_mask(
                     coverage: Some(coverage),
                     transparent: None,
                 }),
+                None,
                 &mut ignored_details,
             ) {
                 if writes.is_empty() {

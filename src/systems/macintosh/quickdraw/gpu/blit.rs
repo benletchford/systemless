@@ -13,6 +13,7 @@ pub struct QuickDrawGpuBlit {
     pub palette: Option<[u32; 256]>,
     pub direct: Option<QuickDrawGpuDirectColor>,
     pub clip: Option<QuickDrawGpuBlitClip>,
+    pub arithmetic: Option<super::QuickDrawGpuArithmetic>,
 }
 impl QuickDrawGpuBlit {
     pub fn valid(&self) -> bool {
@@ -38,6 +39,16 @@ impl QuickDrawGpuBlit {
                     || clip
                         .transparent
                         .is_some_and(|[key, mask]| mask == 0 || key & !mask != 0)
+            })
+            || self.arithmetic.as_ref().is_some_and(|a| {
+                self.palette.is_some()
+                    || self.direct.is_some()
+                    || !a.valid(destination, &self.pixels)
+                    || self
+                        .columns
+                        .iter()
+                        .chain(&self.rows)
+                        .any(|g| g[1] - g[0] != 1)
             })
             || self.direct.as_ref().is_some_and(|d| {
                 !d.valid()
@@ -101,7 +112,11 @@ impl QuickDrawGpuBlit {
                     .palette
                     .as_ref()
                     .map_or(maximum, |p| p[maximum as usize]);
-                pixels.push(self.direct.as_ref().map_or(value, |d| d.convert(value)));
+                let value = self.arithmetic.as_ref().map_or_else(
+                    || self.direct.as_ref().map_or(value, |d| d.convert(value)),
+                    |a| a.reference(maximum, a.background[pixels.len()]),
+                );
+                pixels.push(value);
             }
         }
         Some(pixels)

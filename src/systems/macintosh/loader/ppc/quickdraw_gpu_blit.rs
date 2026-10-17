@@ -13,6 +13,7 @@ pub(super) fn sample_copy(
     palette: Option<[u32; 256]>,
     direct: Option<crate::quickdraw::gpu::QuickDrawGpuDirectColor>,
     operation_clip: Option<crate::quickdraw::gpu::QuickDrawGpuBlitClip>,
+    mut arithmetic: Option<crate::quickdraw::gpu::QuickDrawGpuArithmetic>,
     details: &mut crate::memory::SavedPixels<()>,
 ) -> Option<Vec<(i32, i32, u32)>> {
     let renderer = memory.quickdraw_gpu_renderer();
@@ -60,6 +61,15 @@ pub(super) fn sample_copy(
             pixels.push(ppc_read_pixmap_raw_pixel(memory, source, x, y)?);
         }
     }
+    if let Some(a) = &mut arithmetic {
+        a.background = Vec::with_capacity(xs.len() * ys.len());
+        for y in top..bottom {
+            for x in left..right {
+                a.background
+                    .push(ppc_read_pixmap_raw_pixel(memory, destination, x, y)?);
+            }
+        }
+    }
     let command = crate::quickdraw::gpu::QuickDrawGpuBlit {
         width,
         height,
@@ -75,11 +85,12 @@ pub(super) fn sample_copy(
         palette,
         direct,
         clip: operation_clip,
+        arithmetic,
     };
     if !command.valid() {
         return None;
     }
-    let output = if command.clip.is_some() {
+    let output = if command.clip.is_some() || command.arithmetic.is_some() {
         renderer.render_blit_cells(&command).ok()?
     } else {
         renderer
@@ -108,7 +119,8 @@ pub(super) fn sample_copy(
         let pixel = cell.value;
         let row = i / xs.len();
         let col = i % xs.len();
-        if source.depth == destination.depth
+        if command.arithmetic.is_none()
+            && source.depth == destination.depth
             && matches!(source.depth, 8 | 16)
             && command.pixels[((ys[row] - y0) as u32 * width + (xs[col] - x0) as u32) as usize]
                 == pixel

@@ -111,6 +111,7 @@ struct State {
     polygon_products: wgpu::ComputePipeline,
     blit_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
     cells_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
+    arithmetic_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
     packed_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
 }
 impl State {
@@ -148,6 +149,7 @@ impl State {
             polygon_products,
             blit_pipeline: Default::default(),
             cells_pipeline: Default::default(),
+            arithmetic_pipeline: Default::default(),
             packed_pipeline: Default::default(),
         })
     }
@@ -186,7 +188,7 @@ impl State {
         }
     }
     fn render_blit(&self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
-        if command.clip.is_some() {
+        if command.clip.is_some() || command.arithmetic.is_some() {
             return Err("clipped bitmap requires coverage readback".into());
         }
         self.render_blit_words(command, false)
@@ -215,13 +217,23 @@ impl State {
         if !command.valid() {
             return Err("invalid QuickDraw bitmap blit".into());
         }
-        let mut cached = if cells {
+        let mut cached = if cells && command.arithmetic.is_some() {
+            self.arithmetic_pipeline.borrow_mut()
+        } else if cells {
             self.cells_pipeline.borrow_mut()
         } else {
             self.blit_pipeline.borrow_mut()
         };
         if cached.is_none() {
-            *cached = Some(self.create_blit_pipeline(if cells { "blit_cells" } else { "blit" }));
+            *cached = Some(
+                self.create_blit_pipeline(if cells && command.arithmetic.is_some() {
+                    "blit_arithmetic"
+                } else if cells {
+                    "blit_cells"
+                } else {
+                    "blit"
+                }),
+            );
         }
         let pipeline = cached.as_ref().unwrap().as_ref().map_err(Clone::clone)?;
         let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
@@ -358,6 +370,27 @@ impl State {
         ];
         if cells {
             inputs.push((6, &coverage, wgpu::BufferUsages::STORAGE));
+        }
+        let mut arithmetic = Vec::new();
+        if let Some(a) = &command.arithmetic {
+            arithmetic.extend([
+                a.depth,
+                a.mode,
+                a.source_clut.len() as u32,
+                u32::from(a.op[0]),
+                u32::from(a.op[1]),
+                u32::from(a.op[2]),
+            ]);
+            arithmetic.extend(
+                a.source_clut
+                    .iter()
+                    .chain(&a.destination_clut)
+                    .flatten()
+                    .map(|v| u32::from(*v)),
+            );
+            arithmetic.extend(&a.background);
+            inputs.retain(|(binding, _, _)| *binding != 1);
+            inputs.push((7, &arithmetic, wgpu::BufferUsages::STORAGE));
         }
         self.dispatch_blit(pipeline, width, height, if cells { 2 } else { 1 }, &inputs)
     }
@@ -829,8 +862,183 @@ mod tests {
             palette: None,
             direct: None,
             clip: None,
+            arithmetic: None,
         };
         assert_eq!(state.render_blit(&raw).unwrap(), vec![u32::MAX]);
+    }
+
+    #[test]
+    fn gpu_arithmetic_bitmap_modes_match_full_precision_cpu_rules() {
+        use systemless::quickdraw::gpu::{QuickDrawGpuArithmetic, QuickDrawGpuBlitClip};
+        fn color(depth: u32, pixel: u32, clut: &[[u16; 3]]) -> [u16; 3] {
+            match depth {
+                2 | 4 | 8 => clut[pixel as usize],
+                16 => [pixel >> 10 & 31, pixel >> 5 & 31, pixel & 31]
+                    .map(|v| ((f64::from(v) * 65535.0 / 31.0).round()) as u16),
+                32 => [pixel >> 16 & 255, pixel >> 8 & 255, pixel & 255].map(|v| v as u16 * 257),
+                _ => unreachable!(),
+            }
+        }
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        for depth in [1u32, 2, 4, 8, 16, 32] {
+            for mode in [32u32, 33, 34, 35, 37, 38, 39] {
+                for op in [[0u16; 3], [65535; 3], [1, 32768, 60000]] {
+                    let limit = if depth == 32 {
+                        u32::MAX
+                    } else {
+                        (1 << depth) - 1
+                    };
+                    let count = if matches!(depth, 2 | 4 | 8) {
+                        1usize << depth
+                    } else {
+                        0
+                    };
+                    let source_clut = (0..count)
+                        .map(|i| {
+                            [
+                                ((i * 1327 + 511) % 65536) as u16,
+                                ((i * 8191 + 65535) % 65536) as u16,
+                                ((i * 37 + 29) % 65536) as u16,
+                            ]
+                        })
+                        .collect();
+                    let destination_clut = (0..count)
+                        .map(|i| {
+                            [
+                                ((i / 2 * 7 % 32) * 2048 + i % 2) as u16,
+                                ((i / 2 * 11 % 32) * 2048 + i % 2) as u16,
+                                ((i / 2 * 17 % 32) * 2048 + i % 2) as u16,
+                            ]
+                        })
+                        .collect();
+                    let pixels: Vec<u32> = (0..279u32)
+                        .map(|i| {
+                            if i % 7 == 0 {
+                                limit
+                            } else {
+                                i.wrapping_mul(2654435761) & limit
+                            }
+                        })
+                        .collect();
+                    let background: Vec<u32> = (0..279u32)
+                        .map(|i| {
+                            if i % 11 == 0 {
+                                0
+                            } else {
+                                i.wrapping_mul(123456789).rotate_left(13) & limit
+                            }
+                        })
+                        .collect();
+                    let a = QuickDrawGpuArithmetic {
+                        depth,
+                        mode,
+                        op,
+                        source_clut,
+                        destination_clut,
+                        background,
+                    };
+                    let mask: Vec<u8> = (0..279).map(|i| u8::from(i % 5 != 0)).collect();
+                    let expected: Vec<QuickDrawGpuPixel> = pixels
+                        .iter()
+                        .enumerate()
+                        .map(|(i, s)| {
+                            let d = a.background[i];
+                            let value = if depth == 1 {
+                                match mode {
+                                    32 => *s,
+                                    33 | 37 => d & !*s,
+                                    34 | 38 => d ^ s,
+                                    _ => d | s,
+                                }
+                            } else {
+                                let src = color(depth, *s, &a.source_clut);
+                                let dst = color(depth, d, &a.destination_clut);
+                                let rgb: [u16; 3] = std::array::from_fn(|c| match mode {
+                                    32 => {
+                                        ((u64::from(src[c]) * u64::from(op[c])
+                                            + u64::from(dst[c]) * (65536 - u64::from(op[c])))
+                                            >> 16) as u16
+                                    }
+                                    33 => src[c].saturating_add(dst[c]).min(op[c]),
+                                    34 => src[c].wrapping_add(dst[c]),
+                                    35 => src[c].saturating_sub(dst[c]).max(op[c]),
+                                    37 => src[c].max(dst[c]),
+                                    38 => src[c].wrapping_sub(dst[c]),
+                                    _ => src[c].min(dst[c]),
+                                });
+                                match depth {
+                                    16 => {
+                                        (u32::from(rgb[0] / 2048) << 10)
+                                            | (u32::from(rgb[1] / 2048) << 5)
+                                            | u32::from(rgb[2] / 2048)
+                                    }
+                                    32 => {
+                                        (u32::from(rgb[0] / 256) << 16)
+                                            | (u32::from(rgb[1] / 256) << 8)
+                                            | u32::from(rgb[2] / 256)
+                                    }
+                                    _ => {
+                                        a.destination_clut
+                                            .iter()
+                                            .enumerate()
+                                            .min_by_key(|(_, c)| {
+                                                (0..3)
+                                                    .map(|j| {
+                                                        (i32::from(c[j] / 2048)
+                                                            - i32::from(rgb[j] / 2048))
+                                                        .pow(2)
+                                                    })
+                                                    .sum::<i32>()
+                                            })
+                                            .unwrap()
+                                            .0 as u32
+                                    }
+                                }
+                            };
+                            QuickDrawGpuPixel {
+                                value,
+                                covered: mask[i] != 0,
+                            }
+                        })
+                        .collect();
+                    let command = QuickDrawGpuBlit {
+                        width: 31,
+                        height: 9,
+                        pixels,
+                        columns: (0..31).map(|x| [x, x + 1]).collect(),
+                        rows: (0..9).map(|y| [y, y + 1]).collect(),
+                        palette: None,
+                        direct: None,
+                        clip: Some(QuickDrawGpuBlitClip {
+                            coverage: Some(mask),
+                            transparent: None,
+                        }),
+                        arithmetic: Some(a),
+                    };
+                    assert_eq!(
+                        state.render_blit_cells(&command).unwrap(),
+                        expected,
+                        "depth={depth},mode={mode},op={op:?}"
+                    );
+                    assert!(state.render_blit(&command).is_err());
+                    let mut invalid = command.clone();
+                    invalid.arithmetic.as_mut().unwrap().background.pop();
+                    assert!(state.render_blit_cells(&invalid).is_err());
+                    let mut invalid = command;
+                    invalid.arithmetic.as_mut().unwrap().mode = 36;
+                    assert!(state.render_blit_cells(&invalid).is_err());
+                }
+            }
+        }
     }
 
     #[test]
@@ -884,6 +1092,7 @@ mod tests {
                             coverage: masked.then_some(mask.clone()),
                             transparent: transparent.then_some([key, source_mask]),
                         }),
+                        arithmetic: None,
                     };
                     let actual = state.render_blit_cells(&command).unwrap();
                     for (i, cell) in actual.iter().enumerate() {
@@ -964,6 +1173,7 @@ mod tests {
                         palette,
                     }),
                     clip: None,
+                    arithmetic: None,
                 };
                 let colors = &command.direct.as_ref().unwrap().palette;
                 let expected: Vec<u32> = command
@@ -1059,6 +1269,7 @@ mod tests {
                 palette,
                 direct: None,
                 clip: None,
+                arithmetic: None,
             };
             let mut expected = Vec::new();
             for row in &command.rows {
