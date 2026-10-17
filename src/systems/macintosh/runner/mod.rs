@@ -2160,6 +2160,14 @@ impl FixtureRunner {
 
     /// Install a synchronous GPU renderer that commits results to guest memory.
     /// No GPU backend is constructed by default.
+    pub fn set_quickdraw_gpu_renderer(
+        &mut self,
+        renderer: Box<dyn crate::quickdraw::gpu::QuickDrawGpuRenderer>,
+    ) {
+        self.bus.quickdraw_gpu_renderer = Some(renderer);
+    }
+
+    /// Install synchronous 3D rasterization; no GPU backend exists by default.
     pub fn set_q3_gpu_renderer(&mut self, renderer: Box<dyn PpcQ3GpuRenderer>) {
         self.q3_gpu_renderer = Some(renderer);
     }

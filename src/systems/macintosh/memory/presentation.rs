@@ -4143,6 +4143,55 @@ mod tests {
     }
 
     #[test]
+    fn gpu_rectangle_writeback_preserves_frame_interior_text_and_same_value_paint() {
+        use crate::quickdraw::gpu::{
+            try_rectangle, QuickDrawGpuCommand, RasterTarget, ReferenceRenderer,
+        };
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x101b);
+        bus.quickdraw_gpu_renderer = Some(Box::new(ReferenceRenderer {
+            calls: Default::default(),
+            failure: 0,
+        }));
+        let mut command = QuickDrawGpuCommand {
+            area: [0, 0, 8, 8],
+            rect: [0, 0, 8, 8],
+            border: Some([1, 1]),
+            pattern: [0xff; 8],
+            transfer: [[0, 255], [0, 0]],
+        };
+        assert!(try_rectangle(
+            &mut bus,
+            RasterTarget {
+                base: 0x1000,
+                row_bytes: 8,
+                depth: 8,
+                origin: [0, 0]
+            },
+            command.clone()
+        ));
+        assert!(
+            bus.has_visible_outline_detail(),
+            "frame interior must not lose text detail"
+        );
+        command.border = None;
+        assert!(try_rectangle(
+            &mut bus,
+            RasterTarget {
+                base: 0x1000,
+                row_bytes: 8,
+                depth: 8,
+                origin: [0, 0]
+            },
+            command
+        ));
+        assert!(
+            !bus.has_visible_outline_detail(),
+            "same-value paint must invalidate text detail"
+        );
+    }
+
+    #[test]
     fn gpu_readback_preserves_untouched_retained_text() {
         let mut bus = bus();
         paint_detail(&mut bus, 0x1002);

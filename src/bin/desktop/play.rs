@@ -406,6 +406,7 @@ pub(super) fn run(
         runner.set_ui_theme(theme);
         if gpu {
             runner.set_q3_gpu_renderer(Box::new(super::wgpu_qd3d::Qd3dRenderer::new()));
+            runner.set_quickdraw_gpu_renderer(Box::new(super::wgpu_quickdraw::QuickDrawRenderer::new()));
         }
         runner.set_app_start_time(start_time);
         let app = game::load_game_from_path(&mut runner, archive)

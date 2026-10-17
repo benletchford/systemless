@@ -935,6 +935,8 @@ pub struct MacMemoryBus {
     /// passes through the bus.
     access_watch: Option<AccessWatch>,
     pub(crate) presentation: super::presentation::PresentationSlot,
+    /// Installed by the runner only when GPU drawing is explicitly enabled.
+    pub(crate) quickdraw_gpu_renderer: Option<Box<dyn crate::quickdraw::gpu::QuickDrawGpuRenderer>>,
     /// Mapped text cells for the current CopyBits colour table.
     pub(crate) copy_map_cache: super::presentation::CopyMapCache,
     /// Inline JIT store filter (`m68k::AddressBus::tracked_store_filter`):
@@ -1844,6 +1846,7 @@ impl MacMemoryBus {
             write_probe_original: None,
             access_watch: None,
             presentation: Default::default(),
+            quickdraw_gpu_renderer: None,
             copy_map_cache: Default::default(),
             store_filter: None,
             store_filter_seen: 0,
@@ -1935,6 +1938,7 @@ impl MacMemoryBus {
             write_probe_original: None,
             access_watch: None,
             presentation: Default::default(),
+            quickdraw_gpu_renderer: None,
             copy_map_cache: Default::default(),
             store_filter: None,
             store_filter_seen: 0,

@@ -139,6 +139,7 @@ impl GuiDriver {
         runner.set_ui_theme(self.ui_theme);
         if self.gpu {
             runner.set_q3_gpu_renderer(Box::new(super::wgpu_qd3d::Qd3dRenderer::new()));
+            runner.set_quickdraw_gpu_renderer(Box::new(super::wgpu_quickdraw::QuickDrawRenderer::new()));
         }
         #[cfg(target_os = "macos")]
         if self.native_integrations {

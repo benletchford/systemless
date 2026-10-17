@@ -14,5 +14,6 @@
 //!   fills shared by the 68K trap path and the PowerPC import path.
 
 pub mod fonts;
+pub mod gpu;
 pub(crate) mod raster;
 pub mod text;

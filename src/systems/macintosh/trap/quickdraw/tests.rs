@@ -2787,7 +2787,22 @@
     /// second [12,14] at row 4 closes the notch again). `pattern` sets
     /// pnPat/bkPat.
     fn draw_rect_1bpp(op: ShapeOp, pattern: [u8; 8], notched_clip: bool) -> Vec<u8> {
+        draw_rect_1bpp_route(op, pattern, notched_clip, false).0
+    }
+    fn draw_rect_1bpp_route(
+        op: ShapeOp,
+        pattern: [u8; 8],
+        notched_clip: bool,
+        gpu: bool,
+    ) -> (Vec<u8>, usize) {
         let (mut d, mut cpu, mut bus) = setup();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        if gpu {
+            bus.quickdraw_gpu_renderer = Some(Box::new(crate::quickdraw::gpu::ReferenceRenderer {
+                calls: calls.clone(),
+                failure: 0,
+            }));
+        }
         let base = bus.alloc(5 * 6);
         for offset in 0..30u32 {
             bus.write_byte(base + offset, (offset * 37 + 11) as u8);
@@ -2833,7 +2848,85 @@
             right: 29,
         };
         d.draw_rect(&mut cpu, &mut bus, &rect, op);
-        bus.read_bytes(base, 30)
+        (bus.read_bytes(base, 30), calls.get())
+    }
+
+    #[test]
+    fn gpu_rectangles_match_classic_quickdraw_and_decline_complex_clips() {
+        for op in [
+            ShapeOp::Paint,
+            ShapeOp::Frame,
+            ShapeOp::Erase,
+            ShapeOp::Invert,
+            ShapeOp::Fill([0xa5; 8]),
+        ] {
+            for pattern in [
+                [0; 8],
+                [0xff; 8],
+                [0xa5, 0x5a, 0xcc, 0x33, 0x96, 0x69, 0xf0, 0x0f],
+            ] {
+                for complex in [false, true] {
+                    let (actual, calls) = draw_rect_1bpp_route(op, pattern, complex, true);
+                    let expected = draw_rect_1bpp(op, pattern, complex);
+                    assert_eq!(actual, expected, "op={op:?},complex={complex}");
+                    assert_eq!(calls, usize::from(!complex));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gpu_color_rectangles_match_classic_transfer_modes_at_every_depth() {
+        fn draw(depth: u16, mode: i16, op: ShapeOp, gpu: bool) -> (Vec<u8>, usize) {
+            let (mut d, mut cpu, mut bus) = setup();
+            setup_color_polygon_surface(&mut d, &cpu, &mut bus);
+            let a5 = cpu.read_reg(Register::A5);
+            let globals = bus.read_long(a5);
+            let port = bus.read_long(globals);
+            let pixmap = bus.read_long(bus.read_long(port + 2));
+            let row_bytes = 64 * u32::from(depth) / 8 + 3;
+            let base = bus.alloc(row_bytes * 64);
+            bus.write_bytes(base, &vec![0xa5; (row_bytes * 64) as usize]);
+            bus.write_long(pixmap, base);
+            bus.write_word(pixmap + 4, 0x8000 | row_bytes as u16);
+            bus.write_word(pixmap + 32, depth);
+            d.screen_mode = (base, row_bytes, 64, 64, depth);
+            d.fg_color = (0x1234, 0xabcd, 0xf0f0);
+            d.bg_color = (0xeec0, 0x4321, 0x0100);
+            d.pn_pat = [0x96, 0x69, 0x55, 0xaa, 0xcc, 0x33, 0xf0, 0x0f];
+            d.pn_mode = mode;
+            d.pn_size = (2, 3);
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            if gpu {
+                bus.quickdraw_gpu_renderer =
+                    Some(Box::new(crate::quickdraw::gpu::ReferenceRenderer {
+                        calls: calls.clone(),
+                        failure: 0,
+                    }));
+            }
+            d.draw_rect(
+                &mut cpu,
+                &mut bus,
+                &Rect {
+                    top: 3,
+                    left: 5,
+                    bottom: 10,
+                    right: 31,
+                },
+                op,
+            );
+            (bus.read_bytes(base, (row_bytes * 64) as usize), calls.get())
+        }
+        for depth in [2, 4, 8, 16, 32] {
+            for mode in [0, 1, 2, 3] {
+                for op in [ShapeOp::Paint, ShapeOp::Frame] {
+                    let (actual, calls) = draw(depth, mode, op, true);
+                    let (expected, _) = draw(depth, mode, op, false);
+                    assert_eq!(actual, expected, "depth={depth},mode={mode},op={op:?}");
+                    assert_eq!(calls, 1);
+                }
+            }
+        }
     }
 
     fn bit_at(bits: &[u8], y: usize, x: usize) -> bool {
