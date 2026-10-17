@@ -183,6 +183,93 @@ const CLIPS: [(RegionSpec, RegionSpec); 4] = [
 ];
 
 #[test]
+fn gpu_native_rounded_fills_and_frames_match_software_at_every_depth() {
+    let pixels = initial_pixels();
+    for depth in [1, 2, 4, 8, 16] {
+        for (vis, clip) in [CLIPS[0], CLIPS[3]] {
+            let fixture = fixture(&pixels, vis, clip);
+            for rect in [RECTS[0], RECTS[3], RECTS[1]] {
+                for frame in [false, true] {
+                    for pen in [(1, 1), (2, 3), (0, 0)] {
+                        for corner in [(11, 5), (0, 0)] {
+                            let mut outputs = Vec::new();
+                            for gpu in [false, true] {
+                                let mut loaded = load_pef_application(&synthetic_pef_with_import(
+                                    b"PaintRoundRect",
+                                ))
+                                .unwrap();
+                                install_port(&mut loaded, &fixture, depth);
+                                ppc_write_rect(
+                                    &mut loaded.memory,
+                                    RECT,
+                                    rect.0,
+                                    rect.1,
+                                    rect.2,
+                                    rect.3,
+                                )
+                                .unwrap();
+                                loaded.cpu.gpr[3] = RECT;
+                                loaded.cpu.gpr[4] = corner.0;
+                                loaded.cpu.gpr[5] = corner.1;
+                                loaded
+                                    .memory
+                                    .write_u16_be(PORT + PPC_CGRAF_PORT_PN_SIZE_OFFSET, pen.0)
+                                    .unwrap();
+                                loaded
+                                    .memory
+                                    .write_u16_be(PORT + PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2, pen.1)
+                                    .unwrap();
+                                let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                                if gpu {
+                                    loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                                        crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                            crate::quickdraw::gpu::ReferenceRenderer {
+                                                calls: calls.clone(),
+                                                failure: 0,
+                                            },
+                                        )),
+                                    );
+                                }
+                                let wrote = if frame {
+                                    ppc_frame_round_rect(
+                                        &loaded.cpu,
+                                        &mut loaded.memory,
+                                        &loaded.gworlds,
+                                        PORT,
+                                        PPC_RGB_BLACK,
+                                        Some(fixture.fg_index),
+                                    )
+                                } else {
+                                    ppc_paint_round_rect(
+                                        &loaded.cpu,
+                                        &mut loaded.memory,
+                                        &loaded.gworlds,
+                                        PORT,
+                                        PPC_RGB_BLACK,
+                                        Some(fixture.fg_index),
+                                    )
+                                };
+                                assert_eq!(
+                                    calls.get(),
+                                    usize::from(
+                                        gpu && wrote && !(frame && (pen.0 == 0 || pen.1 == 0))
+                                    )
+                                );
+                                if rect == RECTS[3] && !frame {
+                                    assert!(wrote);
+                                }
+                                outputs.push((wrote, read_pixels(&mut loaded, pixels.len())));
+                            }
+                            assert_eq!(outputs[1],outputs[0],"depth={depth},rect={rect:?},frame={frame},pen={pen:?},corner={corner:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn gpu_native_oval_fills_and_frames_match_software_at_every_depth() {
     let pixels = initial_pixels();
     for depth in [1, 2, 4, 8, 16] {
