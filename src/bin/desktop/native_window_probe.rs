@@ -82,6 +82,7 @@ impl Probe {
             } else {
                 "owned snapshot -> actual native cursor event -> guest input round trip; guest origin covered by driver tests"
             },
+            "renderer": if self.app.use_wgpu { "wgpu" } else { "platform" },
             "runtime_error": self.app.runtime_error,
             "window": self.app.window.as_ref().map(|w| serde_json::json!({
                 "width": w.inner_size().width, "height": w.inner_size().height,
@@ -131,7 +132,7 @@ impl Probe {
         }
         let settled = self.phase_started.elapsed() > Duration::from_secs(2);
         match self.phase {
-            0 if self.app.frame.sequence > 2 => {
+            0 if self.app.frame.sequence > 2 && self.app.last_presented_guest_tick.is_some() => {
                 window.focus_window();
                 self.advance("guest frames reach real window");
             }
