@@ -309,10 +309,71 @@ pub(crate) fn ppc_draw_oval_bounds(
     let inner_top = top + pen_height;
     let inner_width = width - 2 * pen_width;
     let inner_height = height - 2 * pen_height;
-    let inner_spans = TrapDispatcher::compute_oval_spans(
-        inner_width.max(0) as i16,
-        inner_height.max(0) as i16,
-    );
+    let inner_spans =
+        TrapDispatcher::compute_oval_spans(inner_width.max(0) as i16, inner_height.max(0) as i16);
+    if memory.quickdraw_gpu_renderer().is_some() {
+        let result = (|| {
+            use crate::quickdraw::raster::paint::{ClipRows, Ink, TransferMode};
+            use crate::quickdraw::raster::region_rows::{difference_rows, intersect_rows};
+            let area = crate::trap::types::Rect {
+                top: i16::try_from(top.max(0) + i32::from(surface.top)).ok()?,
+                left: i16::try_from(left.max(0) + i32::from(surface.left)).ok()?,
+                bottom: i16::try_from(
+                    bottom.min(front_buffer.height as i32) + i32::from(surface.top),
+                )
+                .ok()?,
+                right: i16::try_from(
+                    right.min(front_buffer.width as i32) + i32::from(surface.left),
+                )
+                .ok()?,
+            };
+            if area.top >= area.bottom || area.left >= area.right {
+                return Some(false);
+            }
+            let mut rows = ppc_port_clip_rows(memory, current_gworld, area.top, area.bottom)?
+                .clipped_rows(area)?;
+            for (dy, row) in rows.iter_mut().enumerate() {
+                let y = i32::from(area.top) + dy as i32 - i32::from(surface.top);
+                let Some(&(l, r)) = spans.get(usize::try_from(y - top).ok()?) else {
+                    row.clear();
+                    continue;
+                };
+                let clamp = |x: i32| {
+                    (x + i32::from(surface.left)).clamp(i32::from(area.left), i32::from(area.right))
+                        as i16
+                };
+                let (l, r) = (clamp(left + i32::from(l)), clamp(left + i32::from(r)));
+                if l >= r {
+                    row.clear();
+                    continue;
+                }
+                *row = intersect_rows(row, &[l, r]);
+                if frame_only && y >= inner_top && y < inner_top + inner_height {
+                    if let Some(&(l, r)) = inner_spans.get((y - inner_top) as usize) {
+                        let (l, r) = (
+                            clamp(inner_left + i32::from(l)),
+                            clamp(inner_left + i32::from(r)),
+                        );
+                        if l < r {
+                            *row = difference_rows(row, &[l, r]);
+                        }
+                    }
+                }
+            }
+            let clip = ClipRows::from_rows(area.top, rows);
+            let ink = Ink {
+                fg: u32::from(color_pixel),
+                bg: u32::from(color_pixel),
+                pattern: [0xff; 8],
+                mode: TransferMode::PatCopy,
+                pat_origin: (0, 0),
+            };
+            ppc_gpu_pattern_rect(memory, surface, area, &clip, &ink)
+        })();
+        if let Some(wrote) = result {
+            return wrote;
+        }
+    }
     let clip_storage = memory
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
         .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
@@ -330,10 +391,12 @@ pub(crate) fn ppc_draw_oval_bounds(
         for x in outer_left.max(0)..outer_right.min(front_buffer.width as i32) {
             let inner = if frame_only && y >= inner_top && y < inner_top + inner_height {
                 let inner_row = (y - inner_top) as usize;
-                inner_spans.get(inner_row).is_some_and(|&(span_left, span_right)| {
-                    x >= inner_left + i32::from(span_left)
-                        && x < inner_left + i32::from(span_right)
-                })
+                inner_spans
+                    .get(inner_row)
+                    .is_some_and(|&(span_left, span_right)| {
+                        x >= inner_left + i32::from(span_left)
+                            && x < inner_left + i32::from(span_right)
+                    })
             } else {
                 false
             };
