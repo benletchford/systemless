@@ -317,6 +317,164 @@ fn gpu_native_glyph_masks_match_software_text_modes_and_explicit_clips() {
 }
 
 #[test]
+fn gpu_native_small_region_frames_stay_accelerated_on_large_surfaces() {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, CLIPS[0].0, CLIPS[0].1);
+    let mut expected = None;
+    for gpu in [false, true] {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FrameRgn")).unwrap();
+        install_port(&mut loaded, &fixture, 8);
+        let base = 0x30000000;
+        loaded.memory.add_region(base, vec![0xa5; 4003 * 12]);
+        ppc_write_pixmap(&mut loaded.memory, PIXMAP, base, 4003, 0, 0, 3000, 4000, 8).unwrap();
+        let record = loaded.gworlds.iter_mut().find(|r| r.port == PORT).unwrap();
+        record.base_addr = base;
+        record.width = 4000;
+        record.height = 3000;
+        record.row_bytes = 4003;
+        let handle = SCRATCH + 0x500;
+        let storage = SCRATCH + 0x520;
+        loaded.memory.write_u32_be(handle, storage).unwrap();
+        loaded
+            .memory
+            .write_bytes(storage, &region_storage_bytes((0, 0, 10, 16), &[]))
+            .unwrap();
+        loaded
+            .memory
+            .write_u16_be(PORT + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 8)
+            .unwrap();
+        loaded
+            .memory
+            .write_u16_be(PORT + PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2, 5)
+            .unwrap();
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        if gpu {
+            loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                    crate::quickdraw::gpu::ReferenceRenderer {
+                        calls: calls.clone(),
+                        failure: 0,
+                    },
+                )),
+            );
+        }
+        assert!(ppc_frame_region(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PORT,
+            handle,
+            PPC_RGB_WHITE,
+            Some(103)
+        ));
+        assert_eq!(calls.get(), usize::from(gpu));
+        let mut result = vec![0; 4003 * 12];
+        loaded.memory.read_bytes_into(base, &mut result).unwrap();
+        if let Some(expected) = &expected {
+            assert_eq!(&result, expected);
+        } else {
+            expected = Some(result);
+        }
+    }
+}
+
+#[test]
+fn gpu_native_regions_match_software_paint_frame_patterns_and_fallback() {
+    let pixels = initial_pixels();
+    for depth in [1, 2, 4, 8, 16] {
+        for (vis, clip) in [CLIPS[0], CLIPS[3]] {
+            let fixture = fixture(&pixels, vis, clip);
+            for region in [
+                WHOLE_PORT,
+                CLIP_WITH_HOLE,
+                ((20, 20, 24, 27), &[]),
+                ((-20, -20, -17, -14), &[]),
+            ] {
+                for (op, pen, pattern) in [
+                    (0, (1, 1), [255; 8]),
+                    (1, (0, 0), [255; 8]),
+                    (1, (2, 3), [255; 8]),
+                    (1, (8, 5), [255; 8]),
+                    (2, (1, 1), [255; 8]),
+                    (2, (1, 1), [0; 8]),
+                    (2, (1, 1), DIAGONAL),
+                ] {
+                    let mut expected = None;
+                    for backend in [None, Some(0), Some(1), Some(2)] {
+                        let mut loaded =
+                            load_pef_application(&synthetic_pef_with_import(b"PaintRgn")).unwrap();
+                        install_port(&mut loaded, &fixture, depth);
+                        let handle = SCRATCH + 0x500;
+                        let storage = SCRATCH + 0x520;
+                        loaded.memory.write_u32_be(handle, storage).unwrap();
+                        loaded
+                            .memory
+                            .write_bytes(storage, &region_storage_bytes(region.0, region.1))
+                            .unwrap();
+                        loaded
+                            .memory
+                            .write_u16_be(PORT + PPC_CGRAF_PORT_PN_SIZE_OFFSET, pen.0)
+                            .unwrap();
+                        loaded
+                            .memory
+                            .write_u16_be(PORT + PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2, pen.1)
+                            .unwrap();
+                        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                        if let Some(failure) = backend {
+                            loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                    crate::quickdraw::gpu::ReferenceRenderer {
+                                        calls: calls.clone(),
+                                        failure,
+                                    },
+                                )),
+                            );
+                        }
+                        let wrote = match op {
+                            0 => ppc_paint_region(
+                                &mut loaded.memory,
+                                &loaded.gworlds,
+                                PORT,
+                                handle,
+                                PPC_RGB_WHITE,
+                                Some(fixture.fg_index),
+                            ),
+                            1 => ppc_frame_region(
+                                &mut loaded.memory,
+                                &loaded.gworlds,
+                                PORT,
+                                handle,
+                                PPC_RGB_WHITE,
+                                Some(fixture.fg_index),
+                            ),
+                            _ => ppc_fill_region_with_mono_pattern(
+                                &mut loaded.memory,
+                                &loaded.gworlds,
+                                PORT,
+                                handle,
+                                Some(pattern),
+                                PPC_RGB_WHITE,
+                                Some(fixture.fg_index),
+                                PPC_RGB_BLACK,
+                                Some(fixture.bg_index),
+                            ),
+                        };
+                        if backend.is_some() && wrote {
+                            assert_eq!(calls.get(), 1, "region must reach GPU once");
+                        }
+                        let result = (wrote, read_pixels(&mut loaded, pixels.len()));
+                        if let Some(expected) = &expected {
+                            assert_eq!(&result,expected,"depth={depth},op={op},pen={pen:?},pattern={pattern:?},backend={backend:?}");
+                        } else {
+                            expected = Some(result);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn gpu_native_arc_paints_match_software_angles_depths_and_fallback() {
     let pixels = initial_pixels();
     let fixture = fixture(&pixels, CLIPS[0].0, CLIPS[0].1);

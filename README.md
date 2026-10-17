@@ -134,6 +134,8 @@ PowerPC solid rectangle paints, ovals, rounded rectangles, and solid arc paints 
 backend
 at 1, 2, 4, 8, and 16 bits per pixel. PowerPC patterned PaintRect uses the same
 depths, and FillRect patterns use wgpu at 8 and 16 bits per pixel.
+PowerPC solid region paints/frames and monochrome region fills use GPU row
+intervals, including complex region holes and port-aligned patterns.
 PowerPC bitmap text, including scaled, bold, italic, outline, shadow, and
 underline styles, uses GPU glyph-coverage sampling and text transfer modes while
 retaining outline detail. Repeated scaled source pixels preserve XOR parity and
