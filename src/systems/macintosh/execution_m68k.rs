@@ -83,33 +83,87 @@ pub(crate) struct M68kMenuHookFrame {
     pub(crate) image: [u8; 32],
 }
 
-impl M68kMenuHookFrame {
-    pub(crate) fn new(target: u32, caller_sp: u32) -> Option<Self> {
-        let entry = caller_sp.checked_sub(48)?;
-        let saved_sp = entry.checked_sub(66)?;
+/// Pascal QuickDraw callbacks use word-sized scalar arguments and long-sized
+/// pointers/Points. Push in declaration order; the callee removes its arguments.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum QuickDrawArgument {
+    Word(u16),
+    Long(u32),
+}
+
+/// A stack-local void callback thunk with an exact internal A-line return boundary.
+/// Registers and code stay below the caller SP until the owning continuation
+/// retires. Standard-procedure chaining can therefore enter nested Toolbox
+/// calls without overwriting the suspended picture's frame.
+pub(crate) struct M68kQuickDrawCallbackFrame {
+    pub(crate) entry: u32,
+    pub(crate) floor: u32,
+    pub(crate) return_pc: u32,
+    pub(crate) image: Vec<u8>,
+}
+
+impl M68kQuickDrawCallbackFrame {
+    pub(crate) fn new(
+        target: u32,
+        caller_sp: u32,
+        arguments: &[QuickDrawArgument],
+        return_trap: u16,
+    ) -> Option<Self> {
+        if return_trap & 0xf000 != 0xa000 {
+            return None;
+        }
+        let mut image = Vec::new();
+        image.extend_from_slice(&[0x40, 0xe7, 0x48, 0xe7, 0xff, 0xfe]);
+        let mut argument_bytes = 0u32;
+        for argument in arguments {
+            match *argument {
+                QuickDrawArgument::Word(value) => {
+                    image.extend_from_slice(&0x3f3cu16.to_be_bytes());
+                    image.extend_from_slice(&value.to_be_bytes());
+                    argument_bytes = argument_bytes.checked_add(2)?;
+                }
+                QuickDrawArgument::Long(value) => {
+                    image.extend_from_slice(&0x2f3cu16.to_be_bytes());
+                    image.extend_from_slice(&value.to_be_bytes());
+                    argument_bytes = argument_bytes.checked_add(4)?;
+                }
+            }
+        }
+        image.extend_from_slice(&0x4eb9u16.to_be_bytes()); // JSR target
+        image.extend_from_slice(&target.to_be_bytes());
+        image.extend_from_slice(&0x2e7cu16.to_be_bytes()); // restore saved-register SP
+        let saved_sp_offset = image.len();
+        image.extend_from_slice(&[0; 4]);
+        image.extend_from_slice(&[
+            0x4c, 0xdf, 0x7f, 0xff, // MOVEM all D/A except SP
+            0x46, 0xdf,             // restore SR
+            0x4e, 0x74, 0x00, 0x00, // RTD into internal boundary
+        ]);
+        let return_offset = u32::try_from(image.len()).ok()?;
+        image.extend_from_slice(&return_trap.to_be_bytes());
+        image.extend_from_slice(&0x4e71u16.to_be_bytes());
+        let reservation = u32::try_from(image.len()).ok()?.checked_add(16)?;
+        let entry = caller_sp.checked_sub(reservation)?;
         if entry & 1 != 0 {
             return None;
         }
-        let mut image = [0; 32];
-        for (offset, word) in [
-            (0, 0x40e7u16), // MOVE SR,-(SP)
-            (2, 0x48e7),
-            (4, 0xfffe),  // MOVEM all D/A except SP
-            (6, 0x4eb9),  // JSR target
-            (12, 0x2e7c), // MOVEA.L #saved-register SP,A7
-            (18, 0x4cdf),
-            (20, 0x7fff), // restore all D/A except SP
-            (22, 0x46df), // MOVE (SP)+,SR
-            (24, 0x4e74),
-            (26, 0), // RTD into the internal boundary
-            (28, 0xa93d),
-            (30, 0x4e71),
-        ] {
-            image[offset..offset + 2].copy_from_slice(&word.to_be_bytes());
-        }
-        image[8..12].copy_from_slice(&target.to_be_bytes());
-        image[14..18].copy_from_slice(&saved_sp.to_be_bytes());
-        Some(Self { entry, image })
+        // Initial return address (4), SR (2), D0-D7/A0-A6 (60).
+        let saved_sp = entry.checked_sub(66)?;
+        let floor = saved_sp.checked_sub(argument_bytes)?.checked_sub(4)?;
+        image[saved_sp_offset..saved_sp_offset + 4].copy_from_slice(&saved_sp.to_be_bytes());
+        Some(Self {
+            entry,
+            floor,
+            return_pc: entry.checked_add(return_offset)?,
+            image,
+        })
+    }
+}
+
+impl M68kMenuHookFrame {
+    pub(crate) fn new(target: u32, caller_sp: u32) -> Option<Self> {
+        let frame = M68kQuickDrawCallbackFrame::new(target, caller_sp, &[], 0xa93d)?;
+        Some(Self { entry: frame.entry, image: frame.image.try_into().ok()? })
     }
 }
 
@@ -571,6 +625,64 @@ mod tests {
         MenuManagerContinuation, MenuTrackingCall, MenuTrackingContext, MenuTrackingOrigin,
     };
     use crate::guest_procedure::GuestIsa;
+
+    #[test]
+    fn quickdraw_pascal_callback_restores_registers_and_its_exact_return_boundary() {
+        use crate::cpu::StepResult;
+        use crate::memory::{MacMemoryBus, MemoryBus};
+        let mut bus = MacMemoryBus::new(0x10000);
+        let target = 0x2000;
+        let output = 0x3000;
+        let frame = M68kQuickDrawCallbackFrame::new(
+            target, 0x9000,
+            &[QuickDrawArgument::Word(0x1234), QuickDrawArgument::Long(0x55667788)],
+            0xa8f6,
+        ).unwrap();
+        assert!(bus.is_guest_address_writable(frame.floor, (0x9000 - frame.floor) as usize));
+        bus.write_bytes(frame.entry, &frame.image);
+        bus.write_long(frame.entry - 4, frame.return_pc);
+        // Observe the actual Pascal argument frame, clobber caller registers,
+        // then let the callback remove its six argument bytes with RTD.
+        for (offset, word) in [
+            (0, 0x202fu16), (2, 4), (4, 0x23c0),
+            (10, 0x322f), (12, 8), (14, 0x33c1),
+            (20, 0x207c), (26, 0x7e2a), (28, 0x4e74), (30, 6),
+        ] { bus.write_word(target + offset, word); }
+        bus.write_long(target + 6, output);
+        bus.write_long(target + 16, output + 4);
+        bus.write_long(target + 22, 0x11223344);
+        let mut cpu = M68kCpu::new();
+        cpu.core.set_sr(0x2015);
+        for index in 0..8 { cpu.core.set_d(index, 0x80000000 + index as u32); }
+        for index in 0..7 { cpu.core.set_a(index, 0x4000 + index as u32 * 4); }
+        let data: [u32; 8] = std::array::from_fn(|index| cpu.core.d(index));
+        let addresses: [u32; 7] = std::array::from_fn(|index| cpu.core.a(index));
+        cpu.write_reg(Register::A7, frame.entry - 4);
+        cpu.write_reg(Register::PC, frame.entry);
+        let mut returned = false;
+        for _ in 0..64 {
+            match cpu.step(&mut bus) {
+                StepResult::Ok => {},
+                StepResult::Aline(0xa8f6) => { returned = true; break; },
+                _ => panic!("unexpected callback exit"),
+            }
+        }
+        assert!(returned);
+        assert_eq!(bus.read_long(output), 0x55667788);
+        assert_eq!(bus.read_word(output + 4), 0x1234);
+        assert_eq!(cpu.read_reg(Register::PC), frame.return_pc + 2);
+        assert_eq!(cpu.read_reg(Register::A7), frame.entry);
+        assert_eq!(cpu.core.get_sr(), 0x2015);
+        assert_eq!(std::array::from_fn::<_, 8, _>(|index| cpu.core.d(index)), data);
+        assert_eq!(std::array::from_fn::<_, 7, _>(|index| cpu.core.a(index)), addresses);
+    }
+
+    #[test]
+    fn quickdraw_callback_frame_rejects_unaligned_or_underflowing_stack() {
+        assert!(M68kQuickDrawCallbackFrame::new(0x2000, 0x9001, &[], 0xa8f6).is_none());
+        assert!(M68kQuickDrawCallbackFrame::new(0x2000, 100, &[], 0xa8f6).is_none());
+        assert!(M68kQuickDrawCallbackFrame::new(0x2000, 0x9000, &[], 0x4e75).is_none());
+    }
 
     #[test]
     fn already_active_callback_preserves_the_live_native_reservation() {

@@ -2948,3 +2948,228 @@ fn pict_shape_erasure_preserves_background_pattern_bit_colors() {
         }
     }
 }
+
+fn cursor_picture_v2(commands: &[u8]) -> Vec<u8> {
+    let mut picture = vec![0; 10];
+    picture.extend_from_slice(&[0x00, 0x11, 0x02, 0xff]);
+    picture.extend_from_slice(commands);
+    picture
+}
+
+#[test]
+fn picture_cursor_preserves_order_and_source_boundaries_across_resumption() {
+    // TextBegin, LongText, TextEnd, OvSize, FrameRRect, EndOfPicture.
+    let picture = cursor_picture_v2(&[
+        0x00, 0xa0, 0x00, 0x96,
+        0x00, 0x28, 0x00, 0x08, 0x00, 0x10, 0x03, b'a', b'b', b'c',
+        0x00, 0xa0, 0x00, 0x97,
+        0x00, 0x0b, 0x00, 0x04, 0x00, 0x06,
+        0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x20,
+        0x00, 0xff,
+    ]);
+    let mut cursor = super::PictureCursor::new(&picture).unwrap();
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0x00);
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0x11);
+    let expected = [
+        (0xa0, 14, 16, 18), (0x28, 18, 20, 28),
+        (0xa0, 28, 30, 32), (0x0b, 32, 34, 38),
+        (0x40, 38, 40, 48), (0xff, 48, 50, 50),
+    ];
+    for (opcode, start, data_start, end) in expected {
+        // Move the operation as a suspended playback would; source range and
+        // version state must survive without running the next command early.
+        cursor = cursor.clone();
+        assert_eq!(cursor.next(&picture), Some(super::PictureOpcode {
+            opcode, start, data_start, end,
+        }));
+    }
+    assert!(cursor.next(&picture).is_none());
+}
+
+#[test]
+fn picture_cursor_reads_later_commands_only_when_resumed() {
+    let mut picture = cursor_picture_v2(&[0x00, 0xa0, 0x00, 0x96, 0x00, 0xff]);
+    let mut cursor = super::PictureCursor::new(&picture).unwrap();
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0x00);
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0x11);
+    // A guest input callback can supply a different next command. Retaining
+    // predecoded future commands would incorrectly keep the old ShortComment.
+    picture[14..18].copy_from_slice(&[0x00, 0x0d, 0x00, 0x18]);
+    let next = cursor.next(&picture).unwrap();
+    assert_eq!(next.opcode, 0x0d);
+    assert_eq!(&picture[next.data_start..next.end], &[0x00, 0x18]);
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0xff);
+}
+
+#[test]
+fn picture_cursor_truncated_payload_does_not_advance() {
+    let mut picture = cursor_picture_v2(&[0x00, 0xa1, 0x00, 0x97, 0x00, 0x04, 1]);
+    let mut cursor = super::PictureCursor::new(&picture).unwrap();
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0x00);
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0x11);
+    assert!(cursor.next(&picture).is_none());
+    assert_eq!(cursor.pos, 14);
+    assert_eq!(cursor.opcount, 2);
+    picture.extend_from_slice(&[2, 3, 4, 0x00, 0xff]);
+    let comment = cursor.next(&picture).unwrap();
+    assert_eq!(comment.opcode, 0xa1);
+    assert_eq!(comment.end, 24);
+    assert_eq!(cursor.next(&picture).unwrap().opcode, 0xff);
+}
+
+#[test]
+fn picture_cursor_nested_v1_stream_does_not_change_outer_v2_position() {
+    let outer = cursor_picture_v2(&[0x00, 0xa0, 0x00, 0x96, 0x00, 0xff]);
+    let mut inner = vec![0; 10];
+    inner.extend_from_slice(&[0x11, 0x01, 0xa0, 0x00, 0x97, 0xff]);
+    let mut enclosing = super::PictureCursor::new(&outer).unwrap();
+    assert_eq!(enclosing.next(&outer).unwrap().opcode, 0x00);
+    assert_eq!(enclosing.next(&outer).unwrap().opcode, 0x11);
+    let mut nested = super::PictureCursor::new(&inner).unwrap();
+    assert_eq!(nested.next(&inner).unwrap().opcode, 0x11);
+    assert_eq!(nested.next(&inner).unwrap().opcode, 0xa0);
+    assert_eq!(nested.next(&inner).unwrap().opcode, 0xff);
+    assert!(nested.next(&inner).is_none());
+    assert_eq!(enclosing.next(&outer).unwrap().start, 14);
+    assert_eq!(enclosing.next(&outer).unwrap().opcode, 0xff);
+}
+
+
+#[test]
+fn picture_input_reads_v2_opcode_before_its_fixed_payload() {
+    use super::{PictureInputRequest, PictureStep};
+    let mut bytes = cursor_picture_v2(&[]);
+    let mut cursor = super::PictureCursor::new(&bytes).unwrap();
+    assert_eq!(cursor.next(&bytes).unwrap().opcode, 0x00);
+    assert_eq!(cursor.next(&bytes).unwrap().opcode, 0x11);
+    assert_eq!(cursor.step(&bytes), PictureStep::Input(PictureInputRequest { start: 14, len: 2 }));
+    bytes.extend_from_slice(&[0x00, 0x0b]); // OvSize input-reader inspection point.
+    assert_eq!(cursor.step(&bytes), PictureStep::Input(PictureInputRequest { start: 16, len: 4 }));
+    assert_eq!(cursor.pos, 14); // no command is published before its payload.
+    bytes.extend_from_slice(&[0x00, 0x04, 0x00, 0x06]);
+    assert_eq!(cursor.next(&bytes).unwrap().opcode, 0x0b);
+    assert_eq!(cursor.step(&bytes), PictureStep::Input(PictureInputRequest { start: 20, len: 2 }));
+    bytes.extend_from_slice(&[0x00, 0xff]);
+    assert_eq!(cursor.next(&bytes).unwrap().opcode, 0xff);
+    assert_eq!(cursor.step(&bytes), PictureStep::Done);
+}
+
+#[test]
+fn picture_input_uses_supplied_text_length_and_reads_alignment_separately() {
+    use super::{PictureInputRequest, PictureStep};
+    let mut bytes = cursor_picture_v2(&[0x00, 0x28]);
+    let mut cursor = super::PictureCursor::new(&bytes).unwrap();
+    cursor.next(&bytes).unwrap();
+    cursor.next(&bytes).unwrap();
+    assert_eq!(cursor.step(&bytes), PictureStep::Input(PictureInputRequest { start: 16, len: 5 }));
+    bytes.extend_from_slice(&[0, 8, 0, 16, 2]); // supplied byteCount controls the next request.
+    assert_eq!(cursor.step(&bytes), PictureStep::Input(PictureInputRequest { start: 21, len: 2 }));
+    bytes.extend_from_slice(b"ab");
+    assert_eq!(cursor.step(&bytes), PictureStep::Input(PictureInputRequest { start: 23, len: 1 }));
+    bytes.push(0); // v2 word alignment is not text data.
+    let text = cursor.next(&bytes).unwrap();
+    assert_eq!((text.opcode, text.data_start, text.end), (0x28, 16, 24));
+}
+
+#[test]
+fn picture_input_handles_bitmap_payload_without_treating_pixels_as_opcodes() {
+    use super::PictureStep;
+    let mut source = vec![0; 10];
+    source.push(0x90); // BitsRect, one-byte row with two monochrome pixels.
+    source.extend_from_slice(&[0, 1]);
+    for _ in 0..3 { source.extend_from_slice(&[0, 0, 0, 0, 0, 1, 0, 2]); }
+    source.extend_from_slice(&[0, 0, 0xff, 0xff]); // mode, pixel byte, EndOfPicture.
+    let mut bytes = source[..10].to_vec();
+    let mut cursor = super::PictureCursor::new(&bytes).unwrap();
+    let mut commands = Vec::new();
+    for _ in 0..64 {
+        match cursor.step(&bytes) {
+            PictureStep::Input(request) => {
+                assert_eq!(request.start, bytes.len());
+                assert!(request.len > 0);
+                bytes.extend_from_slice(&source[request.start..request.start + request.len]);
+            },
+            PictureStep::Command(command) => commands.push(command),
+            PictureStep::Done => break,
+            PictureStep::Invalid => panic!("valid bitmap was rejected"),
+        }
+    }
+    assert_eq!(commands.iter().map(|command| command.opcode).collect::<Vec<_>>(), [0x90, 0xff]);
+    assert_eq!(commands.last().unwrap().end, source.len());
+}
+
+#[test]
+fn picture_input_distinguishes_invalid_data_and_overflow_from_missing_input() {
+    let mut bytes = vec![0; 10];
+    bytes.push(0xfe); // unsupported v1 opcode, not an incomplete payload.
+    let mut cursor = super::PictureCursor::new(&bytes).unwrap();
+    assert_eq!(cursor.step(&bytes), super::PictureStep::Invalid);
+    assert_eq!(cursor.pos, 10);
+    let input = super::PictureInput::new(&bytes);
+    assert!(input.range(usize::MAX, 4).is_none());
+    assert!(input.missing.get().is_none());
+}
+
+#[test]
+fn picture_playback_yields_without_losing_same_rect_or_nested_picture_state() {
+    let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+    let screen = 0x08_0000;
+    let outer_ptr = 0x10_0000;
+    let inner_ptr = 0x11_0000;
+    let frame = (0, 0, 8, 8);
+    let outer = finish_v1_picture(frame, &[0x31, 0, 0, 0, 0, 0, 2, 0, 2, 0x3A]);
+    let inner = finish_v1_picture(frame, &[0x31, 0, 4, 0, 4, 0, 6, 0, 6]);
+    bus.write_bytes(outer_ptr, &outer);
+    bus.write_bytes(inner_ptr, &inner);
+    bus.fill_zeros(screen, 64);
+    let clut = TrapDispatcher::standard_mac_8bpp_clut();
+    let mode = (screen, 8, 8, 8, 8);
+    let mut outer = super::PicturePlayback::from_frame(outer_ptr, frame, frame, 8, &clut).unwrap();
+    let mut inner = super::PicturePlayback::from_frame(inner_ptr, frame, frame, 8, &clut).unwrap();
+    outer.render_commands(&mut bus, mode, &clut, 0, None, 0);
+    assert_eq!(outer.pos, outer_ptr + 10);
+    outer.render_commands(&mut bus, mode, &clut, 0, None, 2);
+    assert_eq!(bus.read_byte(screen), 255);
+    assert!(!outer.ended);
+    inner.render_commands(&mut bus, mode, &clut, 0, None, usize::MAX);
+    assert!(inner.ended);
+    assert_eq!(bus.read_byte(screen + 4 * 8 + 4), 255);
+    outer.render_commands(&mut bus, mode, &clut, 0, None, 1);
+    assert_eq!(bus.read_byte(screen), 0);
+    assert_eq!(bus.read_byte(screen + 4 * 8 + 4), 255);
+    assert!(!outer.ended);
+    outer.render_commands(&mut bus, mode, &clut, 0, None, 1);
+    assert!(outer.ended);
+    let final_count = outer.opcount;
+    outer.render_commands(&mut bus, mode, &clut, 0, None, 1);
+    assert_eq!(outer.opcount, final_count);
+}
+
+#[test]
+fn picture_playback_single_opcode_slices_preserve_v2_font_color_and_relative_text() {
+    let frame = (0, 0, 48, 80);
+    let mut commands = Vec::new();
+    for word in [0x0003, 0, 0x000D, 18, 0x001A, 0xFFFF, 0, 0] {
+        super::recording_push_word(&mut commands, word);
+    }
+    super::recording_push_long_text(&mut commands, 20, 10, b"A");
+    push_v2_relative_text(&mut commands, 0x002B, &[12, 8], b"B");
+    let picture = super::finish_recording(frame, commands);
+    let expected = render_text_picture(&picture, 80, 48);
+    assert!(expected.iter().any(|&pixel| pixel != 0));
+    let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+    let screen = 0x08_0000;
+    let pic = 0x10_0000;
+    bus.write_bytes(pic, &picture);
+    bus.fill_zeros(screen, 80 * 48);
+    let clut = TrapDispatcher::standard_mac_8bpp_clut();
+    let mut playback = super::PicturePlayback::from_frame(pic, frame, frame, 8, &clut).unwrap();
+    for _ in 0..32 {
+        playback.render_commands(&mut bus, (screen, 80, 80, 48, 8), &clut, 0, None, 1);
+        if playback.ended {
+            break;
+        }
+    }
+    assert!(playback.ended);
+    assert_eq!(bus.read_bytes(screen, 80 * 48), expected);
+}
