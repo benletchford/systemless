@@ -77,6 +77,14 @@ jobs:
       - name: Build all targets
         run: cargo build --all-targets --all-features
 
+      # Windows provides a D3D adapter. Require successful shader compilation
+      # here so captured initialization errors cannot silently skip GPU tests.
+      - name: Test Windows GPU shaders and rasterization
+        if: runner.os == 'Windows'
+        env:
+          SYSTEMLESS_REQUIRE_GPU: "1"
+        run: cargo test --locked --bin systemless wgpu_
+
       # test-support enables the scripted_traces module and its tests. The
       # debugger is an opt-in feature, so this run also covers its disabled
       # path; the next step exercises the enabled one.

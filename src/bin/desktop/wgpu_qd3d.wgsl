@@ -114,14 +114,16 @@ fn unpack555(value: u32) -> vec3<f32> {
             let start=vec2<i32>(a.position.xy); let end=vec2<i32>(b.position.xy);
             let delta=abs(end-start); let sign=select(vec2(-1),vec2(1),start<end);
             let major=max(delta.x,delta.y);
-            let axis=select(1u,0u,delta.x>=delta.y);
-            let step=(i32(xy[axis])-start[axis])*sign[axis];
+            let horizontal=delta.x>=delta.y;
+            let step=select((i32(xy.y)-start.y)*sign.y,(i32(xy.x)-start.x)*sign.x,horizontal);
             if step < 0 || step > major { continue; }
             var expected=start;
             if major != 0 {
-                let minor=1u-axis;
-                let advance=select(i32((u32(step)*u32(delta[minor])+u32(major)/2u)/u32(max(major,1))),delta[minor],step==major);
-                expected[axis]+=step*sign[axis]; expected[minor]+=advance*sign[minor];
+                let minor_delta=select(delta.x,delta.y,horizontal);
+                let advance=select(i32((u32(step)*u32(minor_delta)+u32(major)/2u)/u32(max(major,1))),minor_delta,step==major);
+                // FXC cannot address dynamically selected vector components as
+                // l-values. Assemble the whole advance vector instead.
+                expected+=select(vec2(advance,step),vec2(step,advance),horizontal)*sign;
             }
             if any(vec2<i32>(xy) != expected) { continue; }
             let t=f32(step)/f32(max(major,1));
