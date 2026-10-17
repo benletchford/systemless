@@ -2859,6 +2859,18 @@
         match shape {
             1 => d.draw_oval(&mut cpu, &mut bus, &rect, op),
             2 => d.draw_round_rect(&mut cpu, &mut bus, &rect, 11, 3, op),
+            3 => {
+                let poly = bus.alloc(64);
+                let handle = bus.alloc(4);
+                make_poly(
+                    &mut bus,
+                    poly,
+                    handle,
+                    (1, 3, 5, 29),
+                    &[(1, 3), (5, 29), (1, 29), (5, 3)],
+                );
+                d.draw_poly(&mut cpu, &mut bus, handle, op);
+            }
             _ => d.draw_rect(&mut cpu, &mut bus, &rect, op),
         }
         (bus.read_bytes(base, 30), calls.get())
@@ -2889,8 +2901,8 @@
     }
 
     #[test]
-    fn gpu_curves_match_classic_patterns_frames_and_complex_clips() {
-        for shape in [1, 2] {
+    fn gpu_shapes_match_classic_patterns_frames_and_complex_clips() {
+        for shape in [1, 2, 3] {
             for op in [
                 ShapeOp::Paint,
                 ShapeOp::Frame,
@@ -2957,6 +2969,18 @@
             match shape {
                 1 => d.draw_oval(&mut cpu, &mut bus, &rect, op),
                 2 => d.draw_round_rect(&mut cpu, &mut bus, &rect, 11, 5, op),
+                3 => {
+                    let poly = bus.alloc(64);
+                    let handle = bus.alloc(4);
+                    make_poly(
+                        &mut bus,
+                        poly,
+                        handle,
+                        (3, 5, 10, 31),
+                        &[(3, 5), (3, 31), (10, 20), (5, 20), (10, 5)],
+                    );
+                    d.draw_poly(&mut cpu, &mut bus, handle, op);
+                }
                 _ => d.draw_rect(&mut cpu, &mut bus, &rect, op),
             }
             (bus.read_bytes(base, (row_bytes * 64) as usize), calls.get())
@@ -2964,7 +2988,7 @@
         for depth in [2, 4, 8, 16, 32] {
             for mode in [0, 1, 2, 3] {
                 for op in [ShapeOp::Paint, ShapeOp::Frame] {
-                    for shape in [0, 1, 2] {
+                    for shape in [0, 1, 2, 3] {
                         let (actual, calls) = draw(depth, mode, op, true, shape);
                         let (expected, _) = draw(depth, mode, op, false, shape);
                         assert_eq!(actual, expected, "depth={depth},mode={mode},op={op:?}");

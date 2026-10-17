@@ -1,7 +1,7 @@
 //! Optional host rasterization with synchronous guest-memory writeback.
 use crate::memory::{MacMemoryBus, MemoryBus};
 
-/// A clipped rectangle draw in port coordinates. Bounds use
+/// A clipped shape draw in port coordinates. Bounds use
 /// `[left, top, right, bottom]`, with exclusive far edges. Border dimensions
 /// are `[horizontal, vertical]`; None fills the rectangle. Transfer entries
 /// are `[destination_pass_mask, xor_mask]` for white and black pattern bits.
@@ -9,6 +9,9 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 pub struct QuickDrawGpuCommand {
     /// Optional sorted interval endpoints for each row of `area`.
     pub clip_rows: Option<Vec<Vec<i32>>>,
+    /// Polygon edges [minimum_y, maximum_y, x_at_minimum_y, inverse_slope].
+    /// Horizontal edges are omitted; coverage uses the even-odd crossing rule.
+    pub polygon_edges: Option<Vec<[f32; 4]>>,
     pub area: [i32; 4],
     pub rect: [i32; 4],
     pub border: Option<[i32; 2]>,
@@ -16,6 +19,20 @@ pub struct QuickDrawGpuCommand {
     pub transfer: [[u32; 2]; 2],
 }
 impl QuickDrawGpuCommand {
+    pub fn valid_polygon_edges(&self) -> bool {
+        let Some(edges) = &self.polygon_edges else {
+            return true;
+        };
+        self.pixel_count()
+            .is_some_and(|count| count.saturating_mul(edges.len()) <= 64_000_000)
+            && edges.len() <= 16_384
+            && edges.iter().all(|edge| {
+                edge.iter().all(|v| v.is_finite())
+                    && edge[0] < edge[1]
+                    && edge[..3].iter().all(|v| (-32768.0..=32767.0).contains(v))
+                    && (-65535.0..=65535.0).contains(&edge[3])
+            })
+    }
     pub fn valid_clip_rows(&self) -> bool {
         let Some(rows) = &self.clip_rows else {
             return true;
@@ -92,7 +109,10 @@ pub(crate) fn try_rectangle(
     let Some(count) = command.pixel_count().filter(|count| *count <= 4_194_304) else {
         return false;
     };
-    if !command.valid_clip_rows() || !matches!(target.depth, 1 | 2 | 4 | 8 | 16 | 32) {
+    if !command.valid_clip_rows()
+        || !command.valid_polygon_edges()
+        || !matches!(target.depth, 1 | 2 | 4 | 8 | 16 | 32)
+    {
         return false;
     }
     let width = (command.area[2] - command.area[0]) as usize;
@@ -243,7 +263,20 @@ impl QuickDrawGpuRenderer for ReferenceRenderer {
                         .chunks_exact(2)
                         .any(|p| x >= p[0] && x < p[1])
                 });
-                let covered = in_clip
+                let in_polygon = command.polygon_edges.as_ref().is_none_or(|edges| {
+                    edges
+                        .iter()
+                        .filter(|e| {
+                            (y as f32) >= e[0]
+                                && (y as f32) < e[1]
+                                && e[2] + (y as f32 - e[0]) * e[3] <= x as f32
+                        })
+                        .count()
+                        % 2
+                        != 0
+                });
+                let covered = in_polygon
+                    && in_clip
                     && x >= r[0]
                     && x < r[2]
                     && y >= r[1]
@@ -284,6 +317,7 @@ mod tests {
                 _ => (1u32 << depth) - 1,
             };
             let command = QuickDrawGpuCommand {
+                polygon_edges: None,
                 clip_rows: None,
                 area: [-3, 2, 8, 6],
                 rect: [-3, 2, 8, 6],
@@ -332,7 +366,7 @@ mod tests {
     }
     #[test]
     fn gpu_rectangle_errors_and_missing_backend_leave_guest_bytes_unchanged() {
-        for failure in [0, 1, 2, 3] {
+        for failure in [0, 1, 2, 3, 4] {
             let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
             bus.write_bytes(0x1000, &[0xa5; 16]);
             if failure != 0 {
@@ -342,6 +376,7 @@ mod tests {
                 }));
             }
             let mut command = QuickDrawGpuCommand {
+                polygon_edges: None,
                 clip_rows: None,
                 area: [0, 0, 4, 4],
                 rect: [0, 0, 4, 4],
@@ -351,6 +386,9 @@ mod tests {
             };
             if failure == 3 {
                 command.clip_rows = Some(vec![]);
+            }
+            if failure == 4 {
+                command.polygon_edges = Some(vec![[0., 1., f32::NAN, 0.]]);
             }
             assert!(!try_rectangle(
                 &mut bus,
