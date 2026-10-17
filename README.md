@@ -122,7 +122,7 @@ and spot falloff, Lambert/Phong shading with flat, vertex, or pixel interpolatio
 and linear, exponential, squared exponential, and alpha fog. Results are read
 back into the guest framebuffer before execution resumes, preserving CopyBits
 and subsequent drawing. Degenerate filled triangles and frames beyond the GPU
-resource/work limits currently use the software renderer. Classic 68K rectangle, oval, rounded-rectangle, and polygon
+resource/work limits currently use the software renderer. Classic 68K rectangle, oval, rounded-rectangle, polygon, and region
 draws use GPU pattern expansion and boolean transfers at 1, 2, 4, 8,
 16, and 32 bits per pixel, with immediate guest-memory writeback. Complex visible
 and clip regions are decoded into row intervals and tested on the GPU. Raw
