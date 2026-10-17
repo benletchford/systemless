@@ -14,6 +14,12 @@
 //! stores, and capture plays a single ascending pass from the first word
 //! written. An untouched buffer keeps its last layout; anything else plays
 //! in buffer order.
+//!
+//! As a startup-noise policy, an entirely zero first frame after sound is
+//! enabled is queued as silence. Some drivers output an unprepared buffer
+//! before their first mix. Only that first frame is eligible: zero is valid
+//! full-negative-amplitude PCM, and later frames must preserve it. This can
+//! suppress an intentional initial rectangular pulse as well.
 
 use std::collections::VecDeque;
 
@@ -48,6 +54,9 @@ const TRIM_WINDOW: u32 = 60;
 pub(super) struct LegacySound {
     samples: VecDeque<u8>,
     phase: u64,
+    /// Whether a valid frame has been captured since the last observed
+    /// disable. Host underflow, page flips and volume changes do not reset it.
+    captured_since_enable: bool,
     /// The word each buffer's frames start at: [main, alternate].
     rotation: [u16; 2],
     /// Each buffer's last captured samples, to tell an untouched buffer from
@@ -94,6 +103,11 @@ impl LegacySound {
     /// contents or collapse several guest frames into one repeated buffer.
     pub(super) fn capture_frame(&mut self, bus: &mut MacMemoryBus) {
         let Some(port_a) = Self::controls(bus) else {
+            // Missing controls are not an observed disable. If the device
+            // is addressable, controls() returned None because PB7 is set.
+            if bus.legacy_sound_port_a().is_some() {
+                self.captured_since_enable = false;
+            }
             self.stop(bus);
             return;
         };
@@ -137,6 +151,15 @@ impl LegacySound {
             }
         }
         self.last[slot] = Some(frame);
+
+        if !self.captured_since_enable {
+            self.captured_since_enable = true;
+            if frame.iter().all(|&sample| sample == 0) {
+                // Preserve guest RAM and the frame's duration. Keep `last`
+                // above as the actual RAM image used by store-order tracking.
+                frame.fill(128);
+            }
+        }
 
         let level = self.samples.len();
         self.low_water = Some(self.low_water.map_or(level, |low| low.min(level)));
@@ -265,6 +288,145 @@ mod tests {
         let mut pcm = Vec::new();
         sound.mix_stereo(&bus, &mut pcm, 100, false);
         assert!(pcm.is_empty());
+    }
+
+    #[test]
+    fn zero_first_frame_is_silenced_without_changing_guest_memory_or_duration() {
+        let (mut bus, mut sound) = device();
+        fill(&mut bus, false, 0);
+        sound.capture_frame(&mut bus);
+        assert_eq!(sound.queued(), vec![128; FRAME]);
+        let base = buffer(&bus, false);
+        for word in 0..FRAME as u32 {
+            assert_eq!(bus.read_word(base + 2 * word), 0x00ff);
+        }
+
+        // An untouched second frame is real full-negative-amplitude PCM.
+        sound.capture_frame(&mut bus);
+        assert_eq!(&sound.queued()[FRAME..], vec![0; FRAME]);
+        assert_eq!(sound.samples.len(), 2 * FRAME);
+    }
+
+    #[test]
+    fn nonzero_first_frame_preserves_later_zero_frames() {
+        for first in [1, 127, 128, 129, 255] {
+            let (mut bus, mut sound) = device();
+            fill(&mut bus, false, first);
+            sound.capture_frame(&mut bus);
+            fill(&mut bus, false, 0);
+            sound.capture_frame(&mut bus);
+            assert_eq!(&sound.queued()[..FRAME], vec![first; FRAME]);
+            assert_eq!(&sound.queued()[FRAME..], vec![0; FRAME]);
+        }
+    }
+
+    #[test]
+    fn a_partial_zero_first_frame_keeps_every_sample() {
+        for word in [0, FRAME / 2, FRAME - 1] {
+            let (mut bus, mut sound) = device();
+            fill(&mut bus, false, 0);
+            bus.write_byte(buffer(&bus, false) + 2 * word as u32, 1);
+            sound.capture_frame(&mut bus);
+            let mut expected = vec![0; FRAME];
+            expected[word] = 1;
+            assert_eq!(sound.queued(), expected);
+        }
+    }
+
+    #[test]
+    fn zero_startup_policy_rearms_on_disable_without_dropping_queued_audio() {
+        let (mut bus, mut sound) = device();
+        fill(&mut bus, false, 0);
+        sound.capture_frame(&mut bus);
+        sound.capture_frame(&mut bus);
+        let registers = bus.read_long(addr::VIA_BASE);
+        bus.write_byte(registers, 0x80);
+        sound.capture_frame(&mut bus);
+        assert_eq!(sound.samples.len(), 2 * FRAME);
+        bus.write_byte(registers, 0);
+        sound.capture_frame(&mut bus);
+        assert_eq!(sound.queued(), [vec![128; FRAME], vec![0; FRAME], vec![128; FRAME]].concat());
+    }
+
+    #[test]
+    fn startup_policy_checks_selected_page_and_does_not_rearm_on_page_or_volume_changes() {
+        let (mut bus, mut sound) = device();
+        fill(&mut bus, false, 255);
+        fill(&mut bus, true, 0);
+        let port_a = bus.read_long(addr::VIA_BASE) + LEGACY_SOUND_PORT_A_OFFSET;
+        bus.write_byte(port_a, 7); // alternate page, full volume
+        sound.capture_frame(&mut bus);
+        assert_eq!(sound.queued(), vec![128; FRAME]);
+        fill(&mut bus, false, 0);
+        bus.write_byte(port_a, 8); // main page, minimum volume
+        sound.capture_frame(&mut bus);
+        assert_eq!(&sound.queued()[FRAME..], vec![0; FRAME]);
+    }
+
+    #[test]
+    fn silenced_startup_frame_keeps_resampling_phase_across_host_chunks() {
+        let (mut bus, mut sound) = device();
+        fill(&mut bus, false, 0);
+        sound.capture_frame(&mut bus);
+        write_ring(&mut bus, false, 0, 0);
+        sound.capture_frame(&mut bus);
+        let mut actual = Vec::new();
+        for count in [1, 31, 367, 2, 300] {
+            let mut chunk = Vec::new();
+            sound.mix_stereo(&bus, &mut chunk, count, false);
+            actual.extend(chunk);
+        }
+        assert_eq!(actual.len(), 701 * 2);
+        for (i, frame) in actual.chunks_exact(2).enumerate() {
+            let source = (i as u64 * SOURCE_STEP / OUTPUT_STEP) as usize;
+            let expected = if source < FRAME { 128 } else { ((source - FRAME) % 256) as u8 };
+            assert_eq!(frame, [expected; 2], "output frame {i}");
+        }
+    }
+
+    #[test]
+    fn host_underflow_and_invalid_pointer_do_not_rearm_startup_policy() {
+        let (mut bus, mut sound) = device();
+        sound.capture_frame(&mut bus); // initialized silence consumes the first frame
+        let mut output = Vec::new();
+        sound.mix_stereo(&bus, &mut output, 500, false);
+        assert!(sound.samples.is_empty());
+        let main = bus.read_long(addr::SOUND_BASE);
+        bus.write_long(addr::SOUND_BASE, 0);
+        sound.capture_frame(&mut bus);
+        bus.write_long(addr::SOUND_BASE, main);
+        fill(&mut bus, false, 0);
+        sound.capture_frame(&mut bus);
+        assert_eq!(sound.queued(), vec![0; FRAME]);
+        output.clear();
+        sound.mix_stereo(&bus, &mut output, 100, false);
+        assert_eq!(output, vec![0; 200]);
+    }
+
+    #[test]
+    fn unavailable_controls_do_not_rearm_startup_policy() {
+        let (mut bus, mut sound) = device();
+        sound.capture_frame(&mut bus);
+        let via = bus.read_long(addr::VIA_BASE);
+        bus.write_long(addr::VIA_BASE, 0);
+        sound.capture_frame(&mut bus);
+        bus.write_long(addr::VIA_BASE, via);
+        fill(&mut bus, false, 0);
+        sound.capture_frame(&mut bus);
+        assert_eq!(&sound.queued()[FRAME..], vec![0; FRAME]);
+    }
+
+    #[test]
+    fn invalid_initial_sound_base_does_not_consume_startup_check() {
+        let (mut bus, mut sound) = device();
+        let main = bus.read_long(addr::SOUND_BASE);
+        bus.write_long(addr::SOUND_BASE, 0);
+        sound.capture_frame(&mut bus);
+        assert!(sound.samples.is_empty());
+        bus.write_long(addr::SOUND_BASE, main);
+        fill(&mut bus, false, 0);
+        sound.capture_frame(&mut bus);
+        assert_eq!(sound.queued(), vec![128; FRAME]);
     }
 
     #[test]
