@@ -1,7 +1,7 @@
 //! Optional host rasterization with synchronous guest-memory writeback.
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 mod blit;
-pub use blit::{QuickDrawGpuBlit, QuickDrawGpuPackedCopy};
+pub use blit::{QuickDrawGpuBlit, QuickDrawGpuDirectColor, QuickDrawGpuPackedCopy};
 
 /// Glyph/bitmap coverage sampled in the same coordinates as the draw.
 #[derive(Clone, Debug)]

@@ -13,6 +13,7 @@ struct Geometry { size:vec4<u32>, transfer:vec4<u32> }
         for(var x=xs.x;x<xs.y;x++) {value=max(value,source[y*geometry.size.x+x]);}
     }
     if geometry.size.w!=0u {value=palette[value];}
+    if geometry.transfer.x!=0u {value=direct_color(value);}
     output[id.y*geometry.size.y+id.x]=value;
 }
 
@@ -33,4 +34,26 @@ struct Geometry { size:vec4<u32>, transfer:vec4<u32> }
         }
     }
     output[index]=value;
+}
+
+fn direct_color(pixel:u32) -> u32 {
+    var rgb=vec3<u32>((pixel>>16u)&255u,(pixel>>8u)&255u,pixel&255u);
+    if geometry.transfer.x==16u {
+        let channels=vec3<u32>((pixel>>10u)&31u,(pixel>>5u)&31u,pixel&31u);
+        rgb=((channels*65535u+vec3<u32>(15u))/31u)>>vec3<u32>(8u);
+    }
+    let depth=geometry.transfer.y;
+    if depth==32u {return (rgb.x<<16u)|(rgb.y<<8u)|rgb.z;}
+    if depth==16u {return ((rgb.x>>3u)<<10u)|((rgb.y>>3u)<<5u)|(rgb.z>>3u);}
+    // Exact squared-distance comparison against black/white after 8-to-16-bit expansion.
+    if depth==1u && geometry.transfer.x==32u {return select(0u,1u,rgb.x+rgb.y+rgb.z<=382u);}
+    let requested_color=vec3<i32>(rgb>>vec3<u32>(3u));
+    var best=0u; var best_distance=0xffffffffu;
+    for(var i=0u;i<geometry.transfer.z;i++) {
+        let color=palette[i];
+        let delta=requested_color-vec3<i32>(i32((color>>10u)&31u),i32((color>>5u)&31u),i32(color&31u));
+        let distance=u32(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z);
+        if distance<best_distance {best=i;best_distance=distance;}
+    }
+    return best;
 }

@@ -4,9 +4,6 @@ use super::*;
 fn gpu_native_scaled_copies_match_format_expansion_clipping_aliases_and_fallback() {
     for source_depth in [1u32, 2, 4, 8, 16, 32] {
         for destination_depth in [1u32, 2, 4, 8, 16, 32] {
-            if source_depth > 8 && source_depth != destination_depth {
-                continue;
-            }
             for [bottom, right] in [[9, 16], [2, 3], [4, 5]] {
                 for alias in [false, true] {
                     let mut expected = None;

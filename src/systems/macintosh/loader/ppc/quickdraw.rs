@@ -4775,7 +4775,6 @@ pub(crate) fn ppc_copy_bits(
         let gpu_writes = if mode == 0
             && mask_storage.is_none()
             && memory.quickdraw_gpu_renderer().is_some()
-            && (src_bits.depth <= 8 || src_bits.depth == dst_bits.depth)
         {
             gpu_blit::sample_copy(
                 memory,
@@ -4785,6 +4784,24 @@ pub(crate) fn ppc_copy_bits(
                 [dst_top, dst_left, dst_bottom, dst_right].map(i32::from),
                 [copy_top, copy_left, copy_bottom, copy_right],
                 gpu_palette,
+                (src_bits.depth > 8 && src_bits.depth != dst_bits.depth).then(|| {
+                    crate::quickdraw::gpu::QuickDrawGpuDirectColor {
+                        source_depth: src_bits.depth,
+                        destination_depth: dst_bits.depth,
+                        palette: dst_clut.as_ref().map_or_else(Vec::new, |clut| {
+                            clut.iter()
+                                .take(ppc_indexed_depth_entry_count(dst_bits.depth).unwrap_or(0))
+                                .map(|rgb| {
+                                    u32::from(ppc_rgb_color_to_rgb555(PpcRgbColor {
+                                        red: rgb[0],
+                                        green: rgb[1],
+                                        blue: rgb[2],
+                                    }))
+                                })
+                                .collect()
+                        }),
+                    }
+                }),
                 &mut details,
             )
         } else {
