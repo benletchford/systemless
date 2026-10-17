@@ -60,11 +60,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Linux audio dependencies
+      - name: Install Linux audio and GPU dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libasound2-dev
+          sudo apt-get install -y pkg-config libasound2-dev libvulkan1 mesa-vulkan-drivers
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -78,13 +78,34 @@ jobs:
       - name: Build all targets
         run: cargo build --all-targets --all-features
 
-      # Windows provides a D3D adapter. Require successful shader compilation
-      # here so captured initialization errors cannot silently skip GPU tests.
-      - name: Test Windows GPU shaders and rasterization
-        if: runner.os == 'Windows'
+      # Require actual shader execution on every host. Linux uses Mesa's
+      # Vulkan adapter; captured initialization errors must never skip tests.
+      - name: Test GPU shaders and rasterization
         env:
           SYSTEMLESS_REQUIRE_GPU: "1"
         run: cargo test --locked --bin systemless wgpu_
+
+      - name: Build GPU application probe
+        run: cargo build --locked --bin systemless
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Test GPU application rendering
+        run: python .github/scripts/verify-gpu-play.py
+
+      - name: Preserve GPU application evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gpu-play-${{ matrix.os }}
+          path: |
+            gpu-play-results/**/run.log
+            gpu-play-results/**/report.json
+            gpu-play-results/**/*.png
+          if-no-files-found: warn
+          retention-days: 7
 
       # test-support enables the scripted_traces module and its tests. The
       # debugger is an opt-in feature, so this run also covers its disabled
