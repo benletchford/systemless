@@ -2516,6 +2516,146 @@ pub(crate) fn ppc_frame_rect(
     wrote
 }
 
+#[derive(Clone, Copy)]
+struct PpcRoundedRect {
+    bounds: [i32; 4], // left, top, right, bottom in pixel-image coordinates
+    corner: [i32; 2],
+}
+impl PpcRoundedRect {
+    /// A convex row has one interval. Binary search retains the exact f64
+    /// membership rule while avoiding a CPU coverage test for every pixel.
+    fn span(self, y: i32) -> Option<[i32; 2]> {
+        let [left, top, right, bottom] = self.bounds;
+        if left >= right || y < top || y >= bottom {
+            return None;
+        }
+        let inside = |x| {
+            ppc_point_in_rounded_rect(
+                x,
+                y,
+                left,
+                top,
+                right,
+                bottom,
+                self.corner[0],
+                self.corner[1],
+            )
+        };
+        let middle = left + (right - left) / 2;
+        if !inside(middle) {
+            return None;
+        }
+        let (mut lo, mut hi) = (left, middle);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if inside(mid) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let first = lo;
+        let (mut lo, mut hi) = (middle + 1, right);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if inside(mid) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        Some([first, lo])
+    }
+}
+
+fn ppc_gpu_round_rect(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    port: u32,
+    outer: PpcRoundedRect,
+    inner: Option<PpcRoundedRect>,
+    pixel: u16,
+) -> Option<bool> {
+    use crate::quickdraw::raster::paint::{ClipRows, Ink, TransferMode};
+    use crate::quickdraw::raster::region_rows::{difference_rows, intersect_rows};
+    if memory.quickdraw_gpu_renderer().is_none() {
+        return None;
+    }
+    let [left, top, right, bottom] = outer.bounds;
+    if left >= right || top >= bottom {
+        return Some(false);
+    }
+    let area = crate::trap::types::Rect {
+        left: i16::try_from(left + i32::from(surface.left)).ok()?,
+        top: i16::try_from(top + i32::from(surface.top)).ok()?,
+        right: i16::try_from(right + i32::from(surface.left)).ok()?,
+        bottom: i16::try_from(bottom + i32::from(surface.top)).ok()?,
+    };
+    let mut rows = ppc_port_clip_rows(memory, port, area.top, area.bottom)?.clipped_rows(area)?;
+    for (dy, row) in rows.iter_mut().enumerate() {
+        let y = top + dy as i32;
+        let to_port =
+            |span: [i32; 2]| span.map(|x| (x.clamp(left, right) + i32::from(surface.left)) as i16);
+        let Some(span) = outer.span(y) else {
+            row.clear();
+            continue;
+        };
+        *row = intersect_rows(row, &to_port(span));
+        if let Some(span) = inner.and_then(|shape| shape.span(y)) {
+            *row = difference_rows(row, &to_port(span));
+        }
+    }
+    let clip = ClipRows::from_rows(area.top, rows);
+    let ink = Ink {
+        fg: u32::from(pixel),
+        bg: u32::from(pixel),
+        pattern: [0xff; 8],
+        mode: TransferMode::PatCopy,
+        pat_origin: (0, 0),
+    };
+    ppc_gpu_pattern_rect(memory, surface, area, &clip, &ink)
+}
+
+#[test]
+fn gpu_native_rounded_row_boundaries_match_floating_point_membership() {
+    for width in 1..=19 {
+        for height in 1..=15 {
+            for ow in [0, 1, 2, 7, 32] {
+                for oh in [0, 1, 2, 7, 32] {
+                    let shape = PpcRoundedRect {
+                        bounds: [-9, -7, -9 + width, -7 + height],
+                        corner: [ow, oh],
+                    };
+                    for y in -8..=-7 + height {
+                        let span = shape.span(y);
+                        for x in -10..=-9 + width {
+                            let expected = x >= -9
+                                && x < -9 + width
+                                && y >= -7
+                                && y < -7 + height
+                                && ppc_point_in_rounded_rect(
+                                    x,
+                                    y,
+                                    -9,
+                                    -7,
+                                    -9 + width,
+                                    -7 + height,
+                                    ow,
+                                    oh,
+                                );
+                            assert_eq!(
+                                span.is_some_and(|[l, r]| x >= l && x < r),
+                                expected,
+                                "size={width},{height};corner={ow},{oh};point={x},{y}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn ppc_frame_round_rect(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -2574,6 +2714,25 @@ pub(crate) fn ppc_frame_round_rect(
     let inner_top = top + pen_height;
     let inner_right = right - pen_width;
     let inner_bottom = bottom - pen_height;
+    if let Some(wrote) = ppc_gpu_round_rect(
+        memory,
+        surface,
+        current_gworld,
+        PpcRoundedRect {
+            bounds: [left, top, right, bottom],
+            corner: [oval_width, oval_height],
+        },
+        Some(PpcRoundedRect {
+            bounds: [inner_left, inner_top, inner_right, inner_bottom],
+            corner: [
+                oval_width.saturating_sub(pen_width.saturating_mul(2)),
+                oval_height.saturating_sub(pen_height.saturating_mul(2)),
+            ],
+        }),
+        color_pixel,
+    ) {
+        return wrote;
+    }
     let mut wrote = false;
     for y in top..bottom {
         for x in left..right {
@@ -2646,24 +2805,30 @@ pub(crate) fn ppc_paint_round_rect(
     let vis_storage = memory
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
+    if let Some(wrote) = ppc_gpu_round_rect(
+        memory,
+        surface,
+        current_gworld,
+        PpcRoundedRect {
+            bounds: [left, top, right, bottom],
+            corner: [oval_width, oval_height],
+        },
+        None,
+        color_pixel,
+    ) {
+        return wrote;
+    }
     let mut wrote = false;
     for y in top..bottom {
         for x in left..right {
-            if ppc_point_in_rounded_rect(
-                x,
-                y,
-                left,
-                top,
-                right,
-                bottom,
-                oval_width,
-                oval_height,
-            ) && ppc_local_point_in_port_regions(
-                surface,
-                (x, y),
-                vis_storage.as_deref(),
-                clip_storage.as_deref(),
-            ) {
+            if ppc_point_in_rounded_rect(x, y, left, top, right, bottom, oval_width, oval_height)
+                && ppc_local_point_in_port_regions(
+                    surface,
+                    (x, y),
+                    vis_storage.as_deref(),
+                    clip_storage.as_deref(),
+                )
+            {
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
             }
         }
