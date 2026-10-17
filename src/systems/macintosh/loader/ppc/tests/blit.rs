@@ -104,6 +104,254 @@ fn gpu_native_scaled_copies_match_format_expansion_clipping_aliases_and_fallback
         }
     }
 }
+#[test]
+fn gpu_native_masked_copies_match_software_keys_regions_aliases_and_fallback() {
+    for (source_depth, destination_depth) in [
+        (1u32, 16u32),
+        (2, 4),
+        (8, 8),
+        (16, 8),
+        (32, 1),
+        (32, 16),
+        (16, 32),
+    ] {
+        for (mode, masked) in [(0, true), (36, false), (36, true)] {
+            for [bottom, right] in [[9, 16]] {
+                for alias in [false, true] {
+                    let mut expected = None;
+                    for backend in [None, Some(0), Some(1), Some(2)] {
+                        let mut loaded =
+                            load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();
+                        let base = PPC_HEAP_BASE + 0x18000;
+                        loaded
+                            .memory
+                            .add_region(base, (0..0x2000).map(|i| (i * 73 + 0xa5) as u8).collect());
+                        let source = base;
+                        let destination = if alias { base + 9 } else { base + 0x400 };
+                        let records = base + 0x1000;
+                        let source_stride = (7 * source_depth).div_ceil(8) + 3;
+                        let destination_stride = (13 * destination_depth).div_ceil(8) + 5;
+                        ppc_write_pixmap(
+                            &mut loaded.memory,
+                            records,
+                            source,
+                            source_stride,
+                            0,
+                            0,
+                            5,
+                            7,
+                            source_depth,
+                        )
+                        .unwrap();
+                        ppc_write_pixmap(
+                            &mut loaded.memory,
+                            records + 0x40,
+                            destination,
+                            destination_stride,
+                            0,
+                            0,
+                            8,
+                            13,
+                            destination_depth,
+                        )
+                        .unwrap();
+                        ppc_write_rect(&mut loaded.memory, records + 0x80, 0, 0, 5, 7).unwrap();
+                        ppc_write_rect(&mut loaded.memory, records + 0x90, -1, -2, bottom, right)
+                            .unwrap();
+                        loaded.cpu.gpr[3] = records;
+                        loaded.cpu.gpr[4] = records + 0x40;
+                        loaded.cpu.gpr[5] = records + 0x80;
+                        loaded.cpu.gpr[6] = records + 0x90;
+                        loaded.cpu.gpr[7] = mode;
+                        loaded.cpu.gpr[8] = if masked { records + 0xa0 } else { 0 };
+                        let storage = crate::trap::test_helpers::region_storage_bytes(
+                            (0, 1, 4, 12),
+                            &[0, 1, 5, 7, 12, i16::MAX, 4, 1, 5, 7, 12, i16::MAX, i16::MAX],
+                        );
+                        loaded
+                            .memory
+                            .write_u32_be(records + 0xa0, records + 0xb0)
+                            .unwrap();
+                        loaded.memory.write_bytes(records + 0xb0, &storage).unwrap();
+                        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                        if let Some(failure) = backend {
+                            loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                    crate::quickdraw::gpu::ReferenceRenderer {
+                                        calls: calls.clone(),
+                                        failure,
+                                    },
+                                )),
+                            );
+                        }
+                        let clut = std::array::from_fn(|i| {
+                            [
+                                (i as u16) * 257,
+                                ((255 - i) as u16) * 257,
+                                ((i * 37 % 256) as u16) * 257,
+                            ]
+                        });
+                        let key = match source_depth {
+                            1 => 0,
+                            8 => 1,
+                            16 => 32767,
+                            32 => 0xb7ff_ffff,
+                            _ => u32::from(ppc_rgb_color_to_index_in_clut(
+                                PPC_RGB_WHITE,
+                                &clut,
+                                1usize << source_depth,
+                            )),
+                        };
+                        let bits =
+                            ppc_resolve_pixmap_bits(&mut loaded.memory, &[], records).unwrap();
+                        for y in 0..5 {
+                            for x in 0..7 {
+                                if (x + y) % 3 == 0 {
+                                    ppc_write_pixmap_raw_pixel(&mut loaded.memory, bits, x, y, key)
+                                        .unwrap();
+                                }
+                            }
+                        }
+                        crate::memory::write_log::start();
+                        let result = ppc_copy_bits(
+                            &mut loaded.cpu,
+                            &mut loaded.memory,
+                            &[],
+                            0,
+                            0,
+                            &loaded.toolbox_startup,
+                            &clut,
+                            PPC_RGB_BLACK,
+                            Some(3),
+                            PPC_RGB_WHITE,
+                            Some(1),
+                            PPC_RGB_BLACK,
+                        );
+                        let writes = crate::memory::write_log::take();
+                        assert!(
+                            result,
+                            "source={source_depth},destination={destination_depth}"
+                        );
+                        if backend.is_some() {
+                            assert_eq!(calls.get(), 1);
+                        }
+                        let mut pixels = vec![0; 0x800];
+                        loaded.memory.read_bytes_into(base, &mut pixels).unwrap();
+                        let pixels = (pixels, writes);
+                        if let Some(expected) = &expected {
+                            assert_eq!(&pixels,expected,"source={source_depth},destination={destination_depth},alias={alias},backend={backend:?}");
+                        } else {
+                            expected = Some(pixels);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn gpu_native_copy_mask_matches_scaled_masks_aliases_empty_masks_and_stores() {
+    for depth in [1u32, 2, 4, 8, 16] {
+        for alias in [false, true] {
+            for mask_alias in [false, true] {
+                for empty in [false, true] {
+                    let mut expected = None;
+                    for backend in [None, Some(0), Some(1), Some(2)] {
+                        let mut loaded =
+                            load_pef_application(&synthetic_pef_with_import(b"CopyMask")).unwrap();
+                        let base = PPC_HEAP_BASE + 0x18000;
+                        loaded
+                            .memory
+                            .add_region(base, (0..0x2000).map(|i| (i * 73 + 0xa5) as u8).collect());
+                        let destination = if alias { base + 9 } else { base + 0x400 };
+                        let mask = if mask_alias {
+                            destination
+                        } else {
+                            base + 0x900
+                        };
+                        let records = base + 0x1000;
+                        ppc_write_pixmap(
+                            &mut loaded.memory,
+                            records,
+                            base,
+                            (7 * depth).div_ceil(8) + 3,
+                            0,
+                            0,
+                            5,
+                            7,
+                            depth,
+                        )
+                        .unwrap();
+                        ppc_write_pixmap(
+                            &mut loaded.memory,
+                            records + 0x40,
+                            destination,
+                            (13 * depth).div_ceil(8) + 5,
+                            0,
+                            0,
+                            8,
+                            13,
+                            depth,
+                        )
+                        .unwrap();
+                        ppc_write_pixmap(
+                            &mut loaded.memory,
+                            records + 0x80,
+                            mask,
+                            3,
+                            0,
+                            0,
+                            6,
+                            9,
+                            1,
+                        )
+                        .unwrap();
+                        if empty {
+                            loaded.memory.write_bytes(mask, &[0; 18]).unwrap();
+                        }
+                        ppc_write_rect(&mut loaded.memory, records + 0xc0, 0, 0, 5, 7).unwrap();
+                        ppc_write_rect(&mut loaded.memory, records + 0xd0, 0, 0, 6, 9).unwrap();
+                        ppc_write_rect(&mut loaded.memory, records + 0xe0, -1, -2, 9, 16).unwrap();
+                        loaded.cpu.gpr[3] = records;
+                        loaded.cpu.gpr[4] = records + 0x80;
+                        loaded.cpu.gpr[5] = records + 0x40;
+                        loaded.cpu.gpr[6] = records + 0xc0;
+                        loaded.cpu.gpr[7] = records + 0xd0;
+                        loaded.cpu.gpr[8] = records + 0xe0;
+                        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                        if let Some(failure) = backend {
+                            loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                    crate::quickdraw::gpu::ReferenceRenderer {
+                                        calls: calls.clone(),
+                                        failure,
+                                    },
+                                )),
+                            );
+                        }
+                        let clut = std::array::from_fn(|i| [i as u16 * 257; 3]);
+                        crate::memory::write_log::start();
+                        let result = ppc_copy_mask(&loaded.cpu, &mut loaded.memory, &[], &clut);
+                        let writes = crate::memory::write_log::take();
+                        if backend.is_some() {
+                            assert_eq!(calls.get(), 1);
+                        }
+                        let mut pixels = vec![0; 0xa00];
+                        loaded.memory.read_bytes_into(base, &mut pixels).unwrap();
+                        let actual = (result, pixels, writes);
+                        if let Some(expected) = &expected {
+                            assert_eq!(&actual,expected,"depth={depth},alias={alias},mask_alias={mask_alias},empty={empty},backend={backend:?}");
+                        } else {
+                            expected = Some(actual);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
     #[test]
     fn hle_import_runner_copybits_overlapping_rows_preserve_padding() {
         let mut loaded = load_pef_application(&synthetic_pef_with_import(b"CopyBits")).unwrap();

@@ -12,6 +12,7 @@ pub struct QuickDrawGpuBlit {
     /// Indexed source colors mapped into raw destination pixels.
     pub palette: Option<[u32; 256]>,
     pub direct: Option<QuickDrawGpuDirectColor>,
+    pub clip: Option<QuickDrawGpuBlitClip>,
 }
 impl QuickDrawGpuBlit {
     pub fn valid(&self) -> bool {
@@ -30,6 +31,14 @@ impl QuickDrawGpuBlit {
             || !valid_groups(&self.columns, self.width)
             || !valid_groups(&self.rows, self.height)
             || (self.palette.is_some() && self.pixels.iter().any(|v| *v > 255))
+            || self.clip.as_ref().is_some_and(|clip| {
+                clip.coverage
+                    .as_ref()
+                    .is_some_and(|mask| mask.len() != destination)
+                    || clip
+                        .transparent
+                        .is_some_and(|[key, mask]| mask == 0 || key & !mask != 0)
+            })
             || self.direct.as_ref().is_some_and(|d| {
                 !d.valid()
                     || self.palette.is_some()
@@ -46,6 +55,33 @@ impl QuickDrawGpuBlit {
         let x: u64 = self.columns.iter().map(|g| u64::from(g[1] - g[0])).sum();
         let y: u64 = self.rows.iter().map(|g| u64::from(g[1] - g[0])).sum();
         x.saturating_mul(y) <= 64_000_000
+    }
+    #[cfg(test)]
+    pub(crate) fn reference_cells(&self) -> Option<Vec<super::QuickDrawGpuPixel>> {
+        let values = self.reference()?;
+        Some(
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(i, value)| {
+                    let column = self.columns[i % self.columns.len()];
+                    let row = self.rows[i / self.columns.len()];
+                    let mut source = 0;
+                    for y in row[0]..row[1] {
+                        for x in column[0]..column[1] {
+                            source = source.max(self.pixels[(y * self.width + x) as usize]);
+                        }
+                    }
+                    let covered = self.clip.as_ref().is_none_or(|clip| {
+                        clip.coverage.as_ref().is_none_or(|mask| mask[i] != 0)
+                            && clip
+                                .transparent
+                                .is_none_or(|[key, mask]| source & mask != key)
+                    });
+                    super::QuickDrawGpuPixel { value, covered }
+                })
+                .collect(),
+        )
     }
     #[cfg(test)]
     pub(crate) fn reference(&self) -> Option<Vec<u32>> {
@@ -189,4 +225,12 @@ impl QuickDrawGpuDirectColor {
             }
         }
     }
+}
+
+/// Destination coverage and a transparent key in the source pixel format.
+#[derive(Clone, Debug)]
+pub struct QuickDrawGpuBlitClip {
+    pub coverage: Option<Vec<u8>>,
+    /// [key, mask], allowing xRGB's unused high byte to be ignored.
+    pub transparent: Option<[u32; 2]>,
 }

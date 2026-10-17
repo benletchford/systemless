@@ -57,3 +57,21 @@ fn direct_color(pixel:u32) -> u32 {
     }
     return best;
 }
+
+@group(0) @binding(6) var<storage,read> coverage:array<u32>;
+@compute @workgroup_size(8,8) fn blit_cells(@builtin(global_invocation_id) id:vec3<u32>) {
+    if id.x>=geometry.size.y || id.y>=geometry.size.z {return;}
+    let xs=columns[id.x]; let ys=rows[id.y];
+    var value=0u;
+    for(var y=ys.x;y<ys.y;y++) {
+        for(var x=xs.x;x<xs.y;x++) {value=max(value,source[y*geometry.size.x+x]);}
+    }
+    let index=id.y*geometry.size.y+id.x;
+    var covered=true;
+    if (coverage[0]&1u)!=0u {covered=coverage[index+3u]!=0u;}
+    if (coverage[0]&2u)!=0u && (value&coverage[2])==coverage[1] {covered=false;}
+    if geometry.size.w!=0u {value=palette[value];}
+    if geometry.transfer.x!=0u {value=direct_color(value);}
+    output[index*2u]=value;
+    output[index*2u+1u]=select(0u,1u,covered);
+}
