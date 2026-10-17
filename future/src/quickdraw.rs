@@ -1122,7 +1122,10 @@ impl Ports {
         }
         Ok((bitmap, clips))
     }
-    pub(crate) fn paint_coverage(
+    /// Paint rectangular coverage through the selected port's pen, clipping and
+    /// GPU transfer semantics. A missing shape covers the entire rectangle.
+    /// Also used by the standalone text probe's independent coverage baseline.
+    pub fn paint_coverage(
         &self,
         gpu: &Graphics,
         memory: &mut Memory,

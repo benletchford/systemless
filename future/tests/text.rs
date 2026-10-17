@@ -136,6 +136,59 @@ fn glyph_drawing_uses_gpu_transfer_modes_clip_and_preserves_port_and_padding() {
         assert_eq!(m.read(GuestPtr(port.0 + 58), 8).unwrap(), [0xa5; 8]);
         assert_eq!(m.read(GuestPtr(port.0 + 71), 1).unwrap(), [0xa5]);
     }
+    // Reuse one live renderer while the guest edits and restores the source FONT.
+    m.write(GuestPtr(port.0 + 72), &0u16.to_be_bytes()).unwrap();
+    m.write(GuestPtr(0x2000), &before).unwrap();
+    text::move_to(&mut m, ports, 1, 2).unwrap();
+    text::draw(&mut m, &mut process, ports, &gpu, Input::Character(b'A')).unwrap();
+    let original = m.read(GuestPtr(0x2000), 8).unwrap().to_vec();
+    let handle = process.get_resource(&mut m, *b"FONT", 393).unwrap();
+    let row = GuestPtr(m.u32(GuestPtr(handle)).unwrap() + 26);
+    let saved_row = m.read(row, 1).unwrap()[0];
+    m.write(row, &[saved_row ^ 0x40]).unwrap();
+    m.write(GuestPtr(0x2000), &before).unwrap();
+    text::move_to(&mut m, ports, 1, 2).unwrap();
+    text::draw(&mut m, &mut process, ports, &gpu, Input::Character(b'A')).unwrap();
+    let mut edited = original.clone();
+    edited[0] ^= 0x40;
+    assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), edited);
+    m.write(row, &[saved_row]).unwrap();
+    m.write(GuestPtr(0x2000), &before).unwrap();
+    text::move_to(&mut m, ports, 1, 2).unwrap();
+    text::draw(&mut m, &mut process, ports, &gpu, Input::Character(b'A')).unwrap();
+    assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), original);
+    // 257 distinct 3x3 masks exceed the production identity capacity. Reused
+    // atlas IDs must never return earlier glyph pixels, including blank masks.
+    let source_rows: Vec<_> = (0..3)
+        .map(|y| m.read(GuestPtr(row.0 + y * 2), 1).unwrap()[0])
+        .collect();
+    for variant in 0..=256u16 {
+        let mut expected = before;
+        for y in 0..3usize {
+            let ink = (((variant >> (y * 3)) & 7) as u8) << 5;
+            m.write(
+                GuestPtr(row.0 + y as u32 * 2),
+                &[(source_rows[y] & 0x1f) | ink],
+            )
+            .unwrap();
+            expected[y * 2] = (before[y * 2] & !0x60) | (ink & 0x60);
+        }
+        m.write(GuestPtr(0x2000), &before).unwrap();
+        text::move_to(&mut m, ports, 1, 2).unwrap();
+        text::draw(&mut m, &mut process, ports, &gpu, Input::Character(b'A')).unwrap();
+        assert_eq!(
+            m.read(GuestPtr(0x2000), 8).unwrap(),
+            expected,
+            "glyph variant {variant}"
+        );
+    }
+    for (y, byte) in source_rows.iter().enumerate() {
+        m.write(GuestPtr(row.0 + y as u32 * 2), &[*byte]).unwrap();
+    }
+    m.write(GuestPtr(0x2000), &before).unwrap();
+    text::move_to(&mut m, ports, 1, 2).unwrap();
+    text::draw(&mut m, &mut process, ports, &gpu, Input::Character(b'A')).unwrap();
+    assert_eq!(m.read(GuestPtr(0x2000), 8).unwrap(), original);
     let bytes = m.read(GuestPtr(0x2000), 8).unwrap().to_vec();
     m.write(GuestPtr(port.0 + 72), &8u16.to_be_bytes()).unwrap();
     let state = m.read(port, 108).unwrap().to_vec();

@@ -5108,3 +5108,31 @@ as2026-10-17-direct-update.*. Neither game is verified playable; no fresh PPC-or
 complete GPU text or browser acceptance claim follows. A separate native-window
 smoke retry failed its600-attempt completion gate while the host reported a locked
 screen; native presentation remains unverified. The full rebuild stays active.
+
+
+## Production Glyphon replay (2026-10-17)
+
+Shared strike drawing uses Glyphon 0.12.0 masks and the existing wgpu compositor.
+Guest font decoding, metrics and selection stay shared. No original inputs are
+patched. Fresh 68K replays exercise five Marathon and 36 EV TextDraw calls and
+preserve previous captures exactly. This does not establish native font parity,
+PPC original-game acceptance or gameplay.
+
+| Original | Screen SHA256 | Saved volume SHA256 |
+|---|---|---|
+| Marathon 1 v1.2 | 7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e | e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42 |
+| Escape Velocity 1.0.5 | 11ea1805a2dc51f970d0486b5a7fa6d03801bf8c8b582b32f8daf2757aea0e48 | e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80 |
+
+Marathon stops at 22,890,015 instructions/PC0102605C, reading FFFCC1AF. EV reaches
+the same 24M budget/PC007E6830 with the recorded E-key pair. Both exits are 1;
+these are bounded regression results, not successful game exits or playability.
+Independent volume checks verify framing/CRC, directories, companion forks and
+metadata, Marathon's same 1222-byte preference addition, and EV pilot/preferences,
+flagged alis/0 target/path and scripts. Preference contents remain native-unverified.
+
+Captures: /tmp/systemless-{marathon,ev}-glyphon.{txt,ppm,slv}. Volume checks:
+/tmp/systemless-glyphon-{marathon,ev}-volume.txt. Ignored per-game evidence retains
+2026-10-17-glyphon captures. Native presentation stays unverified with host lock
+flag Yes. Full text API/style/workload, browser and rebuild acceptance remain
+open. See text-rendering.md and progress.md for 167 unique scoped tests, 40 probe
+assertions and 36 debug samples; these are not full application acceptance.

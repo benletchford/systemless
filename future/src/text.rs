@@ -234,23 +234,12 @@ pub fn draw_strike(
     }
     let v = memory.u16(GuestPtr(port.0 + 48))? as i16;
     let mut h = memory.u16(GuestPtr(port.0 + 50))? as i16;
-    let (plans, end) = plan_strike(font, bytes, h, v)?;
+    let (cells, end) = plan_cells(font, bytes, h, v)?;
+    crate::text_gpu::validate(&cells)?;
     h = end;
     let result = (|| {
-        memory.write(GuestPtr(port.0 + 56), &(8 + mode).to_be_bytes())?;
-        for (bounds, ink, paper) in plans {
-            for (pattern, coverage) in [(0u8, paper), (255u8, ink)] {
-                if coverage.is_empty() {
-                    continue;
-                }
-                crate::port_layout::write_pattern(
-                    memory,
-                    port,
-                    crate::port_layout::Pattern::Pen,
-                    &[pattern; 8],
-                )?;
-                ports.paint_coverage(gpu, memory, bounds, Some(&coverage))?;
-            }
+        for cell in cells {
+            crate::text_gpu::draw(gpu, memory, ports, &cell, mode as i16)?;
         }
         Ok(())
     })();

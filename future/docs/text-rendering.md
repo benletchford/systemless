@@ -13,12 +13,13 @@ must not become a second production renderer.
 
 ## Current evidence and remaining work
 
-`font.rs` parses guest FONT/NFNT data. `text.rs` prepares disjoint glyph ink and
-background coverage and sends it through the same GPU port drawing services.
-`textedit.rs` uses shared font/graphics behavior. `font_fallback.rs` currently
-rasterizes fallback outlines on the CPU with ab_glyph to prepare packed source
-strikes. These facts establish an existing GPU destination path, not completion
-of all text APIs, styles, fallback behavior or the library evaluation below.
+`font.rs` parses guest FONT/NFNT data. `text.rs` prepares ordered classic cells;
+`text_gpu.rs` now prepares binary masks through Glyphon and composes them through
+the shared GPU port service. Menus retain specialized GPU coverage runs.
+TextEdit, controls and window titles use shared strike drawing. CPU ab_glyph
+source preparation remains. The scoped integration passes 167 unique tests plus
+the independent 40-case probe. Full API/style/UI coverage, representative
+performance and native/browser acceptance remain open; the goal stays active.
 
 ## Evaluate libraries before extending the custom path
 
@@ -71,9 +72,9 @@ production selection and verify its APIs against current primary documentation.
 7. Measure representative text-heavy workloads before/after any library migration;
    include uploads, dispatches, cache/memory growth and synchronization costs.
 
-The first bounded Glyphon compatibility prototype is now verified below. Next is
-the GPU mask/QuickDraw transfer adapter and API audit, followed by integration and
-full pixel acceptance. Work continues alongside Marathon/Escape Velocity compatibility.
+The production strike integration and entry-point audit are recorded below.
+Next are remaining API/style/UI cases and representative workloads, alongside
+Marathon/Escape Velocity compatibility.
 
 
 ## Baseline GPU verification (2026-10-16)
@@ -379,3 +380,93 @@ This extends supported destination-format acceptance, not all-text completion.
 Styles, the full API/UI audit, production Glyphon integration and direct-target
 library-mask fixtures, workload measurements and native/browser acceptance remain
 open. Keep the whole rebuild goal active.
+
+
+## Production Glyphon strike integration (2026-10-17)
+
+The shared draw_strike implementation now prepares the existing ordered classic
+cells with pinned Glyphon 0.12.0. Application DrawChar/DrawString/DrawText,
+TextEdit, control labels and window titles reach this path through their existing
+services. Menus retain specialized GPU coverage drawing; no host destination
+text renderer is introduced. Guest font decoding and metrics remain shared.
+
+Graphics owns one lazily initialized, same-device renderer, shared by scratch
+targets. An empty font database and empty shaping buffer prevent host font
+substitution. Content identities include exact binary bytes and cell dimensions;
+256 entries / 1,000,000 source bytes trigger a full atlas/renderer reset before ID
+reuse. This source bound is not a total GPU-atlas-memory measurement. A reusable
+RGBA mask target holds at most1,000,000 texels. Only the active cell rectangle is
+transferred, in order, through the existing GPU QuickDraw compositor; masks are
+never read back to the CPU. Destination readback still synchronizes guest memory.
+Invalid/oversized cell geometry is checked for the complete string before drawing.
+
+The independent prototype retains its former monochrome coverage comparator,
+now local to that executable, because production draw_strike uses Glyphon.
+The production dependency-license gate passes with future/deny.toml. The declared Rust 1.93 check, final strict scoped lint and license gate pass.
+The scoped run passes 167 unique tests. Final expanded all-mode direct-color and
+257-mask cache-rollover fixtures pass separately, superseding their earlier
+instances without duplicate counts. All 40 independent probe assertions and 36
+debug workload samples match pixels. Fresh unchanged originals execute five
+Marathon and 36 EV TextDraw calls; screen and saved-volume hashes match prior
+rebuild captures. Independent volume checks pass. Neither original is verified
+playable. Exact commands/logs and boundaries are in progress.md and
+original-applications.md. Historical probe
+measurements above do not establish production integration performance. Full
+styles/API/UI coverage, representative workload and atlas-memory measurement,
+original-application replays, native/browser acceptance and remaining rebuild
+requirements remain open; do not mark the goal complete.
+
+
+### Current entry-point audit
+
+Source audit for this integration (not an exhaustive classic Toolbox inventory):
+
+| Entry/caller | Shared route and current destination backend |
+|---|---|
+| 68K DrawChar/DrawString/DrawText traps; PPC imports | ABI TextDraw → runtime → text::draw → draw_strike → Glyphon mask → GPU QuickDraw transfer |
+| CharWidth/StringWidth/TextWidth/GetFontInfo | Same guest font resolution/metrics; no destination drawing |
+| TextFont/TextFace/TextMode/TextSize | Shared port selection; drawing observes live fields |
+| TextEdit redraw, TextBox, dialog static/edit text | Shared TextEdit → draw_strike; selection, caret and erasure use GPU geometry |
+| Controls and window titles | draw_strike; remaining decoration geometry uses GPU paint |
+| Standard File labels | text::draw |
+| Menu titles and tracked menu items | Shared cell-to-coverage planner → specialized GPU composition; not Glyphon |
+
+Explicit gaps found in current sources include fractional space extra, non-bold
+synthetic styles, custom text/measurement and TextEdit callbacks, mixed-style and
+arbitrary colored TextEdit redraw, and picture-recorded text. Neither StdText nor
+StdTxMeas, MeasureText or SpaceExtra has a named PPC import mapping in the current
+ABI table. Absence of a named mapping is source evidence of a gap, not a native
+behavior oracle. StyledLineBreak and TextRatio also need explicit compatibility
+decisions. Full API/style acceptance must resolve these deliberately; this audit
+does not declare them unnecessary because selected fixtures do not call them.
+
+
+### Library decision and dependency cost
+
+Glyphon 0.12.0 is selected for the current binary-strike integration because its
+same-device custom-mask path has executable pixel evidence, while classic
+selection/layout and transfer semantics stay shared. The production lockfile adds
+29 package/version pairs and removes none; existing versions are preserved. This
+includes COSMIC Text 0.19.0, font parsing and rasterization packages,
+etagere 0.3.0 and lru 0.16.4. The pinned published Glyphon manifest declares
+MIT OR Apache-2.0 OR Zlib; the whole rebuild license gate passes. Prior optimized
+probe timings support integration work, but representative production performance
+and total atlas memory remain unverified.
+
+Vello was reconsidered against primary upstream main on 2026-10-17:
+[workspace manifest](https://github.com/linebender/vello/blob/main/Cargo.toml),
+[GPU manifest](https://github.com/linebender/vello/blob/main/vello_gpu/Cargo.toml),
+[Glifo manifest](https://github.com/linebender/vello/blob/main/glifo/Cargo.toml),
+[GPU documentation](https://github.com/linebender/vello/blob/main/vello_gpu/README.md).
+Main declares vello_gpu 0.3.0, glifo 0.4.0, Rust 1.89, Apache-2.0 OR MIT and wgpu 30;
+these are repository declarations, not a verified published dependency selection.
+The GPU feature supplies rasterization/composition; text enables Glifo. Its vector
+pipeline and experimental glyph caching would need an independently verified
+classic-mask/transfer adapter. The documentation lists unsupported mask layers,
+resource-lifecycle limitations and some panic paths. These are integration risks,
+not proof it cannot preserve classic pixels. No compiled Vello dependency graph,
+classic pixel comparison or workload measurement has been performed. It remains
+an outline/vector alternative; it is not added alongside the proven Glyphon mask
+adapter merely to provide a second renderer. The CPU and WebGL backends are not
+selected for production. This decision does not claim Glyphon is universally
+faster or that Vello's performance/compatibility was tested.

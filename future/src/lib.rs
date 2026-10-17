@@ -56,6 +56,7 @@ pub mod standard_file;
 mod stdlib;
 mod surface;
 pub mod text;
+mod text_gpu;
 pub mod textedit;
 pub mod timers;
 pub mod traps;

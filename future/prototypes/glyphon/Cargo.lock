@@ -2055,6 +2055,7 @@ dependencies = [
  "ab_glyph",
  "astro-float-num",
  "cpal",
+ "glyphon",
  "m68k",
  "pollster",
  "ppc",

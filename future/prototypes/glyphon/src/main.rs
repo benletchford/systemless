@@ -316,6 +316,63 @@ fn check(label: &str, actual: &[u8], reference: &[u8]) {
     }
     println!("PASS {label}: {} exact bytes", actual.len());
 }
+// Retained monochrome coverage baseline for this probe's equivalence/benchmark.
+// Production draw_strike now uses Glyphon. Only this fixture's basic GrafPort is used.
+fn coverage_reference(
+    memory: &mut Memory,
+    ports: Ports,
+    gpu: &Graphics,
+    bytes: &[u8],
+    font: &Strike<'_>,
+) -> Result<()> {
+    let port = ports.current(memory)?;
+    let saved = memory.read(port, 108)?.to_vec();
+    let h = memory.u16(GuestPtr(port.0 + 50))? as i16;
+    let v = memory.u16(GuestPtr(port.0 + 48))? as i16;
+    let mode = memory.u16(GuestPtr(port.0 + 72))?;
+    let (cells, end) = systemless_future::text::plan_cells(font, bytes, h, v)?;
+    let result = (|| -> Result<()> {
+        memory.write(GuestPtr(port.0 + 56), &(8 + mode).to_be_bytes())?;
+        for cell in cells {
+            let width = (cell.bounds.right - cell.bounds.left) as usize;
+            if width == 0 {
+                continue;
+            }
+            for bit in [0u8, 1] {
+                let mut runs = Vec::new();
+                for (y, row) in cell.mask.chunks_exact(width).enumerate() {
+                    let mut x = 0;
+                    while x < width {
+                        let start = x;
+                        let value = row[x];
+                        x += 1;
+                        while x < width && row[x] == value {
+                            x += 1;
+                        }
+                        if value == bit {
+                            runs.push(Rect::new(
+                                cell.bounds.left + start as i32,
+                                cell.bounds.top + y as i32,
+                                cell.bounds.left + x as i32,
+                                cell.bounds.top + y as i32 + 1,
+                            ));
+                        }
+                    }
+                }
+                if !runs.is_empty() {
+                    memory.write(GuestPtr(port.0 + 58), &[bit * 255; 8])?;
+                    ports.paint_coverage(gpu, memory, cell.bounds, Some(&runs))?;
+                }
+            }
+        }
+        Ok(())
+    })();
+    memory.write(port, &saved)?;
+    result?;
+    memory.write(GuestPtr(port.0 + 50), &end.to_be_bytes())?;
+    Ok(())
+}
+
 fn transfer_probe(probe: &mut Probe, mask: &[u8], font: &Strike<'_>) -> Result<()> {
     let mut memory = Memory::default();
     memory.map(GuestPtr(0x1000), vec![0; 1024], Permissions::RW)?;
@@ -410,7 +467,7 @@ fn transfer_probe(probe: &mut Probe, mask: &[u8], font: &Strike<'_>) -> Result<(
         memory.write(GuestPtr(0x4000), &initial)?;
         memory.write(GuestPtr(0x1148), &mode.to_be_bytes())?;
         systemless_future::text::move_to(&mut memory, ports, 3, 4)?;
-        systemless_future::text::draw_strike(&mut memory, ports, &probe.gpu, b"AAA", font)?;
+        coverage_reference(&mut memory, ports, &probe.gpu, b"AAA", font)?;
         let reference = memory.read(GuestPtr(0x4000), initial.len())?.to_vec();
         let pen = memory.u16(GuestPtr(0x1132))?;
         memory.write(GuestPtr(0x4000), &initial)?;
@@ -418,6 +475,15 @@ fn transfer_probe(probe: &mut Probe, mask: &[u8], font: &Strike<'_>) -> Result<(
         assert_eq!(pen, end as u16);
         check(
             &format!("ordered overlapping string mode {mode}"),
+            memory.read(GuestPtr(0x4000), initial.len())?,
+            &reference,
+        );
+        memory.write(GuestPtr(0x4000), &initial)?;
+        systemless_future::text::move_to(&mut memory, ports, 3, 4)?;
+        systemless_future::text::draw_strike(&mut memory, ports, &probe.gpu, b"AAA", font)?;
+        assert_eq!(memory.u16(GuestPtr(0x1132))?, pen);
+        check(
+            &format!("production overlapping string mode {mode}"),
             memory.read(GuestPtr(0x4000), initial.len())?,
             &reference,
         );
@@ -432,14 +498,19 @@ fn transfer_probe(probe: &mut Probe, mask: &[u8], font: &Strike<'_>) -> Result<(
             for mode in [0u16, 2] {
                 memory.write(GuestPtr(0x1148), &mode.to_be_bytes())?;
                 probe.draw_cells(&mut memory, ports, font, text, (3, 4), mode as i16)?;
+                systemless_future::text::move_to(&mut memory, ports, 3, 4)?;
+                systemless_future::text::draw_strike(&mut memory, ports, &probe.gpu, text, font)?;
                 for round in 0..3 {
-                    let mut results = [Vec::new(), Vec::new()];
-                    for backend in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                    let mut results = [Vec::new(), Vec::new(), Vec::new()];
+                    for backend in if round % 2 == 0 { [0, 1, 2] } else { [2, 1, 0] } {
                         memory.write(GuestPtr(0x4000), &initial)?;
                         let started = std::time::Instant::now();
                         let mut uploads = 0;
                         for _ in 0..16 {
                             if backend == 0 {
+                                systemless_future::text::move_to(&mut memory, ports, 3, 4)?;
+                                coverage_reference(&mut memory, ports, &probe.gpu, text, font)?;
+                            } else if backend == 2 {
                                 systemless_future::text::move_to(&mut memory, ports, 3, 4)?;
                                 systemless_future::text::draw_strike(
                                     &mut memory,
@@ -464,13 +535,14 @@ fn transfer_probe(probe: &mut Probe, mask: &[u8], font: &Strike<'_>) -> Result<(
                         }
                         let elapsed = started.elapsed();
                         results[backend] = memory.read(GuestPtr(0x4000), initial.len())?.to_vec();
-                        println!("BENCH mode={mode} round={round} backend={} workload={workload} strings=16 glyphs={} elapsed_us={} raster_uploads={uploads} profile={}",
-                        ["coverage", "glyphon"][backend], text.len()*16, elapsed.as_micros(), if cfg!(debug_assertions) { "debug" } else { "release" });
+                        println!("BENCH mode={mode} round={round} backend={} workload={workload} strings=16 glyphs={} elapsed_us={} raster_uploads={} profile={}",
+                        ["coverage", "glyphon-probe", "glyphon-production"][backend], text.len()*16, elapsed.as_micros(), if backend == 2 { "unmeasured".to_owned() } else { uploads.to_string() }, if cfg!(debug_assertions) { "debug" } else { "release" });
                         if backend == 1 {
                             assert_eq!(uploads, 0);
                         }
                     }
                     assert_eq!(results[0], results[1]);
+                    assert_eq!(results[0], results[2]);
                 }
             }
         }
@@ -604,6 +676,6 @@ fn main() -> Result<()> {
         &first,
     );
     transfer_probe(&mut probe, &first, &font)?;
-    println!("RESULT GPU mask transfer seam verified; bounded content cache verified; text API integration remains required");
+    println!("RESULT GPU mask transfer and production strings verified; full text API/platform acceptance remains required");
     Ok(())
 }

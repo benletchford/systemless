@@ -134,6 +134,7 @@ pub struct Graphics {
     dither_pipeline: wgpu::ComputePipeline,
     empty_source: wgpu::Texture,
     error: Arc<Mutex<Option<String>>>,
+    pub(crate) text: Arc<Mutex<Option<crate::text_gpu::Renderer>>>,
 }
 fn words_bytes(words: impl IntoIterator<Item = u32>) -> Vec<u8> {
     words.into_iter().flat_map(u32::to_le_bytes).collect()
@@ -229,6 +230,7 @@ impl Graphics {
             dither_pipeline,
             empty_source,
             error,
+            text: Arc::new(Mutex::new(None)),
         })
     }
     /// A scratch drawing target on the same device. Guest memory remains the
@@ -267,6 +269,7 @@ impl Graphics {
             dither_pipeline: self.dither_pipeline.clone(),
             empty_source: self.empty_source.clone(),
             error: self.error.clone(),
+            text: self.text.clone(),
         })
     }
     pub fn check_error(&self) -> Result<()> {

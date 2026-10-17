@@ -1299,44 +1299,15 @@ fn direct_destinations_share_paint_copybits_guest_writes_and_glyphs_on_both_cpus
             .write(GuestPtr(PORT + 68), &[0, 3, 0, 0, 0, 0, 0, 9])
             .unwrap();
         rgb(&mut a, fg, false, false);
-        for native_call in [false, true] {
-            a.runtime
-                .memory
-                .write(GuestPtr(PORT + 72), &0u16.to_be_bytes())
-                .unwrap();
-            a.runtime
-                .memory
-                .write(GuestPtr(BITS), &vec![0xa5; stride * 3])
-                .unwrap();
-            a.runtime
-                .memory
-                .write(GuestPtr(PORT + 48), &[0, 0, 255, 255])
-                .unwrap();
-            if native_call {
-                native(&mut a, 8, &65u16.to_be_bytes());
-            } else {
-                invoke(&mut a, 8, &[65]);
-            }
-            let mut expected = vec![0xa5; stride * 3];
-            for (y, row) in [
-                [true, true, true, false, false],
-                [true, false, true, false, false],
-                [false, true, false, false, false],
-            ]
-            .iter()
-            .enumerate()
-            {
-                for (x, ink) in row.iter().enumerate() {
-                    let at = y * stride + (x + 1) * bytes;
-                    expected[at..at + bytes]
-                        .copy_from_slice(&direct_word(depth, if *ink { fg } else { [65535; 3] }));
-                }
-            }
-            assert_direct(&a, depth, stride, &expected);
-            for _ in 0..2 {
+        for mode in 0..8u16 {
+            for native_call in [false, true] {
                 a.runtime
                     .memory
-                    .write(GuestPtr(PORT + 72), &2u16.to_be_bytes())
+                    .write(GuestPtr(PORT + 72), &mode.to_be_bytes())
+                    .unwrap();
+                a.runtime
+                    .memory
+                    .write(GuestPtr(BITS), &vec![0xa5; stride * 3])
                     .unwrap();
                 a.runtime
                     .memory
@@ -1347,9 +1318,70 @@ fn direct_destinations_share_paint_copybits_guest_writes_and_glyphs_on_both_cpus
                 } else {
                     invoke(&mut a, 8, &[65]);
                 }
+                let mut expected = vec![0xa5; stride * 3];
+                for (y, row) in [
+                    [true, true, true, false, false],
+                    [true, false, true, false, false],
+                    [false, true, false, false, false],
+                ]
+                .iter()
+                .enumerate()
+                {
+                    for (x, ink) in row.iter().enumerate() {
+                        let at = y * stride + (x + 1) * bytes;
+                        let on = *ink ^ (mode & 4 != 0);
+                        let out = match mode & 3 {
+                            0 => {
+                                if on {
+                                    fg
+                                } else {
+                                    [65535; 3]
+                                }
+                            }
+                            1 => {
+                                if on {
+                                    fg
+                                } else {
+                                    initial
+                                }
+                            }
+                            2 => {
+                                if on {
+                                    initial.map(|v| 65535 - v)
+                                } else {
+                                    initial
+                                }
+                            }
+                            _ => {
+                                if on {
+                                    [65535; 3]
+                                } else {
+                                    initial
+                                }
+                            }
+                        };
+                        expected[at..at + bytes].copy_from_slice(&direct_word(depth, out));
+                    }
+                }
+                assert_direct(&a, depth, stride, &expected);
+                for _ in 0..2 {
+                    a.runtime
+                        .memory
+                        .write(GuestPtr(PORT + 72), &2u16.to_be_bytes())
+                        .unwrap();
+                    a.runtime
+                        .memory
+                        .write(GuestPtr(PORT + 48), &[0, 0, 255, 255])
+                        .unwrap();
+                    if native_call {
+                        native(&mut a, 8, &65u16.to_be_bytes());
+                    } else {
+                        invoke(&mut a, 8, &[65]);
+                    }
+                }
+                assert_direct(&a, depth, stride, &expected);
+                assert_eq!(a.runtime.memory.u16(GuestPtr(PORT + 50)).unwrap(), 3);
             }
-            assert_direct(&a, depth, stride, &expected);
-            assert_eq!(a.runtime.memory.u16(GuestPtr(PORT + 50)).unwrap(), 3);
         }
         let ports = a.runtime.process.ports.unwrap();
         let before = a

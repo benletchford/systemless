@@ -1,8 +1,13 @@
 # Glyphon compatibility probe
 
 This isolated executable evaluates Glyphon 0.12.0 with the rebuild's wgpu 30.0.1
-and classic FONT decoding. It is not a production backend and does not select a
-renderer for the runtime. The production manifest and lockfile are unchanged.
+and classic FONT decoding. The executable remains a compatibility probe. Its
+initial evaluation kept production dependencies unchanged; the subsequent shared
+runtime integration now pins the same Glyphon release. See the production
+integration section in [text-rendering.md](../../docs/text-rendering.md).
+The probe retains a local monochrome coverage baseline, since production
+`text::draw_strike` now uses Glyphon. Historical benchmark results below describe
+the probe, not current production workload performance.
 
 From the repository root, run:
 
@@ -194,3 +199,23 @@ is not representative application performance: target is 16x12 monochrome, font
 is synthetic, and there is no native/browser presentation. Wider real fonts,
 indexed formats, editing/scrolling/UI workloads, atlas memory growth, cold uploads
 and dispatch/synchronization profiling remain before production selection.
+
+
+## Shared production path comparison (2026-10-17)
+
+The runtime now pins Glyphon 0.12.0 for shared strike drawing. The probe retains
+its former monochrome coverage implementation locally, using the existing public
+GPU coverage primitive; this is separate from production draw_strike. Eight new
+checks compare production overlapping strings to this coverage baseline in every
+classic transfer mode, including final pen positions. All 40 probe assertions pass
+on Apple M1/Metal in /tmp/systemless-text-integration-probe-workload.txt.
+
+The optional benchmark now has coverage, glyphon-probe and glyphon-production
+lanes. Both Glyphon lanes warm the current workload before timing, and order is
+reversed each alternate round. The production lane does not yet instrument
+raster uploads and reports them as unmeasured. All 36 debug samples complete with
+pixel equality between all three lanes in the same log. This overlapping debug
+run validates the harness only; its times are not production performance evidence.
+Representative application workloads, cold uploads, total atlas memory, native
+presentation and browser acceptance remain required. Strict final probe lint
+passes in /tmp/systemless-text-integration-probe-lint-final.txt.

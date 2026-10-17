@@ -11182,3 +11182,65 @@ the genuine supported path. Do not patch guest probes or infer native flag parit
 from these fixtures. Direct screen modes, complete GPU text/Glyphon integration,
 Mixed Mode, native/browser and full gameplay acceptance remain unfinished. Keep
 the rebuild goal active, the baseline checkout unchanged and PR4802 draft.
+
+
+## Production Glyphon strike drawing (2026-10-17)
+
+Application DrawChar/DrawString/DrawText, TextEdit, control labels and window
+titles now reach pinned Glyphon 0.12.0 through shared draw_strike. Classic font
+selection, metrics, ordered cells and pen updates remain shared. Glyphon supplies
+same-device binary masks to the existing GPU QuickDraw compositor. CPU source
+preparation remains; destination composition stays in wgpu. Menus retain GPU
+coverage. There is no host font database, mask readback or application patch.
+Graphics and scratch targets share one lazy renderer. Exact mask/dimension keys
+reset atlas/renderer before reuse at 256 entries or 1,000,000 source bytes. The
+reusable target holds at most 1,000,000 texels; total atlas memory is not measured.
+The independent coverage reference stays local to the prototype executable.
+
+Validation (functional/build/license gates exit 0; original trace boundaries reported separately; GPU cases enabled):
+
+- `cargo test --offline --manifest-path future/Cargo.toml --lib --test text --test fonts --test textedit --test indexed_destinations --test controls --test windows --test dialogs -- --include-ignored --nocapture --test-threads=1`: 167 passes, 0 failed/ignored. Counts: 96 library, 3 controls, 5 dialogs, 13 fonts, 12 destinations, 5 text, 17 TextEdit, 16 windows. Log: /tmp/systemless-text-integration-tests.txt.
+- Expanded direct fixture: all eight modes, RGB555/xRGB8888, both CPU adapters,
+  independently expected pixels, double-XOR, clips/padding and read-only rejection.
+  Log: /tmp/systemless-text-integration-direct-final.txt. Expanded text fixture:
+  live font edits/restores and 257 distinct masks through the production cache,
+  exceeding its capacity without stale pixels. Log:
+  /tmp/systemless-text-integration-cache-final.txt. These supersede two earlier
+  fixture instances; unique total stays 167, not 169.
+- Strict scoped lint: /tmp/systemless-text-integration-clippy.txt,
+  /tmp/systemless-text-integration-lint-final.txt and
+  /tmp/systemless-text-integration-cache-lint.txt. Rust 1.93 check:
+  /tmp/systemless-text-integration-msrv.txt. Sequential stdin formatting and
+  whitespace checks pass; no recursive cargo fmt.
+- `cargo run --offline --locked --manifest-path future/prototypes/glyphon/Cargo.toml -- --benchmark`:
+  40 assertions and 36 debug workload samples pass with exact pixels across
+  coverage/probe/production lanes. Log:
+  /tmp/systemless-text-integration-probe-workload.txt. Production upload counts
+  remain unmeasured. Overlapping debug timings are not performance acceptance.
+  Strict probe lint: /tmp/systemless-text-integration-probe-lint-final.txt.
+- `cargo deny --manifest-path future/Cargo.toml --config future/deny.toml check licenses`
+  passes /tmp/systemless-text-integration-licenses.txt. Glyphon adds 29 locked
+  package/version pairs, removes none and changes no existing package version.
+  Primary Vello manifests/docs were reconsidered; no compiled Vello graph,
+  compatibility test or performance comparison is claimed. See text-rendering.md.
+- Fresh tracer build: /tmp/systemless-text-integration-tracer.txt. Original
+  Marathon 23M and EV 24M use unchanged forks/volumes and the same EV E-key pair.
+  Four screen/volume hashes match prior captures. Independent volume checks
+  preserve directories, companions, forks, metadata, scripts and pilot/alias
+  records, including the same 1222-byte Marathon preference addition.
+
+The original exits remain regression boundaries: Marathon 22,890,015 instructions,
+PC0102605C/read FFFCC1AF; EV 24M/PC007E6830 budget stop. Neither is verified
+playable. Captures: /tmp/systemless-{marathon,ev}-glyphon.{txt,ppm,slv}.
+Volume checks: /tmp/systemless-glyphon-{marathon,ev}-volume.txt. Private captures
+and gate logs are archived under ignored target evidence.
+
+Current host lock flag remains Yes. Native presentation was not accepted or
+repeated under the unchanged locked-host condition; the preceding bounded window
+attempt failed. Browser acceptance, actual minimize/device-loss behavior and
+native performance remain unverified. Full text styles/APIs, specialized menu
+library fit, representative application workloads and total atlas memory remain
+open, as do Mixed Mode, original-game playability and the rest of the rebuild.
+Keep the goal active. Next is remaining shared text semantics and the original
+games' real capability/runtime boundaries; do not bypass Marathon's 32BitQD
+probe or patch original applications.

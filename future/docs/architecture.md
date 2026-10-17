@@ -4219,3 +4219,19 @@ Allocation failure after GPU conversion leaves every guest payload unchanged.
 Purged direct images can be reallocated with complete matching component records.
 Flags and native edge/rounding parity still require broader conformance evidence;
 this is not complete graphics-profile, screen-mode or original-game acceptance.
+
+
+### Shared library text masks
+
+The text service retains guest font selection, classic cell geometry, bearings,
+advances and pen ownership. Glyphon 0.12.0 now prepares these binary cells on the
+same wgpu device; no host font database or modern layout substitutes for guest
+metrics. A Graphics-owned mutex serializes cached mask preparation and its GPU
+QuickDraw transfer. Scratch Graphics targets share this device-bound cache.
+Content/dimension keys observe live guest font edits without retaining guest
+pointers. Atlas/renderer reset precedes identity reuse at the source-cache bound.
+The reusable RGBA target is bounded to 1,000,000 texels, and only the active cell
+rectangle is composed. Masks remain on the GPU; destination synchronization
+continues through the shared Surface path. Specialized menu text still uses
+GPU coverage runs. Integration acceptance and remaining full-text requirements
+are tracked in text-rendering.md; this is not native/browser acceptance.
