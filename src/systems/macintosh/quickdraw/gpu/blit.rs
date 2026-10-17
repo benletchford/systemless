@@ -59,3 +59,71 @@ impl QuickDrawGpuBlit {
         Some(pixels)
     }
 }
+
+/// A packed srcCopy, one GPU invocation per destination byte. Source and
+/// background rows are snapshots, so in-place copies cannot race their reads.
+#[derive(Clone, Debug)]
+pub struct QuickDrawGpuPackedCopy {
+    pub depth: u32,
+    pub width: u32,
+    pub height: u32,
+    pub source_stride: u32,
+    pub source_bit: u32,
+    pub source: Vec<u8>,
+    pub destination_stride: u32,
+    pub destination_bit: u32,
+    pub background: Vec<u8>,
+    pub palette: Option<[u8; 256]>,
+}
+impl QuickDrawGpuPackedCopy {
+    pub fn valid(&self) -> bool {
+        if !matches!(self.depth, 1 | 2 | 4)
+            || self.width == 0
+            || self.width > 65535
+            || self.height == 0
+            || self.height > 32768
+            || self.source_bit >= 8
+            || self.destination_bit >= 8
+            || self.source_bit % self.depth != 0
+            || self.destination_bit % self.depth != 0
+        {
+            return false;
+        }
+        let bits = u64::from(self.width) * u64::from(self.depth);
+        let source = u64::from(self.source_stride) * u64::from(self.height);
+        let destination = u64::from(self.destination_stride) * u64::from(self.height);
+        source <= 4_194_304
+            && destination <= 4_194_304
+            && source == self.source.len() as u64
+            && destination == self.background.len() as u64
+            && u64::from(self.source_bit) + bits <= u64::from(self.source_stride) * 8
+            && u64::from(self.destination_bit) + bits <= u64::from(self.destination_stride) * 8
+            && self.palette.as_ref().is_none_or(|p| {
+                p[..1usize << self.depth]
+                    .iter()
+                    .all(|v| u32::from(*v) < 1 << self.depth)
+            })
+    }
+    #[cfg(test)]
+    pub(crate) fn reference(&self) -> Option<Vec<u8>> {
+        if !self.valid() {
+            return None;
+        }
+        let mut output = self.background.clone();
+        let mask = ((1 << self.depth) - 1) as u8;
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let bit = self.source_bit + x * self.depth;
+                let value = (self.source[(y * self.source_stride + bit / 8) as usize]
+                    >> (8 - self.depth - bit % 8))
+                    & mask;
+                let value = self.palette.as_ref().map_or(value, |p| p[value as usize]);
+                let bit = self.destination_bit + x * self.depth;
+                let shift = 8 - self.depth - bit % 8;
+                let byte = &mut output[(y * self.destination_stride + bit / 8) as usize];
+                *byte = (*byte & !(mask << shift)) | (value << shift);
+            }
+        }
+        Some(output)
+    }
+}

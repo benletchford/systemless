@@ -1,6 +1,7 @@
 //! Guest-visible QuickDraw rasterization, enabled only by --gpu.
 use systemless::quickdraw::gpu::{
-    QuickDrawGpuBlit, QuickDrawGpuCommand, QuickDrawGpuPixel, QuickDrawGpuRenderer,
+    QuickDrawGpuBlit, QuickDrawGpuCommand, QuickDrawGpuPackedCopy, QuickDrawGpuPixel,
+    QuickDrawGpuRenderer,
 };
 use wgpu::util::DeviceExt;
 
@@ -19,6 +20,25 @@ impl QuickDrawRenderer {
     }
 }
 impl QuickDrawGpuRenderer for QuickDrawRenderer {
+    fn render_packed_blit(&mut self, command: &QuickDrawGpuPackedCopy) -> Result<Vec<u8>, String> {
+        if self.state.is_none() && self.initialization_error.is_none() {
+            match State::new() {
+                Ok(state) => self.state = Some(state),
+                Err(error) => self.initialization_error = Some(error),
+            }
+        }
+        let result = match self.state.as_ref() {
+            Some(state) => state.render_packed_blit(command),
+            None => Err(self.initialization_error.clone().unwrap()),
+        };
+        if let Err(error) = &result {
+            if self.last_error.as_ref() != Some(error) {
+                eprintln!("[GPU] QuickDraw packed bitmap CPU fallback: {error}");
+                self.last_error = Some(error.clone());
+            }
+        }
+        result
+    }
     fn render_blit(&mut self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
@@ -68,6 +88,7 @@ struct State {
     pipeline: wgpu::ComputePipeline,
     polygon_products: wgpu::ComputePipeline,
     blit_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
+    packed_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
 }
 impl State {
     fn new() -> Result<Self, String> {
@@ -103,9 +124,10 @@ impl State {
             pipeline,
             polygon_products,
             blit_pipeline: Default::default(),
+            packed_pipeline: Default::default(),
         })
     }
-    fn create_blit_pipeline(&self) -> Result<wgpu::ComputePipeline, String> {
+    fn create_blit_pipeline(&self, entry: &str) -> Result<wgpu::ComputePipeline, String> {
         let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
         let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -121,7 +143,7 @@ impl State {
                 label: Some("QuickDraw bitmap blit"),
                 layout: None,
                 module: &shader,
-                entry_point: Some("blit"),
+                entry_point: Some(entry),
                 compilation_options: Default::default(),
                 cache: None,
             });
@@ -134,7 +156,7 @@ impl State {
         match error {
             Some(error) => Err(error),
             None => {
-                eprintln!("[GPU] QuickDraw bitmap sampling enabled");
+                eprintln!("[GPU] QuickDraw {entry} bitmap sampling enabled");
                 Ok(pipeline)
             }
         }
@@ -145,13 +167,74 @@ impl State {
         }
         let mut cached = self.blit_pipeline.borrow_mut();
         if cached.is_none() {
-            *cached = Some(self.create_blit_pipeline());
+            *cached = Some(self.create_blit_pipeline("blit"));
         }
         let pipeline = cached.as_ref().unwrap().as_ref().map_err(Clone::clone)?;
         let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
         let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let result = self.render_blit_inner(command, pipeline);
+        let mut error = None;
+        for scope in [validation, memory, internal] {
+            if let Some(e) = pollster::block_on(scope.pop()) {
+                error = Some(e.to_string());
+            }
+        }
+        match error {
+            Some(error) => Err(error),
+            None => result,
+        }
+    }
+    fn render_packed_blit(&self, command: &QuickDrawGpuPackedCopy) -> Result<Vec<u8>, String> {
+        if !command.valid() {
+            return Err("invalid packed bitmap blit".into());
+        }
+        let mut cached = self.packed_pipeline.borrow_mut();
+        if cached.is_none() {
+            *cached = Some(self.create_blit_pipeline("packed_copy"));
+        }
+        let pipeline = cached.as_ref().unwrap().as_ref().map_err(Clone::clone)?;
+        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let source: Vec<u32> = command.source.iter().map(|v| u32::from(*v)).collect();
+        let palette: Vec<u32> = command.palette.as_ref().map_or_else(
+            || (0..256).collect(),
+            |p| p.iter().map(|v| u32::from(*v)).collect(),
+        );
+        let background: Vec<u32> = command
+            .background
+            .iter()
+            .flat_map(|v| [u32::from(*v), 0])
+            .collect();
+        let geometry = [
+            command.source_stride,
+            command.destination_stride,
+            command.height,
+            command.depth,
+            command.source_bit,
+            command.destination_bit,
+            command.width,
+            u32::from(command.palette.is_some()),
+        ];
+        let result = self
+            .dispatch_blit(
+                pipeline,
+                command.destination_stride,
+                command.height,
+                &[
+                    (0, &source, wgpu::BufferUsages::STORAGE),
+                    (1, &palette, wgpu::BufferUsages::STORAGE),
+                    (2, &background, wgpu::BufferUsages::STORAGE),
+                    (5, &geometry, wgpu::BufferUsages::UNIFORM),
+                ],
+            )
+            .and_then(|pixels| {
+                if pixels.iter().any(|p| *p > 255) {
+                    return Err("packed bitmap returned invalid bytes".into());
+                }
+                Ok(pixels.into_iter().map(|p| p as u8).collect())
+            });
         let mut error = None;
         for scope in [validation, memory, internal] {
             if let Some(e) = pollster::block_on(scope.pop()) {
@@ -170,58 +253,83 @@ impl State {
     ) -> Result<Vec<u32>, String> {
         let width = command.columns.len() as u32;
         let height = command.rows.len() as u32;
+        let palette: Vec<u32> = command.palette.as_ref().map_or_else(
+            || (0..256).collect(),
+            |p| p.iter().map(|v| u32::from(*v)).collect(),
+        );
+        let columns: Vec<u32> = command.columns.iter().flatten().copied().collect();
+        let rows: Vec<u32> = command.rows.iter().flatten().copied().collect();
+        let geometry = [
+            command.width,
+            width,
+            height,
+            u32::from(command.palette.is_some()),
+            0,
+            0,
+            0,
+            0,
+        ];
+        self.dispatch_blit(
+            pipeline,
+            width,
+            height,
+            &[
+                (0, &command.pixels, wgpu::BufferUsages::STORAGE),
+                (1, &palette, wgpu::BufferUsages::STORAGE),
+                (2, &columns, wgpu::BufferUsages::STORAGE),
+                (3, &rows, wgpu::BufferUsages::STORAGE),
+                (5, &geometry, wgpu::BufferUsages::UNIFORM),
+            ],
+        )
+    }
+    fn dispatch_blit(
+        &self,
+        pipeline: &wgpu::ComputePipeline,
+        width: u32,
+        height: u32,
+        inputs: &[(u32, &[u32], wgpu::BufferUsages)],
+    ) -> Result<Vec<u32>, String> {
         let output_bytes = u64::from(width) * u64::from(height) * 4;
         let limits = self.device.limits();
         if output_bytes > u64::from(limits.max_storage_buffer_binding_size)
-            || command.pixels.len() as u64 * 4 > u64::from(limits.max_storage_buffer_binding_size)
             || output_bytes > limits.max_buffer_size
+            || inputs.iter().any(|(_, v, _)| {
+                v.len() as u64 * 4 > u64::from(limits.max_storage_buffer_binding_size)
+            })
             || width.div_ceil(8) > limits.max_compute_workgroups_per_dimension
             || height.div_ceil(8) > limits.max_compute_workgroups_per_dimension
         {
             return Err("QuickDraw bitmap exceeds GPU limits".into());
         }
-        let buffer = |words: &[u32], usage| {
-            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-            self.device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("QuickDraw bitmap data"),
-                    contents: &bytes,
-                    usage,
-                })
-        };
-        let source = buffer(&command.pixels, wgpu::BufferUsages::STORAGE);
-        let palette: Vec<u32> = command.palette.as_ref().map_or_else(
-            || (0..256).collect(),
-            |p| p.iter().map(|v| u32::from(*v)).collect(),
-        );
-        let palette = buffer(&palette, wgpu::BufferUsages::STORAGE);
-        let columns: Vec<u32> = command.columns.iter().flatten().copied().collect();
-        let columns = buffer(&columns, wgpu::BufferUsages::STORAGE);
-        let rows: Vec<u32> = command.rows.iter().flatten().copied().collect();
-        let rows = buffer(&rows, wgpu::BufferUsages::STORAGE);
-        let geometry = buffer(
-            &[
-                command.width,
-                width,
-                height,
-                u32::from(command.palette.is_some()),
-            ],
-            wgpu::BufferUsages::UNIFORM,
-        );
+        let mut buffers: Vec<(u32, wgpu::Buffer)> = inputs
+            .iter()
+            .map(|(binding, words, usage)| {
+                let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+                (
+                    *binding,
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("QuickDraw bitmap data"),
+                            contents: &bytes,
+                            usage: *usage,
+                        }),
+                )
+            })
+            .collect();
         let output = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("QuickDraw bitmap result"),
             size: output_bytes,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let entries = [&source, &palette, &columns, &rows, &output, &geometry]
-            .into_iter()
-            .enumerate()
+        buffers.push((4, output));
+        let entries: Vec<_> = buffers
+            .iter()
             .map(|(binding, buffer)| wgpu::BindGroupEntry {
-                binding: binding as u32,
+                binding: *binding,
                 resource: buffer.as_entire_binding(),
             })
-            .collect::<Vec<_>>();
+            .collect();
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("QuickDraw bitmap"),
             layout: &pipeline.get_bind_group_layout(0),
@@ -240,7 +348,7 @@ impl State {
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
         }
-        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, output_bytes);
+        encoder.copy_buffer_to_buffer(&buffers.last().unwrap().1, 0, &readback, 0, output_bytes);
         self.queue.submit([encoder.finish()]);
         let (tx, rx) = std::sync::mpsc::channel();
         readback
@@ -550,6 +658,99 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gpu_packed_bitmap_bytes_match_pixel_oracle_at_each_alignment() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        for depth in [1, 2, 4u32] {
+            let offsets: Vec<_> = if depth == 1 {
+                vec![1, 7]
+            } else {
+                (0..8).step_by(depth as usize).collect()
+            };
+            for source_bit in &offsets {
+                for destination_bit in &offsets {
+                    for width in [1, 17] {
+                        for mapped in [false, true] {
+                            let source_stride = (source_bit + width * depth).div_ceil(8) + 2;
+                            let destination_stride =
+                                (destination_bit + width * depth).div_ceil(8) + 3;
+                            let height = 3;
+                            let source = (0..source_stride * height)
+                                .map(|i| (i * 73 + 19) as u8)
+                                .collect();
+                            let background = (0..destination_stride * height)
+                                .map(|i| (i * 37 + 165) as u8)
+                                .collect();
+                            let mask = ((1 << depth) - 1) as u8;
+                            let palette = mapped.then(|| {
+                                std::array::from_fn(|i| {
+                                    if i <= usize::from(mask) {
+                                        mask - i as u8
+                                    } else {
+                                        255
+                                    }
+                                })
+                            });
+                            let command = QuickDrawGpuPackedCopy {
+                                depth,
+                                width,
+                                height,
+                                source_stride,
+                                source_bit: *source_bit,
+                                source,
+                                destination_stride,
+                                destination_bit: *destination_bit,
+                                background,
+                                palette,
+                            };
+                            let mut expected = command.background.clone();
+                            for y in 0..height {
+                                for x in 0..width {
+                                    let bit = source_bit + x * depth;
+                                    let value = (command.source
+                                        [(y * source_stride + bit / 8) as usize]
+                                        >> (8 - depth - bit % 8))
+                                        & mask;
+                                    let value = command
+                                        .palette
+                                        .as_ref()
+                                        .map_or(value, |p| p[value as usize]);
+                                    let bit = destination_bit + x * depth;
+                                    let shift = 8 - depth - bit % 8;
+                                    let byte =
+                                        &mut expected[(y * destination_stride + bit / 8) as usize];
+                                    *byte = (*byte & !(mask << shift)) | (value << shift);
+                                }
+                            }
+                            assert_eq!(state.render_packed_blit(&command).unwrap(),expected,"depth={depth},sb={source_bit},db={destination_bit},width={width},mapped={mapped}");
+                            let mut invalid = command.clone();
+                            invalid.source.pop();
+                            assert!(state.render_packed_blit(&invalid).is_err());
+                        }
+                    }
+                }
+            }
+        }
+        let raw = QuickDrawGpuBlit {
+            width: 1,
+            height: 1,
+            pixels: vec![u32::MAX],
+            columns: vec![[0, 1]],
+            rows: vec![[0, 1]],
+            palette: None,
+        };
+        assert_eq!(state.render_blit(&raw).unwrap(), vec![u32::MAX]);
+    }
+
     #[test]
     fn gpu_bitmap_samples_reductions_palettes_and_raw_words_match_cpu() {
         let state = match State::new() {
