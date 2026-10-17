@@ -1,5 +1,7 @@
 //! GPU rasterization with synchronous RGB555 readback for guest memory coherence.
-use systemless::loader::ppc::{PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3GpuVertex};
+use systemless::loader::ppc::{
+    PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3RasterFrame, PpcQ3RasterVertex,
+};
 use wgpu::util::DeviceExt;
 
 pub(super) struct Qd3dRenderer {
@@ -51,7 +53,7 @@ impl State {
         })
     }
 
-    fn render(&self, frame: &PpcQ3GpuFrame, background: &[u16]) -> Result<Vec<u16>, String> {
+    fn render(&self, frame: &PpcQ3RasterFrame, background: &[u16]) -> Result<Vec<u16>, String> {
         let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
         let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -68,7 +70,11 @@ impl State {
         }
     }
 
-    fn render_inner(&self, frame: &PpcQ3GpuFrame, background: &[u16]) -> Result<Vec<u16>, String> {
+    fn render_inner(
+        &self,
+        frame: &PpcQ3RasterFrame,
+        background: &[u16],
+    ) -> Result<Vec<u16>, String> {
         let count = u64::from(frame.width) * u64::from(frame.height);
         let pixel_bytes = count
             .checked_mul(4)
@@ -123,6 +129,25 @@ impl State {
                 }
                 None => (0, 0, 0, 0),
             };
+            let fog = draw.fog.filter(|fog| fog.state != 0);
+            if let Some(fog) = fog {
+                if fog.state != 1
+                    || fog.mode > 3
+                    || ![
+                        fog.fog_start,
+                        fog.fog_end,
+                        fog.density,
+                        fog.color.0,
+                        fog.color.1,
+                        fog.color.2,
+                        fog.color.3,
+                    ]
+                    .into_iter()
+                    .all(f32::is_finite)
+                {
+                    return Err("invalid GPU fog state".into());
+                }
+            }
             for triangle in draw.vertices.chunks_exact(3) {
                 if triangle.iter().any(|v| !vertex_valid(v)) {
                     return Err("invalid projected GPU vertex".into());
@@ -134,7 +159,7 @@ impl State {
                 if area == 0. || !area.is_finite() {
                     return Err("degenerate GPU triangle requires software line rendering".into());
                 }
-                let mut bytes = Vec::with_capacity(160);
+                let mut bytes = Vec::with_capacity(192);
                 for v in triangle {
                     for value in [
                         v.screen_x,
@@ -143,8 +168,8 @@ impl State {
                         v.reciprocal_w,
                         v.uv[0],
                         v.uv[1],
-                        0.,
-                        0.,
+                        v.fog_depth,
+                        v.vertex_alpha.unwrap_or(-1.0),
                         v.color[0],
                         v.color[1],
                         v.color[2],
@@ -154,6 +179,23 @@ impl State {
                     }
                 }
                 for value in [offset, width, height, wrap | u32::from(draw.write_depth)] {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                let fog_values = fog
+                    .map(|fog| {
+                        [
+                            fog.color.1,
+                            fog.color.2,
+                            fog.color.3,
+                            (fog.mode + 1) as f32,
+                            fog.fog_start,
+                            fog.fog_end,
+                            fog.density,
+                            0.0,
+                        ]
+                    })
+                    .unwrap_or([0.0; 8]);
+                for value in fog_values {
                     bytes.extend_from_slice(&value.to_le_bytes());
                 }
                 if draw.blend {
@@ -167,14 +209,14 @@ impl State {
         for (_, bytes) in deferred {
             triangles.extend(bytes);
         }
-        let triangle_count = triangles.len() / 160;
+        let triangle_count = triangles.len() / 192;
         if triangles.len() as u64 > limits.max_storage_buffer_binding_size.into()
             || count.saturating_mul(triangle_count as u64) > 512_000_000
         {
             return Err("QD3D GPU frame exceeds raster work limits".into());
         }
         if triangles.is_empty() {
-            triangles.resize(160, 0);
+            triangles.resize(192, 0);
         }
         if texture_bytes.is_empty() {
             texture_bytes.resize(4, 255);
@@ -276,11 +318,13 @@ impl State {
             .collect())
     }
 }
-fn vertex_valid(v: &PpcQ3GpuVertex) -> bool {
+fn vertex_valid(v: &PpcQ3RasterVertex) -> bool {
     [
         v.screen_x,
         v.screen_y,
         v.depth,
+        v.fog_depth,
+        v.vertex_alpha.unwrap_or(1.0),
         v.reciprocal_w,
         v.uv[0],
         v.uv[1],
@@ -291,12 +335,22 @@ fn vertex_valid(v: &PpcQ3GpuVertex) -> bool {
     ]
     .into_iter()
     .all(f32::is_finite)
+        && v.vertex_alpha
+            .is_none_or(|alpha| (0.0..=1.0).contains(&alpha))
         && v.reciprocal_w > 0.
         && v.screen_x.abs() <= 32768.
         && v.screen_y.abs() <= 32768.
 }
 impl PpcQ3GpuRenderer for Qd3dRenderer {
     fn render(&mut self, frame: &PpcQ3GpuFrame, background: &[u16]) -> Result<Vec<u16>, String> {
+        self.render_native(&PpcQ3RasterFrame::from(frame), background)
+    }
+
+    fn render_native(
+        &mut self,
+        frame: &PpcQ3RasterFrame,
+        background: &[u16],
+    ) -> Result<Vec<u16>, String> {
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
                 Ok(state) => self.state = Some(state),
@@ -325,8 +379,10 @@ mod tests {
     use systemless::loader::ppc::*;
     use systemless::memory::GuestAddressSpace;
 
-    fn vertex(x: f32, y: f32, z: f32, color: [f32; 4]) -> PpcQ3GpuVertex {
-        PpcQ3GpuVertex {
+    fn vertex(x: f32, y: f32, z: f32, color: [f32; 4]) -> PpcQ3RasterVertex {
+        PpcQ3RasterVertex {
+            fog_depth: 0.,
+            vertex_alpha: None,
             screen_x: x,
             screen_y: y,
             depth: z,
@@ -335,8 +391,9 @@ mod tests {
             color,
         }
     }
-    fn triangle(z: f32, color: [f32; 4]) -> PpcQ3GpuDraw {
-        PpcQ3GpuDraw {
+    fn triangle(z: f32, color: [f32; 4]) -> PpcQ3RasterDraw {
+        PpcQ3RasterDraw {
+            fog: None,
             texture: None,
             vertices: vec![
                 vertex(1., 1., z, color),
@@ -347,7 +404,7 @@ mod tests {
             write_depth: color[3] == 1.,
         }
     }
-    fn cpu_render(frame: &PpcQ3GpuFrame, background: &[u16]) -> Vec<u16> {
+    fn cpu_render(frame: &PpcQ3RasterFrame, background: &[u16]) -> Vec<u16> {
         let mut memory = GuestAddressSpace::new();
         let mut bytes = Vec::new();
         for row in background.chunks(frame.width as usize) {
@@ -396,12 +453,17 @@ mod tests {
                 specular_color: (0., 0., 0.),
                 specular_control: 0.,
                 highlight_state: false,
-                transparency: (1., 1., 1.),
+                transparency: if ppc_q3_software_material_uses_alpha_fog(draw.fog) {
+                    let alpha = draw.vertices[0].color[3];
+                    (alpha, alpha, alpha)
+                } else {
+                    (1., 1., 1.)
+                },
                 illumination_type: PPC_Q3_ILLUMINATION_TYPE_NULL,
                 texture: None,
                 uv_transform: None,
                 shader_boundary: None,
-                fog_style: None,
+                fog_style: draw.fog,
             };
             for vertices in draw.vertices.chunks_exact(3) {
                 let points = std::array::from_fn(|i| {
@@ -414,7 +476,7 @@ mod tests {
                         reciprocal_w: v.reciprocal_w,
                         world: (0., 0., 0.),
                         view_direction: None,
-                        fog_depth: 0.,
+                        fog_depth: v.fog_depth,
                         uv: None,
                         diffuse: Some((v.color[0], v.color[1], v.color[2])),
                         ambient_coefficient: None,
@@ -422,7 +484,11 @@ mod tests {
                         specular_color: None,
                         specular_control: None,
                         highlight_state: None,
-                        vertex_alpha: Some(v.color[3]),
+                        vertex_alpha: if ppc_q3_software_material_uses_alpha_fog(draw.fog) {
+                            v.vertex_alpha
+                        } else {
+                            Some(v.color[3])
+                        },
                     }
                 });
                 ppc_q3_draw_software_triangle(
@@ -466,7 +532,7 @@ mod tests {
         };
         let background = vec![0x801f; 32 * 24];
         for clear_color in [None, Some([0.25, 0.5, 0.75, 1.])] {
-            let frame = PpcQ3GpuFrame {
+            let frame = PpcQ3RasterFrame {
                 width: 32,
                 height: 24,
                 viewport: [2, 3, 28, 20],
@@ -511,7 +577,7 @@ mod tests {
                 if reverse {
                     draw.vertices.reverse();
                 }
-                let frame = PpcQ3GpuFrame {
+                let frame = PpcQ3RasterFrame {
                     width: 32,
                     height: 24,
                     viewport: [0, 0, 31, 23],
@@ -538,6 +604,97 @@ mod tests {
     }
 
     #[test]
+    fn gpu_qd3d_fog_matches_software_modes_and_alpha_semantics() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        for mode in 0..=3 {
+            for zero_range in [false, true] {
+                for alpha_present in [false, true] {
+                    let mut draw = triangle(0.1, [0.8, 0.2, 0.1, 0.6]);
+                    draw.fog = Some(PpcQ3FogStyleData {
+                        state: 1,
+                        mode,
+                        fog_start: 1.,
+                        fog_end: if zero_range { 1. } else { 5. },
+                        density: 0.3,
+                        color: (1., 0.1, 0.3, 0.9),
+                    });
+                    for (i, v) in draw.vertices.iter_mut().enumerate() {
+                        v.fog_depth = [0.5, 3., 7.][i];
+                        v.reciprocal_w = [1., 0.5, 0.25][i];
+                        v.vertex_alpha = alpha_present.then_some([0.1, 0.5, 0.9][i]);
+                    }
+                    let frame = PpcQ3RasterFrame {
+                        width: 32,
+                        height: 24,
+                        viewport: [2, 3, 28, 20],
+                        clear_color: None,
+                        textures: vec![],
+                        draws: vec![draw],
+                    };
+                    let background = vec![0x801f; 32 * 24];
+                    let actual = state.render(&frame, &background).unwrap();
+                    let expected = cpu_render(&frame, &background);
+                    for (i, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
+                        assert_eq!(actual & 0x8000, expected & 0x8000, "fog coverage at {i}");
+                        for shift in [0, 5, 10] {
+                            assert!(((actual>>shift)&31).abs_diff((expected>>shift)&31)<=1,"mode={mode} zero_range={zero_range} alpha_present={alpha_present} pixel={i}: {actual:04x} vs {expected:04x}");
+                        }
+                    }
+                }
+            }
+        }
+        // Texture alpha changes opacity, while alpha fog changes the color
+        // factor. Both distance and alpha fog must run after texture sampling.
+        for mode in [PPC_Q3_FOG_MODE_LINEAR, PPC_Q3_FOG_MODE_ALPHA] {
+            let mut draw = triangle(0., [1.; 4]);
+            draw.texture = Some(0);
+            draw.blend = true;
+            draw.write_depth = false;
+            draw.fog = Some(PpcQ3FogStyleData {
+                state: 1,
+                mode,
+                fog_start: 1.,
+                fog_end: 5.,
+                density: 0.3,
+                color: (1., 0., 0., 1.),
+            });
+            for vertex in &mut draw.vertices {
+                vertex.fog_depth = 3.;
+                vertex.vertex_alpha = Some(0.5);
+            }
+            let frame = PpcQ3RasterFrame {
+                width: 32,
+                height: 24,
+                viewport: [0, 0, 31, 23],
+                clear_color: None,
+                textures: vec![PpcQ3GpuTexture {
+                    width: 1,
+                    height: 1,
+                    rgba: vec![255, 0, 0, 128],
+                    wrap_u: false,
+                    wrap_v: false,
+                }],
+                draws: vec![draw],
+            };
+            let actual = state.render(&frame, &vec![0x801f; 32 * 24]).unwrap();
+            assert_eq!(
+                actual[8 * 32 + 8],
+                0x2017,
+                "fog/texture alpha ordering for mode {mode}"
+            );
+        }
+    }
+
+    #[test]
     fn gpu_qd3d_rejects_invalid_packets_before_dispatch() {
         let state = match State::new() {
             Ok(state) => state,
@@ -549,7 +706,7 @@ mod tests {
                 return;
             }
         };
-        let frame = PpcQ3GpuFrame {
+        let frame = PpcQ3RasterFrame {
             width: 32,
             height: 24,
             viewport: [0, 0, 31, 23],
@@ -569,6 +726,19 @@ mod tests {
         assert!(state.render(&invalid, &background).is_err());
         let mut invalid = frame.clone();
         invalid.draws[0].vertices.fill(vertex(1., 1., 0., [1.; 4]));
+        assert!(state.render(&invalid, &background).is_err());
+        let mut invalid = frame.clone();
+        invalid.draws[0].fog = Some(PpcQ3FogStyleData {
+            state: 1,
+            mode: 99,
+            fog_start: 0.,
+            fog_end: 1.,
+            density: 0.2,
+            color: (1., 1., 1., 1.),
+        });
+        assert!(state.render(&invalid, &background).is_err());
+        invalid.draws[0].fog.as_mut().unwrap().mode = 0;
+        invalid.draws[0].fog.as_mut().unwrap().density = f32::NAN;
         assert!(state.render(&invalid, &background).is_err());
         let mut invalid = frame;
         invalid.width = u32::MAX;
@@ -600,7 +770,7 @@ mod tests {
                 for v in &mut draw.vertices {
                     v.uv = uv;
                 }
-                let frame = PpcQ3GpuFrame {
+                let frame = PpcQ3RasterFrame {
                     width: 32,
                     height: 24,
                     viewport: [0, 0, 31, 23],

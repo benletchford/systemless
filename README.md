@@ -116,10 +116,11 @@ desktop, including system windows and text, through wgpu. Retained outline text
 and drawing coverage is resolved on the GPU with exact integer area sampling,
 including cropped and resized desktops. Supported QuickDraw 3D TriMesh frames
 use a wgpu compute rasterizer for 8-bit indexed and 16-bit RGB555 targets,
-with depth, perspective-correct color/texture
-interpolation, texture wrapping, and alpha blending. Results are read back into
+with depth, perspective-correct color/texture interpolation, texture wrapping,
+alpha blending, and linear, exponential, squared exponential, and alpha fog.
+Results are read back into
 the guest framebuffer before execution resumes, preserving CopyBits and
-subsequent drawing. Lighting, fog, non-filled geometry, and frames beyond the
+subsequent drawing. Lighting, non-filled geometry, and frames beyond the
 GPU resource/work limits currently use the software renderer. Guest QuickDraw
 shape drawing and glyph rasterization still run on the CPU. It is experimental
 and reports initialization errors instead of silently selecting another backend.

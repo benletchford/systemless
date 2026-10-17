@@ -1,5 +1,5 @@
 struct Vertex { position: vec4<f32>, uv: vec4<f32>, color: vec4<f32> }
-struct Triangle { vertices: array<Vertex,3>, info: vec4<u32> }
+struct Triangle { vertices: array<Vertex,3>, info: vec4<u32>, fog_color: vec4<f32>, fog_parameters: vec4<f32> }
 struct Geometry { size: vec4<u32>, viewport: vec4<u32>, clear: vec4<u32> }
 @group(0) @binding(0) var<storage, read> triangles: array<Triangle>;
 @group(0) @binding(1) var<storage, read> textures: array<u32>;
@@ -45,6 +45,26 @@ fn unpack555(value: u32) -> vec3<f32> {
             let texel = min(vec2<u32>(vec2(uv.x,1.-uv.y)*vec2<f32>(size)),size-vec2(1u));
             let rgba = textures[triangle.info.x+texel.y*size.x+texel.x];
             color *= vec4<f32>((vec4(rgba)>>vec4(0u,8u,16u,24u))&vec4(255u))/255.;
+        }
+        let fog_mode = u32(triangle.fog_color.w);
+        if fog_mode != 0u {
+            let fog_depth = a.uv.z+(b.uv.z-a.uv.z)*perspective.y+(c.uv.z-a.uv.z)*perspective.z;
+            let parameters = triangle.fog_parameters;
+            var factor = 1.;
+            if fog_mode == 1u {
+                let range = parameters.y-parameters.x;
+                if range == 0. { factor = select(0.,1.,fog_depth < parameters.y); }
+                else { factor = (parameters.y-fog_depth)/range; }
+            } else if fog_mode == 2u { factor = exp(-parameters.z*fog_depth); }
+            else if fog_mode == 3u { let value=parameters.z*fog_depth; factor=exp(-value*value); }
+            else if fog_mode == 4u && all(vec3(a.uv.w,b.uv.w,c.uv.w)>=vec3(0.)) {
+                factor = a.uv.w+(b.uv.w-a.uv.w)*perspective.y+(c.uv.w-a.uv.w)*perspective.z;
+            }
+            // Overflowing exponential factors mean no fog, matching the CPU.
+            if abs(factor) <= 3.402823e38 {
+                factor = clamp(factor,0.,1.);
+                color = vec4(fma(color.rgb,vec3(factor),triangle.fog_color.rgb*(1.-factor)),color.a);
+            }
         }
         let alpha = clamp(color.a,0.,1.);
         pixel = rgb555(fma(color.rgb,vec3(alpha),unpack555(pixel)*(1.-alpha)));

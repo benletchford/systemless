@@ -15104,8 +15104,33 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
                 }
             }
         }
+        fn render_native(
+            &mut self,
+            frame: &PpcQ3RasterFrame,
+            background: &[u16],
+        ) -> Result<Vec<u16>, String> {
+            if self.mode == 4 {
+                assert_eq!(frame.draws[0].fog.unwrap().mode, PPC_Q3_FOG_MODE_LINEAR);
+                assert!(frame.draws[0]
+                    .vertices
+                    .iter()
+                    .all(|v| v.fog_depth == 0. && v.vertex_alpha.is_none()));
+                return Ok(background.to_vec());
+            }
+            self.render(&frame.clone().into_transport(), background)
+        }
+    }
+    struct LegacyRenderer;
+    impl PpcQ3GpuRenderer for LegacyRenderer {
+        fn render(&mut self, _: &PpcQ3GpuFrame, background: &[u16]) -> Result<Vec<u16>, String> {
+            Ok(background.to_vec())
+        }
     }
     let completed = loaded.q3_completed_frames.clone();
+    assert!(loaded
+        .render_completed_q3_frames_with_gpu(&mut LegacyRenderer)
+        .is_some());
+    loaded.q3_completed_frames = completed.clone();
     for mode in [0, 1] {
         assert!(loaded
             .render_completed_q3_frames_with_gpu(&mut HostRenderer { mode })
@@ -15207,6 +15232,35 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
         loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
         Some(0)
     );
+
+    let mut fog_materials = loaded.q3_submission_materials.clone();
+    fog_materials[0].fog_style = Some(PpcQ3FogStyleData {
+        state: 1,
+        mode: PPC_Q3_FOG_MODE_LINEAR,
+        fog_start: 1.,
+        fog_end: 10.,
+        density: 0.2,
+        color: (1., 0.5, 0.5, 0.5),
+    });
+    loaded.q3_completed_frames.push(PpcQ3CompletedFrameRecord {
+        view_snapshot: None,
+        view,
+        submissions: loaded.q3_submissions.clone(),
+        submission_transforms: loaded.q3_submission_transforms.clone(),
+        submission_materials: fog_materials,
+        submission_lights: loaded.q3_submission_lights.clone(),
+        retained_trimeshes: Vec::new(),
+    });
+    assert!(loaded.take_completed_q3_gpu_frame().is_none());
+    assert_eq!(loaded.q3_completed_frames.len(), 1);
+    assert!(loaded
+        .render_completed_q3_frames_with_gpu(&mut LegacyRenderer)
+        .is_none());
+    assert_eq!(loaded.q3_completed_frames.len(), 1);
+    assert!(loaded
+        .render_completed_q3_frames_with_gpu(&mut HostRenderer { mode: 4 })
+        .is_some());
+    assert!(loaded.q3_completed_frames.is_empty());
 
     loaded.q3_submission_lights[0]
         .lights

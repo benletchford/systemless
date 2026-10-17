@@ -621,6 +621,19 @@ impl PpcQ3SceneReplay {
 /// pixels; indexed targets use this coverage marker to preserve exact indices.
 pub trait PpcQ3GpuRenderer {
     fn render(&mut self, frame: &PpcQ3GpuFrame, background: &[u16]) -> Result<Vec<u16>, String>;
+
+    /// Extended shading hook. Existing host renderers keep their original
+    /// packet interface and decline shading they cannot represent.
+    fn render_native(
+        &mut self,
+        frame: &PpcQ3RasterFrame,
+        background: &[u16],
+    ) -> Result<Vec<u16>, String> {
+        if frame.draws.iter().any(|draw| draw.fog.is_some()) {
+            return Err("host renderer does not support native fog packets".into());
+        }
+        self.render(&frame.clone().into_transport(), background)
+    }
 }
 
 /// A browser-friendly QD3D frame whose guest geometry has already been
@@ -660,6 +673,110 @@ pub struct PpcQ3GpuVertex {
     pub reciprocal_w: f32,
     pub uv: [f32; 2],
     pub color: [f32; 4],
+}
+
+/// Extended synchronous raster packet. The older browser transport above
+/// remains unchanged; native GPU shading may carry additional guest attributes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PpcQ3RasterFrame {
+    pub width: u32,
+    pub height: u32,
+    pub viewport: [i32; 4],
+    pub clear_color: Option<[f32; 4]>,
+    pub textures: Vec<PpcQ3GpuTexture>,
+    pub draws: Vec<PpcQ3RasterDraw>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PpcQ3RasterDraw {
+    pub fog: Option<PpcQ3FogStyleData>,
+    pub texture: Option<usize>,
+    pub vertices: Vec<PpcQ3RasterVertex>,
+    pub blend: bool,
+    pub write_depth: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PpcQ3RasterVertex {
+    pub fog_depth: f32,
+    pub vertex_alpha: Option<f32>,
+    pub screen_x: f32,
+    pub screen_y: f32,
+    pub depth: f32,
+    pub reciprocal_w: f32,
+    pub uv: [f32; 2],
+    pub color: [f32; 4],
+}
+
+impl From<&PpcQ3GpuFrame> for PpcQ3RasterFrame {
+    fn from(frame: &PpcQ3GpuFrame) -> Self {
+        Self {
+            width: frame.width,
+            height: frame.height,
+            viewport: frame.viewport,
+            clear_color: frame.clear_color,
+            textures: frame.textures.clone(),
+            draws: frame
+                .draws
+                .iter()
+                .map(|draw| PpcQ3RasterDraw {
+                    fog: None,
+                    texture: draw.texture,
+                    blend: draw.blend,
+                    write_depth: draw.write_depth,
+                    vertices: draw
+                        .vertices
+                        .iter()
+                        .map(|v| PpcQ3RasterVertex {
+                            fog_depth: 0.,
+                            vertex_alpha: None,
+                            screen_x: v.screen_x,
+                            screen_y: v.screen_y,
+                            depth: v.depth,
+                            reciprocal_w: v.reciprocal_w,
+                            uv: v.uv,
+                            color: v.color,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl PpcQ3RasterFrame {
+    /// Used only after preparation with the external transport's state guard.
+    pub(super) fn into_transport(self) -> PpcQ3GpuFrame {
+        debug_assert!(self.draws.iter().all(|draw| draw.fog.is_none()));
+        PpcQ3GpuFrame {
+            width: self.width,
+            height: self.height,
+            viewport: self.viewport,
+            clear_color: self.clear_color,
+            textures: self.textures,
+            draws: self
+                .draws
+                .into_iter()
+                .map(|draw| PpcQ3GpuDraw {
+                    texture: draw.texture,
+                    blend: draw.blend,
+                    write_depth: draw.write_depth,
+                    vertices: draw
+                        .vertices
+                        .into_iter()
+                        .map(|v| PpcQ3GpuVertex {
+                            screen_x: v.screen_x,
+                            screen_y: v.screen_y,
+                            depth: v.depth,
+                            reciprocal_w: v.reciprocal_w,
+                            uv: v.uv,
+                            color: v.color,
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
