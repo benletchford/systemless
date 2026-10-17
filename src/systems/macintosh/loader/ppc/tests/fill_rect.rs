@@ -317,6 +317,89 @@ fn gpu_native_glyph_masks_match_software_text_modes_and_explicit_clips() {
 }
 
 #[test]
+fn gpu_native_scaled_text_matches_repeated_transfers_and_fallback() {
+    // A dense 4x4 strike guarantees four source writes per destination pixel
+    // when halved. Register a private family so nearby strikes cannot mask scaling.
+    let family = 31079;
+    let mut strike = vec![0u8; 44];
+    for (at, value) in [
+        (2, 65u16),
+        (4, 65),
+        (6, 4),
+        (12, 8),
+        (14, 4),
+        (16, 12),
+        (18, 4),
+        (24, 1),
+        (36, 4),
+        (38, 8),
+        (40, 4),
+        (42, 4),
+    ] {
+        strike[at..at + 2].copy_from_slice(&value.to_be_bytes());
+    }
+    for row in 0..4 {
+        strike[26 + row * 2] = 255;
+    }
+    assert!(crate::quickdraw::fonts::register_resource_font_strike_for_family(family, 12, &strike));
+    let pixels = initial_pixels();
+    for depth in [1, 2, 4, 8, 16] {
+        for (vis, clip) in [CLIPS[0], CLIPS[3]] {
+            let fixture = fixture(&pixels, vis, clip);
+            for size in [6, 9, 18, 24] {
+                let (_, n, d) = get_font_face_scale_ratio(family, size);
+                assert_ne!(n, d);
+                for style in [0, 1, 4, 8, 31] {
+                    for mode in [0, 1, 2, 3] {
+                        let mut expected = None;
+                        for backend in [None, Some(0), Some(1), Some(2)] {
+                            let mut loaded =
+                                load_pef_application(&synthetic_pef_with_import(b"DrawString"))
+                                    .unwrap();
+                            install_port(&mut loaded, &fixture, depth);
+                            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                            if let Some(failure) = backend {
+                                loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                                    crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                        crate::quickdraw::gpu::ReferenceRenderer {
+                                            calls: calls.clone(),
+                                            failure,
+                                        },
+                                    )),
+                                );
+                            }
+                            let advance = ppc_draw_text_bytes_styled_clipped(
+                                &mut loaded.memory,
+                                &loaded.gworlds,
+                                PORT,
+                                (-2, 6),
+                                family,
+                                size,
+                                mode,
+                                PPC_RGB_WHITE,
+                                Some(fixture.fg_index),
+                                style,
+                                None,
+                                b"AAA",
+                            );
+                            if backend.is_some() {
+                                assert!(calls.get() > 0, "scaled text must reach GPU: depth={depth},size={size},style={style},mode={mode}");
+                            }
+                            let result = (advance, read_pixels(&mut loaded, pixels.len()));
+                            if let Some(expected) = &expected {
+                                assert_eq!(&result, expected, "depth={depth},size={size},style={style},mode={mode},backend={backend:?}");
+                            } else {
+                                expected = Some(result);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn gpu_native_styled_text_matches_software_transfers_clips_and_fallback() {
     let pixels = initial_pixels();
     for depth in [1, 2, 4, 8, 16] {

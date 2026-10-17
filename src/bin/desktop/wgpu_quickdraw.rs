@@ -242,7 +242,12 @@ impl State {
                 .mask
                 .as_ref()
                 .map_or(0, |mask| u32::from(mask.threshold)),
-            0,
+            u32::from(
+                command
+                    .mask
+                    .as_ref()
+                    .is_some_and(|mask| mask.repeat_transfer),
+            ),
         ]);
         let mask_geometry = command.mask.as_ref().map_or([0; 4], |mask| {
             [
@@ -365,6 +370,54 @@ impl State {
 mod tests {
     use super::*;
     #[test]
+    fn gpu_repeated_mask_transfers_preserve_even_xor_paint_coverage() {
+        use systemless::quickdraw::gpu::QuickDrawGpuMask;
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let coverage = vec![0, 1, 2, 3, 4, 254, 255];
+        for transfer in [[0xffff, 0x73a5], [0, 0x1234], [0x8527, 0], [0x8527, 0x73a5]] {
+            let command = QuickDrawGpuCommand {
+                mask: Some(QuickDrawGpuMask {
+                    origin: [0, 0],
+                    size: [7, 1],
+                    coverage: coverage.clone(),
+                    threshold: 1,
+                    repeat_transfer: true,
+                }),
+                area: [0, 0, 7, 1],
+                rect: [0, 0, 7, 1],
+                border: None,
+                clip_rows: None,
+                polygon_edges: None,
+                pattern: [255; 8],
+                transfer: [transfer; 2],
+            };
+            let pixels = state.render(&command, &[0xc7a5; 7]).unwrap();
+            for (pixel, count) in pixels.iter().zip(&coverage) {
+                let mut expected = 0xc7a5;
+                for _ in 0..*count {
+                    expected = (expected & transfer[0]) ^ transfer[1];
+                }
+                assert_eq!(
+                    *pixel,
+                    QuickDrawGpuPixel {
+                        value: expected,
+                        covered: *count != 0
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
     fn gpu_glyph_masks_match_thresholds_clips_and_negative_origins() {
         use systemless::quickdraw::gpu::QuickDrawGpuMask;
         let state = match State::new() {
@@ -384,6 +437,7 @@ mod tests {
             for threshold in [1, 128, 255] {
                 let command = QuickDrawGpuCommand {
                     mask: Some(QuickDrawGpuMask {
+                        repeat_transfer: false,
                         origin,
                         size: [9, 7],
                         coverage: coverage.clone(),
@@ -429,6 +483,7 @@ mod tests {
             };
             let command = QuickDrawGpuCommand {
                 mask: Some(QuickDrawGpuMask {
+                    repeat_transfer: false,
                     origin,
                     size: [4, 4],
                     coverage: vec![255; 16],
@@ -467,6 +522,7 @@ mod tests {
             ([1, 1], vec![255], 0),
         ] {
             command.mask = Some(QuickDrawGpuMask {
+                repeat_transfer: false,
                 origin: [0, 0],
                 size,
                 coverage,

@@ -42,10 +42,14 @@ struct Geometry {
         }
         covered=(crossings&1u)!=0u;
     }
+    var repetitions=1u;
     if covered && geometry.polygon.z!=0u {
         let texel=point-geometry.mask.xy;
         if any(texel<vec2(0)) || any(texel>=geometry.mask.zw) {covered=false;}
-        else {covered=coverage[u32(texel.y)*u32(geometry.mask.z)+u32(texel.x)]>=geometry.polygon.z;}
+        else {
+            repetitions=coverage[u32(texel.y)*u32(geometry.mask.z)+u32(texel.x)];
+            covered=repetitions>=geometry.polygon.z;
+        }
     }
     var value=background[index];
     if covered {
@@ -54,7 +58,9 @@ struct Geometry {
         if row>=4u {pattern=geometry.pattern1[row&3u];}
         let black=((pattern>>u32(7-(point.x&7)))&1u)!=0u;
         let masks=select(geometry.transfer.xy,geometry.transfer.zw,black);
-        value=(value&masks.x)^masks.y;
+        var xor=masks.y;
+        if geometry.polygon.w!=0u && (repetitions&1u)==0u {xor^=xor&masks.x;}
+        value=(value&masks.x)^xor;
     }
     result[index]=vec2(value,u32(covered));
 }
