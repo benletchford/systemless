@@ -3,7 +3,9 @@
 
 Integer UI and sprite output must match CPU captures exactly. Native 3D uses
 its script's component tolerances, since shader floating-point rounding can
-vary between host backends. Logs must prove that the expected GPU kernels ran.
+vary between host backends. Logs prove that the opt-in backend was selected.
+Strict device unit tests exercise every kernel, including operations which
+adaptive dispatch keeps on CPU.
 """
 import argparse
 import json
@@ -28,11 +30,11 @@ def main():
     fixture = repo / "tests/toolbox-showcase/toolbox-showcase.sit"
     cases = (
         ("classic-ui", "--prefer-classic-68k", "toolbox-showcase.json", "68k", True,
-         ("[GPU] QuickDraw rasterization:",)),
+         ("[GPU] QuickDraw adaptive dispatch enabled",)),
         ("native-3d", "--prefer-powerpc", "toolbox-showcase-ppc-qd3d.json", "ppc", False,
-         ("[GPU] QD3D rasterization:",)),
+         ("[GPU] QD3D adaptive dispatch enabled",)),
         ("native-sprites", "--prefer-powerpc", "toolbox-showcase-ppc-sprites.json", "ppc", True,
-         ("[GPU] QuickDraw blit_deep_mask bitmap sampling enabled",)),
+         ("[GPU] QuickDraw adaptive dispatch enabled",)),
     )
     for name, architecture_flag, script, architecture, exact, markers in cases:
         reference = None

@@ -24,6 +24,17 @@ pub(super) fn sample_copy(
     let [st, sl, sb, sr] = source_rect;
     let [dt, dl, db, dr] = destination_rect;
     let [top, left, bottom, right] = clip;
+    let destination_pixels = usize::try_from(right.checked_sub(left)?)
+        .ok()?
+        .checked_mul(usize::try_from(bottom.checked_sub(top)?).ok()?)?;
+    let expensive_color = arithmetic.is_some()
+        || deep_mask.is_some()
+        || direct
+            .as_ref()
+            .is_some_and(|color| color.destination_depth <= 8);
+    if !renderer.prefers_blit(destination_pixels, expensive_color) {
+        return None;
+    }
     let xs: Vec<i32> = (left..right)
         .map(|x| {
             (i64::from(sl)

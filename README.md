@@ -113,58 +113,33 @@ to force software presentation.
 Pass `--gpu` to opt into cross-platform wgpu desktop presentation (Metal,
 Vulkan, or DX12, depending on the host). This renders the complete Macintosh
 desktop, including system windows and text, through wgpu. Retained outline text
-and drawing coverage is resolved on the GPU with exact integer area sampling,
-including cropped and resized desktops. QuickDraw 3D TriMesh frames in filled,
-edge, or point mode use a wgpu compute rasterizer for 8-bit indexed and 16-bit
-RGB555 targets, with depth, perspective-correct color/texture interpolation,
-texture wrapping, alpha blending, ambient, directional, point, and spot lighting with attenuation
-and spot falloff, Lambert/Phong shading with flat, vertex, or pixel interpolation,
-and linear, exponential, squared exponential, and alpha fog. Results are read
-back into the guest framebuffer before execution resumes, preserving CopyBits
-and subsequent drawing. Indexed targets quantize through the live guest palette
-after each paint and preserve exact palette indices during readback. Degenerate filled triangles and frames beyond the GPU
-resource/work limits currently use the software renderer. Classic 68K rectangle, oval, rounded-rectangle, polygon, and region
-draws use GPU pattern expansion and boolean transfers at 1, 2, 4, 8,
-16, and 32 bits per pixel, with immediate guest-memory writeback. Complex visible
-and clip regions are decoded into row intervals and tested on the GPU. Raw
-PixPats and retained-outline-preserving indexed inversions use software.
-Classic 68K glyphs and arcs use wgpu mask sampling and transfers at all six
-pixel depths, preserving complex clips and retained outline detail for text.
-PowerPC lines, solid rectangle paints, ovals, rounded rectangles, and solid arc paints use the shared GPU
-backend
-at 1, 2, 4, 8, and 16 bits per pixel. PowerPC patterned PaintRect uses the same
-depths, and FillRect patterns use wgpu at 8 and 16 bits per pixel.
-PowerPC solid polygon paints and monochrome polygon fills use GPU span filling
-and pattern sampling after exact native scanline tessellation.
-PowerPC solid region paints/frames and monochrome region fills use GPU row
-intervals, including complex region holes and port-aligned patterns.
-PowerPC bitmap text, including scaled, bold, italic, outline, shadow, and
-underline styles, uses GPU glyph-coverage sampling and text transfer modes while
-retaining outline detail. Repeated scaled source pixels preserve XOR parity and
-painted-cell write observers. Font rasterization, other guest shapes, and
-further PowerPC operations still run on the CPU. It is experimental and reports initialization errors instead of
-silently selecting another backend.
-Eligible same-depth rectangular `srcCopy` transfers at 8, 16, 24, and 32 bits
-use wgpu bitmap sampling, including 8-bit palette maps and retained text detail.
-The measured identity-palette 8-bit horizontal shrink and vertical scaling
-families use GPU maximum-index reductions with the existing clipping phase and
-guard-byte behavior. Eligible same-depth 2-bit and 4-bit rectangular `srcCopy`
-transfers also use wgpu, preserving adjacent packed pixels and row padding.
-Native PowerPC `srcCopy` also uses GPU sampling for rectangular scaling,
-monochrome foreground/background expansion, and indexed-color conversion into
-1, 2, 4, 8, 16, and 32-bit destinations. Native RGB555 and xRGB sources also
-convert to each other or indexed destinations on the GPU, preserving inverse
-table matching and monochrome conversion rules. Native CopyBits region masks
-and transparent transfers, plus scaled one-bit CopyMask masks, use GPU coverage
-and source-color keys before conversion. Native blend, pinned/wrapping
-add/subtract, minimum, and maximum transfers also run on the GPU with full
-16-bit color components and one-bit Boolean fallbacks. Native CopyDeepMask
-also samples independently scaled masks and blends their RGB weights on the GPU,
-including Boolean source transforms and mixed pixel depths. Other classic
-monochrome and packed palette copies still use software.
-Without `--gpu`, existing platform presentation remains the default.
-`--headless --gpu` also enables guest rasterization in play scripts and timed runs
-without creating a window; desktop presentation is only used for windowed runs.
+and drawing coverage use exact integer area sampling, including cropped and
+resized desktops.
+
+Guest rasterization is adaptive. Rectangles, CPU-prepared spans and glyph
+atlases, ordinary copies, small color transfers, and small 3D workloads retain
+CPU execution: submitting each one to the GPU and synchronously reading it back
+can cost much more than drawing it directly. Substantial polygon edge work,
+large color conversions/blends/masks, reductions, and suitable 3D frames can use
+the compute kernels. Selection happens before staging guest-memory snapshots
+and coverage atlases where possible. See [GPU performance](RENDERING-PERFORMANCE.md)
+for the repeatable benchmark, measurements, and dispatch boundaries.
+
+The QuickDraw kernels support patterns, Boolean transfers, complex clips,
+glyph coverage, packed pixels, scaling, indexed/direct color conversion,
+CopyMask, and weighted CopyDeepMask. The 3D rasterizer supports filled, edge,
+and point TriMesh frames in indexed and RGB555 targets, depth, perspective
+color/texture interpolation, texture wrapping, alpha blending, ambient,
+directional, point and spot lighting, Lambert/Phong shading, and fog. GPU
+results return to authoritative guest memory before execution resumes, preserving
+CopyBits, exact indexed colors and guest write observers. Unsupported requests,
+degenerate triangles and work beyond device limits retain software rendering.
+Strict device tests exercise the kernels independently of adaptive selection.
+
+Without `--gpu`, existing platform presentation and CPU dispatch remain the
+default. `--headless --gpu` enables the same adaptive guest rasterization in play
+scripts and timed runs without creating a window; it does not measure desktop
+presentation. GPU initialization and rendering errors remain visible in logs.
 
 To check the native PowerPC 3D scene, run Toolbox Showcase with
 `--headless --gpu --prefer-powerpc --play-script tests/play/toolbox-showcase-ppc-qd3d.json`

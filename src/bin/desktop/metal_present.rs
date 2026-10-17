@@ -1946,7 +1946,7 @@ fn copy_guest_visible_pixels_to_ptr(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
         argb_bytes, aspect_fit_viewport, copy_guest_visible_pixels, guest_cursor_data,
         guest_packed_content_left, guest_visible_byte_layout, guest_visible_pixels_equal,
@@ -2068,9 +2068,9 @@ mod tests {
         frame: &systemless::memory::CompactPresentation,
         crop: (u32, u32, u32, u32),
         drawable: (u32, u32),
+        measure: Option<&str>,
     ) -> Vec<u32> {
         use super::*;
-        let uniforms = compact_frame_uniforms(frame, crop, drawable).expect("supported frame");
         autoreleasepool(|_| {
             let device = unsafe { Retained::retain(MTLCreateSystemDefaultDevice()) }
                 .expect("Metal device required");
@@ -2112,50 +2112,89 @@ mod tests {
             desc.setUsage(MTLTextureUsage::RenderTarget);
             let output = device.newTextureWithDescriptor(&desc).unwrap();
             let mut buffers = CompactBuffers::default();
-            let (cells, detail) = buffers.upload(&device, frame).unwrap();
-            let pass = unsafe { MTLRenderPassDescriptor::new() };
-            let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
-            color.setTexture(Some(&output));
-            color.setLoadAction(MTLLoadAction::Clear);
-            color.setStoreAction(MTLStoreAction::Store);
-            color.setClearColor(objc2_metal::MTLClearColor {
-                red: 0.0,
-                green: 0.0,
-                blue: 0.0,
-                alpha: 1.0,
-            });
             let queue = device.newCommandQueue().unwrap();
-            let command = queue.commandBuffer().unwrap();
-            let encoder = command.renderCommandEncoderWithDescriptor(&pass).unwrap();
-            encoder.setRenderPipelineState(&pipeline);
-            unsafe {
-                encoder.setFragmentBuffer_offset_atIndex(Some(cells), 0, 0);
-                encoder.setFragmentBuffer_offset_atIndex(Some(detail), 0, 1);
-                encoder.setFragmentBytes_length_atIndex(
-                    non_null_bytes(&uniforms),
-                    size_of::<CompactFrameUniforms>(),
-                    2,
-                );
+            let mut samples = Vec::new();
+            let mut submitted = Vec::new();
+            let mut gpu_time = Vec::new();
+            let mut alternate = frame.clone();
+            if measure.is_some() {
+                alternate.cells[0] ^= 0x010101;
             }
-            encoder.setViewport(MTLViewport {
-                originX: uniforms.ox.into(),
-                originY: uniforms.oy.into(),
-                width: uniforms.dw.into(),
-                height: uniforms.dh.into(),
-                znear: 0.0,
-                zfar: 1.0,
-            });
-            unsafe {
-                encoder.drawPrimitives_vertexStart_vertexCount(
-                    MTLPrimitiveType::TriangleStrip,
-                    0,
-                    4,
-                );
+            for iteration in 0..if measure.is_some() { 420 } else { 1 } {
+                let frame = if iteration % 2 == 0 {
+                    frame
+                } else {
+                    &alternate
+                };
+                let start = std::time::Instant::now();
+                let (submit_elapsed, gpu_seconds) = autoreleasepool(|_| {
+                    let uniforms = compact_frame_uniforms(frame, crop, drawable).unwrap();
+                    let pass = unsafe { MTLRenderPassDescriptor::new() };
+                    let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+                    color.setTexture(Some(&output));
+                    color.setLoadAction(MTLLoadAction::Clear);
+                    color.setStoreAction(MTLStoreAction::Store);
+                    color.setClearColor(objc2_metal::MTLClearColor {
+                        red: 0.0,
+                        green: 0.0,
+                        blue: 0.0,
+                        alpha: 1.0,
+                    });
+                    let (cells, detail) = buffers.upload(&device, frame).unwrap();
+                    let command = queue.commandBuffer().unwrap();
+                    let encoder = command.renderCommandEncoderWithDescriptor(&pass).unwrap();
+                    encoder.setRenderPipelineState(&pipeline);
+                    unsafe {
+                        encoder.setFragmentBuffer_offset_atIndex(Some(cells), 0, 0);
+                        encoder.setFragmentBuffer_offset_atIndex(Some(detail), 0, 1);
+                        encoder.setFragmentBytes_length_atIndex(
+                            non_null_bytes(&uniforms),
+                            size_of::<CompactFrameUniforms>(),
+                            2,
+                        );
+                    }
+                    encoder.setViewport(MTLViewport {
+                        originX: uniforms.ox.into(),
+                        originY: uniforms.oy.into(),
+                        width: uniforms.dw.into(),
+                        height: uniforms.dh.into(),
+                        znear: 0.0,
+                        zfar: 1.0,
+                    });
+                    unsafe {
+                        encoder.drawPrimitives_vertexStart_vertexCount(
+                            MTLPrimitiveType::TriangleStrip,
+                            0,
+                            4,
+                        );
+                    }
+                    encoder.endEncoding();
+                    command.commit();
+                    let submit_elapsed = start.elapsed();
+                    unsafe {
+                        command.waitUntilCompleted();
+                    }
+                    let gpu_seconds = unsafe { command.GPUEndTime() - command.GPUStartTime() };
+                    (submit_elapsed, gpu_seconds)
+                });
+                if iteration >= 120 {
+                    samples.push(start.elapsed());
+                    submitted.push(submit_elapsed);
+                    gpu_time.push(std::time::Duration::from_secs_f64(gpu_seconds.max(0.)));
+                }
             }
-            encoder.endEncoding();
-            command.commit();
-            unsafe {
-                command.waitUntilCompleted();
+            if let Some(name) = measure {
+                crate::renderer_bench::report(name, "default-metal", &mut samples);
+                crate::renderer_bench::report(
+                    &format!("{name}-submit"),
+                    "default-metal",
+                    &mut submitted,
+                );
+                crate::renderer_bench::report(
+                    &format!("{name}-gpu-time"),
+                    "default-metal",
+                    &mut gpu_time,
+                );
             }
             let mut result = vec![0u32; (drawable.0 * drawable.1) as usize];
             unsafe {
@@ -2177,6 +2216,19 @@ mod tests {
         })
     }
 
+    pub(crate) fn benchmark_default_presentation(text: bool) {
+        {
+            let frame = crate::renderer_bench::presentation_fixture(text);
+            let name = if text { "present-text" } else { "present-ui" };
+            let result = render_compact(
+                &frame,
+                (0, 0, frame.width, frame.height),
+                (800, 600),
+                Some(name),
+            );
+            assert_eq!(result.len(), 800 * 600);
+        }
+    }
     #[test]
     fn compact_shader_matches_cpu_coverage_for_crops_and_drawables() {
         use systemless::memory::CompactPresentation;
@@ -2244,7 +2296,7 @@ mod tests {
                         (dw, dh),
                         &mut scaled,
                     );
-                    let actual = render_compact(&frame, crop, drawable);
+                    let actual = render_compact(&frame, crop, drawable, None);
                     for y in 0..drawable.1 {
                         for x in 0..drawable.0 {
                             let expected = if x >= ox && x < ox + dw && y >= oy && y < oy + dh {

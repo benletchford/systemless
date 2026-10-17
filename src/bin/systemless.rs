@@ -26,6 +26,13 @@ mod wgpu_compact;
 #[path = "desktop/wgpu_present.rs"]
 mod wgpu_present;
 
+#[path = "desktop/wgpu_buffers.rs"]
+mod wgpu_buffers;
+
+#[cfg(test)]
+#[path = "desktop/renderer_bench.rs"]
+mod renderer_bench;
+
 #[cfg(target_os = "windows")]
 #[path = "desktop/d3d_present.rs"]
 mod d3d_present;
@@ -3230,6 +3237,9 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::Resized(size) => {
+                if let Some(gpu) = self.wgpu.as_mut() {
+                    gpu.invalidate();
+                }
                 self.force_next_render = true;
                 #[cfg(target_os = "macos")]
                 {
@@ -3245,6 +3255,9 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
+                if let Some(gpu) = self.wgpu.as_mut() {
+                    gpu.invalidate();
+                }
                 self.force_next_render = true;
                 #[cfg(target_os = "macos")]
                 {

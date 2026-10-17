@@ -967,7 +967,7 @@ impl super::TrapDispatcher {
 
             let shape_rows = bus
                 .quickdraw_gpu_renderer
-                .is_some()
+                .prefers_precomputed_raster()
                 .then(|| gpu_region_frame_rows(&cache, &inset_rows, pen_h as usize, pen_w))
                 .flatten();
             self.draw_generic_shape_with_geometry(
@@ -1012,7 +1012,7 @@ impl super::TrapDispatcher {
 
         let shape_rows = bus
             .quickdraw_gpu_renderer
-            .is_some()
+            .prefers_precomputed_raster()
             .then(|| {
                 cache
                     .as_ref()
@@ -1075,7 +1075,7 @@ impl super::TrapDispatcher {
         let spans_inset =
             Self::compute_oval_spans(r_inset.right - r_inset.left, r_inset.bottom - r_inset.top);
 
-        let shape_rows = bus.quickdraw_gpu_renderer.is_some().then(|| {
+        let shape_rows = bus.quickdraw_gpu_renderer.prefers_precomputed_raster().then(|| {
             gpu_curve_rows(
                 r.top,
                 r.left,
@@ -1147,7 +1147,7 @@ impl super::TrapDispatcher {
         };
         let spans_inset = Self::compute_rrect_spans(&r_inset, ow - 2 * pen_w, oh - 2 * pen_h);
 
-        let shape_rows = bus.quickdraw_gpu_renderer.is_some().then(|| {
+        let shape_rows = bus.quickdraw_gpu_renderer.prefers_precomputed_raster().then(|| {
             gpu_curve_rows(
                 r.top,
                 0,
@@ -1742,7 +1742,7 @@ impl super::TrapDispatcher {
             None
         };
 
-        if bus.quickdraw_gpu_renderer.is_some()
+        if (bus.quickdraw_gpu_renderer.prefers_precomputed_raster() || polygon_edges.is_some())
             && (full_rect_coverage || shape_rows.is_some() || polygon_edges.is_some())
             && (!vis_region_complex || vis_region_cache.is_some())
             && (!clip_region_complex || clip_region_cache.is_some())
@@ -2119,7 +2119,7 @@ impl super::TrapDispatcher {
                 _ => (u32::from(r >> 8) << 16) | (u32::from(g >> 8) << 8) | u32::from(b >> 8),
             }
         };
-        if bus.quickdraw_gpu_renderer.is_some()
+        if bus.quickdraw_gpu_renderer.prefers_precomputed_raster()
             && matches!(pixel_size, 1 | 2 | 4 | 8 | 16 | 32)
             && (matches!(op, ShapeOp::Glyph(_))
                 || (!full_rect_coverage && shape_rows.is_none() && polygon_edges.is_none()))

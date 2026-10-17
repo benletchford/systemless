@@ -315,6 +315,9 @@ impl PpcLoadedApp {
         let commands = self.q3_completed_frame_scene_commands(&frame);
         let target = self.q3_render_target(&commands)?;
         let packet = self.prepare_q3_gpu_frame(commands, true)?;
+        if !renderer.prefers_native(&packet) {
+            return None;
+        }
         let front = target.front_buffer;
         let indexed_clut = (front.depth == 8).then(|| {
             target

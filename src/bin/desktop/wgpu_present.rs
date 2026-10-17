@@ -2,6 +2,69 @@
 use std::rc::Rc;
 use winit::window::Window;
 
+struct CompactFrame {
+    image: std::sync::Arc<systemless::memory::CompactPresentation>,
+    crop: (u32, u32, u32, u32),
+    output: (u32, u32),
+}
+
+impl CompactFrame {
+    fn matches(
+        &self,
+        image: &std::sync::Arc<systemless::memory::CompactPresentation>,
+        crop: (u32, u32, u32, u32),
+        output: (u32, u32),
+    ) -> bool {
+        std::sync::Arc::ptr_eq(&self.image, image) && self.crop == crop && self.output == output
+    }
+}
+
+pub(super) fn request_device(
+    adapter: &wgpu::Adapter,
+) -> Result<(wgpu::Device, wgpu::Queue), String> {
+    // UMA adapters can upload into the same validated buffers the fragment
+    // shader reads, avoiding a staging allocation and GPU copy per packet.
+    let shared = matches!(
+        adapter.get_info().device_type,
+        wgpu::DeviceType::IntegratedGpu | wgpu::DeviceType::Cpu
+    );
+    let required_features = if shared {
+        adapter.features() & wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
+    } else {
+        wgpu::Features::empty()
+    };
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_features,
+        ..Default::default()
+    }))
+    .map_err(|error| error.to_string())
+}
+
+fn raster_format() -> wgpu::TextureFormat {
+    if cfg!(target_endian = "little") {
+        wgpu::TextureFormat::Bgra8Unorm
+    } else {
+        wgpu::TextureFormat::Rgba8Unorm
+    }
+}
+
+fn raster_upload<'a>(pixels: &'a [u32], _bytes: &'a mut Vec<u8>) -> &'a [u8] {
+    #[cfg(target_endian = "little")]
+    {
+        super::wgpu_buffers::word_bytes(pixels)
+    }
+    #[cfg(target_endian = "big")]
+    {
+        _bytes.clear();
+        _bytes.extend(
+            pixels
+                .iter()
+                .flat_map(|p| [(*p >> 16) as u8, (*p >> 8) as u8, *p as u8, 255]),
+        );
+        _bytes
+    }
+}
+
 pub struct WgpuPresenter {
     // Drop the surface before its owning window; raw handles never escape this owner.
     surface: wgpu::Surface<'static>,
@@ -12,9 +75,11 @@ pub struct WgpuPresenter {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     geometry: wgpu::Buffer,
+    raster_geometry: Option<[u32; 8]>,
     image: Option<(wgpu::Texture, wgpu::BindGroup)>,
     bytes: Vec<u8>,
     compact: super::wgpu_compact::CompactRenderer,
+    last_compact: Option<CompactFrame>,
 }
 
 fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
@@ -30,11 +95,21 @@ pub(super) fn pipeline_with_shader(
         label: Some("desktop presentation"),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
+    pipeline_with_module(device, format, &shader, None, &[])
+}
+
+pub(super) fn pipeline_with_module(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    shader: &wgpu::ShaderModule,
+    layout: Option<&wgpu::PipelineLayout>,
+    constants: &[(&str, f64)],
+) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("desktop presentation"),
-        layout: None,
+        layout,
         vertex: wgpu::VertexState {
-            module: &shader,
+            module: shader,
             entry_point: Some("vs"),
             compilation_options: Default::default(),
             buffers: &[],
@@ -43,9 +118,12 @@ pub(super) fn pipeline_with_shader(
         depth_stencil: None,
         multisample: Default::default(),
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: shader,
             entry_point: Some("fs"),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants,
+                ..Default::default()
+            },
             targets: &[Some(wgpu::ColorTargetState {
                 format,
                 blend: None,
@@ -79,9 +157,7 @@ impl WgpuPresenter {
             ..Default::default()
         }))
         .map_err(|e| e.to_string())?;
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .map_err(|e| e.to_string())?;
+        let (device, queue) = request_device(&adapter)?;
         let mut config = surface
             .get_default_config(&adapter, 1, 1)
             .ok_or("surface has no supported configuration")?;
@@ -109,6 +185,8 @@ impl WgpuPresenter {
         );
         let compact = super::wgpu_compact::CompactRenderer::new(&device, config.format);
         Ok(Self {
+            last_compact: None,
+            raster_geometry: None,
             compact,
             surface,
             _window: window,
@@ -137,26 +215,32 @@ impl WgpuPresenter {
             self.config.width = output.0;
             self.config.height = output.1;
             self.surface.configure(&self.device, &self.config);
+            self.last_compact = None;
         }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
+                self.last_compact = None;
                 return Ok(None);
             }
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(None)
+                return Ok(None);
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 *self = Self::new(self._window.clone(), self.display.clone())?;
                 return Ok(None);
             }
             wgpu::CurrentSurfaceTexture::Validation => {
-                return Err("wgpu surface validation failed".into())
+                return Err("wgpu surface validation failed".into());
             }
         };
         Ok(Some(frame))
+    }
+
+    pub fn invalidate(&mut self) {
+        self.last_compact = None;
     }
 
     pub fn present_compact(
@@ -165,13 +249,20 @@ impl WgpuPresenter {
         crop: (u32, u32, u32, u32),
         output: (u32, u32),
     ) -> Result<Option<bool>, String> {
+        // Immutable packets may be reused for idle frontend frames. A host
+        // expose/resize or a raster overlay invalidates this successful frame.
+        if self
+            .last_compact
+            .as_ref()
+            .is_some_and(|last| last.matches(image, crop, output))
+        {
+            return Ok(Some(true));
+        }
         let viewport = super::aspect_fit_dimensions(crop.2, crop.3, output.0, output.1);
-        if !super::wgpu_compact::CompactRenderer::supports(
-            image,
-            crop,
-            viewport,
-            &self.device.limits(),
-        ) {
+        if !self
+            .compact
+            .prepare(image, crop, viewport, &self.device.limits())
+        {
             return Ok(None);
         }
         let Some(frame) = self.acquire(output)? else {
@@ -186,6 +277,11 @@ impl WgpuPresenter {
             &frame.texture.create_view(&Default::default()),
         );
         self.queue.present(frame);
+        self.last_compact = Some(CompactFrame {
+            image: image.clone(),
+            crop,
+            output,
+        });
         Ok(Some(true))
     }
 
@@ -233,7 +329,7 @@ impl WgpuPresenter {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: raster_format(),
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
@@ -255,16 +351,11 @@ impl WgpuPresenter {
             });
             self.image = Some((texture, group));
         }
-        self.bytes.clear();
-        self.bytes.extend(
-            pixels
-                .iter()
-                .flat_map(|p| [(*p >> 16) as u8, (*p >> 8) as u8, *p as u8, 255]),
-        );
+        let bytes = raster_upload(pixels, &mut self.bytes);
         let (image, group) = self.image.as_ref().unwrap();
         self.queue.write_texture(
             image.as_image_copy(),
-            &self.bytes,
+            bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(size.0 * 4),
@@ -276,8 +367,11 @@ impl WgpuPresenter {
         let words = [
             crop.0, crop.1, crop.2, crop.3, rect.0, rect.1, rect.2, rect.3,
         ];
-        let uniforms: Vec<u8> = words.into_iter().flat_map(u32::to_ne_bytes).collect();
-        self.queue.write_buffer(&self.geometry, 0, &uniforms);
+        if self.raster_geometry != Some(words) {
+            self.queue
+                .write_buffer(&self.geometry, 0, super::wgpu_buffers::word_bytes(&words));
+            self.raster_geometry = Some(words);
+        }
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
@@ -311,6 +405,7 @@ impl WgpuPresenter {
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
+        self.last_compact = None;
         Ok(true)
     }
 }
@@ -319,6 +414,21 @@ impl WgpuPresenter {
 mod tests {
     use super::*;
     use wgpu::util::DeviceExt;
+
+    #[test]
+    fn unchanged_compact_frames_require_the_same_packet_crop_and_output() {
+        let image = std::sync::Arc::new(systemless::memory::CompactPresentation::default());
+        let frame = CompactFrame {
+            image: image.clone(),
+            crop: (0, 0, 640, 480),
+            output: (800, 600),
+        };
+        assert!(frame.matches(&image, frame.crop, frame.output));
+        assert!(!frame.matches(&image, (1, 0, 639, 480), frame.output));
+        assert!(!frame.matches(&image, frame.crop, (1024, 768)));
+        let replacement = std::sync::Arc::new((*image).clone());
+        assert!(!frame.matches(&replacement, frame.crop, frame.output));
+    }
 
     #[test]
     fn gpu_readback_preserves_rgb_crop_orientation_and_letterboxing() {
@@ -347,17 +457,19 @@ mod tests {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: raster_format(),
             usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         // Crop the first column; all four remaining colors must retain their position.
         queue.write_texture(
             source.as_image_copy(),
-            &[
-                99, 99, 99, 255, 18, 52, 86, 255, 255, 0, 0, 255, 99, 99, 99, 255, 0, 255, 0, 255,
-                0, 0, 255, 255,
-            ],
+            raster_upload(
+                &[
+                    0x00636363, 0x00123456, 0x00ff0000, 0x00636363, 0x0000ff00, 0x000000ff,
+                ],
+                &mut Vec::new(),
+            ),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(12),

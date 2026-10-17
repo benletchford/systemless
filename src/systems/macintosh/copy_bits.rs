@@ -271,6 +271,9 @@ pub(crate) trait CopyBitsMemory {
     fn gpu_blits_enabled(&self) -> bool {
         false
     }
+    fn prefers_gpu_blit(&self, _destination_pixels: usize, _expensive: bool) -> bool {
+        self.gpu_blits_enabled()
+    }
     fn render_gpu_blit(
         &mut self,
         _command: &crate::quickdraw::gpu::QuickDrawGpuBlit,
@@ -330,10 +333,16 @@ pub(crate) trait CopyBitsMemory {
 }
 
 impl CopyBitsMemory for GuestAddressSpace {
+    fn prefers_gpu_blit(&self, destination_pixels: usize, expensive: bool) -> bool {
+        self.quickdraw_gpu_renderer().prefers_blit(destination_pixels, expensive)
+    }
     fn render_gpu_packed_blit(
         &mut self,
         command: &crate::quickdraw::gpu::QuickDrawGpuPackedCopy,
     ) -> Option<Vec<u8>> {
+        if !self.prefers_gpu_blit(command.width as usize * command.height as usize, false) {
+            return None;
+        }
         self.quickdraw_gpu_renderer()
             .render_packed_blit(command)
             .ok()
@@ -411,10 +420,16 @@ impl CopyBitsMemory for GuestAddressSpace {
 }
 
 impl CopyBitsMemory for MacMemoryBus {
+    fn prefers_gpu_blit(&self, destination_pixels: usize, expensive: bool) -> bool {
+        self.quickdraw_gpu_renderer.prefers_blit(destination_pixels, expensive)
+    }
     fn render_gpu_packed_blit(
         &mut self,
         command: &crate::quickdraw::gpu::QuickDrawGpuPackedCopy,
     ) -> Option<Vec<u8>> {
+        if !self.prefers_gpu_blit(command.width as usize * command.height as usize, false) {
+            return None;
+        }
         self.quickdraw_gpu_renderer.render_packed_blit(command).ok()
     }
 
@@ -635,6 +650,9 @@ fn gpu_blit_bytes(
         return None;
     }
     let output_len = columns.len().checked_mul(rows.len())?;
+    if !memory.prefers_gpu_blit(output_len, source.len() / lanes > output_len.saturating_mul(4)) {
+        return None;
+    }
     let command = crate::quickdraw::gpu::QuickDrawGpuBlit {
         width,
         height: u32::try_from(source.len() / row_len).ok()?,

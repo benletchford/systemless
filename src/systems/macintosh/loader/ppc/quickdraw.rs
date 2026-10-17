@@ -250,7 +250,7 @@ fn ppc_gpu_line(
     clips: [Option<&[u8]>; 2],
 ) -> Option<bool> {
     let fb = surface.front_buffer;
-    if memory.quickdraw_gpu_renderer().is_none() {
+    if !memory.quickdraw_gpu_renderer().prefers_precomputed_raster() {
         return None;
     }
     if pen.0 == 0 || pen.1 == 0 || fb.width == 0 || fb.height == 0 {
@@ -410,7 +410,7 @@ pub(crate) fn ppc_draw_oval_bounds(
     let inner_height = height - 2 * pen_height;
     let inner_spans =
         TrapDispatcher::compute_oval_spans(inner_width.max(0) as i16, inner_height.max(0) as i16);
-    if memory.quickdraw_gpu_renderer().is_some() {
+    if memory.quickdraw_gpu_renderer().prefers_precomputed_raster() {
         let result = (|| {
             use crate::quickdraw::raster::paint::{ClipRows, Ink, TransferMode};
             use crate::quickdraw::raster::region_rows::{difference_rows, intersect_rows};
@@ -588,7 +588,7 @@ pub(crate) fn ppc_paint_arc(
         right.min(front_buffer.width as i32),
         bottom.min(front_buffer.height as i32),
     );
-    if memory.quickdraw_gpu_renderer().is_some()
+    if memory.quickdraw_gpu_renderer().prefers_precomputed_raster()
         && i64::from((x1 - x0).max(0)) * i64::from((y1 - y0).max(0)) <= 4_194_304
     {
         let mut points = Vec::new();
@@ -639,7 +639,7 @@ pub(super) fn ppc_gpu_region_rows(
 ) -> Option<bool> {
     use crate::quickdraw::gpu::{try_native_rectangle, QuickDrawGpuCommand, RasterTarget};
     let fb = surface.front_buffer;
-    if memory.quickdraw_gpu_renderer().is_none()
+    if !memory.quickdraw_gpu_renderer().prefers_precomputed_raster()
         || !matches!(fb.depth, 1 | 2 | 4 | 8 | 16)
         || fb.width > 32767
         || fb.height > 32767
@@ -1412,7 +1412,7 @@ pub(crate) fn ppc_frame_region(
             .any(|interval| x >= interval[0] && x < interval[1])
     };
 
-    if memory.quickdraw_gpu_renderer().is_some()
+    if memory.quickdraw_gpu_renderer().prefers_precomputed_raster()
         && front_buffer.width <= 32767
         && front_buffer.height <= 32767
     {
@@ -1795,7 +1795,7 @@ fn ppc_gpu_text_mask(
     use crate::quickdraw::gpu::{
         try_native_rectangle, QuickDrawGpuCommand, QuickDrawGpuMask, RasterTarget,
     };
-    if memory.quickdraw_gpu_renderer().is_none() {
+    if !memory.quickdraw_gpu_renderer().prefers_precomputed_raster() {
         return false;
     }
     (|| {
@@ -1889,7 +1889,7 @@ fn ppc_gpu_text_points(
     text_mode: i16,
     scale: (i32, i32),
 ) -> bool {
-    if memory.quickdraw_gpu_renderer().is_none() {
+    if !memory.quickdraw_gpu_renderer().prefers_precomputed_raster() {
         return false;
     }
     let fb = surface.front_buffer;
@@ -2687,7 +2687,7 @@ pub(crate) fn ppc_paint_rect(
     let top = top.max(0).min(front_buffer.height as i32);
     let right = right.max(0).min(front_buffer.width as i32);
     let bottom = bottom.max(0).min(front_buffer.height as i32);
-    if memory.quickdraw_gpu_renderer().is_some() {
+    if memory.quickdraw_gpu_renderer().prefers_precomputed_raster() {
         let area = (|| {
             Some(crate::trap::types::Rect {
                 top: i16::try_from(top + i32::from(surface.top)).ok()?,
@@ -2811,7 +2811,7 @@ fn ppc_paint_rect_bounds_with_clip(
     let vis_storage = memory
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
-    if memory.quickdraw_gpu_renderer().is_some() {
+    if memory.quickdraw_gpu_renderer().prefers_precomputed_raster() {
         // Clip in port coordinates, then convert to framebuffer coordinates.
         // Ordinary and Window Manager painting differ only in clipRgn use.
         let command = (|| {
@@ -3145,7 +3145,7 @@ fn ppc_gpu_round_rect(
 ) -> Option<bool> {
     use crate::quickdraw::raster::paint::{ClipRows, Ink, TransferMode};
     use crate::quickdraw::raster::region_rows::{difference_rows, intersect_rows};
-    if memory.quickdraw_gpu_renderer().is_none() {
+    if !memory.quickdraw_gpu_renderer().prefers_precomputed_raster() {
         return None;
     }
     let [left, top, right, bottom] = outer.bounds;
@@ -4737,9 +4737,14 @@ pub(crate) fn ppc_copy_bits(
             _ => return None,
         };
         let mut details = crate::memory::SavedPixels::<()>::default();
+        let gpu_selected = memory.quickdraw_gpu_renderer().prefers_blit(
+            ((copy_right - copy_left) as usize).saturating_mul((copy_bottom - copy_top) as usize),
+            matches!(mode, 32..=35 | 37..=39)
+                || (matches!(src_bits.depth, 16 | 32) && dst_bits.depth <= 8),
+        );
         // CLUT resolution remains on the host; sampling and destination color
         // lookup happen in the GPU kernel, including monochrome expansion.
-        let gpu_palette = if !matches!(mode, 0 | 36) || !memory.quickdraw_gpu_renderer().is_some() {
+        let gpu_palette = if !matches!(mode, 0 | 36) || !gpu_selected {
             None
         } else if src_bits.depth == 1 {
             Some(std::array::from_fn(|i| {
@@ -4772,7 +4777,7 @@ pub(crate) fn ppc_copy_bits(
             None
         };
         let gpu_writes = if matches!(mode, 0 | 32..=39)
-            && memory.quickdraw_gpu_renderer().is_some()
+            && gpu_selected
             && i64::from(copy_right - copy_left) * i64::from(copy_bottom - copy_top) <= 4_194_304
         {
             gpu_blit::sample_copy(
@@ -5164,7 +5169,10 @@ pub(crate) fn ppc_copy_mask(
             return None;
         }
 
-        if memory.quickdraw_gpu_renderer().is_some()
+        if memory.quickdraw_gpu_renderer().prefers_blit(
+            ((copy_right - copy_left) as usize).saturating_mul((copy_bottom - copy_top) as usize),
+            matches!(src_bits.depth, 16 | 32) && dst_bits.depth <= 8,
+        )
             && i64::from(copy_right - copy_left) * i64::from(copy_bottom - copy_top) <= 4_194_304
         {
             let coverage = (copy_top..copy_bottom)
@@ -5390,7 +5398,10 @@ pub(crate) fn ppc_copy_deep_mask_with(
             return None;
         }
 
-        if memory.quickdraw_gpu_renderer().is_some()
+        if memory.quickdraw_gpu_renderer().prefers_blit(
+            ((copy_right - copy_left) as usize).saturating_mul((copy_bottom - copy_top) as usize),
+            true,
+        )
             && i64::from(copy_right - copy_left) * i64::from(copy_bottom - copy_top) <= 4_194_304
         {
             let area = [copy_top, copy_left, copy_bottom, copy_right];
