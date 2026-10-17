@@ -629,7 +629,7 @@ pub(crate) fn ppc_paint_arc(
 
 // Rows are in port coordinates. Callers apply their existing region clips;
 // this helper only intersects the pixel image and preserves pattern phase.
-fn ppc_gpu_region_rows(
+pub(super) fn ppc_gpu_region_rows(
     memory: &mut PpcSectionMem,
     surface: PpcQuickDrawSurface,
     top: i16,

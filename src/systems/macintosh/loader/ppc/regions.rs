@@ -1400,7 +1400,11 @@ pub(super) fn ppc_paint_polygon(
         |memory, surface| {
             let color_pixel =
                 ppc_quickdraw_surface_fore_pixel(memory, surface, color, explicit_index)?;
-            Some(move |_: &mut PpcSectionMem, _: (i32, i32)| Some(color_pixel))
+            Some((
+                move |_: &mut PpcSectionMem, _: (i32, i32)| Some(color_pixel),
+                [255; 8],
+                [color_pixel, color_pixel],
+            ))
         },
     )
 }
@@ -1439,12 +1443,85 @@ pub(super) fn ppc_fill_polygon_pattern(
             };
             // Patterns align to the port's coordinate system.
             let (origin_x, origin_y) = (i32::from(surface.left), i32::from(surface.top));
-            Some(move |_: &mut PpcSectionMem, (x, y): (i32, i32)| {
-                let row = pattern[(y + origin_y).rem_euclid(8) as usize];
-                let set = row & (0x80 >> (x + origin_x).rem_euclid(8)) != 0;
-                Some(if set { fore } else { back })
-            })
+            Some((
+                move |_: &mut PpcSectionMem, (x, y): (i32, i32)| {
+                    let row = pattern[(y + origin_y).rem_euclid(8) as usize];
+                    let set = row & (0x80 >> (x + origin_x).rem_euclid(8)) != 0;
+                    Some(if set { fore } else { back })
+                },
+                pattern,
+                [back, fore],
+            ))
         },
+    )
+}
+
+/// Tessellate scanlines with the same f64 crossings as the native software
+/// rasterizer, then let the GPU sample the pattern and fill the covered spans.
+fn ppc_gpu_polygon_rows(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    points: &[(i32, i32)],
+    bounds: (i32, i32, i32, i32),
+    pattern: [u8; 8],
+    colors: [u16; 2],
+) -> Option<bool> {
+    let fb = surface.front_buffer;
+    if memory.quickdraw_gpu_renderer().is_none() || fb.width > 32767 || fb.height > 32767 {
+        return None;
+    }
+    let top = bounds.0.max(0);
+    let bottom = bounds.2.min(fb.height as i32);
+    let left = bounds.1.max(0);
+    let right = bounds.3.min(fb.width as i32);
+    if top >= bottom || left >= right {
+        return Some(false);
+    }
+    if (bottom - top) as usize * points.len() > 64_000_000 {
+        return None;
+    }
+    let port_top = i16::try_from(top + i32::from(surface.top)).ok()?;
+    let mut rows = Vec::with_capacity((bottom - top) as usize);
+    let mut total = 0usize;
+    for y in top..bottom {
+        let mut crossings = Vec::new();
+        for i in 0..points.len() {
+            let (x1, y1) = points[i];
+            let (x2, y2) = points[(i + 1) % points.len()];
+            let (y_min, y_max, x_min, x_max) = if y1 < y2 {
+                (y1, y2, x1, x2)
+            } else {
+                (y2, y1, x2, x1)
+            };
+            if y1 != y2 && y >= y_min && y < y_max {
+                let intersection = f64::from(x_min)
+                    + f64::from(y - y_min) * f64::from(x_max - x_min) / f64::from(y_max - y_min);
+                crossings.push(intersection.ceil() as i32);
+            }
+        }
+        crossings.sort_unstable();
+        let mut row = Vec::new();
+        for pair in crossings.chunks_exact(2) {
+            let start = pair[0].max(left);
+            let end = pair[1].min(right);
+            if start < end {
+                row.push(i16::try_from(start + i32::from(surface.left)).ok()?);
+                row.push(i16::try_from(end + i32::from(surface.left)).ok()?);
+            }
+        }
+        total += row.len();
+        if total > 1_048_576 {
+            return None;
+        }
+        rows.push(row);
+    }
+    super::quickdraw::ppc_gpu_region_rows(
+        memory,
+        surface,
+        port_top,
+        &rows,
+        pattern,
+        [[0, u32::from(colors[0])], [0, u32::from(colors[1])]],
     )
 }
 
@@ -1458,7 +1535,7 @@ fn ppc_fill_polygon_interior<P, F>(
     prepare: P,
 ) -> bool
 where
-    P: FnOnce(&mut PpcSectionMem, PpcQuickDrawSurface) -> Option<F>,
+    P: FnOnce(&mut PpcSectionMem, PpcQuickDrawSurface) -> Option<(F, [u8; 8], [u16; 2])>,
     F: FnMut(&mut PpcSectionMem, (i32, i32)) -> Option<u16>,
 {
     let Some(points) = ppc_polygon_points(memory, handle).filter(|points| points.len() >= 3) else {
@@ -1474,7 +1551,7 @@ where
         return false;
     };
     let front_buffer = surface.front_buffer;
-    let Some(mut pixel_for) = prepare(memory, surface) else {
+    let Some((mut pixel_for, pattern, colors)) = prepare(memory, surface) else {
         return false;
     };
     let (top, left, bottom, right) = surface.local_rect(bounds);
@@ -1482,6 +1559,16 @@ where
         .into_iter()
         .map(|(h, v)| surface.local_point((i32::from(h), i32::from(v))))
         .collect::<Vec<_>>();
+    if let Some(wrote) = ppc_gpu_polygon_rows(
+        memory,
+        surface,
+        &points,
+        (top, left, bottom, right),
+        pattern,
+        colors,
+    ) {
+        return wrote;
+    }
     let mut wrote = false;
     for y in top..bottom {
         for x in left..right {
@@ -1496,8 +1583,8 @@ where
                     (y2, y1, x2, x1)
                 };
                 if y1 != y2 && f64::from(y) >= y_min && f64::from(y) < y_max {
-                    let intersection = x_at_min
-                        + (f64::from(y) - y_min) * (x_at_max - x_at_min) / (y_max - y_min);
+                    let intersection =
+                        x_at_min + (f64::from(y) - y_min) * (x_at_max - x_at_min) / (y_max - y_min);
                     if intersection <= f64::from(x) {
                         crossings += 1;
                     }
