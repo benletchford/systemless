@@ -470,3 +470,15 @@ an outline/vector alternative; it is not added alongside the proven Glyphon mask
 adapter merely to provide a second renderer. The CPU and WebGL backends are not
 selected for production. This decision does not claim Glyphon is universally
 faster or that Vello's performance/compatibility was tested.
+
+
+## Application coordinate arithmetic follow-up (2026-10-17)
+
+A subsequent shared SANE zero-addition correction preserves original EV's actual
+nonzero drawing coordinates; it does not change Glyphon, font metrics or source
+masks. The original scene now uses nonzero positions, and isolated right/up input
+shows centered-ship turning and world scrolling. This is bounded headless game
+interaction evidence, not full text/font parity or native/browser/performance
+acceptance. Full text API/style/UI and representative workload requirements
+remain open. See the exact arithmetic/control milestone in progress.md and
+original-applications.md; the whole rebuild goal remains active.

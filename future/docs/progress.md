@@ -11244,3 +11244,72 @@ open, as do Mixed Mode, original-game playability and the rest of the rebuild.
 Keep the goal active. Next is remaining shared text semantics and the original
 games' real capability/runtime boundaries; do not bypass Marathon's 32BitQD
 probe or patch original applications.
+
+
+## Exact zero addends and original EV flight response (2026-10-17)
+
+The unchanged original EV coordinate trace exposed shared SANE addition reducing
+exact 240 + 0 to ten zero bytes. A focused regression failed before the fix with
+that exact output. The pinned astro-float-num 0.3.7 full-precision add/subtract path
+passes precision 0 through set_precision when one operand is zero. Shared
+Numerics::add now resolves finite zero identities directly after NaN/infinity and
+signed-zero handling, retaining the other normalized operand and subtraction sign.
+No coordinate override, guest patch, graphics-probe change, host-double shortcut
+or dependency replacement is introduced.
+
+Validation: 130 unique scoped checks pass, 0 failed/ignored: 97 core, 3 numeric-sign,
+26 native numeric and 4 power tests. The new value fixture covers both signs of
+zero, both operand positions, addition/subtraction, normal/max/subnormal values
+and no spurious exceptions. The real 68K SANE frame fixture covers all five source
+formats (extended/double/single/word/long), operand preservation, registers,
+stack/results and exact coordinate bytes. No fabricated PPC extended import or
+fresh PPC-original-game acceptance is claimed. Commands:
+
+- `cargo test --offline --locked --manifest-path future/Cargo.toml --lib --test numerics --test numeric_sign --test power -- --include-ignored --nocapture --test-threads=1`
+- `cargo build --offline --locked --manifest-path future/Cargo.toml --example trace_application`
+- `cargo clippy --offline --locked --manifest-path future/Cargo.toml --lib --test numerics --test numeric_sign --test power --example trace_application -- -D warnings`
+- `cargo +1.93.0 check --offline --locked --manifest-path future/Cargo.toml`
+
+All gates exit 0. Logs are /tmp/systemless-zero-add-{tests,tracer-build,lint,msrv}.txt;
+/tmp/systemless-zero-add-before.txt preserves the pre-fix failing test. Formatting
+uses sequential stdin rustfmt only; whitespace checks pass. No dependency changes.
+
+Read-only drawing diagnostics now capture CopyBits rectangles/descriptors at the
+service boundary, before callers can reuse stack records, plus both CPU caller
+register/code snapshots. Existing --draw-diagnostics bounds and 512-sample cap
+remain. The first narrow 16M..16.1M sample contained no draw call; widening the
+logging interval, with unchanged 24M execution budget, captured actual calls.
+Diagnostics are not performance measurements or guest-state changes.
+
+Before the correction, independent same-build controls isolated right-arrow's
+171-pixel corner-sprite change from up-arrow's zero-pixel response. An idle 100M
+extension reached PC00019394 with no service fault, 7247 GetKeys calls, 1031 changed
+pixels and the same saved volume; this was not movement/playability acceptance.
+The read-only numeric probe retained the previous idle screen/volume hashes.
+
+After correction, original EV's scene lays out around a centered ship with
+separate planet/station, asteroids and stars. All three 24M runs complete to their
+budget boundary without a service fault. Enter Ship uses code 14 down 8M/up 8.005M.
+Isolated right uses code 124 down 16M/up 17M; isolated up uses code 126 down 18M/up 20M.
+Right changes 174 pixels only in inclusive box (242,229)..(253,251), visually rotating
+the centered ship with all other frame pixels unchanged. Up changes 6595 pixels:
+the ship stays centered while the planet scrolls out of view and other objects
+move across the play area. This demonstrates bounded headless turning and movement,
+not exact physics, combat/audio, sustained play, native presentation or performance.
+All input edges are recorded. Independent volume checks preserve every existing
+companion/directory/fork/metadata, pilot/preferences, flagged alias/path and script
+invariant. No original data is patched. Exact hashes/PCs are in original-applications.md.
+
+Marathon retains its prior 22,890,015/PC0102605C/readFFFCC1AF fault and exact screen/
+volume hashes. Independent volume verification still preserves the same 1222-byte
+preference addition and all companions. Its genuine graphics-profile/probe boundary
+remains unresolved. Full game compatibility, text/API/style and native/browser
+acceptance, Mixed Mode and the entire rebuild remain open. Keep the goal active.
+Next: extend original EV interaction/state acceptance and the real Marathon graphics
+contract; do not mask memory faults or advertise unsupported 32BitQD capability.
+
+Private captures are retained under each game's ignored evidence directory;
+gate logs/reports are under future/target/validation/zero-add. Machine-readable
+before/after controls: /tmp/systemless-ev-input-isolation-before.json and
+/tmp/systemless-zero-add-ev-controls.json. All original replay exits are 1 (budget
+or known Marathon fault), never successful-game or full-goal acceptance.

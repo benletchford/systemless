@@ -602,6 +602,82 @@ fn native_extended_add_and_subtract_preserve_low_bits_operand_order_and_frame() 
 }
 
 #[test]
+fn native_zero_addends_preserve_extended_coordinates_across_all_source_formats() {
+    let coordinate = [0x40, 0x06, 0xf0, 0, 0, 0, 0, 0, 0, 0];
+    let mut negative = coordinate;
+    negative[0] |= 0x80;
+    for (format, encoded) in [
+        (0u16, coordinate.to_vec()),
+        (0x0800, 240f64.to_bits().to_be_bytes().to_vec()),
+        (0x1000, 240f32.to_bits().to_be_bytes().to_vec()),
+        (0x2000, 240i16.to_be_bytes().to_vec()),
+        (0x2800, 240i32.to_be_bytes().to_vec()),
+    ] {
+        for operation in [0u16, 2] {
+            for source_zero in [false, true] {
+                let source = 0x53000000;
+                let destination = STACK_BASE + 0x6000;
+                let mut a = app(format | operation, destination);
+                let bytes = if source_zero {
+                    vec![0; encoded.len()]
+                } else {
+                    encoded.clone()
+                };
+                a.runtime
+                    .memory
+                    .map(GuestPtr(source), bytes.clone(), Permissions::RX)
+                    .unwrap();
+                a.runtime
+                    .memory
+                    .write(
+                        GuestPtr(destination),
+                        if source_zero { &coordinate } else { &[0; 10] },
+                    )
+                    .unwrap();
+                a.runtime
+                    .memory
+                    .write(GuestPtr(STACK_BASE + 0x7006), &source.to_be_bytes())
+                    .unwrap();
+                a.runtime
+                    .memory
+                    .write(GuestPtr(STACK_BASE + 0x700a), &[0x5a; 4])
+                    .unwrap();
+                assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+                let expected = if !source_zero && operation == 2 {
+                    negative
+                } else {
+                    coordinate
+                };
+                assert_eq!(
+                    a.runtime.memory.read(GuestPtr(destination), 10).unwrap(),
+                    expected,
+                    "format {format:04x}, operation {operation}, source_zero {source_zero}"
+                );
+                assert_eq!(
+                    a.runtime
+                        .memory
+                        .read(GuestPtr(source), bytes.len())
+                        .unwrap(),
+                    bytes
+                );
+                assert_eq!(a.runtime.process.numerics.environment_word(), 0);
+                let Cpu::M68k(cpu) = &a.runtime.cpu else {
+                    panic!()
+                };
+                assert_eq!(cpu.dar[15], STACK_BASE + 0x700a);
+                for i in 0..15 {
+                    assert_eq!(cpu.dar[i], 0x12340000 + i as u32);
+                }
+                assert_eq!(
+                    a.runtime.memory.read(GuestPtr(cpu.dar[15]), 4).unwrap(),
+                    [0x5a; 4]
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn native_extended_square_root_uses_six_byte_frame_and_preserves_registers() {
     let pointer = STACK_BASE + 0x6000;
     let mut a = app(0x12, pointer);

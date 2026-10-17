@@ -1,6 +1,6 @@
 //! Read-only snapshots for separating guest drawing, copies and display CLUTs.
 use systemless_future::{
-    cpu::Call,
+    cpu::{Call, Cpu},
     load::LoadedApplication,
     memory::{GuestPtr, Memory},
 };
@@ -40,6 +40,26 @@ pub fn drawing(app: &LoadedApplication, call: &Call) {
         "drawing diagnostic instruction={} after={call:?}",
         app.runtime.instructions
     );
+    if let Call::CopyBits(copy) = call {
+        // Capture live arguments immediately after this service, before the
+        // caller can reuse stack rectangles. End-of-run pointers are not history.
+        println!(
+            "drawing diagnostic CopyBits source rect={:?} destination rect={:?}",
+            systemless_future::quickdraw::read_rect(&app.runtime.memory, copy.source_rect),
+            systemless_future::quickdraw::read_rect(&app.runtime.memory, copy.destination_rect)
+        );
+        describe(app, "copy source", copy.source, false);
+        describe(app, "copy destination", copy.destination, false);
+    }
+    let pc = app.runtime.cpu.pc();
+    println!(
+        "drawing diagnostic caller pc={pc:08x} code-before={:02x?}",
+        app.runtime.memory.read(GuestPtr(pc.saturating_sub(32)), 32)
+    );
+    match &app.runtime.cpu {
+        Cpu::M68k(cpu) => println!("drawing diagnostic 68K registers={:08x?}", cpu.dar),
+        Cpu::PowerPc(cpu) => println!("drawing diagnostic PPC registers={:08x?}", cpu.gpr),
+    }
     current_port(app);
 }
 fn current_port(app: &LoadedApplication) {

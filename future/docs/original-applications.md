@@ -5136,3 +5136,46 @@ Captures: /tmp/systemless-{marathon,ev}-glyphon.{txt,ppm,slv}. Volume checks:
 flag Yes. Full text API/style/workload, browser and rebuild acceptance remain
 open. See text-rendering.md and progress.md for 167 unique scoped tests, 40 probe
 assertions and 36 debug samples; these are not full application acceptance.
+
+
+## Exact coordinate arithmetic and isolated EV controls (2026-10-17)
+
+Original EV's numerical trace proved exact 240+0 was becoming zero in the shared
+SANE service. The focused test reproduced this before fixing finite zero-operand
+identities. The resulting scene now separates the centered player ship, planet,
+station, asteroids and stars. No application, media, coordinate or capability
+probe is patched. Bounded read-only CopyBits snapshots now record live call
+arguments rather than treating end-of-run reused stack pointers as history.
+
+Same corrected tracer, original media and 24M limit; Enter Ship code 14 at 8M..8.005M:
+
+| Input after Enter Ship | Final PC | Canonical PPM SHA256 |
+|---|---|---|
+| Idle | 007E6C3A | ab60ddcff2b03afff894b9f2744709b65e141679437ae2e6d5308a231377f799 |
+| Right 124, 16M down/17M up | 007E67E4 | b4a435e3ebaa51ae8d64b31d7c865eb773b93be3fd322aa0e9cad67676f2809e |
+| Up 126, 18M down/20M up | 00035F88 | 24a45214eeb40b1513938c3b1870dda12c453ea8ed763b07894d0dee7772f711 |
+
+Inspected right-only pixels differ from idle only at the centered ship: 174 pixels,
+inclusive box (242,229)..(253,251). Inspected up-only changes 6595 pixels, with the
+ship still centered and the planet moving out of view. These isolated controls
+establish visible turning and world scrolling, not exact velocity/acceleration,
+combat, audio, sustained game correctness, native performance or whole-game
+playability. The instruction-budget tracer is not a frontend-clock scenario.
+
+All three saved volumes remain SHA256
+e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80.
+Independent directory/companion/fork/metadata, pilot/preferences, alias target/path
+and script verification passes. Input hash for the original fork stays
+d739c1d5bd0d5c7efddc55f34bfadd8f66a25c819a00bbed9523c7c56e3f716b;
+input scripted volume stays 09166806147fef3f40ba7edbdf41efc67d46f51d7d369b4b987961817173c476.
+Captures/logs: /tmp/systemless-ev-zero-add{,-right,-up}.{txt,ppm,png,slv}; exact
+input edges, PCs, diffs/hashes: /tmp/systemless-zero-add-ev-controls.json. Ignored
+per-game evidence retains 2026-10-17 captures. All three exits are budget-stop 1.
+
+Marathon remains 22,890,015/PC0102605C/readFFFCC1AF with unchanged screen SHA256
+7599fcecb10c3df0996ef1a955085f45433de3bcaafd26c41dfd2d99f9cbae2e and volume
+SHA256 e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42.
+The same 1222-byte preference addition and all companions verify independently;
+this is still an unresolved graphics-profile/memory boundary, not a successful
+game exit. No fresh PPC-original acceptance is claimed. The full rebuild and text
+requirements remain active and unfinished.

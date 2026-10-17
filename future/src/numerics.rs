@@ -349,6 +349,15 @@ impl Numerics {
         if am == 0 && bm == 0 {
             return Ok(encode(ae & effective_be & 0x8000, 0));
         }
+        // Preserve exact finite identities before the full-precision library
+        // operation: astro-float-num 0.3.7 applies precision zero when one
+        // operand is zero, discarding the nonzero value in that special branch.
+        if am == 0 {
+            return Ok(encode(effective_be, bm));
+        }
+        if bm == 0 {
+            return Ok(encode(ae, am));
+        }
         #[cfg(target_pointer_width = "64")]
         let (aw, bw) = ([am], [bm]);
         #[cfg(target_pointer_width = "32")]
@@ -1283,6 +1292,30 @@ mod tests {
             value(0x7fff, 0xc001_0000_0000_0000)
         );
         assert!(n.invalid);
+    }
+    #[test]
+    fn finite_addition_zero_operands_preserve_every_value_and_exception_state() {
+        for (exponent, mantissa) in [
+            (0x4006, 0xf000_0000_0000_0000), // exact 240 from original EV coordinates
+            (0x3fff, 1 << 63),
+            (0x7ffe, u64::MAX),
+            (0, 1),
+            (0, 1 << 63),
+        ] {
+            for sign in [0, 0x8000] {
+                let x = value(exponent | sign, mantissa);
+                let negative_x = value((exponent | sign) ^ 0x8000, mantissa);
+                for zero_sign in [0, 0x8000] {
+                    let zero = value(zero_sign, 0);
+                    let mut n = Numerics::default();
+                    assert_eq!(n.add(x, zero, false).unwrap(), x, "x + zero");
+                    assert_eq!(n.add(zero, x, false).unwrap(), x, "zero + x");
+                    assert_eq!(n.add(x, zero, true).unwrap(), x, "x - zero");
+                    assert_eq!(n.add(zero, x, true).unwrap(), negative_x, "zero - x");
+                    assert_eq!(n.environment_word(), 0);
+                }
+            }
+        }
     }
     #[test]
     fn addition_and_subtraction_keep_cancellation_and_single_rounding_exact() {
