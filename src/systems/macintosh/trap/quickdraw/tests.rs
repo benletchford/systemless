@@ -2795,6 +2795,15 @@
         notched_clip: bool,
         gpu: bool,
     ) -> (Vec<u8>, usize) {
+        draw_shape_1bpp_route(op, pattern, notched_clip, gpu, 0)
+    }
+    fn draw_shape_1bpp_route(
+        op: ShapeOp,
+        pattern: [u8; 8],
+        notched_clip: bool,
+        gpu: bool,
+        shape: u8,
+    ) -> (Vec<u8>, usize) {
         let (mut d, mut cpu, mut bus) = setup();
         let calls = std::rc::Rc::new(std::cell::Cell::new(0));
         if gpu {
@@ -2847,7 +2856,11 @@
             bottom: 5,
             right: 29,
         };
-        d.draw_rect(&mut cpu, &mut bus, &rect, op);
+        match shape {
+            1 => d.draw_oval(&mut cpu, &mut bus, &rect, op),
+            2 => d.draw_round_rect(&mut cpu, &mut bus, &rect, 11, 3, op),
+            _ => d.draw_rect(&mut cpu, &mut bus, &rect, op),
+        }
         (bus.read_bytes(base, 30), calls.get())
     }
 
@@ -2876,8 +2889,39 @@
     }
 
     #[test]
-    fn gpu_color_rectangles_match_classic_transfer_modes_at_every_depth() {
-        fn draw(depth: u16, mode: i16, op: ShapeOp, gpu: bool) -> (Vec<u8>, usize) {
+    fn gpu_curves_match_classic_patterns_frames_and_complex_clips() {
+        for shape in [1, 2] {
+            for op in [
+                ShapeOp::Paint,
+                ShapeOp::Frame,
+                ShapeOp::Erase,
+                ShapeOp::Invert,
+                ShapeOp::Fill([0xa5; 8]),
+            ] {
+                for pattern in [
+                    [0; 8],
+                    [0xff; 8],
+                    [0xa5, 0x5a, 0xcc, 0x33, 0x96, 0x69, 0xf0, 0x0f],
+                ] {
+                    for complex in [false, true] {
+                        let (actual, calls) =
+                            draw_shape_1bpp_route(op, pattern, complex, true, shape);
+                        let (expected, _) =
+                            draw_shape_1bpp_route(op, pattern, complex, false, shape);
+                        assert_eq!(
+                            actual, expected,
+                            "shape={shape},op={op:?},complex={complex}"
+                        );
+                        assert_eq!(calls, 1);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gpu_color_shapes_match_classic_transfer_modes_at_every_depth() {
+        fn draw(depth: u16, mode: i16, op: ShapeOp, gpu: bool, shape: u8) -> (Vec<u8>, usize) {
             let (mut d, mut cpu, mut bus) = setup();
             setup_color_polygon_surface(&mut d, &cpu, &mut bus);
             let a5 = cpu.read_reg(Register::A5);
@@ -2904,26 +2948,28 @@
                         failure: 0,
                     }));
             }
-            d.draw_rect(
-                &mut cpu,
-                &mut bus,
-                &Rect {
-                    top: 3,
-                    left: 5,
-                    bottom: 10,
-                    right: 31,
-                },
-                op,
-            );
+            let rect = Rect {
+                top: 3,
+                left: 5,
+                bottom: 10,
+                right: 31,
+            };
+            match shape {
+                1 => d.draw_oval(&mut cpu, &mut bus, &rect, op),
+                2 => d.draw_round_rect(&mut cpu, &mut bus, &rect, 11, 5, op),
+                _ => d.draw_rect(&mut cpu, &mut bus, &rect, op),
+            }
             (bus.read_bytes(base, (row_bytes * 64) as usize), calls.get())
         }
         for depth in [2, 4, 8, 16, 32] {
             for mode in [0, 1, 2, 3] {
                 for op in [ShapeOp::Paint, ShapeOp::Frame] {
-                    let (actual, calls) = draw(depth, mode, op, true);
-                    let (expected, _) = draw(depth, mode, op, false);
-                    assert_eq!(actual, expected, "depth={depth},mode={mode},op={op:?}");
-                    assert_eq!(calls, 1);
+                    for shape in [0, 1, 2] {
+                        let (actual, calls) = draw(depth, mode, op, true, shape);
+                        let (expected, _) = draw(depth, mode, op, false, shape);
+                        assert_eq!(actual, expected, "depth={depth},mode={mode},op={op:?}");
+                        assert_eq!(calls, 1);
+                    }
                 }
             }
         }

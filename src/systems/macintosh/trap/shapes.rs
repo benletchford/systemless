@@ -80,17 +80,25 @@ fn fg_bg_low_contrast(fg: (u16, u16, u16), bg: (u16, u16, u16)) -> bool {
     dominant(fg) == dominant(bg)
 }
 
+#[cfg(test)]
 fn gpu_rectangle_clip_rows(
     area: [i16; 4],
     vis: Option<&super::quickdraw::RegionMembershipCache>,
     clip: Option<&super::quickdraw::RegionMembershipCache>,
+) -> Option<Vec<Vec<i32>>> {
+    gpu_shape_clip_rows(area, [vis, clip, None])
+}
+
+fn gpu_shape_clip_rows(
+    area: [i16; 4],
+    regions: [Option<&super::quickdraw::RegionMembershipCache>; 3],
 ) -> Option<Vec<Vec<i32>>> {
     let [left, top, right, bottom] = area;
     let mut total = 0usize;
     (i32::from(top)..i32::from(bottom))
         .map(|y| {
             let mut row = vec![left, right];
-            for cache in [vis, clip].into_iter().flatten() {
+            for cache in regions.into_iter().flatten() {
                 let endpoints = cache
                     .rows
                     .get(usize::try_from(y - i32::from(cache.top)).ok()?)?;
@@ -128,6 +136,44 @@ fn gpu_rectangle_regions_intersect_and_decline_malformed_rows() {
         assert!(gpu_rectangle_clip_rows([-6, -1, 6, 1], Some(&vis), Some(&clip)).is_none());
     }
     assert!(gpu_rectangle_clip_rows([-6, -2, 6, 1], Some(&vis), None).is_none());
+}
+
+fn gpu_curve_rows(
+    top: i16,
+    left: i16,
+    outer: &[(i16, i16)],
+    inner_top: i16,
+    inner_left: i16,
+    inner: &[(i16, i16)],
+    frame: bool,
+) -> super::quickdraw::RegionMembershipCache {
+    let rows = outer
+        .iter()
+        .enumerate()
+        .map(|(y, &(l, r))| {
+            let row = if l < r {
+                vec![left + l, left + r]
+            } else {
+                vec![]
+            };
+            if frame {
+                if let Some(&(li, ri)) =
+                    usize::try_from(i32::from(top) + y as i32 - i32::from(inner_top))
+                        .ok()
+                        .and_then(|i| inner.get(i))
+                {
+                    if li < ri {
+                        return crate::quickdraw::raster::region_rows::difference_rows(
+                            &row,
+                            &[inner_left + li, inner_left + ri],
+                        );
+                    }
+                }
+            }
+            row
+        })
+        .collect();
+    super::quickdraw::RegionMembershipCache { top, rows }
 }
 
 fn pen_dimensions_valid((height, width): (i16, i16), rect: &Rect) -> bool {
@@ -872,7 +918,18 @@ impl super::TrapDispatcher {
         let spans_inset =
             Self::compute_oval_spans(r_inset.right - r_inset.left, r_inset.bottom - r_inset.top);
 
-        self.draw_generic_shape(cpu, bus, r, op, false, |y, x| {
+        let shape_rows = bus.quickdraw_gpu_renderer.is_some().then(|| {
+            gpu_curve_rows(
+                r.top,
+                r.left,
+                &spans,
+                r_inset.top,
+                r_inset.left,
+                &spans_inset,
+                matches!(op, ShapeOp::Frame),
+            )
+        });
+        self.draw_generic_shape_with_rows(cpu, bus, r, op, false, shape_rows, |y, x| {
             let idx = (y - r.top) as usize;
             if idx >= spans.len() {
                 return 0;
@@ -933,7 +990,18 @@ impl super::TrapDispatcher {
         };
         let spans_inset = Self::compute_rrect_spans(&r_inset, ow - 2 * pen_w, oh - 2 * pen_h);
 
-        self.draw_generic_shape(cpu, bus, r, op, false, |y, x| {
+        let shape_rows = bus.quickdraw_gpu_renderer.is_some().then(|| {
+            gpu_curve_rows(
+                r.top,
+                0,
+                &spans,
+                r_inset.top,
+                0,
+                &spans_inset,
+                matches!(op, ShapeOp::Frame),
+            )
+        });
+        self.draw_generic_shape_with_rows(cpu, bus, r, op, false, shape_rows, |y, x| {
             let idx = (y - r.top) as usize;
             if idx >= spans.len() {
                 return 0;
@@ -1117,6 +1185,21 @@ impl super::TrapDispatcher {
         r: &Rect,
         op: ShapeOp,
         full_rect_coverage: bool,
+        coverage_at: F,
+    ) where
+        F: Fn(i16, i16) -> u8,
+    {
+        self.draw_generic_shape_with_rows(cpu, bus, r, op, full_rect_coverage, None, coverage_at);
+    }
+
+    fn draw_generic_shape_with_rows<C: CpuOps, F>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        r: &Rect,
+        op: ShapeOp,
+        full_rect_coverage: bool,
+        shape_rows: Option<super::quickdraw::RegionMembershipCache>,
         coverage_at: F,
     ) where
         F: Fn(i16, i16) -> u8,
@@ -1493,7 +1576,7 @@ impl super::TrapDispatcher {
         };
 
         if bus.quickdraw_gpu_renderer.is_some()
-            && full_rect_coverage
+            && (full_rect_coverage || shape_rows.is_some())
             && (!vis_region_complex || vis_region_cache.is_some())
             && (!clip_region_complex || clip_region_cache.is_some())
             && installed_raw_pixpat.is_none()
@@ -1561,11 +1644,14 @@ impl super::TrapDispatcher {
                     let zero = map(0);
                     *entry = [zero ^ map(mask), zero];
                 }
-                let gpu_clip = if has_complex_port_clip {
-                    gpu_rectangle_clip_rows(
+                let gpu_clip = if has_complex_port_clip || shape_rows.is_some() {
+                    gpu_shape_clip_rows(
                         [left, top, right, bottom],
-                        vis_region_cache.as_ref(),
-                        clip_region_cache.as_ref(),
+                        [
+                            vis_region_cache.as_ref(),
+                            clip_region_cache.as_ref(),
+                            shape_rows.as_ref(),
+                        ],
                     )
                     .map(Some)
                 } else {
@@ -1586,7 +1672,8 @@ impl super::TrapDispatcher {
                             i32::from(r.right),
                             i32::from(r.bottom),
                         ],
-                        border: frame.then_some([i32::from(self.pn_size.1), i32::from(self.pn_size.0)]),
+                        border: (frame && shape_rows.is_none())
+                            .then_some([i32::from(self.pn_size.1), i32::from(self.pn_size.0)]),
                         pattern,
                         transfer,
                     };
