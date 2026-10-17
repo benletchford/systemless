@@ -434,7 +434,8 @@ Source audit for this integration (not an exhaustive classic Toolbox inventory):
 | Standard File labels | text::draw |
 | Menu titles and tracked menu items | Shared cell-to-coverage planner → specialized GPU composition; not Glyphon |
 
-Explicit gaps found in current sources include fractional space extra, non-bold
+Explicit gaps found in current sources include all nonzero space extra (both
+measurement and drawing reject the port field, even for whole pixels), non-bold
 synthetic styles, custom text/measurement and TextEdit callbacks, mixed-style and
 arbitrary colored TextEdit redraw, and picture-recorded text. Neither StdText nor
 StdTxMeas, MeasureText or SpaceExtra has a named PPC import mapping in the current

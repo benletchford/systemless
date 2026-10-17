@@ -5532,3 +5532,54 @@ GPU text/full rebuild acceptance. All diagnostic jobs are terminal. This stage
 changes only tracing/capture and documentation, not the runtime/mixer/services.
 No new unit-test count is claimed; build/lint/Rust1.93/CLI and actual-original
 behavior are the verification scope. Keep the goal active and PR4802 draft.
+
+
+## Original-game audio controls and pull granularity (2026-10-17)
+
+On runtime54fc15e12, matched EV trials use the same Enter Ship key at24M, Up
+held40–42M and48M instruction budget. Both pre-input40M snapshots are identical
+to the verified Enter Ship baseline (PC007E65A4). One schedule pulls64x512 frames
+at40.1M..46.4M in100k steps; the control pulls4x8192 frames at41.6M,43.2M,44.8M,
+46.4M. Both consume32768 stereo PCM16 frames at48kHz, with equal cumulative
+frame totals at shared endpoints. Independent WAV decoding matches every logged
+nonzero count and peak. Both produce6704 nonzero frames with peak3658, but the
+actual PCM sequences differ, even after removing silent frames. Neither sequence
+is an authoritative fidelity oracle. The smaller pulls complete7 original sound
+callbacks versus6 for the larger pulls; both finish48M to budget without service
+fault, atPC0001914A/01014BB8 respectively, with pending audio. Inspected final
+frames remain in space. Both saved catalogs equal the verified no-pull catalog
+634e760a54feb7579480885633bc964dd2f80c8e88a0bd67f9a25a86d5f9a72f.
+This establishes scheduling sensitivity, not that either pull size fixes it.
+
+Original Marathon now has a matched Space-input/audio trial and idle control.
+Both use the confirmed New Game sequence and32x512-frame48kHz pulls at28.1M..31.2M
+in100k steps, with the same34M poll budget. Their pre-input28M frames and
+PC0102781A are identical. Holding Space/key49 at28–30M produces12797 nonzero
+frames in25 of32 WAVs, peak23250; the idle control is entirely silent. Every WAV
+independently validates as512-frame/stereo/PCM16/48kHz and agrees with logged
+statistics. Both reach33,999,926 retired instructions to budget without service
+fault, atPC01014B4C/01009728. Timer callback counts are16886/16881; sound andVBL
+callback counts are0 in both. Active audio is true/false respectively. Audio
+output does not require an application sound callback for queued sample playback.
+
+The inspected Space frame has an approaching enemy and red radar marks; the idle
+frame has no enemy at that point. Final frames differ in2266 pixels. This is a
+controlled original-application input response with sample output; precise gunshot
+identity, ammo accounting and sound fidelity remain unverified. Space was selected
+from preserved port-source bindings, not asserted from native System7 evidence.
+Both output catalogs are byte-identical, SHA256
+3294808dab802d212fa40cc73ec1203a106d89e0172b2a3b517eda5e10376321.
+Independent catalog parsing verifies all original nodes, metadata and both forks
+unchanged; Preferences1222B and Recording342B are the new guest files. Recording
+playback is unverified. No original media/binary patch or volume override is used.
+
+Evidence: /tmp/systemless-ev-quantum-{small,large}.* and corresponding numbered
+WAVs; /tmp/systemless-ev-quantum-summary.json;
+/tmp/systemless-marathon-{fire,fire-idle}.* and corresponding numbered WAVs;
+/tmp/systemless-marathon-fire-comparison.json. Private copies are under
+future/target/validation/audio-quantum-controls. All four jobs are terminal with
+budget exit1, not successful application exit. These discrete schedules are not
+a continuous native sink, latency/performance measurement or mixing-fidelity pass.
+No runtime change or new unit-test count is claimed. Next resolve continuous
+audio scheduling and explicit firing/ammo acceptance; sustained game/save/recording,
+Mixed Mode, native/browser and complete shared GPU text/full rebuild stay open.
