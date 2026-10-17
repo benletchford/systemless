@@ -15091,6 +15091,9 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
             background: &[u16],
         ) -> Result<Vec<u16>, String> {
             assert_eq!((frame.width, frame.height), (8, 8));
+            if self.mode == 3 {
+                assert!(background.iter().all(|pixel| pixel & 0x8000 != 0));
+            }
             match self.mode {
                 0 => Err("test rejection".into()),
                 1 => Ok(Vec::new()),
@@ -15127,6 +15130,67 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
         .memory
         .write_u16_be(front_base + 3 * 16 + 4 * 2, 0)
         .unwrap();
+    // Indexed targets retain untouched indices even when duplicate palette
+    // entries encode the same color; only painted RGB555 pixels are remapped.
+    let old_gworld = loaded.gworlds[0].clone();
+    let old_clut = *loaded.color_manager_clut;
+    loaded.gworlds[0].depth = 8;
+    loaded.gworlds[0].row_bytes = 12;
+    loaded.color_manager_clut.with_mut(|clut| {
+        *clut = [[0; 3]; 256];
+        clut[7] = [0, 65535, 0];
+    });
+    let ctable_handle =
+        ppc_live_gworld_ctable_handle(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+            .unwrap();
+    let table = loaded.memory.read_u32_be(ctable_handle).unwrap();
+    let mut old_table = vec![0; 8 + 256 * 8];
+    loaded
+        .memory
+        .read_bytes_into(table, &mut old_table)
+        .unwrap();
+    ppc_install_standard_indexed_ctable(
+        &mut loaded.memory,
+        ctable_handle,
+        123,
+        &loaded.color_manager_clut,
+        256,
+    )
+    .unwrap();
+    loaded.memory.write_bytes(front_base, &[0xcc; 96]).unwrap();
+    for y in 0..8 {
+        loaded
+            .memory
+            .write_bytes(front_base + y * 12, &[200; 8])
+            .unwrap();
+    }
+    loaded.q3_completed_frames = completed.clone();
+    // The older external packet transport remains unchanged. Indexed targets
+    // only use the synchronous renderer explicitly installed by --gpu.
+    assert!(loaded.take_completed_q3_gpu_frame().is_none());
+    assert_eq!(loaded.q3_completed_frames, completed);
+    assert!(loaded
+        .render_completed_q3_frames_with_gpu(&mut HostRenderer { mode: 3 })
+        .is_some());
+    for y in 0..8 {
+        for x in 0..12 {
+            let expected = if x >= 8 {
+                0xcc
+            } else if (x, y) == (4, 3) {
+                7
+            } else {
+                200
+            };
+            assert_eq!(
+                loaded.memory.read_u8(front_base + y * 12 + x),
+                Some(expected)
+            );
+        }
+    }
+    loaded.memory.write_bytes(table, &old_table).unwrap();
+    loaded.gworlds[0] = old_gworld;
+    loaded.color_manager_clut.with_mut(|clut| *clut = old_clut);
+    loaded.memory.write_bytes(front_base, &[0; 128]).unwrap();
     loaded.q3_completed_frames = completed;
 
     let gpu_frame = loaded

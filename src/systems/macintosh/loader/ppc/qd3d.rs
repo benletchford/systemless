@@ -617,6 +617,8 @@ impl PpcQ3SceneReplay {
 /// A synchronous host rasterizer. Returning an error leaves the completed frame
 /// queued for the software renderer. Successful RGB555 pixels are committed to
 /// guest memory before execution resumes, including offscreen draw contexts.
+/// Preserve background bit 15 on untouched pixels and clear it on painted
+/// pixels; indexed targets use this coverage marker to preserve exact indices.
 pub trait PpcQ3GpuRenderer {
     fn render(&mut self, frame: &PpcQ3GpuFrame, background: &[u16]) -> Result<Vec<u16>, String>;
 }
