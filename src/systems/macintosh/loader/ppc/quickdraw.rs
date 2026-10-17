@@ -468,23 +468,59 @@ pub(crate) fn ppc_paint_arc(
     let rx = width as f64 / 2.0;
     let ry = height as f64 / 2.0;
 
+    let covered = |x: i32, y: i32| {
+        let dx = (x as f64 - cx + 0.5) / rx;
+        let dy = (y as f64 - cy + 0.5) / ry;
+        let dist_sq = dx * dx + dy * dy;
+        if dist_sq > 1.0 {
+            return false;
+        }
+        let angle = (-(y as f64 - cy + 0.5)).atan2(x as f64 - cx + 0.5);
+        let mut mac_angle = 90.0 - angle.to_degrees();
+        if mac_angle < 0.0 {
+            mac_angle += 360.0;
+        }
+        (mac_angle >= a_start && mac_angle < a_end)
+            || (a_end > 360.0 && mac_angle + 360.0 < a_end)
+    };
+    let (x0, y0, x1, y1) = (
+        left.max(0),
+        top.max(0),
+        right.min(front_buffer.width as i32),
+        bottom.min(front_buffer.height as i32),
+    );
+    if memory.quickdraw_gpu_renderer().is_some()
+        && i64::from((x1 - x0).max(0)) * i64::from((y1 - y0).max(0)) <= 4_194_304
+    {
+        let mut points = Vec::new();
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if covered(x, y) {
+                    points.push((x, y));
+                }
+            }
+        }
+        if points.is_empty() {
+            return false;
+        }
+        if ppc_gpu_text_points(
+            memory,
+            surface,
+            None,
+            None,
+            points,
+            (0, 0),
+            color_pixel,
+            0,
+            (1, 1),
+        ) {
+            return true;
+        }
+    }
     let mut wrote = false;
-    for y in top.max(0)..bottom.min(front_buffer.height as i32) {
-        for x in left.max(0)..right.min(front_buffer.width as i32) {
-            let dx = (x as f64 - cx + 0.5) / rx;
-            let dy = (y as f64 - cy + 0.5) / ry;
-            let dist_sq = dx * dx + dy * dy;
-            if dist_sq > 1.0 {
-                continue;
-            }
-            let angle = (-(y as f64 - cy + 0.5)).atan2(x as f64 - cx + 0.5);
-            let mut mac_angle = 90.0 - angle.to_degrees();
-            if mac_angle < 0.0 {
-                mac_angle += 360.0;
-            }
-            let in_arc = (mac_angle >= a_start && mac_angle < a_end)
-                || (a_end > 360.0 && mac_angle + 360.0 < a_end);
-            if in_arc {
+    for y in y0..y1 {
+        for x in x0..x1 {
+            if covered(x, y) {
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
             }
         }

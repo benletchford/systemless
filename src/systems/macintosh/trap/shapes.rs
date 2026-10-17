@@ -2119,8 +2119,35 @@ impl super::TrapDispatcher {
                 _ => (u32::from(r >> 8) << 16) | (u32::from(g >> 8) << 8) | u32::from(b >> 8),
             }
         };
-        if bus.quickdraw_gpu_renderer.is_some() && matches!(pixel_size, 1 | 2 | 4 | 8 | 16 | 32) {
-            if let ShapeOp::Glyph(mode) = op {
+        if bus.quickdraw_gpu_renderer.is_some()
+            && matches!(pixel_size, 1 | 2 | 4 | 8 | 16 | 32)
+            && (matches!(op, ShapeOp::Glyph(_))
+                || (!full_rect_coverage && shape_rows.is_none() && polygon_edges.is_none()))
+            && installed_raw_pixpat.is_none()
+            && !(pixel_size == 8 && matches!(op, ShapeOp::Invert) && bus.presentation.is_some())
+        {
+            {
+                let (pattern, mode) = match op {
+                    ShapeOp::Glyph(mode) => ([255; 8], mode),
+                    ShapeOp::Paint | ShapeOp::Frame => (
+                        if pixel_size == 1 {
+                            self.pn_pat
+                        } else {
+                            effective_pn_pat
+                        },
+                        self.pn_mode,
+                    ),
+                    ShapeOp::Erase => (
+                        if pixel_size == 1 {
+                            self.bk_pat
+                        } else {
+                            effective_bk_pat
+                        },
+                        0,
+                    ),
+                    ShapeOp::Fill(pattern) => (pattern, 0),
+                    ShapeOp::Invert => ([255; 8], 2),
+                };
                 let (top, left, bottom, right) = (
                     r.top.max(clip_top),
                     r.left.max(clip_left),
@@ -2166,29 +2193,42 @@ impl super::TrapDispatcher {
                             (u32::from(r >> 8) << 16) | (u32::from(g >> 8) << 8) | u32::from(b >> 8)
                         }
                     };
-                    let map = |old: u32| match pixel_size {
-                        1 if matches!(mode, 0 | 1)
-                            && effective_fg_color == (0xffff, 0xffff, 0xffff) =>
-                        {
-                            0
-                        }
-                        1 => u32::from(apply_boolean_transfer_1(old != 0, mode, true)),
-                        2 | 4 | 8 => {
-                            u32::from(apply_boolean_transfer_8(
-                                old as u8, mode, true, fg_idx, bg_idx,
-                            )) & mask
-                        }
-                        _ => {
-                            apply_boolean_transfer_32(
-                                old,
-                                mode,
-                                true,
-                                pack(effective_fg_color),
-                                pack(effective_bg_color),
-                            ) & mask
-                        }
-                    };
-                    let zero = map(0);
+                    let mut transfer = [[0; 2]; 2];
+                    for (bit, entry) in transfer.iter_mut().enumerate() {
+                        let map = |old: u32| {
+                            if matches!(op, ShapeOp::Invert) {
+                                return !old & mask;
+                            }
+                            match pixel_size {
+                                1 if matches!(op, ShapeOp::Glyph(0 | 1))
+                                    && effective_fg_color == (65535, 65535, 65535) =>
+                                {
+                                    0
+                                }
+                                1 => u32::from(apply_boolean_transfer_1(old != 0, mode, bit != 0)),
+                                2 | 4 | 8 => {
+                                    u32::from(apply_boolean_transfer_8(
+                                        old as u8,
+                                        mode,
+                                        bit != 0,
+                                        fg_idx,
+                                        bg_idx,
+                                    )) & mask
+                                }
+                                _ => {
+                                    apply_boolean_transfer_32(
+                                        old,
+                                        mode,
+                                        bit != 0,
+                                        pack(effective_fg_color),
+                                        pack(effective_bg_color),
+                                    ) & mask
+                                }
+                            }
+                        };
+                        let zero = map(0);
+                        *entry = [zero ^ map(mask), zero];
+                    }
                     let command = crate::quickdraw::gpu::QuickDrawGpuCommand {
                         mask: Some(crate::quickdraw::gpu::QuickDrawGpuMask {
                             origin: [i32::from(left), i32::from(top)],
@@ -2212,8 +2252,8 @@ impl super::TrapDispatcher {
                             i32::from(bottom),
                         ],
                         border: None,
-                        pattern: [255; 8],
-                        transfer: [[zero ^ map(mask), zero]; 2],
+                        pattern,
+                        transfer,
                     };
                     let target = crate::quickdraw::gpu::RasterTarget {
                         base: pix_base,
@@ -2653,6 +2693,7 @@ impl super::TrapDispatcher {
             }
         }
     }
+
 
     #[inline]
     fn solid_src_copy_fill_index(
