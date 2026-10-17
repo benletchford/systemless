@@ -4236,12 +4236,10 @@ mod tests {
             height: 8,
             depth: 8,
         };
-        let clut = std::array::from_fn(|i| [i as u16 * 257; 3]);
         let mut pixels = vec![0x8000; 64];
-        assert!(crate::loader::ppc::qd3d_gpu::commit_pixels(
+        assert!(crate::loader::ppc::qd3d_gpu::commit_indexed_pixels(
             &mut memory,
             front,
-            Some(&clut),
             &pixels
         ));
         assert!(
@@ -4249,10 +4247,9 @@ mod tests {
             "untouched readback cleared text coverage"
         );
         pixels[9] = 0;
-        assert!(crate::loader::ppc::qd3d_gpu::commit_pixels(
+        assert!(crate::loader::ppc::qd3d_gpu::commit_indexed_pixels(
             &mut memory,
             front,
-            Some(&clut),
             &pixels
         ));
         assert!(
@@ -4261,10 +4258,9 @@ mod tests {
         );
         pixels[9] = 0x8000;
         pixels[2] = 0;
-        assert!(crate::loader::ppc::qd3d_gpu::commit_pixels(
+        assert!(crate::loader::ppc::qd3d_gpu::commit_indexed_pixels(
             &mut memory,
             front,
-            Some(&clut),
             &pixels
         ));
         assert!(
