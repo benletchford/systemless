@@ -366,7 +366,12 @@ impl PpcLoadedApp {
             if (material.fog_style.is_some() && !extended)
                 || command.lights.lights.iter().any(|light| {
                     light.data.is_on != 0
-                        && (!extended || (lit && !matches!(light.kind, PpcQ3LightKind::Ambient)))
+                        && (!extended
+                            || (lit
+                                && !matches!(
+                                    light.kind,
+                                    PpcQ3LightKind::Ambient | PpcQ3LightKind::Directional { .. }
+                                )))
                 })
             {
                 return None;
@@ -375,12 +380,9 @@ impl PpcLoadedApp {
             // retaining each vertex coefficient for shading and interpolation on GPU.
             let ambient_light = (extended && lit && !command.lights.lights.is_empty()).then(|| {
                 let mut sum = [0.0; 3];
-                for light in command
-                    .lights
-                    .lights
-                    .iter()
-                    .filter(|light| light.data.is_on != 0)
-                {
+                for light in command.lights.lights.iter().filter(|light| {
+                    light.data.is_on != 0 && matches!(light.kind, PpcQ3LightKind::Ambient)
+                }) {
                     let value = ppc_q3_software_light_contribution(light, 1.0);
                     sum[0] += value.0;
                     sum[1] += value.1;
@@ -409,6 +411,16 @@ impl PpcLoadedApp {
             let vertex_ambient =
                 self.q3_software_trimesh_vertex_ambient_coefficients(&command, points.len());
             let triangle_ambient = self.q3_software_trimesh_triangle_ambient_coefficients(&command);
+            let vertex_normals = self.q3_software_trimesh_vertex_normals(&command, points.len());
+            let vertex_specular =
+                self.q3_software_trimesh_vertex_specular_colors(&command, points.len());
+            let vertex_controls =
+                self.q3_software_trimesh_vertex_specular_controls(&command, points.len());
+            let vertex_highlights =
+                self.q3_software_trimesh_vertex_highlight_states(&command, points.len());
+            let triangle_specular = self.q3_software_trimesh_triangle_specular_colors(&command);
+            let triangle_controls = self.q3_software_trimesh_triangle_specular_controls(&command);
+            let triangle_highlights = self.q3_software_trimesh_triangle_highlight_states(&command);
             let vertex_alpha = self.q3_software_trimesh_vertex_alphas(&command, points.len());
             let triangle_diffuse = self.q3_software_trimesh_triangle_diffuse_colors(&command);
             let triangle_alpha = self.q3_software_trimesh_triangle_alphas(&command);
@@ -423,6 +435,21 @@ impl PpcLoadedApp {
                     continue;
                 };
                 projected.ambient_coefficient = vertex_ambient
+                    .as_ref()
+                    .and_then(|values| values.get(index).copied());
+                projected.normal = vertex_normals
+                    .as_ref()
+                    .and_then(|values| values.get(index).copied())
+                    .and_then(|normal| {
+                        ppc_q3_software_transform_normal(normal, command.local_to_world)
+                    });
+                projected.specular_color = vertex_specular
+                    .as_ref()
+                    .and_then(|values| values.get(index).copied());
+                projected.specular_control = vertex_controls
+                    .as_ref()
+                    .and_then(|values| values.get(index).copied());
+                projected.highlight_state = vertex_highlights
                     .as_ref()
                     .and_then(|values| values.get(index).copied());
                 projected.uv = vertex_uvs.get(index).copied();
@@ -489,6 +516,37 @@ impl PpcLoadedApp {
                             vertex.vertex_alpha = Some(alpha);
                         }
                     }
+                }
+                let normal = triangle_normals
+                    .as_ref()
+                    .and_then(|values| values.get(triangle.index).copied().flatten())
+                    .and_then(|normal| {
+                        ppc_q3_software_transform_normal(normal, command.local_to_world)
+                    });
+                let geometric_normal = ppc_q3_software_geometric_normal(
+                    triangle.points.map(|index| points[index]),
+                    orientation_style,
+                )
+                .and_then(|normal| {
+                    ppc_q3_software_transform_normal(normal, command.local_to_world)
+                });
+                for vertex in &mut triangle_vertices {
+                    vertex.normal = vertex.normal.or(normal).or(geometric_normal);
+                    vertex.specular_color = vertex.specular_color.or_else(|| {
+                        triangle_specular
+                            .as_ref()
+                            .and_then(|values| values.get(triangle.index).copied())
+                    });
+                    vertex.specular_control = vertex.specular_control.or_else(|| {
+                        triangle_controls
+                            .as_ref()
+                            .and_then(|values| values.get(triangle.index).copied())
+                    });
+                    vertex.highlight_state = vertex.highlight_state.or_else(|| {
+                        triangle_highlights
+                            .as_ref()
+                            .and_then(|values| values.get(triangle.index).copied())
+                    });
                 }
                 let clipped = ppc_q3_software_clip_projected_triangle(
                     command.camera,
@@ -563,7 +621,29 @@ impl PpcLoadedApp {
                             material.uv_transform,
                         )?;
                         let (screen_x, screen_y) = ppc_q3_software_raster_position(point);
+                        let shading_point = flat_sample.unwrap_or(point);
+                        let specular = shading_point
+                            .specular_color
+                            .unwrap_or(material.specular_color);
                         vertices.push(PpcQ3RasterVertex {
+                            shading: PpcQ3RasterShading {
+                                highlight: shading_point
+                                    .highlight_state
+                                    .unwrap_or(material.highlight_state),
+                                normal: shading_point.normal.map(|n| [n.0, n.1, n.2]),
+                                world: [
+                                    shading_point.world.0,
+                                    shading_point.world.1,
+                                    shading_point.world.2,
+                                ],
+                                view_direction: shading_point
+                                    .view_direction
+                                    .map(|v| [v.0, v.1, v.2]),
+                                specular_color: [specular.0, specular.1, specular.2],
+                                specular_control: shading_point
+                                    .specular_control
+                                    .unwrap_or(material.specular_control),
+                            },
                             ambient_coefficient: flat_sample
                                 .map(|sample| sample.ambient_coefficient)
                                 .unwrap_or(point.ambient_coefficient)
@@ -586,7 +666,24 @@ impl PpcLoadedApp {
                 }
             }
             if !vertices.is_empty() {
+                let directional = command
+                    .lights
+                    .lights
+                    .iter()
+                    .filter(|light| {
+                        light.data.is_on != 0
+                            && matches!(light.kind, PpcQ3LightKind::Directional { .. })
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
                 draws.push(PpcQ3RasterDraw {
+                    lighting: (extended && lit && !directional.is_empty()).then_some(
+                        PpcQ3RasterLighting {
+                            lights: directional,
+                            interpolation_style,
+                            illumination_type: material.illumination_type,
+                        },
+                    ),
                     ambient_light,
                     ambient_per_vertex: interpolation_style == PPC_Q3_INTERPOLATION_STYLE_VERTEX,
                     fog: material.fog_style,
