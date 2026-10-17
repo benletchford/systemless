@@ -226,14 +226,14 @@ impl WgpuPresenter {
                 return Ok(None);
             }
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return Ok(None)
+                return Ok(None);
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 *self = Self::new(self._window.clone(), self.display.clone())?;
                 return Ok(None);
             }
             wgpu::CurrentSurfaceTexture::Validation => {
-                return Err("wgpu surface validation failed".into())
+                return Err("wgpu surface validation failed".into());
             }
         };
         Ok(Some(frame))
@@ -259,12 +259,10 @@ impl WgpuPresenter {
             return Ok(Some(true));
         }
         let viewport = super::aspect_fit_dimensions(crop.2, crop.3, output.0, output.1);
-        if !super::wgpu_compact::CompactRenderer::supports(
-            image,
-            crop,
-            viewport,
-            &self.device.limits(),
-        ) {
+        if !self
+            .compact
+            .prepare(image, crop, viewport, &self.device.limits())
+        {
             return Ok(None);
         }
         let Some(frame) = self.acquire(output)? else {

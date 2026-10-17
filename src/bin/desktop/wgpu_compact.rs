@@ -7,6 +7,8 @@ pub(super) struct CompactRenderer {
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
+    prepared: Option<Prepared>,
+    epoch: u64,
     layout: wgpu::BindGroupLayout,
     geometry: wgpu::Buffer,
     resources: Option<Resources>,
@@ -15,6 +17,15 @@ pub(super) struct CompactRenderer {
     geometry_words: Option<[u32; 12]>,
     staging: wgpu::util::StagingBelt,
     primary: Option<wgpu::util::StagingBelt>,
+}
+
+struct Prepared {
+    image: Arc<CompactPresentation>,
+    crop: (u32, u32, u32, u32),
+    viewport: (u32, u32, u32, u32),
+    epoch: u64,
+    cells: std::ops::Range<usize>,
+    detail: std::ops::Range<usize>,
 }
 
 struct Resources {
@@ -72,6 +83,8 @@ impl CompactRenderer {
                         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::UNIFORM,
                     )
                 }),
+            prepared: None,
+            epoch: 0,
             resources: None,
             source: None,
             previous: None,
@@ -86,7 +99,7 @@ impl CompactRenderer {
 
     /// Integer coverage is exact within the same accumulator limits as Metal/D3D.
     /// Invalid or out-of-range packets retain the existing CPU resolve fallback.
-    pub fn supports(
+    fn supports_layout(
         image: &CompactPresentation,
         crop: (u32, u32, u32, u32),
         viewport: (u32, u32, u32, u32),
@@ -116,15 +129,63 @@ impl CompactRenderer {
         {
             return false;
         }
-        let tile = u64::from(image.scale * image.scale);
-        if image.cells.iter().any(|cell| {
-            cell >> 31 != 0 && u64::from(cell & 0x7fffffff) + tile > image.detail.len() as u64
-        }) {
-            return false;
-        }
         [image.cells.len(), image.detail.len().max(1)]
             .into_iter()
             .all(|n| (n as u64) * 4 <= u64::from(limits.max_storage_buffer_binding_size))
+    }
+
+    #[cfg(test)]
+    fn supports(
+        image: &CompactPresentation,
+        crop: (u32, u32, u32, u32),
+        viewport: (u32, u32, u32, u32),
+        limits: &wgpu::Limits,
+    ) -> bool {
+        Self::supports_layout(image, crop, viewport, limits) && valid_cells(image, &image.cells)
+    }
+
+    pub fn prepare(
+        &mut self,
+        image: &Arc<CompactPresentation>,
+        crop: (u32, u32, u32, u32),
+        viewport: (u32, u32, u32, u32),
+        limits: &wgpu::Limits,
+    ) -> bool {
+        if self.prepared.as_ref().is_some_and(|p| {
+            p.epoch == self.epoch
+                && Arc::ptr_eq(&p.image, image)
+                && p.crop == crop
+                && p.viewport == viewport
+        }) {
+            return true;
+        }
+        self.prepared = None;
+        if !Self::supports_layout(image, crop, viewport, limits) {
+            return false;
+        }
+        let cells = changed_words(
+            self.previous.as_ref().map(|p| p.cells.as_slice()),
+            &image.cells,
+        );
+        let detail = changed_words(
+            self.previous.as_ref().map(|p| p.detail.as_slice()),
+            &image.detail,
+        );
+        // Previously accepted cells remain valid only if their tile size and
+        // accessible detail range are unchanged. RGB detail words are data,
+        // not further indices, so changing those words needs no index scan.
+        if !valid_changed_cells(self.previous.as_deref(), image, cells.clone()) {
+            return false;
+        }
+        self.prepared = Some(Prepared {
+            image: image.clone(),
+            crop,
+            viewport,
+            epoch: self.epoch,
+            cells,
+            detail,
+        });
+        true
     }
 
     fn encode_shared(
@@ -236,6 +297,10 @@ impl CompactRenderer {
         viewport: (u32, u32, u32, u32),
         target: &wgpu::TextureView,
     ) {
+        assert!(
+            self.prepare(image, crop, viewport, &device.limits()),
+            "invalid retained GPU packet"
+        );
         let index = (image.scale - 1) as usize + if image.detail.is_empty() { 0 } else { 4 };
         if self.pipelines[index].is_none() {
             self.pipelines[index] = Some(super::wgpu_present::pipeline_with_module(
@@ -252,14 +317,9 @@ impl CompactRenderer {
                 ],
             ));
         }
-        let cells_changed = changed_words(
-            self.previous.as_ref().map(|p| p.cells.as_slice()),
-            &image.cells,
-        );
-        let detail_changed = changed_words(
-            self.previous.as_ref().map(|p| p.detail.as_slice()),
-            &image.detail,
-        );
+        let prepared = self.prepared.as_ref().unwrap();
+        let cells_changed = prepared.cells.clone();
+        let detail_changed = prepared.detail.clone();
         let full_upload = cells_changed.len() + detail_changed.len()
             > (image.cells.len() + image.detail.len()) / 2;
         if self.primary.is_some()
@@ -267,6 +327,7 @@ impl CompactRenderer {
             && self.encode_shared(device, queue, image, crop, viewport, target)
         {
             self.previous = Some(image.clone());
+            self.epoch = self.epoch.wrapping_add(1);
             return;
         }
         if self.resources.as_ref().is_none_or(|resources| {
@@ -381,7 +442,33 @@ impl CompactRenderer {
         self.staging.finish_and_recall_on_submit(&encoder);
         queue.submit([encoder.finish()]);
         self.previous = Some(image.clone());
+        self.epoch = self.epoch.wrapping_add(1);
     }
+}
+
+fn valid_changed_cells(
+    previous: Option<&CompactPresentation>,
+    image: &CompactPresentation,
+    changed: std::ops::Range<usize>,
+) -> bool {
+    let unchanged_bounds = previous.is_some_and(|previous| {
+        previous.scale == image.scale && previous.detail.len() == image.detail.len()
+    });
+    valid_cells(
+        image,
+        if unchanged_bounds {
+            &image.cells[changed]
+        } else {
+            &image.cells
+        },
+    )
+}
+
+fn valid_cells(image: &CompactPresentation, cells: &[u32]) -> bool {
+    let tile = u64::from(image.scale * image.scale);
+    cells.iter().all(|cell| {
+        cell >> 31 == 0 || u64::from(cell & 0x7fffffff) + tile <= image.detail.len() as u64
+    })
 }
 
 /// Find the smallest upload containing all changed words. Binary slice
@@ -518,7 +605,7 @@ pub(crate) mod tests {
             for iteration in 0..420 {
                 let image = &images[iteration % 2];
                 let start = std::time::Instant::now();
-                assert!(CompactRenderer::supports(
+                assert!(renderer.prepare(
                     image,
                     (0, 0, 640, 480),
                     (0, 0, 800, 600),
@@ -719,6 +806,30 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn incremental_validation_rechecks_changed_indices_and_bounds() {
+        let previous = CompactPresentation {
+            width: 2,
+            height: 1,
+            scale: 2,
+            cells: vec![0x80000000, 0],
+            detail: vec![0; 4],
+        };
+        let mut image = previous.clone();
+        image.cells[1] = 0x80000001;
+        assert!(!valid_changed_cells(Some(&previous), &image, 1..2));
+        image = previous.clone();
+        image.detail.pop();
+        assert!(!valid_changed_cells(Some(&previous), &image, 0..0));
+        image = previous.clone();
+        image.scale = 3;
+        assert!(!valid_changed_cells(Some(&previous), &image, 0..0));
+        image = previous.clone();
+        image.detail.fill(0x123456);
+        assert!(valid_changed_cells(Some(&previous), &image, 0..0));
+        assert!(valid_changed_cells(None, &image, 0..0));
     }
 
     #[test]
