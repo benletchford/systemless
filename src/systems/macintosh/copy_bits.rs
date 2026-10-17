@@ -1600,6 +1600,8 @@ mod tests {
             (5, 4, 3, 4),
             (190, 2, 1, 2),
             (256, 2, 1, 2),
+            (4097, 2, 1, 2),
+            (30000, 1, 1, 1),
             (7, 9, 7, 3),
             (7, 7, 7, 3),
             (7, 3, 7, 8),
@@ -1613,7 +1615,13 @@ mod tests {
                     memory.add_region(
                         0x1000,
                         (0..stride * (sh + 2))
-                            .map(|i| ((i * 73 + 19) % 256) as u8)
+                            .map(|i| {
+                                if sw >= 4097 {
+                                    0
+                                } else {
+                                    ((i * 73 + 19) % 256) as u8
+                                }
+                            })
                             .collect(),
                     );
                     memory.add_region(0x5000, vec![0xa5; (destination_stride * (dh + 2)) as usize]);
