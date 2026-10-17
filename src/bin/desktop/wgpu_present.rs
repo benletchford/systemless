@@ -215,12 +215,14 @@ impl WgpuPresenter {
             self.config.width = output.0;
             self.config.height = output.1;
             self.surface.configure(&self.device, &self.config);
+            self.last_compact = None;
         }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
+                self.last_compact = None;
                 return Ok(None);
             }
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
