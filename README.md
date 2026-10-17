@@ -113,11 +113,18 @@ to force software presentation.
 Pass `--gpu` to opt into cross-platform wgpu desktop presentation (Metal,
 Vulkan, or DX12, depending on the host). This renders the complete Macintosh
 desktop, including system windows and text, through wgpu. Retained outline text
-and drawing coverage is resolved on the GPU with exact
-integer area sampling, including cropped and resized desktops. Guest QuickDraw
-drawing, glyph rasterization, and 3D still run on the CPU. It is experimental
+and drawing coverage is resolved on the GPU with exact integer area sampling,
+including cropped and resized desktops. Supported QuickDraw 3D TriMesh frames
+use a wgpu compute rasterizer with depth, perspective-correct color/texture
+interpolation, texture wrapping, and alpha blending. Results are read back into
+the guest framebuffer before execution resumes, preserving CopyBits and
+subsequent drawing. Lighting, fog, non-filled geometry, and frames beyond the
+GPU resource/work limits currently use the software renderer. Guest QuickDraw
+shape drawing and glyph rasterization still run on the CPU. It is experimental
 and reports initialization errors instead of silently selecting another backend.
 Without `--gpu`, existing platform presentation remains the default.
+`--headless --gpu` also enables the 3D rasterizer in play scripts and timed runs
+without creating a window; desktop presentation is only used for windowed runs.
 
 The experimental desktop execution owner can be selected with
 `SYSTEMLESS_DESKTOP_RUNTIME=thread`. It constructs and runs the guest on a

@@ -14,6 +14,9 @@
 //! headless-only library and skip the `winit` / `softbuffer` / `cpal`
 //! link.
 
+#[path = "desktop/wgpu_qd3d.rs"]
+mod wgpu_qd3d;
+
 #[path = "desktop/wgpu_compact.rs"]
 mod wgpu_compact;
 
@@ -240,8 +243,8 @@ struct Cli {
     #[arg(value_name = "GAME")]
     game: PathBuf,
 
-    /// Render the desktop through the experimental cross-platform wgpu backend
-    #[arg(long, conflicts_with = "headless")]
+    /// Use wgpu for desktop presentation and supported QuickDraw 3D rasterization
+    #[arg(long)]
     gpu: bool,
 
     /// Run without opening a window
@@ -3465,6 +3468,7 @@ fn run_gui(
         screen_depth,
         ui_theme,
         debug_socket: debug_socket.clone(),
+        gpu: use_wgpu,
     };
     let mut app = App::new_with_display_scale(
         game_path,
@@ -3478,6 +3482,9 @@ fn run_gui(
         threaded,
     );
     app.use_wgpu = use_wgpu;
+    if let Some(driver) = app.driver.as_mut() {
+        driver.gpu = use_wgpu;
+    }
     #[cfg(target_os = "windows")]
     {
         app.gpu_wake = Some(event_loop.create_proxy());
@@ -3638,6 +3645,7 @@ fn run_headless(
     script: &[ScriptedInput],
     ui_theme: UiThemeId,
     debug_socket: Option<PathBuf>,
+    gpu: bool,
 ) {
     eprintln!(
         "[HEADLESS] Legacy instruction-budget diagnostic mode: retained Toolbox waits may re-fire repeatedly; do not use these totals as GUI CPU measurements. Use --max-ticks with --tick-input-script for time-based runs."
@@ -3647,6 +3655,11 @@ fn run_headless(
 
     let mut session = MacintoshSession::new(!addressing_24_bit, screen_depth);
     session.runner_mut().set_ui_theme(ui_theme);
+    if gpu {
+        session
+            .runner_mut()
+            .set_q3_gpu_renderer(Box::new(wgpu_qd3d::Qd3dRenderer::new()));
+    }
     let app = session.load_path(game_path).expect("Failed to load game");
     let mut save_store = DesktopSaveStore::for_loaded_archive(game_path, session.runner_mut());
     eprintln!(
@@ -3801,6 +3814,7 @@ fn main() {
             cli.addressing_24_bit,
             cli.screen_depth,
             cli.ui_theme,
+            cli.gpu,
         ) {
             eprintln!("[PLAY] {error}");
             std::process::exit(1);
@@ -3865,6 +3879,7 @@ fn main() {
                 &script,
                 cli.ui_theme,
                 cli.debug_socket,
+                cli.gpu,
             );
         } else {
             run_headless(
@@ -3875,6 +3890,7 @@ fn main() {
                 &script,
                 cli.ui_theme,
                 cli.debug_socket,
+                cli.gpu,
             );
         }
     } else {
@@ -4356,14 +4372,18 @@ mod tests {
     }
 
     #[test]
-    fn gpu_cli_is_opt_in_and_requires_a_window() {
+    fn gpu_cli_is_opt_in_and_supports_headless_rasterization() {
         assert!(!Cli::try_parse_from(["systemless", "game.sit"]).unwrap().gpu);
         assert!(
             Cli::try_parse_from(["systemless", "--gpu", "game.sit"])
                 .unwrap()
                 .gpu
         );
-        assert!(Cli::try_parse_from(["systemless", "--gpu", "--headless", "game.sit"]).is_err());
+        assert!(
+            Cli::try_parse_from(["systemless", "--gpu", "--headless", "game.sit"])
+                .unwrap()
+                .gpu
+        );
     }
 
     #[test]

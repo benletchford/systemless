@@ -15079,6 +15079,56 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
         submission_lights: loaded.q3_submission_lights.clone(),
         retained_trimeshes: Vec::new(),
     });
+    // A rejected or malformed host result must leave the frame and guest pixels
+    // available for the software fallback. Successful readback is guest-visible.
+    struct HostRenderer {
+        mode: u8,
+    }
+    impl PpcQ3GpuRenderer for HostRenderer {
+        fn render(
+            &mut self,
+            frame: &PpcQ3GpuFrame,
+            background: &[u16],
+        ) -> Result<Vec<u16>, String> {
+            assert_eq!((frame.width, frame.height), (8, 8));
+            match self.mode {
+                0 => Err("test rejection".into()),
+                1 => Ok(Vec::new()),
+                _ => {
+                    let mut result = background.to_vec();
+                    result[3 * 8 + 4] = 0x03e0;
+                    Ok(result)
+                }
+            }
+        }
+    }
+    let completed = loaded.q3_completed_frames.clone();
+    for mode in [0, 1] {
+        assert!(loaded
+            .render_completed_q3_frames_with_gpu(&mut HostRenderer { mode })
+            .is_none());
+        assert_eq!(loaded.q3_completed_frames, completed);
+        assert_eq!(
+            loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
+            Some(0)
+        );
+    }
+    let stats = loaded
+        .render_completed_q3_frames_with_gpu(&mut HostRenderer { mode: 2 })
+        .unwrap();
+    assert_eq!(stats.frames, 1);
+    assert_eq!(stats.triangles, 1);
+    assert_eq!(
+        loaded.memory.read_u16_be(front_base + 3 * 16 + 4 * 2),
+        Some(0x03e0)
+    );
+    assert!(loaded.q3_completed_frames.is_empty());
+    loaded
+        .memory
+        .write_u16_be(front_base + 3 * 16 + 4 * 2, 0)
+        .unwrap();
+    loaded.q3_completed_frames = completed;
+
     let gpu_frame = loaded
         .take_completed_q3_gpu_frame()
         .expect("simple filled triangle should use the GPU packet path");

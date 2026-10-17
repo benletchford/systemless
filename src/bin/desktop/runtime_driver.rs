@@ -15,6 +15,7 @@ use systemless::systems::macintosh::game;
 use systemless::{runner::FixtureRunner, ui_theme::UiThemeId};
 
 pub(super) struct GuiDriver {
+    pub(super) gpu: bool,
     generation: u64,
     snapshot_sequence: u64,
     warp_serial: u64,
@@ -86,6 +87,7 @@ impl GuiDriver {
             )
             .expect("desktop runtime generation exhausted");
         Self {
+            gpu: false,
             generation,
             snapshot_sequence: 0,
             warp_serial: 0,
@@ -135,6 +137,9 @@ impl GuiDriver {
             None => game::new_runner_with_addressing(!self.addressing_24_bit),
         };
         runner.set_ui_theme(self.ui_theme);
+        if self.gpu {
+            runner.set_q3_gpu_renderer(Box::new(super::wgpu_qd3d::Qd3dRenderer::new()));
+        }
         #[cfg(target_os = "macos")]
         if self.native_integrations {
             runner.set_menu_bar_policy(MenuBarPolicy::ForceHidden);

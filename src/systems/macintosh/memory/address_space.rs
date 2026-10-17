@@ -1908,6 +1908,23 @@ impl GuestAddressSpace {
         Some(())
     }
 
+    /// Check write protection without notifying guest write observers. The
+    /// overlapping sparse fallback probes byte-identical values in the region
+    /// map only; presentation coverage and executable-code tokens stay intact.
+    pub(crate) fn is_writable_range(&mut self, addr: u32, len: u32) -> bool {
+        if len == 0 {
+            return true;
+        }
+        if u64::from(addr) + u64::from(len) > (1u64 << 32) {
+            return false;
+        }
+        if self.plain_writable(addr, len as usize) {
+            return true;
+        }
+        let state = self.state_mut();
+        (0..len).all(|offset| routed_byte_is_writable_state(state, addr + offset, None))
+    }
+
     /// Verify that a non-wrapping range is mapped and writable without
     /// changing its bytes. The write-back is deliberately byte-identical;
     /// it exercises the same protection and shared-overlay path used by the
@@ -4122,6 +4139,30 @@ mod tests {
         assert_eq!(PpcMemory::write_u32_be(&mut memory, 0x0700_0000, 1), None);
         clear_ledger_caches(&mut memory);
         assert_eq!(PpcMemory::write_u32_be(&mut memory, 0x0700_0000, 1), None);
+    }
+
+    #[test]
+    fn gpu_write_protection_probe_preserves_code_tokens_and_mapping_protection() {
+        const BASE: u32 = 0x0600_0000;
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(BASE, vec![0x60; 0x1000]);
+        // An overlapping newer region forces the bytewise proof path.
+        memory.add_region(BASE + 8, vec![0x22; 8]);
+        let token = PpcMemory::instruction_cache_token(&mut memory, BASE);
+        assert!(memory.is_writable_range(BASE, 32));
+        assert_eq!(PpcMemory::instruction_cache_token(&mut memory, BASE), token);
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut memory, BASE + 8),
+            Some(0x22222222)
+        );
+        memory.add_readonly_region(BASE + 16, vec![0x33; 4]);
+        assert!(!memory.is_writable_range(BASE, 32));
+        assert!(!memory.is_writable_range(u32::MAX - 1, 4));
+        assert!(!memory.is_writable_range(0x0700_0000, 4));
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut memory, BASE + 16),
+            Some(0x33333333)
+        );
     }
 
     /// Every whole-range probe with the route it must produce, for the tests

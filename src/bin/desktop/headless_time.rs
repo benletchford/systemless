@@ -130,6 +130,7 @@ pub(super) fn run(
     script: &[ScriptedInput],
     theme: UiThemeId,
     debug_socket: Option<std::path::PathBuf>,
+    gpu: bool,
 ) {
     if let Err(error) = validate_script(script, ticks) {
         eprintln!("[HEADLESS-TIME] {error}");
@@ -140,6 +141,9 @@ pub(super) fn run(
         None => game::new_runner_with_addressing(!addressing_24_bit),
     };
     runner.set_ui_theme(theme);
+    if gpu {
+        runner.set_q3_gpu_renderer(Box::new(super::wgpu_qd3d::Qd3dRenderer::new()));
+    }
     runner.set_app_start_time(start_time);
     let app = game::load_game_from_path(&mut runner, path).expect("Failed to load game");
     let mut saves = DesktopSaveStore::for_loaded_archive(path, &mut runner);
