@@ -88,30 +88,56 @@ fn unpack555(value: u32) -> vec3<f32> {
     if any(xy >= geometry.size.xy) { return; }
     let index = xy.y*geometry.size.x+xy.x;
     var pixel = pixels[index];
-    if any(xy < geometry.viewport.xy) || any(xy > geometry.viewport.zw) { return; }
-    if geometry.clear.x != 0u { pixel = geometry.clear.y; }
+    let in_viewport=all(xy>=geometry.viewport.xy)&&all(xy<=geometry.viewport.zw);
+    if in_viewport && geometry.clear.x != 0u { pixel = geometry.clear.y; }
     var depth = 3.402823e38;
     let point = vec2<f32>(xy);
     for(var i=0u; i<geometry.size.z; i++) {
         let triangle = triangles[i];
         let a = triangle.vertices[0]; let b = triangle.vertices[1]; let c = triangle.vertices[2];
-        let area = edge(a.position.xy,b.position.xy,c.position.xy);
-        let weights = vec3(edge(b.position.xy,c.position.xy,point),edge(c.position.xy,a.position.xy,point),edge(a.position.xy,b.position.xy,point));
-        if (area > 0. && any(weights < vec3(0.))) || (area < 0. && any(weights > vec3(0.))) { continue; }
-        let affine = weights/area;
-        let z = a.position.z+(b.position.z-a.position.z)*affine.y+(c.position.z-a.position.z)*affine.z;
-        if z > depth { continue; }
+        let kind=(triangle.info.w>>4u)&3u;
+        var perspective=vec3(1.,0.,0.);
+        var z=a.position.z;
+        if kind == 0u {
+            if !in_viewport {continue;}
+            let area = edge(a.position.xy,b.position.xy,c.position.xy);
+            let weights = vec3(edge(b.position.xy,c.position.xy,point),edge(c.position.xy,a.position.xy,point),edge(a.position.xy,b.position.xy,point));
+            if (area > 0. && any(weights < vec3(0.))) || (area < 0. && any(weights > vec3(0.))) { continue; }
+            let affine = weights/area;
+            z = a.position.z+(b.position.z-a.position.z)*affine.y+(c.position.z-a.position.z)*affine.z;
+            perspective = affine*vec3(a.position.w,b.position.w,c.position.w);
+            perspective /= dot(perspective,vec3(1.));
+        } else if kind == 2u {
+            if any(vec2<i32>(xy) != vec2<i32>(a.position.xy)) { continue; }
+        } else {
+            // Closed-form Bresenham coverage, including its directional tie rule.
+            let start=vec2<i32>(a.position.xy); let end=vec2<i32>(b.position.xy);
+            let delta=abs(end-start); let sign=select(vec2(-1),vec2(1),start<end);
+            let major=max(delta.x,delta.y);
+            let axis=select(1u,0u,delta.x>=delta.y);
+            let step=(i32(xy[axis])-start[axis])*sign[axis];
+            if step < 0 || step > major { continue; }
+            var expected=start;
+            if major != 0 {
+                let minor=1u-axis;
+                let advance=select(i32((u32(step)*u32(delta[minor])+u32(major)/2u)/u32(max(major,1))),delta[minor],step==major);
+                expected[axis]+=step*sign[axis]; expected[minor]+=advance*sign[minor];
+            }
+            if any(vec2<i32>(xy) != expected) { continue; }
+            let t=f32(step)/f32(max(major,1));
+            z=fma(a.position.z,1.-t,b.position.z*t);
+            perspective=vec3(0.,0.,1.);
+        }
+        if (triangle.info.w&8u)==0u && z > depth { continue; }
         if (triangle.info.w & 1u) != 0u { depth = z; }
-        var perspective = affine*vec3(a.position.w,b.position.w,c.position.w);
-        perspective /= dot(perspective,vec3(1.));
         var ca=a.color; var cb=b.color; var cc=c.color;
         let spatial_lighting=triangle.light_info.y != 0u;
-        let vertex_lighting=spatial_lighting && triangle.light_info.z != 2u;
+        let vertex_lighting=spatial_lighting && triangle.light_info.z != 2u && kind==0u;
         if vertex_lighting {
             ca=vec4(shade(a,ca.rgb,triangle),ca.a);
             cb=vec4(shade(b,cb.rgb,triangle),cb.a);
             cc=vec4(shade(c,cc.rgb,triangle),cc.a);
-        } else if !spatial_lighting && triangle.ambient.w == 1. {
+        } else if !spatial_lighting && triangle.ambient.w == 1. && kind==0u {
             ca=vec4(ca.rgb*triangle.ambient.rgb*a.lighting.x,ca.a);
             cb=vec4(cb.rgb*triangle.ambient.rgb*b.lighting.x,cb.a);
             cc=vec4(cc.rgb*triangle.ambient.rgb*c.lighting.x,cc.a);
@@ -127,7 +153,7 @@ fn unpack555(value: u32) -> vec3<f32> {
         }
         if spatial_lighting && !vertex_lighting {
             color=vec4(shade(interpolate_shading(a,b,c,perspective),color.rgb,triangle),color.a);
-        } else if !spatial_lighting && triangle.ambient.w == 2. {
+        } else if !spatial_lighting && (triangle.ambient.w == 2. || (kind!=0u && triangle.ambient.w!=0.)) {
             let coefficient=a.lighting.x+(b.lighting.x-a.lighting.x)*perspective.y+(c.lighting.x-a.lighting.x)*perspective.z;
             color=vec4(color.rgb*triangle.ambient.rgb*coefficient,color.a);
         }
