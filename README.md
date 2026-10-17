@@ -152,9 +152,10 @@ Native PowerPC `srcCopy` also uses GPU sampling for rectangular scaling,
 monochrome foreground/background expansion, and indexed-color conversion into
 1, 2, 4, 8, 16, and 32-bit destinations. Native RGB555 and xRGB sources also
 convert to each other or indexed destinations on the GPU, preserving inverse
-table matching and monochrome conversion rules. Other classic monochrome and
-packed palette copies, masked transfers, and other bitmap transfer families
-still use software.
+table matching and monochrome conversion rules. Native CopyBits region masks
+and transparent transfers, plus scaled one-bit CopyMask masks, use GPU coverage
+and source-color keys before conversion. Other classic monochrome and packed
+palette copies, arithmetic transfers, and deep masks still use software.
 Without `--gpu`, existing platform presentation remains the default.
 `--headless --gpu` also enables guest rasterization in play scripts and timed runs
 without creating a window; desktop presentation is only used for windowed runs.

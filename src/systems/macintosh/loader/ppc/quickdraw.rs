@@ -4739,42 +4739,41 @@ pub(crate) fn ppc_copy_bits(
         let mut details = crate::memory::SavedPixels::<()>::default();
         // CLUT resolution remains on the host; sampling and destination color
         // lookup happen in the GPU kernel, including monochrome expansion.
-        let gpu_palette =
-            if mode != 0 || mask_storage.is_some() || !memory.quickdraw_gpu_renderer().is_some() {
-                None
-            } else if src_bits.depth == 1 {
-                Some(std::array::from_fn(|i| {
-                    if i == 0 {
-                        bitmap_back_pixel
-                    } else {
-                        bitmap_fore_pixel
-                    }
-                }))
-            } else if let Some(entries) = ppc_indexed_depth_entry_count(src_bits.depth) {
-                let mut colors = [0u32; 256];
-                for i in 0..entries {
-                    colors[i] = if src_bits.depth == dst_bits.depth {
-                        u32::from(palette_map.as_ref().map_or(i as u8, |p| p[i]))
-                    } else {
-                        let [red, green, blue] = src_clut.as_ref()?[i];
-                        if let Some(count) = ppc_indexed_depth_entry_count(dst_bits.depth) {
-                            u32::from(ppc_rgb_color_to_index_in_clut(
-                                PpcRgbColor { red, green, blue },
-                                dst_clut.as_ref()?,
-                                count,
-                            ))
-                        } else {
-                            ppc_rgb_to_pixmap_pixel(dst_bits, [red, green, blue], None)?
-                        }
-                    };
+        let gpu_palette = if !matches!(mode, 0 | 36) || !memory.quickdraw_gpu_renderer().is_some() {
+            None
+        } else if src_bits.depth == 1 {
+            Some(std::array::from_fn(|i| {
+                if i == 0 {
+                    bitmap_back_pixel
+                } else {
+                    bitmap_fore_pixel
                 }
-                Some(colors)
-            } else {
-                None
-            };
-        let gpu_writes = if mode == 0
-            && mask_storage.is_none()
+            }))
+        } else if let Some(entries) = ppc_indexed_depth_entry_count(src_bits.depth) {
+            let mut colors = [0u32; 256];
+            for i in 0..entries {
+                colors[i] = if src_bits.depth == dst_bits.depth {
+                    u32::from(palette_map.as_ref().map_or(i as u8, |p| p[i]))
+                } else {
+                    let [red, green, blue] = src_clut.as_ref()?[i];
+                    if let Some(count) = ppc_indexed_depth_entry_count(dst_bits.depth) {
+                        u32::from(ppc_rgb_color_to_index_in_clut(
+                            PpcRgbColor { red, green, blue },
+                            dst_clut.as_ref()?,
+                            count,
+                        ))
+                    } else {
+                        ppc_rgb_to_pixmap_pixel(dst_bits, [red, green, blue], None)?
+                    }
+                };
+            }
+            Some(colors)
+        } else {
+            None
+        };
+        let gpu_writes = if matches!(mode, 0 | 36)
             && memory.quickdraw_gpu_renderer().is_some()
+            && i64::from(copy_right - copy_left) * i64::from(copy_bottom - copy_top) <= 4_194_304
         {
             gpu_blit::sample_copy(
                 memory,
@@ -4802,13 +4801,37 @@ pub(crate) fn ppc_copy_bits(
                         }),
                     }
                 }),
+                (mask_storage.is_some() || transparent).then(|| {
+                    crate::quickdraw::gpu::QuickDrawGpuBlitClip {
+                        coverage: mask_storage.as_ref().map(|storage| {
+                            (copy_top..copy_bottom)
+                                .flat_map(|y| {
+                                    (copy_left..copy_right).map(move |x| {
+                                        u8::from(ppc_point_in_region_storage(
+                                            storage, y as i16, x as i16,
+                                        ))
+                                    })
+                                })
+                                .collect()
+                        }),
+                        transparent: transparent.then_some([
+                            transparent_back_pixel,
+                            if src_bits.depth == 32 {
+                                0x00ff_ffff
+                            } else {
+                                u32::MAX
+                            },
+                        ]),
+                    }
+                }),
                 &mut details,
             )
         } else {
             None
         };
+        let gpu_handled = gpu_writes.is_some();
         let mut writes = gpu_writes.unwrap_or_default();
-        if writes.is_empty() {
+        if !gpu_handled {
             for dst_y in copy_top..copy_bottom {
                 let rel_y = i64::from(dst_y) - i64::from(dst_top);
                 let src_y = i64::from(src_top) + (rel_y * src_height) / dst_height;
@@ -5041,8 +5064,7 @@ pub(crate) fn ppc_copy_mask(
     // averages source and destination weighted by the mask's color instead
     // of gating the transfer. That is CopyDeepMask's srcCopy transfer with
     // no mask region.
-    if ppc_resolve_pixmap_bits(memory, gworlds, mask_bits_ptr).is_some_and(|mask| mask.depth != 1)
-    {
+    if ppc_resolve_pixmap_bits(memory, gworlds, mask_bits_ptr).is_some_and(|mask| mask.depth != 1) {
         return ppc_copy_deep_mask_with(cpu, memory, gworlds, color_manager_clut, 0, 0, "CopyMask");
     }
     let mut reason = "ok";
@@ -5120,6 +5142,50 @@ pub(crate) fn ppc_copy_mask(
         if copy_left >= copy_right || copy_top >= copy_bottom {
             reason = "clipped-empty";
             return None;
+        }
+
+        if memory.quickdraw_gpu_renderer().is_some()
+            && i64::from(copy_right - copy_left) * i64::from(copy_bottom - copy_top) <= 4_194_304
+        {
+            let coverage = (copy_top..copy_bottom)
+                .flat_map(|y| {
+                    let mask_y = i64::from(mask_rect.0)
+                        + (i64::from(y) - i64::from(dst_rect.0)) * mask_height / dst_height;
+                    (copy_left..copy_right).map(move |x| {
+                        let mask_x = i64::from(mask_rect.1)
+                            + (i64::from(x) - i64::from(dst_rect.1)) * mask_width / dst_width;
+                        (mask_x as i32, mask_y as i32)
+                    })
+                })
+                .map(|(x, y)| {
+                    u8::from(ppc_read_pixmap_raw_pixel(memory, mask_bits, x, y) == Some(1))
+                })
+                .collect();
+            let mut ignored_details = crate::memory::SavedPixels::<()>::default();
+            if let Some(writes) = gpu_blit::sample_copy(
+                memory,
+                src_bits,
+                dst_bits,
+                [src_rect.0, src_rect.1, src_rect.2, src_rect.3].map(i32::from),
+                [dst_rect.0, dst_rect.1, dst_rect.2, dst_rect.3].map(i32::from),
+                [copy_top, copy_left, copy_bottom, copy_right],
+                palette_map.map(|p| p.map(u32::from)),
+                None,
+                Some(crate::quickdraw::gpu::QuickDrawGpuBlitClip {
+                    coverage: Some(coverage),
+                    transparent: None,
+                }),
+                &mut ignored_details,
+            ) {
+                if writes.is_empty() {
+                    reason = "no-pixels";
+                    return None;
+                }
+                for (x, y, pixel) in writes {
+                    ppc_write_pixmap_raw_pixel(memory, dst_bits, x, y, pixel)?;
+                }
+                return Some(());
+            }
         }
 
         // Imaging With QuickDraw (1994), pp. 3-119--3-120: CopyMask scales

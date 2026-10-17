@@ -12,6 +12,7 @@ pub(super) fn sample_copy(
     clip: [i32; 4],
     palette: Option<[u32; 256]>,
     direct: Option<crate::quickdraw::gpu::QuickDrawGpuDirectColor>,
+    operation_clip: Option<crate::quickdraw::gpu::QuickDrawGpuBlitClip>,
     details: &mut crate::memory::SavedPixels<()>,
 ) -> Option<Vec<(i32, i32, u32)>> {
     let renderer = memory.quickdraw_gpu_renderer();
@@ -73,21 +74,38 @@ pub(super) fn sample_copy(
             .collect(),
         palette,
         direct,
+        clip: operation_clip,
     };
     if !command.valid() {
         return None;
     }
-    let output = renderer.render_blit(&command).ok()?;
+    let output = if command.clip.is_some() {
+        renderer.render_blit_cells(&command).ok()?
+    } else {
+        renderer
+            .render_blit(&command)
+            .ok()?
+            .into_iter()
+            .map(|value| crate::quickdraw::gpu::QuickDrawGpuPixel {
+                value,
+                covered: true,
+            })
+            .collect()
+    };
     let limit = if destination.depth == 32 {
         u32::MAX
     } else {
         (1 << destination.depth) - 1
     };
-    if output.len() != xs.len() * ys.len() || output.iter().any(|p| *p > limit) {
+    if output.len() != xs.len() * ys.len() || output.iter().any(|p| p.value > limit) {
         return None;
     }
     let mut writes = Vec::with_capacity(output.len());
-    for (i, pixel) in output.into_iter().enumerate() {
+    for (i, cell) in output.into_iter().enumerate() {
+        if !cell.covered {
+            continue;
+        }
+        let pixel = cell.value;
         let row = i / xs.len();
         let col = i % xs.len();
         if source.depth == destination.depth
@@ -101,7 +119,7 @@ pub(super) fn sample_copy(
                 + (xs[col] - i32::from(source.left)) as u32 * lanes;
             memory.presentation().capture_detail(
                 details,
-                i * lanes as usize,
+                writes.len() * lanes as usize,
                 address,
                 lanes as usize,
             );

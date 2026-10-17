@@ -20,6 +20,28 @@ impl QuickDrawRenderer {
     }
 }
 impl QuickDrawGpuRenderer for QuickDrawRenderer {
+    fn render_blit_cells(
+        &mut self,
+        command: &QuickDrawGpuBlit,
+    ) -> Result<Vec<QuickDrawGpuPixel>, String> {
+        if self.state.is_none() && self.initialization_error.is_none() {
+            match State::new() {
+                Ok(state) => self.state = Some(state),
+                Err(error) => self.initialization_error = Some(error),
+            }
+        }
+        let result = match self.state.as_ref() {
+            Some(state) => state.render_blit_cells(command),
+            None => Err(self.initialization_error.clone().unwrap()),
+        };
+        if let Err(error) = &result {
+            if self.last_error.as_ref() != Some(error) {
+                eprintln!("[GPU] QuickDraw clipped bitmap CPU fallback: {error}");
+                self.last_error = Some(error.clone());
+            }
+        }
+        result
+    }
     fn render_packed_blit(&mut self, command: &QuickDrawGpuPackedCopy) -> Result<Vec<u8>, String> {
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
@@ -88,6 +110,7 @@ struct State {
     pipeline: wgpu::ComputePipeline,
     polygon_products: wgpu::ComputePipeline,
     blit_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
+    cells_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
     packed_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
 }
 impl State {
@@ -124,6 +147,7 @@ impl State {
             pipeline,
             polygon_products,
             blit_pipeline: Default::default(),
+            cells_pipeline: Default::default(),
             packed_pipeline: Default::default(),
         })
     }
@@ -162,18 +186,48 @@ impl State {
         }
     }
     fn render_blit(&self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
+        if command.clip.is_some() {
+            return Err("clipped bitmap requires coverage readback".into());
+        }
+        self.render_blit_words(command, false)
+    }
+    fn render_blit_cells(
+        &self,
+        command: &QuickDrawGpuBlit,
+    ) -> Result<Vec<QuickDrawGpuPixel>, String> {
+        let words = self.render_blit_words(command, true)?;
+        if words.len() % 2 != 0 || words.chunks_exact(2).any(|p| p[1] > 1) {
+            return Err("invalid bitmap coverage readback".into());
+        }
+        Ok(words
+            .chunks_exact(2)
+            .map(|p| QuickDrawGpuPixel {
+                value: p[0],
+                covered: p[1] != 0,
+            })
+            .collect())
+    }
+    fn render_blit_words(
+        &self,
+        command: &QuickDrawGpuBlit,
+        cells: bool,
+    ) -> Result<Vec<u32>, String> {
         if !command.valid() {
             return Err("invalid QuickDraw bitmap blit".into());
         }
-        let mut cached = self.blit_pipeline.borrow_mut();
+        let mut cached = if cells {
+            self.cells_pipeline.borrow_mut()
+        } else {
+            self.blit_pipeline.borrow_mut()
+        };
         if cached.is_none() {
-            *cached = Some(self.create_blit_pipeline("blit"));
+            *cached = Some(self.create_blit_pipeline(if cells { "blit_cells" } else { "blit" }));
         }
         let pipeline = cached.as_ref().unwrap().as_ref().map_err(Clone::clone)?;
         let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
         let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let result = self.render_blit_inner(command, pipeline);
+        let result = self.render_blit_inner(command, pipeline, cells);
         let mut error = None;
         for scope in [validation, memory, internal] {
             if let Some(e) = pollster::block_on(scope.pop()) {
@@ -222,6 +276,7 @@ impl State {
                 pipeline,
                 command.destination_stride,
                 command.height,
+                1,
                 &[
                     (0, &source, wgpu::BufferUsages::STORAGE),
                     (1, &palette, wgpu::BufferUsages::STORAGE),
@@ -250,6 +305,7 @@ impl State {
         &self,
         command: &QuickDrawGpuBlit,
         pipeline: &wgpu::ComputePipeline,
+        cells: bool,
     ) -> Result<Vec<u32>, String> {
         let width = command.columns.len() as u32;
         let height = command.rows.len() as u32;
@@ -281,27 +337,39 @@ impl State {
                 .map_or(0, |d| d.palette.len() as u32),
             0,
         ];
-        self.dispatch_blit(
-            pipeline,
-            width,
-            height,
-            &[
-                (0, &command.pixels, wgpu::BufferUsages::STORAGE),
-                (1, &palette, wgpu::BufferUsages::STORAGE),
-                (2, &columns, wgpu::BufferUsages::STORAGE),
-                (3, &rows, wgpu::BufferUsages::STORAGE),
-                (5, &geometry, wgpu::BufferUsages::UNIFORM),
-            ],
-        )
+        let mut coverage = vec![0, 0, u32::MAX];
+        if let Some(clip) = &command.clip {
+            if let Some([key, mask]) = clip.transparent {
+                coverage[1] = key;
+                coverage[2] = mask;
+                coverage[0] |= 2;
+            }
+            if let Some(mask) = &clip.coverage {
+                coverage[0] |= 1;
+                coverage.extend(mask.iter().map(|v| u32::from(*v)));
+            }
+        }
+        let mut inputs: Vec<(u32, &[u32], wgpu::BufferUsages)> = vec![
+            (0, &command.pixels, wgpu::BufferUsages::STORAGE),
+            (1, &palette, wgpu::BufferUsages::STORAGE),
+            (2, &columns, wgpu::BufferUsages::STORAGE),
+            (3, &rows, wgpu::BufferUsages::STORAGE),
+            (5, &geometry, wgpu::BufferUsages::UNIFORM),
+        ];
+        if cells {
+            inputs.push((6, &coverage, wgpu::BufferUsages::STORAGE));
+        }
+        self.dispatch_blit(pipeline, width, height, if cells { 2 } else { 1 }, &inputs)
     }
     fn dispatch_blit(
         &self,
         pipeline: &wgpu::ComputePipeline,
         width: u32,
         height: u32,
+        output_words: u32,
         inputs: &[(u32, &[u32], wgpu::BufferUsages)],
     ) -> Result<Vec<u32>, String> {
-        let output_bytes = u64::from(width) * u64::from(height) * 4;
+        let output_bytes = u64::from(width) * u64::from(height) * 4 * u64::from(output_words);
         let limits = self.device.limits();
         if output_bytes > u64::from(limits.max_storage_buffer_binding_size)
             || output_bytes > limits.max_buffer_size
@@ -760,8 +828,90 @@ mod tests {
             rows: vec![[0, 1]],
             palette: None,
             direct: None,
+            clip: None,
         };
         assert_eq!(state.render_blit(&raw).unwrap(), vec![u32::MAX]);
+    }
+
+    #[test]
+    fn gpu_masked_bitmap_cells_apply_source_keys_before_color_conversion() {
+        use systemless::quickdraw::gpu::{QuickDrawGpuBlitClip, QuickDrawGpuDirectColor};
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        for direct in [false, true] {
+            for masked in [false, true] {
+                for transparent in [false, true] {
+                    let pixels = if direct {
+                        vec![
+                            0x00ff_ffff,
+                            0xaaff_ffff,
+                            0xff00_0000,
+                            0x0001_0203,
+                            0x00ff_ffff,
+                            0xa501_0203,
+                        ]
+                    } else {
+                        vec![1, 2, 1, 3, 1, 4]
+                    };
+                    let columns = vec![[0, 1], [2, 3], [1, 2], [0, 1]];
+                    let rows = vec![[0, 1], [1, 2], [0, 1]];
+                    let mask: Vec<u8> = (0..12).map(|i| if i % 3 == 0 { 0 } else { 2 }).collect();
+                    let key = if direct { 0x00ff_ffff } else { 1 };
+                    let source_mask = if direct { 0x00ff_ffff } else { u32::MAX };
+                    let palette =
+                        (!direct).then(|| std::array::from_fn(|i| if i == 1 { 200 } else { 1 }));
+                    let command = QuickDrawGpuBlit {
+                        width: 3,
+                        height: 2,
+                        pixels,
+                        columns,
+                        rows,
+                        palette,
+                        direct: direct.then_some(QuickDrawGpuDirectColor {
+                            source_depth: 32,
+                            destination_depth: 16,
+                            palette: vec![],
+                        }),
+                        clip: Some(QuickDrawGpuBlitClip {
+                            coverage: masked.then_some(mask.clone()),
+                            transparent: transparent.then_some([key, source_mask]),
+                        }),
+                    };
+                    let actual = state.render_blit_cells(&command).unwrap();
+                    for (i, cell) in actual.iter().enumerate() {
+                        let raw = command.pixels
+                            [(command.rows[i / 4][0] * 3 + command.columns[i % 4][0]) as usize];
+                        let covered =
+                            (!masked || mask[i] != 0) && (!transparent || raw & source_mask != key);
+                        let value = if direct {
+                            ((raw >> 19 & 31) << 10) | ((raw >> 11 & 31) << 5) | (raw >> 3 & 31)
+                        } else {
+                            command.palette.as_ref().unwrap()[raw as usize]
+                        };
+                        assert_eq!(
+                            *cell,
+                            QuickDrawGpuPixel { value, covered },
+                            "direct={direct},masked={masked},transparent={transparent},cell={i}"
+                        );
+                    }
+                    assert!(state.render_blit(&command).is_err());
+                    let mut invalid = command.clone();
+                    invalid.clip.as_mut().unwrap().coverage = Some(vec![1]);
+                    assert!(state.render_blit_cells(&invalid).is_err());
+                    let mut invalid = command;
+                    invalid.clip.as_mut().unwrap().transparent = Some([1, 0]);
+                    assert!(state.render_blit_cells(&invalid).is_err());
+                }
+            }
+        }
     }
 
     #[test]
@@ -813,6 +963,7 @@ mod tests {
                         destination_depth,
                         palette,
                     }),
+                    clip: None,
                 };
                 let colors = &command.direct.as_ref().unwrap().palette;
                 let expected: Vec<u32> = command
@@ -829,7 +980,8 @@ mod tests {
                             32 => (rgb[0] << 16) | (rgb[1] << 8) | rgb[2],
                             16 => ((rgb[0] / 8) << 10) | ((rgb[1] / 8) << 5) | (rgb[2] / 8),
                             1 if source_depth == 32 => {
-                                let black: u64 = rgb.iter().map(|c| u64::from(c * 257).pow(2)).sum();
+                                let black: u64 =
+                                    rgb.iter().map(|c| u64::from(c * 257).pow(2)).sum();
                                 let white: u64 =
                                     rgb.iter().map(|c| u64::from(65535 - c * 257).pow(2)).sum();
                                 u32::from(black <= white)
@@ -896,9 +1048,8 @@ mod tests {
                     }
                 })
                 .collect();
-            let palette = mapped.then(|| {
-                std::array::from_fn(|i| 0xff00_0000 | ((255 - i as u32) * 0x010101))
-            });
+            let palette = mapped
+                .then(|| std::array::from_fn(|i| 0xff00_0000 | ((255 - i as u32) * 0x010101)));
             let command = QuickDrawGpuBlit {
                 width: 23,
                 height: 17,
@@ -907,6 +1058,7 @@ mod tests {
                 rows: vec![[0, 1], [1, 7], [9, 17], [16, 17]],
                 palette,
                 direct: None,
+                clip: None,
             };
             let mut expected = Vec::new();
             for row in &command.rows {

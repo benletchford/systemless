@@ -1,7 +1,9 @@
 //! Optional host rasterization with synchronous guest-memory writeback.
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 mod blit;
-pub use blit::{QuickDrawGpuBlit, QuickDrawGpuDirectColor, QuickDrawGpuPackedCopy};
+pub use blit::{
+    QuickDrawGpuBlit, QuickDrawGpuBlitClip, QuickDrawGpuDirectColor, QuickDrawGpuPackedCopy,
+};
 
 /// Glyph/bitmap coverage sampled in the same coordinates as the draw.
 #[derive(Clone, Debug)]
@@ -109,6 +111,23 @@ pub struct QuickDrawGpuPixel {
 
 /// An error or malformed result leaves guest pixels untouched for CPU fallback.
 pub trait QuickDrawGpuRenderer {
+    fn render_blit_cells(
+        &mut self,
+        command: &QuickDrawGpuBlit,
+    ) -> Result<Vec<QuickDrawGpuPixel>, String> {
+        if command.clip.is_some() {
+            return Err("QuickDraw backend does not support clipped bitmap blits".into());
+        }
+        self.render_blit(command).map(|pixels| {
+            pixels
+                .into_iter()
+                .map(|value| QuickDrawGpuPixel {
+                    value,
+                    covered: true,
+                })
+                .collect()
+        })
+    }
     fn render_packed_blit(&mut self, _command: &QuickDrawGpuPackedCopy) -> Result<Vec<u8>, String> {
         Err("QuickDraw backend does not support packed bitmap blits".into())
     }
@@ -156,6 +175,17 @@ impl QuickDrawGpuSlot {
             .try_borrow_mut()
             .map_err(|_| "QuickDraw GPU backend is busy")?
             .render_packed_blit(command)
+    }
+    pub(crate) fn render_blit_cells(
+        &self,
+        command: &QuickDrawGpuBlit,
+    ) -> Result<Vec<QuickDrawGpuPixel>, String> {
+        self.0
+            .as_ref()
+            .ok_or("QuickDraw GPU backend missing")?
+            .try_borrow_mut()
+            .map_err(|_| "QuickDraw GPU backend is busy")?
+            .render_blit_cells(command)
     }
     pub(crate) fn render_blit(&self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
         self.0
@@ -411,6 +441,19 @@ pub(crate) struct ReferenceRenderer {
 }
 #[cfg(test)]
 impl QuickDrawGpuRenderer for ReferenceRenderer {
+    fn render_blit_cells(
+        &mut self,
+        command: &QuickDrawGpuBlit,
+    ) -> Result<Vec<QuickDrawGpuPixel>, String> {
+        self.calls.set(self.calls.get() + 1);
+        match self.failure {
+            1 => Err("test clipped blit failure".into()),
+            2 => Ok(vec![]),
+            _ => command
+                .reference_cells()
+                .ok_or("invalid clipped blit".into()),
+        }
+    }
     fn render_packed_blit(&mut self, command: &QuickDrawGpuPackedCopy) -> Result<Vec<u8>, String> {
         self.calls.set(self.calls.get() + 1);
         match self.failure {
