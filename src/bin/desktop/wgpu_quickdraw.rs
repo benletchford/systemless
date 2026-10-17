@@ -1,5 +1,7 @@
 //! Guest-visible QuickDraw rasterization, enabled only by --gpu.
-use systemless::quickdraw::gpu::{QuickDrawGpuCommand, QuickDrawGpuPixel, QuickDrawGpuRenderer};
+use systemless::quickdraw::gpu::{
+    QuickDrawGpuBlit, QuickDrawGpuCommand, QuickDrawGpuPixel, QuickDrawGpuRenderer,
+};
 use wgpu::util::DeviceExt;
 
 pub(super) struct QuickDrawRenderer {
@@ -17,6 +19,25 @@ impl QuickDrawRenderer {
     }
 }
 impl QuickDrawGpuRenderer for QuickDrawRenderer {
+    fn render_blit(&mut self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
+        if self.state.is_none() && self.initialization_error.is_none() {
+            match State::new() {
+                Ok(state) => self.state = Some(state),
+                Err(error) => self.initialization_error = Some(error),
+            }
+        }
+        let result = match self.state.as_ref() {
+            Some(state) => state.render_blit(command),
+            None => Err(self.initialization_error.clone().unwrap()),
+        };
+        if let Err(error) = &result {
+            if self.last_error.as_ref() != Some(error) {
+                eprintln!("[GPU] QuickDraw bitmap CPU fallback: {error}");
+                self.last_error = Some(error.clone());
+            }
+        }
+        result
+    }
     fn render(
         &mut self,
         command: &QuickDrawGpuCommand,
@@ -46,6 +67,7 @@ struct State {
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
     polygon_products: wgpu::ComputePipeline,
+    blit_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
 }
 impl State {
     fn new() -> Result<Self, String> {
@@ -80,7 +102,166 @@ impl State {
             queue,
             pipeline,
             polygon_products,
+            blit_pipeline: Default::default(),
         })
+    }
+    fn create_blit_pipeline(&self) -> Result<wgpu::ComputePipeline, String> {
+        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let shader = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("QuickDraw bitmap samples"),
+                source: wgpu::ShaderSource::Wgsl(include_str!("wgpu_blit.wgsl").into()),
+            });
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("QuickDraw bitmap blit"),
+                layout: None,
+                module: &shader,
+                entry_point: Some("blit"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        let mut error = None;
+        for scope in [validation, memory, internal] {
+            if let Some(e) = pollster::block_on(scope.pop()) {
+                error = Some(e.to_string());
+            }
+        }
+        match error {
+            Some(error) => Err(error),
+            None => {
+                eprintln!("[GPU] QuickDraw bitmap sampling enabled");
+                Ok(pipeline)
+            }
+        }
+    }
+    fn render_blit(&self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
+        if !command.valid() {
+            return Err("invalid QuickDraw bitmap blit".into());
+        }
+        let mut cached = self.blit_pipeline.borrow_mut();
+        if cached.is_none() {
+            *cached = Some(self.create_blit_pipeline());
+        }
+        let pipeline = cached.as_ref().unwrap().as_ref().map_err(Clone::clone)?;
+        let internal = self.device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let result = self.render_blit_inner(command, pipeline);
+        let mut error = None;
+        for scope in [validation, memory, internal] {
+            if let Some(e) = pollster::block_on(scope.pop()) {
+                error = Some(e.to_string());
+            }
+        }
+        match error {
+            Some(error) => Err(error),
+            None => result,
+        }
+    }
+    fn render_blit_inner(
+        &self,
+        command: &QuickDrawGpuBlit,
+        pipeline: &wgpu::ComputePipeline,
+    ) -> Result<Vec<u32>, String> {
+        let width = command.columns.len() as u32;
+        let height = command.rows.len() as u32;
+        let output_bytes = u64::from(width) * u64::from(height) * 4;
+        let limits = self.device.limits();
+        if output_bytes > u64::from(limits.max_storage_buffer_binding_size)
+            || command.pixels.len() as u64 * 4 > u64::from(limits.max_storage_buffer_binding_size)
+            || output_bytes > limits.max_buffer_size
+            || width.div_ceil(8) > limits.max_compute_workgroups_per_dimension
+            || height.div_ceil(8) > limits.max_compute_workgroups_per_dimension
+        {
+            return Err("QuickDraw bitmap exceeds GPU limits".into());
+        }
+        let buffer = |words: &[u32], usage| {
+            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("QuickDraw bitmap data"),
+                    contents: &bytes,
+                    usage,
+                })
+        };
+        let source = buffer(&command.pixels, wgpu::BufferUsages::STORAGE);
+        let palette: Vec<u32> = command.palette.as_ref().map_or_else(
+            || (0..256).collect(),
+            |p| p.iter().map(|v| u32::from(*v)).collect(),
+        );
+        let palette = buffer(&palette, wgpu::BufferUsages::STORAGE);
+        let columns: Vec<u32> = command.columns.iter().flatten().copied().collect();
+        let columns = buffer(&columns, wgpu::BufferUsages::STORAGE);
+        let rows: Vec<u32> = command.rows.iter().flatten().copied().collect();
+        let rows = buffer(&rows, wgpu::BufferUsages::STORAGE);
+        let geometry = buffer(
+            &[
+                command.width,
+                width,
+                height,
+                u32::from(command.palette.is_some()),
+            ],
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let output = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("QuickDraw bitmap result"),
+            size: output_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let entries = [&source, &palette, &columns, &rows, &output, &geometry]
+            .into_iter()
+            .enumerate()
+            .map(|(binding, buffer)| wgpu::BindGroupEntry {
+                binding: binding as u32,
+                resource: buffer.as_entire_binding(),
+            })
+            .collect::<Vec<_>>();
+        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("QuickDraw bitmap"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &entries,
+        });
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("QuickDraw bitmap readback"),
+            size: output_bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
+        }
+        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, output_bytes);
+        self.queue.submit([encoder.finish()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = tx.send(result);
+            });
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| e.to_string())?;
+        rx.recv()
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let bytes = readback
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|e| e.to_string())?;
+        Ok(bytes
+            .chunks_exact(4)
+            .map(|p| u32::from_le_bytes(p.try_into().unwrap()))
+            .collect())
     }
     fn render(
         &self,
@@ -369,6 +550,69 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gpu_bitmap_samples_reductions_palettes_and_raw_words_match_cpu() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        for mapped in [false, true] {
+            let pixels: Vec<u32> = (0..23 * 17u32)
+                .map(|i| {
+                    if mapped {
+                        (i * 73) & 255
+                    } else {
+                        i.wrapping_mul(2654435761)
+                    }
+                })
+                .collect();
+            let palette = mapped.then(|| std::array::from_fn(|i| 255 - i as u8));
+            let command = QuickDrawGpuBlit {
+                width: 23,
+                height: 17,
+                pixels,
+                columns: vec![[0, 1], [1, 5], [3, 4], [22, 23], [22, 23]],
+                rows: vec![[0, 1], [1, 7], [9, 17], [16, 17]],
+                palette,
+            };
+            let mut expected = Vec::new();
+            for row in &command.rows {
+                for col in &command.columns {
+                    let mut value = 0;
+                    for y in row[0]..row[1] {
+                        for x in col[0]..col[1] {
+                            value = value.max(command.pixels[(y * 23 + x) as usize]);
+                        }
+                    }
+                    expected.push(
+                        command
+                            .palette
+                            .as_ref()
+                            .map_or(value, |p| u32::from(p[value as usize])),
+                    );
+                }
+            }
+            assert_eq!(state.render_blit(&command).unwrap(), expected);
+            let mut invalid = command.clone();
+            invalid.columns[0] = [4, 3];
+            assert!(state.render_blit(&invalid).is_err());
+            invalid = command.clone();
+            invalid.pixels.pop();
+            assert!(state.render_blit(&invalid).is_err());
+            if mapped {
+                invalid = command.clone();
+                invalid.pixels[0] = 256;
+                assert!(state.render_blit(&invalid).is_err());
+            }
+        }
+    }
+
     #[test]
     fn gpu_repeated_mask_transfers_preserve_even_xor_paint_coverage() {
         use systemless::quickdraw::gpu::QuickDrawGpuMask;

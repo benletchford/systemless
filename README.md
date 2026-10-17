@@ -142,6 +142,12 @@ retaining outline detail. Repeated scaled source pixels preserve XOR parity and
 painted-cell write observers. Font rasterization, other guest shapes, and
 further PowerPC operations still run on the CPU. It is experimental and reports initialization errors instead of
 silently selecting another backend.
+Eligible same-depth rectangular `srcCopy` transfers at 8, 16, 24, and 32 bits
+use wgpu bitmap sampling, including 8-bit palette maps and retained text detail.
+The measured identity-palette 8-bit horizontal shrink and vertical scaling
+families use GPU maximum-index reductions with the existing clipping phase and
+guard-byte behavior. Packed, converting, masked, and other bitmap transfer
+families still use software.
 Without `--gpu`, existing platform presentation remains the default.
 `--headless --gpu` also enables guest rasterization in play scripts and timed runs
 without creating a window; desktop presentation is only used for windowed runs.

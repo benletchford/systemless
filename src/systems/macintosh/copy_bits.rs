@@ -261,6 +261,26 @@ impl Indexed8VerticalScale {
 }
 
 pub(crate) trait CopyBitsMemory {
+    fn gpu_blits_enabled(&self) -> bool {
+        false
+    }
+    fn render_gpu_blit(
+        &mut self,
+        _command: &crate::quickdraw::gpu::QuickDrawGpuBlit,
+    ) -> Option<Vec<u32>> {
+        None
+    }
+    fn write_gpu_copy_pixels(
+        &mut self,
+        address: u32,
+        row: &[u8],
+        _source: &SavedPixels,
+        _offset: usize,
+        _palette: Option<&[u8; 256]>,
+    ) -> Option<()> {
+        self.write_copy_row(address, row)
+    }
+
     fn read_copy_row(&mut self, address: u32, bytes: &mut [u8]) -> Option<()>;
     fn write_copy_row(&mut self, address: u32, bytes: &[u8]) -> Option<()>;
     fn capture_copy_detail(
@@ -303,6 +323,29 @@ pub(crate) trait CopyBitsMemory {
 }
 
 impl CopyBitsMemory for GuestAddressSpace {
+    fn gpu_blits_enabled(&self) -> bool {
+        self.quickdraw_gpu_renderer().is_some()
+    }
+    fn render_gpu_blit(
+        &mut self,
+        command: &crate::quickdraw::gpu::QuickDrawGpuBlit,
+    ) -> Option<Vec<u32>> {
+        self.quickdraw_gpu_renderer().render_blit(command).ok()
+    }
+    fn write_gpu_copy_pixels(
+        &mut self,
+        address: u32,
+        row: &[u8],
+        source: &SavedPixels,
+        offset: usize,
+        palette: Option<&[u8; 256]>,
+    ) -> Option<()> {
+        self.write_copy_row(address, row)?;
+        self.presentation()
+            .restore_copy_detail(source, offset, address, row.len(), palette);
+        Some(())
+    }
+
     fn copy_rows_with_detail(
         &mut self,
         rows: &[(u32, u32)],
@@ -352,6 +395,50 @@ impl CopyBitsMemory for GuestAddressSpace {
 }
 
 impl CopyBitsMemory for MacMemoryBus {
+    fn gpu_blits_enabled(&self) -> bool {
+        self.quickdraw_gpu_renderer.is_some()
+    }
+    fn render_gpu_blit(
+        &mut self,
+        command: &crate::quickdraw::gpu::QuickDrawGpuBlit,
+    ) -> Option<Vec<u32>> {
+        self.quickdraw_gpu_renderer.render_blit(command).ok()
+    }
+    fn write_gpu_copy_pixels(
+        &mut self,
+        address: u32,
+        row: &[u8],
+        source: &SavedPixels,
+        offset: usize,
+        palette: Option<&[u8; 256]>,
+    ) -> Option<()> {
+        self.write_copy_row(address, row)?;
+        if source.has_detail_in(offset..offset + row.len()) {
+            if let Some(translated) = self.range_translates_contiguously(address, row.len()) {
+                self.presentation.restore_copy_detail(
+                    source,
+                    offset,
+                    translated,
+                    row.len(),
+                    palette,
+                );
+            } else {
+                for i in 0..row.len() {
+                    if source.has_detail_at(offset + i) {
+                        self.presentation.restore_copy_detail(
+                            source,
+                            offset + i,
+                            self.translate_guest_address(address + i as u32),
+                            1,
+                            palette,
+                        );
+                    }
+                }
+            }
+        }
+        Some(())
+    }
+
     fn copy_rows_with_detail(
         &mut self,
         rows: &[(u32, u32)],
@@ -412,7 +499,13 @@ impl CopyBitsMemory for MacMemoryBus {
             while i < len && !pixels.has_detail_at(offset + i) {
                 i += 1;
             }
-            if !self.write_plain_copy_span(address + start as u32, pixels, offset + start, i - start, palette) {
+            if !self.write_plain_copy_span(
+                address + start as u32,
+                pixels,
+                offset + start,
+                i - start,
+                palette,
+            ) {
                 for j in start..i {
                     self.copy_saved_pixel(address + j as u32, pixels, offset + j, map);
                 }
@@ -497,6 +590,57 @@ impl BytePixmap {
         }
         Some((address, len, first_bit % 8))
     }
+}
+
+/// Decode storage words without color conversion; the GPU owns sampling,
+/// reductions and palette lookup. Reject malformed host results before stores.
+fn gpu_blit_bytes(
+    memory: &mut impl CopyBitsMemory,
+    source: &[u8],
+    depth: u32,
+    width: u32,
+    columns: Vec<[u32; 2]>,
+    rows: Vec<[u32; 2]>,
+    palette: Option<&[u8; 256]>,
+) -> Option<Vec<u8>> {
+    if !memory.gpu_blits_enabled() || !matches!(depth, 8 | 16 | 24 | 32) || width == 0 {
+        return None;
+    }
+    let lanes = (depth / 8) as usize;
+    let row_len = (width as usize).checked_mul(lanes)?;
+    if source.len() % row_len != 0 || source.len() / lanes > 4_194_304 {
+        return None;
+    }
+    let output_len = columns.len().checked_mul(rows.len())?;
+    let command = crate::quickdraw::gpu::QuickDrawGpuBlit {
+        width,
+        height: u32::try_from(source.len() / row_len).ok()?,
+        pixels: source
+            .chunks_exact(lanes)
+            .map(|p| p.iter().fold(0u32, |v, b| (v << 8) | u32::from(*b)))
+            .collect(),
+        columns,
+        rows,
+        palette: palette.copied(),
+    };
+    if !command.valid() {
+        return None;
+    }
+    let output = memory.render_gpu_blit(&command)?;
+    let limit = if depth == 32 {
+        u32::MAX
+    } else {
+        (1u32 << depth) - 1
+    };
+    if output.len() != output_len || output.iter().any(|p| *p > limit) {
+        return None;
+    }
+    Some(
+        output
+            .iter()
+            .flat_map(|p| p.to_be_bytes()[4 - lanes..].to_vec())
+            .collect(),
+    )
 }
 
 /// One synchronous transfer, consumed before any guest callback can run.
@@ -768,10 +912,63 @@ impl RowCopy<'_> {
             }
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
-        let output = parallel::reduce(plan, snapshots, row_count);
-        #[cfg(target_arch = "wasm32")]
-        let output = plan.reduce_rows(&snapshots, row_count);
+        let gpu_output = if memory.gpu_blits_enabled() {
+            (|| {
+                let prefix_end = plan
+                    .staged_len
+                    .checked_add(INDEXED_8_GUARD_BYTES + INDEXED_8_MAP_ENTRIES * 4)?;
+                let len = prefix_end.checked_mul(row_count)?;
+                if len > 4_194_304 {
+                    return None;
+                }
+                let mut staged = vec![0; len];
+                for y in 0..row_count {
+                    staged[y * prefix_end + source_range.start..y * prefix_end + source_range.end]
+                        .copy_from_slice(
+                            &snapshots[y * source_range.len()..(y + 1) * source_range.len()],
+                        );
+                    for entry in 0..256u32 {
+                        let at = y * prefix_end
+                            + plan.staged_len
+                            + INDEXED_8_GUARD_BYTES
+                            + entry as usize * 4;
+                        staged[at..at + 4].copy_from_slice(&entry.to_be_bytes());
+                    }
+                }
+                let columns = plan
+                    .groups
+                    .iter()
+                    .map(|g| [g.start as u32, g.end.min(prefix_end) as u32])
+                    .collect();
+                let rows = (0..row_count as u32).map(|y| [y, y + 1]).collect();
+                let output =
+                    gpu_blit_bytes(memory, &staged, 8, prefix_end as u32, columns, rows, None)?;
+                for row in output.chunks_exact(output_len) {
+                    if row
+                        .iter()
+                        .zip(&plan.groups)
+                        .any(|(value, g)| g.end > prefix_end && *value != 255)
+                    {
+                        return None;
+                    }
+                }
+                Some(output)
+            })()
+        } else {
+            None
+        };
+        let output = if let Some(output) = gpu_output {
+            Some(output)
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                parallel::reduce(plan, snapshots, row_count)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                plan.reduce_rows(&snapshots, row_count)
+            }
+        };
         let Some(output) = output else {
             return RowCopyOutcome::ReadOrGeometryFailure;
         };
@@ -977,34 +1174,64 @@ impl RowCopy<'_> {
         let Some(output_len) = plan.groups().len().checked_mul(output_width) else {
             return RowCopyOutcome::ReadOrGeometryFailure;
         };
-        let mut output = Vec::new();
-        if output.try_reserve_exact(output_len).is_err() {
-            return RowCopyOutcome::ReadOrGeometryFailure;
-        }
-        for group in plan.groups() {
-            for x in 0..output_width {
-                let mut maximum = None;
-                for source_index in group.clone() {
-                    let Some(row) = source_index.checked_sub(source_range.start) else {
-                        return RowCopyOutcome::ReadOrGeometryFailure;
-                    };
-                    let Some(index) = row
-                        .checked_mul(output_width)
-                        .and_then(|start| start.checked_add(x))
-                    else {
-                        return RowCopyOutcome::ReadOrGeometryFailure;
-                    };
-                    let Some(value) = snapshots.get(index).copied() else {
-                        return RowCopyOutcome::ReadOrGeometryFailure;
-                    };
-                    maximum = Some(maximum.map_or(value, |current: u8| current.max(value)));
-                }
-                let Some(maximum) = maximum else {
-                    return RowCopyOutcome::ReadOrGeometryFailure;
-                };
-                output.push(maximum);
+        let gpu_output = if memory.gpu_blits_enabled() {
+            let columns = (0..output_width as u32).map(|x| [x, x + 1]).collect();
+            let rows = plan
+                .groups()
+                .iter()
+                .map(|g| {
+                    [
+                        (g.start - source_range.start) as u32,
+                        (g.end - source_range.start) as u32,
+                    ]
+                })
+                .collect();
+            gpu_blit_bytes(
+                memory,
+                &snapshots,
+                8,
+                output_width as u32,
+                columns,
+                rows,
+                None,
+            )
+        } else {
+            None
+        };
+        let output = if let Some(output) = gpu_output {
+            output
+        } else {
+            let mut output = Vec::new();
+            if output.try_reserve_exact(output_len).is_err() {
+                return RowCopyOutcome::ReadOrGeometryFailure;
             }
-        }
+            for group in plan.groups() {
+                for x in 0..output_width {
+                    let mut maximum = None;
+                    for source_index in group.clone() {
+                        let Some(row) = source_index.checked_sub(source_range.start) else {
+                            return RowCopyOutcome::ReadOrGeometryFailure;
+                        };
+                        let Some(index) = row
+                            .checked_mul(output_width)
+                            .and_then(|start| start.checked_add(x))
+                        else {
+                            return RowCopyOutcome::ReadOrGeometryFailure;
+                        };
+                        let Some(value) = snapshots.get(index).copied() else {
+                            return RowCopyOutcome::ReadOrGeometryFailure;
+                        };
+                        maximum = Some(maximum.map_or(value, |current: u8| current.max(value)));
+                    }
+                    let Some(maximum) = maximum else {
+                        return RowCopyOutcome::ReadOrGeometryFailure;
+                    };
+                    output.push(maximum);
+                }
+            }
+
+            output
+        };
 
         for (rows_written, (address, row)) in destination_addresses
             .iter()
@@ -1128,6 +1355,45 @@ impl RowCopy<'_> {
                 return RowCopyOutcome::ReadOrGeometryFailure;
             }
         }
+        if memory.gpu_blits_enabled() {
+            let columns = (0..pixel_width as u32).map(|x| [x, x + 1]).collect();
+            let groups = (0..count as u32).map(|y| [y, y + 1]).collect();
+            if let Some(output) = gpu_blit_bytes(
+                memory,
+                &pixels,
+                depth,
+                pixel_width as u32,
+                columns,
+                groups,
+                self.palette,
+            ) {
+                let mut source: SavedPixels = pixels.into();
+                if matches!(depth, 8 | 16 | 32) {
+                    for (row, (address, _)) in addresses.iter().enumerate() {
+                        memory.capture_copy_detail(*address, &mut source, row * row_len, row_len);
+                    }
+                }
+                for (rows_written, ((_, destination), row)) in addresses
+                    .iter()
+                    .zip(output.chunks_exact(row_len))
+                    .enumerate()
+                {
+                    if memory
+                        .write_gpu_copy_pixels(
+                            *destination,
+                            row,
+                            &source,
+                            rows_written * row_len,
+                            self.palette,
+                        )
+                        .is_none()
+                    {
+                        return RowCopyOutcome::WriteFailure { rows_written };
+                    }
+                }
+                return RowCopyOutcome::Completed;
+            }
+        }
         if matches!(depth, 8 | 16 | 32)
             && memory.copy_rows_with_detail(&addresses, &pixels, row_len, self.palette)
         {
@@ -1140,8 +1406,16 @@ impl RowCopy<'_> {
             }
         }
         for (rows_written, (_, destination)) in addresses.iter().enumerate() {
-            if memory.write_copy_pixels(*destination, &pixels, rows_written * row_len,
-                row_len, self.palette).is_none() {
+            if memory
+                .write_copy_pixels(
+                    *destination,
+                    &pixels,
+                    rows_written * row_len,
+                    row_len,
+                    self.palette,
+                )
+                .is_none()
+            {
                 return RowCopyOutcome::WriteFailure { rows_written };
             }
         }
@@ -1237,6 +1511,176 @@ impl RowCopy<'_> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn gpu_byte_copies_match_software_aliases_palettes_padding_and_failures() {
+        for depth in [8, 16, 24, 32] {
+            for alias in [false, true] {
+                for readonly in [false, true] {
+                    let lanes = depth / 8;
+                    let source_stride = 20 * lanes + 3;
+                    let destination_stride = if alias { source_stride } else { 20 * lanes + 5 };
+                    let palette = std::array::from_fn(|i| 255 - i as u8);
+                    for mapped in [false, true] {
+                        if mapped && depth != 8 {
+                            continue;
+                        }
+                        let mut expected = None;
+                        for backend in [None, Some(0), Some(1), Some(2)] {
+                            let mut memory = GuestAddressSpace::new();
+                            let source: Vec<u8> = (0..source_stride * 10)
+                                .map(|i| (i * 73 + 165) as u8)
+                                .collect();
+                            memory.add_region(0x1000, source);
+                            let destination = if alias { 0x1000 } else { 0x3000 };
+                            if !alias {
+                                memory.add_region(
+                                    destination,
+                                    vec![0xcc; (destination_stride * 10) as usize],
+                                );
+                            }
+                            if readonly {
+                                memory.add_readonly_region(
+                                    destination + 4 * destination_stride,
+                                    vec![0x5a; destination_stride as usize],
+                                );
+                            }
+                            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                            if let Some(failure) = backend {
+                                memory.shared_view().set_quickdraw_gpu_renderer(
+                                    crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                        crate::quickdraw::gpu::ReferenceRenderer {
+                                            calls: calls.clone(),
+                                            failure,
+                                        },
+                                    )),
+                                );
+                            }
+                            let outcome = RowCopy {
+                                mode: 0,
+                                source: BytePixmap {
+                                    base: 0x1000,
+                                    row_bytes: source_stride,
+                                    depth,
+                                    bounds: [0, 0, 8, 20],
+                                },
+                                destination: BytePixmap {
+                                    base: destination,
+                                    row_bytes: destination_stride,
+                                    depth,
+                                    bounds: [0, 0, 8, 20],
+                                },
+                                source_rect: [1, 2, 6, 14],
+                                destination_rect: [2, 3, 7, 15],
+                                clip: [2, 4, 6, 14],
+                                palette: mapped.then_some(&palette),
+                            }
+                            .execute(&mut memory);
+                            if backend.is_some() {
+                                assert_eq!(calls.get(), 1);
+                            }
+                            let mut bytes = vec![0; (destination_stride * 10) as usize];
+                            memory.read_bytes_into(destination, &mut bytes).unwrap();
+                            let result = (outcome, bytes);
+                            if let Some(expected) = &expected {
+                                assert_eq!(&result,expected,"depth={depth},alias={alias},readonly={readonly},mapped={mapped},backend={backend:?}");
+                            } else {
+                                expected = Some(result);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gpu_indexed_scaling_matches_measured_guards_phase_and_reductions() {
+        for (sw, sh, dw, dh) in [
+            (17, 5, 7, 5),
+            (5, 4, 3, 4),
+            (190, 2, 1, 2),
+            (256, 2, 1, 2),
+            (4097, 2, 1, 2),
+            (30000, 1, 1, 1),
+            (7, 9, 7, 3),
+            (7, 7, 7, 3),
+            (7, 3, 7, 8),
+        ] {
+            for clipped in [false, true] {
+                let mut expected = None;
+                for backend in [None, Some(0), Some(1), Some(2)] {
+                    let mut memory = GuestAddressSpace::new();
+                    let stride = sw + 4;
+                    let destination_stride = dw + 5;
+                    memory.add_region(
+                        0x1000,
+                        (0..stride * (sh + 2))
+                            .map(|i| {
+                                if sw >= 4097 {
+                                    0
+                                } else {
+                                    ((i * 73 + 19) % 256) as u8
+                                }
+                            })
+                            .collect(),
+                    );
+                    memory.add_region(0x5000, vec![0xa5; (destination_stride * (dh + 2)) as usize]);
+                    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                    if let Some(failure) = backend {
+                        memory.shared_view().set_quickdraw_gpu_renderer(
+                            crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                crate::quickdraw::gpu::ReferenceRenderer {
+                                    calls: calls.clone(),
+                                    failure,
+                                },
+                            )),
+                        );
+                    }
+                    let request = RowCopy {
+                        mode: 0,
+                        source: BytePixmap {
+                            base: 0x1000,
+                            row_bytes: stride as u32,
+                            depth: 8,
+                            bounds: [0, 0, sh, sw],
+                        },
+                        destination: BytePixmap {
+                            base: 0x5000,
+                            row_bytes: destination_stride as u32,
+                            depth: 8,
+                            bounds: [0, 0, dh, dw],
+                        },
+                        source_rect: [0, 0, sh, sw],
+                        destination_rect: [0, 0, dh, dw],
+                        clip: if clipped {
+                            [1, if dw > 2 { 1 } else { 0 }, dh, dw - 1]
+                        } else {
+                            [0, 0, dh, dw]
+                        },
+                        palette: None,
+                    };
+                    let result = request.execute_with_indexed8_scaling(
+                        &mut memory,
+                        Indexed8ScalingSelection::from_adapter_facts(true, true, true, true, 0),
+                    );
+                    if backend.is_some() && result == RowCopyOutcome::Completed {
+                        assert_eq!(calls.get(), 1);
+                    }
+                    let mut bytes = vec![0; (destination_stride * (dh + 2)) as usize];
+                    memory.read_bytes_into(0x5000, &mut bytes).unwrap();
+                    let result = (result, bytes);
+                    if let Some(expected) = &expected {
+                        assert_eq!(
+                            &result, expected,
+                            "{sw}x{sh}->{dw}x{dh},clipped={clipped},backend={backend:?}"
+                        );
+                    } else {
+                        expected = Some(result);
+                    }
+                }
+            }
+        }
+    }
     const SOURCE: u32 = 0x0100_0000;
     const DESTINATION: u32 = 0x0200_0000;
 
