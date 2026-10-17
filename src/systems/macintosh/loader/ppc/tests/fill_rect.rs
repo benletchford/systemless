@@ -317,6 +317,93 @@ fn gpu_native_glyph_masks_match_software_text_modes_and_explicit_clips() {
 }
 
 #[test]
+fn gpu_native_lines_match_software_octants_pens_clips_and_fallback() {
+    let pixels = initial_pixels();
+    for depth in [1, 2, 4, 8, 16] {
+        for (vis, clip) in [CLIPS[0], CLIPS[3]] {
+            let fixture = fixture(&pixels, vis, clip);
+            for to in [
+                (-1, 3),
+                (-8, 3),
+                (25, 3),
+                (-1, -8),
+                (-1, 14),
+                (-12, -3),
+                (-5, -7),
+                (10, -3),
+                (3, -7),
+                (-12, 9),
+                (-5, 13),
+                (10, 9),
+                (3, 13),
+            ] {
+                for (pen, hidden) in [
+                    ((0, 0), false),
+                    ((1, 1), false),
+                    ((3, 2), false),
+                    ((2, 4), false),
+                    ((3, 2), true),
+                ] {
+                    let mut expected = None;
+                    for backend in [None, Some(0), Some(1), Some(2)] {
+                        let mut loaded =
+                            load_pef_application(&synthetic_pef_with_import(b"LineTo")).unwrap();
+                        install_port(&mut loaded, &fixture, depth);
+                        loaded
+                            .memory
+                            .write_u16_be(PORT + PPC_CGRAF_PORT_PN_SIZE_OFFSET, pen.1)
+                            .unwrap();
+                        loaded
+                            .memory
+                            .write_u16_be(PORT + PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2, pen.0)
+                            .unwrap();
+                        loaded
+                            .memory
+                            .write_u16_be(
+                                PORT + PPC_CGRAF_PORT_PN_VIS_OFFSET,
+                                if hidden { 65535 } else { 0 },
+                            )
+                            .unwrap();
+                        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                        if let Some(failure) = backend {
+                            loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                    crate::quickdraw::gpu::ReferenceRenderer {
+                                        calls: calls.clone(),
+                                        failure,
+                                    },
+                                )),
+                            );
+                        }
+                        let wrote = ppc_line_to(
+                            &mut loaded.memory,
+                            &loaded.gworlds,
+                            PORT,
+                            (-1, 3),
+                            to,
+                            PPC_RGB_WHITE,
+                            Some(fixture.fg_index),
+                        );
+                        if backend.is_some() && wrote {
+                            assert_eq!(calls.get(), 1);
+                        }
+                        if hidden || pen.0 == 0 || pen.1 == 0 {
+                            assert_eq!(calls.get(), 0);
+                        }
+                        let result = (wrote, read_pixels(&mut loaded, pixels.len()));
+                        if let Some(expected) = &expected {
+                            assert_eq!(&result,expected,"depth={depth},to={to:?},pen={pen:?},hidden={hidden},backend={backend:?}");
+                        } else {
+                            expected = Some(result);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn gpu_native_small_region_frames_stay_accelerated_on_large_surfaces() {
     let pixels = initial_pixels();
     let fixture = fixture(&pixels, CLIPS[0].0, CLIPS[0].1);

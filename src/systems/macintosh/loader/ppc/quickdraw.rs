@@ -160,8 +160,19 @@ pub(crate) fn ppc_line_to(
             .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2))
             .unwrap_or(1),
     );
+    if let Some(wrote) = ppc_gpu_line(
+        memory,
+        surface,
+        (x0, y0),
+        (x1, y1),
+        (pen_width, pen_height),
+        color_pixel,
+        [vis_storage.as_deref(), clip_storage.as_deref()],
+    ) {
+        return wrote;
+    }
     let mut wrote = false;
-    let mut paint_pen = |x: i32, y: i32| {
+    let paint_pen = |x: i32, y: i32| {
         for py in y..y.saturating_add(pen_height) {
             for px in x..x.saturating_add(pen_width) {
                 if ppc_local_point_in_port_regions(
@@ -170,17 +181,21 @@ pub(crate) fn ppc_line_to(
                     vis_storage.as_deref(),
                     clip_storage.as_deref(),
                 ) {
-                    wrote |= ppc_quickdraw_write_raw_pixel(
-                        memory,
-                        front_buffer,
-                        (px, py),
-                        color_pixel,
-                    );
+                    wrote |=
+                        ppc_quickdraw_write_raw_pixel(memory, front_buffer, (px, py), color_pixel);
                 }
             }
         }
     };
 
+    ppc_visit_line_centers((x0, y0), (x1, y1), paint_pen);
+
+    wrote
+}
+
+fn ppc_visit_line_centers(from: (i32, i32), to: (i32, i32), mut paint_pen: impl FnMut(i32, i32)) {
+    let (x0, y0) = from;
+    let (x1, y1) = to;
     if x0 == x1 {
         let (top, bottom) = if y0 <= y1 { (y0, y1) } else { (y1, y0) };
         for y in top..=bottom {
@@ -201,8 +216,7 @@ pub(crate) fn ppc_line_to(
         let dv = ey - sy;
         let x_dir = if ex > sx { 1 } else { -1 };
         if dv >= dh {
-            let slope = (((i64::from(ex - sx)) << 16) + i64::from(dv) / 2)
-                / i64::from(dv);
+            let slope = (((i64::from(ex - sx)) << 16) + i64::from(dv) / 2) / i64::from(dv);
             let mut x_fixed = ((i64::from(sx)) << 16) | 0x8000;
             x_fixed += slope >> 1;
             for y in sy..=ey {
@@ -210,8 +224,7 @@ pub(crate) fn ppc_line_to(
                 x_fixed += slope;
             }
         } else {
-            let slope = (((i64::from(dv)) << 16) + i64::from(dh) / 2)
-                / i64::from(dh);
+            let slope = (((i64::from(dv)) << 16) + i64::from(dh) / 2) / i64::from(dh);
             let mut y_fixed = ((i64::from(sy)) << 16) | 0x8000;
             y_fixed += slope >> 1;
             let mut x = sx;
@@ -222,8 +235,91 @@ pub(crate) fn ppc_line_to(
             }
         }
     }
+}
 
-    wrote
+fn ppc_gpu_line(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    from: (i32, i32),
+    to: (i32, i32),
+    pen: (i32, i32),
+    color: u16,
+    clips: [Option<&[u8]>; 2],
+) -> Option<bool> {
+    let fb = surface.front_buffer;
+    if memory.quickdraw_gpu_renderer().is_none() {
+        return None;
+    }
+    if pen.0 == 0 || pen.1 == 0 || fb.width == 0 || fb.height == 0 {
+        return Some(false);
+    }
+    if fb.width > 32767
+        || fb.height > 32767
+        || i32::from(surface.left) + fb.width as i32 > 32767
+        || i32::from(surface.top) + fb.height as i32 > 32767
+    {
+        return None;
+    }
+    let count = (i64::from(to.0) - i64::from(from.0))
+        .unsigned_abs()
+        .max((i64::from(to.1) - i64::from(from.1)).unsigned_abs())
+        + 1;
+    if count.saturating_mul((pen.1 as u64).min(u64::from(fb.height))) > 1_000_000 {
+        return None;
+    }
+    let mut stamps = vec![Vec::<(i16, i16)>::new(); fb.height as usize];
+    ppc_visit_line_centers(from, to, |x, y| {
+        let left = x.max(0);
+        let right = x.saturating_add(pen.0).min(fb.width as i32);
+        if left >= right {
+            return;
+        }
+        for y in y.max(0)..y.saturating_add(pen.1).min(fb.height as i32) {
+            stamps[y as usize].push((
+                (left + i32::from(surface.left)) as i16,
+                (right + i32::from(surface.left)) as i16,
+            ));
+        }
+    });
+    let mut rows: Vec<Vec<i16>> = stamps
+        .into_iter()
+        .map(|mut row| {
+            row.sort_unstable();
+            let mut merged = Vec::<(i16, i16)>::new();
+            for (left, right) in row {
+                if let Some(last) = merged.last_mut() {
+                    if left <= last.1 {
+                        last.1 = last.1.max(right);
+                        continue;
+                    }
+                }
+                merged.push((left, right));
+            }
+            merged
+                .into_iter()
+                .flat_map(|(left, right)| [left, right])
+                .collect()
+        })
+        .collect();
+    let bottom = (i32::from(surface.top) + fb.height as i32) as i16;
+    for clip in clips.into_iter().flatten() {
+        let clips = ppc_region_rows_for_band(clip, surface.top, bottom)?;
+        for (row, clip) in rows.iter_mut().zip(clips) {
+            *row = ppc_region_intersect_rows(row, &clip);
+        }
+    }
+    let Some(first) = rows.iter().position(|row| !row.is_empty()) else {
+        return Some(false);
+    };
+    let last = rows.iter().rposition(|row| !row.is_empty())?;
+    ppc_gpu_region_rows(
+        memory,
+        surface,
+        (i32::from(surface.top) + first as i32) as i16,
+        &rows[first..=last],
+        [255; 8],
+        [[0, u32::from(color)]; 2],
+    )
 }
 
 pub(crate) fn ppc_local_point_in_port_regions(
