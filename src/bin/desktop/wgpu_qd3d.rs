@@ -39,6 +39,9 @@ impl State {
             .map_err(|e| e.to_string())?;
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
             .map_err(|e| e.to_string())?;
+        let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+        let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("QD3D rasterizer"),
             source: wgpu::ShaderSource::Wgsl(include_str!("wgpu_qd3d.wgsl").into()),
@@ -51,6 +54,15 @@ impl State {
             compilation_options: Default::default(),
             cache: None,
         });
+        let mut initialization_error = None;
+        for scope in [validation, memory, internal] {
+            if let Some(error) = pollster::block_on(scope.pop()) {
+                initialization_error = Some(error.to_string());
+            }
+        }
+        if let Some(error) = initialization_error {
+            return Err(error);
+        }
         eprintln!("[GPU] QD3D rasterization: {}", adapter.get_info().name);
         Ok(Self {
             device,
