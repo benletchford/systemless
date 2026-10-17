@@ -1,0 +1,24 @@
+[package]
+name = "systemless-future"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93"
+license = "GPL-3.0-or-later"
+publish = false
+
+# An independent build: no dependency on the legacy package or workspace.
+[workspace]
+
+[dependencies]
+ab_glyph = "=0.2.32"
+glyphon = "=0.12.0"
+astro-float-num = { version = "=0.3.7", default-features = false, features = ["std"] }
+m68k = "=0.14.4"
+ppc = "=0.7.2"
+wgpu = "=30.0.1"
+winit = "=0.30.13"
+pollster = "=0.4.0"
+thiserror = "2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cpal = "=0.18.2"

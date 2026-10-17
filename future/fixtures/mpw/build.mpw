@@ -1,0 +1,134 @@
+Set Echo 1
+Set Exit 1
+SC -sym off probe.c -o probe.68k.o
+Link -d -t 'APPL' -c 'FUTR' probe.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o probe.68k
+MrC -sym off -opt off probe.c -o probe.ppc.o
+PPCLink probe.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -export main -init FutureInit -o probe.ppc
+Rez -append -o probe.68k probe.r
+Rez -append -o probe.ppc probe.r
+MrC -sym off -opt off jump.c -o jump.ppc.o
+PPCLink jump.ppc.o "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o jump.ppc
+SC -sym off events.c -o events.68k.o
+Link -d -t 'APPL' -c 'FUTR' events.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o events.68k
+MrC -sym off -opt off events.c -o events.ppc.o
+PPCLink events.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o events.ppc
+SC -sym off wait.c -o wait.68k.o
+Link -d -t 'APPL' -c 'FUTR' wait.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o wait.68k
+MrC -sym off -opt off wait.c -o wait.ppc.o
+PPCLink wait.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o wait.ppc
+SC -sym off draw.c -o draw.68k.o
+Link -d -t 'APPL' -c 'FUTR' draw.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o draw.68k
+MrC -sym off -opt off draw.c -o draw.ppc.o
+PPCLink draw.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o draw.ppc
+Rez -append -o draw.68k probe.r
+Rez -append -o draw.ppc probe.r
+MrC -sym off -opt off plugin.c -o plugin.ppc.o
+PPCLink plugin.ppc.o "{SharedLibraries}"InterfaceLib -xm sharedlibrary -main PluginMain -init PluginInit -term PluginTerm -export PluginMain -sym off -o plugin.ppc
+MrC -sym off -opt off dynamic.c -o dynamic.ppc.o
+PPCLink dynamic.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o dynamic.ppc
+Rez -append -o dynamic.ppc dynamic.r
+SC -sym off windows.c -o windows.68k.o
+Link -d -t 'APPL' -c 'FUTR' windows.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o windows.68k
+MrC -sym off -opt off windows.c -o windows.ppc.o
+PPCLink windows.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o windows.ppc
+Rez -append -o windows.68k windows.r
+Rez -append -o windows.ppc windows.r
+SC -sym off textedit.c -o textedit.68k.o
+Link -d -t 'APPL' -c 'FUTR' textedit.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o textedit.68k
+MrC -sym off -opt off textedit.c -o textedit.ppc.o
+PPCLink textedit.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o textedit.ppc
+SC -sym off menus.c -o menus.68k.o
+Link -d -t 'APPL' -c 'FUTR' menus.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o menus.68k
+MrC -sym off -opt off menus.c -o menus.ppc.o
+PPCLink menus.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o menus.ppc
+Rez -append -o menus.68k menus.r
+Rez -append -o menus.ppc menus.r
+SC -sym off dialogs.c -o dialogs.68k.o
+Link -d -t 'APPL' -c 'FUTR' dialogs.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o dialogs.68k
+MrC -sym off -opt off dialogs.c -o dialogs.ppc.o
+PPCLink dialogs.ppc.o "{PPCLibraries}"CarbonAccessors.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o dialogs.ppc
+SC -sym off environment.c -o environment.68k.o
+Link -d -t 'APPL' -c 'FUTR' environment.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o environment.68k
+MrC -sym off -opt off environment.c -o environment.ppc.o
+PPCLink environment.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o environment.ppc
+SC -sym off tracking.c -o tracking.68k.o
+Link -d -t 'APPL' -c 'FUTR' tracking.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o tracking.68k
+MrC -sym off -opt off tracking.c -o tracking.ppc.o
+PPCLink tracking.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o tracking.ppc
+SC -sym off menu_tracking.c -o menu_tracking.68k.o
+Link -d -t 'APPL' -c 'FUTR' menu_tracking.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o menu_tracking.68k
+MrC -sym off -opt off menu_tracking.c -o menu_tracking.ppc.o
+PPCLink menu_tracking.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o menu_tracking.ppc
+Rez -append -o menu_tracking.68k menus.r
+Rez -append -o menu_tracking.ppc menus.r
+SC -sym off working.c -o working.68k.o
+Link -d -t 'APPL' -c 'FUTR' working.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o working.68k
+MrC -sym off -opt off working.c -o working.ppc.o
+PPCLink working.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o working.ppc
+SC -sym off standard_file.c -o standard_file.68k.o
+Link -d -t 'APPL' -c 'FUTR' standard_file.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o standard_file.68k
+MrC -sym off -opt off standard_file.c -o standard_file.ppc.o
+PPCLink standard_file.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o standard_file.ppc
+
+SC -sym off open_file.c -o open_file.68k.o
+Link -d -t 'APPL' -c 'FUTR' open_file.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o open_file.68k
+MrC -sym off -opt off open_file.c -o open_file.ppc.o
+PPCLink open_file.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o open_file.ppc
+
+SC -sym off persistence.c -o persistence.68k.o
+Link -d -t 'APPL' -c 'FUTR' persistence.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o persistence.68k
+MrC -sym off -opt off persistence.c -o persistence.ppc.o
+PPCLink persistence.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o persistence.ppc
+
+SC -sym off sound_channels.c -o sound_channels.68k.o
+Link -d -t 'APPL' -c 'FUTR' sound_channels.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o sound_channels.68k
+MrC -sym off -opt off sound_channels.c -o sound_channels.ppc.o
+PPCLink sound_channels.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o sound_channels.ppc
+SC -sym off devices.c -o devices.68k.o
+Link -d -t 'APPL' -c 'FUTR' devices.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o devices.68k
+MrC -sym off -opt off devices.c -o devices.ppc.o
+PPCLink devices.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o devices.ppc
+SC -sym off color_ports.c -o color_ports.68k.o
+Link -d -t 'APPL' -c 'FUTR' color_ports.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o color_ports.68k
+MrC -sym off -opt off color_ports.c -o color_ports.ppc.o
+PPCLink color_ports.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o color_ports.ppc
+SC -sym off color_windows.c -o color_windows.68k.o
+Link -d -t 'APPL' -c 'FUTR' color_windows.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o color_windows.68k
+MrC -sym off -opt off color_windows.c -o color_windows.ppc.o
+PPCLink color_windows.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o color_windows.ppc
+Rez -append -o color_windows.68k color_windows.r
+Rez -append -o color_windows.ppc color_windows.r
+SC -sym off sampled_sound.c -o sampled_sound.68k.o
+Link -d -t 'APPL' -c 'FUTR' sampled_sound.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o sampled_sound.68k
+MrC -sym off -opt off sampled_sound.c -o sampled_sound.ppc.o
+PPCLink sampled_sound.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o sampled_sound.ppc
+SC -sym off handle_state.c -o handle_state.68k.o
+Link -d -t 'APPL' -c 'FUTR' handle_state.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o handle_state.68k
+Rez -append -o handle_state.68k handle_state.r
+MrC -sym off -opt off handle_state.c -o handle_state.ppc.o
+PPCLink handle_state.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o handle_state.ppc
+Rez -append -o handle_state.ppc handle_state.r
+SC -sym off queued_sound.c -o queued_sound.68k.o
+Link -d -t 'APPL' -c 'FUTR' queued_sound.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o queued_sound.68k
+MrC -sym off -opt off queued_sound.c -o queued_sound.ppc.o
+PPCLink queued_sound.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o queued_sound.ppc
+SC -sym off resource_sound.c -o resource_sound.68k.o
+Link -d -t 'APPL' -c 'FUTR' resource_sound.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o resource_sound.68k
+MrC -sym off -opt off resource_sound.c -o resource_sound.ppc.o
+PPCLink resource_sound.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o resource_sound.ppc
+Rez -append -o resource_sound.68k resource_sound.r
+SC -sym off sound_info.c -o sound_info.68k.o
+Link -d -t 'APPL' -c 'FUTR' sound_info.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o sound_info.68k
+MrC -sym off -opt off sound_info.c -o sound_info.ppc.o
+PPCLink sound_info.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o sound_info.ppc
+Rez -append -o sound_info.68k sound_info.r
+
+SC -sym off timers.c -o timers.68k.o
+Link -d -t 'APPL' -c 'FUTR' timers.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o timers.68k
+MrC -sym off -opt off timers.c -o timers.ppc.o
+PPCLink timers.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o timers.ppc
+
+SC -sym off retrace.c -o retrace.68k.o
+Link -d -t 'APPL' -c 'FUTR' retrace.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o retrace.68k
+MrC -sym off -opt off retrace.c -o retrace.ppc.o
+PPCLink retrace.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o retrace.ppc
