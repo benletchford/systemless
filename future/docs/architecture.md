@@ -7,6 +7,11 @@ release, or website deployment is authorized. The independent `future/`
 workspace is the replacement build; the legacy sources remain reference-only
 until replacement compatibility justifies retiring them from this branch.
 
+Current native-32-bit profile: the executable AB03 identity entry is installed,
+backed by the implemented direct/managed-world path. The final section records
+its additional primary-source rationale and scope; earlier absence notes describe
+prior milestones. Complete QuickDraw and full-rebuild acceptance remain open.
+
 ## Evidence and boundaries
 
 The baseline README, loader layout, and Toolbox Showcase sources describe CODE
@@ -4235,3 +4240,36 @@ rectangle is composed. Masks remain on the GPU; destination synchronization
 continues through the shared Surface path. Specialized menu text still uses
 GPU coverage runs. Integration acceptance and remaining full-text requirements
 are tracked in text-rendering.md; this is not native/browser acceptance.
+
+
+### Native-32-bit internal QuickDraw address entry
+
+The legacy internal AB03 entry is now installed with a real shared native-mode
+contract: validate the existing 32-bit address model and preserve registers,
+condition codes, stack arguments and guest memory. Callable veneers retain the
+ordinary JSR return behavior. Both CPU adapters observe the same trap table.
+No PPC private import or 24-bit translation ABI is invented.
+
+Additional primary evidence revises the earlier conservative absence decision:
+[Apple's Jackson Pollock product plan, scanned PDF page 38](https://bitsavers.trailing-edge.com/pdf/apple/mac/blue/Apple_Blue_Book_vol1_1989.pdf#page=38)
+identifies AB03 internally and specifies return-only behavior for native-32-bit
+machines. We implement that documented case as a compatibility policy for this
+fixed native-32-bit runtime; this is not an alias inferred from the later public
+A091 interface or a claim about every private ROM revision. The downloaded PDF
+SHA256 is a02c03a6cedc774466db1fe962ece328492d9bd9692932c140e3acf4e966c694.
+
+The declaration is backed by implemented 8/16/32-bit surfaces and managed-world
+creation, coherent resize/locking, device ownership, GPU composition and tests.
+The previous isolated offscreen-policy assertion is superseded by executable
+entry tests and the existing real Marathon-sized resize test linked to this
+profile. This does not establish complete QuickDraw conformance: direct-target
+dithering, hardware/temporary allocations, remaining queries, native/display
+profiles and full text/native/browser acceptance remain open. Corrupting the
+mode flag to an unsupported 24-bit state still errors without translation.
+
+Unchanged original Marathon now selects its System 7 managed-world branch and
+renders a textured 3D demo beyond the prior framebuffer/light-array fault. The
+shared manager updates both port/device PixMaps with the resized image; no pixel
+allocation padding, aliasing, guest patch or shade-index clamp is introduced.
+Escape Velocity's corrected idle frame remains byte-identical. Exact acceptance
+and remaining interaction limits are in progress.md and original-applications.md.

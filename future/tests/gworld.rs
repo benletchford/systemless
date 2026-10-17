@@ -456,13 +456,6 @@ fn selection_output_fault_and_locked_disposal_are_atomic() {
     }
 }
 #[test]
-fn offscreen_creation_does_not_advertise_incomplete_32_bit_quickdraw() {
-    assert_eq!(
-        systemless_future::traps::address(0xab03, true),
-        systemless_future::traps::UNIMPLEMENTED
-    );
-}
-#[test]
 #[ignore = "requires a real wgpu adapter"]
 fn locked_offscreen_pixels_mix_direct_guest_writes_and_shared_gpu_drawing() {
     let mut a = app();
@@ -655,6 +648,11 @@ fn update(
 fn marathon_size_shrink_updates_both_pixmaps_image_region_and_port_on_both_cpus() {
     for arch in [Architecture::M68k, Architecture::PowerPc] {
         let mut a = app();
+        // This real managed resize backs the native-32-bit profile declaration;
+        // availability alone is not the acceptance criterion.
+        let entry = systemless_future::traps::lookup(&a.runtime.memory, 0xab03, true).unwrap();
+        assert_ne!(entry, systemless_future::traps::UNIMPLEMENTED);
+        assert_eq!(systemless_future::traps::opcode(entry), Some(0xab03));
         let old = get(&mut a, arch);
         rect(&mut a, [0, 0, 272, 448]);
         assert_eq!(new(&mut a, arch, 8, 0, 0, 0).unwrap(), 0);

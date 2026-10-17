@@ -3586,6 +3586,7 @@ impl Abi {
                 },
                 Reply::M68kA0,
             )),
+            0xab03 => Ok((Call::QuickDraw32Addressing, Reply::None)),
             0xa89f => Err(Error::Cpu(
                 "unimplemented system routine (dsCoreErr 12)".into(),
             )),

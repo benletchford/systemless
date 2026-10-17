@@ -5179,3 +5179,44 @@ The same 1222-byte preference addition and all companions verify independently;
 this is still an unresolved graphics-profile/memory boundary, not a successful
 game exit. No fresh PPC-original acceptance is claimed. The full rebuild and text
 requirements remain active and unfinished.
+
+
+## Marathon native-32-bit world path and 3D demo (2026-10-17)
+
+The shared native-32-bit AB03 identity entry is now installed using additional
+primary Apple evidence, after real direct/managed-world support was implemented.
+The unchanged original selects NewGWorld/UpdateGWorld and related services rather
+than its stale-stride fallback. The prior 22.89M overrun/shade fault is absent in
+the bounded 32M request; no application/resource/media patch or corruption mask.
+The 75 GWorld calls are real shared services, with both CPU adapters and the
+Marathon-sized resize exercised by the 64-check regression gate.
+
+| Original replay | Retired instructions / final PC | Canonical PPM SHA256 |
+|---|---|---|
+| Marathon, no injected input, 32M polls | 31,999,258 / 0102693C | 11b15319889bfceae476f202e74a21099f4cd6080247747e4a553717713acdaf |
+| Marathon, Escape at 27M..27.005M, 32M polls | 31,998,514 / 01004CDA | a6087ec5178c7619d8136de2aa159dde7161d56f9e4c3b899b7165935d0353d8 |
+| EV, same Enter Ship input, 24M | 24,000,000 / 007E6C3A | ab60ddcff2b03afff894b9f2744709b65e141679437ae2e6d5308a231377f799 |
+
+The inspected Marathon control frame shows textured perspective walls, weapon,
+HUD and scanner. Original film ordinal 2/resource 129 was loaded, so this is demo
+rendering, not an interactive-game acceptance result or native image/color oracle.
+Escape 53 down at instruction 27M/up 27.005M changes the path to film ordinal 1 and
+a black loading-transition capture. It does not prove a return to menu, disposal
+cleanup, player movement or a new game. Budget figures count tracer polls; actual
+retired instructions are listed separately. Neither instruction tracing nor this
+demo establishes native interactive performance.
+
+Both Marathon saved volumes remain
+e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42; EV remains
+e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80. Independent
+CRC/catalog/directory/companion/fork/metadata and existing pilot/alias/script checks
+pass. Marathon retains the same 1222-byte preference addition. Preference contents
+remain native-unverified. All replay exits are 1 (budget boundaries), not success.
+
+Captures/logs: /tmp/systemless-marathon-qd32{,-escape}.{txt,ppm,png,slv} and
+/tmp/systemless-ev-qd32.{txt,ppm,png,slv}; saved-volume check logs are
+/tmp/systemless-qd32-{marathon,marathon-escape,ev}-volume.txt. Ignored per-game
+evidence retains 2026-10-17-qd32 captures. Primary-source reasoning and exact gate
+commands are in architecture.md/progress.md. No fresh PPC-original or full-game
+acceptance follows. Text/styles, complete graphics profiles, Mixed Mode and full
+native/browser rebuild acceptance remain open; keep the goal active.

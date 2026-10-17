@@ -12,7 +12,12 @@ use systemless_future::{
 fn setup() -> LoadedApplication {
     let fixture = support::pef_program(
         &[0x4e800020],
-        &[b"GetMMUMode", b"SwapMMUMode", b"StripAddress"],
+        &[
+            b"GetMMUMode",
+            b"SwapMMUMode",
+            b"StripAddress",
+            b"GetToolboxTrapAddress",
+        ],
         128,
     );
     let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
@@ -250,4 +255,116 @@ fn swap_abis_use_low_register_byte_or_one_writable_byte_reference() {
         (Call::SwapMmuMode(1), Reply::M68kByte)
     );
     assert_eq!(c.dar[15], 0x9000);
+}
+
+#[test]
+fn quickdraw32_address_entry_is_callable_identity_in_native_mode_only() {
+    use systemless_future::traps;
+    for veneer in [false, true] {
+        for mode in [0u8, 1] {
+            let mut app = setup();
+            let entry = traps::lookup(&app.runtime.memory, 0xab03, true).unwrap();
+            assert_ne!(entry, traps::UNIMPLEMENTED);
+            assert_eq!(
+                app.runtime.memory.read(GuestPtr(entry), 4).unwrap(),
+                [0xab, 3, 0x4e, 0x75]
+            );
+            app.runtime
+                .memory
+                .map(
+                    GuestPtr(0x51000000),
+                    if veneer {
+                        vec![0x4e, 0x90, 0x4e, 0x71]
+                    } else {
+                        vec![0xab, 3]
+                    },
+                    Permissions::RX,
+                )
+                .unwrap();
+            let stack = STACK_BASE + 0x7800;
+            app.runtime.cpu = Cpu::new(Architecture::M68k, 0x51000000, stack);
+            let Cpu::M68k(cpu) = &mut app.runtime.cpu else {
+                panic!()
+            };
+            for i in 0..15 {
+                cpu.dar[i] = 0xabab0000 + i as u32;
+            }
+            cpu.dar[8] = entry;
+            cpu.set_sr((cpu.get_sr() & !0x071f) | 0x031f);
+            if veneer {
+                assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+            }
+            app.runtime.memory.write(MMU32_BIT, &[mode]).unwrap();
+            let Cpu::M68k(cpu) = &app.runtime.cpu else {
+                panic!()
+            };
+            let (registers, status, pc) = (cpu.dar, cpu.get_sr(), cpu.pc);
+            let bytes = app
+                .runtime
+                .memory
+                .read(GuestPtr(stack - 8), 24)
+                .unwrap()
+                .to_vec();
+            let result = app.runtime.advance(1);
+            if mode == 1 {
+                assert_eq!(result.unwrap(), Stop::Budget);
+            } else {
+                assert!(matches!(result, Err(Error::AddressMode(0))));
+            }
+            let Cpu::M68k(cpu) = &app.runtime.cpu else {
+                panic!()
+            };
+            let mut expected = registers;
+            // Built-in veneers complete the ordinary JSR/RTS return in the
+            // ABI adapter, rather than retiring their trailing RTS separately.
+            if veneer {
+                expected[15] += 4;
+            }
+            assert_eq!(cpu.dar, expected);
+            assert_eq!(cpu.get_sr(), status);
+            assert_eq!(cpu.pc, if veneer { 0x51000002 } else { pc + 2 });
+            assert_eq!(
+                app.runtime.memory.read(GuestPtr(stack - 8), 24).unwrap(),
+                bytes
+            );
+            assert_eq!(app.runtime.memory.read(MMU32_BIT, 1).unwrap(), [mode]);
+            assert!(app
+                .runtime
+                .services
+                .calls
+                .contains(&Call::QuickDraw32Addressing));
+        }
+    }
+}
+
+#[test]
+fn quickdraw32_presence_queries_use_one_table_for_both_cpu_adapters() {
+    use systemless_future::traps;
+    let mut app = setup();
+    let entry = traps::lookup(&app.runtime.memory, 0xab03, true).unwrap();
+    assert_eq!(invoke_ppc(&mut app, 3, 0xab03).unwrap(), Stop::Budget);
+    let Cpu::PowerPc(cpu) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(cpu.gpr[3], entry);
+    assert_eq!(invoke_ppc(&mut app, 3, 0xa89f).unwrap(), Stop::Budget);
+    let Cpu::PowerPc(cpu) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(cpu.gpr[3], traps::UNIMPLEMENTED);
+    assert_ne!(entry, traps::UNIMPLEMENTED);
+    app.runtime
+        .memory
+        .map(GuestPtr(0x51000000), vec![0xa7, 0x46], Permissions::RX)
+        .unwrap();
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x51000000, STACK_BASE + 0x7800);
+    let Cpu::M68k(cpu) = &mut app.runtime.cpu else {
+        panic!()
+    };
+    cpu.dar[0] = 0xab03;
+    assert_eq!(app.runtime.advance(1).unwrap(), Stop::Budget);
+    let Cpu::M68k(cpu) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(cpu.dar[8], entry);
 }

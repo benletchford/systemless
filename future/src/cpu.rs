@@ -429,6 +429,7 @@ pub enum Call {
     DeviceControl(GuestPtr),
     GetMmuMode,
     SwapMmuMode(u8),
+    QuickDraw32Addressing,
     StripAddress(u32),
     Munger(crate::process::munger::Request),
     MemError,

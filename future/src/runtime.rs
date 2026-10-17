@@ -365,6 +365,7 @@ impl Runtime {
                                 | Call::FixedRatio { .. }
                                 | Call::GetMmuMode
                                 | Call::SwapMmuMode(_)
+                                | Call::QuickDraw32Addressing
                                 | Call::Logical { .. }
                                 | Call::EmptyRect(_)
                                 | Call::PointInRect { .. }
@@ -2336,6 +2337,13 @@ impl Runtime {
                             let previous = crate::addressing::swap(&self.memory, requested)?;
                             reply.apply(&mut self.cpu, &mut self.memory, u32::from(previous), 0)?;
                         }
+                        Call::QuickDraw32Addressing => {
+                            // Apple's Jackson Pollock product plan (1989, scanned
+                            // page 38) specifies an RTS for this internal address
+                            // entry on native 32-bit machines. Preserve every
+                            // register/flag/stack byte; do not guess a 24-bit ABI.
+                            crate::addressing::current(&self.memory)?;
+                        }
                         Call::StripAddress(address) => {
                             // This runtime starts in 32-bit mode. IM: Memory
                             // Utilities specifies an unchanged address in that mode.
@@ -2838,6 +2846,7 @@ impl Runtime {
                         | Call::DeviceControl(_)
                         | Call::GetMmuMode
                         | Call::SwapMmuMode(_)
+                        | Call::QuickDraw32Addressing
                         | Call::StripAddress(_)
                         | Call::Munger(_)
                         | Call::MemError

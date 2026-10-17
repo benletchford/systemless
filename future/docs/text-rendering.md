@@ -17,8 +17,8 @@ must not become a second production renderer.
 `text_gpu.rs` now prepares binary masks through Glyphon and composes them through
 the shared GPU port service. Menus retain specialized GPU coverage runs.
 TextEdit, controls and window titles use shared strike drawing. CPU ab_glyph
-source preparation remains. The scoped integration passes 167 unique tests plus
-the independent 40-case probe. Full API/style/UI coverage, representative
+source preparation remains. The Glyphon integration gate at 4d3b48902 passed
+167 unique tests plus the independent 40-case probe. Full API/style/UI coverage, representative
 performance and native/browser acceptance remain open; the goal stays active.
 
 ## Evaluate libraries before extending the custom path
@@ -482,3 +482,9 @@ interaction evidence, not full text/font parity or native/browser/performance
 acceptance. Full text API/style/UI and representative workload requirements
 remain open. See the exact arithmetic/control milestone in progress.md and
 original-applications.md; the whole rebuild goal remains active.
+
+
+The subsequent native-32-bit entry milestone advances original Marathon to a
+textured 3D demo through genuine managed-world services. This does not change the
+shared Glyphon text path or complete text/API/style/native/browser acceptance.
+See the latest original-applications.md/progress.md evidence; the goal stays active.

@@ -11313,3 +11313,76 @@ gate logs/reports are under future/target/validation/zero-add. Machine-readable
 before/after controls: /tmp/systemless-ev-input-isolation-before.json and
 /tmp/systemless-zero-add-ev-controls.json. All original replay exits are 1 (budget
 or known Marathon fault), never successful-game or full-goal acceptance.
+
+
+## Native-32-bit QuickDraw entry and original Marathon 3D demo (2026-10-17)
+
+Additional primary Apple evidence resolves the earlier private-entry ambiguity.
+See the native-32-bit architecture section for the 1989 product-plan source,
+verified scanned page 38 and SHA256. The released public A091 interface remains
+separate. AB03 now implements the documented native-32-bit identity case through
+shared address-mode validation, preserving all data/address registers, condition
+codes and stack data. Unsupported mode 0 still errors. This is backed by the real
+managed GWorld and direct-color implementation, not a fabricated capability-only
+entry or a guessed 24-bit translator. No game-specific branch or guest patch.
+
+64 unique scoped tests pass, 0 failed/ignored: 8 addressing, 14 devices, 32 GWorld,
+6 pixel-lock and 4 trap-patch checks, including required real-GPU cases. Entry
+fixtures cover bare calls, callable JSR veneers, unsupported-mode guards and
+shared trap queries through both real CPU adapters. No PPC-private-call import
+is fabricated. Existing managed-world tests cover both CPU adapters, indexed/
+direct formats, real GPU synchronization, lifetime, rollback, purge and the exact
+448x272→224x136 resize with both PixMap headers/stride coherent.
+
+The first new fixture assumed a veneer retired its trailing RTS separately;
+the existing ABI completes the normal return with the service, so the assertion
+was corrected. A later run caught the old deliberate AB03-absent policy test.
+That obsolete policy assertion is removed, and the real Marathon-sized resize
+fixture now verifies the installed entry as part of its backing contract. The
+final suite passes in /tmp/systemless-qd32-entry-tests-verified.txt; earlier
+failed logs are retained but superseded.
+
+Commands/gates (all exit 0):
+
+- `cargo test --offline --locked --manifest-path future/Cargo.toml --test addressing --test gworld --test devices --test pixel_locks --test trap_patches -- --include-ignored --nocapture --test-threads=1`
+- `cargo build --offline --locked --manifest-path future/Cargo.toml --example trace_application`
+- `cargo clippy --offline --locked --manifest-path future/Cargo.toml --lib --test addressing --test gworld --test devices --test pixel_locks --test trap_patches --example trace_application -- -D warnings`
+- `cargo +1.93.0 check --offline --locked --manifest-path future/Cargo.toml`
+
+Build/lint/MSRV logs: /tmp/systemless-qd32-entry-{tracer,lint,msrv}.txt. Changed
+Rust files are formatted/checked sequentially via stdin; no recursive cargo fmt.
+No dependency changes. Logs and the inspected primary page are retained under
+ignored future/target/validation/qd32-entry.
+
+Fresh original Marathon 32M-poll replay retires 31,999,258 instructions, PC0102693C,
+then reaches the bounded budget (exit 1). It no longer faults at 22,890,015 reading
+FFFCC1AF. The unchanged app selects genuine NewGWorld/UpdateGWorld/PixMap/locking
+services: 75 GWorld calls. The inspected image contains textured perspective
+walls, the weapon and HUD/scanner. It loaded original film ordinal 2 (resource 129),
+so this establishes 3D demo rendering, not an interactive new game or exact image/
+color parity. The render destination register remains inside the real 30464-byte
+image allocation; the manager/fixtures establish 224-byte resized strides rather
+than the previous stale 448-byte port stride. No bounds padding or corruption mask.
+
+A separate 32M-poll replay delivers Escape 53 at instruction 27M/down and 27.005M/up.
+It retires 31,998,514 instructions, PC01004CDA, then reaches budget without a service
+fault. Its final frame is a black loading transition, and trace selects film
+ordinal 1 after the original ordinal 2. This is a control-path change, not a verified
+return-to-menu, cleanup/disposal or playable-game result. All input edges are
+recorded. Exact image/volume hashes and private captures are listed below in
+original-applications.md.
+
+Fresh unchanged EV 24M retains corrected idle PC007E6C3A, exact frame
+ab60ddcff2b03afff894b9f2744709b65e141679437ae2e6d5308a231377f799 and saved-volume
+hash e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80.
+Independent saved-volume checks pass for both Marathon replays and EV: directories,
+companions, forks, metadata, pilot/preferences/alias/scripts and the same 1222-byte
+Marathon preference addition remain preserved. All original replay exits are 1,
+not successful application exits. Originals/media remain unmodified and private.
+
+Native host lock flag still reports Yes; presentation is not newly tested or
+accepted. Full QuickDraw/profile conformance, direct dithering, remaining text
+API/style/UI and library workload acceptance, Mixed Mode, browser/native behavior
+and original-game playability remain open. Keep the full goal active. Next is
+an explicit interactive Marathon new-game path and further real original-game
+state/interaction acceptance, not a larger demo budget presented as gameplay.
