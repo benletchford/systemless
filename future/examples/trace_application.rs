@@ -455,6 +455,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         word(26),
                         word(16)
                     );
+                    display_diagnostics::driver(&app, *pointer);
                 }
             }
 

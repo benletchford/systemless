@@ -11465,3 +11465,42 @@ step is inspect those driver parameter blocks, return codes and physical palette
 changes, alongside PICT index mapping. This run ends at 3M / PC010059EC in the
 original color interpolation code, budget exit 1. Keep this evidence separate from
 native Macintosh behavior; no native display/palette parity is claimed.
+
+
+## Original Marathon physical-palette arguments (2026-10-17)
+
+The existing opt-in `--display-diagnostics` driver report now additionally reads
+completed video control-3 VDSetEntryRecord arguments before the caller reuses
+its stack. It prints actual instruction count, record/table addresses, start/count,
+entries 0/16/255 and total nonblack entries. Reads are bounded to 256 ColorSpecs;
+malformed/unavailable diagnostic data is reported without modifying guest state.
+No runtime driver/picture/graphics semantics or dependencies change.
+
+A fresh unchanged-original 8M-poll replay (640x480x8, original companion volume,
+no keys, virtual wait advancement) completes to budget exit 1 at 7,999,258 retired
+instructions / PC0102295C, exactly the prior no-input run's boundary. Its black
+screen SHA-256 is `a6087ec5178c7619d8136de2aa159dde7161d56f9e4c3b899b7165935d0353d8`.
+53 physical video palette calls are captured; their ioResult values are all zero.
+At 3,029,209 through 3,118,078, for example, the original supplies increasingly
+bright entry 0 (8191 through 65535), with 16 nonblack entries. Entries 16 and 255
+remain black. The earlier immediate post-PICT snapshot has screen indices 16 and
+255 and both requested port RGB foreground/background black, with cached pixel
+fields both 255. These observations narrow the unresolved intro issue to picture
+color state/mapping, not simply missing driver updates. They do not independently
+prove the full driver or picture implementation correct.
+
+Preserved Systemless's indexed PICT srcCopy ignores foreground/background tinting,
+but that is not sufficient authority for copying its behavior. Apple's
+[Color QuickDraw chapter, pp.4-32–4-33](https://developer.apple.com/library/archive/documentation/mac/pdf/Imaging_With_QuickDraw/Color_QuickDraw.pdf)
+explicitly applies foreground/background weighting to source copies. Preserve the
+shared transfer semantics while investigating picture playback default color state
+and initial window colors. Do not globally neutralize indexed copies merely to
+make this original visible. The original PICT 1111/1114 payloads have been extracted
+privately for further inspection; no guest media is patched.
+
+Tracer build, strict example Clippy, Rust1.93 example check, sequential stdin
+formatting and whitespace gates pass. Evidence: /tmp/systemless-driverdiag-*.txt,
+/tmp/systemless-marathon-driverpalette{.txt,-summary.json,.ppm}, archived under
+ignored target validation/private-original directories. Both replay/build/check
+handles are terminal; no job remains running. New-game interaction, native parity,
+full original-game acceptance and full rebuild/text acceptance remain unfinished.

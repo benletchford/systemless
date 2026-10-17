@@ -196,3 +196,43 @@ fn plus(base: u32, offset: u32) -> systemless_future::Result<GuestPtr> {
         .map(GuestPtr)
         .ok_or_else(|| systemless_future::Error::Cpu("display diagnostic pointer overflow".into()))
 }
+
+/// Read live, completed video-control arguments before the caller reuses them.
+pub fn driver(app: &LoadedApplication, pointer: GuestPtr) {
+    let m = &app.runtime.memory;
+    let result = (|| -> systemless_future::Result<()> {
+        if m.u16(plus(pointer.0, 24)?)? as i16 != systemless_future::drivers::VIDEO_REFERENCE
+            || m.u16(plus(pointer.0, 26)?)? != 3
+        {
+            return Ok(());
+        }
+        let record = m.u32(plus(pointer.0, 28)?)?;
+        let table = m.u32(GuestPtr(record))?;
+        let start = m.u16(plus(record, 4)?)? as i16;
+        let count = m.u16(plus(record, 6)?)? as i16;
+        println!("driver palette instruction={} record={record:08x} table={table:08x} start={start} count={count}", app.runtime.instructions);
+        if !(-1..256).contains(&start) || !(0..256).contains(&count) {
+            return Ok(());
+        }
+        let bytes = m.read(GuestPtr(table), (count as usize + 1) * 8)?;
+        let mut nonblack = 0;
+        for (ordinal, entry) in bytes.chunks_exact(8).enumerate() {
+            let index = if start == -1 {
+                usize::from(u16::from_be_bytes(entry[..2].try_into().unwrap()))
+            } else {
+                start as usize + ordinal
+            };
+            let rgb: [u16; 3] =
+                std::array::from_fn(|c| u16::from_be_bytes([entry[2 + c * 2], entry[3 + c * 2]]));
+            nonblack += usize::from(rgb != [0; 3]);
+            if [0, 16, 255].contains(&index) {
+                println!("driver palette ordinal={ordinal} index={index} rgb={rgb:?}");
+            }
+        }
+        println!("driver palette nonblack={nonblack}");
+        Ok(())
+    })();
+    if let Err(error) = result {
+        println!("driver palette diagnostic unavailable: {error}");
+    }
+}
