@@ -4155,6 +4155,7 @@ mod tests {
                 failure: 0,
             }));
         let mut command = QuickDrawGpuCommand {
+            mask: None,
             polygon_edges: None,
             clip_rows: None,
             area: [0, 0, 8, 8],

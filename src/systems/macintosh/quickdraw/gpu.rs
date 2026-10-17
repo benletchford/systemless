@@ -1,12 +1,22 @@
 //! Optional host rasterization with synchronous guest-memory writeback.
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 
+/// Glyph/bitmap coverage sampled in the same coordinates as the draw.
+#[derive(Clone, Debug)]
+pub struct QuickDrawGpuMask {
+    pub origin: [i32; 2],
+    pub size: [u32; 2],
+    pub coverage: Vec<u8>,
+    pub threshold: u8,
+}
+
 /// A clipped shape draw in port coordinates. Bounds use
 /// `[left, top, right, bottom]`, with exclusive far edges. Border dimensions
 /// are `[horizontal, vertical]`; None fills the rectangle. Transfer entries
 /// are `[destination_pass_mask, xor_mask]` for white and black pattern bits.
 #[derive(Clone, Debug)]
 pub struct QuickDrawGpuCommand {
+    pub mask: Option<QuickDrawGpuMask>,
     /// Optional sorted interval endpoints for each row of `area`.
     pub clip_rows: Option<Vec<Vec<i32>>>,
     /// Polygon edges [minimum_y, maximum_y, x_at_minimum_y, inverse_slope].
@@ -19,6 +29,17 @@ pub struct QuickDrawGpuCommand {
     pub transfer: [[u32; 2]; 2],
 }
 impl QuickDrawGpuCommand {
+    pub fn valid_mask(&self) -> bool {
+        self.mask.as_ref().is_none_or(|mask| {
+            mask.threshold != 0
+                && mask.size.iter().all(|v| (1..=32767).contains(v))
+                && mask.size[0]
+                    .checked_mul(mask.size[1])
+                    .is_some_and(|n| n <= 4_194_304 && n as usize == mask.coverage.len())
+                // An atlas may straddle the port's i16 clipping bounds.
+                && mask.origin.iter().all(|v| (-65535..=65535).contains(v))
+        })
+    }
     pub fn valid_polygon_edges(&self) -> bool {
         let Some(edges) = &self.polygon_edges else {
             return true;
@@ -214,7 +235,8 @@ fn try_raster(
     let Some(count) = command.pixel_count().filter(|count| *count <= 4_194_304) else {
         return false;
     };
-    if !command.valid_clip_rows()
+    if !command.valid_mask()
+        || !command.valid_clip_rows()
         || !command.valid_polygon_edges()
         || !matches!(target.depth, 1 | 2 | 4 | 8 | 16 | 32)
     {
@@ -264,9 +286,11 @@ fn try_raster(
         }
         addresses.push(address);
     }
+    // Boolean text modes operate on the complete stored field: native RGB555
+    // XOR/BIC must retain the destination's unused high bit. Color-only draws
+    // already clear unused bits through their explicit transfer masks.
     let mask = match target.depth {
         32 => 0x00ff_ffff,
-        16 => 0x7fff,
         depth => (1u32 << depth) - 1,
     };
     let mut rows = Vec::with_capacity(height);
@@ -378,7 +402,18 @@ impl QuickDrawGpuRenderer for ReferenceRenderer {
                         % 2
                         != 0
                 });
-                let covered = in_polygon
+                let in_mask = command.mask.as_ref().is_none_or(|mask| {
+                    let tx = x - mask.origin[0];
+                    let ty = y - mask.origin[1];
+                    tx >= 0
+                        && ty >= 0
+                        && (tx as u32) < mask.size[0]
+                        && (ty as u32) < mask.size[1]
+                        && mask.coverage[ty as usize * mask.size[0] as usize + tx as usize]
+                            >= mask.threshold
+                });
+                let covered = in_mask
+                    && in_polygon
                     && in_clip
                     && x >= r[0]
                     && x < r[2]
@@ -417,6 +452,7 @@ mod tests {
         assert!(memory.quickdraw_gpu_renderer().is_some());
         assert!(memory.clone().quickdraw_gpu_renderer().is_none());
         let command = QuickDrawGpuCommand {
+            mask: None,
             clip_rows: Some(vec![vec![], vec![1, 3]]),
             polygon_edges: None,
             area: [0, 0, 4, 2],
@@ -473,6 +509,7 @@ mod tests {
                 })));
             let token = ppc::PpcMemory::instruction_cache_token(&mut memory, 0x1000);
             let command = QuickDrawGpuCommand {
+                mask: None,
                 clip_rows: None,
                 polygon_edges: None,
                 area: [0, 0, 4, 2],
@@ -520,6 +557,7 @@ mod tests {
                 _ => (1u32 << depth) - 1,
             };
             let command = QuickDrawGpuCommand {
+                mask: None,
                 polygon_edges: None,
                 clip_rows: None,
                 area: [-3, 2, 8, 6],
@@ -569,7 +607,7 @@ mod tests {
     }
     #[test]
     fn gpu_rectangle_errors_and_missing_backend_leave_guest_bytes_unchanged() {
-        for failure in [0, 1, 2, 3, 4] {
+        for failure in [0, 1, 2, 3, 4, 5] {
             let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
             bus.write_bytes(0x1000, &[0xa5; 16]);
             if failure != 0 {
@@ -580,6 +618,7 @@ mod tests {
                     }));
             }
             let mut command = QuickDrawGpuCommand {
+                mask: None,
                 polygon_edges: None,
                 clip_rows: None,
                 area: [0, 0, 4, 4],
@@ -593,6 +632,14 @@ mod tests {
             }
             if failure == 4 {
                 command.polygon_edges = Some(vec![[0., 1., f32::NAN, 0.]]);
+            }
+            if failure == 5 {
+                command.mask = Some(QuickDrawGpuMask {
+                    origin: [0, 0],
+                    size: [2, 2],
+                    coverage: vec![255; 3],
+                    threshold: 128,
+                });
             }
             assert!(!try_rectangle(
                 &mut bus,

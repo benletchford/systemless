@@ -1448,6 +1448,106 @@ pub(crate) fn ppc_begin_outline_text_glyph(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn ppc_gpu_text_glyph(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    vis: Option<&[u8]>,
+    clip: Option<&[u8]>,
+    glyph: &crate::quickdraw::fonts::Glyph,
+    data: &[u8],
+    pen: (i32, i32),
+    color: u16,
+    text_mode: i16,
+) -> bool {
+    use crate::quickdraw::gpu::{
+        try_native_rectangle, QuickDrawGpuCommand, QuickDrawGpuMask, RasterTarget,
+    };
+    if memory.quickdraw_gpu_renderer().is_none() {
+        return false;
+    }
+    (|| {
+        let (width, height) = (u32::from(glyph.width), u32::from(glyph.height));
+        if width == 0 || height == 0 {
+            return Some(true);
+        }
+        let fb = surface.front_buffer;
+        let left = pen.0.checked_add(i32::from(glyph.origin_x))?;
+        let top = pen.1.checked_add(i32::from(glyph.origin_y))?;
+        let right = left.checked_add(width as i32)?;
+        let bottom = top.checked_add(height as i32)?;
+        let port_x = |x: i32| x.checked_add(i32::from(surface.left));
+        let port_y = |y: i32| y.checked_add(i32::from(surface.top));
+        let area = crate::trap::types::Rect {
+            left: i16::try_from(port_x(left.max(0))?).ok()?,
+            top: i16::try_from(port_y(top.max(0))?).ok()?,
+            right: i16::try_from(port_x(right.min(fb.width as i32))?).ok()?,
+            bottom: i16::try_from(port_y(bottom.min(fb.height as i32))?).ok()?,
+        };
+        if area.left >= area.right || area.top >= area.bottom {
+            return Some(true);
+        }
+        let mut rows = vec![
+            vec![area.left, area.right];
+            (i32::from(area.bottom) - i32::from(area.top)) as usize
+        ];
+        for storage in [vis, clip].into_iter().flatten() {
+            let clips = ppc_region_rows_for_band(storage, area.top, area.bottom)?;
+            for (row, clip) in rows.iter_mut().zip(clips) {
+                *row = ppc_region_intersect_rows(row, &clip);
+            }
+        }
+        let source =
+            data.get(glyph.data_offset..glyph.data_offset.checked_add((width * height) as usize)?)?;
+        let bits = (1u32 << fb.depth) - 1;
+        let transfer = match text_mode & 0x3f {
+            2 => [bits, u32::from(color)],
+            3 => [bits & !u32::from(color), 0],
+            _ => [0, u32::from(color)],
+        };
+        let command = QuickDrawGpuCommand {
+            mask: Some(QuickDrawGpuMask {
+                origin: [port_x(left)?, port_y(top)?],
+                size: [width, height],
+                coverage: source.to_vec(),
+                threshold: 128,
+            }),
+            area: [
+                i32::from(area.left),
+                i32::from(area.top),
+                i32::from(area.right),
+                i32::from(area.bottom),
+            ],
+            rect: [
+                i32::from(area.left),
+                i32::from(area.top),
+                i32::from(area.right),
+                i32::from(area.bottom),
+            ],
+            clip_rows: Some(
+                rows.into_iter()
+                    .map(|row| row.into_iter().map(i32::from).collect())
+                    .collect(),
+            ),
+            polygon_edges: None,
+            border: None,
+            pattern: [0xff; 8],
+            transfer: [transfer; 2],
+        };
+        Some(try_native_rectangle(
+            memory,
+            RasterTarget {
+                base: fb.base_addr,
+                row_bytes: fb.row_bytes,
+                depth: fb.depth as u16,
+                origin: [i32::from(surface.left), i32::from(surface.top)],
+            },
+            command,
+        ))
+    })()
+    .unwrap_or(false)
+}
+
 pub(crate) fn ppc_apply_text_pixel(
     memory: &mut PpcSectionMem,
     surface: PpcQuickDrawSurface,
@@ -1763,33 +1863,51 @@ pub(crate) fn ppc_draw_text_chars(
                     None,
                 );
             }
-            let width = glyph.width as usize;
-            let height = glyph.height as usize;
-            for row in 0..height {
-                for col in 0..width {
-                    let index = glyph.data_offset + row * width + col;
-                    if index < data.len() && data[index] >= 128 {
-                        let source_x = base_advance + i32::from(glyph.origin_x) + col as i32;
-                        let source_y = i32::from(glyph.origin_y) + row as i32;
-                        let left = local_h + ppc_scale_font_floor(source_x, numerator, denominator);
-                        let right = local_h
-                            + ppc_scale_font_floor(source_x + 1, numerator, denominator)
-                                .max(ppc_scale_font_floor(source_x, numerator, denominator) + 1);
-                        let top = local_v + ppc_scale_font_floor(source_y, numerator, denominator);
-                        let bottom = local_v
-                            + ppc_scale_font_floor(source_y + 1, numerator, denominator)
-                                .max(ppc_scale_font_floor(source_y, numerator, denominator) + 1);
-                        for y in top..bottom {
-                            for x in left..right {
-                                let _ = ppc_apply_text_pixel(
-                                    memory,
-                                    surface,
-                                    vis_storage.as_deref(),
-                                    clip_storage.as_deref(),
-                                    (x, y),
-                                    color_pixel,
-                                    text_mode,
+            let gpu_glyph = numerator == denominator
+                && ppc_gpu_text_glyph(
+                    memory,
+                    surface,
+                    vis_storage.as_deref(),
+                    clip_storage.as_deref(),
+                    glyph,
+                    data,
+                    (local_h + base_advance, local_v),
+                    color_pixel,
+                    text_mode,
+                );
+            if !gpu_glyph {
+                let width = glyph.width as usize;
+                let height = glyph.height as usize;
+                for row in 0..height {
+                    for col in 0..width {
+                        let index = glyph.data_offset + row * width + col;
+                        if index < data.len() && data[index] >= 128 {
+                            let source_x = base_advance + i32::from(glyph.origin_x) + col as i32;
+                            let source_y = i32::from(glyph.origin_y) + row as i32;
+                            let left =
+                                local_h + ppc_scale_font_floor(source_x, numerator, denominator);
+                            let right = local_h
+                                + ppc_scale_font_floor(source_x + 1, numerator, denominator).max(
+                                    ppc_scale_font_floor(source_x, numerator, denominator) + 1,
                                 );
+                            let top =
+                                local_v + ppc_scale_font_floor(source_y, numerator, denominator);
+                            let bottom = local_v
+                                + ppc_scale_font_floor(source_y + 1, numerator, denominator).max(
+                                    ppc_scale_font_floor(source_y, numerator, denominator) + 1,
+                                );
+                            for y in top..bottom {
+                                for x in left..right {
+                                    let _ = ppc_apply_text_pixel(
+                                        memory,
+                                        surface,
+                                        vis_storage.as_deref(),
+                                        clip_storage.as_deref(),
+                                        (x, y),
+                                        color_pixel,
+                                        text_mode,
+                                    );
+                                }
                             }
                         }
                     }
@@ -2264,6 +2382,7 @@ fn ppc_paint_rect_bounds_with_clip(
                 }
             }
             Some(crate::quickdraw::gpu::QuickDrawGpuCommand {
+                mask: None,
                 area: [left, top, right, bottom],
                 rect: [left, top, right, bottom],
                 border: None,
