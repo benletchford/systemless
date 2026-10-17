@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "clock": "frontend_ticks",
+  "max_ticks": 160,
+  "actions": [
+    {
+      "type": "run_until_pixel",
+      "x": 305,
+      "y": 145,
+      "rgb": [
+        255,
+        33,
+        33
+      ],
+      "timeout_ticks": 120
+    },
+    {
+      "type": "assert_pixel",
+      "x": 305,
+      "y": 145,
+      "rgb": [
+        255,
+        33,
+        33
+      ]
+    },
+    {
+      "type": "mouse_down",
+      "v": 10,
+      "h": 64
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_move",
+      "v": 75,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 2
+    },
+    {
+      "type": "mouse_up",
+      "v": 75,
+      "h": 150
+    },
+    {
+      "type": "run",
+      "ticks": 20
+    },
+    {
+      "type": "assert_pixel",
+      "x": 110,
+      "y": 162,
+      "rgb": [
+        107,
+        222,
+        255
+      ],
+      "tolerance": 8
+    },
+    {
+      "type": "assert_pixel",
+      "x": 80,
+      "y": 140,
+      "rgb": [
+        33,
+        41,
+        74
+      ]
+    },
+    {
+      "type": "screenshot",
+      "name": "native-qd3d"
+    }
+  ]
+}

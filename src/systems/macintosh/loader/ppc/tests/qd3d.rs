@@ -8716,8 +8716,16 @@ fn hle_import_runner_queues_completed_q3_frames_at_render_boundaries() {
     let view = PPC_Q3_OBJECT_BASE;
     let stale_trimesh = PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE;
     let trimesh = PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE * 2;
-    let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3View_StartRendering");
+    let mut code = synthetic_code();
+    code.splice(16..16, 0x90c7_0000u32.to_be_bytes()); // stw r6,0(r7) after the import
+    let pef = synthetic_pef_with_loader_code_and_data(
+        synthetic_loader(b"QuickDraw\xaa 3D", b"Q3View_StartRendering"),
+        &code,
+        &[0; 8],
+    );
     let mut loaded = load_pef_application(&pef).unwrap();
+    loaded.memory.add_region(PPC_DATA_BASE + 0x1800, vec![0; 4]);
+    loaded.cpu.gpr[7] = PPC_DATA_BASE + 0x1800;
     loaded
         .q3_objects
         .push(test_q3_object(view, PPC_Q3_TYPE_VIEW));
@@ -8804,7 +8812,19 @@ fn hle_import_runner_queues_completed_q3_frames_at_render_boundaries() {
     loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Q3ViewEndRendering;
     loaded.cpu.gpr[3] = view;
 
-    let probe = loaded.run_with_hle_imports(64);
+    // Return into a guest framebuffer read/write continuation. EndRendering must
+    // yield to host rasterization before this next instruction can execute.
+    let continuation = loaded.entry_pc + 16; // instruction after the import bctrl
+    let marker = PPC_DATA_BASE + 0x1800;
+    loaded.memory.write_u32_be(marker, 0).unwrap();
+    loaded.cpu.gpr[6] = 42;
+    loaded.cpu.gpr[7] = marker;
+    let probe = loaded.run_with_hle_imports(1_000_000);
+    assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+    assert_eq!(loaded.cpu.pc, continuation);
+    assert_eq!(loaded.memory.read_u32_be(marker), Some(0));
+    loaded.run_with_hle_imports(1);
+    assert_eq!(loaded.memory.read_u32_be(marker), Some(42));
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
@@ -9310,20 +9330,10 @@ fn hle_import_runner_fast_paths_idle_q3_state_only_render_boundaries() {
 
     assert_eq!(probe.handled_import_count, 1);
     assert_eq!(probe.unsupported_import_index, None);
-    assert!(
-        matches!(
-            probe.result,
-            PpcRunResult::Halted {
-                cycles,
-                ..
-            } | PpcRunResult::CycleLimit {
-                cycles,
-                ..
-            } if cycles >= PPC_Q3_IDLE_STATE_ONLY_FRAME_EXTRA_CYCLES
-        ),
-        "{:?}",
-        probe.result
-    );
+    // A retained geometry frame needs the same host commit boundary as a direct
+    // TriMesh, rather than consuming guest instructions after EndRendering.
+    assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+    assert_eq!(loaded.cpu.pc, loaded.entry_pc + 16);
     assert_eq!(loaded.cpu.gpr[3], PPC_Q3_VIEW_STATUS_DONE);
     assert!(loaded.q3_submissions.is_empty());
     assert_eq!(loaded.q3_completed_frames.len(), 1);

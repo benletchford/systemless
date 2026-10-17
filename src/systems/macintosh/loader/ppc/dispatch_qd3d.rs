@@ -1483,7 +1483,7 @@ pub(super) fn dispatch_q3_geometry_import(
 
 pub(super) struct PpcQ3GroupViewDispatchContext<'a> {
     pub(super) target: &'a PpcImportDispatcherTarget,
-    pub(super) cpu: &'a PpcCpu,
+    pub(super) cpu: &'a mut PpcCpu,
     pub(super) memory: &'a mut PpcSectionMem,
     pub(super) stores: PpcQ3ObjectStores<'a>,
     pub(super) next_q3_object: &'a mut u32,
