@@ -17,6 +17,9 @@
 #[path = "desktop/wgpu_qd3d.rs"]
 mod wgpu_qd3d;
 
+#[path = "desktop/wgpu_quickdraw.rs"]
+mod wgpu_quickdraw;
+
 #[path = "desktop/wgpu_compact.rs"]
 mod wgpu_compact;
 
@@ -3659,6 +3662,9 @@ fn run_headless(
         session
             .runner_mut()
             .set_q3_gpu_renderer(Box::new(wgpu_qd3d::Qd3dRenderer::new()));
+        session
+            .runner_mut()
+            .set_quickdraw_gpu_renderer(Box::new(wgpu_quickdraw::QuickDrawRenderer::new()));
     }
     let app = session.load_path(game_path).expect("Failed to load game");
     let mut save_store = DesktopSaveStore::for_loaded_archive(game_path, session.runner_mut());

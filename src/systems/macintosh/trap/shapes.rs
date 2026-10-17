@@ -80,6 +80,15 @@ fn fg_bg_low_contrast(fg: (u16, u16, u16), bg: (u16, u16, u16)) -> bool {
     dominant(fg) == dominant(bg)
 }
 
+fn pen_dimensions_valid((height, width): (i16, i16), rect: &Rect) -> bool {
+    height >= 0
+        && width >= 0
+        && rect.top.checked_add(height).is_some()
+        && rect.bottom.checked_sub(height).is_some()
+        && rect.left.checked_add(width).is_some()
+        && rect.right.checked_sub(width).is_some()
+}
+
 use std::sync::OnceLock;
 static TRACE_MENU_REDRAWS: OnceLock<bool> = OnceLock::new();
 static TRACE_DIALOG_DRAW: OnceLock<bool> = OnceLock::new();
@@ -1432,6 +1441,113 @@ impl super::TrapDispatcher {
         } else {
             None
         };
+
+        if bus.quickdraw_gpu_renderer.is_some()
+            && full_rect_coverage
+            && !has_complex_port_clip
+            && installed_raw_pixpat.is_none()
+            && !matches!(op, ShapeOp::Glyph(_))
+            && !(pixel_size == 8 && matches!(op, ShapeOp::Invert) && bus.presentation.is_some())
+        {
+            let top = r.top.max(clip_top);
+            let left = r.left.max(clip_left);
+            let bottom = r.bottom.min(clip_bottom);
+            let right = r.right.min(clip_right);
+            let frame = matches!(op, ShapeOp::Frame);
+            let frame_valid = !frame || pen_dimensions_valid(self.pn_size, r);
+            if top < bottom
+                && left < right
+                && frame_valid
+                && matches!(pixel_size, 1 | 2 | 4 | 8 | 16 | 32)
+            {
+                let (pattern, mode) = match op {
+                    ShapeOp::Paint | ShapeOp::Frame => (effective_pn_pat, self.pn_mode),
+                    ShapeOp::Erase => (effective_bk_pat, 0),
+                    ShapeOp::Fill(pattern) => (pattern, 0),
+                    ShapeOp::Invert => ([0xff; 8], 2),
+                    ShapeOp::Glyph(_) => unreachable!(),
+                };
+                let mask = match pixel_size {
+                    32 => 0x00ff_ffff,
+                    16 => 0x7fff,
+                    depth => (1u32 << depth) - 1,
+                };
+                let pack = |(r, g, b): (u16, u16, u16)| {
+                    if pixel_size == 16 {
+                        (u32::from(r >> 11) << 10) | (u32::from(g >> 11) << 5) | u32::from(b >> 11)
+                    } else {
+                        (u32::from(r >> 8) << 16) | (u32::from(g >> 8) << 8) | u32::from(b >> 8)
+                    }
+                };
+                let mut transfer = [[0; 2]; 2];
+                for (bit, entry) in transfer.iter_mut().enumerate() {
+                    let map = |old: u32| {
+                        if matches!(op, ShapeOp::Invert) {
+                            return (!old) & mask;
+                        }
+                        match pixel_size {
+                            1 => u32::from(apply_boolean_transfer_1(old != 0, mode, bit != 0)),
+                            2 | 4 | 8 => {
+                                u32::from(apply_boolean_transfer_8(
+                                    old as u8,
+                                    mode,
+                                    bit != 0,
+                                    fg_idx,
+                                    bg_idx,
+                                )) & mask
+                            }
+                            _ => {
+                                apply_boolean_transfer_32(
+                                    old,
+                                    mode,
+                                    bit != 0,
+                                    pack(effective_fg_color),
+                                    pack(effective_bg_color),
+                                ) & mask
+                            }
+                        }
+                    };
+                    let zero = map(0);
+                    *entry = [zero ^ map(mask), zero];
+                }
+                let command = crate::quickdraw::gpu::QuickDrawGpuCommand {
+                    area: [
+                        i32::from(left),
+                        i32::from(top),
+                        i32::from(right),
+                        i32::from(bottom),
+                    ],
+                    rect: [
+                        i32::from(r.left),
+                        i32::from(r.top),
+                        i32::from(r.right),
+                        i32::from(r.bottom),
+                    ],
+                    border: frame.then_some([i32::from(self.pn_size.1), i32::from(self.pn_size.0)]),
+                    pattern,
+                    transfer,
+                };
+                let target = crate::quickdraw::gpu::RasterTarget {
+                    base: pix_base,
+                    row_bytes: pix_row_bytes,
+                    depth: pixel_size,
+                    origin: [i32::from(bounds_left), i32::from(bounds_top)],
+                };
+                if crate::quickdraw::gpu::try_rectangle(bus, target, command) {
+                    if touched_screen {
+                        let rect = (
+                            touch_top.saturating_sub(bounds_top),
+                            touch_left.saturating_sub(bounds_left),
+                            touch_bottom.saturating_sub(bounds_top),
+                            touch_right.saturating_sub(bounds_left),
+                        );
+                        self.refresh_dialog_saved_pixels_after_screen_draw(bus, port, rect);
+                        self.refresh_visible_dialog_snapshot_region_for_port(bus, port, rect);
+                    }
+                    return;
+                }
+            }
+        }
 
         if pixel_size == 8
             && full_rect_coverage

@@ -116,18 +116,21 @@ desktop, including system windows and text, through wgpu. Retained outline text
 and drawing coverage is resolved on the GPU with exact integer area sampling,
 including cropped and resized desktops. QuickDraw 3D TriMesh frames in filled,
 edge, or point mode use a wgpu compute rasterizer for 8-bit indexed and 16-bit
-RGB555 targets,
-with depth, perspective-correct color/texture interpolation, texture wrapping,
-alpha blending, ambient, directional, point, and spot lighting with attenuation
+RGB555 targets, with depth, perspective-correct color/texture interpolation,
+texture wrapping, alpha blending, ambient, directional, point, and spot lighting with attenuation
 and spot falloff, Lambert/Phong shading with flat, vertex, or pixel interpolation,
 and linear, exponential, squared exponential, and alpha fog. Results are read
 back into the guest framebuffer before execution resumes, preserving CopyBits
 and subsequent drawing. Degenerate filled triangles and frames beyond the GPU
-resource/work limits currently use the software renderer. Guest QuickDraw shape
-drawing and glyph rasterization still run on the CPU. It is experimental
-and reports initialization errors instead of silently selecting another backend.
+resource/work limits currently use the software renderer. Classic 68K rectangle
+fills and frames use GPU pattern expansion and boolean transfers at 1, 2, 4, 8,
+16, and 32 bits per pixel, with immediate guest-memory writeback. Complex clips,
+raw PixPats, and retained-outline-preserving indexed inversions use software.
+Other guest shapes, PowerPC QuickDraw operations, and glyph rasterization still
+run on the CPU. It is experimental and reports initialization errors instead of
+silently selecting another backend.
 Without `--gpu`, existing platform presentation remains the default.
-`--headless --gpu` also enables the 3D rasterizer in play scripts and timed runs
+`--headless --gpu` also enables guest rasterization in play scripts and timed runs
 without creating a window; desktop presentation is only used for windowed runs.
 
 To check the native PowerPC 3D scene, run Toolbox Showcase with
