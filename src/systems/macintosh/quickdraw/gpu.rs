@@ -1,5 +1,5 @@
 //! Optional host rasterization with synchronous guest-memory writeback.
-use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 
 /// A clipped shape draw in port coordinates. Bounds use
 /// `[left, top, right, bottom]`, with exclusive far edges. Border dimensions
@@ -89,6 +89,103 @@ pub trait QuickDrawGpuRenderer {
     ) -> Result<Vec<QuickDrawGpuPixel>, String>;
 }
 
+/// Shared by serialized CPU adapters; detached memory snapshots have no backend.
+#[derive(Clone, Default)]
+pub(crate) struct QuickDrawGpuSlot(
+    Option<std::rc::Rc<std::cell::RefCell<Box<dyn QuickDrawGpuRenderer>>>>,
+);
+impl std::fmt::Debug for QuickDrawGpuSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuickDrawGpuSlot")
+            .field("installed", &self.is_some())
+            .finish()
+    }
+}
+impl QuickDrawGpuSlot {
+    pub(crate) fn new(renderer: Box<dyn QuickDrawGpuRenderer>) -> Self {
+        Self(Some(std::rc::Rc::new(std::cell::RefCell::new(renderer))))
+    }
+    pub(crate) fn is_some(&self) -> bool {
+        self.0.is_some()
+    }
+    pub(crate) fn is_none(&self) -> bool {
+        self.0.is_none()
+    }
+    fn render(
+        &self,
+        command: &QuickDrawGpuCommand,
+        background: &[u32],
+    ) -> Result<Vec<QuickDrawGpuPixel>, String> {
+        self.0
+            .as_ref()
+            .ok_or("QuickDraw GPU backend missing")?
+            .try_borrow_mut()
+            .map_err(|_| "QuickDraw GPU backend is busy")?
+            .render(command, background)
+    }
+}
+
+trait RasterMemory {
+    fn writable(&mut self, address: u32, len: usize) -> bool;
+    fn read(&mut self, address: u32, len: usize) -> Option<Vec<u8>>;
+    fn render(
+        &mut self,
+        command: &QuickDrawGpuCommand,
+        background: &[u32],
+    ) -> Result<Vec<QuickDrawGpuPixel>, String>;
+    fn store(&mut self, address: u32, bytes: &[u8]);
+}
+impl RasterMemory for MacMemoryBus {
+    fn writable(&mut self, address: u32, len: usize) -> bool {
+        self.presented_bytes_writable(address, len)
+    }
+    fn read(&mut self, address: u32, len: usize) -> Option<Vec<u8>> {
+        Some(self.read_bytes(address, len))
+    }
+    fn render(
+        &mut self,
+        command: &QuickDrawGpuCommand,
+        background: &[u32],
+    ) -> Result<Vec<QuickDrawGpuPixel>, String> {
+        self.quickdraw_gpu_renderer.render(command, background)
+    }
+    fn store(&mut self, address: u32, bytes: &[u8]) {
+        self.write_bytes(address, bytes);
+    }
+}
+impl RasterMemory for GuestAddressSpace {
+    fn writable(&mut self, address: u32, len: usize) -> bool {
+        u32::try_from(len).is_ok_and(|len| self.is_writable_range(address, len))
+    }
+    fn read(&mut self, address: u32, len: usize) -> Option<Vec<u8>> {
+        let mut bytes = vec![0; len];
+        self.read_bytes_into(address, &mut bytes)?;
+        Some(bytes)
+    }
+    fn render(
+        &mut self,
+        command: &QuickDrawGpuCommand,
+        background: &[u32],
+    ) -> Result<Vec<QuickDrawGpuPixel>, String> {
+        self.quickdraw_gpu_renderer().render(command, background)
+    }
+    fn store(&mut self, address: u32, bytes: &[u8]) {
+        let result = self.write_bytes(address, bytes);
+        debug_assert!(result.is_some(), "preflighted GPU store failed");
+    }
+}
+
+pub(crate) fn try_native_rectangle(
+    memory: &mut GuestAddressSpace,
+    target: RasterTarget,
+    command: QuickDrawGpuCommand,
+) -> bool {
+    if memory.quickdraw_gpu_renderer().is_none() {
+        return false;
+    }
+    try_raster(memory, target, command)
+}
+
 pub(crate) struct RasterTarget {
     pub base: u32,
     pub row_bytes: u32,
@@ -106,6 +203,14 @@ pub(crate) fn try_rectangle(
     if bus.quickdraw_gpu_renderer.is_none() || !bus.presented_bytes_gates_open() {
         return false;
     }
+    try_raster(bus, target, command)
+}
+
+fn try_raster(
+    bus: &mut impl RasterMemory,
+    target: RasterTarget,
+    command: QuickDrawGpuCommand,
+) -> bool {
     let Some(count) = command.pixel_count().filter(|count| *count <= 4_194_304) else {
         return false;
     };
@@ -154,7 +259,7 @@ pub(crate) fn try_rectangle(
         else {
             return false;
         };
-        if !bus.presented_bytes_writable(address, row_len) {
+        if !bus.writable(address, row_len) {
             return false;
         }
         addresses.push(address);
@@ -167,7 +272,9 @@ pub(crate) fn try_rectangle(
     let mut rows = Vec::with_capacity(height);
     let mut background = Vec::with_capacity(count);
     for &address in &addresses {
-        let bytes = bus.read_bytes(address, row_len);
+        let Some(bytes) = bus.read(address, row_len) else {
+            return false;
+        };
         for column in 0..width {
             let value = if target.depth < 8 {
                 let bit = bit_offset + column * target.depth as usize;
@@ -183,11 +290,7 @@ pub(crate) fn try_rectangle(
         }
         rows.push(bytes);
     }
-    let result = bus
-        .quickdraw_gpu_renderer
-        .as_mut()
-        .unwrap()
-        .render(&command, &background);
+    let result = bus.render(&command, &background);
     let Ok(pixels) = result else {
         return false;
     };
@@ -225,7 +328,7 @@ pub(crate) fn try_rectangle(
             while at < row_len && touched[at] {
                 at += 1;
             }
-            bus.write_bytes(address + start as u32, &bytes[start..at]);
+            bus.store(address + start as u32, &bytes[start..at]);
         }
     }
     true
@@ -298,15 +401,115 @@ impl QuickDrawGpuRenderer for ReferenceRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ppc::PpcMemory;
+    use std::{cell::Cell, rc::Rc};
+    #[test]
+    fn gpu_native_slot_shares_between_adapters_but_not_detached_snapshots() {
+        let calls = Rc::new(Cell::new(0));
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x1000, vec![0xa5; 16]);
+        let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+        bus.set_quickdraw_gpu_renderer(QuickDrawGpuSlot::new(Box::new(ReferenceRenderer {
+            calls: calls.clone(),
+            failure: 0,
+        })));
+        bus.attach_guest_address_space(memory.shared_view());
+        assert!(memory.quickdraw_gpu_renderer().is_some());
+        assert!(memory.clone().quickdraw_gpu_renderer().is_none());
+        let command = QuickDrawGpuCommand {
+            clip_rows: Some(vec![vec![], vec![1, 3]]),
+            polygon_edges: None,
+            area: [0, 0, 4, 2],
+            rect: [0, 0, 4, 2],
+            border: None,
+            pattern: [0xff; 8],
+            transfer: [[0, 7]; 2],
+        };
+        let token = ppc::PpcMemory::instruction_cache_token(&mut memory, 0x1000).unwrap();
+        assert!(try_native_rectangle(
+            &mut memory,
+            RasterTarget {
+                base: 0x1000,
+                row_bytes: 8,
+                depth: 8,
+                origin: [0, 0]
+            },
+            command.clone()
+        ));
+        assert_eq!(memory.read_u32_be(0x1000), Some(0xa5a5a5a5));
+        assert_eq!(memory.read_u32_be(0x1008), Some(0xa50707a5));
+        assert_ne!(
+            ppc::PpcMemory::instruction_cache_token(&mut memory, 0x1000),
+            Some(token)
+        );
+        assert_eq!(calls.get(), 1);
+        bus.set_quickdraw_gpu_renderer(QuickDrawGpuSlot::default());
+        assert!(memory.quickdraw_gpu_renderer().is_none());
+        assert!(!try_native_rectangle(
+            &mut memory,
+            RasterTarget {
+                base: 0x1000,
+                row_bytes: 8,
+                depth: 8,
+                origin: [0, 0]
+            },
+            command
+        ));
+    }
+
+    #[test]
+    fn gpu_native_preflight_and_backend_errors_preserve_pixels_and_code_tokens() {
+        for failure in [0, 1, 2] {
+            let mut memory = GuestAddressSpace::new();
+            memory.add_region(0x1000, vec![0xa5; 16]);
+            if failure == 0 {
+                memory.add_readonly_region(0x1008, vec![0xa5; 4]);
+            }
+            memory
+                .shared_view()
+                .set_quickdraw_gpu_renderer(QuickDrawGpuSlot::new(Box::new(ReferenceRenderer {
+                    calls: Rc::new(Cell::new(0)),
+                    failure,
+                })));
+            let token = ppc::PpcMemory::instruction_cache_token(&mut memory, 0x1000);
+            let command = QuickDrawGpuCommand {
+                clip_rows: None,
+                polygon_edges: None,
+                area: [0, 0, 4, 2],
+                rect: [0, 0, 4, 2],
+                border: None,
+                pattern: [0xff; 8],
+                transfer: [[0, 7]; 2],
+            };
+            assert!(!try_native_rectangle(
+                &mut memory,
+                RasterTarget {
+                    base: 0x1000,
+                    row_bytes: 8,
+                    depth: 8,
+                    origin: [0, 0]
+                },
+                command
+            ));
+            assert_eq!(memory.read_u32_be(0x1000), Some(0xa5a5a5a5));
+            assert_eq!(memory.read_u32_be(0x1008), Some(0xa5a5a5a5));
+            assert_eq!(
+                ppc::PpcMemory::instruction_cache_token(&mut memory, 0x1000),
+                token
+            );
+        }
+    }
+
     #[test]
     fn gpu_rectangle_writeback_preserves_packed_neighbors_padding_and_frame_holes() {
         for depth in [1, 2, 4, 8, 16, 32] {
             let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-            bus.quickdraw_gpu_renderer = Some(Box::new(ReferenceRenderer {
-                calls: calls.clone(),
-                failure: 0,
-            }));
+            bus.quickdraw_gpu_renderer =
+                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(ReferenceRenderer {
+                    calls: calls.clone(),
+                    failure: 0,
+                }));
             let row_bytes = (13usize * depth as usize).div_ceil(8) + 3;
             let original = vec![0xa5; row_bytes * 6];
             let mut expected = original.clone();
@@ -370,10 +573,11 @@ mod tests {
             let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
             bus.write_bytes(0x1000, &[0xa5; 16]);
             if failure != 0 {
-                bus.quickdraw_gpu_renderer = Some(Box::new(ReferenceRenderer {
-                    calls: Default::default(),
-                    failure,
-                }));
+                bus.quickdraw_gpu_renderer =
+                    crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(ReferenceRenderer {
+                        calls: Default::default(),
+                        failure,
+                    }));
             }
             let mut command = QuickDrawGpuCommand {
                 polygon_edges: None,

@@ -182,6 +182,7 @@ pub(crate) enum GuestMemoryRoute {
 /// crate's concrete memory type.
 #[derive(Debug, Default)]
 struct GuestAddressSpaceState {
+    quickdraw_gpu_renderer: crate::quickdraw::gpu::QuickDrawGpuSlot,
     presentation: super::presentation::PresentationSlot,
     regions: PpcSectionMem,
     ordinary_regions: Vec<OrdinaryRegionMapping>,
@@ -1105,6 +1106,13 @@ fn write_routed_u32_state(
 }
 
 impl SharedGuestAddressSpace {
+    pub(crate) fn set_quickdraw_gpu_renderer(
+        &self,
+        renderer: crate::quickdraw::gpu::QuickDrawGpuSlot,
+    ) {
+        self.with_state_mut(|state| state.quickdraw_gpu_renderer = renderer);
+    }
+
     pub(crate) fn set_presentation(&self, slot: super::presentation::PresentationSlot) {
         self.with_state_mut(|state| state.presentation = slot);
     }
@@ -1307,6 +1315,7 @@ impl Clone for GuestAddressSpace {
         Self(Rc::new(UnsafeCell::new(GuestAddressSpaceState {
             regions: state.regions.clone(),
             presentation: Default::default(),
+            quickdraw_gpu_renderer: Default::default(),
             ordinary_regions: state.ordinary_regions.clone(),
             shared_bounds: state.shared_bounds.clone(),
             shared_pages: state.shared_pages.clone(),
@@ -1338,6 +1347,9 @@ impl Clone for GuestAddressSpace {
 }
 
 impl GuestAddressSpace {
+    pub(crate) fn quickdraw_gpu_renderer(&self) -> crate::quickdraw::gpu::QuickDrawGpuSlot {
+        self.state().quickdraw_gpu_renderer.clone()
+    }
     pub(crate) fn presentation(&self) -> super::presentation::PresentationSlot {
         self.state().presentation.clone()
     }

@@ -161,6 +161,65 @@ const CLIPS: [(RegionSpec, RegionSpec); 4] = [
 ];
 
 #[test]
+fn gpu_native_solid_fills_match_software_for_packed_pixels_and_complex_regions() {
+    let pixels = initial_pixels();
+    for depth in [1, 2, 4, 8, 16] {
+        for (vis, clip) in CLIPS {
+            let fixture = fixture(&pixels, vis, clip);
+            for rect in RECTS {
+                for respect_clip in [false, true] {
+                    let mut outputs = Vec::new();
+                    for gpu in [false, true] {
+                        let mut loaded =
+                            load_pef_application(&synthetic_pef_with_import(b"PaintRect")).unwrap();
+                        install_port(&mut loaded, &fixture, depth);
+                        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                        if gpu {
+                            loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                    crate::quickdraw::gpu::ReferenceRenderer {
+                                        calls: calls.clone(),
+                                        failure: 0,
+                                    },
+                                )),
+                            );
+                        }
+                        let wrote = if respect_clip {
+                            ppc_paint_rect_bounds(
+                                &mut loaded.memory,
+                                &loaded.gworlds,
+                                PORT,
+                                rect,
+                                PPC_RGB_BLACK,
+                                Some(fixture.fg_index),
+                            )
+                        } else {
+                            ppc_paint_window_background_bounds(
+                                &mut loaded.memory,
+                                &loaded.gworlds,
+                                PORT,
+                                rect,
+                                PPC_RGB_BLACK,
+                            )
+                        };
+                        if rect == RECTS[3] {
+                            assert!(wrote, "whole-port fill must draw at depth {depth}");
+                        }
+                        assert_eq!(
+                            calls.get(),
+                            usize::from(gpu && wrote),
+                            "depth={depth},rect={rect:?}"
+                        );
+                        outputs.push((wrote, read_pixels(&mut loaded, pixels.len())));
+                    }
+                    assert_eq!(outputs[1],outputs[0],"depth={depth},rect={rect:?},respect_clip={respect_clip},vis={:?},clip={:?}",vis.0,clip.0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn fill_rect_matches_the_68k_fill_rect_path_on_an_8bpp_port() {
     let pixels = initial_pixels();
     let mut differing_from_solid = 0;

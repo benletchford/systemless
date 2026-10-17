@@ -127,8 +127,9 @@ draws use GPU pattern expansion and boolean transfers at 1, 2, 4, 8,
 16, and 32 bits per pixel, with immediate guest-memory writeback. Complex visible
 and clip regions are decoded into row intervals and tested on the GPU. Raw
 PixPats and retained-outline-preserving indexed inversions use software.
-Other guest shapes, PowerPC QuickDraw operations, and glyph rasterization still
-run on the CPU. It is experimental and reports initialization errors instead of
+PowerPC solid rectangle paints also use the shared GPU backend at 1, 2, 4, 8,
+and 16 bits per pixel. Other guest shapes, patterned PowerPC QuickDraw
+operations, and glyph rasterization still run on the CPU. It is experimental and reports initialization errors instead of
 silently selecting another backend.
 Without `--gpu`, existing platform presentation remains the default.
 `--headless --gpu` also enables guest rasterization in play scripts and timed runs

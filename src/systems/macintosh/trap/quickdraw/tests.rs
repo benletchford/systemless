@@ -645,11 +645,12 @@
 
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
             if gpu {
-                bus.quickdraw_gpu_renderer =
-                    Some(Box::new(crate::quickdraw::gpu::ReferenceRenderer {
+                bus.quickdraw_gpu_renderer = crate::quickdraw::gpu::QuickDrawGpuSlot::new(
+                    Box::new(crate::quickdraw::gpu::ReferenceRenderer {
                         calls: calls.clone(),
                         failure: 0,
-                    }));
+                    }),
+                );
             }
             d.draw_rgn(&mut cpu, &mut bus, rgn, ShapeOp::Frame);
             assert_eq!(calls.get(), usize::from(gpu));
@@ -2817,10 +2818,12 @@
         let (mut d, mut cpu, mut bus) = setup();
         let calls = std::rc::Rc::new(std::cell::Cell::new(0));
         if gpu {
-            bus.quickdraw_gpu_renderer = Some(Box::new(crate::quickdraw::gpu::ReferenceRenderer {
-                calls: calls.clone(),
-                failure: 0,
-            }));
+            bus.quickdraw_gpu_renderer = crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                crate::quickdraw::gpu::ReferenceRenderer {
+                    calls: calls.clone(),
+                    failure: 0,
+                },
+            ));
         }
         let base = bus.alloc(5 * 6);
         for offset in 0..30u32 {
@@ -2972,11 +2975,12 @@
             d.pn_size = (2, 3);
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
             if gpu {
-                bus.quickdraw_gpu_renderer =
-                    Some(Box::new(crate::quickdraw::gpu::ReferenceRenderer {
+                bus.quickdraw_gpu_renderer = crate::quickdraw::gpu::QuickDrawGpuSlot::new(
+                    Box::new(crate::quickdraw::gpu::ReferenceRenderer {
                         calls: calls.clone(),
                         failure: 0,
-                    }));
+                    }),
+                );
             }
             let rect = Rect {
                 top: 3,
