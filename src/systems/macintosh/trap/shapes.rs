@@ -1984,8 +1984,13 @@ impl super::TrapDispatcher {
                                 let source_is_black = effective_bk_pat[y.rem_euclid(8) as usize]
                                     & (1 << (7 - x.rem_euclid(8)))
                                     != 0;
-                                *pixel =
-                                    apply_boolean_transfer_8(*pixel, 0, source_is_black, fg_idx, bg_idx);
+                                *pixel = apply_boolean_transfer_8(
+                                    *pixel,
+                                    0,
+                                    source_is_black,
+                                    fg_idx,
+                                    bg_idx,
+                                );
                             }
                         }
                         if has_source {
@@ -2114,6 +2119,162 @@ impl super::TrapDispatcher {
                 _ => (u32::from(r >> 8) << 16) | (u32::from(g >> 8) << 8) | u32::from(b >> 8),
             }
         };
+        if bus.quickdraw_gpu_renderer.is_some() && matches!(pixel_size, 1 | 2 | 4 | 8 | 16 | 32) {
+            if let ShapeOp::Glyph(mode) = op {
+                let (top, left, bottom, right) = (
+                    r.top.max(clip_top),
+                    r.left.max(clip_left),
+                    r.bottom.min(clip_bottom),
+                    r.right.min(clip_right),
+                );
+                let width = (i32::from(right) - i32::from(left)).max(0) as usize;
+                let height = (i32::from(bottom) - i32::from(top)).max(0) as usize;
+                if width > 0 && height > 0 && width.saturating_mul(height) <= 4_194_304 {
+                    let mut cells = Vec::with_capacity(width * height);
+                    for y in top..bottom {
+                        for x in left..right {
+                            let inside = (!vis_region_complex
+                                || Self::region_contains_point_cached(
+                                    bus,
+                                    vis_rgn_handle,
+                                    vis_region_cache.as_ref(),
+                                    y,
+                                    x,
+                                ))
+                                && (!clip_region_complex
+                                    || Self::region_contains_point_cached(
+                                        bus,
+                                        clip_rgn_handle,
+                                        clip_region_cache.as_ref(),
+                                        y,
+                                        x,
+                                    ));
+                            cells.push(inside.then(|| coverage_at(y, x)));
+                        }
+                    }
+                    let mask = match pixel_size {
+                        32 => 0x00ff_ffff,
+                        16 => 0x7fff,
+                        d => (1u32 << d) - 1,
+                    };
+                    let pack = |(r, g, b): (u16, u16, u16)| {
+                        if pixel_size == 16 {
+                            (u32::from(r >> 11) << 10)
+                                | (u32::from(g >> 11) << 5)
+                                | u32::from(b >> 11)
+                        } else {
+                            (u32::from(r >> 8) << 16) | (u32::from(g >> 8) << 8) | u32::from(b >> 8)
+                        }
+                    };
+                    let map = |old: u32| match pixel_size {
+                        1 if matches!(mode, 0 | 1)
+                            && effective_fg_color == (0xffff, 0xffff, 0xffff) =>
+                        {
+                            0
+                        }
+                        1 => u32::from(apply_boolean_transfer_1(old != 0, mode, true)),
+                        2 | 4 | 8 => {
+                            u32::from(apply_boolean_transfer_8(
+                                old as u8, mode, true, fg_idx, bg_idx,
+                            )) & mask
+                        }
+                        _ => {
+                            apply_boolean_transfer_32(
+                                old,
+                                mode,
+                                true,
+                                pack(effective_fg_color),
+                                pack(effective_bg_color),
+                            ) & mask
+                        }
+                    };
+                    let zero = map(0);
+                    let command = crate::quickdraw::gpu::QuickDrawGpuCommand {
+                        mask: Some(crate::quickdraw::gpu::QuickDrawGpuMask {
+                            origin: [i32::from(left), i32::from(top)],
+                            size: [width as u32, height as u32],
+                            coverage: cells.iter().map(|c| c.unwrap_or(0)).collect(),
+                            threshold: MONO_COVERAGE_THRESHOLD,
+                            repeat_transfer: false,
+                        }),
+                        clip_rows: None,
+                        polygon_edges: None,
+                        area: [
+                            i32::from(left),
+                            i32::from(top),
+                            i32::from(right),
+                            i32::from(bottom),
+                        ],
+                        rect: [
+                            i32::from(left),
+                            i32::from(top),
+                            i32::from(right),
+                            i32::from(bottom),
+                        ],
+                        border: None,
+                        pattern: [255; 8],
+                        transfer: [[zero ^ map(mask), zero]; 2],
+                    };
+                    let target = crate::quickdraw::gpu::RasterTarget {
+                        base: pix_base,
+                        row_bytes: pix_row_bytes,
+                        depth: pixel_size,
+                        origin: [i32::from(bounds_left), i32::from(bounds_top)],
+                    };
+                    let prepared = crate::quickdraw::gpu::try_rectangle_with_prepare(
+                        bus,
+                        target,
+                        command,
+                        |bus| {
+                            if !glyph_detail {
+                                return;
+                            }
+                            for (row, cells) in cells.chunks(width).enumerate() {
+                                let y = i32::from(top) + row as i32;
+                                let mut x = 0;
+                                while x < width {
+                                    if cells[x].is_none() {
+                                        x += 1;
+                                        continue;
+                                    }
+                                    let first = x;
+                                    while x < width && cells[x].is_some() {
+                                        x += 1;
+                                    }
+                                    let coverage: Vec<u8> =
+                                        cells[first..x].iter().map(|c| c.unwrap()).collect();
+                                    let start = i32::from(left) + first as i32;
+                                    let address = pix_base
+                                        + (y - i32::from(bounds_top)) as u32 * pix_row_bytes
+                                        + (start - i32::from(bounds_left)) as u32 * glyph_lanes;
+                                    bus.outline_glyph_span(
+                                        address,
+                                        (start as i16, y as i16),
+                                        x - first,
+                                        glyph_lanes as usize,
+                                        glyph_foreground,
+                                        &coverage,
+                                    );
+                                }
+                            }
+                        },
+                    );
+                    if prepared {
+                        if touched_screen {
+                            let rect = (
+                                touch_top.saturating_sub(bounds_top),
+                                touch_left.saturating_sub(bounds_left),
+                                touch_bottom.saturating_sub(bounds_top),
+                                touch_right.saturating_sub(bounds_left),
+                            );
+                            self.refresh_dialog_saved_pixels_after_screen_draw(bus, port, rect);
+                            self.refresh_visible_dialog_snapshot_region_for_port(bus, port, rect);
+                        }
+                        return;
+                    }
+                }
+            }
+        }
         // Color QuickDraw matches pixel-pattern colors against the destination
         // device's inverse table (Imaging With QuickDraw 1994, pp. 4-82,
         // 4-103). Cache only source indices actually drawn: the match remains

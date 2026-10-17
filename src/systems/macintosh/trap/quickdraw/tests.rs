@@ -2953,6 +2953,129 @@
     }
 
     #[test]
+    fn gpu_classic_glyph_rows_match_software_at_every_depth_and_transfer() {
+        for depth in [1, 2, 4, 8, 16, 32] {
+            for mode in 0..8 {
+                for white in [false, true] {
+                    let mut expected = None;
+                    for backend in [None, Some(0), Some(1), Some(2)] {
+                        let (mut d, mut cpu, mut bus) = setup();
+                        setup_color_polygon_surface(&mut d, &cpu, &mut bus);
+                        let globals = bus.read_long(cpu.read_reg(Register::A5));
+                        let port = bus.read_long(globals);
+                        let pixmap = bus.read_long(bus.read_long(port + 2));
+                        let row_bytes = 64 * u32::from(depth) / 8 + 3;
+                        let base = bus.alloc(row_bytes * 64);
+                        bus.write_bytes(base, &vec![0xa5; (row_bytes * 64) as usize]);
+                        bus.write_long(pixmap, base);
+                        bus.write_word(pixmap + 4, 0x8000 | row_bytes as u16);
+                        bus.write_word(pixmap + 32, depth);
+                        d.screen_mode = (base, row_bytes, 64, 64, depth);
+                        d.fg_color = if white {
+                            (65535, 65535, 65535)
+                        } else {
+                            (0x1234, 0xabcd, 0xf0f0)
+                        };
+                        d.bg_color = (0xeec0, 0x4321, 0x0100);
+                        if matches!(depth, 8 | 16 | 32) {
+                            bus.enable_outline_presentation(
+                                d.screen_mode,
+                                std::array::from_fn(|i| [i as u8; 3]),
+                                4,
+                            );
+                        }
+                        let clip = make_complex_rgn(
+                            &mut bus,
+                            (2, 4, 12, 30),
+                            &[
+                                2,
+                                4,
+                                30,
+                                super::REGION_STOP,
+                                4,
+                                10,
+                                15,
+                                super::REGION_STOP,
+                                7,
+                                10,
+                                15,
+                                super::REGION_STOP,
+                                12,
+                                4,
+                                30,
+                                super::REGION_STOP,
+                                super::REGION_STOP,
+                            ],
+                        );
+                        bus.write_long(port + 28, clip);
+                        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                        if let Some(failure) = backend {
+                            bus.quickdraw_gpu_renderer =
+                                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                    crate::quickdraw::gpu::ReferenceRenderer {
+                                        calls: calls.clone(),
+                                        failure,
+                                    },
+                                ));
+                        }
+                        let (glyph, data) = crate::quickdraw::text::get_glyph(0, 12, 'W').unwrap();
+                        bus.begin_presentation_text_run(mode == 0);
+                        bus.begin_outline_glyph(glyph, data, 3, 13, false, None, None);
+                        let rect = Rect {
+                            top: 1,
+                            left: 3,
+                            bottom: 14,
+                            right: 35,
+                        };
+                        d.draw_generic_shape(
+                            &mut cpu,
+                            &mut bus,
+                            &rect,
+                            ShapeOp::Glyph(mode),
+                            false,
+                            |y, x| {
+                                [0, 1, 127, 128, 129, 254, 255]
+                                    [(i32::from(y) * 3 + i32::from(x)).rem_euclid(7) as usize]
+                            },
+                        );
+                        bus.end_outline_glyph();
+                        bus.end_presentation_text_run();
+                        if backend.is_some() {
+                            assert_eq!(calls.get(), 1);
+                        }
+                        let bytes = bus.read_bytes(base, (row_bytes * 64) as usize);
+                        let detail: Vec<_> = (1..14)
+                            .flat_map(|y| (3..35).map(move |x| (x, y)))
+                            .map(|(x, y)| {
+                                bus.save_pixel_bytes(
+                                    base + y * row_bytes + x * u32::from(depth / 8),
+                                    usize::from(depth / 8).max(1),
+                                )
+                                .has_detail_at(0)
+                            })
+                            .collect();
+                        if matches!(depth, 8 | 16 | 32) && matches!(mode, 0 | 1) {
+                            assert!(
+                                detail.iter().any(|v| *v),
+                                "retained outline must be exercised"
+                            );
+                        }
+                        let actual = (bytes, detail);
+                        if let Some(expected) = &expected {
+                            assert_eq!(
+                                &actual, expected,
+                                "depth={depth},mode={mode},white={white},backend={backend:?}"
+                            );
+                        } else {
+                            expected = Some(actual);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn gpu_color_shapes_match_classic_transfer_modes_at_every_depth() {
         fn draw(depth: u16, mode: i16, op: ShapeOp, gpu: bool, shape: u8) -> (Vec<u8>, usize) {
             let (mut d, mut cpu, mut bus) = setup();
