@@ -4143,6 +4143,63 @@ mod tests {
     }
 
     #[test]
+    fn gpu_readback_preserves_untouched_retained_text() {
+        let mut bus = bus();
+        paint_detail(&mut bus, 0x1002);
+        assert!(bus.has_visible_outline_detail());
+        let original: Vec<u8> = (0..64)
+            .map(|offset| bus.read_byte(0x1000 + offset))
+            .collect();
+        let mut memory = crate::memory::GuestAddressSpace::new();
+        memory.add_region(0x1000, original);
+        memory
+            .shared_view()
+            .set_presentation(bus.presentation.clone());
+        let front = crate::loader::ppc::PpcFrontBuffer {
+            base_addr: 0x1000,
+            row_bytes: 8,
+            width: 8,
+            height: 8,
+            depth: 8,
+        };
+        let clut = std::array::from_fn(|i| [i as u16 * 257; 3]);
+        let mut pixels = vec![0x8000; 64];
+        assert!(crate::loader::ppc::qd3d_gpu::commit_pixels(
+            &mut memory,
+            front,
+            Some(&clut),
+            &pixels
+        ));
+        assert!(
+            bus.has_visible_outline_detail(),
+            "untouched readback cleared text coverage"
+        );
+        pixels[9] = 0;
+        assert!(crate::loader::ppc::qd3d_gpu::commit_pixels(
+            &mut memory,
+            front,
+            Some(&clut),
+            &pixels
+        ));
+        assert!(
+            bus.has_visible_outline_detail(),
+            "painting elsewhere cleared text coverage"
+        );
+        pixels[9] = 0x8000;
+        pixels[2] = 0;
+        assert!(crate::loader::ppc::qd3d_gpu::commit_pixels(
+            &mut memory,
+            front,
+            Some(&clut),
+            &pixels
+        ));
+        assert!(
+            !bus.has_visible_outline_detail(),
+            "painting over text must invalidate its coverage"
+        );
+    }
+
+    #[test]
     fn plain_bytes_check_sees_text_under_matching_bytes() {
         let mut bus = bus();
         assert!(bus.span_holds_plain_bytes(0x1000, &[255; 8]));

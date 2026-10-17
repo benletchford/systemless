@@ -280,6 +280,7 @@ pub mod memory;
 pub mod menu;
 pub mod palettes;
 pub mod qd3d;
+pub(crate) mod qd3d_gpu;
 pub(crate) mod qd3d_text;
 pub mod quickdraw;
 pub mod quicktime;
