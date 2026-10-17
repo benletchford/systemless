@@ -11420,8 +11420,7 @@ Disassembly places that PC in a nested shade-table construction loop, so this
 image is not evidence of a menu wait or permanent hang. Its committed volume is
 the identical verified Marathon output above; independent catalog/CRC/fork and
 metadata checks pass. Original media remains unchanged. Interactive new game,
-movement and sustained gameplay remain unverified. A longer bounded replay is
-being observed separately; it must reach a terminal result before any claim.
+movement and sustained gameplay remain unverified. The longer bounded replay result is recorded below.
 
 Evidence: /tmp/systemless-checkpoint-{build,checkpoint,control,existing-output}.txt,
 /tmp/systemless-checkpoint-{equivalence,parser}.json, and the private
@@ -11443,4 +11442,26 @@ cursor visible). The trace nevertheless requests and draws PICT 1111 and 1114,
 and performs SetEntries calls. Therefore the next investigation must include the
 intro picture/palette/display path, rather than assuming a visible menu was only
 missed by input timing. This is evidence of an unresolved display boundary, not
-proof of the particular cause. The longer replay remains separately pending.
+proof of the particular cause. The longer replay result is recorded below.
+
+
+The longer 120M-poll replay is now terminal: budget exit 1, 119,997,031 retired
+instructions / PC01004CDE, with every scheduled N edge delivered (1M, 8M, 60M,
+100M). Film resource ordinals cycle 2, 1, 2, 1. The final image was inspected and
+is black, SHA-256 `a6087ec5178c7619d8136de2aa159dde7161d56f9e4c3b899b7165935d0353d8`.
+Its committed volume retains SHA-256
+`e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`;
+independent CRC/catalog/companion/fork/metadata validation passes. There is no
+new-game or movement acceptance from this replay and no live replay left running.
+
+A separate 3M-poll original intro trace with display/drawing diagnostics proves
+PICT 1111 changes main-screen pixels at retired instruction 2,995,940:
+1,734 pixels at index 16 and 305,466 at index 255. This rules out a completely
+empty/wrong-offscreen destination at that observation. Both used logical CLUT
+entries are black. However presentation correctly uses a separate physical video
+driver palette, and the trace contains repeated DeviceControl calls during fades;
+logical CLUT black alone does not diagnose a presentation bug. The precise next
+step is inspect those driver parameter blocks, return codes and physical palette
+changes, alongside PICT index mapping. This run ends at 3M / PC010059EC in the
+original color interpolation code, budget exit 1. Keep this evidence separate from
+native Macintosh behavior; no native display/palette parity is claimed.
