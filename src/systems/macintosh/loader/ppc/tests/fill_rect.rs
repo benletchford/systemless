@@ -137,14 +137,36 @@ fn fill_rect_ppc(
     (top, left, bottom, right): (i16, i16, i16, i16),
     pattern: [u8; 8],
 ) -> Vec<u8> {
+    fill_rect_ppc_route(fixture, depth, (top, left, bottom, right), pattern, None).0
+}
+
+fn fill_rect_ppc_route(
+    fixture: &IndexedPortFixture<'_>,
+    depth: u32,
+    (top, left, bottom, right): (i16, i16, i16, i16),
+    pattern: [u8; 8],
+    gpu_failure: Option<u8>,
+) -> (Vec<u8>, usize) {
     let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FillRect")).unwrap();
     install_port(&mut loaded, fixture, depth);
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    if let Some(failure) = gpu_failure {
+        loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+            crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                crate::quickdraw::gpu::ReferenceRenderer {
+                    calls: calls.clone(),
+                    failure,
+                },
+            )),
+        );
+    }
+
     ppc_write_rect(&mut loaded.memory, RECT, top, left, bottom, right).unwrap();
     loaded.memory.write_bytes(PATTERN, &pattern).unwrap();
     loaded.cpu.gpr[3] = RECT;
     loaded.cpu.gpr[4] = PATTERN;
     run_test_import(&mut loaded, PpcImportDispatcherTarget::FillRect);
-    read_pixels(&mut loaded, fixture.pixels.len())
+    (read_pixels(&mut loaded, fixture.pixels.len()), calls.get())
 }
 
 const RECTS: [(i16, i16, i16, i16); 4] = [
@@ -159,6 +181,90 @@ const CLIPS: [(RegionSpec, RegionSpec); 4] = [
     (WHOLE_PORT, CLIP_WITH_HOLE),
     (VIS_NOTCHED, CLIP_WITH_HOLE),
 ];
+
+#[test]
+fn gpu_native_fill_rect_patterns_match_software_and_error_fallback() {
+    let pixels = initial_pixels();
+    for depth in [8, 16] {
+        for (vis, clip) in CLIPS {
+            let fixture = fixture(&pixels, vis, clip);
+            for rect in RECTS {
+                for pattern in [[0xff; 8], [0; 8], GRAY, DIAGONAL, MIXED] {
+                    let expected = fill_rect_ppc(&fixture, depth, rect, pattern);
+                    let (actual, calls) =
+                        fill_rect_ppc_route(&fixture, depth, rect, pattern, Some(0));
+                    assert_eq!(
+                        actual, expected,
+                        "depth={depth},rect={rect:?},pattern={pattern:?}"
+                    );
+                    if rect == RECTS[3] {
+                        assert_eq!(calls, 1);
+                    }
+                }
+            }
+        }
+    }
+    let fixture = fixture(&pixels, VIS_NOTCHED, CLIP_WITH_HOLE);
+    let expected = fill_rect_ppc(&fixture, 16, RECTS[3], MIXED);
+    for failure in [1, 2] {
+        let (actual, calls) = fill_rect_ppc_route(&fixture, 16, RECTS[3], MIXED, Some(failure));
+        assert_eq!(calls, 1);
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn gpu_native_paint_patterns_keep_pixel_image_phase_at_every_depth() {
+    let pixels = initial_pixels();
+    for depth in [1, 2, 4, 8, 16] {
+        for (vis, clip) in CLIPS {
+            let fixture = fixture(&pixels, vis, clip);
+            for rect in RECTS {
+                for pattern in [GRAY, MIXED] {
+                    let mut outputs = Vec::new();
+                    for gpu in [false, true] {
+                        let mut loaded =
+                            load_pef_application(&synthetic_pef_with_import(b"PaintRect")).unwrap();
+                        install_port(&mut loaded, &fixture, depth);
+                        ppc_write_rect(&mut loaded.memory, RECT, rect.0, rect.1, rect.2, rect.3)
+                            .unwrap();
+                        loaded.cpu.gpr[3] = RECT;
+                        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                        if gpu {
+                            loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                    crate::quickdraw::gpu::ReferenceRenderer {
+                                        calls: calls.clone(),
+                                        failure: 0,
+                                    },
+                                )),
+                            );
+                        }
+                        let wrote = ppc_paint_rect(
+                            &loaded.cpu,
+                            &mut loaded.memory,
+                            &loaded.gworlds,
+                            PORT,
+                            PPC_RGB_BLACK,
+                            Some(fixture.fg_index),
+                            PPC_RGB_WHITE,
+                            &pattern,
+                        );
+                        if rect == RECTS[3] {
+                            assert!(wrote);
+                            assert_eq!(calls.get(), usize::from(gpu));
+                        }
+                        outputs.push((wrote, read_pixels(&mut loaded, pixels.len())));
+                    }
+                    assert_eq!(
+                        outputs[1], outputs[0],
+                        "depth={depth},rect={rect:?},pattern={pattern:?}"
+                    );
+                }
+            }
+        }
+    }
+}
 
 #[test]
 fn gpu_native_solid_fills_match_software_for_packed_pixels_and_complex_regions() {

@@ -121,6 +121,44 @@ impl ClipRows {
         Self { bbox, rows: None }
     }
 
+    /// Covered intervals of `area`, including empty rows outside the clip.
+    /// Malformed or oversized endpoint lists are declined without normalization.
+    pub(crate) fn clipped_rows(&self, area: Rect) -> Option<Vec<Vec<i16>>> {
+        let mut endpoints = 0usize;
+        let mut work = 0usize;
+        (i32::from(area.top)..i32::from(area.bottom))
+            .map(|y| {
+                let left = area.left.max(self.bbox.left);
+                let right = area.right.min(self.bbox.right);
+                if y < i32::from(self.bbox.top) || y >= i32::from(self.bbox.bottom) || left >= right
+                {
+                    return Some(vec![]);
+                }
+                let row = if let Some(rows) = &self.rows {
+                    let Some(row) = rows.get(usize::try_from(y - i32::from(self.bbox.top)).ok()?)
+                    else {
+                        return Some(vec![]);
+                    };
+                    work = work.checked_add(row.len())?;
+                    if work > 64_000_000 {
+                        return None;
+                    }
+                    if row.len() % 2 != 0 || row.windows(2).any(|p| p[0] >= p[1]) {
+                        return None;
+                    }
+                    super::region_rows::intersect_rows(&[left, right], row)
+                } else {
+                    vec![left, right]
+                };
+                endpoints = endpoints.checked_add(row.len())?;
+                if endpoints > 1_048_576 {
+                    return None;
+                }
+                Some(row)
+            })
+            .collect()
+    }
+
     /// Row `i` of `rows` lists the covered x endpoints of scanline
     /// `top + i`, as `region_rows` reads them; scanlines past the last row
     /// are clipped away.
