@@ -11958,3 +11958,58 @@ Do not claim the output catalog is byte-identical or all node identities unchang
 Original input assets remain untouched. Next implement documented shared CmpString
 ABI/case/diacritic semantics and replay EV; continue actual audio callbacks, full
 gameplay, native/browser, Mixed Mode and complete GPU text. Goal remains active.
+
+
+## Shared EqualString/CmpString implementation (2026-10-17)
+
+Original EV's A43C boundary now reaches shared Roman byte equality through native
+register variants and the PPC Pascal-string import. Return inversion belongs to
+the ABI reply; comparison is CPU independent. The four case/mark modes follow
+Text1993, superseding earlier inverted MARKS prose. A rendered primary IM IV table
+also corrects the preserved runtime's unsupported ligature-to-base stripping.
+Architecture.md records primary contracts, conversion profile and explicit limits.
+
+Six tests cover all modifier modes, ASCII/extended bytes, every documented strip/
+case pair, ligatures without expansions, embedded zero, native65535-byte spans,
+empty pointers including a terminal-address Pascal prefix, complete-span faults,
+register/flag/stack/error preservation and actual PPC discovery plus native
+modified-veneer JSR. The core/environment/trap-patches/equality run passes117
+checks with real GPU tests enabled; scoped strict Clippy and Rust1.93 pass. Final
+expanded discovery checks are finishing in /tmp/systemless-equal-tests-complete.txt
+and /tmp/systemless-equal-clippy-complete.txt. Earlier gate used a misspelled test
+target; it was rerun under the correct trap_patches target. No failure is counted
+as a pass. No dependencies change.
+
+Original EV24M replay is live under /tmp/systemless-ev-equal.txt with fresh saved
+outputs /tmp/systemless-ev-equal.{ppm,slv}; no final original outcome is claimed.
+After it terminates inspect frames and independently check catalog/fork changes,
+then record the next actual boundary. Full rebuild/wgpu-text/game/mixed-mode/
+native/browser acceptance remains open; goal stays active and PR4802 draft.
+
+
+Final equality gate:117 selected checks pass, zero failed/ignored:100 library
+(real GPU cases enabled),7 environment,6 string comparison,4 trap-patches.
+Accepted logs /tmp/systemless-equal-tests-accepted.txt and
+/tmp/systemless-equal-clippy-accepted.txt. Tracer build, declared Rust1.93,
+sequential stdin formatting and whitespace checks pass. The final tests include
+unsigned255-byte Pascal strings and actual PPC GetOSTrapAddress lookup of each
+modifier before native JSR with original D1. No dependencies change.
+
+Original EV now makes two real shared EqualString calls and completes24,000,000
+retired instructions / PC0003E30A to its requested24M budget (exit1), instead of
+faulting at12,981,332 / PC0001B5BE. The inspected frame shows the main menu and
+New Pilot/Open Pilot/Enter Ship controls. No ship/gameplay interaction after menu
+arrival has yet been verified; the old8M E key precedes this current menu state.
+Screen SHA256c5fd0e3c2ba4146d50433f70a9cef5b2aeeded8e186cecb3d5494c4738af5a49.
+The independently parsed saved v3 catalog is byte-identical to the preceding
+output-volume milestone, SHA256634e760a54feb7579480885633bc964dd2f80c8e88a0bd67f9a25a86d5f9a72f.
+This preserves that milestone's explicit guest alias recreation/new-file deltas;
+it does not mean the catalog equals the untouched input. Evidence:
+/tmp/systemless-ev-equal.{txt,ppm,png,slv}, archived privately under
+future/target/validation/string-equality.
+
+A separate40M run is now live at /tmp/systemless-ev-equal-enter.txt, scheduling
+actual E/code14/text e at24M after menu arrival, with a pre-input checkpoint and
+new immutable outputs. Inspect completion/frame/catalog before claiming entry or
+controls. Callback/audio, longer gameplay, original Marathon regression,
+native/browser, Mixed Mode and full wgpu-text/rebuild acceptance remain open.

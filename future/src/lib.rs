@@ -54,6 +54,7 @@ pub mod runtime;
 pub mod sound;
 pub mod standard_file;
 mod stdlib;
+pub mod string_compare;
 mod surface;
 pub mod text;
 mod text_gpu;

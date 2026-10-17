@@ -4453,3 +4453,37 @@ Primary range/layout contract: Inside Macintosh Sound, pp. 2-139–142:
 https://dev.os9.ca/techpubs/mac/pdf/Sound/Sound_Manager.pdf
 The actual 68K selector words are verified against Apple's Sound.h and original
 EV; printed assembly tables in the PDF contain inconsistent low selector words.
+
+
+## Shared Roman string equality
+
+Native CmpString A03C/A23C/A43C/A63C and the PPC EqualString import now dispatch
+one typed byte-span equality request. 68K arguments are A0/A1 raw character
+pointers and unsigned16-bit byte counts packed into D0; PPC arguments are Pascal
+strings and low-byte Boolean sensitivity flags. Both complete nonempty spans are
+validated before comparison even if their lengths differ. Empty raw spans are not
+dereferenced. Embedded zero bytes are ordinary data; no C-string interpretation,
+allocation or destination mutation is involved.
+
+The shared result is a Boolean; ABI reply handling converts it to native D0 zero
+for equal / one for unequal, while PPC receives its Pascal Boolean. Native stack,
+source registers, condition flags and MemErr/ResErr remain intact. The canonical
+A03C veneer is discoverable from either CPU; OS patch-chain D1 retains the original
+modifier word when a caller chains to that veneer.
+
+The comparison is the documented nonlocalizable Roman byte operation, not a
+Unicode or locale sorting function. CASE(bit10) enables case sensitivity and
+MARKS(bit9) enables diacritic sensitivity, following the later four-row table in
+Inside Macintosh: Text(1993),5-51–52. That table supersedes the inverted MARKS
+annotation in the1985/1986 descriptions. Conversion uses the explicit single-byte
+Roman stripping/uppercase table in IM IV,IV-235. Unlisted bytes retain identity;
+there is no multi-character expansion. In particular Æ/æ and Œ/œ fold case but do
+not strip to A/O. The preserved implementation incorrectly strips those ligatures;
+that legacy result is not adopted as authority. This does not add locale-aware
+IdenticalString/CompareString/RelString sorting or script/resource overrides.
+Existing catalog name comparison is not silently replaced by this service.
+
+Primary sources inspected:
+https://vintageapple.org/inside_r/pdf/Text_1993.pdf (printed5-51–52, PDF561–562)
+https://vintageapple.org/inside_o/pdf/Inside_Macintosh_Volume_IV_1986.pdf
+(printedIV-235, PDF244, rendered table inspected). Local reference SHA256: 17bb3f9719523b18b4a3e70343c622b6c1a19e9d1c2c0ef0e2e409527ed17a50.

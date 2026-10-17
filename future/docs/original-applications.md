@@ -5395,3 +5395,31 @@ Do not claim the output catalog is byte-identical or all node identities unchang
 Original input assets remain untouched. Next implement documented shared CmpString
 ABI/case/diacritic semantics and replay EV; continue actual audio callbacks, full
 gameplay, native/browser, Mixed Mode and complete GPU text. Goal remains active.
+
+
+Final equality gate:117 selected checks pass, zero failed/ignored:100 library
+(real GPU cases enabled),7 environment,6 string comparison,4 trap-patches.
+Accepted logs /tmp/systemless-equal-tests-accepted.txt and
+/tmp/systemless-equal-clippy-accepted.txt. Tracer build, declared Rust1.93,
+sequential stdin formatting and whitespace checks pass. The final tests include
+unsigned255-byte Pascal strings and actual PPC GetOSTrapAddress lookup of each
+modifier before native JSR with original D1. No dependencies change.
+
+Original EV now makes two real shared EqualString calls and completes24,000,000
+retired instructions / PC0003E30A to its requested24M budget (exit1), instead of
+faulting at12,981,332 / PC0001B5BE. The inspected frame shows the main menu and
+New Pilot/Open Pilot/Enter Ship controls. No ship/gameplay interaction after menu
+arrival has yet been verified; the old8M E key precedes this current menu state.
+Screen SHA256c5fd0e3c2ba4146d50433f70a9cef5b2aeeded8e186cecb3d5494c4738af5a49.
+The independently parsed saved v3 catalog is byte-identical to the preceding
+output-volume milestone, SHA256634e760a54feb7579480885633bc964dd2f80c8e88a0bd67f9a25a86d5f9a72f.
+This preserves that milestone's explicit guest alias recreation/new-file deltas;
+it does not mean the catalog equals the untouched input. Evidence:
+/tmp/systemless-ev-equal.{txt,ppm,png,slv}, archived privately under
+future/target/validation/string-equality.
+
+A separate40M run is now live at /tmp/systemless-ev-equal-enter.txt, scheduling
+actual E/code14/text e at24M after menu arrival, with a pre-input checkpoint and
+new immutable outputs. Inspect completion/frame/catalog before claiming entry or
+controls. Callback/audio, longer gameplay, original Marathon regression,
+native/browser, Mixed Mode and full wgpu-text/rebuild acceptance remain open.

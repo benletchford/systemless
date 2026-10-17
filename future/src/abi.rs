@@ -19,6 +19,7 @@ pub enum Service {
     Retrace { remove: bool, slot: bool },
     NumToString,
     StringToNum,
+    EqualString,
     Gestalt,
     Button,
     StillDown,
@@ -342,6 +343,7 @@ pub enum Reply {
     M68kFileError,
     M68kOSEvent,
     M68kD0,
+    M68kNotBoolean,
     M68kMaxMemory(bool),
     M68kByte,
     M68kError,
@@ -493,6 +495,7 @@ impl Abi {
             b"BeginUpdate" => Some(Service::Window(crate::windows::Op::Begin)),
             b"EndUpdate" => Some(Service::Window(crate::windows::Op::End)),
             b"Gestalt" => Some(Service::Gestalt),
+            b"EqualString" => Some(Service::EqualString),
             b"Button" => Some(Service::Button),
             b"StillDown" => Some(Service::StillDown),
             b"FindWindow" => Some(Service::FindWindow),
@@ -2042,6 +2045,21 @@ impl Abi {
                     Reply::StackByte(GuestPtr(result)),
                 ))
             }
+            0xa03c | 0xa23c | 0xa43c | 0xa63c => Ok((
+                Call::EqualString(crate::string_compare::Equal {
+                    first: crate::string_compare::Bytes {
+                        pointer: GuestPtr(c.dar[8]),
+                        length: (c.dar[0] >> 16) as u16,
+                    },
+                    second: crate::string_compare::Bytes {
+                        pointer: GuestPtr(c.dar[9]),
+                        length: c.dar[0] as u16,
+                    },
+                    case_sensitive: opcode & 0x400 != 0,
+                    marks_sensitive: opcode & 0x200 != 0,
+                }),
+                Reply::M68kNotBoolean,
+            )),
             0xa0ad | 0xa1ad => Ok((Call::Gestalt(c.dar[0]), Reply::M68kGestalt)),
             0xa974 => {
                 memory.validate_write(GuestPtr(sp), 1)?;
@@ -4444,6 +4462,12 @@ impl Abi {
                     }
                 })
             }
+            Service::EqualString => Call::EqualString(crate::string_compare::Equal {
+                first: crate::string_compare::Bytes::pascal(memory, GuestPtr(c.gpr[3]))?,
+                second: crate::string_compare::Bytes::pascal(memory, GuestPtr(c.gpr[4]))?,
+                case_sensitive: c.gpr[5] as u8 != 0,
+                marks_sensitive: c.gpr[6] as u8 != 0,
+            }),
             Service::Gestalt => Call::Gestalt(c.gpr[3]),
             Service::Button => Call::Button,
             Service::StillDown => Call::StillDown,
@@ -5720,6 +5744,10 @@ impl Reply {
             Self::M68kByte => match cpu {
                 Cpu::M68k(c) => c.dar[0] = (c.dar[0] & 0xffff_ff00) | (value & 0xff),
                 _ => return Err(Error::Cpu("68K byte result on PPC".into())),
+            },
+            Self::M68kNotBoolean => match cpu {
+                Cpu::M68k(c) => c.dar[0] = u32::from(value == 0),
+                _ => return Err(Error::Cpu("68K comparison result on PPC".into())),
             },
             Self::M68kHandle | Self::M68kD0 | Self::M68kError => match cpu {
                 Cpu::M68k(c) => {

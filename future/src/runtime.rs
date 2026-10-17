@@ -2337,6 +2337,10 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::EqualString(request) => {
+                            let equal = request.evaluate(&self.memory)?;
+                            reply.apply(&mut self.cpu, &mut self.memory, u32::from(equal), 0)?;
+                        }
                         Call::GetOutputVolume(destination) => {
                             let error = self
                                 .process
@@ -2921,6 +2925,7 @@ impl Runtime {
                         | Call::SoundPlay { .. }
                         | Call::SoundVersion
                         | Call::SoundStatus(_)
+                        | Call::EqualString(_)
                         | Call::GetOutputVolume(_)
                         | Call::SetOutputVolume(_)
                         | Call::SoundVolume(_)

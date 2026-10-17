@@ -407,6 +407,7 @@ pub enum Call {
     },
     SoundVolume(i16),
     GetOutputVolume(GuestPtr),
+    EqualString(crate::string_compare::Equal),
     SetOutputVolume(u32),
     SoundChannel(crate::sound::Op),
     SoundStartFile(crate::sound::StartFilePlay),
