@@ -1826,6 +1826,7 @@ impl super::TrapDispatcher {
                 };
                 if let Some(clip_rows) = gpu_clip {
                     let command = crate::quickdraw::gpu::QuickDrawGpuCommand {
+                        mask: None,
                         clip_rows,
                         polygon_edges: polygon_edges.clone(),
                         area: [

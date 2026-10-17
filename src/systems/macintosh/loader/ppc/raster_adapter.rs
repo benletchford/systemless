@@ -135,6 +135,7 @@ pub(super) fn ppc_gpu_pattern_rect(
             .rotate_left((-i32::from(ink.pat_origin.0)).rem_euclid(8) as u32)
     });
     let command = QuickDrawGpuCommand {
+        mask: None,
         area: [
             i32::from(area.left),
             i32::from(area.top),

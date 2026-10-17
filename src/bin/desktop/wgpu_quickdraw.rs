@@ -114,7 +114,8 @@ impl State {
         let output_bytes = (count as u64)
             .checked_mul(8)
             .ok_or("QuickDraw size overflow")?;
-        if !command.valid_clip_rows()
+        if !command.valid_mask()
+            || !command.valid_clip_rows()
             || !command.valid_polygon_edges()
             || background.len() != count
             || output_bytes > u64::from(limits.max_storage_buffer_binding_size)
@@ -184,6 +185,25 @@ impl State {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
+        let mask_bytes: Vec<u8> = command.mask.as_ref().map_or_else(
+            || vec![0; 4],
+            |mask| {
+                mask.coverage
+                    .iter()
+                    .flat_map(|&v| u32::from(v).to_le_bytes())
+                    .collect()
+            },
+        );
+        if mask_bytes.len() as u64 > u64::from(limits.max_storage_buffer_binding_size) {
+            return Err("QuickDraw mask exceeds GPU limits".into());
+        }
+        let mask_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("QuickDraw glyph coverage"),
+                contents: &mask_bytes,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
         let input: Vec<u8> = background.iter().flat_map(|p| p.to_le_bytes()).collect();
         let input = self
             .device
@@ -199,7 +219,7 @@ impl State {
             mapped_at_creation: false,
         });
         let border = command.border.unwrap_or([0, 0]);
-        let mut words = Vec::with_capacity(28);
+        let mut words = Vec::with_capacity(32);
         words.extend([
             command.area[0] as u32,
             command.area[1] as u32,
@@ -218,9 +238,21 @@ impl State {
         words.extend([
             u32::from(command.polygon_edges.is_some()),
             edges.len() as u32,
-            0,
+            command
+                .mask
+                .as_ref()
+                .map_or(0, |mask| u32::from(mask.threshold)),
             0,
         ]);
+        let mask_geometry = command.mask.as_ref().map_or([0; 4], |mask| {
+            [
+                mask.origin[0],
+                mask.origin[1],
+                mask.size[0] as i32,
+                mask.size[1] as i32,
+            ]
+        });
+        words.extend(mask_geometry.map(|v| v as u32));
         let uniform: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
         let uniform = self
             .device
@@ -256,6 +288,10 @@ impl State {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: products.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: mask_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -329,6 +365,118 @@ impl State {
 mod tests {
     use super::*;
     #[test]
+    fn gpu_glyph_masks_match_thresholds_clips_and_negative_origins() {
+        use systemless::quickdraw::gpu::QuickDrawGpuMask;
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let coverage = (0..63)
+            .map(|i| [0, 1, 127, 128, 129, 254, 255][i % 7])
+            .collect::<Vec<_>>();
+        for origin in [[-3, -2], [4, 6]] {
+            for threshold in [1, 128, 255] {
+                let command = QuickDrawGpuCommand {
+                    mask: Some(QuickDrawGpuMask {
+                        origin,
+                        size: [9, 7],
+                        coverage: coverage.clone(),
+                        threshold,
+                    }),
+                    area: [-5, -4, 16, 15],
+                    rect: [-5, -4, 16, 15],
+                    clip_rows: Some(vec![vec![-5, 1, 3, 16]; 19]),
+                    polygon_edges: None,
+                    border: None,
+                    pattern: [0xff; 8],
+                    transfer: [[0xffff, 0xa5]; 2],
+                };
+                let pixels = state.render(&command, &vec![0x8001; 21 * 19]).unwrap();
+                for y in -4..15 {
+                    for x in -5..16 {
+                        let tx = x - origin[0];
+                        let ty = y - origin[1];
+                        let covered = (0..9).contains(&tx)
+                            && (0..7).contains(&ty)
+                            && !(1..3).contains(&x)
+                            && coverage[(ty * 9 + tx) as usize] >= threshold;
+                        assert_eq!(
+                            pixels[((y + 4) * 21 + x + 5) as usize],
+                            QuickDrawGpuPixel {
+                                value: if covered { 0x80a4 } else { 0x8001 },
+                                covered
+                            },
+                            "origin={origin:?},threshold={threshold},point={x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+        for area in [
+            [-32768, -32768, -32766, -32766],
+            [32766, 32766, 32767, 32767],
+        ] {
+            let origin = if area[0] < 0 {
+                [-32770, -32770]
+            } else {
+                [32766, 32766]
+            };
+            let command = QuickDrawGpuCommand {
+                mask: Some(QuickDrawGpuMask {
+                    origin,
+                    size: [4, 4],
+                    coverage: vec![255; 16],
+                    threshold: 128,
+                }),
+                area,
+                rect: area,
+                clip_rows: None,
+                polygon_edges: None,
+                border: None,
+                pattern: [0xff; 8],
+                transfer: [[0xffff, 0xa5]; 2],
+            };
+            let pixels = state
+                .render(&command, &vec![0x8001; command.pixel_count().unwrap()])
+                .unwrap();
+            assert!(pixels.iter().all(|p| *p
+                == QuickDrawGpuPixel {
+                    value: 0x80a4,
+                    covered: true
+                }));
+        }
+        let mut command = QuickDrawGpuCommand {
+            mask: None,
+            area: [0, 0, 1, 1],
+            rect: [0, 0, 1, 1],
+            clip_rows: None,
+            polygon_edges: None,
+            border: None,
+            pattern: [0; 8],
+            transfer: [[0; 2]; 2],
+        };
+        for (size, coverage, threshold) in [
+            ([0, 1], vec![], 128),
+            ([2, 2], vec![255; 3], 128),
+            ([1, 1], vec![255], 0),
+        ] {
+            command.mask = Some(QuickDrawGpuMask {
+                origin: [0, 0],
+                size,
+                coverage,
+                threshold,
+            });
+            assert!(state.render(&command, &[0]).is_err());
+        }
+    }
+
+    #[test]
     fn gpu_quickdraw_polygons_match_even_odd_crossings() {
         let state = match State::new() {
             Ok(state) => state,
@@ -375,6 +523,7 @@ mod tests {
                 ]);
             }
             let command = QuickDrawGpuCommand {
+                mask: None,
                 polygon_edges: Some(edges.clone()),
                 clip_rows: Some(
                     (-10..16)
@@ -418,6 +567,7 @@ mod tests {
             }
         }
         let mut command = QuickDrawGpuCommand {
+            mask: None,
             polygon_edges: None,
             clip_rows: None,
             area: [0, 0, 1, 1],
@@ -454,6 +604,7 @@ mod tests {
         for origin in [[-11, -9], [-3, 2], [0, 0], [5, 7]] {
             for border in [None, Some([1, 2])] {
                 let command = QuickDrawGpuCommand {
+                    mask: None,
                     polygon_edges: None,
                     area: [origin[0], origin[1], origin[0] + 17, origin[1] + 13],
                     rect: [origin[0], origin[1], origin[0] + 17, origin[1] + 13],
@@ -499,6 +650,7 @@ mod tests {
             }
         }
         let command = QuickDrawGpuCommand {
+            mask: None,
             polygon_edges: None,
             area: [0, 0, 1, 1],
             rect: [0, 0, 1, 1],
@@ -543,6 +695,7 @@ mod tests {
                     [[0x00ff_ffff, 0x0000_1234], [0x0000_ffff, 0x00ff_0000]],
                 ] {
                     let command = QuickDrawGpuCommand {
+                        mask: None,
                         polygon_edges: None,
                         clip_rows: None,
                         area: [origin[0], origin[1], origin[0] + 17, origin[1] + 13],
@@ -590,6 +743,7 @@ mod tests {
             }
         }
         let command = QuickDrawGpuCommand {
+            mask: None,
             polygon_edges: None,
             clip_rows: None,
             area: [0, 0, 1, 1],

@@ -1,12 +1,13 @@
 struct Geometry {
     area:vec4<i32>, rect:vec4<i32>, border:vec4<i32>,
-    transfer:vec4<u32>, pattern0:vec4<u32>, pattern1:vec4<u32>, polygon:vec4<u32>,
+    transfer:vec4<u32>, pattern0:vec4<u32>, pattern1:vec4<u32>, polygon:vec4<u32>, mask:vec4<i32>,
 }
 @group(0) @binding(0) var<storage,read> background:array<u32>;
 @group(0) @binding(1) var<storage,read_write> result:array<vec2<u32>>;
 @group(0) @binding(2) var<uniform> geometry:Geometry;
 @group(0) @binding(3) var<storage,read> clips:array<i32>;
 @group(0) @binding(4) var<storage,read> edges:array<vec4<f32>>;
+@group(0) @binding(6) var<storage,read> coverage:array<u32>;
 @group(0) @binding(5) var<storage,read_write> products:array<f32>;
 // A storage boundary rounds the product before the add, matching the guest's
 // software f32 evaluation rather than Metal's fused multiply-add.
@@ -40,6 +41,11 @@ struct Geometry {
             }
         }
         covered=(crossings&1u)!=0u;
+    }
+    if covered && geometry.polygon.z!=0u {
+        let texel=point-geometry.mask.xy;
+        if any(texel<vec2(0)) || any(texel>=geometry.mask.zw) {covered=false;}
+        else {covered=coverage[u32(texel.y)*u32(geometry.mask.z)+u32(texel.x)]>=geometry.polygon.z;}
     }
     var value=background[index];
     if covered {

@@ -183,6 +183,140 @@ const CLIPS: [(RegionSpec, RegionSpec); 4] = [
 ];
 
 #[test]
+fn gpu_native_glyph_writes_preserve_retained_outline_presentation() {
+    use crate::memory::{MacMemoryBus, MemoryBus};
+    let pixels = vec![255; usize::from(ROW_BYTES) * HEIGHT];
+    for depth in [8, 16] {
+        let mut outputs = Vec::new();
+        for gpu in [false, true] {
+            let fixture = fixture(&pixels, WHOLE_PORT, WHOLE_PORT);
+            let mut loaded =
+                load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+            install_port(&mut loaded, &fixture, depth);
+            loaded.memory.add_region(0x1000, pixels.clone());
+            loaded.memory.write_u32_be(PIXMAP, 0x1000).unwrap();
+            loaded.gworlds.last_mut().unwrap().base_addr = 0x1000;
+            let mut bus = MacMemoryBus::new(1024 * 1024);
+            bus.write_bytes(0x1000, &pixels);
+            bus.enable_outline_presentation(
+                (
+                    0x1000,
+                    u32::from(ROW_BYTES),
+                    24,
+                    HEIGHT as u16,
+                    depth as u16,
+                ),
+                std::array::from_fn(|i| [i as u8; 3]),
+                3,
+            );
+            loaded
+                .memory
+                .shared_view()
+                .set_presentation(bus.presentation.clone());
+            if gpu {
+                loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                    crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                        crate::quickdraw::gpu::ReferenceRenderer {
+                            calls: std::rc::Rc::new(std::cell::Cell::new(0)),
+                            failure: 0,
+                        },
+                    )),
+                );
+            }
+            ppc_draw_text_bytes(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PORT,
+                (-4, 7),
+                PPC_QD_TEXT_FONT_DEFAULT,
+                12,
+                1,
+                PPC_RGB_BLACK,
+                Some(0),
+                b"Ag",
+            );
+            assert!(
+                bus.has_visible_outline_detail(),
+                "native text must retain outline samples"
+            );
+            let mut bytes = vec![0; pixels.len()];
+            loaded.memory.read_bytes_into(0x1000, &mut bytes).unwrap();
+            outputs.push((bytes, bus.outline_presentation_rgb()));
+        }
+        assert_eq!(outputs[1], outputs[0], "depth={depth}");
+    }
+}
+
+#[test]
+fn gpu_native_glyph_masks_match_software_text_modes_and_explicit_clips() {
+    let pixels = initial_pixels();
+    for depth in [1, 2, 4, 8, 16] {
+        for (vis, clip) in [CLIPS[0], CLIPS[3]] {
+            let fixture = fixture(&pixels, vis, clip);
+            for mode in [0, 1, 2, 3] {
+                for extra_clip in [None, Some((0, -1, 5, 10))] {
+                    let mut outputs = Vec::new();
+                    for gpu in [false, true] {
+                        let mut loaded =
+                            load_pef_application(&synthetic_pef_with_import(b"DrawString"))
+                                .unwrap();
+                        install_port(&mut loaded, &fixture, depth);
+                        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                        if gpu {
+                            loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                    crate::quickdraw::gpu::ReferenceRenderer {
+                                        calls: calls.clone(),
+                                        failure: 0,
+                                    },
+                                )),
+                            );
+                        }
+                        ppc_draw_text_bytes(
+                            &mut loaded.memory,
+                            &loaded.gworlds,
+                            PORT,
+                            (-4, 7),
+                            PPC_QD_TEXT_FONT_DEFAULT,
+                            12,
+                            mode,
+                            PPC_RGB_WHITE,
+                            Some(fixture.fg_index),
+                            b"Ag",
+                        );
+                        // Exercise an explicit clip through the same unstyled text path.
+                        ppc_draw_text_bytes_clipped(
+                            &mut loaded.memory,
+                            &loaded.gworlds,
+                            PORT,
+                            (3, 7),
+                            PPC_QD_TEXT_FONT_DEFAULT,
+                            12,
+                            mode,
+                            PPC_RGB_WHITE,
+                            Some(fixture.fg_index),
+                            extra_clip,
+                            b"A",
+                        );
+                        if gpu {
+                            assert!(
+                                calls.get() > 0,
+                                "native text must reach the GPU at depth {depth}"
+                            );
+                        }
+                        outputs.push(read_pixels(&mut loaded, pixels.len()));
+                    }
+                    assert_eq!(
+                        outputs[1], outputs[0],
+                        "depth={depth},mode={mode},extra_clip={extra_clip:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn gpu_native_rounded_fills_and_frames_match_software_at_every_depth() {
     let pixels = initial_pixels();
     for depth in [1, 2, 4, 8, 16] {
