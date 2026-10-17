@@ -183,6 +183,117 @@ const CLIPS: [(RegionSpec, RegionSpec); 4] = [
 ];
 
 #[test]
+fn gpu_native_polygon_fills_match_concave_crossed_translated_and_degenerate_shapes() {
+    let polygons: Vec<Vec<(i16, i16)>> = vec![
+        vec![(-4, -2), (17, -2), (-4, 8)],
+        vec![(-4, -2), (17, 8), (-4, 8), (17, -2)],
+        vec![(-5, -3), (18, -3), (18, 2), (5, 2), (5, 9), (-5, 9)],
+        vec![(-4, 1), (6, 1), (6, 1), (17, 8), (-4, 8), (-4, 1)],
+        vec![(-4, 0), (5, 0), (17, 0)],
+        vec![
+            (i16::MIN, i16::MIN),
+            (i16::MAX, i16::MAX),
+            (i16::MIN, i16::MAX),
+        ],
+        vec![(-100, -100), (-90, -100), (-100, -90)],
+    ];
+    for depth in [1, 2, 4, 8, 16] {
+        for points in &polygons {
+            for reversed in [false, true] {
+                for op in 0..3 {
+                    let mut expected = None;
+                    for backend in [None, Some(0), Some(1), Some(2)] {
+                        let pixels = initial_pixels();
+                        let fixture = fixture(&pixels, CLIPS[3].0, CLIPS[3].1);
+                        let mut loaded =
+                            load_pef_application(&synthetic_pef_with_import(b"FillPoly")).unwrap();
+                        install_port(&mut loaded, &fixture, depth);
+                        let points: Vec<_> = if reversed {
+                            points.iter().rev().copied().collect()
+                        } else {
+                            points.clone()
+                        };
+                        let handle = SCRATCH + 0x500;
+                        let storage = SCRATCH + 0x520;
+                        loaded.memory.write_u32_be(handle, storage).unwrap();
+                        loaded
+                            .memory
+                            .write_u16_be(storage, (10 + points.len() * 4) as u16)
+                            .unwrap();
+                        let top = points.iter().map(|p| p.1).min().unwrap();
+                        let bottom = points.iter().map(|p| p.1).max().unwrap();
+                        let left = points.iter().map(|p| p.0).min().unwrap();
+                        let right = points.iter().map(|p| p.0).max().unwrap();
+                        let (top, left, bottom, right) = if points.iter().any(|p| p.0 == i16::MIN) {
+                            BOUNDS
+                        } else {
+                            (top, left, bottom, right)
+                        };
+                        ppc_write_rect(&mut loaded.memory, storage + 2, top, left, bottom, right)
+                            .unwrap();
+                        for (i, (x, y)) in points.iter().enumerate() {
+                            loaded
+                                .memory
+                                .write_u16_be(storage + 10 + i as u32 * 4, *y as u16)
+                                .unwrap();
+                            loaded
+                                .memory
+                                .write_u16_be(storage + 12 + i as u32 * 4, *x as u16)
+                                .unwrap();
+                        }
+                        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                        if let Some(failure) = backend {
+                            loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                                crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                    crate::quickdraw::gpu::ReferenceRenderer {
+                                        calls: calls.clone(),
+                                        failure,
+                                    },
+                                )),
+                            );
+                        }
+                        let wrote = if op == 0 {
+                            ppc_paint_polygon(
+                                &mut loaded.memory,
+                                &loaded.gworlds,
+                                PORT,
+                                handle,
+                                PPC_RGB_BLACK,
+                                Some(fixture.fg_index),
+                            )
+                        } else {
+                            ppc_fill_polygon_pattern(
+                                &mut loaded.memory,
+                                &loaded.gworlds,
+                                PORT,
+                                handle,
+                                if op == 1 { MIXED } else { [255; 8] },
+                                PPC_RGB_BLACK,
+                                Some(fixture.fg_index),
+                                PPC_RGB_WHITE,
+                                Some(fixture.bg_index),
+                            )
+                        };
+                        if backend.is_some() && wrote {
+                            assert_eq!(calls.get(), 1);
+                        }
+                        let actual = (wrote, read_pixels(&mut loaded, pixels.len()));
+                        if let Some(expected) = &expected {
+                            assert_eq!(
+                                &actual, expected,
+                                "depth={depth},points={points:?},op={op},backend={backend:?}"
+                            );
+                        } else {
+                            expected = Some(actual);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn gpu_native_glyph_writes_preserve_retained_outline_presentation() {
     use crate::memory::{MacMemoryBus, MemoryBus};
     let pixels = vec![255; usize::from(ROW_BYTES) * HEIGHT];
