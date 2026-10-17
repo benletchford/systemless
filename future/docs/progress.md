@@ -11561,3 +11561,73 @@ Final tracer build, strict scoped Clippy (`--lib --test picture --test video_dri
 Rust1.93 example check, sequential stdin formatting and whitespace gates pass.
 All original replay and verification handles are terminal; no job remains running.
 No dependency changes are included.
+
+
+## Original Marathon New Game, forward and turn verified (2026-10-17)
+
+The preceding picture fix is now exercised through the actual original menu.
+A bounded instruction trace finds WaitNextEvent at3,688,138 through3,706,432
+(153 calls, PC01006034), followed by film selection at3,706,620. Thus the old
+3.75M key was already late. A plain N at3.69M reaches original handler0100646C
+but its command-modifier test at01006486 produces0; it selects film2 later.
+Disassembly shows the handler requires bit0100 in EventRecord.modifiers.
+
+Reproducible fresh original input sequence (retired instruction clock): N/code45
+at3.15/3.35/3.55M, up5,000instructions later; Command/code55 down3,689,000;
+N down3,690,000/up3,695,000; Command up3,696,000. The modifier test now produces256,
+the original uppercases n to N, matches menu row0 and invokes its original New
+Game callback at01006716 (retired3,690,093). No film resource is loaded. A16M
+request stops to budget at15,999,928/PC010229F6 during setup. These are real host
+key events into the original binary; no guest code, state override or media patch.
+
+A40M-poll idle request reaches a live New Game room by24M. The visually inspected
+24M/32M frames show the initial wall terminal, weapon, HUD and scanner and are
+byte-identical, SHA-256 `16713d0263447c9cf42a35e03663570db08f3b7a8f6fa39917d0638416c37740`.
+This is distinct from the earlier demo: Command-N has invoked the original menu
+callback and no film is loaded. The original polls GetKeys during the live scene.
+
+Two fresh40M-poll input runs reuse the exact menu sequence and same unmodified
+companion volume. Both pre-input captures at28M are identical to the idle24M/32M
+frame and both are atPC010156F8. Keypad8/code91 or keypad6/code88 is held from28M
+to30M. The published Aleph One standard_key_definitions suggests these candidate
+forward/right keys; their effect is separately verified in the unchanged original:
+forward moves the camera close to the wall terminal, while right changes the view
+toward the neighboring wall/door. All input edges are delivered. Final images were
+visually inspected; post-input frames stop at different instruction counts, so
+this is bounded visible player-control evidence, not exact physics/time parity.
+
+All three live-game runs stop on the same genuinely unsupported trap, not budget:
+- idle34,157,024, PC0100B588, screen `ed60c85157271cefa66e6680e7c7beeeb2348b22ada17b1a2ac66f3b103f0638`;
+- forward33,515,799, samePC, screen `35e6f363c749eb3722ccdb1f9047c437180a2a0382164ae663e4b48062a5da7a`;
+- right33,093,301, samePC, screen `9aa7613573d81c51d0957680ae80fcbf55e66eca9d3ffc5ac6104c50bcf1b315`.
+Each exits1 with Service(41479), native A207/PBHGetVInfo, issued at0100B586. The
+original then intends to multiply free allocation blocks by allocation-block size.
+All saved volumes have SHA-256 `e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`
+and pass independent CRC/catalog/companion/fork/metadata verification. Application
+and companion inputs remain unmodified. No successful game exit, sustained play,
+combat/audio, native performance or native/System7 parity is established.
+
+Next executable implementation: shared synchronous volume-info services for both
+ABI adapters, including real free-space figures from the existing64MiB writable
+quota/reservation model (files/resource.rs::space_used), correct classic/HFS
+parameter layouts and mounted-volume/WD/name selection. Implement output/error
+preflight and quota-change tests; do not return invented fixed free space or a
+success stub. Apple's File Manager pp.2-144 onward and the unsigned free-space
+example are primary references. Verify packed field offsets from the manual/header,
+not a summary table whose clump-size/free-block offsets contain transcription
+errors. Re-run original New Game controls beyond A207 once that service exists.
+
+Evidence: /tmp/systemless-marathon-{menu-window,menu-key,command-new}*,
+/tmp/systemless-marathon-command-selection-summary.json,
+/tmp/systemless-marathon-newgame-{40m,forward,right}*, and controls-summary.json.
+Private captures and exact summaries are archived under ignored Marathon evidence
+2026-10-17-menu-command and2026-10-17-newgame-controls. All replay handles are
+terminal; no source/runtime changes or new unit-test counts belong to this evidence
+milestone. Full rebuild, complete wgpu text, mixed mode and sustained game
+acceptance remain unfinished. Keep the goal active and PR draft.
+
+Primary continuation sources: [Apple File Manager chapter](https://developer.apple.com/library/archive/documentation/mac/pdf/Files/File_Manager.pdf)
+(cached as /tmp/systemless-file-manager-primary.{pdf,txt}) and the
+[published candidate key definitions](https://github.com/Aleph-One-Marathon/alephone/blob/97c73d8f2892c542283ac79940cf732bb077624d/Source_Files/Misc/key_definitions.h).
+The printed assembly-summary offsets also need cross-checking against the typed
+HVolumeParam declaration; the source itself can contain table mistakes.

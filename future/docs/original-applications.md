@@ -5233,3 +5233,21 @@ movement remain unverified. The fresh24M original EV frame/PC and saved volume
 are byte-identical to the preceding corrected idle evidence. See progress.md for
 exact captures, hashes, input schedules and independent volume checks. This is
 shared-runtime headless evidence, not native System7 or sustained gameplay parity.
+
+
+### Current original Marathon interaction boundary (2026-10-17)
+
+The original now starts New Game via Command-N inside the verified menu wait;
+plain N lacks the modifier required by the original handler. The unchanged game
+loads no demo film and renders its live initial room, weapon and HUD by24M.
+Matched pre-input frames are byte-identical. Holding keypad8/code91 or keypad6/code88
+from28M to30M separately exercises forward movement and turning, with visibly
+changed camera views. These are bounded headless player-control checks.
+
+Idle/forward/right runs fault at34,157,024/33,515,799/33,093,301 retired instructions,
+all atPC0100B588 on unsupported A207/PBHGetVInfo. They are not budget successes or
+full gameplay acceptance. All three saved volumes retain the same verified hash
+and companion/fork/metadata contents. Next implement synchronous volume information
+from the shared writable-quota model and replay beyond this point. Exact schedules,
+call traces, screen hashes and remaining limits are in progress.md. Full rebuild
+and complete wgpu text acceptance remain active.
