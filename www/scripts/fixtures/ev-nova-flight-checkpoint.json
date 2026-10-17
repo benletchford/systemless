@@ -1,0 +1,15 @@
+{
+  "size": [756, 469],
+  "cpuMhz": 60,
+  "instructionRange": [1400000000, 1600000000],
+  "pixels": [
+    {
+      "rect": [285, 225, 35, 35],
+      "rgbMin": [150, 100, 0],
+      "rgbMax": [255, 255, 100],
+      "minCount": 20,
+      "maxCount": 100
+    }
+  ],
+  "checkEnd": true
+}
