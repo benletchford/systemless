@@ -621,47 +621,57 @@
     }
 
     #[test]
-    fn framergn_frames_complex_boundary_without_painting_interior() {
+    fn gpu_and_software_framergn_preserve_outer_and_inner_boundaries() {
         // Imaging With QuickDraw (1994), pp. 3-100--3-101: FrameRgn is
         // equivalent to CopyRgn + InsetRgn + DiffRgn.  A complex region's
         // interior must therefore remain untouched.
-        let (mut d, mut cpu, mut bus) = setup_with_port();
-        d
-            .current_port
-            .with_mut(|current_port| *current_port = 0x181000);
-        d.pn_size = (1, 1);
-        d.pn_pat = [0xFF; 8];
-        d.pn_mode = 8; // patCopy
+        for gpu in [false, true] {
+            let (mut d, mut cpu, mut bus) = setup_with_port();
+            d.current_port
+                .with_mut(|current_port| *current_port = 0x181000);
+            d.pn_size = (1, 1);
+            d.pn_pat = [0xFF; 8];
+            d.pn_mode = 8; // patCopy
 
-        let rgn = bus.alloc(4);
-        let mut rows = vec![vec![10, 20]; 10];
-        // A two-pixel hole makes this a genuinely complex region and gives
-        // FrameRgn an interior boundary to outline as well.
-        rows[5] = vec![10, 14, 16, 20];
-        assert!(TrapDispatcher::write_region_from_rows(
-            &mut bus, rgn, 10, &rows
-        ));
-        assert!(bus.read_word(bus.read_long(rgn)) > super::REGION_HEADER_SIZE as u16);
+            let rgn = bus.alloc(4);
+            let mut rows = vec![vec![10, 20]; 10];
+            // A two-pixel hole makes this a genuinely complex region and gives
+            // FrameRgn an interior boundary to outline as well.
+            rows[5] = vec![10, 14, 16, 20];
+            assert!(TrapDispatcher::write_region_from_rows(
+                &mut bus, rgn, 10, &rows
+            ));
+            assert!(bus.read_word(bus.read_long(rgn)) > super::REGION_HEADER_SIZE as u16);
 
-        d.draw_rgn(&mut cpu, &mut bus, rgn, ShapeOp::Frame);
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            if gpu {
+                bus.quickdraw_gpu_renderer =
+                    Some(Box::new(crate::quickdraw::gpu::ReferenceRenderer {
+                        calls: calls.clone(),
+                        failure: 0,
+                    }));
+            }
+            d.draw_rgn(&mut cpu, &mut bus, rgn, ShapeOp::Frame);
+            assert_eq!(calls.get(), usize::from(gpu));
 
-        let screen = bus.read_long(0x0824);
-        let pixel_is_black = |bus: &MacMemoryBus, y: u32, x: u32| {
-            let byte = bus.read_byte(screen + y * 64 + x / 8);
-            byte & (1 << (7 - (x % 8))) != 0
-        };
-        assert!(
-            pixel_is_black(&bus, 10, 12),
-            "outer boundary must be framed"
-        );
-        assert!(
-            pixel_is_black(&bus, 15, 13),
-            "the boundary around a complex-region hole must be framed"
-        );
-        assert!(
-            !pixel_is_black(&bus, 12, 12),
-            "FrameRgn must not paint a complex region's interior"
-        );
+            let screen = bus.read_long(0x0824);
+            let pixel_is_black = |bus: &MacMemoryBus, y: u32, x: u32| {
+                let byte = bus.read_byte(screen + y * 64 + x / 8);
+                byte & (1 << (7 - (x % 8))) != 0
+            };
+            assert!(
+                pixel_is_black(&bus, 10, 12),
+                "outer boundary must be framed"
+            );
+            assert!(
+                pixel_is_black(&bus, 15, 13),
+                "the boundary around a complex-region hole must be framed"
+            );
+            assert!(
+                !pixel_is_black(&bus, 12, 12),
+                "FrameRgn must not paint a complex region's interior"
+            );
+        }
     }
 
     /// Helper: write a BitMap record.
@@ -2871,6 +2881,14 @@
                 );
                 d.draw_poly(&mut cpu, &mut bus, handle, op);
             }
+            4 => {
+                let handle = bus.alloc(4);
+                let rows = vec![vec![3, 29], vec![3, 12, 14, 29], vec![3, 29], vec![3, 29]];
+                assert!(TrapDispatcher::write_region_from_rows(
+                    &mut bus, handle, 1, &rows
+                ));
+                d.draw_rgn(&mut cpu, &mut bus, handle, op);
+            }
             _ => d.draw_rect(&mut cpu, &mut bus, &rect, op),
         }
         (bus.read_bytes(base, 30), calls.get())
@@ -2902,7 +2920,7 @@
 
     #[test]
     fn gpu_shapes_match_classic_patterns_frames_and_complex_clips() {
-        for shape in [1, 2, 3] {
+        for shape in [1, 2, 3, 4] {
             for op in [
                 ShapeOp::Paint,
                 ShapeOp::Frame,
@@ -2981,6 +2999,15 @@
                     );
                     d.draw_poly(&mut cpu, &mut bus, handle, op);
                 }
+                4 => {
+                    let handle = bus.alloc(4);
+                    let mut rows = vec![vec![5, 31]; 7];
+                    rows[3] = vec![5, 12, 20, 31];
+                    assert!(TrapDispatcher::write_region_from_rows(
+                        &mut bus, handle, 3, &rows
+                    ));
+                    d.draw_rgn(&mut cpu, &mut bus, handle, op);
+                }
                 _ => d.draw_rect(&mut cpu, &mut bus, &rect, op),
             }
             (bus.read_bytes(base, (row_bytes * 64) as usize), calls.get())
@@ -2988,7 +3015,7 @@
         for depth in [2, 4, 8, 16, 32] {
             for mode in [0, 1, 2, 3] {
                 for op in [ShapeOp::Paint, ShapeOp::Frame] {
-                    for shape in [0, 1, 2, 3] {
+                    for shape in [0, 1, 2, 3, 4] {
                         let (actual, calls) = draw(depth, mode, op, true, shape);
                         let (expected, _) = draw(depth, mode, op, false, shape);
                         assert_eq!(actual, expected, "depth={depth},mode={mode},op={op:?}");

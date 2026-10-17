@@ -138,6 +138,105 @@ fn gpu_rectangle_regions_intersect_and_decline_malformed_rows() {
     assert!(gpu_rectangle_clip_rows([-6, -2, 6, 1], Some(&vis), None).is_none());
 }
 
+fn gpu_region_frame_rows(
+    cache: &super::quickdraw::RegionMembershipCache,
+    inset: &[Vec<i16>],
+    pen_h: usize,
+    pen_w: i16,
+) -> Option<super::quickdraw::RegionMembershipCache> {
+    use crate::quickdraw::raster::region_rows::{difference_rows, intersect_rows};
+    if cache.rows.iter().map(Vec::len).sum::<usize>() > 1_048_576
+        || cache
+            .rows
+            .iter()
+            .any(|row| row.len() % 2 != 0 || row.windows(2).any(|p| p[0] >= p[1]))
+    {
+        return None;
+    }
+    let mut work = 0usize;
+    let rows = cache
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(y, outer)| {
+            if pen_h == 0 && pen_w == 0 {
+                return Some(vec![]);
+            }
+            let Some(first) = y.checked_sub(pen_h) else {
+                return Some(outer.clone());
+            };
+            let Some(last) = y.checked_add(pen_h).filter(|last| *last < inset.len()) else {
+                return Some(outer.clone());
+            };
+            let mut inner = inset[first].clone();
+            for row in &inset[first + 1..=last] {
+                work = work.checked_add(inner.len().saturating_add(row.len()))?;
+                if work > 64_000_000 {
+                    return None;
+                }
+                inner = intersect_rows(&inner, row);
+                if inner.is_empty() {
+                    break;
+                }
+            }
+            Some(difference_rows(outer, &inner))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(super::quickdraw::RegionMembershipCache {
+        top: cache.top,
+        rows,
+    })
+}
+
+#[test]
+fn gpu_region_frames_match_rectangular_erosion_with_holes_and_zero_pens() {
+    use super::quickdraw::RegionMembershipCache;
+    let cache = RegionMembershipCache {
+        top: -3,
+        rows: vec![
+            vec![-8, 12],
+            vec![-8, 12],
+            vec![-8, -1, 2, 12],
+            vec![-8, -1, 2, 12],
+            vec![],
+            vec![-6, 9],
+            vec![-6, 9],
+        ],
+    };
+    let member = |y: i32, x: i16| {
+        usize::try_from(y - i32::from(cache.top))
+            .ok()
+            .and_then(|i| cache.rows.get(i))
+            .is_some_and(|row| row.chunks_exact(2).any(|p| x >= p[0] && x < p[1]))
+    };
+    for pen_h in 0..=4usize {
+        for pen_w in 0..=4i16 {
+            let inset = cache
+                .rows
+                .iter()
+                .map(|row| super::TrapDispatcher::inset_region_row(row, pen_w))
+                .collect::<Vec<_>>();
+            let frame = gpu_region_frame_rows(&cache, &inset, pen_h, pen_w).unwrap();
+            for y in -3..4 {
+                for x in -10..15i16 {
+                    let inside = (-(pen_h as i32)..=pen_h as i32)
+                        .all(|dy| (-pen_w..=pen_w).all(|dx| member(y + dy, x + dx)));
+                    let expected = member(y, x) && !inside;
+                    let actual = frame.rows[(y + 3) as usize]
+                        .chunks_exact(2)
+                        .any(|p| x >= p[0] && x < p[1]);
+                    assert_eq!(actual, expected, "pen={pen_h},{pen_w};point={x},{y}");
+                }
+            }
+        }
+    }
+    let malformed = RegionMembershipCache {
+        top: 0,
+        rows: vec![vec![0, 4, 6]],
+    };
+    assert!(gpu_region_frame_rows(&malformed, &[vec![]], 1, 1).is_none());
+}
+
 fn gpu_curve_rows(
     top: i16,
     left: i16,
@@ -866,49 +965,85 @@ impl super::TrapDispatcher {
             let top = i32::from(bbox.top);
             let bottom = i32::from(bbox.bottom);
 
-            self.draw_generic_shape(cpu, bus, &bbox, op, false, |y, x| {
-                let row = i32::from(y) - top;
-                if row < 0
-                    || row >= cache.rows.len() as i32
-                    || !Self::endpoints_contain_point(&cache.rows[row as usize], x)
-                {
-                    return 0;
-                }
+            let shape_rows = bus
+                .quickdraw_gpu_renderer
+                .is_some()
+                .then(|| gpu_region_frame_rows(&cache, &inset_rows, pen_h as usize, pen_w))
+                .flatten();
+            self.draw_generic_shape_with_geometry(
+                cpu,
+                bus,
+                &bbox,
+                op,
+                false,
+                shape_rows,
+                None,
+                |y, x| {
+                    let row = i32::from(y) - top;
+                    if row < 0
+                        || row >= cache.rows.len() as i32
+                        || !Self::endpoints_contain_point(&cache.rows[row as usize], x)
+                    {
+                        return 0;
+                    }
 
-                // A zero-sized pen draws no frame, matching the rectangular
-                // shape paths. Otherwise this is membership in the region
-                // produced by InsetRgn(rgn, pnSize.h, pnSize.v).
-                if pen_h == 0 && pen_w == 0 {
-                    return 0;
-                }
-                let first_source_y = i32::from(y) - pen_h;
-                let last_source_y = i32::from(y) + pen_h;
-                let inside_inset = first_source_y >= top
-                    && last_source_y < bottom
-                    && (first_source_y..=last_source_y).all(|source_y| {
-                        Self::endpoints_contain_point(&inset_rows[(source_y - top) as usize], x)
-                    });
-                if inside_inset {
-                    0
-                } else {
-                    255
-                }
-            });
+                    // A zero-sized pen draws no frame, matching the rectangular
+                    // shape paths. Otherwise this is membership in the region
+                    // produced by InsetRgn(rgn, pnSize.h, pnSize.v).
+                    if pen_h == 0 && pen_w == 0 {
+                        return 0;
+                    }
+                    let first_source_y = i32::from(y) - pen_h;
+                    let last_source_y = i32::from(y) + pen_h;
+                    let inside_inset = first_source_y >= top
+                        && last_source_y < bottom
+                        && (first_source_y..=last_source_y).all(|source_y| {
+                            Self::endpoints_contain_point(&inset_rows[(source_y - top) as usize], x)
+                        });
+                    if inside_inset {
+                        0
+                    } else {
+                        255
+                    }
+                },
+            );
             return;
         }
 
-        self.draw_generic_shape(cpu, bus, &bbox, op, false, |y, x| {
-            if let Some(c) = &cache {
-                let row = (y - c.top) as usize;
-                if row < c.rows.len() && Self::endpoints_contain_point(&c.rows[row], x) {
-                    return 255;
+        let shape_rows = bus
+            .quickdraw_gpu_renderer
+            .is_some()
+            .then(|| {
+                cache
+                    .as_ref()
+                    .filter(|c| c.rows.iter().map(Vec::len).sum::<usize>() <= 1_048_576)
+                    .map(|c| super::quickdraw::RegionMembershipCache {
+                        top: c.top,
+                        rows: c.rows.clone(),
+                    })
+            })
+            .flatten();
+        self.draw_generic_shape_with_geometry(
+            cpu,
+            bus,
+            &bbox,
+            op,
+            false,
+            shape_rows,
+            None,
+            |y, x| {
+                if let Some(c) = &cache {
+                    let row = (y - c.top) as usize;
+                    if row < c.rows.len() && Self::endpoints_contain_point(&c.rows[row], x) {
+                        return 255;
+                    }
+                    return 0;
                 }
-                return 0;
-            }
-            // Cache build failed: fall back to filled bbox so the trap still
-            // produces visible output rather than silently doing nothing.
-            255
-        });
+                // Cache build failed: fall back to filled bbox so the trap still
+                // produces visible output rather than silently doing nothing.
+                255
+            },
+        );
     }
 
     #[inline]
