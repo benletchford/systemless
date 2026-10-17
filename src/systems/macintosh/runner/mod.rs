@@ -12,7 +12,7 @@ use crate::guest_procedure::GuestIsa;
 use crate::loader::ppc::{
     PpcDrawSprocketTraceEntry, PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry,
     PpcImportBinding, PpcImportDispatcherTarget, PpcInputSnapshot,
-    PpcInputSprocketSimpleStateTraceEntry, PpcLoadedApp, PpcQ3GpuFrame, PpcQ3SceneReplay,
+    PpcInputSprocketSimpleStateTraceEntry, PpcLoadedApp, PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3SceneReplay,
     PpcQ3SoftwareRenderStats, PpcRgbColor, PpcSndCommandRecord, PpcSoundCompletionRecord,
     PpcSoundDoubleBackRecord, PpcSoundDoubleBufferPlaybackRecord,
 };
@@ -1951,6 +1951,7 @@ pub struct FixtureRunner {
     /// GPU instead of being rasterized into guest memory.
     external_q3_renderer_enabled: bool,
     pending_q3_gpu_frame: Option<PpcQ3GpuFrame>,
+    q3_gpu_renderer: Option<Box<dyn PpcQ3GpuRenderer>>,
     #[cfg(feature = "debug")]
     pub(crate) debug: crate::debug::DebuggerCoordinator,
 }
@@ -2121,6 +2122,7 @@ impl FixtureRunner {
             q3_completed_frame_index: 0,
             external_q3_renderer_enabled: false,
             pending_q3_gpu_frame: None,
+            q3_gpu_renderer: None,
             #[cfg(feature = "debug")]
             debug: crate::debug::DebuggerCoordinator::fresh(),
         }
@@ -2154,6 +2156,12 @@ impl FixtureRunner {
                 .map(|file| file.path)
                 .collect(),
         );
+    }
+
+    /// Install a synchronous GPU renderer that commits results to guest memory.
+    /// No GPU backend is constructed by default.
+    pub fn set_q3_gpu_renderer(&mut self, renderer: Box<dyn PpcQ3GpuRenderer>) {
+        self.q3_gpu_renderer = Some(renderer);
     }
 
     pub fn set_external_q3_renderer_enabled(&mut self, enabled: bool) {
@@ -8677,6 +8685,14 @@ impl FixtureRunner {
         ppc_app: &mut PpcLoadedApp,
         pc: u32,
     ) -> PpcQ3SoftwareRenderStats {
+        if let Some(renderer) = self.q3_gpu_renderer.as_mut() {
+            if let Some(stats) = ppc_app.render_completed_q3_frames_with_gpu(renderer.as_mut()) {
+                let start = self.q3_completed_frame_index;
+                self.q3_completed_frame_index = start.saturating_add(stats.frames);
+                self.record_q3_frame_trace(pc, start, self.q3_completed_frame_index, stats);
+                return stats;
+            }
+        }
         if self.external_q3_renderer_enabled {
             if let Some(frame) = ppc_app.take_completed_q3_gpu_frame() {
                 self.pending_q3_gpu_frame = Some(frame);

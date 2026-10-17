@@ -376,6 +376,7 @@ pub(super) fn run(
     addressing_24_bit: bool,
     depth: Option<u16>,
     theme: UiThemeId,
+    gpu: bool,
 ) -> Result<(), String> {
     // Never reuse stale captures or modify adjacent saves during a reproduction.
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
@@ -403,6 +404,9 @@ pub(super) fn run(
             None => game::new_runner_with_addressing(!addressing_24_bit),
         };
         runner.set_ui_theme(theme);
+        if gpu {
+            runner.set_q3_gpu_renderer(Box::new(super::wgpu_qd3d::Qd3dRenderer::new()));
+        }
         runner.set_app_start_time(start_time);
         let app = game::load_game_from_path(&mut runner, archive)
             .map_err(|e| format!("load {}: {e}", archive.display()))?;

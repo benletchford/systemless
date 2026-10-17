@@ -218,6 +218,110 @@ impl PpcLoadedApp {
         Some(gpu_frame)
     }
 
+    /// Rasterize the newest supported completed frame and synchronously restore
+    /// guest-visible RGB555 storage. No queue or guest memory changes on rejection.
+    pub fn render_completed_q3_frames_with_gpu(
+        &mut self,
+        renderer: &mut dyn PpcQ3GpuRenderer,
+    ) -> Option<PpcQ3SoftwareRenderStats> {
+        let (frame_index, frame) =
+            self.q3_completed_frames
+                .iter()
+                .enumerate()
+                .rfind(|(_, frame)| {
+                    frame
+                        .submissions
+                        .iter()
+                        .any(|submission| submission.kind == PpcQ3SubmissionKind::TriMesh)
+                })?;
+        let frame = frame.clone();
+        let commands = self.q3_completed_frame_scene_commands(&frame);
+        let target = self.q3_render_target(&commands)?;
+        let packet = self.prepare_q3_gpu_frame(commands)?;
+        let front = target.front_buffer;
+        let surface = PpcQ3SoftwareFrontBufferSurface::new(&mut self.memory, front, None);
+        // Use routed writes so presentation observers and shared guest RAM see
+        // the result. Cached spans deliberately exclude observed framebuffers.
+        let row_len = front.width.checked_mul(2)?;
+        if row_len > front.row_bytes {
+            return None;
+        }
+        let mut row_addresses = Vec::new();
+        for y in 0..front.height {
+            let address = ppc_q3_front_buffer_pixel_addr(front, (0, y as i32))?;
+            if !self.memory.is_writable_range(address, row_len) {
+                return None;
+            }
+            row_addresses.push(address);
+        }
+        let count = (front.width as usize).checked_mul(front.height as usize)?;
+        let mut background = Vec::new();
+        background.try_reserve_exact(count).ok()?;
+        for y in 0..front.height {
+            for x in 0..front.width {
+                background.push(surface.read_pixel(&mut self.memory, (x as i32, y as i32))?);
+            }
+        }
+        let pixels = match renderer.render(&packet, &background) {
+            Ok(pixels) if pixels.len() == count => pixels,
+            Ok(_) => {
+                tracing::warn!("GPU QD3D renderer returned the wrong pixel count; using software");
+                return None;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "GPU QD3D rendering failed; using software");
+                return None;
+            }
+        };
+        let mut row = Vec::with_capacity(row_len as usize);
+        for (y, address) in row_addresses.into_iter().enumerate() {
+            row.clear();
+            row.extend(
+                pixels[y * front.width as usize..(y + 1) * front.width as usize]
+                    .iter()
+                    .flat_map(|pixel| pixel.to_be_bytes()),
+            );
+            self.memory
+                .write_bytes(address, &row)
+                .expect("preflighted GPU target remains writable");
+        }
+        let mut stats = PpcQ3SoftwareRenderStats::default();
+        stats.record_target(target);
+        stats.frames = 1;
+        stats.commands = packet.draws.len();
+        stats.vertices = packet.draws.iter().map(|draw| draw.vertices.len()).sum();
+        stats.triangles = stats.vertices / 3;
+        stats.pixels = background
+            .iter()
+            .zip(&pixels)
+            .filter(|(a, b)| a != b)
+            .count();
+        let rendered_stats = stats;
+        let mut stats = PpcQ3SoftwareRenderStats::default();
+        stats.add_state_only_batches(&std::mem::take(
+            &mut self.q3_state_only_completed_frame_batches,
+        ));
+        let mut saw_missing_target = false;
+        for (index, frame) in std::mem::take(&mut self.q3_completed_frames)
+            .into_iter()
+            .enumerate()
+        {
+            if frame.submissions.is_empty() {
+                continue;
+            }
+            if index == frame_index {
+                stats.merge_frame_stats(rendered_stats, &mut saw_missing_target);
+            } else {
+                if let Some(target) = self.q3_completed_frame_render_target(&frame) {
+                    stats.record_target(target);
+                }
+                stats.add_empty_frames(1);
+            }
+        }
+        self.prune_q3_immediate_trimeshes();
+        Some(stats)
+    }
+
     fn prepare_q3_gpu_frame(&mut self, commands: Vec<PpcQ3SceneCommand>) -> Option<PpcQ3GpuFrame> {
         let target = self.q3_render_target(&commands)?;
         let front_buffer = target.front_buffer;

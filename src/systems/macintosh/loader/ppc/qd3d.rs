@@ -614,6 +614,13 @@ impl PpcQ3SceneReplay {
     }
 }
 
+/// A synchronous host rasterizer. Returning an error leaves the completed frame
+/// queued for the software renderer. Successful RGB555 pixels are committed to
+/// guest memory before execution resumes, including offscreen draw contexts.
+pub trait PpcQ3GpuRenderer {
+    fn render(&mut self, frame: &PpcQ3GpuFrame, background: &[u16]) -> Result<Vec<u16>, String>;
+}
+
 /// A browser-friendly QD3D frame whose guest geometry has already been
 /// transformed, clipped, lit, and decoded for direct GPU rasterization.
 #[derive(Debug, Clone, PartialEq)]
