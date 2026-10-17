@@ -14,6 +14,9 @@
 //! headless-only library and skip the `winit` / `softbuffer` / `cpal`
 //! link.
 
+#[path = "desktop/wgpu_present.rs"]
+mod wgpu_present;
+
 #[cfg(target_os = "windows")]
 #[path = "desktop/d3d_present.rs"]
 mod d3d_present;
@@ -233,6 +236,10 @@ struct Cli {
     /// Application or game archive to launch
     #[arg(value_name = "GAME")]
     game: PathBuf,
+
+    /// Render the desktop through the experimental cross-platform wgpu backend
+    #[arg(long, conflicts_with = "headless")]
+    gpu: bool,
 
     /// Run without opening a window
     #[arg(long)]
@@ -910,6 +917,8 @@ struct App {
     gpu_frame: std::sync::Arc<systemless::memory::CompactPresentation>,
     #[cfg(target_os = "windows")]
     gpu_pending: Option<PendingGpuFrame>,
+    use_wgpu: bool,
+    wgpu: Option<wgpu_present::WgpuPresenter>,
     window: Option<Rc<Window>>,
     #[cfg(target_os = "macos")]
     surface: Option<metal_present::MetalPresenter>,
@@ -1092,6 +1101,8 @@ impl App {
             gpu_frame: Default::default(),
             #[cfg(target_os = "windows")]
             gpu_pending: None,
+            use_wgpu: false,
+            wgpu: None,
             surface: None,
             #[cfg(not(target_os = "macos"))]
             surface_size: None,
@@ -2247,6 +2258,41 @@ impl App {
             (game_w, game_h)
         };
 
+        if let Some(gpu) = self.wgpu.as_mut() {
+            #[cfg(target_os = "macos")]
+            let crop = if borrowed_size.is_some() {
+                (0, 0, game_w, game_h)
+            } else {
+                (
+                    presentation_rect.left,
+                    presentation_rect.top,
+                    presentation_rect.width,
+                    presentation_rect.height,
+                )
+            };
+            #[cfg(not(target_os = "macos"))]
+            let crop = (0, 0, game_w, game_h);
+            let pixels = if borrowed_size.is_some() {
+                self.retained_frame_cache.pixels()
+            } else {
+                &frame_argb
+            };
+            let submitted = gpu
+                .present(pixels, (game_w, game_h), crop, (buf_w, buf_h))
+                .expect("Failed to present requested wgpu frame");
+            if used_outlines {
+                std::mem::swap(&mut frame_argb, &mut presented);
+            }
+            self.presentation_argb = presented;
+            self.frame_argb = frame_argb;
+            self.force_next_render = !submitted;
+            if submitted {
+                self.last_presented_guest_tick = Some(presented_tick);
+            }
+            self.render_headroom = GuiDriver::next_render_headroom(render_start.elapsed());
+            return;
+        }
+
         #[cfg(target_os = "macos")]
         {
             let Some(surface) = self.surface.as_mut() else {
@@ -2976,10 +3022,28 @@ impl ApplicationHandler for App {
             window.set_visible(true);
 
             #[cfg(target_os = "macos")]
-            let surface = metal_present::MetalPresenter::new(window.clone())
-                .expect("Failed to create Metal presenter");
+            let surface = if self.use_wgpu {
+                None
+            } else {
+                Some(
+                    metal_present::MetalPresenter::new(window.clone())
+                        .expect("Failed to create Metal presenter"),
+                )
+            };
+            if self.use_wgpu {
+                self.wgpu = Some(
+                    wgpu_present::WgpuPresenter::new(
+                        window.clone(),
+                        event_loop.owned_display_handle(),
+                    )
+                    .expect("Failed to create requested wgpu presenter"),
+                );
+            }
             #[cfg(target_os = "windows")]
-            if std::env::var_os("SYSTEMLESS_D3D11").as_deref() != Some(std::ffi::OsStr::new("0")) {
+            if !self.use_wgpu
+                && std::env::var_os("SYSTEMLESS_D3D11").as_deref()
+                    != Some(std::ffi::OsStr::new("0"))
+            {
                 match d3d_present::D3dPresenter::new(
                     window.clone(),
                     self.gpu_wake.as_ref().unwrap().clone(),
@@ -2997,7 +3061,7 @@ impl ApplicationHandler for App {
                 let software = self.gpu.is_none();
                 #[cfg(not(target_os = "windows"))]
                 let software = true;
-                if software {
+                if software && !self.use_wgpu {
                     let context =
                         softbuffer::Context::new(window.clone()).expect("Failed to create context");
                     self.surface = Some(
@@ -3007,7 +3071,7 @@ impl ApplicationHandler for App {
             }
             #[cfg(target_os = "macos")]
             {
-                self.surface = Some(surface);
+                self.surface = surface;
             }
             self.window = Some(window);
         }
@@ -3332,6 +3396,7 @@ fn run_gui(
     ui_theme: UiThemeId,
     fullscreen: bool,
     debug_socket: Option<PathBuf>,
+    use_wgpu: bool,
 ) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     eprintln!(
@@ -3378,6 +3443,7 @@ fn run_gui(
         fullscreen,
         threaded,
     );
+    app.use_wgpu = use_wgpu;
     #[cfg(target_os = "windows")]
     {
         app.gpu_wake = Some(event_loop.create_proxy());
@@ -3792,6 +3858,7 @@ fn main() {
             cli.ui_theme,
             cli.fullscreen,
             cli.debug_socket,
+            cli.gpu,
         );
     }
 }
@@ -4252,6 +4319,17 @@ mod tests {
         );
         assert_eq!(app.frame.sequence, 0);
         assert_eq!(app.guest_state.generation, 0);
+    }
+
+    #[test]
+    fn gpu_cli_is_opt_in_and_requires_a_window() {
+        assert!(!Cli::try_parse_from(["systemless", "game.sit"]).unwrap().gpu);
+        assert!(
+            Cli::try_parse_from(["systemless", "--gpu", "game.sit"])
+                .unwrap()
+                .gpu
+        );
+        assert!(Cli::try_parse_from(["systemless", "--gpu", "--headless", "game.sit"]).is_err());
     }
 
     #[test]
