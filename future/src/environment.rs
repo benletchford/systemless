@@ -13,6 +13,7 @@ pub fn gestalt(selector: u32) -> std::result::Result<u32, i16> {
         b"sysv" => Ok(u32::from(SYSTEM_VERSION)),
         b"snd " => Ok(crate::sound::ATTRIBUTES),
         b"proc" => Ok(u32::from(PROCESSOR)),
+        b"fold" => Ok(1), // FindFolder only; no extended Folder Manager APIs.
         b"addr" => Ok(crate::addressing::ATTRIBUTES),
         _ => Err(-5551),
     }
@@ -25,6 +26,15 @@ pub(crate) fn query_display(
     version: i16,
     record: GuestPtr,
     display: crate::display::Display,
+) -> Result<i16> {
+    query_profile(memory, version, record, display, None)
+}
+pub(crate) fn query_profile(
+    memory: &mut Memory,
+    version: i16,
+    record: GuestPtr,
+    display: crate::display::Display,
+    system_volume: Option<i16>,
 ) -> Result<i16> {
     if version <= 0 {
         return Ok(-5501);
@@ -40,6 +50,7 @@ pub(crate) fn query_display(
         bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
     }
     bytes[9] = u8::from(display.depth() > 1);
+    bytes[14..16].copy_from_slice(&system_volume.unwrap_or(0).to_be_bytes());
     memory.write(record, &bytes)?;
     Ok(if version > 2 { -5502 } else { 0 })
 }

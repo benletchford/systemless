@@ -9,6 +9,8 @@ mod aliases;
 mod browse;
 pub(crate) use aliases::{new_alias, resolve_alias};
 pub use aliases::{NewAlias, ResolveAlias, ResolveAliasFile};
+mod folders;
+pub use folders::FindFolder;
 mod io;
 mod resource;
 pub use resource::CreateSpecResource;
@@ -71,6 +73,7 @@ pub struct Files {
     files: BTreeMap<u32, File>,
     directories: BTreeMap<u32, Directory>,
     next_node: u32,
+    system_folder: Option<u32>,
     revision: u64,
     resource_growth: BTreeMap<u32, usize>,
     working: BTreeMap<i16, (u32, u32)>,
@@ -94,6 +97,7 @@ impl Files {
             files: BTreeMap::new(),
             directories: BTreeMap::new(),
             next_node: 17,
+            system_folder: None,
             revision: 0,
             resource_growth: BTreeMap::new(),
             working: BTreeMap::new(),

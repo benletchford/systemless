@@ -63,12 +63,20 @@ fn both_cpu_adapters_report_one_profile_and_preserve_the_maximized_heap() {
     let end = HEAP_BASE + HEAP_SIZE;
     assert_eq!(app.runtime.memory.u32(GuestPtr(0x114)).unwrap(), end);
     assert_eq!(app.runtime.memory.u32(GuestPtr(0x130)).unwrap(), end);
+    // Application loading owns live heap allocations; exhaust only the free extent.
+    let available = app
+        .runtime
+        .process
+        .compact_memory(&mut app.runtime.memory)
+        .unwrap();
+    assert!(available > 4 && available < HEAP_SIZE);
     let all = app
         .runtime
         .process
-        .new_pointer(&mut app.runtime.memory, HEAP_SIZE, false)
+        .new_pointer(&mut app.runtime.memory, available, false)
         .unwrap();
-    assert_eq!(all, HEAP_BASE);
+    assert_ne!(all, 0);
+    assert_eq!(app.runtime.process.free_memory(), 0);
     app.runtime.memory.write(GuestPtr(all), &[42]).unwrap();
     assert_eq!(invoke(&mut app, 0, &[1, 0x300]), 0);
     let record = app
@@ -121,7 +129,7 @@ fn both_cpu_adapters_report_one_profile_and_preserve_the_maximized_heap() {
     assert_ne!(
         app.runtime
             .process
-            .new_handle(&mut app.runtime.memory, HEAP_SIZE - 4, false)
+            .new_handle(&mut app.runtime.memory, available - 4, false)
             .unwrap(),
         0
     );
@@ -131,6 +139,12 @@ fn foreign_application_limits_fail_without_changing_heap_or_globals() {
     let f = support::pef_program(&[0x4e800020], &[], 0);
     let mut app = LoadedApplication::pef(&f.bytes, None).unwrap();
     let end = HEAP_BASE + HEAP_SIZE;
+    let available = app
+        .runtime
+        .process
+        .compact_memory(&mut app.runtime.memory)
+        .unwrap();
+    let free_before = app.runtime.process.free_memory();
     app.runtime
         .memory
         .write(GuestPtr(0x130), &(end + 4).to_be_bytes())
@@ -146,10 +160,11 @@ fn foreign_application_limits_fail_without_changing_heap_or_globals() {
         .process
         .application_limit(&app.runtime.memory)
         .is_err());
+    assert_eq!(app.runtime.process.free_memory(), free_before);
     assert_ne!(
         app.runtime
             .process
-            .new_pointer(&mut app.runtime.memory, HEAP_SIZE, false)
+            .new_pointer(&mut app.runtime.memory, available, false)
             .unwrap(),
         0
     );
@@ -332,4 +347,33 @@ fn environment_trap_discovery_and_callable_veneer_reach_the_shared_profile() {
         app.runtime.memory.read(GuestPtr(0x320), 16).unwrap(),
         expected
     );
+}
+
+#[test]
+fn gestalt_discovery_and_callable_veneer_expose_the_shared_folder_capability() {
+    use systemless_future::traps;
+    let fixture = support::pef_program(&[0x4e800020], &[b"GetOSTrapAddress"], 0);
+    let mut app = LoadedApplication::pef(&fixture.bytes, None).unwrap();
+    let entry = invoke(&mut app, 0, &[0xa0ad]);
+    assert_ne!(entry, traps::UNIMPLEMENTED);
+    assert_eq!(invoke(&mut app, 0, &[0xa1ad]), entry);
+    assert_eq!(traps::opcode(entry), Some(0xa0ad));
+    let code = support::words(&[
+        0x203c, 0, 0xa0ad, 0xa346, 0x2448, 0x203c, 0x666f, 0x6c64, 0x4e92, 0x4e71,
+    ]);
+    app.runtime
+        .memory
+        .map(GuestPtr(0x50000000), code, Permissions::RX)
+        .unwrap();
+    let stack = STACK_BASE + 0x8000;
+    app.runtime.cpu = Cpu::new(Architecture::M68k, 0x50000000, stack);
+    assert_eq!(app.runtime.advance(7).unwrap(), Stop::Budget);
+    let Cpu::M68k(cpu) = &app.runtime.cpu else {
+        panic!()
+    };
+    assert_eq!(cpu.dar[0], 0);
+    assert_eq!(cpu.dar[8], 1);
+    assert_eq!(cpu.dar[10], entry);
+    assert_eq!(cpu.dar[15], stack);
+    assert_eq!(cpu.pc, 0x50000014);
 }

@@ -4360,3 +4360,35 @@ Packed field offsets are derived from the typed HVolumeParam declaration (free
 blocks62, allocation-block size48); the printed assembly-summary offsets are
 inconsistent for some fields. Original Marathon's free-space routine independently
 reads these exact offsets. This is direct application evidence, not native parity.
+
+
+## Shared Folder Manager and persistent System Folder identity
+
+FindFolder is a shared catalog service reached by native 68K A823 selector zero
+and the PowerPC FindFolder import. Both adapters preflight output pointers before
+publishing any directory creation. Classic system-subfolder types resolve below
+one blessed directory, while desktop, temporary and trash folders resolve below
+the application volume root. Gestalt fold advertises only FindFolder bit zero.
+
+File-application host initialization provisions a virtual System Folder after
+catalog restoration and before guest execution. This is deliberately separate
+from FindFolder: that API never creates the System Folder, even when its create
+argument is true (Inside Macintosh, Toolbox, FindFolder). No System file or ROM
+is installed. SysEnvirons reports the blessed folder's actual mounted volume
+reference; PBHGetVInfo returns its ID in ioVFndrInfo[0]. The blessed directory
+cannot be deleted through the shared catalog service.
+
+Catalog version three persists the System Folder ID immediately after the
+32-byte header and otherwise uses version-two directory/file records, including
+extended Finder metadata. CRC, length, node and parent checks precede publication;
+a blessed ID must name an actual directory. Versions one and two still load and
+remain the export format until a System Folder has been provisioned. Restore
+precedes host initialization so a reopened volume retains its directory IDs.
+
+This virtual profile uses classic English folder names and one local user.
+Extended Folder Manager calls, localized fld# descriptors, network folders and
+startup temporary-file cleanup are outside the implemented slice. Original-game
+acceptance must verify actual successful folder and volume queries rather than
+accepting a fabricated volume reference after failed discovery.
+
+Primary contract: https://dev.os9.ca/techpubs/mac/Toolbox/Toolbox-472.html

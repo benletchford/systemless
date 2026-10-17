@@ -693,6 +693,7 @@ fn run_file(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     app.runtime.set_date_time(
         unix_seconds.wrapping_add(systemless_future::calendar::UNIX_OFFSET) as u32,
     )?;
+    app.runtime.prepare_application_volume()?;
     if window {
         let event_loop = EventLoop::new()?;
         let mut host = App {

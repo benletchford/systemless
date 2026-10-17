@@ -460,6 +460,7 @@ pub enum Call {
         pointer: GuestPtr,
         op: crate::files::WorkingOp,
     },
+    FindFolder(crate::files::FindFolder),
     VolumeInfo {
         pointer: GuestPtr,
         hierarchical: bool,

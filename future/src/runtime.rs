@@ -167,6 +167,16 @@ impl Runtime {
             calendar: crate::calendar::Clock::default(),
         }
     }
+    /// Initialize the virtual boot-volume environment after optional catalog restore.
+    pub fn prepare_application_volume(&mut self) -> Result<()> {
+        let error = self.process.files.provision_system_folder(&self.memory)?;
+        if error != 0 {
+            return Err(Error::Volume(format!(
+                "virtual System Folder initialization failed: {error}"
+            )));
+        }
+        Ok(())
+    }
     /// Refresh the host display from canonical screen bytes, even after exit.
     /// Offscreen ports and their last drawing texture do not select the display.
     pub fn refresh_screen(&mut self) -> Result<()> {
@@ -855,11 +865,12 @@ impl Runtime {
                             reply.apply(&mut self.cpu, &mut self.memory, 0, 0)?;
                         }
                         Call::SysEnvirons { version, record } => {
-                            let result = crate::environment::query_display(
+                            let result = crate::environment::query_profile(
                                 &mut self.memory,
                                 version,
                                 record,
                                 self.process.display,
+                                self.process.files.system_volume_reference(),
                             )?;
                             reply.apply(
                                 &mut self.cpu,
@@ -2409,6 +2420,16 @@ impl Runtime {
                                 error,
                             )?;
                         }
+                        Call::FindFolder(request) => {
+                            let error =
+                                self.process.files.find_folder(&mut self.memory, request)?;
+                            reply.apply(
+                                &mut self.cpu,
+                                &mut self.memory,
+                                error as i32 as u32,
+                                error,
+                            )?;
+                        }
                         Call::VolumeInfo {
                             pointer,
                             hierarchical,
@@ -2880,6 +2901,7 @@ impl Runtime {
                         | Call::GetNamedResource { .. }
                         | Call::CreateDirectory(_)
                         | Call::FileInfo { .. }
+                        | Call::FindFolder(_)
                         | Call::VolumeInfo { .. }
                         | Call::CatalogInfo(_)
                         | Call::FileIo { .. }

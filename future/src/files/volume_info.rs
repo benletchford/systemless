@@ -85,6 +85,7 @@ impl Files {
         let free = super::io::LIMIT.saturating_sub(self.space_used()) / BLOCK;
         pb[62..64].copy_from_slice(&(free as u16).to_be_bytes());
         if hierarchical {
+            pb[90..94].copy_from_slice(&self.system_folder.unwrap_or(0).to_be_bytes());
             pb[64..66].copy_from_slice(&0x4244u16.to_be_bytes());
             // Stable virtual online-volume identities, not a physical disk driver.
             pb[66..68].copy_from_slice(&1i16.to_be_bytes());

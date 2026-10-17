@@ -111,7 +111,9 @@ impl Files {
         if self.name.is_empty() {
             return Err(bad("no application volume"));
         }
-        let version = if self.files.values().any(|f| f.extended_finder != [0; 16]) {
+        let version = if self.system_folder.is_some() {
+            3
+        } else if self.files.values().any(|f| f.extended_finder != [0; 16]) {
             2
         } else {
             1
@@ -127,6 +129,9 @@ impl Files {
         ] {
             word(&mut out, v);
         }
+        if version == 3 {
+            word(&mut out, self.system_folder.unwrap());
+        }
         for (&id, d) in &self.directories {
             for v in [id, d.parent, d.created] {
                 word(&mut out, v);
@@ -139,7 +144,7 @@ impl Files {
                 word(&mut out, v);
             }
             out.extend(f.finder);
-            if version == 2 {
+            if version >= 2 {
                 out.extend(f.extended_finder);
             }
             word(&mut out, f.data.len() as u32);
@@ -185,7 +190,7 @@ impl Files {
             return Err(bad("unsupported catalog image format"));
         }
         let version = r.word()?;
-        if !matches!(version, 1 | 2) {
+        if !matches!(version, 1..=3) {
             return Err(bad("unsupported catalog image format"));
         }
         let next = r.word()?;
@@ -197,6 +202,7 @@ impl Files {
         if r.word()? as usize != end - 32 || r.word()? != 0 {
             return Err(bad("invalid catalog header"));
         }
+        let system_folder = if version == 3 { Some(r.word()?) } else { None };
         let mut dirs = BTreeMap::new();
         let mut files = BTreeMap::new();
         let mut ids = BTreeSet::new();
@@ -242,7 +248,7 @@ impl Files {
             let created = r.word()?;
             let modified = r.word()?;
             let finder = r.take(16)?.try_into().unwrap();
-            let extended_finder = if version == 2 {
+            let extended_finder = if version >= 2 {
                 r.take(16)?.try_into().unwrap()
             } else {
                 [0; 16]
@@ -293,6 +299,10 @@ impl Files {
                 }
             }
         }
+        if system_folder.is_some_and(|id| !dirs.contains_key(&id)) {
+            return Err(bad("invalid System Folder identity"));
+        }
+        self.system_folder = system_folder;
         self.directories = dirs;
         self.files = files;
         self.next_node = next;
@@ -501,5 +511,59 @@ mod tests {
         assert_eq!(f.create_directory(&mut m, GuestPtr(0x2000)).unwrap(), -33);
         assert_eq!(m.u16(GuestPtr(0x2010)).unwrap() as i16, -33);
         assert_eq!(f.export_volume().unwrap(), image);
+    }
+}
+
+#[cfg(test)]
+mod folder_identity_tests {
+    use super::*;
+    use crate::memory::{Memory, Permissions};
+    fn clock() -> Memory {
+        let mut m = Memory::default();
+        m.map(
+            crate::calendar::TIME,
+            crate::calendar::DEFAULT_TIME.to_be_bytes().to_vec(),
+            Permissions::RW,
+        )
+        .unwrap();
+        m
+    }
+    #[test]
+    fn v2_upgrade_preserves_extended_finder_data_and_protects_blessed_folder() {
+        let mut f = Files::application(b"app", None);
+        let node = f.create_file(b"Data", -1, 2, 0, [0; 16]).unwrap();
+        f.files.get_mut(&node).unwrap().extended_finder = [0x7a; 16];
+        let old = f.export_volume().unwrap();
+        assert_eq!(u32::from_be_bytes(old[8..12].try_into().unwrap()), 2);
+        let mut loaded = Files::application(b"app", None);
+        loaded.restore_volume(&old).unwrap();
+        let m = clock();
+        assert_eq!(loaded.provision_system_folder(&m).unwrap(), 0);
+        let system = loaded.system_folder.unwrap();
+        assert_eq!(loaded.delete_node(system), -47);
+        let image = loaded.export_volume().unwrap();
+        let mut again = Files::application(b"app", None);
+        again.restore_volume(&image).unwrap();
+        assert_eq!(again.files[&node].extended_finder, [0x7a; 16]);
+        assert_eq!(again.system_folder, Some(system));
+        assert_eq!(again.export_volume().unwrap(), image);
+    }
+    #[test]
+    fn corrupt_blessed_identity_is_rejected_before_restore_publication() {
+        let mut f = Files::application(b"app", None);
+        f.provision_system_folder(&clock()).unwrap();
+        let image = f.export_volume().unwrap();
+        for id in [0u32, 2, 16, 999] {
+            let mut bad = image.clone();
+            bad[32..36].copy_from_slice(&id.to_be_bytes());
+            let end = bad.len() - 4;
+            let checksum = crc(&bad[..end]);
+            bad[end..].copy_from_slice(&checksum.to_be_bytes());
+            let mut target = Files::application(b"app", None);
+            let before = target.export_volume().unwrap();
+            assert!(target.restore_volume(&bad).is_err());
+            assert_eq!(target.export_volume().unwrap(), before);
+            assert_eq!(target.system_folder, None);
+        }
     }
 }

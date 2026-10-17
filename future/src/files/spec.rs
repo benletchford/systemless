@@ -134,6 +134,7 @@ impl Files {
             return -45;
         }
         if node == 2
+            || self.system_folder == Some(node)
             || node == self.default_directory()
             || self.open.values().any(|f| f.node == node)
             || self.directories.contains_key(&node)

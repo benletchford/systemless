@@ -174,6 +174,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Diagnostic snapshot only: never checkpoint changes to the input image.
         app.runtime.process.files.restore_volume(&bytes)?;
     }
+    app.runtime.prepare_application_volume()?;
     if graphics {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         app.runtime.graphics = Some(pollster::block_on(

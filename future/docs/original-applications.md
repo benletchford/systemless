@@ -5269,3 +5269,78 @@ EV's fresh24M frame/PC/volume remain byte-identical. Saved-volume integrity chec
 pass for both games. See progress.md for exact traces, hashes,108-check scope and
 virtual-volume limitations. Sustained gameplay and the full rebuild/text goal
 remain unfinished.
+
+
+Folder discovery follow-up: original Marathon probes GetOSTrapAddress(A0AD)
+before calling Gestalt. A0AD/A1AD were directly implemented but absent from the
+installed OS trap veneers, so discovery incorrectly returned Unimplemented.
+The canonical A0AD entry is now installed. A new regression exercises PPC lookup
+of both modifiers and native lookup/JSR of the actual veneer, querying fold.
+The final selected gate passes 143 tests, zero failures/ignored
+(/tmp/systemless-folders-tests-verified.txt); strict lint and Rust 1.93 checks
+pass in /tmp/systemless-folders-{clippy,msrv}-verified.txt.
+
+The corrected original Marathon 6M-poll run now makes three real FindFolder(pref)
+calls. It stops by budget at 5,999,926 retired / PC 01004CD2, final screen black
+(inspected). The watched volume reference becomes FFFF (-1), replacing 0808.
+Independent CRC/catalog/parent-chain validation finds System Folder 21,
+Preferences 22, Marathon Preferences 23 (1222 data bytes), and Marathon Recording
+24 (342 data bytes), both beneath Preferences. All original companion metadata
+and both forks are byte-identical. Output volume SHA256:
+3294808dab802d212fa40cc73ec1203a106d89e0172b2a3b517eda5e10376321.
+Evidence: /tmp/systemless-marathon-folders-discovery.{txt,ppm,png,slv}, catalog
+JSON and /tmp/systemless-folder-volume-inspect.py. This proves discovery and file
+creation, not recording playback or sustained gameplay. The earlier 40M run
+uses the pre-discovery binary; keep its evidence distinct. Next: longer corrected
+Marathon run, v3 reopen, EV regression, then reviewed milestone commit/push.
+
+
+Original EV regression now reaches SndPlayDoubleBuffer, unsupported selector
+04200008, after 1,474,569 retired instructions at PC 0001BE16; final captured
+screen is black (inspected). This is earlier than the old 24M movement evidence:
+installing the implemented Gestalt veneer exposes the original sound path.
+Do not present old EV movement captures as passing on this source. Apple Sound.h
+(QuickTime 6.0.2 interface mirror) identifies the selector as SndPlayDoubleBuffer:
+https://www.cs.vu.nl/~eliens/research/media/lib-of-vs-libs-QTDevWin-CIncludes-Sound.h.html
+Primary behavior reference for the next implementation slice:
+https://dev.os9.ca/techpubs/mac/pdf/Sound/Sound_Manager.pdf
+Keep correct Gestalt discovery; do not hide the capability query or fake successful
+playback. Implement actual shared buffer consumption, flags, callback lifetime and
+both ABI paths with deterministic audio evidence. EV snapshot/catalog evidence:
+/tmp/systemless-ev-folders.{txt,ppm,png,slv}, independently parsed v3 catalog.
+The pre-discovery Marathon 40M control finished at 39,999,928 / PC 0102620A,
+budget exit; it is historical control evidence only. Corrected 40M and original
+v3 reopen runs are live under logs /tmp/systemless-marathon-folders-verified40.txt
+and /tmp/systemless-marathon-folders-reopen.txt. Do not infer their outcomes.
+
+
+Original v3 reopen evidence: /tmp/systemless-marathon-folders-reopen.txt retires
+5,999,259 instructions / PC 01004C9E to its 6M-poll budget. The original reads the
+existing Preferences file immediately after FindFolder. Both folder identities,
+all file IDs, original companion metadata/forks and Recording bytes remain exact.
+Only four Preferences data bytes differ: offsets 6,7,16,17. Their application-level
+meaning has not been established, so this proves catalog identity and file reuse,
+not persistence of a particular user setting. Reopened catalog SHA256:
+c44b50ce5335fbd4245ec9e0e6915da2e925ea1b85da6ee1d0c06f3b477d18f9.
+
+
+Final folder-service gate: 144 selected checks pass, zero failed/ignored,
+including 100 library (real GPU cases enabled), six Folder Manager, seven
+environment/discovery, four volume-info and the selected file/resource/working-
+directory suites. Exact log: /tmp/systemless-folders-tests-final-source.txt.
+A final primary-contract audit corrected file/folder collisions to dupFNErr -48;
+both CPU adapters test case-insensitive collision, unchanged outputs and catalog.
+
+Corrected original Marathon New Game/forward sequence completes its 40M-poll
+budget at 39,999,926 retired / PC 0102605C, with one VolumeInfo call and a visibly
+rendered close terminal scene (inspected). Valid -1 volume reference is observed;
+this trace does not capture individual PBHGetVInfo return values. Recording data
+grows from 342 to 360 bytes; this is file-write evidence, not playback acceptance.
+Preferences remains 1222 bytes. Independent CRC/catalog/parent validation proves
+all original companion metadata and both forks exact. Catalog SHA256:
+769a25349f918ac91230fd0cb3decd2fb6664a7377e62a9e74fe540f070df6ee.
+Evidence: /tmp/systemless-marathon-folders-verified40.{txt,ppm,png,slv} and catalog
+JSON, archived with all stage evidence under future/target/validation/folders.
+All game jobs are now terminal. Next executable slice is real SndPlayDoubleBuffer
+for EV, then original regression replay; complete game/audio/recording playback,
+native/browser, mixed mode and complete wgpu text/full rebuild remain open.

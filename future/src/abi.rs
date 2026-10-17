@@ -316,6 +316,7 @@ pub enum Service {
     ResolveAliasFile,
     FcbInfo,
     WorkingDirectory(crate::files::WorkingOp),
+    FindFolder,
     VolumeInfo(bool),
     CatalogInfo,
     FileInfo(bool),
@@ -846,6 +847,7 @@ impl Abi {
             b"ResolveAlias" => Some(Service::ResolveAlias),
             b"ResolveAliasFile" => Some(Service::ResolveAliasFile),
             b"PBGetFCBInfoSync" => Some(Service::FcbInfo),
+            b"FindFolder" => Some(Service::FindFolder),
             b"PBGetVInfoSync" => Some(Service::VolumeInfo(false)),
             b"PBHGetVInfoSync" => Some(Service::VolumeInfo(true)),
             b"PBGetCatInfoSync" => Some(Service::CatalogInfo),
@@ -1352,6 +1354,23 @@ impl Abi {
                 Ok((Call::MakeSpec(request), Reply::StackWord(GuestPtr(next))))
             }
             0xa823 => {
+                if c.dar[0] as u16 == 0 {
+                    let a = memory.read(GuestPtr(sp), 18)?;
+                    let request = crate::files::FindFolder {
+                        directory: GuestPtr(u32::from_be_bytes(a[..4].try_into().unwrap())),
+                        found_volume: GuestPtr(u32::from_be_bytes(a[4..8].try_into().unwrap())),
+                        create: a[8] != 0,
+                        kind: a[10..14].try_into().unwrap(),
+                        volume: i16::from_be_bytes(a[14..16].try_into().unwrap()),
+                    };
+                    request.validate(memory)?;
+                    let next = sp
+                        .checked_add(16)
+                        .ok_or_else(|| Error::Cpu("FindFolder stack overflow".into()))?;
+                    memory.validate_write(GuestPtr(next), 2)?;
+                    c.dar[15] = next;
+                    return Ok((Call::FindFolder(request), Reply::StackWord(GuestPtr(next))));
+                }
                 if c.dar[0] as u16 == 2 {
                     let args = memory.read(GuestPtr(sp), 14)?;
                     let long = |i| u32::from_be_bytes(args[i..i + 4].try_into().unwrap());
@@ -5322,6 +5341,17 @@ impl Abi {
                 aliased: GuestPtr(c.gpr[6]),
             }),
             Service::FcbInfo => Call::FcbInfo(GuestPtr(c.gpr[3])),
+            Service::FindFolder => {
+                let request = crate::files::FindFolder {
+                    volume: c.gpr[3] as i16,
+                    kind: c.gpr[4].to_be_bytes(),
+                    create: c.gpr[5] as u8 != 0,
+                    found_volume: GuestPtr(c.gpr[6]),
+                    directory: GuestPtr(c.gpr[7]),
+                };
+                request.validate(memory)?;
+                Call::FindFolder(request)
+            }
             Service::VolumeInfo(hierarchical) => Call::VolumeInfo {
                 pointer: GuestPtr(c.gpr[3]),
                 hierarchical,
