@@ -656,24 +656,46 @@ impl super::TrapDispatcher {
             .collect();
 
         // For each scanline, compute edge intersections and fill spans
-        self.draw_generic_shape(cpu, bus, &bbox, op, false, |y, x| {
-            // Count edge crossings to the left of (or at) x using even-odd rule
-            let mut crossings = 0u32;
-            for edge in &edge_data {
-                if y < edge.y_min || y >= edge.y_max {
-                    continue;
-                }
-                let x_intersect = edge.x_at_ymin + (y - edge.y_min) as f32 * edge.inv_slope;
-                if x_intersect <= x as f32 {
-                    crossings += 1;
-                }
-            }
-            if crossings & 1 != 0 {
-                255
-            } else {
-                0
-            }
+        let polygon_edges = bus.quickdraw_gpu_renderer.is_some().then(|| {
+            edge_data
+                .iter()
+                .map(|e| {
+                    [
+                        f32::from(e.y_min),
+                        f32::from(e.y_max),
+                        e.x_at_ymin,
+                        e.inv_slope,
+                    ]
+                })
+                .collect()
         });
+        self.draw_generic_shape_with_geometry(
+            cpu,
+            bus,
+            &bbox,
+            op,
+            false,
+            None,
+            polygon_edges,
+            |y, x| {
+                // Count edge crossings to the left of (or at) x using even-odd rule
+                let mut crossings = 0u32;
+                for edge in &edge_data {
+                    if y < edge.y_min || y >= edge.y_max {
+                        continue;
+                    }
+                    let x_intersect = edge.x_at_ymin + (y - edge.y_min) as f32 * edge.inv_slope;
+                    if x_intersect <= x as f32 {
+                        crossings += 1;
+                    }
+                }
+                if crossings & 1 != 0 {
+                    255
+                } else {
+                    0
+                }
+            },
+        );
     }
 
     /// Draw an arc (wedge/pie slice) within the bounding rect.
@@ -929,7 +951,7 @@ impl super::TrapDispatcher {
                 matches!(op, ShapeOp::Frame),
             )
         });
-        self.draw_generic_shape_with_rows(cpu, bus, r, op, false, shape_rows, |y, x| {
+        self.draw_generic_shape_with_geometry(cpu, bus, r, op, false, shape_rows, None, |y, x| {
             let idx = (y - r.top) as usize;
             if idx >= spans.len() {
                 return 0;
@@ -1001,7 +1023,7 @@ impl super::TrapDispatcher {
                 matches!(op, ShapeOp::Frame),
             )
         });
-        self.draw_generic_shape_with_rows(cpu, bus, r, op, false, shape_rows, |y, x| {
+        self.draw_generic_shape_with_geometry(cpu, bus, r, op, false, shape_rows, None, |y, x| {
             let idx = (y - r.top) as usize;
             if idx >= spans.len() {
                 return 0;
@@ -1189,10 +1211,19 @@ impl super::TrapDispatcher {
     ) where
         F: Fn(i16, i16) -> u8,
     {
-        self.draw_generic_shape_with_rows(cpu, bus, r, op, full_rect_coverage, None, coverage_at);
+        self.draw_generic_shape_with_geometry(
+            cpu,
+            bus,
+            r,
+            op,
+            full_rect_coverage,
+            None,
+            None,
+            coverage_at,
+        );
     }
 
-    fn draw_generic_shape_with_rows<C: CpuOps, F>(
+    fn draw_generic_shape_with_geometry<C: CpuOps, F>(
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
@@ -1200,6 +1231,7 @@ impl super::TrapDispatcher {
         op: ShapeOp,
         full_rect_coverage: bool,
         shape_rows: Option<super::quickdraw::RegionMembershipCache>,
+        polygon_edges: Option<Vec<[f32; 4]>>,
         coverage_at: F,
     ) where
         F: Fn(i16, i16) -> u8,
@@ -1576,7 +1608,7 @@ impl super::TrapDispatcher {
         };
 
         if bus.quickdraw_gpu_renderer.is_some()
-            && (full_rect_coverage || shape_rows.is_some())
+            && (full_rect_coverage || shape_rows.is_some() || polygon_edges.is_some())
             && (!vis_region_complex || vis_region_cache.is_some())
             && (!clip_region_complex || clip_region_cache.is_some())
             && installed_raw_pixpat.is_none()
@@ -1660,6 +1692,7 @@ impl super::TrapDispatcher {
                 if let Some(clip_rows) = gpu_clip {
                     let command = crate::quickdraw::gpu::QuickDrawGpuCommand {
                         clip_rows,
+                        polygon_edges: polygon_edges.clone(),
                         area: [
                             i32::from(left),
                             i32::from(top),
@@ -1672,7 +1705,7 @@ impl super::TrapDispatcher {
                             i32::from(r.right),
                             i32::from(r.bottom),
                         ],
-                        border: (frame && shape_rows.is_none())
+                        border: (frame && shape_rows.is_none() && polygon_edges.is_none())
                             .then_some([i32::from(self.pn_size.1), i32::from(self.pn_size.0)]),
                         pattern,
                         transfer,

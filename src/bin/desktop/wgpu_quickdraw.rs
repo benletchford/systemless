@@ -45,6 +45,7 @@ struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
+    polygon_products: wgpu::ComputePipeline,
 }
 impl State {
     fn new() -> Result<Self, String> {
@@ -54,7 +55,7 @@ impl State {
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
             .map_err(|e| e.to_string())?;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("QuickDraw rectangle"),
+            label: Some("QuickDraw shapes"),
             source: wgpu::ShaderSource::Wgsl(include_str!("wgpu_quickdraw.wgsl").into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -65,11 +66,20 @@ impl State {
             compilation_options: Default::default(),
             cache: None,
         });
+        let polygon_products = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("QuickDraw rounded polygon products"),
+            layout: None,
+            module: &shader,
+            entry_point: Some("polygon_products"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
         eprintln!("[GPU] QuickDraw rasterization: {}", adapter.get_info().name);
         Ok(Self {
             device,
             queue,
             pipeline,
+            polygon_products,
         })
     }
     fn render(
@@ -105,6 +115,7 @@ impl State {
             .checked_mul(8)
             .ok_or("QuickDraw size overflow")?;
         if !command.valid_clip_rows()
+            || !command.valid_polygon_edges()
             || background.len() != count
             || output_bytes > u64::from(limits.max_storage_buffer_binding_size)
             || output_bytes > limits.max_buffer_size
@@ -140,6 +151,39 @@ impl State {
                 contents: &clip_bytes,
                 usage: wgpu::BufferUsages::STORAGE,
             });
+        let edges = command.polygon_edges.as_deref().unwrap_or(&[]);
+        let edge_bytes: Vec<u8> = if edges.is_empty() {
+            vec![0; 16]
+        } else {
+            edges
+                .iter()
+                .flatten()
+                .flat_map(|v| v.to_le_bytes())
+                .collect()
+        };
+        let edge_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("QuickDraw polygon edges"),
+                contents: &edge_bytes,
+                usage: wgpu::BufferUsages::STORAGE,
+            });
+        let product_bytes = (height as u64)
+            .checked_mul(edges.len() as u64)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or("QuickDraw polygon product size overflow")?
+            .max(4);
+        if product_bytes > u64::from(limits.max_storage_buffer_binding_size)
+            || product_bytes > limits.max_buffer_size
+        {
+            return Err("QuickDraw polygon products exceed GPU limits".into());
+        }
+        let products = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("QuickDraw rounded polygon products"),
+            size: product_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
         let input: Vec<u8> = background.iter().flat_map(|p| p.to_le_bytes()).collect();
         let input = self
             .device
@@ -155,7 +199,7 @@ impl State {
             mapped_at_creation: false,
         });
         let border = command.border.unwrap_or([0, 0]);
-        let mut words = Vec::with_capacity(24);
+        let mut words = Vec::with_capacity(28);
         words.extend([
             command.area[0] as u32,
             command.area[1] as u32,
@@ -171,6 +215,12 @@ impl State {
         ]);
         words.extend(command.transfer.into_iter().flatten());
         words.extend(command.pattern.map(u32::from));
+        words.extend([
+            u32::from(command.polygon_edges.is_some()),
+            edges.len() as u32,
+            0,
+            0,
+        ]);
         let uniform: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
         let uniform = self
             .device
@@ -199,6 +249,14 @@ impl State {
                     binding: 3,
                     resource: clip_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: edge_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: products.as_entire_binding(),
+                },
             ],
         });
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -208,6 +266,31 @@ impl State {
             mapped_at_creation: false,
         });
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        if !edges.is_empty() {
+            let product_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("QuickDraw polygon products"),
+                layout: &self.polygon_products.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: edge_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: products.as_entire_binding(),
+                    },
+                ],
+            });
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&self.polygon_products);
+            pass.set_bind_group(0, &product_group, &[]);
+            pass.dispatch_workgroups((edges.len() as u32).div_ceil(64), height, 1);
+        }
+
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.pipeline);
@@ -246,6 +329,117 @@ impl State {
 mod tests {
     use super::*;
     #[test]
+    fn gpu_quickdraw_polygons_match_even_odd_crossings() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let mut polygons = vec![
+            vec![[-9, -7], [12, -7], [12, 11], [-9, 11]],
+            vec![[-8, -6], [14, 13], [-8, 13], [14, -6]],
+            vec![[-5, -6], [11, -6], [11, 1], [2, 1], [2, 12], [-5, 12]],
+            vec![[0, -8], [0, 13], [0, -8]],
+            vec![],
+        ];
+        let mut seed = 17u32;
+        for _ in 0..80 {
+            let mut vertices = Vec::new();
+            for _ in 0..7 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let x = (seed % 29) as i32 - 12;
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                vertices.push([x, (seed % 25) as i32 - 10]);
+            }
+            polygons.push(vertices);
+        }
+        for vertices in polygons {
+            let mut edges = Vec::new();
+            for i in 0..vertices.len() {
+                let [x0, y0] = vertices[i];
+                let [x1, y1] = vertices[(i + 1) % vertices.len()];
+                if y0 == y1 {
+                    continue;
+                }
+                let (top, bottom, left) = if y0 < y1 { (y0, y1, x0) } else { (y1, y0, x1) };
+                edges.push([
+                    top as f32,
+                    bottom as f32,
+                    left as f32,
+                    (x1 - x0) as f32 / (y1 - y0) as f32,
+                ]);
+            }
+            let command = QuickDrawGpuCommand {
+                polygon_edges: Some(edges.clone()),
+                clip_rows: Some(
+                    (-10..16)
+                        .map(|y| {
+                            if y % 4 == 0 {
+                                vec![-9, 1, 4, 15]
+                            } else {
+                                vec![-12, 18]
+                            }
+                        })
+                        .collect(),
+                ),
+                area: [-12, -10, 18, 16],
+                rect: [-12, -10, 18, 16],
+                border: None,
+                pattern: [0xff; 8],
+                transfer: [[0, 3], [0, 7]],
+            };
+            let pixels = state.render(&command, &vec![0x1234; 30 * 26]).unwrap();
+            for y in -10..16 {
+                for x in -12..18 {
+                    let crossings = edges
+                        .iter()
+                        .filter(|e| {
+                            y as f32 >= e[0]
+                                && (y as f32) < e[1]
+                                && e[2] + (y as f32 - e[0]) * e[3] <= x as f32
+                        })
+                        .count();
+                    let covered = crossings % 2 != 0
+                        && (y % 4 != 0 || (-9..1).contains(&x) || (4..15).contains(&x));
+                    assert_eq!(
+                        pixels[((y + 10) * 30 + x + 12) as usize],
+                        QuickDrawGpuPixel {
+                            value: if covered { 7 } else { 0x1234 },
+                            covered
+                        },
+                        "vertices={vertices:?},point={x},{y}"
+                    );
+                }
+            }
+        }
+        let mut command = QuickDrawGpuCommand {
+            polygon_edges: None,
+            clip_rows: None,
+            area: [0, 0, 1, 1],
+            rect: [0, 0, 1, 1],
+            border: None,
+            pattern: [0; 8],
+            transfer: [[0; 2]; 2],
+        };
+        for invalid in [
+            [0., 1., f32::NAN, 0.],
+            [2., 1., 0., 0.],
+            [0., 1., 0., f32::INFINITY],
+        ] {
+            command.polygon_edges = Some(vec![invalid]);
+            assert!(state.render(&command, &[0]).is_err());
+        }
+        command.area = [0, 0, 100, 100];
+        command.polygon_edges = Some(vec![[0., 1., 0., 0.]; 6401]);
+        assert!(state.render(&command, &vec![0; 10000]).is_err());
+    }
+
+    #[test]
     fn gpu_quickdraw_complex_clips_preserve_holes_and_empty_rows() {
         let state = match State::new() {
             Ok(state) => state,
@@ -260,6 +454,7 @@ mod tests {
         for origin in [[-11, -9], [-3, 2], [0, 0], [5, 7]] {
             for border in [None, Some([1, 2])] {
                 let command = QuickDrawGpuCommand {
+                    polygon_edges: None,
                     area: [origin[0], origin[1], origin[0] + 17, origin[1] + 13],
                     rect: [origin[0], origin[1], origin[0] + 17, origin[1] + 13],
                     border,
@@ -304,6 +499,7 @@ mod tests {
             }
         }
         let command = QuickDrawGpuCommand {
+            polygon_edges: None,
             area: [0, 0, 1, 1],
             rect: [0, 0, 1, 1],
             border: None,
@@ -347,6 +543,7 @@ mod tests {
                     [[0x00ff_ffff, 0x0000_1234], [0x0000_ffff, 0x00ff_0000]],
                 ] {
                     let command = QuickDrawGpuCommand {
+                        polygon_edges: None,
                         clip_rows: None,
                         area: [origin[0], origin[1], origin[0] + 17, origin[1] + 13],
                         rect: [origin[0] + 1, origin[1] + 1, origin[0] + 16, origin[1] + 12],
@@ -393,6 +590,7 @@ mod tests {
             }
         }
         let command = QuickDrawGpuCommand {
+            polygon_edges: None,
             clip_rows: None,
             area: [0, 0, 1, 1],
             rect: [0, 0, 1, 1],
