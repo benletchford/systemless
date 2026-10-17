@@ -15095,6 +15095,20 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
         mode: u8,
     }
     impl PpcQ3GpuRenderer for HostRenderer {
+        fn render_indexed(
+            &mut self,
+            frame: &PpcQ3RasterFrame,
+            background: &[u16],
+            clut: &[[u16; 3]; 256],
+        ) -> Result<Vec<u16>, String> {
+            assert_eq!(self.mode, 3);
+            assert_eq!((frame.width, frame.height), (8, 8));
+            assert_eq!(clut[7], [0, 65535, 0]);
+            assert!(background.iter().all(|p| p & 0x8000 != 0));
+            let mut result = background.to_vec();
+            result[3 * 8 + 4] = 7;
+            Ok(result)
+        }
         fn render(
             &mut self,
             frame: &PpcQ3GpuFrame,

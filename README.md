@@ -121,7 +121,8 @@ texture wrapping, alpha blending, ambient, directional, point, and spot lighting
 and spot falloff, Lambert/Phong shading with flat, vertex, or pixel interpolation,
 and linear, exponential, squared exponential, and alpha fog. Results are read
 back into the guest framebuffer before execution resumes, preserving CopyBits
-and subsequent drawing. Degenerate filled triangles and frames beyond the GPU
+and subsequent drawing. Indexed targets quantize through the live guest palette
+after each paint and preserve exact palette indices during readback. Degenerate filled triangles and frames beyond the GPU
 resource/work limits currently use the software renderer. Classic 68K rectangle, oval, rounded-rectangle, polygon, and region
 draws use GPU pattern expansion and boolean transfers at 1, 2, 4, 8,
 16, and 32 bits per pixel, with immediate guest-memory writeback. Complex visible

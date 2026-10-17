@@ -356,7 +356,11 @@ impl PpcLoadedApp {
                     .push(surface.read_pixel(&mut self.memory, (x as i32, y as i32))? | 0x8000);
             }
         }
-        let pixels = match renderer.render_native(&packet, &background) {
+        let rendered = match indexed_clut.as_ref() {
+            Some(clut) => renderer.render_indexed(&packet, &background, clut),
+            None => renderer.render_native(&packet, &background),
+        };
+        let pixels = match rendered {
             Ok(pixels) if pixels.len() == count => pixels,
             Ok(_) => {
                 tracing::warn!("GPU QD3D renderer returned the wrong pixel count; using software");
@@ -367,7 +371,12 @@ impl PpcLoadedApp {
                 return None;
             }
         };
-        if !qd3d_gpu::commit_pixels(&mut self.memory, front, indexed_clut.as_ref(), &pixels) {
+        let committed = if indexed_clut.is_some() {
+            qd3d_gpu::commit_indexed_pixels(&mut self.memory, front, &pixels)
+        } else {
+            qd3d_gpu::commit_pixels(&mut self.memory, front, &pixels)
+        };
+        if !committed {
             return None;
         }
         let mut stats = PpcQ3SoftwareRenderStats::default();

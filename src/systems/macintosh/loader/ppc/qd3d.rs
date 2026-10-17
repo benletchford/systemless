@@ -614,6 +614,20 @@ impl PpcQ3SceneReplay {
     }
 }
 
+/// RGB555-to-palette lookup used by synchronous indexed GPU rasterization.
+/// Low bits hold the palette color read back by the next primitive; upper bits
+/// hold its exact index so readback never performs a second nearest-color search.
+pub fn ppc_q3_gpu_palette_lookup(clut: &[[u16; 3]; 256]) -> Vec<u32> {
+    (0..0x8000u16)
+        .map(|color| {
+            let index = ppc_rgb555_to_clut_index(color, clut);
+            let [r, g, b] = clut[usize::from(index)];
+            let decoded = ((r >> 11) << 10) | ((g >> 11) << 5) | (b >> 11);
+            u32::from(decoded) | (u32::from(index) << 16)
+        })
+        .collect()
+}
+
 /// A synchronous host rasterizer. Returning an error leaves the completed frame
 /// queued for the software renderer. Successful RGB555 pixels are committed to
 /// guest memory before execution resumes, including offscreen draw contexts.
@@ -621,6 +635,17 @@ impl PpcQ3SceneReplay {
 /// pixels; indexed targets use this coverage marker to preserve exact indices.
 pub trait PpcQ3GpuRenderer {
     fn render(&mut self, frame: &PpcQ3GpuFrame, background: &[u16]) -> Result<Vec<u16>, String>;
+
+    /// Indexed rendering must quantize after each paint. Returned painted cells
+    /// contain palette indices; bit 15 still marks untouched background cells.
+    fn render_indexed(
+        &mut self,
+        _frame: &PpcQ3RasterFrame,
+        _background: &[u16],
+        _clut: &[[u16; 3]; 256],
+    ) -> Result<Vec<u16>, String> {
+        Err("host renderer does not support indexed palette blending".into())
+    }
 
     /// Extended shading hook. Existing host renderers keep their original
     /// packet interface and decline shading they cannot represent.
