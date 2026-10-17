@@ -423,9 +423,10 @@ pub fn draw(
     if !positive(destination) {
         return Ok(());
     }
-    let port = ports.current(memory)?;
     let (bitmap, port_clips) = ports.drawing_target(memory)?;
-    let (foreground, background) = crate::port_layout::colors(memory, port, &bitmap)?;
+    // Picture playback has its own initial color state. Recorded color opcodes
+    // override these defaults without reading or changing the caller's colors.
+    let (foreground, background) = (bitmap.nearest([0; 3])?, bitmap.nearest([65535; 3])?);
     let mut prepared = Vec::new();
     for command in &picture.commands {
         let rect = mapped(command.destination, picture.frame, destination)?;

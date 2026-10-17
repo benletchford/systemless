@@ -4291,3 +4291,27 @@ one. They do not checkpoint the input volume or inject guest events. These are
 headless diagnostic observations, not native presentation or performance evidence.
 This makes loading/menu/demo transitions observable before a final frame changes
 again, without guessing their contents from a terminal budget stop.
+
+
+### Picture-local initial colors
+
+PICT bitmap playback starts from local black foreground/white background instead
+of borrowing the caller port's current colors. Decoded FgColor/BkColor opcodes
+still override that local state in stream order. The caller's port and color
+fields are not modified. Clipping, mapping, source palette decoding, explicit
+transfer modes and GPU destination operations keep their existing shared routes;
+this is not a neutral-copy exception for all indexed images.
+
+Apple Technical Note21, QuickDraw's Internal Picture Definition, p.4, specifies
+that OpenPicture/DrawPicture establish default drawing state. The note explicitly
+covers version1; its scope must not be presented as a new version2/native oracle.
+The preserved implementation independently initializes picture colors (reference
+evidence); focused v1/v2 fixtures exercise this runtime's default/recorded-state
+contract on both CPU adapters. Apple's Color QuickDraw Table4-1, pp.4-32–4-33,
+continues to govern the shared foreground/background-weighted transfer operations.
+Sources: [TN21 scanned note](https://show.docjava.com/posterous/file/2012/07/9614411-DOC01000.PDF),
+[Color QuickDraw](https://developer.apple.com/library/archive/documentation/mac/pdf/Imaging_With_QuickDraw/Color_QuickDraw.pdf).
+The TN21 page was rendered and visually inspected; PDF SHA-256
+`f2854e06001e91c438b8e029fd168bd05debcab2078bcf660e318874221a39f5`.
+Full PICT graphics/text opcodes and authoritative native color-picture parity
+remain outside this completed slice.

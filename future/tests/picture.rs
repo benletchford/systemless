@@ -921,3 +921,69 @@ fn both_cpu_adapters_honor_direct_picture_dither_copy_instead_of_thresholding() 
         );
     }
 }
+
+#[test]
+#[ignore = "requires a real wgpu adapter"]
+fn playback_defaults_and_recorded_colors_are_independent_of_caller_port_colors() {
+    for v2 in [false, true] {
+        for recorded_black_background in [false, true] {
+            let mut bytes = fixture(v2, false, 0);
+            if recorded_black_background {
+                let mut op = Vec::new();
+                opcode(&mut op, v2, 0x0f);
+                op.extend(33u32.to_be_bytes());
+                let start = if v2 { 14 } else { 12 };
+                bytes.splice(start..start, op);
+            }
+            let mut a = app(bytes);
+            let ports = a.runtime.process.ports.unwrap();
+            ports.set_color(&mut a.runtime.memory, true, 33).unwrap();
+            let saved = a
+                .runtime
+                .memory
+                .read(GuestPtr(0x1000), 108)
+                .unwrap()
+                .to_vec();
+            let h = a
+                .runtime
+                .process
+                .get_resource(&mut a.runtime.memory, *b"PICT", 128)
+                .unwrap();
+            a.runtime
+                .memory
+                .map(GuestPtr(0x50000000), vec![0xa8, 0xf6], Permissions::RX)
+                .unwrap();
+            for arch in [Architecture::M68k, Architecture::PowerPc] {
+                a.runtime
+                    .memory
+                    .write(GuestPtr(0x1200), &[0, 0x5a, 0, 0x5a, 0, 0x5a, 0, 0x5a])
+                    .unwrap();
+                if arch == Architecture::PowerPc {
+                    invoke(&mut a, 4, &[h, 0x300]);
+                } else {
+                    let stack = STACK_BASE + 0x8000;
+                    let mut frame = 0x300u32.to_be_bytes().to_vec();
+                    frame.extend(h.to_be_bytes());
+                    a.runtime.memory.write(GuestPtr(stack), &frame).unwrap();
+                    a.runtime.cpu = Cpu::new(arch, 0x50000000, stack);
+                    assert_eq!(a.runtime.advance(1).unwrap(), Stop::Budget);
+                    let Cpu::M68k(cpu) = &a.runtime.cpu else {
+                        panic!()
+                    };
+                    assert_eq!(cpu.dar[15], stack + 8);
+                }
+                let expected = if recorded_black_background {
+                    [0x3c, 0x5a, 0x3c, 0x5a, 0x3c, 0x5a, 0x3c, 0x5a]
+                } else {
+                    [0x30, 0x5a, 0x30, 0x5a, 0x0c, 0x5a, 0x0c, 0x5a]
+                };
+                assert_eq!(
+                    a.runtime.memory.read(GuestPtr(0x1200), 8).unwrap(),
+                    expected,
+                    "{arch:?} v2={v2} recorded={recorded_black_background}"
+                );
+                assert_eq!(a.runtime.memory.read(GuestPtr(0x1000), 108).unwrap(), saved);
+            }
+        }
+    }
+}

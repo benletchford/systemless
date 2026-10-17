@@ -11504,3 +11504,60 @@ formatting and whitespace gates pass. Evidence: /tmp/systemless-driverdiag-*.txt
 ignored target validation/private-original directories. Both replay/build/check
 handles are terminal; no job remains running. New-game interaction, native parity,
 full original-game acceptance and full rebuild/text acceptance remain unfinished.
+
+
+## Picture-local default colors restore original Marathon introductions (2026-10-17)
+
+Root cause: `picture::draw` inherited the caller port's foreground/background.
+Original Marathon's window has black for both requested RGB colors; an indexed
+picture with no color opcodes was therefore tinted black. Picture playback now
+starts with local black/white colors. Recorded FgColor/BkColor opcodes still apply
+in order; the caller port remains byte-identical. Shared CopyBits tinting, driver
+palettes, guest CPU behavior, media and GPU transfer modes are unchanged.
+The architecture note records Apple's TN21 version1 scope, the preserved-renderer
+reference evidence and the remaining authoritative native version2 boundary.
+
+The new real-GPU regression fails before the fix (all-black destination instead
+of the picture's white cells) and passes afterwards. It exercises v1/v2 defaults,
+explicit recorded black background, both native CPU adapters, scaled pixels,
+row padding and preserved caller state. Full focused gate: 31 unique passes,
+0failed/ignored (16 picture,12 indexed-destination,3 video-driver), with all required
+GPU cases enabled. These checks do not establish complete PICT opcode support.
+
+Fresh unchanged original Marathon, 8M polls, no keys, 640x480x8:
+- At retired instruction3,150,000 the inspected capture displays “somewhere in
+  the heavens...they are waiting”. Canonical PPM SHA-256
+  `ea28eed68947e7c2033e13fda9d34c10b13c4bf1f62c82d590bce398a51ed782`.
+- The final snapshot remains 7,999,258 / PC0102295C, budget exit1, black during
+  subsequent film loading. End-of-budget black is not evidence that the earlier
+  introduction failed to render. Volume hash remains `e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+
+A separate 12M-poll N-input probe captures before keys at3.15/3.35/3.55/3.75/4/4.25M
+(up5,000instructions later). The inspected contact sheet shows the intro sentence,
+Marathon/Bungie title, then main-menu artwork at3.75M. It nevertheless selects
+film ordinal2 before the3.75M key, proving that visible retained menu artwork is
+not sufficient evidence of an interactive menu wait. Final11,999,259/PC01022A02,
+budget exit1, black loading; same committed volume hash. No new-game start,
+player movement or menu-selection acceptance is claimed.
+
+Fresh original EV regression:24M/PC007E6C3A, budget exit1, screen byte-identical
+`ab60ddcff2b03afff894b9f2744709b65e141679437ae2e6d5308a231377f799`, volume
+`e524aeff1c6f974d0f3d59291a0730a2fe59716072a03aac0ddb1c8a355c4e80`.
+The original EnterShip input and prior scripted volume are reused. All three
+saved volumes pass independent CRC/catalog/fork/companion/metadata checks.
+No input binary or volume is modified. No native or timing/performance claim.
+
+Evidence: /tmp/systemless-pictdefaults-{before,tests,build,lint,msrv}.txt,
+/tmp/systemless-marathon-pictdefaults*, /tmp/systemless-marathon-menu-probe*,
+/tmp/systemless-ev-pictdefaults*, and independent volume reports. Captures/logs
+are archived under ignored target validation/private-originals directories.
+Next investigate the actual main-menu event/timing boundary before more late keys.
+The full rebuild, mixed mode, complete wgpu text and original-game acceptance
+remain unfinished; keep the goal active and PR draft.
+
+
+Final tracer build, strict scoped Clippy (`--lib --test picture --test video_driver
+--test indexed_destinations --example trace_application -- -D warnings`), declared
+Rust1.93 example check, sequential stdin formatting and whitespace gates pass.
+All original replay and verification handles are terminal; no job remains running.
+No dependency changes are included.

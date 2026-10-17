@@ -5220,3 +5220,16 @@ evidence retains 2026-10-17-qd32 captures. Primary-source reasoning and exact ga
 commands are in architecture.md/progress.md. No fresh PPC-original or full-game
 acceptance follows. Text/styles, complete graphics profiles, Mixed Mode and full
 native/browser rebuild acceptance remain open; keep the goal active.
+
+
+### Latest picture-state verification (2026-10-17)
+
+Picture-local black/white defaults restore original Marathon's intro sentence,
+Marathon/Bungie title and main-menu artwork in timed GPU captures. The31 scoped
+picture/indexed/video checks pass. A12M-poll N-input probe still selects film2
+before its3.75M key and ends in loading at11,999,259/PC01022A02; a retained menu
+image does not establish a menu waiting for input. New-game selection and player
+movement remain unverified. The fresh24M original EV frame/PC and saved volume
+are byte-identical to the preceding corrected idle evidence. See progress.md for
+exact captures, hashes, input schedules and independent volume checks. This is
+shared-runtime headless evidence, not native System7 or sustained gameplay parity.
