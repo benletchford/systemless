@@ -528,6 +528,75 @@ pub(crate) fn ppc_paint_arc(
     wrote
 }
 
+// Rows are in port coordinates. Callers apply their existing region clips;
+// this helper only intersects the pixel image and preserves pattern phase.
+fn ppc_gpu_region_rows(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+    top: i16,
+    rows: &[Vec<i16>],
+    pattern: [u8; 8],
+    transfer: [[u32; 2]; 2],
+) -> Option<bool> {
+    use crate::quickdraw::gpu::{try_native_rectangle, QuickDrawGpuCommand, RasterTarget};
+    let fb = surface.front_buffer;
+    if memory.quickdraw_gpu_renderer().is_none()
+        || !matches!(fb.depth, 1 | 2 | 4 | 8 | 16)
+        || fb.width > 32767
+        || fb.height > 32767
+    {
+        return None;
+    }
+    let y0 = i32::from(top).max(i32::from(surface.top));
+    let y1 = (i32::from(top) + rows.len() as i32)
+        .min(i32::from(surface.top) + fb.height as i32)
+        .min(32767);
+    let x0 = i32::from(surface.left);
+    let x1 = (x0 + fb.width as i32).min(32767);
+    if y1 <= y0 || x1 <= x0 {
+        return Some(false);
+    }
+    let clips: Vec<Vec<i32>> = rows[(y0 - i32::from(top)) as usize..(y1 - i32::from(top)) as usize]
+        .iter()
+        .map(|row| {
+            row.chunks_exact(2)
+                .filter_map(|p| {
+                    let left = i32::from(p[0]).max(x0);
+                    let right = i32::from(p[1]).min(x1);
+                    (left < right).then_some([left, right])
+                })
+                .flatten()
+                .collect()
+        })
+        .collect();
+    let Some(left) = clips.iter().flatten().copied().min() else {
+        return Some(false);
+    };
+    let right = clips.iter().flatten().copied().max()?;
+    let area = [left, y0, right, y1];
+    let command = QuickDrawGpuCommand {
+        mask: None,
+        clip_rows: Some(clips),
+        polygon_edges: None,
+        area,
+        rect: area,
+        border: None,
+        pattern,
+        transfer,
+    };
+    try_native_rectangle(
+        memory,
+        RasterTarget {
+            base: fb.base_addr,
+            row_bytes: fb.row_bytes,
+            depth: fb.depth as u16,
+            origin: [i32::from(surface.left), i32::from(surface.top)],
+        },
+        command,
+    )
+    .then_some(true)
+}
+
 pub(crate) fn ppc_paint_region(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -554,6 +623,16 @@ pub(crate) fn ppc_paint_region(
     else {
         return false;
     };
+    if let Some(wrote) = ppc_gpu_region_rows(
+        memory,
+        surface,
+        top,
+        &rows,
+        [255; 8],
+        [[0, u32::from(color_pixel)]; 2],
+    ) {
+        return wrote;
+    }
     let mut wrote = false;
     for (row, endpoints) in rows.iter().enumerate() {
         let y = i32::from(top) + row as i32 - i32::from(surface.top);
@@ -983,10 +1062,31 @@ fn ppc_fill_rows_with_pixpat(
 
     let surf_top = surface.top;
     let surf_left = surface.left;
-    let surf_bottom = surface.top.saturating_add(surface.front_buffer.height as i16);
-    let surf_right = surface.left.saturating_add(surface.front_buffer.width as i16);
+    let surf_bottom = surface
+        .top
+        .saturating_add(surface.front_buffer.height as i16);
+    let surf_right = surface
+        .left
+        .saturating_add(surface.front_buffer.width as i16);
     let front_buffer = surface.front_buffer;
 
+    if let PpcPixPatKind::Mono {
+        pat1,
+        fore_pixel,
+        back_pixel,
+    } = &sampler.kind
+    {
+        if let Some(wrote) = ppc_gpu_region_rows(
+            memory,
+            surface,
+            top,
+            &rows,
+            *pat1,
+            [[0, u32::from(*back_pixel)], [0, u32::from(*fore_pixel)]],
+        ) {
+            return wrote;
+        }
+    }
     let mut wrote = false;
     for (row_idx, endpoints) in rows.iter().enumerate() {
         let y = top.saturating_add(row_idx as i16);
@@ -1176,7 +1276,7 @@ pub(crate) fn ppc_frame_region(
     let Some(storage) = ppc_region_storage(memory, region_handle) else {
         return false;
     };
-    let Some((top, _, bottom, _)) = ppc_region_storage_bbox(&storage) else {
+    let Some((top, left, bottom, right)) = ppc_region_storage_bbox(&storage) else {
         return true;
     };
     let Some(rows) = ppc_region_rows_for_band(&storage, top, bottom) else {
@@ -1213,6 +1313,66 @@ pub(crate) fn ppc_frame_region(
             .any(|interval| x >= interval[0] && x < interval[1])
     };
 
+    if memory.quickdraw_gpu_renderer().is_some()
+        && front_buffer.width <= 32767
+        && front_buffer.height <= 32767
+    {
+        let width = (i32::from(right).min(i32::from(surface.left) + front_buffer.width as i32)
+            - i32::from(left).max(i32::from(surface.left)))
+        .max(0) as u64;
+        let height = (i32::from(bottom).min(i32::from(surface.top) + front_buffer.height as i32)
+            - i32::from(top).max(i32::from(surface.top)))
+        .max(0) as u64;
+        let work = width
+            .saturating_mul(height)
+            .saturating_mul(2 * pen_height as u64 + 1);
+        if work <= 64_000_000 {
+            let mut frame_rows = vec![Vec::new(); rows.len()];
+            for (row_idx, endpoints) in rows.iter().enumerate() {
+                let v = i32::from(top) + row_idx as i32;
+                if v < i32::from(surface.top)
+                    || v >= i32::from(surface.top) + front_buffer.height as i32
+                {
+                    continue;
+                }
+                for interval in endpoints.chunks_exact(2) {
+                    let left = i32::from(interval[0]).max(i32::from(surface.left));
+                    let right = i32::from(interval[1])
+                        .min(i32::from(surface.left) + front_buffer.width as i32);
+                    let mut run = None;
+                    for h in left..right {
+                        let h = h as i16;
+                        let inside = (row_idx as i32 - pen_height..=row_idx as i32 + pen_height)
+                            .all(|source_row| {
+                                row_contains(source_row, h.saturating_sub(pen_width as i16))
+                                    && row_contains(source_row, h.saturating_add(pen_width as i16))
+                            });
+                        if !inside && run.is_none() {
+                            run = Some(h);
+                        }
+                        if inside {
+                            if let Some(start) = run.take() {
+                                frame_rows[row_idx].extend([start, h]);
+                            }
+                        }
+                    }
+                    if let Some(start) = run {
+                        frame_rows[row_idx].extend([start, right as i16]);
+                    }
+                }
+            }
+            if let Some(wrote) = ppc_gpu_region_rows(
+                memory,
+                surface,
+                top,
+                &frame_rows,
+                [255; 8],
+                [[0, u32::from(color_pixel)]; 2],
+            ) {
+                return wrote;
+            }
+        }
+    }
     let mut wrote = false;
     for (row_idx, endpoints) in rows.iter().enumerate() {
         let v = i32::from(top) + row_idx as i32;
@@ -1220,9 +1380,8 @@ pub(crate) fn ppc_frame_region(
         for interval in endpoints.chunks_exact(2) {
             for h in interval[0]..interval[1] {
                 let x = i32::from(h) - i32::from(surface.left);
-                let inside_inset = (row_idx as i32 - pen_height
-                    ..=row_idx as i32 + pen_height)
-                    .all(|source_row| {
+                let inside_inset =
+                    (row_idx as i32 - pen_height..=row_idx as i32 + pen_height).all(|source_row| {
                         row_contains(source_row, h.saturating_sub(pen_width as i16))
                             && row_contains(source_row, h.saturating_add(pen_width as i16))
                     });
