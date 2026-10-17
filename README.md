@@ -128,9 +128,9 @@ draws use GPU pattern expansion and boolean transfers at 1, 2, 4, 8,
 16, and 32 bits per pixel, with immediate guest-memory writeback. Complex visible
 and clip regions are decoded into row intervals and tested on the GPU. Raw
 PixPats and retained-outline-preserving indexed inversions use software.
-Classic 68K glyphs use wgpu mask sampling and text transfers at all six pixel
-depths, preserving complex clips and retained outline detail.
-PowerPC solid rectangle paints, ovals, and rounded rectangles use the shared GPU
+Classic 68K glyphs and arcs use wgpu mask sampling and transfers at all six
+pixel depths, preserving complex clips and retained outline detail for text.
+PowerPC solid rectangle paints, ovals, rounded rectangles, and solid arc paints use the shared GPU
 backend
 at 1, 2, 4, 8, and 16 bits per pixel. PowerPC patterned PaintRect uses the same
 depths, and FillRect patterns use wgpu at 8 and 16 bits per pixel.

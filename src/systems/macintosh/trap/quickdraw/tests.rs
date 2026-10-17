@@ -2892,6 +2892,7 @@
                 ));
                 d.draw_rgn(&mut cpu, &mut bus, handle, op);
             }
+            5 => d.draw_arc(&mut cpu, &mut bus, &rect, -45, 270, op),
             _ => d.draw_rect(&mut cpu, &mut bus, &rect, op),
         }
         (bus.read_bytes(base, 30), calls.get())
@@ -2923,7 +2924,7 @@
 
     #[test]
     fn gpu_shapes_match_classic_patterns_frames_and_complex_clips() {
-        for shape in [1, 2, 3, 4] {
+        for shape in [1, 2, 3, 4, 5] {
             for op in [
                 ShapeOp::Paint,
                 ShapeOp::Frame,
@@ -3135,6 +3136,17 @@
                     ));
                     d.draw_rgn(&mut cpu, &mut bus, handle, op);
                 }
+                5..=10 => {
+                    let (start, extent) = [
+                        (-45, 270),
+                        (0, 90),
+                        (90, -180),
+                        (0, 360),
+                        (320, 55),
+                        (65, 900),
+                    ][usize::from(shape - 5)];
+                    d.draw_arc(&mut cpu, &mut bus, &rect, start, extent, op);
+                }
                 _ => d.draw_rect(&mut cpu, &mut bus, &rect, op),
             }
             (bus.read_bytes(base, (row_bytes * 64) as usize), calls.get())
@@ -3142,7 +3154,7 @@
         for depth in [2, 4, 8, 16, 32] {
             for mode in [0, 1, 2, 3] {
                 for op in [ShapeOp::Paint, ShapeOp::Frame] {
-                    for shape in [0, 1, 2, 3, 4] {
+                    for shape in 0..=10 {
                         let (actual, calls) = draw(depth, mode, op, true, shape);
                         let (expected, _) = draw(depth, mode, op, false, shape);
                         assert_eq!(actual, expected, "depth={depth},mode={mode},op={op:?}");

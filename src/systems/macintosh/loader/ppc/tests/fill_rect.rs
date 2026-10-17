@@ -317,6 +317,64 @@ fn gpu_native_glyph_masks_match_software_text_modes_and_explicit_clips() {
 }
 
 #[test]
+fn gpu_native_arc_paints_match_software_angles_depths_and_fallback() {
+    let pixels = initial_pixels();
+    let fixture = fixture(&pixels, CLIPS[0].0, CLIPS[0].1);
+    for depth in [1, 2, 4, 8, 16] {
+        for rect in [RECTS[0], RECTS[1], RECTS[3]] {
+            for (start, extent) in [
+                (0, 0),
+                (0, 90),
+                (90, -180),
+                (-45, 270),
+                (320, 55),
+                (0, 360),
+                (65, 900),
+            ] {
+                let mut expected = None;
+                for backend in [None, Some(0), Some(1), Some(2)] {
+                    let mut loaded =
+                        load_pef_application(&synthetic_pef_with_import(b"PaintArc")).unwrap();
+                    install_port(&mut loaded, &fixture, depth);
+                    ppc_write_rect(&mut loaded.memory, RECT, rect.0, rect.1, rect.2, rect.3)
+                        .unwrap();
+                    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+                    if let Some(failure) = backend {
+                        loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                            crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                                crate::quickdraw::gpu::ReferenceRenderer {
+                                    calls: calls.clone(),
+                                    failure,
+                                },
+                            )),
+                        );
+                    }
+                    let wrote = ppc_paint_arc(
+                        &mut loaded.memory,
+                        &loaded.gworlds,
+                        PORT,
+                        RECT,
+                        start,
+                        extent,
+                        PPC_RGB_WHITE,
+                        Some(fixture.fg_index),
+                    );
+                    if backend.is_some() && wrote {
+                        assert_eq!(calls.get(), 1);
+                    }
+                    let result = (wrote, read_pixels(&mut loaded, pixels.len()));
+                    if let Some(expected) = &expected {
+                        assert_eq!(&result,expected,"depth={depth},rect={rect:?},start={start},extent={extent},backend={backend:?}");
+                    } else {
+                        expected = Some(result);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn gpu_native_scaled_text_matches_repeated_transfers_and_fallback() {
     // A dense 4x4 strike guarantees four source writes per destination pixel
     // when halved. Register a private family so nearby strikes cannot mask scaling.
