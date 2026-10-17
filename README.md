@@ -114,14 +114,15 @@ Pass `--gpu` to opt into cross-platform wgpu desktop presentation (Metal,
 Vulkan, or DX12, depending on the host). This renders the complete Macintosh
 desktop, including system windows and text, through wgpu. Retained outline text
 and drawing coverage is resolved on the GPU with exact integer area sampling,
-including cropped and resized desktops. Supported QuickDraw 3D TriMesh frames
-use a wgpu compute rasterizer for 8-bit indexed and 16-bit RGB555 targets,
+including cropped and resized desktops. QuickDraw 3D TriMesh frames in filled,
+edge, or point mode use a wgpu compute rasterizer for 8-bit indexed and 16-bit
+RGB555 targets,
 with depth, perspective-correct color/texture interpolation, texture wrapping,
 alpha blending, ambient, directional, point, and spot lighting with attenuation
 and spot falloff, Lambert/Phong shading with flat, vertex, or pixel interpolation,
 and linear, exponential, squared exponential, and alpha fog. Results are read
 back into the guest framebuffer before execution resumes, preserving CopyBits
-and subsequent drawing. Non-filled geometry and frames beyond the GPU
+and subsequent drawing. Degenerate filled triangles and frames beyond the GPU
 resource/work limits currently use the software renderer. Guest QuickDraw shape
 drawing and glyph rasterization still run on the CPU. It is experimental
 and reports initialization errors instead of silently selecting another backend.

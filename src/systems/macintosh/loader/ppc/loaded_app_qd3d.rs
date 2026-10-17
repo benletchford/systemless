@@ -3,6 +3,83 @@
 
 use super::*;
 
+fn q3_gpu_nonfilled_draw(
+    primitive: PpcQ3RasterPrimitive,
+    points: [PpcQ3SoftwareProjectedPoint; 3],
+    material: &PpcQ3SoftwareMaterialSample,
+    texture: Option<usize>,
+    ambient_light: Option<[f32; 3]>,
+    lighting: Option<&PpcQ3RasterLighting>,
+) -> Option<PpcQ3RasterDraw> {
+    let sample_count = if primitive == PpcQ3RasterPrimitive::Lines {
+        2
+    } else {
+        1
+    };
+    let blend =
+        ppc_q3_software_primitive_deferred_for_transparency(material, &points[..sample_count]);
+    let mut vertices = Vec::with_capacity(3);
+    for point in points {
+        let sample = if primitive == PpcQ3RasterPrimitive::Lines {
+            points[2]
+        } else {
+            point
+        };
+        let diffuse = sample.diffuse.unwrap_or(material.diffuse);
+        let raw_alpha = sample.vertex_alpha;
+        let alpha = if ppc_q3_software_material_uses_alpha_fog(material.fog_style) {
+            1.
+        } else {
+            raw_alpha.unwrap_or(1.)
+        };
+        let specular = sample.specular_color.unwrap_or(material.specular_color);
+        let uv =
+            ppc_q3_software_transform_uv(sample.uv.unwrap_or((0., 0.)), material.uv_transform)?;
+        vertices.push(PpcQ3RasterVertex {
+            screen_x: point.x as f32,
+            screen_y: point.y as f32,
+            depth: point.z,
+            reciprocal_w: 1.,
+            uv: [uv.0, uv.1],
+            color: [
+                diffuse.0,
+                diffuse.1,
+                diffuse.2,
+                material.transparency.0 * alpha,
+            ],
+            fog_depth: sample.fog_depth,
+            vertex_alpha: raw_alpha,
+            ambient_coefficient: sample
+                .ambient_coefficient
+                .unwrap_or(material.ambient_coefficient),
+            shading: PpcQ3RasterShading {
+                normal: sample.normal.map(|n| [n.0, n.1, n.2]),
+                world: [sample.world.0, sample.world.1, sample.world.2],
+                view_direction: sample.view_direction.map(|v| [v.0, v.1, v.2]),
+                specular_color: [specular.0, specular.1, specular.2],
+                specular_control: sample.specular_control.unwrap_or(material.specular_control),
+                highlight: sample.highlight_state.unwrap_or(material.highlight_state),
+            },
+        });
+    }
+    let lighting = lighting.cloned().map(|mut lighting| {
+        lighting.interpolation_style = PPC_Q3_INTERPOLATION_STYLE_PIXEL;
+        lighting
+    });
+    Some(PpcQ3RasterDraw {
+        primitive,
+        test_depth: primitive == PpcQ3RasterPrimitive::Points || blend,
+        lighting,
+        ambient_light,
+        ambient_per_vertex: false,
+        fog: material.fog_style,
+        texture,
+        vertices,
+        blend,
+        write_depth: primitive == PpcQ3RasterPrimitive::Points && !blend,
+    })
+}
+
 impl PpcLoadedApp {
     fn q3_render_target(&mut self, commands: &[PpcQ3SceneCommand]) -> Option<PpcQ3RenderTarget> {
         commands
@@ -298,7 +375,12 @@ impl PpcLoadedApp {
         stats.frames = 1;
         stats.commands = packet.draws.len();
         stats.vertices = packet.draws.iter().map(|draw| draw.vertices.len()).sum();
-        stats.triangles = stats.vertices / 3;
+        stats.triangles = packet
+            .draws
+            .iter()
+            .filter(|draw| draw.primitive == PpcQ3RasterPrimitive::Triangles)
+            .map(|draw| draw.vertices.len() / 3)
+            .sum();
         stats.pixels = background
             .iter()
             .zip(&pixels)
@@ -354,7 +436,8 @@ impl PpcLoadedApp {
             let PpcQ3SceneCommand::TriMesh(command) = command else {
                 continue;
             };
-            if ppc_q3_software_fill_style(&command.material) != PPC_Q3_FILL_STYLE_FILLED {
+            let fill_style = ppc_q3_software_fill_style(&command.material);
+            if !extended && fill_style != PPC_Q3_FILL_STYLE_FILLED {
                 return None;
             }
             let material = ppc_q3_software_material_sample(
@@ -395,7 +478,7 @@ impl PpcLoadedApp {
             }
             let points = self.q3_software_trimesh_points(&command)?;
             let triangles = self.q3_software_trimesh_triangles(&command, points.len());
-            if points.is_empty() || triangles.is_empty() {
+            if points.is_empty() {
                 continue;
             }
             let vertex_uvs = if material.texture.is_some() {
@@ -474,6 +557,67 @@ impl PpcLoadedApp {
             let interpolation_style = ppc_q3_software_interpolation_style(&command.material);
             let backfacing_style = ppc_q3_software_backfacing_style(&command.material);
             let orientation_style = ppc_q3_software_orientation_style(&command.material);
+            let spatial_lights = command
+                .lights
+                .lights
+                .iter()
+                .filter(|light| {
+                    light.data.is_on != 0 && !matches!(light.kind, PpcQ3LightKind::Ambient)
+                })
+                .copied()
+                .collect::<Vec<_>>();
+            let native_lighting =
+                (extended && lit && !spatial_lights.is_empty()).then_some(PpcQ3RasterLighting {
+                    lights: spatial_lights,
+                    interpolation_style,
+                    illumination_type: material.illumination_type,
+                });
+            if triangles.is_empty() {
+                if !extended {
+                    return None;
+                }
+                for vertex in projected.iter().flatten().copied() {
+                    if !ppc_q3_software_projected_vertex_depth_visible(
+                        command.camera.is_some(),
+                        vertex,
+                    ) {
+                        continue;
+                    }
+                    let point = ppc_q3_software_projected_vertex_to_point(vertex);
+                    draws.push(q3_gpu_nonfilled_draw(
+                        PpcQ3RasterPrimitive::Points,
+                        [point; 3],
+                        &material,
+                        texture_index,
+                        ambient_light,
+                        native_lighting.as_ref(),
+                    )?);
+                }
+                continue;
+            }
+            let edge_data = if fill_style == PPC_Q3_FILL_STYLE_EDGES {
+                let edges = self.q3_software_trimesh_edges(&command, points.len());
+                Some((
+                    ppc_q3_software_edge_index_map(&edges),
+                    self.q3_software_trimesh_edge_diffuse_colors(&command),
+                    self.q3_software_trimesh_edge_ambient_coefficients(&command),
+                    self.q3_software_trimesh_edge_specular_colors(&command),
+                    self.q3_software_trimesh_edge_specular_controls(&command),
+                    self.q3_software_trimesh_edge_highlight_states(&command),
+                    self.q3_software_trimesh_edge_normals(&command)
+                        .and_then(|normals| {
+                            normals
+                                .into_iter()
+                                .map(|normal| {
+                                    ppc_q3_software_transform_normal(normal, command.local_to_world)
+                                })
+                                .collect::<Option<Vec<_>>>()
+                        }),
+                    self.q3_software_trimesh_edge_alphas(&command),
+                ))
+            } else {
+                None
+            };
             let mut vertices = Vec::with_capacity(triangles.len().saturating_mul(3));
             let mut blend =
                 transparency.0 < 0.999 || ppc_q3_software_texture_may_blend(material.texture);
@@ -578,6 +722,51 @@ impl PpcLoadedApp {
                     backfacing,
                     &mut clipped,
                 );
+                if fill_style == PPC_Q3_FILL_STYLE_POINTS {
+                    for point in clipped.iter().copied() {
+                        draws.push(q3_gpu_nonfilled_draw(
+                            PpcQ3RasterPrimitive::Points,
+                            [point; 3],
+                            &material,
+                            texture_index,
+                            ambient_light,
+                            native_lighting.as_ref(),
+                        )?);
+                    }
+                    continue;
+                }
+                if fill_style == PPC_Q3_FILL_STYLE_EDGES {
+                    let (indices, diffuse, ambient, specular, controls, highlights, normals, alpha) =
+                        edge_data.as_ref()?;
+                    let edge_materials = ppc_q3_software_triangle_edge_materials(
+                        indices,
+                        diffuse.as_deref(),
+                        ambient.as_deref(),
+                        specular.as_deref(),
+                        controls.as_deref(),
+                        highlights.as_deref(),
+                        normals.as_deref(),
+                        alpha.as_deref(),
+                        triangle.points,
+                    );
+                    for index in 0..clipped.len() {
+                        let (start, end) = ppc_q3_software_edge_material_points(
+                            clipped[index],
+                            clipped[(index + 1) % clipped.len()],
+                            edge_materials.get(index).copied().flatten(),
+                        );
+                        let midpoint = ppc_q3_software_projected_line_midpoint(start, end);
+                        draws.push(q3_gpu_nonfilled_draw(
+                            PpcQ3RasterPrimitive::Lines,
+                            [start, end, midpoint],
+                            &material,
+                            texture_index,
+                            ambient_light,
+                            native_lighting.as_ref(),
+                        )?);
+                    }
+                    continue;
+                }
                 let flat_diffuse = (interpolation_style == PPC_Q3_INTERPOLATION_STYLE_NONE)
                     .then(|| clipped.first().and_then(|vertex| vertex.diffuse))
                     .flatten();
@@ -663,23 +852,10 @@ impl PpcLoadedApp {
                 }
             }
             if !vertices.is_empty() {
-                let spatial_lights = command
-                    .lights
-                    .lights
-                    .iter()
-                    .filter(|light| {
-                        light.data.is_on != 0 && !matches!(light.kind, PpcQ3LightKind::Ambient)
-                    })
-                    .copied()
-                    .collect::<Vec<_>>();
                 draws.push(PpcQ3RasterDraw {
-                    lighting: (extended && lit && !spatial_lights.is_empty()).then_some(
-                        PpcQ3RasterLighting {
-                            lights: spatial_lights,
-                            interpolation_style,
-                            illumination_type: material.illumination_type,
-                        },
-                    ),
+                    primitive: PpcQ3RasterPrimitive::Triangles,
+                    test_depth: true,
+                    lighting: native_lighting,
                     ambient_light,
                     ambient_per_vertex: interpolation_style == PPC_Q3_INTERPOLATION_STYLE_VERTEX,
                     fog: material.fog_style,

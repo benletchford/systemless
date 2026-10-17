@@ -629,11 +629,13 @@ pub trait PpcQ3GpuRenderer {
         frame: &PpcQ3RasterFrame,
         background: &[u16],
     ) -> Result<Vec<u16>, String> {
-        if frame
-            .draws
-            .iter()
-            .any(|draw| draw.fog.is_some() || draw.ambient_light.is_some() || draw.lighting.is_some())
-        {
+        if frame.draws.iter().any(|draw| {
+            draw.fog.is_some()
+                || draw.ambient_light.is_some()
+                || draw.lighting.is_some()
+                || draw.primitive != PpcQ3RasterPrimitive::Triangles
+                || !draw.test_depth
+        }) {
             return Err("host renderer does not support native shading packets".into());
         }
         self.render(&frame.clone().into_transport(), background)
@@ -708,8 +710,19 @@ pub struct PpcQ3RasterShading {
     pub specular_control: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum PpcQ3RasterPrimitive {
+    Triangles = 0,
+    Lines = 1,
+    Points = 2,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PpcQ3RasterDraw {
+    pub primitive: PpcQ3RasterPrimitive,
+    /// Opaque edges bypass depth; transparent edges test without writing it.
+    pub test_depth: bool,
     pub lighting: Option<PpcQ3RasterLighting>,
     /// Sum of enabled ambient light RGB intensities; None disables ambient light.
     pub ambient_light: Option<[f32; 3]>,
@@ -717,6 +730,8 @@ pub struct PpcQ3RasterDraw {
     pub ambient_per_vertex: bool,
     pub fog: Option<PpcQ3FogStyleData>,
     pub texture: Option<usize>,
+    /// Triples: triangle corners; line endpoints and midpoint material sample;
+    /// or three copies of a point. Line samples carry midpoint attributes.
     pub vertices: Vec<PpcQ3RasterVertex>,
     pub blend: bool,
     pub write_depth: bool,
@@ -748,6 +763,8 @@ impl From<&PpcQ3GpuFrame> for PpcQ3RasterFrame {
                 .draws
                 .iter()
                 .map(|draw| PpcQ3RasterDraw {
+                    primitive: PpcQ3RasterPrimitive::Triangles,
+                    test_depth: true,
                     lighting: None,
                     ambient_light: None,
                     ambient_per_vertex: false,
@@ -780,12 +797,11 @@ impl From<&PpcQ3GpuFrame> for PpcQ3RasterFrame {
 impl PpcQ3RasterFrame {
     /// Used only after preparation with the external transport's state guard.
     pub(super) fn into_transport(self) -> PpcQ3GpuFrame {
-        debug_assert!(self
-            .draws
-            .iter()
-            .all(|draw| draw.fog.is_none()
-                && draw.ambient_light.is_none()
-                && draw.lighting.is_none()));
+        debug_assert!(self.draws.iter().all(|draw| draw.fog.is_none()
+            && draw.ambient_light.is_none()
+            && draw.lighting.is_none()
+            && draw.primitive == PpcQ3RasterPrimitive::Triangles
+            && draw.test_depth));
         PpcQ3GpuFrame {
             width: self.width,
             height: self.height,

@@ -15243,6 +15243,20 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
         Some(0)
     );
 
+    let mut point_commands = loaded.q3_scene_commands();
+    let PpcQ3SceneCommand::TriMesh(command) = &mut point_commands[0] else {
+        unreachable!()
+    };
+    command.geometry.data[PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET as usize
+        ..PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET as usize + 4]
+        .copy_from_slice(&0u32.to_be_bytes());
+    let packet = loaded.prepare_q3_gpu_frame(point_commands, true).unwrap();
+    assert_eq!(packet.draws.len(), 3);
+    assert!(packet
+        .draws
+        .iter()
+        .all(|draw| draw.primitive == PpcQ3RasterPrimitive::Points));
+    assert!(LegacyRenderer.render_native(&packet, &[0; 64]).is_err());
     let mut fog_materials = loaded.q3_submission_materials.clone();
     fog_materials[0].fog_style = Some(PpcQ3FogStyleData {
         state: 1,
@@ -16167,6 +16181,26 @@ fn q3_software_renderer_respects_fill_style_edges_and_points() {
                 lights: Vec::new(),
             });
 
+        let commands = loaded.q3_scene_commands();
+        assert!(loaded
+            .prepare_q3_gpu_frame(commands.clone(), false)
+            .is_none());
+        let packet = loaded.prepare_q3_gpu_frame(commands, true).unwrap();
+        assert_eq!(packet.draws.len(), 3);
+        for draw in &packet.draws {
+            let point = fill_style == PPC_Q3_FILL_STYLE_POINTS;
+            assert_eq!(
+                draw.primitive,
+                if point {
+                    PpcQ3RasterPrimitive::Points
+                } else {
+                    PpcQ3RasterPrimitive::Lines
+                }
+            );
+            assert_eq!(draw.test_depth, point);
+            assert_eq!(draw.write_depth, point);
+            assert!(draw.vertices.iter().all(|v| v.color == [0., 1., 0., 1.]));
+        }
         let stats = loaded.render_q3_scene_commands_to_front_buffer();
         (loaded, front_base, stats)
     }
@@ -16403,6 +16437,16 @@ fn q3_software_renderer_uses_trimesh_edge_attributes_for_edge_fill() {
             lights: Vec::new(),
         });
 
+    let commands = loaded.q3_scene_commands();
+    let packet = loaded.prepare_q3_gpu_frame(commands, true).unwrap();
+    assert_eq!(packet.draws.len(), 3);
+    let blue = packet
+        .draws
+        .iter()
+        .find(|draw| draw.vertices[0].color[2] == 1.)
+        .unwrap();
+    assert!(blue.vertices.iter().all(|v| v.color == [0., 0., 1., 0.5]));
+    assert!(blue.blend && blue.test_depth && !blue.write_depth);
     let stats = loaded.render_q3_scene_commands_to_front_buffer();
 
     assert_eq!(stats.commands, 1);

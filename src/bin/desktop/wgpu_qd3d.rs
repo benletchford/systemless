@@ -1,7 +1,7 @@
 //! GPU rasterization with synchronous RGB555 readback for guest memory coherence.
 use systemless::loader::ppc::{
     ppc_q3_vector3d_normalized_value, PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3LightKind,
-    PpcQ3RasterFrame, PpcQ3RasterVertex, PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
+    PpcQ3RasterFrame, PpcQ3RasterPrimitive, PpcQ3RasterVertex, PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
     PPC_Q3_ILLUMINATION_TYPE_PHONG,
 };
 use wgpu::util::DeviceExt;
@@ -122,7 +122,7 @@ impl State {
         let mut deferred = Vec::new();
         for draw in &frame.draws {
             if draw.vertices.len() % 3 != 0 {
-                return Err("incomplete GPU triangle".into());
+                return Err("incomplete GPU primitive triple".into());
             }
             let (offset, width, height, wrap) = match draw.texture {
                 Some(index) => {
@@ -261,11 +261,20 @@ impl State {
                 if triangle.iter().any(|v| !vertex_valid(v)) {
                     return Err("invalid projected GPU vertex".into());
                 }
+                if draw.primitive != PpcQ3RasterPrimitive::Triangles
+                    && triangle
+                        .iter()
+                        .any(|v| v.screen_x.fract() != 0. || v.screen_y.fract() != 0.)
+                {
+                    return Err("GPU point and line coordinates must be integral".into());
+                }
                 let area = (triangle[2].screen_x - triangle[0].screen_x)
                     * (triangle[1].screen_y - triangle[0].screen_y)
                     - (triangle[2].screen_y - triangle[0].screen_y)
                         * (triangle[1].screen_x - triangle[0].screen_x);
-                if area == 0. || !area.is_finite() {
+                if draw.primitive == PpcQ3RasterPrimitive::Triangles
+                    && (area == 0. || !area.is_finite())
+                {
                     return Err("degenerate GPU triangle requires software line rendering".into());
                 }
                 let mut bytes = Vec::with_capacity(TRIANGLE_BYTES);
@@ -311,7 +320,14 @@ impl State {
                         bytes.extend_from_slice(&value.to_le_bytes());
                     }
                 }
-                for value in [offset, width, height, wrap | u32::from(draw.write_depth)] {
+                for value in [
+                    offset,
+                    width,
+                    height,
+                    wrap | u32::from(draw.write_depth)
+                        | (u32::from(!draw.test_depth) << 3)
+                        | ((draw.primitive as u32) << 4),
+                ] {
                     bytes.extend_from_slice(&value.to_le_bytes());
                 }
                 let fog_values = fog
@@ -349,13 +365,22 @@ impl State {
                     bytes.extend_from_slice(&value.to_le_bytes());
                 }
                 if draw.blend {
-                    deferred.push((triangle.iter().map(|v| v.depth / 3.).sum::<f32>(), bytes));
+                    let sort_depth = match draw.primitive {
+                        PpcQ3RasterPrimitive::Triangles => {
+                            (triangle[0].depth + triangle[1].depth + triangle[2].depth) / 3.
+                        }
+                        PpcQ3RasterPrimitive::Lines => {
+                            (triangle[0].depth + triangle[1].depth) * 0.5
+                        }
+                        PpcQ3RasterPrimitive::Points => triangle[0].depth,
+                    };
+                    deferred.push((sort_depth, bytes));
                 } else {
                     triangles.extend(bytes);
                 }
             }
         }
-        deferred.sort_by(|a, b| b.0.total_cmp(&a.0));
+        deferred.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         for (_, bytes) in deferred {
             triangles.extend(bytes);
         }
@@ -565,6 +590,8 @@ mod tests {
     }
     fn triangle(z: f32, color: [f32; 4]) -> PpcQ3RasterDraw {
         PpcQ3RasterDraw {
+            primitive: PpcQ3RasterPrimitive::Triangles,
+            test_depth: true,
             lighting: None,
             ambient_light: None,
             ambient_per_vertex: false,
@@ -694,23 +721,70 @@ mod tests {
                         },
                     }
                 });
-                ppc_q3_draw_software_triangle(
-                    &mut memory,
-                    surface,
-                    &mut depth,
-                    points,
-                    &material,
-                    &lights,
-                    if let Some(lighting) = &draw.lighting {
-                        lighting.interpolation_style
-                    } else if draw.ambient_per_vertex {
-                        PPC_Q3_INTERPOLATION_STYLE_VERTEX
-                    } else {
-                        PPC_Q3_INTERPOLATION_STYLE_PIXEL
-                    },
-                    viewport,
-                    draw.write_depth,
-                );
+                match draw.primitive {
+                    PpcQ3RasterPrimitive::Points => {
+                        if draw.write_depth {
+                            ppc_q3_write_software_depth_material_pixel(
+                                &mut memory,
+                                surface,
+                                &mut depth,
+                                points[0],
+                                &material,
+                                &lights,
+                            );
+                        } else {
+                            ppc_q3_draw_deferred_software_point(
+                                &mut memory,
+                                surface,
+                                &mut depth,
+                                points[0],
+                                &material,
+                                &lights,
+                            );
+                        }
+                    }
+                    PpcQ3RasterPrimitive::Lines => {
+                        if draw.test_depth {
+                            ppc_q3_draw_deferred_software_material_line(
+                                &mut memory,
+                                surface,
+                                &depth,
+                                points[0],
+                                points[1],
+                                &material,
+                                &lights,
+                            );
+                        } else {
+                            ppc_q3_draw_software_material_line(
+                                &mut memory,
+                                surface,
+                                points[0],
+                                points[1],
+                                &material,
+                                &lights,
+                            );
+                        }
+                    }
+                    PpcQ3RasterPrimitive::Triangles => {
+                        ppc_q3_draw_software_triangle(
+                            &mut memory,
+                            surface,
+                            &mut depth,
+                            points,
+                            &material,
+                            &lights,
+                            if let Some(lighting) = &draw.lighting {
+                                lighting.interpolation_style
+                            } else if draw.ambient_per_vertex {
+                                PPC_Q3_INTERPOLATION_STYLE_VERTEX
+                            } else {
+                                PPC_Q3_INTERPOLATION_STYLE_PIXEL
+                            },
+                            viewport,
+                            draw.write_depth,
+                        );
+                    }
+                }
             }
         }
         let mut result = Vec::new();
@@ -724,6 +798,133 @@ mod tests {
             }
         }
         result
+    }
+
+    #[test]
+    fn gpu_qd3d_lines_match_bresenham_in_every_octant() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let background = vec![0x801f; 32 * 24];
+        for alpha in [1., 0.4] {
+            for dx in -8..=8 {
+                for dy in -8..=8 {
+                    let mut draw = triangle(0.3, [1., 0.2, 0.4, alpha]);
+                    draw.primitive = PpcQ3RasterPrimitive::Lines;
+                    draw.test_depth = alpha < 1.;
+                    draw.write_depth = false;
+                    draw.vertices = vec![
+                        vertex(16., 12., 0.3, [1., 0.2, 0.4, alpha]),
+                        vertex(
+                            (16 + dx) as f32,
+                            (12 + dy) as f32,
+                            0.6,
+                            [1., 0.2, 0.4, alpha],
+                        ),
+                        vertex(16., 12., 0.45, [1., 0.2, 0.4, alpha]),
+                    ];
+                    let frame = PpcQ3RasterFrame {
+                        width: 32,
+                        height: 24,
+                        viewport: [4, 4, 20, 18],
+                        clear_color: None,
+                        textures: vec![],
+                        draws: vec![draw],
+                    };
+                    let actual = state.render(&frame, &background).unwrap();
+                    let expected = cpu_render(&frame, &background);
+                    for (i, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
+                        assert_eq!(
+                            actual & 0x7fff,
+                            expected & 0x7fff,
+                            "dx={dx},dy={dy},alpha={alpha},pixel={i}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gpu_qd3d_points_and_edges_preserve_depth_rules() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let background = vec![0x801f; 32 * 24];
+        for alpha in [1., 0.4] {
+            for z in [0.2, 0.8] {
+                let mut edge = triangle(z, [1., 0., 0., alpha]);
+                edge.primitive = PpcQ3RasterPrimitive::Lines;
+                edge.test_depth = alpha < 1.;
+                edge.write_depth = false;
+                edge.vertices = vec![
+                    vertex(0., 8., z, [1., 0., 0., alpha]),
+                    vertex(31., 8., z, [1., 0., 0., alpha]),
+                    vertex(16., 8., z, [1., 0., 0., alpha]),
+                ];
+                let mut point = triangle(z, [0., 0., 1., alpha]);
+                point.primitive = PpcQ3RasterPrimitive::Points;
+                point.vertices = vec![vertex(8., 8., z, [0., 0., 1., alpha]); 3];
+                let mut outside = point.clone();
+                outside.vertices = vec![vertex(1., 1., z, [0., 0., 1., alpha]); 3];
+                let frame = PpcQ3RasterFrame {
+                    width: 32,
+                    height: 24,
+                    viewport: [2, 3, 28, 20],
+                    clear_color: Some([0.1, 0.2, 0.3, 1.]),
+                    textures: vec![],
+                    draws: vec![triangle(0.5, [0., 1., 0., 1.]), edge, point, outside],
+                };
+                let actual = state.render(&frame, &background).unwrap();
+                let expected = cpu_render(&frame, &background);
+                assert_eq!(
+                    actual[33], 0x001f,
+                    "same-color point writes still carry coverage"
+                );
+                for (i, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
+                    for shift in [0, 5, 10] {
+                        assert!(
+                            (((actual >> shift) & 31) as i32 - ((expected >> shift) & 31) as i32)
+                                .abs()
+                                <= 1,
+                            "alpha={alpha},z={z},pixel={i}: {actual:04x}!={expected:04x}"
+                        );
+                    }
+                }
+            }
+        }
+        // Signed zero depths compare equal, so transparent submission order
+        // must stay stable across primitive kinds and depth serialization.
+        let mut first = triangle(-0., [0., 0., 1., 0.4]);
+        first.primitive = PpcQ3RasterPrimitive::Points;
+        first.vertices = vec![vertex(8., 8., -0., [0., 0., 1., 0.4]); 3];
+        let mut second = first.clone();
+        second.vertices = vec![vertex(8., 8., 0., [1., 0., 0., 0.4]); 3];
+        let frame = PpcQ3RasterFrame {
+            width: 32,
+            height: 24,
+            viewport: [0, 0, 31, 23],
+            clear_color: None,
+            textures: vec![],
+            draws: vec![first, second],
+        };
+        let actual = state.render(&frame, &background).unwrap();
+        let expected = cpu_render(&frame, &background);
+        assert_eq!(actual[8 * 32 + 8], expected[8 * 32 + 8]);
     }
 
     #[test]
@@ -984,79 +1185,98 @@ mod tests {
                 return;
             }
         };
-        for interpolation_style in [0, 1, 2] {
-            let mut draw = triangle(0.3, [0.8, 0.4, 0.2, 1.]);
-            draw.texture = Some(0);
-            draw.blend = true;
-            draw.write_depth = false;
-            draw.fog = Some(PpcQ3FogStyleData {
-                state: 1,
-                mode: 0,
-                fog_start: 0.,
-                fog_end: 2.,
-                density: 0.,
-                color: (1., 0.2, 0.4, 0.6),
-            });
-            draw.lighting = Some(PpcQ3RasterLighting {
-                interpolation_style,
-                illumination_type: PPC_Q3_ILLUMINATION_TYPE_PHONG,
-                lights: vec![PpcQ3LightRecord {
-                    light: 0,
-                    light_type: 0,
-                    data: PpcQ3LightData {
-                        is_on: 1,
-                        brightness: 1.,
-                        color: (1., 1., 1.),
-                    },
-                    kind: PpcQ3LightKind::Directional {
-                        casts_shadows: 0,
-                        direction: (0., 0., -1.),
-                    },
-                }],
-            });
-            for v in &mut draw.vertices {
-                v.fog_depth = 1.;
-                v.shading = PpcQ3RasterShading {
-                    highlight: true,
-                    normal: Some([0., 0., 1.]),
-                    view_direction: Some([0., 0., 1.]),
-                    specular_color: [0.2; 3],
-                    specular_control: 8.,
-                    ..Default::default()
+        for primitive in [
+            PpcQ3RasterPrimitive::Triangles,
+            PpcQ3RasterPrimitive::Lines,
+            PpcQ3RasterPrimitive::Points,
+        ] {
+            for interpolation_style in [0, 1, 2] {
+                let mut draw = triangle(0.3, [0.8, 0.4, 0.2, 1.]);
+                draw.primitive = primitive;
+                if primitive != PpcQ3RasterPrimitive::Triangles {
+                    let a = vertex(1., 8., 0.3, [0.8, 0.4, 0.2, 1.]);
+                    let b = vertex(30., 8., 0.3, [0.8, 0.4, 0.2, 1.]);
+                    let c = vertex(8., 8., 0.3, [0.8, 0.4, 0.2, 1.]);
+                    draw.vertices = if primitive == PpcQ3RasterPrimitive::Points {
+                        vec![c; 3]
+                    } else {
+                        vec![a, b, c]
+                    };
+                }
+                draw.texture = Some(0);
+                draw.blend = true;
+                draw.write_depth = false;
+                draw.fog = Some(PpcQ3FogStyleData {
+                    state: 1,
+                    mode: 0,
+                    fog_start: 0.,
+                    fog_end: 2.,
+                    density: 0.,
+                    color: (1., 0.2, 0.4, 0.6),
+                });
+                draw.lighting = Some(PpcQ3RasterLighting {
+                    interpolation_style,
+                    illumination_type: PPC_Q3_ILLUMINATION_TYPE_PHONG,
+                    lights: vec![PpcQ3LightRecord {
+                        light: 0,
+                        light_type: 0,
+                        data: PpcQ3LightData {
+                            is_on: 1,
+                            brightness: 1.,
+                            color: (1., 1., 1.),
+                        },
+                        kind: PpcQ3LightKind::Directional {
+                            casts_shadows: 0,
+                            direction: (0., 0., -1.),
+                        },
+                    }],
+                });
+                for v in &mut draw.vertices {
+                    v.fog_depth = 1.;
+                    v.shading = PpcQ3RasterShading {
+                        highlight: true,
+                        normal: Some([0., 0., 1.]),
+                        view_direction: Some([0., 0., 1.]),
+                        specular_color: [0.2; 3],
+                        specular_control: 8.,
+                        ..Default::default()
+                    };
+                }
+                let frame = PpcQ3RasterFrame {
+                    width: 32,
+                    height: 24,
+                    viewport: [0, 0, 31, 23],
+                    clear_color: None,
+                    textures: vec![PpcQ3GpuTexture {
+                        width: 1,
+                        height: 1,
+                        rgba: vec![128, 255, 64, 128],
+                        wrap_u: false,
+                        wrap_v: false,
+                    }],
+                    draws: vec![draw],
                 };
+                let texture = [128. / 255., 1., 64. / 255.];
+                let diffuse = [0.8, 0.4, 0.2];
+                let fog = [0.2, 0.4, 0.6];
+                let alpha = 128. / 255.;
+                let expected = std::array::from_fn::<_, 3, _>(|i| {
+                    let lit = if interpolation_style == 2
+                        || primitive != PpcQ3RasterPrimitive::Triangles
+                    {
+                        diffuse[i] * texture[i] + 0.2
+                    } else {
+                        (diffuse[i] + 0.2) * texture[i]
+                    };
+                    (lit * 0.5 + fog[i] * 0.5) * alpha + if i == 2 { 1. - alpha } else { 0. }
+                });
+                let pixels = state.render(&frame, &vec![0x801f; 32 * 24]).unwrap();
+                assert_eq!(
+                    pixels[8 * 32 + 8],
+                    ppc_q3_rgb555((expected[0], expected[1], expected[2])),
+                    "style={interpolation_style}"
+                );
             }
-            let frame = PpcQ3RasterFrame {
-                width: 32,
-                height: 24,
-                viewport: [0, 0, 31, 23],
-                clear_color: None,
-                textures: vec![PpcQ3GpuTexture {
-                    width: 1,
-                    height: 1,
-                    rgba: vec![128, 255, 64, 128],
-                    wrap_u: false,
-                    wrap_v: false,
-                }],
-                draws: vec![draw],
-            };
-            let texture = [128. / 255., 1., 64. / 255.];
-            let diffuse = [0.8, 0.4, 0.2];
-            let fog = [0.2, 0.4, 0.6];
-            let alpha = 128. / 255.;
-            let expected = std::array::from_fn::<_, 3, _>(|i| {
-                let lit = if interpolation_style == 2 {
-                    diffuse[i] * texture[i] + 0.2
-                } else {
-                    (diffuse[i] + 0.2) * texture[i]
-                };
-                (lit * 0.5 + fog[i] * 0.5) * alpha + if i == 2 { 1. - alpha } else { 0. }
-            });
-            let pixels = state.render(&frame, &vec![0x801f; 32 * 24]).unwrap();
-            assert_eq!(
-                pixels[8 * 32 + 8],
-                ppc_q3_rgb555((expected[0], expected[1], expected[2])),
-                "style={interpolation_style}"
-            );
         }
     }
 
@@ -1403,6 +1623,10 @@ mod tests {
             });
             assert!(state.render(&invalid, &background).is_err());
         }
+        let mut invalid = frame.clone();
+        invalid.draws[0].primitive = PpcQ3RasterPrimitive::Lines;
+        invalid.draws[0].vertices[0].screen_x = 0.5;
+        assert!(state.render(&invalid, &background).is_err());
         let mut invalid = frame;
         invalid.width = u32::MAX;
         invalid.height = u32::MAX;
