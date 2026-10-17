@@ -211,7 +211,7 @@ impl PpcLoadedApp {
             })?
             .clone();
         let commands = self.q3_completed_frame_scene_commands(&frame);
-        let gpu_frame = self.prepare_q3_gpu_frame(commands, false)?;
+        let gpu_frame = self.prepare_q3_gpu_frame(commands, false)?.into_transport();
         self.q3_completed_frames.clear();
         self.q3_state_only_completed_frame_batches.clear();
         self.prune_q3_immediate_trimeshes();
@@ -279,7 +279,7 @@ impl PpcLoadedApp {
                     .push(surface.read_pixel(&mut self.memory, (x as i32, y as i32))? | 0x8000);
             }
         }
-        let pixels = match renderer.render(&packet, &background) {
+        let pixels = match renderer.render_native(&packet, &background) {
             Ok(pixels) if pixels.len() == count => pixels,
             Ok(_) => {
                 tracing::warn!("GPU QD3D renderer returned the wrong pixel count; using software");
@@ -333,11 +333,11 @@ impl PpcLoadedApp {
     fn prepare_q3_gpu_frame(
         &mut self,
         commands: Vec<PpcQ3SceneCommand>,
-        allow_indexed: bool,
-    ) -> Option<PpcQ3GpuFrame> {
+        extended: bool,
+    ) -> Option<PpcQ3RasterFrame> {
         let target = self.q3_render_target(&commands)?;
         let front_buffer = target.front_buffer;
-        if (front_buffer.depth != 16 && !(allow_indexed && front_buffer.depth == 8))
+        if (front_buffer.depth != 16 && !(extended && front_buffer.depth == 8))
             || front_buffer.width == 0
             || front_buffer.height == 0
         {
@@ -362,7 +362,7 @@ impl PpcLoadedApp {
                 &self.q3_memory_storages,
                 &command.material,
             );
-            if material.fog_style.is_some()
+            if (material.fog_style.is_some() && !extended)
                 || command
                     .lights
                     .lights
@@ -472,16 +472,24 @@ impl PpcLoadedApp {
                     .collect::<Vec<_>>();
                 let backfacing = backfacing_style != PPC_Q3_BACKFACING_STYLE_BOTH
                     && ppc_q3_software_triangle_is_backfacing(
-                    orientation_style,
-                    command.camera,
-                    command.local_to_world,
-                    triangle_normals.as_ref().and_then(|normals| normals.get(triangle.index)).copied().flatten(),
-                    &clipped,
-                );
+                        orientation_style,
+                        command.camera,
+                        command.local_to_world,
+                        triangle_normals
+                            .as_ref()
+                            .and_then(|normals| normals.get(triangle.index))
+                            .copied()
+                            .flatten(),
+                        &clipped,
+                    );
                 if backfacing_style == PPC_Q3_BACKFACING_STYLE_REMOVE && backfacing {
                     continue;
                 }
-                ppc_q3_software_flip_normals_for_backface(backfacing_style, backfacing, &mut clipped);
+                ppc_q3_software_flip_normals_for_backface(
+                    backfacing_style,
+                    backfacing,
+                    &mut clipped,
+                );
                 let flat_diffuse = (interpolation_style == PPC_Q3_INTERPOLATION_STYLE_NONE)
                     .then(|| clipped.first().and_then(|vertex| vertex.diffuse))
                     .flatten();
@@ -489,9 +497,31 @@ impl PpcLoadedApp {
                     .then(|| clipped.first().and_then(|vertex| vertex.vertex_alpha))
                     .flatten();
                 for index in 1..clipped.len().saturating_sub(1) {
-                    for point in [clipped[0], clipped[index], clipped[index + 1]] {
-                        let diffuse = flat_diffuse.or(point.diffuse).unwrap_or(material.diffuse);
-                        let vertex_alpha = flat_alpha.or(point.vertex_alpha).unwrap_or(1.0);
+                    let triangle = [clipped[0], clipped[index], clipped[index + 1]];
+                    let flat_sample = (extended
+                        && interpolation_style == PPC_Q3_INTERPOLATION_STYLE_NONE)
+                        .then(|| {
+                            ppc_q3_software_interpolate_projected_point(
+                                &triangle,
+                                [1.0 / 3.0; 3],
+                                triangle[0].x,
+                                triangle[0].y,
+                            )
+                        });
+                    for point in triangle {
+                        let diffuse = flat_sample
+                            .map(|sample| sample.diffuse)
+                            .unwrap_or_else(|| flat_diffuse.or(point.diffuse))
+                            .unwrap_or(material.diffuse);
+                        let raw_alpha = flat_sample
+                            .map(|sample| sample.vertex_alpha)
+                            .unwrap_or_else(|| flat_alpha.or(point.vertex_alpha));
+                        let vertex_alpha =
+                            if ppc_q3_software_material_uses_alpha_fog(material.fog_style) {
+                                1.0
+                            } else {
+                                raw_alpha.unwrap_or(1.0)
+                            };
                         if vertex_alpha < 0.999 {
                             blend = true;
                         }
@@ -500,7 +530,9 @@ impl PpcLoadedApp {
                             material.uv_transform,
                         )?;
                         let (screen_x, screen_y) = ppc_q3_software_raster_position(point);
-                        vertices.push(PpcQ3GpuVertex {
+                        vertices.push(PpcQ3RasterVertex {
+                            fog_depth: point.fog_depth,
+                            vertex_alpha: raw_alpha,
                             screen_x,
                             screen_y,
                             depth: point.z,
@@ -517,7 +549,8 @@ impl PpcLoadedApp {
                 }
             }
             if !vertices.is_empty() {
-                draws.push(PpcQ3GpuDraw {
+                draws.push(PpcQ3RasterDraw {
+                    fog: material.fog_style,
                     texture: texture_index,
                     vertices,
                     blend,
@@ -528,7 +561,7 @@ impl PpcLoadedApp {
         if draws.is_empty() {
             return None;
         }
-        Some(PpcQ3GpuFrame {
+        Some(PpcQ3RasterFrame {
             width: front_buffer.width,
             height: front_buffer.height,
             viewport: [
