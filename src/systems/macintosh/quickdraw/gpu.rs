@@ -7,6 +7,8 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 /// are `[destination_pass_mask, xor_mask]` for white and black pattern bits.
 #[derive(Clone, Debug)]
 pub struct QuickDrawGpuCommand {
+    /// Optional sorted interval endpoints for each row of `area`.
+    pub clip_rows: Option<Vec<Vec<i32>>>,
     pub area: [i32; 4],
     pub rect: [i32; 4],
     pub border: Option<[i32; 2]>,
@@ -14,6 +16,36 @@ pub struct QuickDrawGpuCommand {
     pub transfer: [[u32; 2]; 2],
 }
 impl QuickDrawGpuCommand {
+    pub fn valid_clip_rows(&self) -> bool {
+        let Some(rows) = &self.clip_rows else {
+            return true;
+        };
+        let Some(height) = self.area[3]
+            .checked_sub(self.area[1])
+            .and_then(|v| usize::try_from(v).ok())
+        else {
+            return false;
+        };
+        let Some(width) = self.area[2]
+            .checked_sub(self.area[0])
+            .and_then(|v| usize::try_from(v).ok())
+        else {
+            return false;
+        };
+        let mut total = 0usize;
+        rows.len() == height
+            && rows.iter().all(|row| {
+                total = total.saturating_add(row.len());
+                total <= 1_048_576
+                    && (total / 2).saturating_mul(width) <= 64_000_000
+                    && row.len() % 2 == 0
+                    && row.chunks_exact(2).all(|pair| pair[0] < pair[1])
+                    && row
+                        .chunks_exact(2)
+                        .zip(row.chunks_exact(2).skip(1))
+                        .all(|(a, b)| a[1] <= b[0])
+            })
+    }
     pub fn pixel_count(&self) -> Option<usize> {
         let width = u32::try_from(self.area[2].checked_sub(self.area[0])?).ok()?;
         let height = u32::try_from(self.area[3].checked_sub(self.area[1])?).ok()?;
@@ -60,7 +92,7 @@ pub(crate) fn try_rectangle(
     let Some(count) = command.pixel_count().filter(|count| *count <= 4_194_304) else {
         return false;
     };
-    if !matches!(target.depth, 1 | 2 | 4 | 8 | 16 | 32) {
+    if !command.valid_clip_rows() || !matches!(target.depth, 1 | 2 | 4 | 8 | 16 | 32) {
         return false;
     }
     let width = (command.area[2] - command.area[0]) as usize;
@@ -206,7 +238,13 @@ impl QuickDrawGpuRenderer for ReferenceRenderer {
                 let x = command.area[0] + (i % width) as i32;
                 let y = command.area[1] + (i / width) as i32;
                 let r = command.rect;
-                let covered = x >= r[0]
+                let in_clip = command.clip_rows.as_ref().is_none_or(|rows| {
+                    rows[i / width]
+                        .chunks_exact(2)
+                        .any(|p| x >= p[0] && x < p[1])
+                });
+                let covered = in_clip
+                    && x >= r[0]
                     && x < r[2]
                     && y >= r[1]
                     && y < r[3]
@@ -246,6 +284,7 @@ mod tests {
                 _ => (1u32 << depth) - 1,
             };
             let command = QuickDrawGpuCommand {
+                clip_rows: None,
                 area: [-3, 2, 8, 6],
                 rect: [-3, 2, 8, 6],
                 border: Some([1, 1]),
@@ -293,7 +332,7 @@ mod tests {
     }
     #[test]
     fn gpu_rectangle_errors_and_missing_backend_leave_guest_bytes_unchanged() {
-        for failure in [0, 1, 2] {
+        for failure in [0, 1, 2, 3] {
             let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
             bus.write_bytes(0x1000, &[0xa5; 16]);
             if failure != 0 {
@@ -302,13 +341,17 @@ mod tests {
                     failure,
                 }));
             }
-            let command = QuickDrawGpuCommand {
+            let mut command = QuickDrawGpuCommand {
+                clip_rows: None,
                 area: [0, 0, 4, 4],
                 rect: [0, 0, 4, 4],
                 border: None,
                 pattern: [0xff; 8],
                 transfer: [[0, 0], [0, 255]],
             };
+            if failure == 3 {
+                command.clip_rows = Some(vec![]);
+            }
             assert!(!try_rectangle(
                 &mut bus,
                 RasterTarget {
