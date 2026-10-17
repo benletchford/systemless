@@ -131,9 +131,10 @@ PowerPC solid rectangle paints, ovals, and rounded rectangles use the shared GPU
 backend
 at 1, 2, 4, 8, and 16 bits per pixel. PowerPC patterned PaintRect uses the same
 depths, and FillRect patterns use wgpu at 8 and 16 bits per pixel.
-Unscaled PowerPC bitmap text uses GPU glyph-coverage sampling and text transfer
-modes while retaining outline detail. Font rasterization, scaled/styled text,
-other guest shapes, and further PowerPC operations still run on the CPU. It is experimental and reports initialization errors instead of
+Unscaled PowerPC bitmap text, including bold, italic, outline, shadow, and
+underline styles, uses GPU glyph-coverage sampling and text transfer modes while
+retaining outline detail. Font rasterization, scaled text, other guest shapes,
+and further PowerPC operations still run on the CPU. It is experimental and reports initialization errors instead of
 silently selecting another backend.
 Without `--gpu`, existing platform presentation remains the default.
 `--headless --gpu` also enables guest rasterization in play scripts and timed runs
