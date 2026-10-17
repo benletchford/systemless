@@ -632,7 +632,7 @@ pub trait PpcQ3GpuRenderer {
         if frame
             .draws
             .iter()
-            .any(|draw| draw.fog.is_some() || draw.ambient_light.is_some())
+            .any(|draw| draw.fog.is_some() || draw.ambient_light.is_some() || draw.lighting.is_some())
         {
             return Err("host renderer does not support native shading packets".into());
         }
@@ -692,8 +692,26 @@ pub struct PpcQ3RasterFrame {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct PpcQ3RasterLighting {
+    pub lights: Vec<PpcQ3LightRecord>,
+    pub interpolation_style: u32,
+    pub illumination_type: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PpcQ3RasterShading {
+    pub highlight: bool,
+    pub normal: Option<[f32; 3]>,
+    pub world: [f32; 3],
+    pub view_direction: Option<[f32; 3]>,
+    pub specular_color: [f32; 3],
+    pub specular_control: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct PpcQ3RasterDraw {
-    /// Sum of enabled ambient light RGB intensities; None bypasses lighting.
+    pub lighting: Option<PpcQ3RasterLighting>,
+    /// Sum of enabled ambient light RGB intensities; None disables ambient light.
     pub ambient_light: Option<[f32; 3]>,
     /// Shade before interpolation, rather than interpolating material attributes.
     pub ambient_per_vertex: bool,
@@ -706,6 +724,7 @@ pub struct PpcQ3RasterDraw {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PpcQ3RasterVertex {
+    pub shading: PpcQ3RasterShading,
     pub ambient_coefficient: f32,
     pub fog_depth: f32,
     pub vertex_alpha: Option<f32>,
@@ -729,6 +748,7 @@ impl From<&PpcQ3GpuFrame> for PpcQ3RasterFrame {
                 .draws
                 .iter()
                 .map(|draw| PpcQ3RasterDraw {
+                    lighting: None,
                     ambient_light: None,
                     ambient_per_vertex: false,
                     fog: None,
@@ -739,6 +759,7 @@ impl From<&PpcQ3GpuFrame> for PpcQ3RasterFrame {
                         .vertices
                         .iter()
                         .map(|v| PpcQ3RasterVertex {
+                            shading: PpcQ3RasterShading::default(),
                             ambient_coefficient: 1.,
                             fog_depth: 0.,
                             vertex_alpha: None,
@@ -762,7 +783,9 @@ impl PpcQ3RasterFrame {
         debug_assert!(self
             .draws
             .iter()
-            .all(|draw| draw.fog.is_none() && draw.ambient_light.is_none()));
+            .all(|draw| draw.fog.is_none()
+                && draw.ambient_light.is_none()
+                && draw.lighting.is_none()));
         PpcQ3GpuFrame {
             width: self.width,
             height: self.height,
