@@ -211,9 +211,11 @@ struct GuestAddressSpaceState {
     /// tokens; a clear bit proves the write cannot have touched executed code
     /// and costs the write path one word test.
     executed_pages: PageIndex,
-    /// Last writable-code token, with the page it answers for. Every
-    /// rotation clears it, so a stale token cannot outlive its generation.
-    instruction_token_cache: Option<(u32, u64)>,
+    /// Recent instruction tokens for fully mapped, unaliased pages. Calls
+    /// commonly alternate between code pages; retain their mapping proofs instead of
+    /// resolving each page again on every call and return. Every rotation
+    /// clears the entries so a stale token cannot outlive its generation.
+    instruction_token_cache: [CodeTokenSlot; INSTRUCTION_TOKEN_CACHE_SLOTS],
     /// Tokens issued per code page, retired by a write to that page. Guest
     /// data shares 4 KiB pages with guest code, so retiring per page keeps
     /// data traffic from invalidating every block in the process.
@@ -237,7 +239,7 @@ impl GuestAddressSpaceState {
         self.instruction_lookup.clear();
         self.data_lookup.clear();
         self.route_lookup.clear();
-        self.instruction_token_cache = None;
+        self.instruction_token_cache.fill(CodeTokenSlot::default());
         self.shared_regions.push(mapping);
     }
 
@@ -282,7 +284,7 @@ impl GuestAddressSpaceState {
     /// its previous contents can never be matched again.
     #[cold]
     fn retire_code_tokens(&mut self, start: u64, end: u64) {
-        self.instruction_token_cache = None;
+        self.instruction_token_cache.fill(CodeTokenSlot::default());
         let Some(slots) = self.page_tokens.as_deref_mut() else {
             return;
         };
@@ -306,7 +308,7 @@ impl GuestAddressSpaceState {
     /// Retire every instruction-cache token issued for writable guest code.
     fn retire_all_code_tokens(&mut self) {
         self.page_tokens = None;
-        self.instruction_token_cache = None;
+        self.instruction_token_cache.fill(CodeTokenSlot::default());
     }
 
     /// Report a completed write to the observers of guest memory: the
@@ -765,6 +767,13 @@ const CODE_PAGE_COUNT: usize = super::page_index::PAGE_COUNT;
 const CODE_TOKEN_SLOTS: usize = 1024;
 const CODE_TOKEN_INDEX_MASK: usize = CODE_TOKEN_SLOTS - 1;
 
+/// A small direct-mapped cache of complete-page mapping proofs, including
+/// immutable code. The larger generation table above also holds writable-code
+/// tokens for partially mapped pages, which cannot authorize an arbitrary
+/// instruction address on the same page.
+const INSTRUCTION_TOKEN_CACHE_SLOTS: usize = 16;
+const INSTRUCTION_TOKEN_CACHE_MASK: usize = INSTRUCTION_TOKEN_CACHE_SLOTS - 1;
+
 /// A cached writable span, paired with the guest address it starts at.
 ///
 /// [`PpcSectionMemSpan`] is opaque, so a write through one cannot say which
@@ -800,46 +809,42 @@ struct CodeTokenSlot {
 /// `PpcSectionMem` tokenizes only read-only regions, treating a writable one
 /// as possibly self-modifying. Classic Mac OS has no memory protection and
 /// CFM publishes fragments into the writable application heap, so that gate
-/// refuses every instruction a PowerPC app executes. Issue our own token for
+/// refuses caching for those heap instructions. Issue our own token for
 /// writable code and keep the hardware contract instead: code written by the
 /// guest is stale until it flushes its instruction cache, and a write to a
 /// page we have executed from rotates the generation on its own.
 #[inline]
 fn sparse_instruction_token(state: &mut GuestAddressSpaceState, addr: u32) -> Option<u64> {
-    // The interpreter asks once per block start and once per word while it
-    // builds one; a page's answer only changes with a rotation.
     let page = addr >> CODE_PAGE_SHIFT;
-    if let Some((cached_page, token)) = state.instruction_token_cache {
-        if cached_page == page {
-            return Some(token);
-        }
-    }
-    resolve_sparse_instruction_token(state, addr, page)
-}
-
-fn resolve_sparse_instruction_token(
-    state: &mut GuestAddressSpaceState,
-    addr: u32,
-    page: u32,
-) -> Option<u64> {
-    if state.regions.writable_span(addr, 4).is_some() {
+    let writable = state.regions.writable_span(addr, 4).is_some();
+    let token = if writable {
         let start = u64::from(addr);
         state.executed_pages.mark(start, start + 4);
-        let token = state.writable_code_token(addr)?;
-        // Only remember the answer when one writable region covers the whole
-        // page. Otherwise the fast path above could hand out a token for an
-        // address past that region's end.
-        let page_start = page << CODE_PAGE_SHIFT;
-        if state
-            .regions
-            .writable_span(page_start, 1 << CODE_PAGE_SHIFT)
-            .is_some()
-        {
-            state.instruction_token_cache = Some((page, token));
-        }
-        return Some(token);
+        state.writable_code_token(addr)?
+    } else {
+        state.regions.instruction_cache_token(addr)?
+    };
+    let page_start = page << CODE_PAGE_SHIFT;
+    let page_end = u64::from(page_start) + (1 << CODE_PAGE_SHIFT);
+    // A hit skips both shared-alias routing and sparse mapping lookup. Prove
+    // the whole page has one owner and no shared overlay before retaining it.
+    // Read-only code needs the same proof cache: its token is immutable, but
+    // rediscovering that mapping on every block is still unnecessary work.
+    let full_page = !state.overlaps_shared(u64::from(page_start), page_end)
+        && if writable {
+            state.regions
+                .writable_span(page_start, 1 << CODE_PAGE_SHIFT)
+                .is_some()
+        } else {
+            state.regions
+                .readable_bytes(page_start, 1 << CODE_PAGE_SHIFT)
+                .is_some()
+        };
+    if full_page {
+        state.instruction_token_cache[(page as usize) & INSTRUCTION_TOKEN_CACHE_MASK] =
+            CodeTokenSlot { page, token };
     }
-    state.regions.instruction_cache_token(addr)
+    Some(token)
 }
 
 /// Select a backing for a contiguous access. Wide ranges avoid a byte loop so
@@ -1341,7 +1346,7 @@ impl Clone for GuestAddressSpace {
             // memory, so the clone mints its own from the first fetch.
             page_tokens: None,
             // Detached regions are fresh allocations; let the clone re-resolve.
-            instruction_token_cache: None,
+            instruction_token_cache: [CodeTokenSlot::default(); INSTRUCTION_TOKEN_CACHE_SLOTS],
         })))
     }
 }
@@ -2202,6 +2207,14 @@ impl PpcMemory for GuestAddressSpace {
             return None;
         };
         let state = self.state_mut();
+        let page = addr >> CODE_PAGE_SHIFT;
+        let cached = state.instruction_token_cache[(page as usize) & INSTRUCTION_TOKEN_CACHE_MASK];
+        if cached.token != 0
+            && cached.page == page
+            && (end - 1) >> CODE_PAGE_SHIFT == u64::from(page)
+        {
+            return Some(cached.token);
+        }
         if !state.overlaps_shared(u64::from(addr), end) {
             return sparse_instruction_token(state, addr);
         }
@@ -2444,7 +2457,10 @@ pub(crate) mod write_log {
 
 #[cfg(test)]
 mod tests {
-    use super::{shared_lookup_at, GuestAddressSpace, GuestIsa, SharedLookup, SharedRamRegion};
+    use super::{
+        shared_lookup_at, GuestAddressSpace, GuestIsa, SharedLookup, SharedRamRegion,
+        CODE_PAGE_SHIFT, INSTRUCTION_TOKEN_CACHE_MASK, INSTRUCTION_TOKEN_CACHE_SLOTS,
+    };
     use crate::memory::{GuestMemoryRoute, MacMemoryBus, MemoryBus};
     use m68k::{AddressBus, BatchExit, CpuCore, StepResult};
     use ppc::{PpcCpu, PpcMemory, PpcRunResult};
@@ -2961,6 +2977,93 @@ mod tests {
             PpcMemory::instruction_cache_token(&mut memory, SECOND_PAGE),
             Some(second)
         );
+    }
+
+    #[test]
+    fn alternating_code_pages_keep_their_proofs_and_redecode_after_writes() {
+        const BASE: u32 = 0x0300_0000;
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(BASE, vec![0; 0x8000]);
+        let pages = [BASE, BASE + 0x1000, BASE + 0x7000];
+        for &pc in &pages {
+            memory.write_u32_be(pc, 0x3863_0001).unwrap();
+            memory.write_u32_be(pc + 4, 0x4e80_0020).unwrap();
+        }
+        let mut cpu = PpcCpu::new();
+        let mut counted = CountingGuestAddressSpace::new(&mut memory);
+        for _ in 0..3 {
+            for &pc in &pages {
+                run_cached_add(&mut cpu, &mut counted, pc, 1);
+            }
+        }
+        // Each page's complete mapping proof remains resident despite calls
+        // to another page. Writes must retire all affected resident proofs,
+        // including pages other than the most recently executed one.
+        let old_tokens: Vec<_> = pages
+            .iter()
+            .map(|&pc| {
+                let page = pc >> CODE_PAGE_SHIFT;
+                let slot = counted.memory.state().instruction_token_cache
+                    [(page as usize) & INSTRUCTION_TOKEN_CACHE_MASK];
+                assert_eq!(slot.page, page);
+                assert_ne!(slot.token, 0);
+                slot.token
+            })
+            .collect();
+        for (i, &pc) in pages.iter().enumerate() {
+            counted.write_u32_be(pc, 0x3863_0002).unwrap();
+            assert_ne!(counted.instruction_cache_token(pc), Some(old_tokens[i]));
+            run_cached_add(&mut cpu, &mut counted, pc, 2);
+        }
+    }
+
+    #[test]
+    fn code_proof_collision_and_partial_page_do_not_authorize_unmapped_code() {
+        const BASE: u32 = 0x0300_0000;
+        let collision = BASE + ((INSTRUCTION_TOKEN_CACHE_SLOTS as u32) << CODE_PAGE_SHIFT);
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(BASE, vec![0; 0x1000]);
+        memory.add_region(collision, vec![0; 8]);
+        let first = memory.instruction_cache_token(BASE).unwrap();
+        assert!(memory.instruction_cache_token(collision).is_some());
+        assert_eq!(memory.instruction_cache_token(collision + 8), None);
+        assert_eq!(memory.instruction_cache_token(BASE), Some(first));
+        // Replacing a full-page mapping invalidates its earlier proof.
+        memory.add_readonly_region(BASE, vec![0; 0x1000]);
+        assert_ne!(memory.instruction_cache_token(BASE), Some(first));
+        assert!(memory
+            .state()
+            .instruction_token_cache
+            .iter()
+            .all(|slot| slot.token != first));
+    }
+
+    #[test]
+    fn complete_code_page_proofs_reject_boundaries_and_shared_overlays() {
+        const BASE: u32 = 0x0300_0000;
+        for writable in [false, true] {
+            let mut memory = GuestAddressSpace::new();
+            if writable {
+                memory.add_region(BASE, vec![0x60; 0x1000]);
+            } else {
+                memory.add_readonly_region(BASE, vec![0x60; 0x1000]);
+            }
+            let token = memory.instruction_cache_token(BASE).unwrap();
+            let slot = (BASE as usize >> CODE_PAGE_SHIFT) & INSTRUCTION_TOKEN_CACHE_MASK;
+            assert_eq!(memory.state().instruction_token_cache[slot].token, token);
+            assert_eq!(memory.instruction_cache_token(BASE + 0xffc), Some(token));
+            for offset in 0xffd..=0x1000 {
+                assert_eq!(memory.instruction_cache_token(BASE + offset), None);
+            }
+            let mut bus = MacMemoryBus::new(0x1000);
+            let shared = bus.shared_ram_region(0, 4).unwrap();
+            // SAFETY: this test serializes every access to both adapters.
+            unsafe { memory.add_shared_region(BASE + 0x40, shared) };
+            // A gap on a partially aliased page must not authorize its alias.
+            assert!(memory.instruction_cache_token(BASE).is_some());
+            assert_eq!(memory.instruction_cache_token(BASE + 0x40), None);
+            assert_eq!(memory.state().instruction_token_cache[slot].token, 0);
+        }
     }
 
     #[test]
