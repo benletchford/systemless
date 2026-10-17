@@ -13,7 +13,7 @@ struct KeyAction {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display-diagnostics] [--cpu-diagnostics] [--draw-diagnostics START:END] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--key-at INSTRUCTION:CODE:down|up[:TEXT]] [--trace-range START:END] [--key-at-poll POLL:CODE:down|up[:TEXT]]".into());
+        return Err("usage: trace_application code|pef PATH INSTRUCTION_LIMIT [--graphics] [--display-diagnostics] [--cpu-diagnostics] [--draw-diagnostics START:END] [--display WIDTHxHEIGHTx8] [--volume IMAGE] [--services-only] [--numeric-operands] [--watch-address HEX] [--elapse-waits] [--save-volume NEW_IMAGE] [--save-screen NEW_PPM] [--save-screen-at INSTRUCTION:NEW_PPM] [--key-at INSTRUCTION:CODE:down|up[:TEXT]] [--trace-range START:END] [--key-at-poll POLL:CODE:down|up[:TEXT]]".into());
     }
     let mut graphics = false;
     let mut display_diagnostics = false;
@@ -25,6 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut volume = None;
     let mut save_volume = None;
     let mut save_screen = None;
+    let mut screen_checkpoints = Vec::new();
     let mut keys = Vec::new();
     let mut poll_keys = Vec::new();
     let mut trace_range = None;
@@ -60,6 +61,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--save-screen" if save_screen.is_none() => {
                 index += 1;
                 save_screen = Some(args.get(index).ok_or("missing screen output")?);
+            }
+            "--save-screen-at" if screen_checkpoints.len() < 64 => {
+                index += 1;
+                let (instruction, path) = args
+                    .get(index)
+                    .ok_or("missing screen checkpoint")?
+                    .split_once(':')
+                    .ok_or("screen checkpoint requires INSTRUCTION:NEW_PPM")?;
+                let instruction = instruction.parse::<u64>()?;
+                if instruction >= budget || path.is_empty() {
+                    return Err("screen checkpoint exceeds budget or has an empty path".into());
+                }
+                screen_checkpoints.push((instruction, path.to_owned()));
             }
             "--trace-range" if trace_range.is_none() => {
                 index += 1;
@@ -128,9 +142,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         index += 1;
     }
-    if (save_screen.is_some() || display_diagnostics || draw_diagnostics.is_some()) && !graphics {
+    if (save_screen.is_some()
+        || !screen_checkpoints.is_empty()
+        || display_diagnostics
+        || draw_diagnostics.is_some())
+        && !graphics
+    {
         return Err("screen capture/diagnostics require --graphics".into());
     }
+    screen_checkpoints.sort_by_key(|(instruction, _)| *instruction);
     keys.sort_by_key(|action| action.instruction);
     poll_keys.sort_by_key(|action| action.instruction);
     let file = std::fs::File::open(&args[1])?;
@@ -167,12 +187,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?);
     }
     let mut keyboard = systemless_future::host_input::Keyboard::default();
+    let mut next_screen = 0;
     let mut next_key = 0;
     let mut next_poll_key = 0;
     let mut watched = None;
     let mut previous_pc = None;
     let mut draw_diagnostic_count = 0u16;
     for poll in 0..budget {
+        // Capture before input scheduled at this same retired-instruction boundary.
+        // Reuse canonical readback and create-new output semantics; never mutate
+        // the input volume or replace an earlier diagnostic capture.
+        while let Some((instruction, path)) = screen_checkpoints
+            .get(next_screen)
+            .filter(|(instruction, _)| *instruction <= app.runtime.instructions)
+        {
+            println!(
+                "screen checkpoint requested={} instruction={} poll={} path={:?}",
+                instruction, app.runtime.instructions, poll, path
+            );
+            save_snapshot(&mut app, None, Some(path), false, false)?;
+            next_screen += 1;
+        }
         for (actions, next, clock) in [
             (&keys, &mut next_key, app.runtime.instructions),
             (&poll_keys, &mut next_poll_key, poll),

@@ -11386,3 +11386,61 @@ API/style/UI and library workload acceptance, Mixed Mode, browser/native behavio
 and original-game playability remain open. Keep the full goal active. Next is
 an explicit interactive Marathon new-game path and further real original-game
 state/interaction acceptance, not a larger demo budget presented as gameplay.
+
+
+## Timed original-application capture diagnostics (2026-10-17)
+
+The next Marathon interaction investigation needs frames at input boundaries,
+not only an end-of-budget image. The tracer now accepts up to 64 repeatable
+`--save-screen-at INSTRUCTION:NEW_PPM` arguments, sorted by retired guest
+instruction count. It reports requested/actual counts and poll index, and captures
+before keys at the same boundary. Graphics is required; existing outputs cannot
+be replaced. It reuses canonical wgpu readback, without changing guest binaries,
+input volumes, timing rules or guest service implementations.
+
+A fresh two-million-poll original Marathon pair used the same media, 640x480x8
+profile and N down/up at 1,000,000/1,005,000 retired instructions. One run requested
+captures in reverse argument order (1,000,000 then 0); the other had none. Both
+ended at exactly 2,000,000 retired instructions / PC01022A02 with budget exit 1,
+identical final screen SHA-256
+`d5cee18abe289b1be11164e9eec2225db24784d65114d4b2239b2d46063079a3`
+and identical committed volume
+`e8277551ba871bac4be029779fc6f8b4a60c4efab619f6ed269406bbd117ae42`.
+The capture log proves sorted delivery and capture-before-key ordering. The
+one-million frame was visually inspected: black loading with a cursor, no menu.
+Five malformed/incompatible requests fail before media loading; a capture at
+zero to an existing output fails with AlreadyExists and preserves its exact bytes.
+These are diagnostic behavior checks, not additional gameplay acceptance tests.
+
+A preceding unchanged-original 40M-poll N-input probe retired 39,998,517
+instructions at PC01004CC4, to budget rather than a fault. It loaded film ordinal 2
+and then ordinal 1 and ended on the same black screen hash as the earlier Escape
+probe (`a6087ec5178c7619d8136de2aa159dde7161d56f9e4c3b899b7165935d0353d8`).
+Disassembly places that PC in a nested shade-table construction loop, so this
+image is not evidence of a menu wait or permanent hang. Its committed volume is
+the identical verified Marathon output above; independent catalog/CRC/fork and
+metadata checks pass. Original media remains unchanged. Interactive new game,
+movement and sustained gameplay remain unverified. A longer bounded replay is
+being observed separately; it must reach a terminal result before any claim.
+
+Evidence: /tmp/systemless-checkpoint-{build,checkpoint,control,existing-output}.txt,
+/tmp/systemless-checkpoint-{equivalence,parser}.json, and the private
+2026-10-17-newgame-probe captures under the ignored Marathon evidence directory.
+The full rebuild and complete wgpu text requirement remain active.
+
+
+Tracer build, strict scoped Clippy (`--example trace_application -- -D warnings`),
+Rust 1.93 example check, sequential stdin formatting and whitespace gates pass.
+No runtime library or dependency changes are included in this diagnostic slice.
+Validation artifacts are retained under ignored target/validation/checkpoints.
+
+
+The new capture option was then exercised without input through eight million
+polls, every 250,000 retired instructions (31 captures). All thresholds were
+reached and the run ended at 7,999,258 retired / PC0102295C, budget exit 1.
+The contact sheet was visually inspected: all sampled frames are black (early
+cursor visible). The trace nevertheless requests and draws PICT 1111 and 1114,
+and performs SetEntries calls. Therefore the next investigation must include the
+intro picture/palette/display path, rather than assuming a visible menu was only
+missed by input timing. This is evidence of an unresolved display boundary, not
+proof of the particular cause. The longer replay remains separately pending.

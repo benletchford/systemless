@@ -4273,3 +4273,21 @@ shared manager updates both port/device PixMaps with the resized image; no pixel
 allocation padding, aliasing, guest patch or shade-index clamp is introduced.
 Escape Velocity's corrected idle frame remains byte-identical. Exact acceptance
 and remaining interaction limits are in progress.md and original-applications.md.
+
+
+### Timed diagnostic screen captures
+
+The file-application tracer accepts up to 64 repeatable
+`--save-screen-at INSTRUCTION:NEW_PPM` options. It orders them by retired guest
+instruction count and captures at the first poll that reaches each threshold,
+before delivering a host key scheduled at that same boundary. Each capture logs
+both the requested threshold and actual retired count/poll; callback and waiting
+polls mean these clocks must not be conflated. A threshold below the poll budget
+is not a promise that the guest will retire that many instructions before stop.
+
+Captures use the same canonical wgpu readback as the final `--save-screen`,
+require `--graphics`, and create a new output file without replacing an existing
+one. They do not checkpoint the input volume or inject guest events. These are
+headless diagnostic observations, not native presentation or performance evidence.
+This makes loading/menu/demo transitions observable before a final frame changes
+again, without guessing their contents from a terminal budget stop.
