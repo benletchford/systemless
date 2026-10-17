@@ -671,6 +671,110 @@ fn gpu_native_arithmetic_copies_clear_outline_detail_like_software() {
 }
 
 #[test]
+fn gpu_native_deep_masks_clear_outline_detail_with_white_color_masks() {
+    use crate::memory::{MacMemoryBus, MemoryBus};
+    let pixels = vec![255; usize::from(ROW_BYTES) * HEIGHT];
+    for depth in [8, 16] {
+        let mut outputs = Vec::new();
+        for gpu in [false, true] {
+            let fixture = fixture(&pixels, WHOLE_PORT, WHOLE_PORT);
+            let mut loaded =
+                load_pef_application(&synthetic_pef_with_import(b"DrawString")).unwrap();
+            install_port(&mut loaded, &fixture, depth);
+            loaded.memory.add_region(0x1000, pixels.clone());
+            loaded.memory.write_u32_be(PIXMAP, 0x1000).unwrap();
+            loaded.gworlds.last_mut().unwrap().base_addr = 0x1000;
+            let mut bus = MacMemoryBus::new(1024 * 1024);
+            bus.write_bytes(0x1000, &pixels);
+            bus.enable_outline_presentation(
+                (
+                    0x1000,
+                    u32::from(ROW_BYTES),
+                    24,
+                    HEIGHT as u16,
+                    depth as u16,
+                ),
+                std::array::from_fn(|i| [i as u8; 3]),
+                3,
+            );
+            loaded
+                .memory
+                .shared_view()
+                .set_presentation(bus.presentation.clone());
+            if gpu {
+                loaded.memory.shared_view().set_quickdraw_gpu_renderer(
+                    crate::quickdraw::gpu::QuickDrawGpuSlot::new(Box::new(
+                        crate::quickdraw::gpu::ReferenceRenderer {
+                            calls: std::rc::Rc::new(std::cell::Cell::new(0)),
+                            failure: 0,
+                        },
+                    )),
+                );
+            }
+            ppc_draw_text_bytes(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PORT,
+                (-4, 7),
+                PPC_QD_TEXT_FONT_DEFAULT,
+                12,
+                1,
+                PPC_RGB_BLACK,
+                Some(0),
+                b"Ag",
+            );
+            assert!(
+                bus.has_visible_outline_detail(),
+                "native text must retain outline samples"
+            );
+            ppc_write_rect(
+                &mut loaded.memory,
+                RECT,
+                BOUNDS.0,
+                BOUNDS.1,
+                BOUNDS.2,
+                BOUNDS.3,
+            )
+            .unwrap();
+            ppc_write_rect(&mut loaded.memory, RECT + 0x20, 0, 0, 8, 18).unwrap();
+            loaded.memory.add_region(0x3000, vec![255; pixels.len()]);
+            let mask = SCRATCH + 0x600;
+            ppc_write_pixmap(
+                &mut loaded.memory,
+                mask,
+                0x3000,
+                u32::from(ROW_BYTES),
+                BOUNDS.0,
+                BOUNDS.1,
+                BOUNDS.2,
+                BOUNDS.3,
+                16,
+            )
+            .unwrap();
+            loaded.cpu.gpr[3] = PIXMAP;
+            loaded.cpu.gpr[4] = mask;
+            loaded.cpu.gpr[5] = PIXMAP;
+            loaded.cpu.gpr[6] = RECT;
+            loaded.cpu.gpr[7] = RECT;
+            loaded.cpu.gpr[8] = RECT + 0x20;
+            loaded.cpu.gpr[9] = 0;
+            loaded.cpu.gpr[10] = 0;
+            let clut = std::array::from_fn(|i| [i as u16 * 257; 3]);
+            assert!(ppc_copy_deep_mask(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &loaded.gworlds,
+                &clut
+            ));
+            let mut bytes = vec![0; pixels.len()];
+            loaded.memory.read_bytes_into(0x1000, &mut bytes).unwrap();
+            outputs.push((bytes, bus.outline_presentation_rgb()));
+        }
+        assert_eq!(outputs[1], outputs[0], "depth={depth}");
+    }
+}
+
+#[test]
 fn gpu_native_glyph_masks_match_software_text_modes_and_explicit_clips() {
     let pixels = initial_pixels();
     for depth in [1, 2, 4, 8, 16] {

@@ -4843,6 +4843,7 @@ pub(crate) fn ppc_copy_bits(
                         background: Vec::new(),
                     }
                 }),
+                None,
                 &mut details,
             )
         } else {
@@ -5195,6 +5196,7 @@ pub(crate) fn ppc_copy_mask(
                     transparent: None,
                 }),
                 None,
+                None,
                 &mut ignored_details,
             ) {
                 if writes.is_empty() {
@@ -5388,6 +5390,67 @@ pub(crate) fn ppc_copy_deep_mask_with(
             return None;
         }
 
+        if memory.quickdraw_gpu_renderer().is_some()
+            && i64::from(copy_right - copy_left) * i64::from(copy_bottom - copy_top) <= 4_194_304
+        {
+            let area = [copy_top, copy_left, copy_bottom, copy_right];
+            let destination_rect = [dst_rect.0, dst_rect.1, dst_rect.2, dst_rect.3].map(i32::from);
+            if let Some(operation) = gpu_blit::deep_mask_operation(
+                memory,
+                src_bits.depth,
+                dst_bits.depth,
+                mask_bits,
+                src_clut.as_ref(),
+                dst_clut.as_ref(),
+                mask_clut.as_ref(),
+                mode,
+                [mask_rect.0, mask_rect.1, mask_rect.2, mask_rect.3].map(i32::from),
+                destination_rect,
+                area,
+            ) {
+                let clip = mask_storage.as_ref().map(|storage| {
+                    crate::quickdraw::gpu::QuickDrawGpuBlitClip {
+                        coverage: Some(
+                            (copy_top..copy_bottom)
+                                .flat_map(|y| {
+                                    (copy_left..copy_right).map(move |x| {
+                                        u8::from(ppc_point_in_region_storage(
+                                            storage, y as i16, x as i16,
+                                        ))
+                                    })
+                                })
+                                .collect(),
+                        ),
+                        transparent: None,
+                    }
+                });
+                let mut ignored_details = crate::memory::SavedPixels::<()>::default();
+                if let Some(writes) = gpu_blit::sample_copy(
+                    memory,
+                    src_bits,
+                    dst_bits,
+                    [src_rect.0, src_rect.1, src_rect.2, src_rect.3].map(i32::from),
+                    destination_rect,
+                    area,
+                    None,
+                    None,
+                    clip,
+                    None,
+                    Some(operation),
+                    &mut ignored_details,
+                ) {
+                    if writes.is_empty() {
+                        reason = "no-pixels";
+                        return None;
+                    }
+                    for (x, y, pixel) in writes {
+                        ppc_write_pixmap_raw_pixel(memory, dst_bits, x, y, pixel)?;
+                    }
+                    return Some(());
+                }
+            }
+        }
+
         // Imaging With QuickDraw (1994), pp. 3-120--3-122: CopyDeepMask
         // scales the source and deep mask into dstRect, then clips the
         // transfer to maskRgn. For a deep mask, black selects the source,
@@ -5417,8 +5480,7 @@ pub(crate) fn ppc_copy_deep_mask_with(
                 else {
                     continue;
                 };
-                let Some(source_rgb) =
-                    ppc_pixmap_pixel_rgb(src_bits, src_pixel, src_clut.as_ref())
+                let Some(source_rgb) = ppc_pixmap_pixel_rgb(src_bits, src_pixel, src_clut.as_ref())
                 else {
                     continue;
                 };
@@ -5427,11 +5489,9 @@ pub(crate) fn ppc_copy_deep_mask_with(
                 else {
                     continue;
                 };
-                let Some(destination_rgb) = ppc_pixmap_pixel_rgb(
-                    dst_bits,
-                    destination_pixel,
-                    dst_clut.as_ref(),
-                ) else {
+                let Some(destination_rgb) =
+                    ppc_pixmap_pixel_rgb(dst_bits, destination_pixel, dst_clut.as_ref())
+                else {
                     continue;
                 };
 
@@ -5446,11 +5506,8 @@ pub(crate) fn ppc_copy_deep_mask_with(
                     if mask_pixel == 0 {
                         continue;
                     }
-                    let source_for_destination = ppc_rgb_to_pixmap_pixel(
-                        dst_bits,
-                        source_rgb,
-                        dst_clut.as_ref(),
-                    )?;
+                    let source_for_destination =
+                        ppc_rgb_to_pixmap_pixel(dst_bits, source_rgb, dst_clut.as_ref())?;
                     let pixel = if mode <= 7 {
                         ppc_deep_mask_boolean_pixel(
                             source_for_destination,
@@ -5471,11 +5528,8 @@ pub(crate) fn ppc_copy_deep_mask_with(
                     continue;
                 };
                 let source_for_blend = if mode <= 7 && mode != 0 {
-                    let source_for_destination = ppc_rgb_to_pixmap_pixel(
-                        dst_bits,
-                        source_rgb,
-                        dst_clut.as_ref(),
-                    )?;
+                    let source_for_destination =
+                        ppc_rgb_to_pixmap_pixel(dst_bits, source_rgb, dst_clut.as_ref())?;
                     let mode_pixel = ppc_deep_mask_boolean_pixel(
                         source_for_destination,
                         destination_pixel,
@@ -5486,11 +5540,8 @@ pub(crate) fn ppc_copy_deep_mask_with(
                 } else {
                     source_rgb
                 };
-                let blended_rgb = ppc_blend_deep_mask_rgb(
-                    source_for_blend,
-                    destination_rgb,
-                    mask_rgb,
-                );
+                let blended_rgb =
+                    ppc_blend_deep_mask_rgb(source_for_blend, destination_rgb, mask_rgb);
                 let pixel = ppc_rgb_to_pixmap_pixel(dst_bits, blended_rgb, dst_clut.as_ref())?;
                 writes.push((dst_x, dst_y, pixel));
             }

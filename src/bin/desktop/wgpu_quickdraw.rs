@@ -112,6 +112,7 @@ struct State {
     blit_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
     cells_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
     arithmetic_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
+    deep_mask_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
     packed_pipeline: std::cell::RefCell<Option<Result<wgpu::ComputePipeline, String>>>,
 }
 impl State {
@@ -150,6 +151,7 @@ impl State {
             blit_pipeline: Default::default(),
             cells_pipeline: Default::default(),
             arithmetic_pipeline: Default::default(),
+            deep_mask_pipeline: Default::default(),
             packed_pipeline: Default::default(),
         })
     }
@@ -188,7 +190,7 @@ impl State {
         }
     }
     fn render_blit(&self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
-        if command.clip.is_some() || command.arithmetic.is_some() {
+        if command.clip.is_some() || command.arithmetic.is_some() || command.deep_mask.is_some() {
             return Err("clipped bitmap requires coverage readback".into());
         }
         self.render_blit_words(command, false)
@@ -217,7 +219,9 @@ impl State {
         if !command.valid() {
             return Err("invalid QuickDraw bitmap blit".into());
         }
-        let mut cached = if cells && command.arithmetic.is_some() {
+        let mut cached = if cells && command.deep_mask.is_some() {
+            self.deep_mask_pipeline.borrow_mut()
+        } else if cells && command.arithmetic.is_some() {
             self.arithmetic_pipeline.borrow_mut()
         } else if cells {
             self.cells_pipeline.borrow_mut()
@@ -226,7 +230,9 @@ impl State {
         };
         if cached.is_none() {
             *cached = Some(
-                self.create_blit_pipeline(if cells && command.arithmetic.is_some() {
+                self.create_blit_pipeline(if cells && command.deep_mask.is_some() {
+                    "blit_deep_mask"
+                } else if cells && command.arithmetic.is_some() {
                     "blit_arithmetic"
                 } else if cells {
                     "blit_cells"
@@ -391,6 +397,36 @@ impl State {
             arithmetic.extend(&a.background);
             inputs.retain(|(binding, _, _)| *binding != 1);
             inputs.push((7, &arithmetic, wgpu::BufferUsages::STORAGE));
+        }
+        let mut deep = Vec::new();
+        if let Some(d) = &command.deep_mask {
+            deep.extend([
+                d.source_depth,
+                d.destination_depth,
+                d.mask_depth,
+                d.mode,
+                d.source_clut.len() as u32,
+                d.destination_clut.len() as u32,
+                d.mask_clut.len() as u32,
+                d.mask_width,
+                d.mask_height,
+                width,
+                height,
+            ]);
+            deep.extend(
+                d.source_clut
+                    .iter()
+                    .chain(&d.destination_clut)
+                    .chain(&d.mask_clut)
+                    .flatten()
+                    .map(|v| u32::from(*v)),
+            );
+            deep.extend(&d.mask_pixels);
+            deep.extend(&d.mask_columns);
+            deep.extend(&d.mask_rows);
+            deep.extend(&d.background);
+            inputs.retain(|(binding, _, _)| *binding != 1);
+            inputs.push((8, &deep, wgpu::BufferUsages::STORAGE));
         }
         self.dispatch_blit(pipeline, width, height, if cells { 2 } else { 1 }, &inputs)
     }
@@ -863,8 +899,238 @@ mod tests {
             direct: None,
             clip: None,
             arithmetic: None,
+            deep_mask: None,
         };
         assert_eq!(state.render_blit(&raw).unwrap(), vec![u32::MAX]);
+    }
+
+    #[test]
+    fn gpu_deep_mask_blends_match_cpu_all_depths_boolean_modes_and_coverage() {
+        use systemless::quickdraw::gpu::{QuickDrawGpuBlitClip, QuickDrawGpuDeepMask};
+        fn rgb(depth: u32, pixel: u32, clut: &[[u16; 3]]) -> [u16; 3] {
+            match depth {
+                1 => {
+                    if pixel == 0 {
+                        [65535; 3]
+                    } else {
+                        [0; 3]
+                    }
+                }
+                2 | 4 | 8 => clut[pixel as usize],
+                16 => [pixel >> 10 & 31, pixel >> 5 & 31, pixel & 31]
+                    .map(|v| (f64::from(v) * 65535.0 / 31.0).round() as u16),
+                32 => [pixel >> 16 & 255, pixel >> 8 & 255, pixel & 255].map(|v| v as u16 * 257),
+                _ => unreachable!(),
+            }
+        }
+        fn encode(depth: u32, rgb: [u16; 3], clut: &[[u16; 3]]) -> u32 {
+            match depth {
+                1 => {
+                    let black: u64 = rgb.iter().map(|v| u64::from(*v).pow(2)).sum();
+                    let white: u64 = rgb.iter().map(|v| u64::from(65535 - *v).pow(2)).sum();
+                    u32::from(black <= white)
+                }
+                16 => {
+                    (u32::from(rgb[0] / 2048) << 10)
+                        | (u32::from(rgb[1] / 2048) << 5)
+                        | u32::from(rgb[2] / 2048)
+                }
+                32 => {
+                    (u32::from(rgb[0] / 256) << 16)
+                        | (u32::from(rgb[1] / 256) << 8)
+                        | u32::from(rgb[2] / 256)
+                }
+                _ => {
+                    clut.iter()
+                        .enumerate()
+                        .min_by_key(|(_, c)| {
+                            (0..3)
+                                .map(|j| (i32::from(c[j] / 2048) - i32::from(rgb[j] / 2048)).pow(2))
+                                .sum::<i32>()
+                        })
+                        .unwrap()
+                        .0 as u32
+                }
+            }
+        }
+        fn boolean(s: u32, d: u32, depth: u32, mode: u32) -> u32 {
+            let bits = if depth == 32 {
+                u32::MAX
+            } else {
+                (1 << depth) - 1
+            };
+            match mode {
+                1 => s | d,
+                2 => s ^ d,
+                3 => !s & d & bits,
+                4 => !s & bits,
+                5 => (!s & bits) | d,
+                6 => (!s & bits) ^ d,
+                7 => s & d,
+                _ => s,
+            }
+        }
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let depths = [1u32, 2, 4, 8, 16, 32];
+        let mut cases = Vec::new();
+        for s in depths {
+            for d in depths {
+                for m in depths {
+                    cases.push((s, d, m, 0));
+                }
+            }
+        }
+        for mode in [0, 1, 2, 3, 4, 5, 6, 7, 36] {
+            for (s, d, m) in [
+                (1, 32, 1),
+                (32, 1, 8),
+                (16, 8, 16),
+                (8, 16, 32),
+                (8, 4, 8),
+                (32, 32, 1),
+                (32, 32, 8),
+                (4, 2, 4),
+            ] {
+                cases.push((s, d, m, mode));
+            }
+        }
+        for (source_depth, destination_depth, mask_depth, mode) in cases {
+            let limit = |d| if d == 32 { u32::MAX } else { (1u32 << d) - 1 };
+            let clut = |d| -> Vec<[u16; 3]> {
+                if matches!(d, 2 | 4 | 8) {
+                    (0..1usize << d)
+                        .map(|i| {
+                            if i == 0 {
+                                [65535; 3]
+                            } else if i == 1 {
+                                [0; 3]
+                            } else {
+                                [
+                                    ((i / 2 * 7 % 32) * 2048 + i % 2) as u16,
+                                    ((i / 2 * 11 % 32) * 2048 + i % 2) as u16,
+                                    ((i / 2 * 17 % 32) * 2048 + i % 2) as u16,
+                                ]
+                            }
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                }
+            };
+            let pixels: Vec<u32> = (0..12u32)
+                .map(|i| i.wrapping_mul(2654435761) & limit(source_depth))
+                .collect();
+            let background = (0..12u32)
+                .map(|i| i.wrapping_mul(123456789).rotate_left(13) & limit(destination_depth))
+                .collect();
+            let mask_pixels = (0..6)
+                .map(|i| match mask_depth {
+                    1 => u32::from(i % 3 != 0),
+                    2 | 4 | 8 => i % 3,
+                    16 => [65535, 0, 0x3d2a][i as usize % 3],
+                    32 => [0xa5ffffff, 0x6b000000, 0x8c7f10e3][i as usize % 3],
+                    _ => unreachable!(),
+                })
+                .collect();
+            let d = QuickDrawGpuDeepMask {
+                source_depth,
+                destination_depth,
+                mask_depth,
+                mode,
+                source_clut: clut(source_depth)
+                    .into_iter()
+                    .map(|c| [c[1], c[2], c[0]])
+                    .collect(),
+                destination_clut: clut(destination_depth).into_iter().rev().collect(),
+                mask_clut: clut(mask_depth),
+                mask_width: 3,
+                mask_height: 2,
+                mask_pixels,
+                mask_columns: vec![2, 0, 1, 2],
+                mask_rows: vec![1, 0, 1],
+                background,
+            };
+            let columns = vec![[0, 1], [3, 4], [1, 2], [2, 3]];
+            let rows = vec![[2, 3], [0, 1], [1, 2]];
+            let coverage: Vec<u8> = (0..12).map(|i| u8::from(i % 5 != 0)).collect();
+            let expected: Vec<QuickDrawGpuPixel> = (0..12)
+                .map(|i| {
+                    let raw = pixels[(rows[i / 4][0] * 4 + columns[i % 4][0]) as usize];
+                    let dst = d.background[i];
+                    let mask = d.mask_pixels[(d.mask_rows[i / 4] * 3 + d.mask_columns[i % 4]) as usize];
+                    let s = rgb(source_depth, raw, &d.source_clut);
+                    let target = rgb(destination_depth, dst, &d.destination_clut);
+                    let value = if mask_depth == 1 {
+                        boolean(
+                            encode(destination_depth, s, &d.destination_clut),
+                            dst,
+                            destination_depth,
+                            mode,
+                        )
+                    } else {
+                        let s = if (1..=7).contains(&mode) {
+                            rgb(
+                                destination_depth,
+                                boolean(
+                                    encode(destination_depth, s, &d.destination_clut),
+                                    dst,
+                                    destination_depth,
+                                    mode,
+                                ),
+                                &d.destination_clut,
+                            )
+                        } else {
+                            s
+                        };
+                        let mask = rgb(mask_depth, mask, &d.mask_clut);
+                        let color = std::array::from_fn(|c| {
+                            ((f64::from(s[c]) * f64::from(65535 - mask[c])
+                                + f64::from(target[c]) * f64::from(mask[c]))
+                                / 65535.0)
+                                .round() as u16
+                        });
+                        encode(destination_depth, color, &d.destination_clut)
+                    };
+                    QuickDrawGpuPixel {
+                        value,
+                        covered: coverage[i] != 0 && (mask_depth != 1 || mask != 0),
+                    }
+                })
+                .collect();
+            let command = QuickDrawGpuBlit {
+                width: 4,
+                height: 3,
+                pixels,
+                columns,
+                rows,
+                palette: None,
+                direct: None,
+                clip: Some(QuickDrawGpuBlitClip {
+                    coverage: Some(coverage),
+                    transparent: None,
+                }),
+                arithmetic: None,
+                deep_mask: Some(d),
+            };
+            assert_eq!(
+                state.render_blit_cells(&command).unwrap(),
+                expected,
+                "source={source_depth},destination={destination_depth},mask={mask_depth},mode={mode}"
+            );
+            assert!(state.render_blit(&command).is_err());
+            let mut invalid = command;
+            invalid.deep_mask.as_mut().unwrap().mask_rows.pop();
+            assert!(state.render_blit_cells(&invalid).is_err());
+        }
     }
 
     #[test]
@@ -1023,6 +1289,7 @@ mod tests {
                             transparent: None,
                         }),
                         arithmetic: Some(a),
+                        deep_mask: None,
                     };
                     assert_eq!(
                         state.render_blit_cells(&command).unwrap(),
@@ -1093,6 +1360,7 @@ mod tests {
                             transparent: transparent.then_some([key, source_mask]),
                         }),
                         arithmetic: None,
+                        deep_mask: None,
                     };
                     let actual = state.render_blit_cells(&command).unwrap();
                     for (i, cell) in actual.iter().enumerate() {
@@ -1174,6 +1442,7 @@ mod tests {
                     }),
                     clip: None,
                     arithmetic: None,
+                    deep_mask: None,
                 };
                 let colors = &command.direct.as_ref().unwrap().palette;
                 let expected: Vec<u32> = command
@@ -1270,6 +1539,7 @@ mod tests {
                 direct: None,
                 clip: None,
                 arithmetic: None,
+                deep_mask: None,
             };
             let mut expected = Vec::new();
             for row in &command.rows {

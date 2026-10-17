@@ -648,6 +648,7 @@ fn gpu_blit_bytes(
         direct: None,
         clip: None,
         arithmetic: None,
+        deep_mask: None,
     };
     if !command.valid() {
         return None;
