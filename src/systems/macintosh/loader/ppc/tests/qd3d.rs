@@ -15165,6 +15165,10 @@ fn q3_software_renderer_replays_trimesh_scene_commands_to_front_buffer() {
             .unwrap();
     }
     loaded.q3_completed_frames = completed.clone();
+    // The older external packet transport remains unchanged. Indexed targets
+    // only use the synchronous renderer explicitly installed by --gpu.
+    assert!(loaded.take_completed_q3_gpu_frame().is_none());
+    assert_eq!(loaded.q3_completed_frames, completed);
     assert!(loaded
         .render_completed_q3_frames_with_gpu(&mut HostRenderer { mode: 3 })
         .is_some());

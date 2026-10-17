@@ -211,7 +211,7 @@ impl PpcLoadedApp {
             })?
             .clone();
         let commands = self.q3_completed_frame_scene_commands(&frame);
-        let gpu_frame = self.prepare_q3_gpu_frame(commands)?;
+        let gpu_frame = self.prepare_q3_gpu_frame(commands, false)?;
         self.q3_completed_frames.clear();
         self.q3_state_only_completed_frame_batches.clear();
         self.prune_q3_immediate_trimeshes();
@@ -237,7 +237,7 @@ impl PpcLoadedApp {
         let frame = frame.clone();
         let commands = self.q3_completed_frame_scene_commands(&frame);
         let target = self.q3_render_target(&commands)?;
-        let packet = self.prepare_q3_gpu_frame(commands)?;
+        let packet = self.prepare_q3_gpu_frame(commands, true)?;
         let front = target.front_buffer;
         let indexed_clut = (front.depth == 8).then(|| {
             target
@@ -361,10 +361,17 @@ impl PpcLoadedApp {
         Some(stats)
     }
 
-    fn prepare_q3_gpu_frame(&mut self, commands: Vec<PpcQ3SceneCommand>) -> Option<PpcQ3GpuFrame> {
+    fn prepare_q3_gpu_frame(
+        &mut self,
+        commands: Vec<PpcQ3SceneCommand>,
+        allow_indexed: bool,
+    ) -> Option<PpcQ3GpuFrame> {
         let target = self.q3_render_target(&commands)?;
         let front_buffer = target.front_buffer;
-        if !matches!(front_buffer.depth, 8 | 16) || front_buffer.width == 0 || front_buffer.height == 0 {
+        if (front_buffer.depth != 16 && !(allow_indexed && front_buffer.depth == 8))
+            || front_buffer.width == 0
+            || front_buffer.height == 0
+        {
             return None;
         }
         let viewport = target
