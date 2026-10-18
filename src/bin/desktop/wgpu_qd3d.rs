@@ -370,10 +370,8 @@ impl State {
                     * (triangle[1].screen_y - triangle[0].screen_y)
                     - (triangle[2].screen_y - triangle[0].screen_y)
                         * (triangle[1].screen_x - triangle[0].screen_x);
-                if draw.primitive == PpcQ3RasterPrimitive::Triangles
-                    && (area == 0. || !area.is_finite())
-                {
-                    return Err("degenerate GPU triangle requires software line rendering".into());
+                if draw.primitive == PpcQ3RasterPrimitive::Triangles && !area.is_finite() {
+                    return Err("non-finite GPU triangle area".into());
                 }
                 let mut bytes = Vec::with_capacity(TRIANGLE_BYTES);
                 for v in triangle {
@@ -1022,6 +1020,92 @@ mod tests {
     }
 
     #[test]
+    fn gpu_degenerate_triangles_match_centroid_shading_and_repeated_edge_blends() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let background = vec![0x4210; 32 * 24];
+        for (dx, dy) in [
+            (0., 0.),
+            (8., 0.),
+            (0., 8.),
+            (8., 4.),
+            (4., 8.),
+            (-8., 4.),
+            (-4., -8.),
+        ] {
+            for alpha in [1., 0.4] {
+                for ambient in [false, true] {
+                    let mut draw = triangle(0.9, [1., 0., 0., alpha]);
+                    draw.ambient_light = ambient.then_some([0.7, 0.8, 0.9]);
+                    draw.ambient_per_vertex = ambient;
+                    draw.lighting = ambient.then_some(PpcQ3RasterLighting {
+                        illumination_type: PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
+                        interpolation_style: PPC_Q3_INTERPOLATION_STYLE_VERTEX,
+                        lights: vec![PpcQ3LightRecord {
+                            light: 0,
+                            light_type: 0,
+                            data: PpcQ3LightData {
+                                is_on: 1,
+                                brightness: 0.4,
+                                color: (0.8, 0.5, 0.7),
+                            },
+                            kind: PpcQ3LightKind::Directional {
+                                direction: (0., 0., -1.),
+                                casts_shadows: 0,
+                            },
+                        }],
+                    });
+                    draw.fog = Some(PpcQ3FogStyleData {
+                        state: 1,
+                        mode: 0,
+                        fog_start: 0.,
+                        fog_end: 2.,
+                        density: 0.2,
+                        color: (1., 0.2, 0.4, 0.6),
+                    });
+                    for (i, v) in draw.vertices.iter_mut().enumerate() {
+                        v.screen_x = 16. + dx * (i as f32 - 1.);
+                        v.screen_y = 12. + dy * (i as f32 - 1.);
+                        v.color = [
+                            [1., 0., 0., alpha],
+                            [0., 1., 0., alpha],
+                            [0., 0., 1., alpha],
+                        ][i];
+                        v.reciprocal_w = [1., 0.5, 0.25][i];
+                        v.ambient_coefficient = [0.2, 0.6, 1.][i];
+                        v.fog_depth = [0.2, 0.8, 1.4][i];
+                        v.shading.normal = Some([0., 0., 1.]);
+                    }
+                    let frame = PpcQ3RasterFrame {
+                        width: 32,
+                        height: 24,
+                        viewport: [10, 10, 20, 16],
+                        clear_color: None,
+                        textures: vec![],
+                        draws: vec![triangle(0.1, [0., 0., 1., 1.]), draw],
+                    };
+                    let actual = state.render(&frame, &background).unwrap();
+                    let expected = cpu_render(&frame, &background);
+                    for (index, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
+                        for shift in [0, 5, 10] {
+                            assert!((((actual>>shift)&31) as i32-((expected>>shift)&31) as i32).abs()<=1,
+                                "degenerate ({dx},{dy}), alpha={alpha}, ambient={ambient}, pixel {index}: {actual:04x} != {expected:04x}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn tile_lists_preserve_order_and_bound_storage() {
         let mut primitive = vec![0u8; TRIANGLE_BYTES];
         for (v, (x, y)) in [(0., 0.), (31., 0.), (0., 31.)].into_iter().enumerate() {
@@ -1068,6 +1152,44 @@ mod tests {
             state.render(&frame, &background).unwrap(),
             cpu_render(&frame, &background)
         );
+    }
+
+    #[test]
+    #[ignore = "optimized tiled mesh benchmark; run alone"]
+    fn benchmark_qd3d_tiled_mesh() {
+        let state = State::new().expect("benchmark requires GPU");
+        let mut frame = sparse_mesh();
+        let original = frame.draws[0].vertices.clone();
+        for _ in 0..27 {
+            frame.draws[0].vertices.extend_from_slice(&original);
+        }
+        let background = vec![0x4210; (frame.width * frame.height) as usize];
+        assert_eq!(
+            state.render(&frame, &background).unwrap(),
+            cpu_render(&frame, &background)
+        );
+        let adaptive = Qd3dRenderer::new();
+        assert!(adaptive.prefers_native(&frame));
+        let mut samples: [Vec<std::time::Duration>; 2] = std::array::from_fn(|_| Vec::new());
+        for iteration in 0..103 {
+            for offset in 0..2 {
+                let index = (iteration + offset) % 2;
+                let start = std::time::Instant::now();
+                std::hint::black_box(if index == 0 {
+                    cpu_render(&frame, &background)
+                } else if adaptive.prefers_native(&frame) {
+                    state.render(&frame, &background).unwrap()
+                } else {
+                    panic!("tiled mesh must reach GPU");
+                });
+                if iteration >= 3 {
+                    samples[index].push(start.elapsed());
+                }
+            }
+        }
+        for (backend, samples) in ["default", "gpu-adaptive"].into_iter().zip(&mut samples) {
+            crate::renderer_bench::report("3d-tiled-1792", backend, samples);
+        }
     }
 
     #[test]
@@ -1403,6 +1525,29 @@ mod tests {
         };
         let mut clut = [[u16::MAX; 3]; 256];
         clut[7] = [0; 3];
+        let mut degenerate = triangle(0.4, [1., 1., 1., 0.4]);
+        degenerate.vertices[0].screen_x = 2.;
+        degenerate.vertices[0].screen_y = 4.;
+        degenerate.vertices[1].screen_x = 16.;
+        degenerate.vertices[1].screen_y = 4.;
+        degenerate.vertices[2].screen_x = 30.;
+        degenerate.vertices[2].screen_y = 4.;
+        let degenerate_frame = PpcQ3RasterFrame {
+            width: 32,
+            height: 24,
+            viewport: [0, 0, 31, 23],
+            clear_color: None,
+            textures: vec![],
+            draws: vec![degenerate],
+        };
+        let expected = cpu_render_target(&degenerate_frame, &vec![7; 32 * 24], Some(clut));
+        let actual = state
+            .render_with_palette(&degenerate_frame, &vec![0x8000; 32 * 24], Some(&clut))
+            .unwrap();
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert_eq!(if actual & 0x8000 != 0 { 7 } else { *actual }, expected);
+        }
+
         let frame = PpcQ3RasterFrame {
             width: 32,
             height: 24,
@@ -2258,9 +2403,6 @@ mod tests {
         assert!(state.render(&invalid, &background).is_err());
         let mut invalid = frame.clone();
         invalid.draws[0].vertices.pop();
-        assert!(state.render(&invalid, &background).is_err());
-        let mut invalid = frame.clone();
-        invalid.draws[0].vertices.fill(vertex(1., 1., 0., [1.; 4]));
         assert!(state.render(&invalid, &background).is_err());
         let mut invalid = frame.clone();
         invalid.draws[0].fog = Some(PpcQ3FogStyleData {

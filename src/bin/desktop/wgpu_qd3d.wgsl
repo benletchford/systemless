@@ -85,6 +85,23 @@ fn rgb555(value: vec3<f32>) -> u32 {
 fn unpack555(value: u32) -> vec3<f32> {
     return vec3<f32>((vec3(value)>>vec3(10u,5u,0u))&vec3(31u))/31.;
 }
+// Same directional ties as the software Bresenham loop. Degenerate
+// triangles shade once at their centroid, then blend each of three edges.
+fn line_covers(point:vec2<u32>, origin:vec2<f32>, destination:vec2<f32>) -> bool {
+    let start=vec2<i32>(sign(origin)*floor(abs(origin)+vec2(0.5)));
+    let end=vec2<i32>(sign(destination)*floor(abs(destination)+vec2(0.5)));
+    let delta=abs(end-start); let direction=select(vec2(-1),vec2(1),start<end);
+    let major=max(delta.x,delta.y); let horizontal=delta.x>=delta.y;
+    let step=select((i32(point.y)-start.y)*direction.y,(i32(point.x)-start.x)*direction.x,horizontal);
+    if step < 0 || step > major { return false; }
+    var expected=start;
+    if major != 0 {
+        let minor=select(delta.x,delta.y,horizontal);
+        let advance=select(i32((u32(step)*u32(minor)+u32(major)/2u)/u32(major)),minor,step==major);
+        expected+=select(vec2(advance,step),vec2(step,advance),horizontal)*direction;
+    }
+    return all(vec2<i32>(point)==expected);
+}
 @compute @workgroup_size(8,8) fn raster(@builtin(global_invocation_id) id: vec3<u32>) {
     let xy = id.xy;
     if any(xy >= geometry.size.xy) { return; }
@@ -103,10 +120,22 @@ fn unpack555(value: u32) -> vec3<f32> {
     for(var entry=0u; entry<count; entry++) {
         let triangle = triangles[tiles[offset+entry]];
         let a = triangle.vertices[0]; let b = triangle.vertices[1]; let c = triangle.vertices[2];
-        let kind=(triangle.info.w>>4u)&3u;
+        var kind=(triangle.info.w>>4u)&3u;
+        let degenerate=kind==0u && edge(a.position.xy,b.position.xy,c.position.xy)==0.;
+        var repeats=1u;
+        if degenerate {
+            repeats=u32(line_covers(xy,a.position.xy,b.position.xy))
+                +u32(line_covers(xy,b.position.xy,c.position.xy))
+                +u32(line_covers(xy,c.position.xy,a.position.xy));
+            if repeats==0u { continue; }
+            kind=3u;
+        }
         var perspective=vec3(1.,0.,0.);
         var z=a.position.z;
-        if kind == 0u {
+        if degenerate {
+            perspective=vec3(a.position.w,b.position.w,c.position.w);
+            perspective/=dot(perspective,vec3(1.));
+        } else if kind == 0u {
             if !in_viewport {continue;}
             let area = edge(a.position.xy,b.position.xy,c.position.xy);
             let weights = vec3(edge(b.position.xy,c.position.xy,point),edge(c.position.xy,a.position.xy,point),edge(a.position.xy,b.position.xy,point));
@@ -138,8 +167,8 @@ fn unpack555(value: u32) -> vec3<f32> {
             z=fma(a.position.z,1.-t,b.position.z*t);
             perspective=vec3(0.,0.,1.);
         }
-        if (triangle.info.w&8u)==0u && z > depth { continue; }
-        if (triangle.info.w & 1u) != 0u { depth = z; }
+        if !degenerate && (triangle.info.w&8u)==0u && z > depth { continue; }
+        if !degenerate && (triangle.info.w & 1u) != 0u { depth = z; }
         var ca=a.color; var cb=b.color; var cc=c.color;
         let spatial_lighting=triangle.light_info.y != 0u;
         let vertex_lighting=spatial_lighting && triangle.light_info.z != 2u && kind==0u;
@@ -188,8 +217,10 @@ fn unpack555(value: u32) -> vec3<f32> {
             }
         }
         let alpha = clamp(color.a,0.,1.);
-        pixel = rgb555(fma(color.rgb,vec3(alpha),unpack555(pixel)*(1.-alpha)));
-        if geometry.clear.z != 0u { pixel = palette[pixel]; }
+        for(var repeat=0u; repeat<repeats; repeat++) {
+            pixel = rgb555(fma(color.rgb,vec3(alpha),unpack555(pixel)*(1.-alpha)));
+            if geometry.clear.z != 0u { pixel = palette[pixel]; }
+        }
     }
     if geometry.clear.z != 0u && (pixel & 32768u) == 0u {
         pixel = pixel >> 16u;
