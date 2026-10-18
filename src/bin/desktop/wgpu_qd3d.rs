@@ -651,6 +651,9 @@ fn vertex_valid(v: &PpcQ3RasterVertex) -> bool {
 }
 impl PpcQ3GpuRenderer for Qd3dRenderer {
     fn prefers_native(&self, frame: &PpcQ3RasterFrame) -> bool {
+        if self.initialization_error.is_some() {
+            return false;
+        }
         // Estimate CPU raster work, rather than using framebuffer size: a tiny
         // triangle in a large window still loses to GPU submission/readback.
         let threshold = (u64::from(frame.width) * u64::from(frame.height) / 4).max(MIN_NATIVE_WORK);
@@ -814,19 +817,22 @@ mod tests {
         let mut renderer = Qd3dRenderer::new();
         renderer.state = Some(state);
         let frame = PpcQ3RasterFrame {
-            width: 1,
-            height: 1,
-            viewport: [0, 0, 0, 0],
-            clear_color: None,
+            width: 640,
+            height: 480,
+            viewport: [0, 0, 639, 479],
+            clear_color: Some([0., 0., 0., 1.]),
             textures: vec![],
             draws: vec![],
         };
+        // Positive control: this workload normally selects the GPU.
+        assert!(Qd3dRenderer::new().prefers_native(&frame));
         for _ in 0..2 {
             assert_eq!(
                 renderer.render_frame(&frame, &[0], None).unwrap_err(),
                 error
             );
             assert!(renderer.state.is_none());
+            assert!(!renderer.prefers_native(&frame));
         }
     }
 
