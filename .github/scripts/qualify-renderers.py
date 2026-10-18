@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--compute-soak-seconds", type=int, default=0,
                         help="active guest compute resources; 0 skips, multi-hour runs are opt-in")
     parser.add_argument("--soak-runtime", choices=("all", "inline", "thread"), default="all")
-    parser.add_argument("--soak-presenter", choices=("all", "platform", "wgpu"), default="all")
+    parser.add_argument("--soak-presenter", choices=("all", "platform", "wgpu", "software"), default="all")
     parser.add_argument("--benchmarks", action="store_true")
     parser.add_argument("--skip-windows", action="store_true",
                         help="record window qualification as pending, e.g. a locked desktop")

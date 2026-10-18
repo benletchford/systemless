@@ -30,6 +30,16 @@ mod wgpu_present;
 #[path = "desktop/wgpu_shared.rs"]
 mod wgpu_shared;
 
+#[cfg(any(target_os = "macos", test))]
+#[path = "desktop/raster_layout.rs"]
+mod raster_layout;
+#[cfg(any(target_os = "macos", test))]
+#[path = "desktop/software_present.rs"]
+mod software_present;
+#[cfg(target_os = "macos")]
+#[path = "desktop/mac_present.rs"]
+mod mac_present;
+
 #[path = "desktop/renderer_selection.rs"]
 mod renderer_selection;
 
@@ -951,13 +961,14 @@ struct App {
     #[cfg(target_os = "windows")]
     gpu_pending: Option<PendingGpuFrame>,
     use_wgpu: bool,
+    use_software: bool,
     wgpu_recovery: renderer_recovery::Recovery,
     wgpu_wake: Option<winit::event_loop::EventLoopProxy<()>>,
     wgpu_display: Option<winit::event_loop::OwnedDisplayHandle>,
     wgpu: Option<wgpu_present::WgpuPresenter>,
     window: Option<Rc<Window>>,
     #[cfg(target_os = "macos")]
-    surface: Option<metal_present::MetalPresenter>,
+    surface: Option<mac_present::Presenter>,
     #[cfg(not(target_os = "macos"))]
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
     #[cfg(not(target_os = "macos"))]
@@ -1138,6 +1149,7 @@ impl App {
             #[cfg(target_os = "windows")]
             gpu_pending: None,
             use_wgpu: false,
+            use_software: false,
             wgpu_recovery: Default::default(),
             wgpu_wake: None,
             wgpu_display: None,
@@ -2402,7 +2414,7 @@ impl App {
                         buf_w,
                         buf_h,
                     )
-                    .expect("Failed to present Metal framebuffer");
+                    .expect("Failed to present framebuffer");
             } else {
                 frame_argb = surface
                     .present_owned(
@@ -2411,7 +2423,7 @@ impl App {
                         buf_w,
                         buf_h,
                     )
-                    .expect("Failed to present Metal framebuffer");
+                    .expect("Failed to present framebuffer");
             }
         }
 
@@ -3465,6 +3477,7 @@ fn run_gui(
     fullscreen: bool,
     debug_socket: Option<PathBuf>,
     use_wgpu: bool,
+    use_software: bool,
 ) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     eprintln!(
@@ -3513,6 +3526,7 @@ fn run_gui(
         threaded,
     );
     app.use_wgpu = use_wgpu;
+    app.use_software = use_software;
     app.wgpu_wake = Some(event_loop.create_proxy());
     if let Some(driver) = app.driver.as_mut() {
         driver.gpu = use_wgpu;
@@ -3829,7 +3843,13 @@ fn main() {
     eprintln!(
         "[SYSTEMLESS] Renderer requested={:?}, selected={}",
         cli.renderer,
-        if use_wgpu { "wgpu" } else { "platform" }
+        if use_wgpu {
+            "wgpu"
+        } else if cli.renderer == renderer_selection::Renderer::Software {
+            "software"
+        } else {
+            "platform"
+        }
     );
     let game_path = cli.game;
     let native_integrations = !cli.no_native_integrations;
@@ -3950,6 +3970,7 @@ fn main() {
             cli.fullscreen,
             cli.debug_socket,
             use_wgpu,
+            cli.renderer == renderer_selection::Renderer::Software,
         );
     }
 }
@@ -4434,13 +4455,14 @@ mod tests {
             (vec!["systemless", "game.sit", "--gpu"], true),
             (vec!["systemless", "game.sit", "--renderer=auto"], false),
             (vec!["systemless", "game.sit", "--renderer=platform"], false),
+            (vec!["systemless", "game.sit", "--renderer=software"], false),
             (vec!["systemless", "game.sit", "--renderer=wgpu"], true),
             (vec!["systemless", "game.sit", "--headless", "--renderer=wgpu"], true),
         ] {
             let cli = Cli::try_parse_from(args).unwrap();
             assert_eq!(cli.renderer.uses_wgpu(cli.gpu), expected);
         }
-        for choice in ["auto", "platform", "wgpu", "unknown"] {
+        for choice in ["auto", "platform", "software", "wgpu", "unknown"] {
             assert!(Cli::try_parse_from(["systemless", "game.sit", "--gpu", "--renderer", choice]).is_err());
         }
         assert!(Cli::try_parse_from(["systemless", "game.sit", "--renderer=unknown"]).is_err());

@@ -124,11 +124,36 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
 }
 
 impl Probe {
+    fn presentation_backend(&self) -> &'static str {
+        if self.app.wgpu.is_some() {
+            return "wgpu";
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.app
+                .surface
+                .as_ref()
+                .map_or("none", |p| p.backend_name())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            #[cfg(target_os = "windows")]
+            if self.app.gpu.is_some() {
+                return "d3d11";
+            }
+            if self.app.surface.is_some() {
+                "software"
+            } else {
+                "none"
+            }
+        }
+    }
     fn sample_gpu_resources(&mut self) {
         self.gpu_resources.append(&serde_json::json!({
             "seconds": self.started.elapsed().as_secs_f64(), "cycle": self.cycles,
             "rebuilds": self.app.wgpu_recovery.rebuilds,
-            "renderer": if self.app.use_wgpu { "wgpu" } else { "platform" },
+            "renderer": if self.app.use_wgpu { "wgpu" } else if self.app.use_software { "software" } else { "platform" },
+            "presentation_backend": self.presentation_backend(),
             "resources": self.app.wgpu.as_ref().map(|gpu| gpu.resource_snapshot()),
         }));
     }
@@ -145,7 +170,8 @@ impl Probe {
             } else {
                 "owned snapshot -> actual native cursor event -> guest input round trip; guest origin covered by driver tests"
             },
-            "renderer": if self.app.use_wgpu { "wgpu" } else { "platform" },
+            "renderer": if self.app.use_wgpu { "wgpu" } else if self.app.use_software { "software" } else { "platform" },
+            "presentation_backend": self.presentation_backend(),
             "runtime_error": self.app.runtime_error,
             "fault": self.fault,
             "injected_failures": self.injected,
