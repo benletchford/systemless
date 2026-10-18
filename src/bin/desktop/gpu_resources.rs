@@ -7,6 +7,33 @@ fn known_bytes(value: isize) -> Option<u64> {
     (value > 0).then_some(value as u64)
 }
 
+#[cfg(target_os = "macos")]
+fn metal_allocations(device: &wgpu::Device) -> Option<Value> {
+    // SAFETY: the HAL guard keeps this exact Metal device alive. Both objc2
+    // versions describe the same opaque Objective-C runtime object; borrow its
+    // pointer only to send read-only NSObject/MTLDevice messages. No handle or
+    // pointer escapes, and no wgpu resource state is changed.
+    unsafe {
+        let metal = device.as_hal::<wgpu::hal::api::Metal>()?;
+        let object = &*(std::ptr::from_ref(&**metal.raw_device()).cast::<objc2::runtime::AnyObject>());
+        let supported: bool =
+            objc2::msg_send![object, respondsToSelector: objc2::sel!(currentAllocatedSize)];
+        if !supported {
+            return None;
+        }
+        let bytes: usize = objc2::msg_send![object, currentAllocatedSize];
+        Some(json!({
+            "allocated_bytes": bytes,
+            "scope": "MTLDevice.currentAllocatedSize; may include other owners sharing this native device; not residency",
+        }))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn metal_allocations(_device: &wgpu::Device) -> Option<Value> {
+    None
+}
+
 pub(super) fn snapshot(device: &wgpu::Device) -> Value {
     let info = device.adapter_info();
     let counters = device.get_internal_counters().hal;
@@ -18,7 +45,8 @@ pub(super) fn snapshot(device: &wgpu::Device) -> Value {
         })
     });
     json!({
-        "scope": "presenter device only; excludes guest compute devices and complete driver/process residency",
+        "scope": "HAL/allocator counters cover the presenter device; native Metal scope is reported separately; incomplete driver/process residency",
+        "native_metal": metal_allocations(device),
         "adapter": {"name": info.name, "backend": format!("{:?}", info.backend),
                     "device_type": format!("{:?}", info.device_type),
                     "vendor": info.vendor, "device": info.device,
@@ -71,7 +99,8 @@ mod tests {
         };
         let (device, _queue) =
             pollster::block_on(adapter.request_device(&Default::default())).unwrap();
-        let before = snapshot(&device)["hal_raw"]["buffers"].as_i64().unwrap();
+        let baseline = snapshot(&device);
+        let before = baseline["hal_raw"]["buffers"].as_i64().unwrap();
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("qualification ownership observation"),
             size: 4096,
@@ -85,6 +114,14 @@ mod tests {
             "native qualification needs working HAL buffer counters"
         );
         assert_eq!(live["hal_counters_enabled"], true);
+        #[cfg(target_os = "macos")]
+        if adapter.get_info().backend == wgpu::Backend::Metal {
+            let live_bytes = live["native_metal"]["allocated_bytes"].as_u64().unwrap();
+            assert!(
+                live_bytes >= 4096,
+                "native Metal observes the live buffer allocation"
+            );
+        }
         drop(buffer);
         device.poll(wgpu::PollType::Poll).unwrap();
         assert_eq!(

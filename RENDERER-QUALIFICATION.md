@@ -31,7 +31,9 @@ GPU allocation accounting. Test-support builds additionally enable wgpu HAL
 counters and record presenter-device resource snapshots after the first frame and
 each lifecycle cycle. Reports include backend-dependent object counts, positive
 buffer/texture byte counters, optional allocator allocated/reserved totals, and
-requested shared-upload pool capacity on Metal. Zero memory counters and missing
+requested shared-upload pool capacity on Metal. Metal also samples `MTLDevice.currentAllocatedSize` on the renderer's own native
+device when available. That total may include other owners sharing the native
+device and does not measure residency. Zero HAL memory counters and missing
 allocator reports are recorded as unknown (`null`), not evidence of zero usage.
 Compare matching renderer/rebuild epochs after warm-up: deferred GPU destruction
 and allocator reservation can legitimately outlive a frame. These observations
