@@ -30,6 +30,9 @@ mod wgpu_present;
 #[path = "desktop/wgpu_shared.rs"]
 mod wgpu_shared;
 
+#[path = "desktop/renderer_recovery.rs"]
+mod renderer_recovery;
+
 #[path = "desktop/wgpu_buffers.rs"]
 mod wgpu_buffers;
 
@@ -938,6 +941,9 @@ struct App {
     #[cfg(target_os = "windows")]
     gpu_pending: Option<PendingGpuFrame>,
     use_wgpu: bool,
+    wgpu_recovery: renderer_recovery::Recovery,
+    wgpu_wake: Option<winit::event_loop::EventLoopProxy<()>>,
+    wgpu_display: Option<winit::event_loop::OwnedDisplayHandle>,
     wgpu: Option<wgpu_present::WgpuPresenter>,
     window: Option<Rc<Window>>,
     #[cfg(target_os = "macos")]
@@ -1122,6 +1128,9 @@ impl App {
             #[cfg(target_os = "windows")]
             gpu_pending: None,
             use_wgpu: false,
+            wgpu_recovery: Default::default(),
+            wgpu_wake: None,
+            wgpu_display: None,
             wgpu: None,
             surface: None,
             #[cfg(not(target_os = "macos"))]
@@ -2134,10 +2143,18 @@ impl App {
             );
             #[cfg(not(target_os = "macos"))]
             let crop = (0, 0, game_w, game_h);
-            if let Some(submitted) = gpu
-                .present_compact(image, crop, (buf_w, buf_h))
-                .expect("Failed to present retained wgpu coverage")
-            {
+            let result = gpu.present_compact(image, crop, (buf_w, buf_h));
+            let submitted = match result {
+                Ok(submitted) => submitted,
+                Err(error) => {
+                    self.frame_argb = frame_argb;
+                    #[cfg(target_os = "macos")]
+                    drop(core_animation_transaction.take());
+                    self.recover_wgpu(error);
+                    return;
+                }
+            };
+            if let Some(submitted) = submitted {
                 self.frame_argb = frame_argb;
                 self.force_next_render = !submitted;
                 if submitted {
@@ -2328,9 +2345,20 @@ impl App {
             } else {
                 &frame_argb
             };
-            let submitted = gpu
-                .present(pixels, (game_w, game_h), crop, (buf_w, buf_h))
-                .expect("Failed to present requested wgpu frame");
+            let submitted = match gpu.present(pixels, (game_w, game_h), crop, (buf_w, buf_h)) {
+                Ok(submitted) => submitted,
+                Err(error) => {
+                    if used_outlines {
+                        std::mem::swap(&mut frame_argb, &mut presented);
+                    }
+                    self.presentation_argb = presented;
+                    self.frame_argb = frame_argb;
+                    #[cfg(target_os = "macos")]
+                    drop(core_animation_transaction.take());
+                    self.recover_wgpu(error);
+                    return;
+                }
+            };
             if used_outlines {
                 std::mem::swap(&mut frame_argb, &mut presented);
             }
@@ -2971,6 +2999,9 @@ impl App {
 
 impl ApplicationHandler for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, (): ()) {
+        if self.check_wgpu_health() && self.frame.sequence != 0 && !self.closing {
+            self.present_frame(std::time::Instant::now());
+        }
         // Upload the latest prepared image. Do not execute the guest, change
         // its clock, or redo CPU composition on this display readiness wake.
         #[cfg(target_os = "windows")]
@@ -3072,59 +3103,16 @@ impl ApplicationHandler for App {
             }
             window.set_visible(true);
 
-            #[cfg(target_os = "macos")]
-            let surface = if self.use_wgpu {
-                None
-            } else {
-                Some(
-                    metal_present::MetalPresenter::new(window.clone())
-                        .expect("Failed to create Metal presenter"),
-                )
-            };
-            if self.use_wgpu {
-                self.wgpu = Some(
-                    wgpu_present::WgpuPresenter::new(
-                        window.clone(),
-                        event_loop.owned_display_handle(),
-                    )
-                    .expect("Failed to create requested wgpu presenter"),
-                );
-            }
-            #[cfg(target_os = "windows")]
-            if !self.use_wgpu
-                && std::env::var_os("SYSTEMLESS_D3D11").as_deref()
-                    != Some(std::ffi::OsStr::new("0"))
-            {
-                match d3d_present::D3dPresenter::new(
-                    window.clone(),
-                    self.gpu_wake.as_ref().unwrap().clone(),
-                ) {
-                    Ok(gpu) => {
-                        eprintln!("[GPU] D3D11 compact coverage enabled");
-                        self.gpu = Some(gpu);
-                    }
-                    Err(message) => eprintln!("[GPU] {message}; using software presentation"),
-                }
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                #[cfg(target_os = "windows")]
-                let software = self.gpu.is_none();
-                #[cfg(not(target_os = "windows"))]
-                let software = true;
-                if software && !self.use_wgpu {
-                    let context =
-                        softbuffer::Context::new(window.clone()).expect("Failed to create context");
-                    self.surface = Some(
-                        Surface::new(&context, window.clone()).expect("Failed to create surface"),
-                    );
-                }
-            }
-            #[cfg(target_os = "macos")]
-            {
-                self.surface = surface;
-            }
             self.window = Some(window);
+            self.wgpu_display = Some(event_loop.owned_display_handle());
+            if self.use_wgpu {
+                match self.create_wgpu_presenter() {
+                    Ok(gpu) => self.wgpu = Some(gpu),
+                    Err(error) => self.fallback_wgpu(error),
+                }
+            } else if let Err(error) = self.create_platform_presenter() {
+                self.stop_renderer(format!("Cannot create platform presenter: {error}"));
+            }
         }
     }
 
@@ -3273,6 +3261,9 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.check_wgpu_health() && self.frame.sequence != 0 && !self.closing {
+            self.present_frame(std::time::Instant::now());
+        }
         if self.owner.is_none() && self.driver.is_none() {
             self.show_runtime_error();
             event_loop.set_control_flow(ControlFlow::Wait);
@@ -3296,6 +3287,16 @@ impl ApplicationHandler for App {
                 }
             }
             self.poll_owner(event_loop);
+            // Device maintenance must still run when an unchanged guest is idle.
+            if self.wgpu.is_some() && !self.closing {
+                let health_at = std::time::Instant::now() + std::time::Duration::from_millis(250);
+                let at = match event_loop.control_flow() {
+                    ControlFlow::WaitUntil(at) => at.min(health_at),
+                    ControlFlow::Poll => std::time::Instant::now(),
+                    ControlFlow::Wait => health_at,
+                };
+                event_loop.set_control_flow(ControlFlow::WaitUntil(at));
+            }
             return;
         }
         {
@@ -3502,6 +3503,7 @@ fn run_gui(
         threaded,
     );
     app.use_wgpu = use_wgpu;
+    app.wgpu_wake = Some(event_loop.create_proxy());
     if let Some(driver) = app.driver.as_mut() {
         driver.gpu = use_wgpu;
     }

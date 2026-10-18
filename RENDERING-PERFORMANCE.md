@@ -55,7 +55,14 @@ writeback, independently of adaptive selection.
 
 ## Dispatch and resource handling
 
-`--gpu` always selects wgpu desktop presentation. Guest-visible memory is still
+`--gpu` requests wgpu desktop presentation. Initialization failures and terminal
+GPU errors switch presentation to the existing platform renderer without
+restarting the guest. Surface/device loss allows at most two presenter rebuilds
+per session; a failed rebuild or exhausted budget also switches to the platform
+renderer. Error callbacks wake idle windows, including cached unchanged frames.
+Failed QuickDraw/3D compute devices retire to CPU rasterization independently
+of presentation; healthy compute devices continue adaptive dispatch. Recovery
+and fallback reasons are printed to stderr. Guest-visible memory is still
 CPU-addressable, so cheap guest writes stay on the CPU rather than paying a
 synchronous GPU round trip. CPU-generated coverage is not repackaged into GPU
 atlases merely to discover that the operation should run on the CPU.

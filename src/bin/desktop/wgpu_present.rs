@@ -1,4 +1,5 @@
 //! Opt-in portable desktop presentation. Guest memory remains authoritative.
+use super::renderer_recovery::{Failure, Health};
 use std::rc::Rc;
 use winit::window::Window;
 
@@ -69,7 +70,8 @@ pub struct WgpuPresenter {
     // Drop the surface before its owning window; raw handles never escape this owner.
     surface: wgpu::Surface<'static>,
     _window: Rc<Window>,
-    display: winit::event_loop::OwnedDisplayHandle,
+    health: std::sync::Arc<Health>,
+    next_health_poll: std::cell::Cell<std::time::Instant>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -139,6 +141,7 @@ impl WgpuPresenter {
     pub fn new(
         window: Rc<Window>,
         display: winit::event_loop::OwnedDisplayHandle,
+        wake: Option<winit::event_loop::EventLoopProxy<()>>,
     ) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
             Box::new(display.clone()),
@@ -158,6 +161,7 @@ impl WgpuPresenter {
         }))
         .map_err(|e| e.to_string())?;
         let (device, queue) = request_device(&adapter)?;
+        let health = Health::install(&device, wake);
         let mut config = surface
             .get_default_config(&adapter, 1, 1)
             .ok_or("surface has no supported configuration")?;
@@ -184,13 +188,15 @@ impl WgpuPresenter {
             adapter.get_info().name
         );
         let compact = super::wgpu_compact::CompactRenderer::new(&device, &queue, config.format);
+        health.check().map_err(|e| e.to_string())?;
         Ok(Self {
+            health,
+            next_health_poll: std::cell::Cell::new(std::time::Instant::now()),
             last_compact: None,
             raster_geometry: None,
             compact,
             surface,
             _window: window,
-            display,
             device,
             queue,
             config,
@@ -201,15 +207,34 @@ impl WgpuPresenter {
         })
     }
 
-    fn acquire(&mut self, output: (u32, u32)) -> Result<Option<wgpu::SurfaceTexture>, String> {
+    #[cfg(feature = "test-support")]
+    pub(super) fn inject_failure(&self, failure: Failure) {
+        self.health.record(failure);
+    }
+
+    pub fn check_health(&self) -> Result<(), Failure> {
+        let now = std::time::Instant::now();
+        if now >= self.next_health_poll.get() {
+            self.next_health_poll
+                .set(now + std::time::Duration::from_millis(250));
+            if let Err(error) = self.device.poll(wgpu::PollType::Poll) {
+                self.health
+                    .record(Failure::lost(format!("wgpu maintenance failed: {error}")));
+            }
+        }
+        self.health.check()
+    }
+
+    fn acquire(&mut self, output: (u32, u32)) -> Result<Option<wgpu::SurfaceTexture>, Failure> {
+        self.check_health()?;
         if output.0 == 0 || output.1 == 0 {
             return Ok(None);
         }
         let limit = self.device.limits().max_texture_dimension_2d;
         if output.0 > limit || output.1 > limit {
-            return Err(format!(
-                "GPU drawable exceeds the adapter texture limit of {limit}"
-            ));
+            return Err(
+                format!("GPU drawable exceeds the adapter texture limit of {limit}").into(),
+            );
         }
         if self.config.width != output.0 || self.config.height != output.1 {
             self.config.width = output.0;
@@ -229,11 +254,10 @@ impl WgpuPresenter {
                 return Ok(None);
             }
             wgpu::CurrentSurfaceTexture::Lost => {
-                *self = Self::new(self._window.clone(), self.display.clone())?;
-                return Ok(None);
+                return Err(Failure::lost("wgpu surface lost"));
             }
             wgpu::CurrentSurfaceTexture::Validation => {
-                return Err("wgpu surface validation failed".into());
+                return Err(Failure::from("wgpu surface validation failed".to_owned()));
             }
         };
         Ok(Some(frame))
@@ -248,7 +272,8 @@ impl WgpuPresenter {
         image: &std::sync::Arc<systemless::memory::CompactPresentation>,
         crop: (u32, u32, u32, u32),
         output: (u32, u32),
-    ) -> Result<Option<bool>, String> {
+    ) -> Result<Option<bool>, Failure> {
+        self.check_health()?;
         // Immutable packets may be reused for idle frontend frames. A host
         // expose/resize or a raster overlay invalidates this successful frame.
         if self
@@ -276,7 +301,9 @@ impl WgpuPresenter {
             viewport,
             &frame.texture.create_view(&Default::default()),
         );
+        self.check_health()?;
         self.queue.present(frame);
+        self.check_health()?;
         self.last_compact = Some(CompactFrame {
             image: image.clone(),
             crop,
@@ -291,15 +318,14 @@ impl WgpuPresenter {
         size: (u32, u32),
         crop: (u32, u32, u32, u32),
         output: (u32, u32),
-    ) -> Result<bool, String> {
+    ) -> Result<bool, Failure> {
+        self.check_health()?;
         if output.0 == 0 || output.1 == 0 {
             return Ok(false);
         }
         let limit = self.device.limits().max_texture_dimension_2d;
         if size.0 > limit || size.1 > limit || output.0 > limit || output.1 > limit {
-            return Err(format!(
-                "GPU frame exceeds the adapter texture limit of {limit}"
-            ));
+            return Err(format!("GPU frame exceeds the adapter texture limit of {limit}").into());
         }
         if size.0 == 0
             || size.1 == 0
@@ -309,7 +335,7 @@ impl WgpuPresenter {
             || crop.0.checked_add(crop.2).is_none_or(|x| x > size.0)
             || crop.1.checked_add(crop.3).is_none_or(|y| y > size.1)
         {
-            return Err("invalid GPU frame geometry".into());
+            return Err(Failure::from("invalid GPU frame geometry".to_owned()));
         }
         let Some(frame) = self.acquire(output)? else {
             return Ok(false);
@@ -404,7 +430,9 @@ impl WgpuPresenter {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);
+        self.check_health()?;
         self.queue.present(frame);
+        self.check_health()?;
         self.last_compact = None;
         Ok(true)
     }
