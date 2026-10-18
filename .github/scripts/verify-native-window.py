@@ -2,8 +2,8 @@
 """Run both runtime modes and presenters against an actual window server.
 
 Linux needs a window manager (CI uses Xvfb + Openbox). macOS uses the hosted
-runner's desktop. No private archives, UI permissions or unlocked local Mac are
-required. This is functional qualification, not a display-latency benchmark.
+runner's desktop. Local runs need an unlocked desktop for drawable/focus
+qualification. No private archives or UI automation permissions are required. This is functional qualification, not a display-latency benchmark.
 """
 import argparse
 import json
@@ -11,19 +11,28 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--recovery-only", action="store_true",
                     help="check renderer transitions without focus/fullscreen interaction")
+parser.add_argument("--output", type=Path)
+parser.add_argument("--soak-seconds", type=int, default=0)
+parser.add_argument("--soak-only", action="store_true",
+                    help="repeat baseline platform/wgpu lifecycle checks in both runtime modes")
 args = parser.parse_args()
+if not 0 <= args.soak_seconds <= 3600:
+    parser.error("--soak-seconds must be 0..3600")
+if args.recovery_only and (args.soak_only or args.soak_seconds):
+    parser.error("recovery-only cannot qualify lifecycle soak")
 root = Path(__file__).resolve().parents[2]
-output = root / "native-window-results"
-output.mkdir(exist_ok=True)
+output = args.output or root / "native-window-results"
+output.mkdir(parents=True, exist_ok=True)
 failed = []
 cases = [] if args.recovery_only else [(backend, gpu, "", None) for backend in ("inline", "thread") for gpu in (False, True)]
-cases += [(backend, True, fault, None) for backend in ("inline", "thread")
+cases += [] if args.soak_only else [(backend, True, fault, None) for backend in ("inline", "thread")
           for fault in ("startup", "loss", "fatal", "recreate", "repeated-loss")]
-if not args.recovery_only:
+if not args.recovery_only and not args.soak_only:
     cases += [(backend, False, "", renderer) for backend in ("inline", "thread")
               for renderer in ("auto", "platform", "wgpu")]
 for backend, gpu, fault, renderer in cases:
@@ -41,6 +50,7 @@ for backend, gpu, fault, renderer in cases:
     env = dict(os.environ, SYSTEMLESS_DESKTOP_RUNTIME=backend,
                SYSTEMLESS_NATIVE_WINDOW_PROBE=str(report))
     env["SYSTEMLESS_GPU_FAULT"] = fault
+    env["SYSTEMLESS_NATIVE_SOAK_SECONDS"] = str(args.soak_seconds)
     if args.recovery_only:
         env["SYSTEMLESS_NATIVE_RECOVERY_ONLY"] = "1"
     else:
@@ -52,15 +62,28 @@ for backend, gpu, fault, renderer in cases:
         command.append("--renderer=" + renderer)
     with (case / "run.log").open("w") as log:
         try:
-            result = subprocess.run(
-                command,
-                cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT,
-                timeout=120,
-            )
+            process = subprocess.Popen(command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
+            started = time.monotonic()
+            memory = []
+            while process.poll() is None:
+                if time.monotonic() - started > 120 + args.soak_seconds:
+                    process.kill()
+                    process.wait()
+                    raise subprocess.TimeoutExpired(command, 120 + args.soak_seconds)
+                if os.name == "posix":
+                    sample = subprocess.run(["ps", "-o", "rss=", "-p", str(process.pid)],
+                                            capture_output=True, text=True)
+                    if sample.returncode == 0 and sample.stdout.strip().isdigit():
+                        memory.append(dict(seconds=time.monotonic() - started,
+                                           rss_kib=int(sample.stdout.strip())))
+                time.sleep(1)
+            (case / "memory.json").write_text(json.dumps(memory, indent=2) + "\n")
             state = json.loads(report.read_text()) if report.exists() else {}
             expected_renderer = "wgpu" if (gpu or renderer == "wgpu") and fault in ("", "loss") else "platform"
-            passed = (result.returncode == 0 and state.get("passed") is True
-                      and state.get("renderer") == expected_renderer)
+            passed = (process.returncode == 0 and state.get("passed") is True
+                      and state.get("renderer") == expected_renderer
+                      and (args.recovery_only or state.get("lifecycle_cycles", 0) >= (2 if args.soak_seconds else 1))
+                      and state.get("elapsed_seconds", 0) >= args.soak_seconds)
         except subprocess.TimeoutExpired:
             passed = False
     print(f"{name}: {'PASS' if passed else 'FAIL'}", flush=True)
