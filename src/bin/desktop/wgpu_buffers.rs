@@ -90,6 +90,7 @@ pub(super) enum BindingRole {
     PolygonProducts,
     Bitmap,
     Qd3d,
+    Qd3dIndexed,
 }
 
 struct CachedBindings {
@@ -101,8 +102,9 @@ struct CachedBindings {
 #[derive(Default)]
 pub(super) struct ScratchBuffers {
     buffers: RefCell<HashMap<&'static str, wgpu::Buffer>>,
-    // One entry per fixed call-site role, never an allocation-history cache.
-    bindings: RefCell<[Option<CachedBindings>; 4]>,
+    // Four fixed roles plus the five bitmap pipeline variants. No history
+    // grows with request count, and scratch growth invalidates every slot.
+    bindings: RefCell<[Option<CachedBindings>; 9]>,
     #[cfg(all(test, feature = "test-support"))]
     binding_creations: std::cell::Cell<u64>,
 }
@@ -132,7 +134,22 @@ impl ScratchBuffers {
         buffers: &[(u32, &wgpu::Buffer)],
     ) -> wgpu::BindGroup {
         let mut bindings = self.bindings.borrow_mut();
-        let cached = &mut bindings[role as usize];
+        let slot = match role {
+            BindingRole::Raster => 0,
+            BindingRole::PolygonProducts => 1,
+            BindingRole::Qd3d => 2,
+            BindingRole::Qd3dIndexed => 3,
+            BindingRole::Bitmap => (4..9)
+                .find(|&slot| {
+                    bindings[slot]
+                        .as_ref()
+                        .is_some_and(|entry| entry.pipeline == *pipeline)
+                })
+                .or_else(|| (4..9).find(|&slot| bindings[slot].is_none()))
+                // A future sixth variant replaces an entry instead of growing.
+                .unwrap_or(4),
+        };
+        let cached = &mut bindings[slot];
         if let Some(entry) = cached {
             if entry.pipeline == *pipeline
                 && entry.buffers.len() == buffers.len()
@@ -270,10 +287,11 @@ mod tests {
         let scratch = ScratchBuffers::default();
         // Reuse, change pipeline, then grow the allocation. Each result must
         // come from the current pipeline and current output buffer.
+        let mut groups = Vec::new();
         for (pipeline, count, expected) in [
             (&pipelines[0], 1, 1),
-            (&pipelines[0], 1, 1),
             (&pipelines[1], 1, 2),
+            (&pipelines[0], 1, 1),
             (&pipelines[1], 2, 2),
         ] {
             let size = count * 4;
@@ -283,7 +301,8 @@ mod tests {
                 size,
                 wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             );
-            let group = scratch.bind_group(&device, BindingRole::Raster, pipeline, &[(0, &output)]);
+            let group = scratch.bind_group(&device, BindingRole::Bitmap, pipeline, &[(0, &output)]);
+            groups.push(group.clone());
             let readback = device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
                 size,
@@ -318,6 +337,11 @@ mod tests {
             drop(bytes);
             readback.unmap();
         }
+        assert_eq!(
+            groups[0], groups[2],
+            "pipeline alternation must reuse bindings"
+        );
+        assert_ne!(groups[1], groups[3], "grown scratch must replace bindings");
     }
 
     #[test]

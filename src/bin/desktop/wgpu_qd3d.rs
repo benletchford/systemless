@@ -566,7 +566,11 @@ impl State {
         let geometry = buffer("3d-geometry", &bytes, wgpu::BufferUsages::UNIFORM);
         let group = self.buffers.bind_group(
             &self.device,
-            BindingRole::Qd3d,
+            if clut.is_some() {
+                BindingRole::Qd3dIndexed
+            } else {
+                BindingRole::Qd3d
+            },
             &self.pipeline,
             &[
                 (0, &triangle_buffer),
