@@ -57,6 +57,36 @@ longer runs (up to 3600 seconds per renderer/runtime). Virtual/software adapters
 qualify correctness only. Windows correctness builds run separately; real Windows
 window lifecycle qualification still needs a desktop run of this tool.
 
+## Sustained guest compute resources
+
+The window soak observes the presenter. To exercise the separate QuickDraw/QD3D
+compute devices in a continuous session, run:
+
+```sh
+python3 .github/scripts/soak-gpu-compute.py --seconds 7200 --output /tmp/compute-qualification
+```
+
+This test-support-only workload forces actual GPU writeback for UI, drawing,
+styled glyphs, sprite/deep masks and 3D, including small work the production
+adaptive selector intentionally keeps on CPU. Independent guests compare pixels
+throughout; every sweep must make progress in all four GPU request categories.
+Any GPU error/fallback, exhausted guest work budget or pixel mismatch fails.
+It records both compute devices' counters, requested scratch capacities, native
+Metal allocation observations when available, and process RSS on Unix. Shared
+native Metal totals must not be summed across owners. This is resource/correctness
+stress, not a production performance or power benchmark.
+
+The runner resolves the exact test executable from Cargo JSON, verifies the
+ignored test exists, and preserves binary/source/harness/fixture hashes and logs.
+Changed source/revision or incomplete device/progress evidence cannot pass.
+Ordinary tests skip the explicit-duration soak; release benchmarks exclude the
+instrumentation. `--seconds 1` is a smoke check, not long-run qualification.
+The compute workflow smoke-tests all three OSes and can be dispatched for up to
+five hours per OS; hosted software devices still do not qualify physical GPUs.
+The main qualification runner accepts `--compute-soak-seconds` (0 leaves this gate
+pending). A one-hour lifecycle case is not a multi-hour session, even when four
+cases run sequentially.
+
 ## Gates before enabling wgpu by default
 
 | Gate | Required evidence | Current disposition |

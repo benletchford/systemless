@@ -227,7 +227,10 @@ fn benchmark_guest_renderers() {
 // production work selector correctly keeps this small fixture on the CPU.
 mod forced_gpu_guest {
     use super::*;
-    use std::{cell::Cell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
     use systemless::loader::ppc::{PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3RasterFrame};
     use systemless::quickdraw::gpu::*;
 
@@ -242,7 +245,7 @@ mod forced_gpu_guest {
         result
     }
     struct QuickDraw {
-        renderer: wgpu_quickdraw::QuickDrawRenderer,
+        renderer: Rc<RefCell<wgpu_quickdraw::QuickDrawRenderer>>,
         calls: Counts,
     }
     impl QuickDrawGpuRenderer for QuickDraw {
@@ -251,20 +254,29 @@ mod forced_gpu_guest {
             command: &QuickDrawGpuCommand,
             background: &[u32],
         ) -> Result<Vec<QuickDrawGpuPixel>, String> {
-            let result = checked(self.renderer.render(command, background), &self.calls[0]);
+            let result = checked(
+                self.renderer.borrow_mut().render(command, background),
+                &self.calls[0],
+            );
             if command.mask.is_some() {
                 self.calls[1].set(self.calls[1].get() + 1);
             }
             result
         }
         fn render_blit(&mut self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
-            checked(self.renderer.render_blit(command), &self.calls[0])
+            checked(
+                self.renderer.borrow_mut().render_blit(command),
+                &self.calls[0],
+            )
         }
         fn render_blit_cells(
             &mut self,
             command: &QuickDrawGpuBlit,
         ) -> Result<Vec<QuickDrawGpuPixel>, String> {
-            let result = checked(self.renderer.render_blit_cells(command), &self.calls[0]);
+            let result = checked(
+                self.renderer.borrow_mut().render_blit_cells(command),
+                &self.calls[0],
+            );
             if command.deep_mask.is_some() {
                 self.calls[2].set(self.calls[2].get() + 1);
             }
@@ -274,11 +286,14 @@ mod forced_gpu_guest {
             &mut self,
             command: &QuickDrawGpuPackedCopy,
         ) -> Result<Vec<u8>, String> {
-            checked(self.renderer.render_packed_blit(command), &self.calls[0])
+            checked(
+                self.renderer.borrow_mut().render_packed_blit(command),
+                &self.calls[0],
+            )
         }
     }
     struct Qd3d {
-        renderer: wgpu_qd3d::Qd3dRenderer,
+        renderer: Rc<RefCell<wgpu_qd3d::Qd3dRenderer>>,
         calls: Counts,
     }
     impl PpcQ3GpuRenderer for Qd3d {
@@ -287,7 +302,10 @@ mod forced_gpu_guest {
             frame: &PpcQ3GpuFrame,
             background: &[u16],
         ) -> Result<Vec<u16>, String> {
-            checked(self.renderer.render(frame, background), &self.calls[3])
+            checked(
+                self.renderer.borrow_mut().render(frame, background),
+                &self.calls[3],
+            )
         }
         fn render_native(
             &mut self,
@@ -295,7 +313,7 @@ mod forced_gpu_guest {
             background: &[u16],
         ) -> Result<Vec<u16>, String> {
             checked(
-                self.renderer.render_native(frame, background),
+                self.renderer.borrow_mut().render_native(frame, background),
                 &self.calls[3],
             )
         }
@@ -306,7 +324,9 @@ mod forced_gpu_guest {
             clut: &[[u16; 3]; 256],
         ) -> Result<Vec<u16>, String> {
             checked(
-                self.renderer.render_indexed(frame, background, clut),
+                self.renderer
+                    .borrow_mut()
+                    .render_indexed(frame, background, clut),
                 &self.calls[3],
             )
         }
@@ -341,11 +361,11 @@ mod forced_gpu_guest {
             runner.set_prefer_powerpc_executables(true);
             if gpu {
                 runner.set_quickdraw_gpu_renderer(Box::new(QuickDraw {
-                    renderer: wgpu_quickdraw::QuickDrawRenderer::new(),
+                    renderer: Rc::new(RefCell::new(wgpu_quickdraw::QuickDrawRenderer::new())),
                     calls: calls.clone(),
                 }));
                 runner.set_q3_gpu_renderer(Box::new(Qd3d {
-                    renderer: wgpu_qd3d::Qd3dRenderer::new(),
+                    renderer: Rc::new(RefCell::new(wgpu_qd3d::Qd3dRenderer::new())),
                     calls: calls.clone(),
                 }));
             }
@@ -381,5 +401,107 @@ mod forced_gpu_guest {
         {
             assert!(calls[index].get() > 0, "no successful {kind} GPU writeback");
         }
+    }
+    #[cfg(feature = "test-support")]
+    #[test]
+    #[ignore = "explicit-duration active GPU qualification; run through soak-gpu-compute.py"]
+    fn qualify_gpu_compute_resources() {
+        use std::io::Write;
+        let seconds: u64 = std::env::var("SYSTEMLESS_GPU_COMPUTE_SOAK_SECONDS")
+            .expect("set an explicit compute soak duration")
+            .parse()
+            .expect("compute soak seconds");
+        assert!((1..=21600).contains(&seconds));
+        let report = std::env::var_os("SYSTEMLESS_GPU_COMPUTE_SOAK_REPORT")
+            .expect("set a compute resource report path");
+        let mut report = std::io::BufWriter::new(std::fs::File::create(report).unwrap());
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/toolbox-showcase/toolbox-showcase.sit");
+        let calls: Counts = Rc::new(std::array::from_fn(|_| Cell::new(0)));
+        let quickdraw = Rc::new(RefCell::new(wgpu_quickdraw::QuickDrawRenderer::new()));
+        let qd3d = Rc::new(RefCell::new(wgpu_qd3d::Qd3dRenderer::new()));
+        let mut runners = [false, true].map(|gpu| {
+            let mut runner = game::new_runner_with_configuration(true, 8);
+            runner.set_prefer_powerpc_executables(true);
+            if gpu {
+                // These wrappers deliberately force real GPU writeback for
+                // small fixture work that production adaptive selection skips.
+                runner.set_quickdraw_gpu_renderer(Box::new(QuickDraw {
+                    renderer: quickdraw.clone(),
+                    calls: calls.clone(),
+                }));
+                runner.set_q3_gpu_renderer(Box::new(Qd3d {
+                    renderer: qd3d.clone(),
+                    calls: calls.clone(),
+                }));
+            }
+            runner.set_app_start_time(0);
+            let app = game::load_game_from_path(&mut runner, &fixture).unwrap();
+            game::init_game(&mut runner, &app);
+            assert!(runner.is_powerpc_app());
+            configure_realtime_execution_rate(&mut runner);
+            frames(&mut runner, 40);
+            runner
+        });
+        let sweep = |runners: &mut [FixtureRunner; 2]| {
+            for target in [2, 1, 11, 14, 4] {
+                for runner in runners.iter_mut() {
+                    assert_eq!(
+                        page(runner, target),
+                        0,
+                        "compute soak exhausted guest work budget"
+                    );
+                }
+                let expected = image(&runners[0]);
+                let actual = image(&runners[1]);
+                let tolerance = if target == 4 { 8 } else { 0 };
+                assert_eq!(expected.len(), actual.len());
+                assert!(
+                    actual.iter().zip(expected).all(|(&a, b)| {
+                        [0, 8, 16].into_iter().all(|shift| {
+                            ((a >> shift) & 255).abs_diff((b >> shift) & 255) <= tolerance
+                        })
+                    }),
+                    "active GPU page {target} differs from CPU writeback"
+                );
+            }
+        };
+        sweep(&mut runners);
+        assert!(
+            calls.iter().all(|count| count.get() > 0),
+            "missing GPU workload coverage"
+        );
+        let started = Instant::now();
+        let mut cycles = 0u64;
+        let mut sampled = Instant::now();
+        loop {
+            let finished = cycles > 0 && started.elapsed() >= Duration::from_secs(seconds);
+            if cycles == 0 || finished || sampled.elapsed() >= Duration::from_secs(30) {
+                let sample = serde_json::json!({
+                    "seconds": started.elapsed().as_secs_f64(), "cycles": cycles,
+                    "gpu_writebacks": calls.iter().map(Cell::get).collect::<Vec<_>>(),
+                    "quickdraw": quickdraw.borrow().qualification_snapshot().expect("healthy QuickDraw GPU"),
+                    "qd3d": qd3d.borrow().qualification_snapshot().expect("healthy QD3D GPU"),
+                    "complete": finished,
+                });
+                writeln!(report, "{sample}").unwrap();
+                report.flush().unwrap();
+                sampled = Instant::now();
+            }
+            if finished {
+                break;
+            }
+            let before = std::array::from_fn::<_, 4, _>(|i| calls[i].get());
+            sweep(&mut runners);
+            assert!(
+                calls
+                    .iter()
+                    .zip(before)
+                    .all(|(count, old)| count.get() > old),
+                "a compute workload stopped reaching the GPU"
+            );
+            cycles += 1;
+        }
+        assert!(cycles > 0);
     }
 }

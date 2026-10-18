@@ -33,6 +33,18 @@ impl Drop for Qd3dRenderer {
 }
 
 impl Qd3dRenderer {
+    #[cfg(all(test, feature = "test-support"))]
+    pub(super) fn qualification_snapshot(&self) -> Result<serde_json::Value, String> {
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| "compute device not initialized".to_owned())?;
+        state.health.check().map_err(|e| e.to_string())?;
+        let mut report = super::gpu_resources::snapshot_for_role(&state.device, "QD3D compute");
+        report["scratch"] = state.buffers.resource_snapshot();
+        Ok(report)
+    }
+
     fn retire_failed_state(&mut self) {
         if let Some(error) = self
             .state
