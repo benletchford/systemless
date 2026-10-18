@@ -84,10 +84,13 @@ def main():
     else:
         report["pending"].append("production release benchmarks")
     report["automated_checks_passed"] = True
-    report["adapters"] = sorted({line.strip() for log in output.rglob("*.log")
-                                  for line in log.read_text(errors="replace").splitlines()
-                                  if line.startswith("[GPU] wgpu ") or line.startswith("[GPU] QD3D rasterization:")
-                                  or line.startswith("[GPU] QuickDraw rasterization:")})
+    adapters = set()
+    for log in output.rglob("*.log"):
+        for line in log.read_text(errors="replace").splitlines():
+            if "[GPU-ADAPTER] " in line:
+                adapter = json.loads(line.split("[GPU-ADAPTER] ", 1)[1])
+                adapters.add(json.dumps(adapter, sort_keys=True))
+    report["adapters"] = [json.loads(adapter) for adapter in sorted(adapters)]
     save()
     return 0
 

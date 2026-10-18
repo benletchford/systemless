@@ -5,6 +5,20 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+/// Preserve hardware/driver identity alongside qualification logs, even if
+/// presenter creation subsequently falls back and releases the adapter.
+pub(super) fn report_adapter(info: &wgpu::AdapterInfo) {
+    eprintln!(
+        "[GPU-ADAPTER] {}",
+        serde_json::json!({
+            "name": info.name, "backend": format!("{:?}", info.backend),
+            "device_type": format!("{:?}", info.device_type),
+            "vendor": info.vendor, "device": info.device,
+            "driver": info.driver, "driver_info": info.driver_info,
+        })
+    );
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Failure {
     pub recoverable: bool,

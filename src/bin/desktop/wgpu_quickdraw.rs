@@ -175,6 +175,7 @@ impl State {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
             .map_err(|e| e.to_string())?;
+        super::renderer_recovery::report_adapter(&adapter.get_info());
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
             .map_err(|e| e.to_string())?;
         let health = super::renderer_recovery::Health::install(&device, None);
