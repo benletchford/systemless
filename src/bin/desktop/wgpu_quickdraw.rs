@@ -10,7 +10,26 @@ pub(super) struct QuickDrawRenderer {
     initialization_error: Option<String>,
     last_error: Option<String>,
 }
+impl Drop for QuickDrawRenderer {
+    fn drop(&mut self) {
+        self.retire_failed_state();
+    }
+}
+
 impl QuickDrawRenderer {
+    fn retire_failed_state(&mut self) {
+        if let Some(error) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.health.check().err())
+        {
+            self.initialization_error = Some(error.to_string());
+            if let Some(state) = self.state.take() {
+                super::renderer_recovery::retire_compute(state);
+            }
+        }
+    }
+
     pub fn new() -> Self {
         eprintln!("[GPU] QuickDraw adaptive dispatch enabled");
         Self {
@@ -45,14 +64,7 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
         &mut self,
         command: &QuickDrawGpuBlit,
     ) -> Result<Vec<QuickDrawGpuPixel>, String> {
-        if let Some(error) = self
-            .state
-            .as_ref()
-            .and_then(|state| state.health.check().err())
-        {
-            self.initialization_error = Some(error.to_string());
-            self.state = None;
-        }
+        self.retire_failed_state();
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
                 Ok(state) => self.state = Some(state),
@@ -63,6 +75,7 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
             Some(state) => state.render_blit_cells(command),
             None => Err(self.initialization_error.clone().unwrap()),
         };
+        self.retire_failed_state();
         if let Err(error) = &result {
             if self.last_error.as_ref() != Some(error) {
                 eprintln!("[GPU] QuickDraw clipped bitmap CPU fallback: {error}");
@@ -72,14 +85,7 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
         result
     }
     fn render_packed_blit(&mut self, command: &QuickDrawGpuPackedCopy) -> Result<Vec<u8>, String> {
-        if let Some(error) = self
-            .state
-            .as_ref()
-            .and_then(|state| state.health.check().err())
-        {
-            self.initialization_error = Some(error.to_string());
-            self.state = None;
-        }
+        self.retire_failed_state();
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
                 Ok(state) => self.state = Some(state),
@@ -90,6 +96,7 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
             Some(state) => state.render_packed_blit(command),
             None => Err(self.initialization_error.clone().unwrap()),
         };
+        self.retire_failed_state();
         if let Err(error) = &result {
             if self.last_error.as_ref() != Some(error) {
                 eprintln!("[GPU] QuickDraw packed bitmap CPU fallback: {error}");
@@ -99,14 +106,7 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
         result
     }
     fn render_blit(&mut self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
-        if let Some(error) = self
-            .state
-            .as_ref()
-            .and_then(|state| state.health.check().err())
-        {
-            self.initialization_error = Some(error.to_string());
-            self.state = None;
-        }
+        self.retire_failed_state();
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
                 Ok(state) => self.state = Some(state),
@@ -117,6 +117,7 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
             Some(state) => state.render_blit(command),
             None => Err(self.initialization_error.clone().unwrap()),
         };
+        self.retire_failed_state();
         if let Err(error) = &result {
             if self.last_error.as_ref() != Some(error) {
                 eprintln!("[GPU] QuickDraw bitmap CPU fallback: {error}");
@@ -130,14 +131,7 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
         command: &QuickDrawGpuCommand,
         background: &[u32],
     ) -> Result<Vec<QuickDrawGpuPixel>, String> {
-        if let Some(error) = self
-            .state
-            .as_ref()
-            .and_then(|state| state.health.check().err())
-        {
-            self.initialization_error = Some(error.to_string());
-            self.state = None;
-        }
+        self.retire_failed_state();
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
                 Ok(state) => self.state = Some(state),
@@ -148,6 +142,7 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
             Some(state) => state.render(command, background),
             None => Err(self.initialization_error.clone().unwrap()),
         };
+        self.retire_failed_state();
         if let Err(error) = &result {
             if self.last_error.as_ref() != Some(error) {
                 eprintln!("[GPU] QuickDraw CPU fallback: {error}");
@@ -586,8 +581,7 @@ impl State {
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = tx.send(result);
             });
-        super::wgpu_buffers::wait_for_readback(&self.device).map_err(|e| e.to_string())?;
-        self.health.check().map_err(|e| e.to_string())?;
+        self.health.wait_readback(&self.device)?;
         rx.recv()
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
@@ -870,8 +864,7 @@ impl State {
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = tx.send(result);
             });
-        super::wgpu_buffers::wait_for_readback(&self.device).map_err(|e| e.to_string())?;
-        self.health.check().map_err(|e| e.to_string())?;
+        self.health.wait_readback(&self.device)?;
         rx.recv()
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;

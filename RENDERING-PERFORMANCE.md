@@ -120,7 +120,14 @@ Cropped source addressing and nearest-sample clamping use the original source
 extent. Pixel checks include odd divisors and independent up/downscaling axes.
 
 On Metal, synchronous guest readback uses sleeping completion waits with a
-50 µs timeout for up to 4 ms before reverting to the ordinary blocking wait. This allows wgpu to
+50 µs timeout for up to 4 ms before reverting to a longer sleeping wait. The complete readback wait has a
+five-second budget on physical GPU adapters; software (`Cpu`) adapters receive a
+finite 60-second budget because their shaders run on shared host CPUs. The
+adapter policy is cached at device creation, outside timed frame work. A timeout retires that compute device to
+CPU fallback for the session, including when the driver reports no device loss.
+Failed compute state is retired immediately on a detached cleanup worker: wgpu
+queue destruction can itself wait for idle. If worker creation fails, that one
+failed state is retained until process exit rather than blocking the guest owner. This allows wgpu to
 observe completed command-buffer status even when the driver's separately
 scheduled completion notification is delayed. Mapping callbacks and coherence
 still run through wgpu's normal maintenance path. Other backends retain their
