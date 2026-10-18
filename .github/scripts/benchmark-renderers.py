@@ -8,11 +8,81 @@ GPU performance. See RENDERING-PERFORMANCE.md for workload boundaries.
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
 import re
 import subprocess
+
+
+SUMMARY = re.compile(r"\[RENDER-BENCH\] case=(\S+) backend=(\S+) n=(\d+) "
+                     r"p50_us=([\d.]+) p95_us=([\d.]+)")
+GUEST_CASES = ("ui", "drawing", "text", "3d", "sprites")
+KERNEL_CASES = ("3d-kernel-64x48", "3d-kernel-320x240", "3d-kernel-640x480",
+                "3d-sparse-64", "3d-overdraw-8")
+
+
+def parse_batch(log, run, samples, guest_case=None, system=None):
+    """Reject incomplete evidence; preserve chronological observations."""
+    summaries = {}
+    for case, backend, count, p50, p95 in SUMMARY.findall(log):
+        key = (case, backend)
+        if key in summaries:
+            raise ValueError(f"duplicate summary: {key}")
+        summaries[key] = (int(count), float(p50), float(p95))
+    raw = {}
+    orders = {}
+    for line in log.splitlines():
+        if "[RENDER-ORDER] " in line:
+            order = json.loads(line.split("[RENDER-ORDER] ", 1)[1])
+            if order["case"] in orders:
+                raise ValueError("duplicate guest pair order")
+            if order["pairs"] != samples or order["first_measured_backend"] not in ("default", "gpu"):
+                raise ValueError("invalid guest pair order")
+            orders[order["case"]] = order["first_measured_backend"]
+        if "[RENDER-SAMPLES] " not in line:
+            continue
+        item = json.loads(line.split("[RENDER-SAMPLES] ", 1)[1])
+        key = (item["case"], item["backend"])
+        values = item["samples_us"]
+        if key in raw:
+            raise ValueError(f"duplicate observations: {key}")
+        if not values or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                             or not math.isfinite(v) or v < 0 for v in values):
+            raise ValueError(f"invalid observations: {key}")
+        raw[key] = values
+    if raw.keys() != summaries.keys():
+        raise ValueError("raw observations and summaries differ")
+    guest_cases = (guest_case,) if guest_case else GUEST_CASES
+    if set(orders) != set(guest_cases):
+        raise ValueError("missing guest pair order")
+    expected = {(case, backend): samples for case in guest_cases
+                for backend in ("default", "gpu")}
+    expected.update({(case, backend): 30 for case in KERNEL_CASES
+                     for backend in ("default", "gpu", "gpu-adaptive")})
+    expected.update({(case, "gpu"): 300 for case in ("present-ui", "present-text")})
+    if (system or platform.system()) == "Darwin":
+        expected.update({(case, "default-metal"): 300 for case in ("present-ui", "present-text")})
+    for key, count in expected.items():
+        if key not in raw or len(raw[key]) != count:
+            raise ValueError(f"missing or incomplete observations: {key}; expected {count}")
+    records = []
+    for (case, backend), values in raw.items():
+        count, logged_p50, logged_p95 = summaries[(case, backend)]
+        ordered = sorted(values)
+        if count != len(values):
+            raise ValueError(f"sample count mismatch: {(case, backend)}")
+        p50 = ordered[count // 2]
+        p95 = ordered[(count * 95 + 99) // 100 - 1]
+        if abs(p50 - logged_p50) > 0.051 or abs(p95 - logged_p95) > 0.051:
+            raise ValueError(f"summary does not match observations: {(case, backend)}")
+        records.append(dict(run=run, case=case, backend=backend, n=count,
+                            first_measured_backend=orders.get(case),
+                            p50_us=p50, p95_us=p95,
+                            p99_us=ordered[(count * 99 + 99) // 100 - 1] if count >= 100 else None,
+                            samples_us=values))
+    return records
 
 
 def main():
@@ -36,8 +106,6 @@ def main():
     else:
         environment.pop("SYSTEMLESS_BENCH_GUEST_CASE", None)
     records = []
-    pattern = re.compile(r"\[RENDER-BENCH\] case=(\S+) backend=(\S+) n=(\d+) "
-                         r"p50_us=([\d.]+) p95_us=([\d.]+)")
     command = ["cargo", "test", "--locked", "--profile", args.profile, "--bin",
                "systemless", "benchmark_", "--", "--ignored", "--nocapture",
                "--test-threads=1"]
@@ -54,13 +122,7 @@ def main():
         text = log.read_text(errors="replace")
         if result.returncode:
             raise RuntimeError(f"benchmark failed; inspect {log}\n{text[-5000:]}")
-        batch = [dict(run=run, case=m[0], backend=m[1], n=int(m[2]),
-                      p50_us=float(m[3]), p95_us=float(m[4]))
-                 for m in pattern.findall(text)]
-        guest_cases = (args.guest_case,) if args.guest_case else ("ui", "drawing", "text", "3d", "sprites")
-        for name in (*guest_cases, "present-ui", "present-text"):
-            if not any(record["case"] == name for record in batch):
-                raise RuntimeError(f"missing {name} measurements in {log}")
+        batch = parse_batch(text, run, args.samples, args.guest_case)
         records.extend(batch)
         for record in batch:
             print(f"run={run} {record['case']} {record['backend']}: "
@@ -74,7 +136,9 @@ def main():
     sources = [name for name in sources if name]
     for name in sorted(sources + ["Cargo.toml", "Cargo.lock"]):
         source_digest.update(name.encode() + b"\0" + (repo / name).read_bytes() + b"\0")
-    report = dict(profile=args.profile, guest_case=args.guest_case, reverse_first=args.reverse_first, source_sha256=source_digest.hexdigest(), host=platform.platform(), machine=platform.machine(),
+    report = dict(schema_version=2, guest_sample_order="alternating-per-iteration",
+                  harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                  p99_minimum_samples=100, profile=args.profile, guest_case=args.guest_case, reverse_first=args.reverse_first, source_sha256=source_digest.hexdigest(), host=platform.platform(), machine=platform.machine(),
                   revision=subprocess.check_output(["git", "rev-parse", "HEAD"],
                                                    cwd=repo, text=True).strip(),
                   dirty=subprocess.check_output(["git", "status", "--porcelain"],
