@@ -568,9 +568,9 @@ fn valid_changed_cells(
 
 fn valid_cells(image: &CompactPresentation, cells: &[u32]) -> bool {
     let tile = (image.scale * image.scale) as usize; // scale was validated as 1..=4
-    // Uniform colors sort below every flagged detail reference. Therefore a
-    // single vectorizable unsigned maximum checks all exclusive tile ends.
-    // If even one tile cannot fit, only unflagged cells are allowed.
+                                                     // Uniform colors sort below every flagged detail reference. Therefore a
+                                                     // single vectorizable unsigned maximum checks all exclusive tile ends.
+                                                     // If even one tile cannot fit, only unflagged cells are allowed.
     let limit = image
         .detail
         .len()
@@ -742,6 +742,7 @@ pub(crate) mod tests {
             let mut submitted = Vec::new();
             let mut prepared = Vec::new();
             let mut encoded = Vec::new();
+            let readback_budget = super::super::wgpu_buffers::readback_budget(&device);
             for iteration in 0..420 {
                 renderer.timestamps = query_set
                     .as_ref()
@@ -764,7 +765,7 @@ pub(crate) mod tests {
                     &view,
                 );
                 let submit_elapsed = start.elapsed();
-                super::super::wgpu_buffers::wait_for_readback(&device).unwrap();
+                super::super::wgpu_buffers::wait_for_readback(&device, readback_budget).unwrap();
                 if iteration >= 120 {
                     samples.push(start.elapsed());
                     submitted.push(submit_elapsed);

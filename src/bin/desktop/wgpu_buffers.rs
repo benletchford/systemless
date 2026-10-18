@@ -22,14 +22,31 @@ pub(super) fn little_endian_word_bytes(words: &[u32]) -> std::borrow::Cow<'_, [u
 }
 
 const READBACK_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+const SOFTWARE_READBACK_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
 const METAL_SHORT_WAIT: std::time::Duration = std::time::Duration::from_micros(50);
 const METAL_SHORT_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
+
+/// Software adapters execute the same shader work on shared host CPUs and
+/// can legitimately take much longer than physical GPUs. Keep that path finite
+/// without treating software correctness runs as physical performance evidence.
+pub(super) fn readback_budget(device: &wgpu::Device) -> std::time::Duration {
+    budget_for_type(device.adapter_info().device_type)
+}
+
+fn budget_for_type(kind: wgpu::DeviceType) -> std::time::Duration {
+    if kind == wgpu::DeviceType::Cpu {
+        SOFTWARE_READBACK_BUDGET
+    } else {
+        READBACK_BUDGET
+    }
+}
 
 /// Sleep in the backend while allowing Metal to observe completion even when
 /// its separately scheduled notification is late. Every wait has a deadline;
 /// a stalled compute queue must return control to guest CPU fallback.
 pub(super) fn wait_for_readback(
     device: &wgpu::Device,
+    budget: std::time::Duration,
 ) -> Result<wgpu::PollStatus, wgpu::PollError> {
     let start = std::time::Instant::now();
     #[cfg(target_os = "macos")]
@@ -38,6 +55,7 @@ pub(super) fn wait_for_readback(
     #[cfg(not(target_os = "macos"))]
     let metal = false;
     wait_with_budget(
+        budget,
         metal,
         || start.elapsed(),
         |timeout| {
@@ -50,6 +68,7 @@ pub(super) fn wait_for_readback(
 }
 
 fn wait_with_budget(
+    budget: std::time::Duration,
     metal: bool,
     mut elapsed: impl FnMut() -> std::time::Duration,
     mut poll: impl FnMut(std::time::Duration) -> Result<wgpu::PollStatus, wgpu::PollError>,
@@ -62,7 +81,7 @@ fn wait_with_budget(
             }
         }
     }
-    poll(READBACK_BUDGET.saturating_sub(elapsed()))
+    poll(budget.saturating_sub(elapsed()))
 }
 
 #[derive(Default)]
@@ -135,10 +154,35 @@ mod tests {
     use std::{cell::Cell, time::Duration};
 
     #[test]
-    fn readback_wait_preserves_short_metal_completion_and_real_errors() {
+    fn wgpu_software_readback_has_a_longer_finite_budget() {
+        for kind in [
+            wgpu::DeviceType::IntegratedGpu,
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::DeviceType::VirtualGpu,
+            wgpu::DeviceType::Other,
+        ] {
+            assert_eq!(budget_for_type(kind), READBACK_BUDGET);
+        }
+        let budget = budget_for_type(wgpu::DeviceType::Cpu);
+        assert_eq!(budget, std::time::Duration::from_secs(60));
+        let result = wait_with_budget(
+            budget,
+            false,
+            || Duration::ZERO,
+            |timeout| {
+                assert_eq!(timeout, budget);
+                Err(wgpu::PollError::Timeout)
+            },
+        );
+        assert!(matches!(result, Err(wgpu::PollError::Timeout)));
+    }
+
+    #[test]
+    fn wgpu_readback_wait_preserves_short_metal_completion_and_real_errors() {
         let elapsed = Cell::new(Duration::ZERO);
         let mut calls = 0;
         let result = wait_with_budget(
+            READBACK_BUDGET,
             true,
             || elapsed.get(),
             |timeout| {
@@ -155,6 +199,7 @@ mod tests {
         assert!(result.unwrap().wait_finished());
         assert_eq!(calls, 2);
         let error = wait_with_budget(
+            READBACK_BUDGET,
             true,
             || Duration::ZERO,
             |_| Err(wgpu::PollError::WrongSubmissionIndex(1, 0)),
@@ -166,10 +211,11 @@ mod tests {
     }
 
     #[test]
-    fn readback_wait_exhausts_one_budget_instead_of_falling_through_to_infinity() {
+    fn wgpu_readback_wait_exhausts_one_budget_instead_of_falling_through_to_infinity() {
         let elapsed = Cell::new(Duration::ZERO);
         let mut waits = Vec::new();
         let error = wait_with_budget(
+            READBACK_BUDGET,
             true,
             || elapsed.get(),
             |timeout| {
@@ -187,8 +233,9 @@ mod tests {
     }
 
     #[test]
-    fn readback_wait_is_bounded_on_other_backends_and_after_a_late_wakeup() {
+    fn wgpu_readback_wait_is_bounded_on_other_backends_and_after_a_late_wakeup() {
         let error = wait_with_budget(
+            READBACK_BUDGET,
             false,
             || Duration::ZERO,
             |timeout| {
@@ -198,6 +245,7 @@ mod tests {
         );
         assert!(matches!(error, Err(wgpu::PollError::Timeout)));
         let error = wait_with_budget(
+            READBACK_BUDGET,
             true,
             || READBACK_BUDGET + Duration::from_secs(1),
             |timeout| {

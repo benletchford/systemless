@@ -83,7 +83,9 @@ jobs:
       - name: Test GPU shaders and rasterization
         env:
           SYSTEMLESS_REQUIRE_GPU: "1"
-        run: cargo test --locked --bin systemless wgpu_
+        # Isolate GPU tests so software adapters do not contend across devices
+        # and turn correctness qualification into an uncontrolled load test.
+        run: cargo test --locked --bin systemless wgpu_ -- --test-threads=1
 
       - name: Build GPU application probe
         run: cargo build --locked --bin systemless

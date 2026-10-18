@@ -78,6 +78,7 @@ impl std::fmt::Display for Failure {
 }
 
 pub(super) struct Health {
+    readback_budget: std::time::Duration,
     failed: AtomicBool,
     failure: Mutex<Option<Failure>>,
     wake: Option<winit::event_loop::EventLoopProxy<()>>,
@@ -88,6 +89,7 @@ impl Health {
         wake: Option<winit::event_loop::EventLoopProxy<()>>,
     ) -> Arc<Self> {
         let health = Arc::new(Self {
+            readback_budget: super::wgpu_buffers::readback_budget(device),
             failed: AtomicBool::new(false),
             failure: Mutex::new(None),
             wake,
@@ -121,7 +123,10 @@ impl Health {
         }
     }
     pub fn wait_readback(&self, device: &wgpu::Device) -> Result<(), String> {
-        self.finish_readback(super::wgpu_buffers::wait_for_readback(device))
+        self.finish_readback(super::wgpu_buffers::wait_for_readback(
+            device,
+            self.readback_budget,
+        ))
     }
 
     pub(super) fn finish_readback(
@@ -283,7 +288,7 @@ impl App {
 mod tests {
     use super::*;
     #[test]
-    fn failed_compute_cleanup_does_not_block_the_owner() {
+    fn wgpu_failed_compute_cleanup_does_not_block_the_owner() {
         let (release, waiting) = std::sync::mpsc::channel();
         let (entered, started) = std::sync::mpsc::channel();
         let (finished, done) = std::sync::mpsc::channel();
@@ -322,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_worker_creation_failure_does_not_drop_on_the_owner() {
+    fn wgpu_cleanup_worker_creation_failure_does_not_drop_on_the_owner() {
         struct DropFlag(Arc<AtomicBool>);
         impl Drop for DropFlag {
             fn drop(&mut self) {
@@ -375,6 +380,7 @@ mod tests {
     #[test]
     fn gpu_health_preserves_terminal_failure_over_later_loss() {
         let health = Health {
+            readback_budget: std::time::Duration::from_secs(5),
             failed: AtomicBool::new(false),
             failure: Mutex::new(None),
             wake: None,

@@ -121,7 +121,9 @@ extent. Pixel checks include odd divisors and independent up/downscaling axes.
 
 On Metal, synchronous guest readback uses sleeping completion waits with a
 50 µs timeout for up to 4 ms before reverting to a longer sleeping wait. The complete readback wait has a
-five-second budget on every backend. A timeout retires that compute device to
+five-second budget on physical GPU adapters; software (`Cpu`) adapters receive a
+finite 60-second budget because their shaders run on shared host CPUs. The
+adapter policy is cached at device creation, outside timed frame work. A timeout retires that compute device to
 CPU fallback for the session, including when the driver reports no device loss.
 Failed compute state is retired immediately on a detached cleanup worker: wgpu
 queue destruction can itself wait for idle. If worker creation fails, that one
