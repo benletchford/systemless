@@ -36,6 +36,48 @@ class EvidenceTests(unittest.TestCase):
     def parse(self, log, samples=100, system="Linux"):
         return benchmark.parse_batch(log, 2, samples, "text", system)
 
+    def cpu_log(self, values=None, clock="CLOCK_THREAD_CPUTIME_ID"):
+        values = list(range(100)) if values is None else values
+        return log_for(observations()) + "\n" + "\n".join(
+            "[RENDER-CPU-SAMPLES] " + json.dumps(dict(case="text", backend=backend, clock=clock, samples_us=values))
+            for backend in ("default", "gpu"))
+
+    def test_cpu_diagnostics_preserve_alignment_without_replacing_wall_times(self):
+        values = [1000] + list(range(99))
+        records = benchmark.parse_batch(self.cpu_log(values), 0, 100, "text", "Linux", thread_cpu=True)
+        gpu = next(r for r in records if r['case']=='text' and r['backend']=='gpu')
+        self.assertEqual(gpu['thread_cpu_samples_us'], values)
+        self.assertEqual(gpu['thread_cpu_p99_us'], 98)
+        self.assertEqual(gpu['samples_us'], list(range(100)))
+        self.assertEqual(gpu['p99_us'], 98)
+        self.assertTrue(all(r['thread_cpu_samples_us'] is None for r in records if r['case']!='text'))
+
+    def test_windows_thread_clock_is_explicitly_identified(self):
+        log=self.cpu_log(clock='GetThreadTimes(user+kernel)')
+        records=benchmark.parse_batch(log, 0, 100, 'text', 'Windows', thread_cpu=True)
+        row=next(r for r in records if r['case']=='text' and r['backend']=='gpu')
+        self.assertEqual(row['thread_cpu_clock'], 'GetThreadTimes(user+kernel)')
+        with self.assertRaisesRegex(ValueError, 'invalid thread CPU'):
+            benchmark.parse_batch(log, 0, 100, 'text', 'Linux', thread_cpu=True)
+
+    def test_cpu_diagnostics_are_explicit_and_complete(self):
+        with self.assertRaisesRegex(ValueError, 'missing or unexpected thread CPU'):
+            self.parse(self.cpu_log())
+        with self.assertRaisesRegex(ValueError, 'missing or unexpected thread CPU'):
+            benchmark.parse_batch(log_for(observations()), 0, 100, 'text', 'Linux', thread_cpu=True)
+        with self.assertRaisesRegex(ValueError, 'missing or unexpected thread CPU'):
+            benchmark.parse_batch(self.cpu_log().rsplit('\n',1)[0], 0, 100, 'text', 'Linux', thread_cpu=True)
+
+    def test_cpu_diagnostics_reject_bad_clock_data_and_duplicates(self):
+        for values in ([0]*99, [float('nan')]*100, [float('inf')]*100, [-1]*100, [True]*100):
+            with self.subTest(values=values[:2]), self.assertRaisesRegex(ValueError, 'invalid thread CPU'):
+                benchmark.parse_batch(self.cpu_log(values), 0, 100, 'text', 'Linux', thread_cpu=True)
+        with self.assertRaisesRegex(ValueError, 'invalid thread CPU'):
+            benchmark.parse_batch(self.cpu_log(clock='unknown'), 0, 100, 'text', 'Linux', thread_cpu=True)
+        log=self.cpu_log()
+        with self.assertRaisesRegex(ValueError, 'duplicate thread CPU'):
+            benchmark.parse_batch(log+'\n'+log.splitlines()[-1], 0, 100, 'text', 'Linux', thread_cpu=True)
+
     def test_preserves_pair_observations_and_reports_p99_only_with_enough_samples(self):
         items = observations()
         items[("text", "gpu")] = [1000] + list(range(99))

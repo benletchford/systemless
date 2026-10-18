@@ -23,7 +23,7 @@ KERNEL_CASES = ("3d-kernel-64x48", "3d-kernel-320x240", "3d-kernel-640x480",
                 "3d-sparse-64", "3d-overdraw-8")
 
 
-def parse_batch(log, run, samples, guest_case=None, system=None):
+def parse_batch(log, run, samples, guest_case=None, system=None, thread_cpu=False):
     """Reject incomplete evidence; preserve chronological observations."""
     summaries = {}
     for case, backend, count, p50, p95 in SUMMARY.findall(log):
@@ -34,7 +34,21 @@ def parse_batch(log, run, samples, guest_case=None, system=None):
     raw = {}
     orders = {}
     dispatch = {}
+    cpu = {}
+    cpu_clock = "GetThreadTimes(user+kernel)" if (system or platform.system()) == "Windows" else "CLOCK_THREAD_CPUTIME_ID"
     for line in log.splitlines():
+        if "[RENDER-CPU-SAMPLES] " in line:
+            item = json.loads(line.split("[RENDER-CPU-SAMPLES] ", 1)[1])
+            key = (item["case"], item["backend"])
+            values = item["samples_us"]
+            if key in cpu:
+                raise ValueError("duplicate thread CPU observations")
+            if (item.get("clock") != cpu_clock or not isinstance(values, list)
+                    or len(values) != samples
+                    or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                           or not math.isfinite(v) or v < 0 for v in values)):
+                raise ValueError("invalid thread CPU observations")
+            cpu[key] = values
         if "[RENDER-DISPATCH] " in line:
             item = json.loads(line.split("[RENDER-DISPATCH] ", 1)[1])
             case = item["case"]
@@ -82,6 +96,9 @@ def parse_batch(log, run, samples, guest_case=None, system=None):
             raise ValueError(f"missing or incomplete observations: {key}; expected {count}")
     if set(dispatch) != set(guest_cases):
         raise ValueError("missing guest dispatch evidence")
+    expected_cpu = {(case, backend) for case in guest_cases for backend in ("default", "gpu")} if thread_cpu else set()
+    if set(cpu) != expected_cpu:
+        raise ValueError("missing or unexpected thread CPU observations")
     records = []
     for (case, backend), values in raw.items():
         count, logged_p50, logged_p95 = summaries[(case, backend)]
@@ -92,11 +109,18 @@ def parse_batch(log, run, samples, guest_case=None, system=None):
         p95 = ordered[(count * 95 + 99) // 100 - 1]
         if abs(p50 - logged_p50) > 0.051 or abs(p95 - logged_p95) > 0.051:
             raise ValueError(f"summary does not match observations: {(case, backend)}")
+        cpu_values = cpu.get((case, backend))
+        cpu_ordered = sorted(cpu_values) if cpu_values is not None else None
         records.append(dict(run=run, case=case, backend=backend, n=count,
                             first_measured_backend=orders.get(case),
                             p50_us=p50, p95_us=p95,
                             p99_us=ordered[(count * 99 + 99) // 100 - 1] if count >= 100 else None,
                             samples_us=values,
+                            thread_cpu_clock=cpu_clock if cpu_values is not None else None,
+                            thread_cpu_samples_us=cpu_values,
+                            thread_cpu_p50_us=cpu_ordered[count // 2] if cpu_ordered is not None else None,
+                            thread_cpu_p95_us=cpu_ordered[(count * 95 + 99) // 100 - 1] if cpu_ordered is not None else None,
+                            thread_cpu_p99_us=cpu_ordered[(count * 99 + 99) // 100 - 1] if cpu_ordered is not None and count >= 100 else None,
                             gpu_requests_per_sample=dispatch[case] if case in dispatch and backend == "gpu" else None))
     return records
 
@@ -110,6 +134,7 @@ def main():
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--guest-case", choices=("ui", "drawing", "text", "3d", "sprites"))
     parser.add_argument("--reverse-first", action="store_true")
+    parser.add_argument("--thread-cpu", action="store_true", help="supplement guest wall timings with current-thread CPU accounting")
     args = parser.parse_args()
     if args.samples < 3 or args.runs < 1:
         parser.error("use at least three samples and one run")
@@ -117,6 +142,10 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     environment = dict(os.environ, SYSTEMLESS_REQUIRE_GPU="1",
                        SYSTEMLESS_BENCH_SAMPLES=str(args.samples))
+    if args.thread_cpu:
+        environment["SYSTEMLESS_BENCH_THREAD_CPU"] = "1"
+    else:
+        environment.pop("SYSTEMLESS_BENCH_THREAD_CPU", None)
     if args.guest_case:
         environment["SYSTEMLESS_BENCH_GUEST_CASE"] = args.guest_case
     else:
@@ -138,7 +167,7 @@ def main():
         text = log.read_text(errors="replace")
         if result.returncode:
             raise RuntimeError(f"benchmark failed; inspect {log}\n{text[-5000:]}")
-        batch = parse_batch(text, run, args.samples, args.guest_case)
+        batch = parse_batch(text, run, args.samples, args.guest_case, thread_cpu=args.thread_cpu)
         records.extend(batch)
         for record in batch:
             print(f"run={run} {record['case']} {record['backend']}: "
@@ -152,7 +181,9 @@ def main():
     sources = [name for name in sources if name]
     for name in sorted(sources + ["Cargo.toml", "Cargo.lock"]):
         source_digest.update(name.encode() + b"\0" + (repo / name).read_bytes() + b"\0")
-    report = dict(schema_version=3,
+    report = dict(schema_version=4 if args.thread_cpu else 3,
+                  thread_cpu_enabled=args.thread_cpu,
+                  thread_cpu_scope="calling guest thread user+kernel CPU; encloses wall timer with boundary overhead; excludes GPU work and other worker threads; clock accounting granularity varies" if args.thread_cpu else None,
                   gpu_request_columns=["quickdraw", "glyph_masks", "deep_masks", "3d"],
                   guest_sample_order="alternating-per-iteration",
                   harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),

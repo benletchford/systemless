@@ -51,6 +51,68 @@ fn benchmark_presenters() {
     }
 }
 
+// Diagnostic CPU accounting encloses the wall timer. These calls stay
+// outside wall timing and do not measure GPU work or other worker threads.
+fn thread_cpu_time() -> Duration {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let mut stamp = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: stamp is writable, correctly sized storage for the native
+        // timespec; the clock refers to this calling thread and owns no handle.
+        let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut stamp) };
+        assert_eq!(
+            result,
+            0,
+            "thread CPU clock failed: {}",
+            std::io::Error::last_os_error()
+        );
+        assert!(stamp.tv_sec >= 0 && (0..1_000_000_000).contains(&stamp.tv_nsec));
+        Duration::new(stamp.tv_sec as u64, stamp.tv_nsec as u32)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::{
+            Foundation::FILETIME,
+            System::Threading::{GetCurrentThread, GetThreadTimes},
+        };
+        let (mut created, mut exited, mut kernel, mut user) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
+        // SAFETY: the current-thread pseudo-handle is valid without closing;
+        // all four output pointers refer to initialized, writable FILETIMEs.
+        unsafe {
+            GetThreadTimes(
+                GetCurrentThread(),
+                &mut created,
+                &mut exited,
+                &mut kernel,
+                &mut user,
+            )
+        }
+        .expect("thread CPU clock failed");
+        let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+        let ticks = ticks(kernel)
+            .checked_add(ticks(user))
+            .expect("thread CPU accounting overflow");
+        Duration::new(ticks / 10_000_000, ((ticks % 10_000_000) * 100) as u32)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    panic!("thread CPU diagnostics are unsupported on this platform");
+}
+fn thread_cpu_clock_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "GetThreadTimes(user+kernel)"
+    } else {
+        "CLOCK_THREAD_CPUTIME_ID"
+    }
+}
+
 fn frames(runner: &mut FixtureRunner, count: usize) -> usize {
     let mut exhausted = 0;
     for _ in 0..count {
@@ -118,6 +180,10 @@ fn benchmark_guest_renderers() {
             .is_none_or(|name| { matches!(name, "ui" | "drawing" | "text" | "3d" | "sprites") }),
         "unknown guest benchmark case"
     );
+    let record_cpu = std::env::var_os("SYSTEMLESS_BENCH_THREAD_CPU").is_some();
+    if record_cpu {
+        let _ = thread_cpu_time();
+    }
     for (name, target) in [
         ("ui", 2),
         ("drawing", 1),
@@ -150,6 +216,7 @@ fn benchmark_guest_renderers() {
         let mut dispatch_samples = Vec::new();
         let reverse = usize::from(std::env::var_os("SYSTEMLESS_BENCH_REVERSE").is_some());
         let mut samples: [Vec<Duration>; 2] = std::array::from_fn(|_| Vec::new());
+        let mut cpu_samples: [Vec<Duration>; 2] = std::array::from_fn(|_| Vec::new());
         for iteration in 0..count + 3 {
             // Pair the same redraw in independent guests, alternating which
             // backend runs first. Reset and screenshot work stay outside timing.
@@ -162,9 +229,15 @@ fn benchmark_guest_renderers() {
                 let runner = &mut runners[index];
                 page(runner, if target == 1 { 2 } else { 1 });
                 let before: [usize; 4] = std::array::from_fn(|i| dispatch[i].get());
+                let cpu_start = record_cpu.then(thread_cpu_time);
                 let start = Instant::now();
                 let exhausted = page(runner, target);
                 let elapsed = start.elapsed();
+                let cpu_elapsed = cpu_start.map(|start| {
+                    thread_cpu_time()
+                        .checked_sub(start)
+                        .expect("thread CPU clock moved backwards")
+                });
                 // Read counters after the timer; exclude reset and warmup calls.
                 if iteration >= 3 && index == 1 {
                     dispatch_samples.push(std::array::from_fn::<_, 4, _>(|i| {
@@ -177,6 +250,9 @@ fn benchmark_guest_renderers() {
                 );
                 if iteration >= 3 {
                     samples[index].push(elapsed);
+                    if let Some(cpu) = cpu_elapsed {
+                        cpu_samples[index].push(cpu);
+                    }
                 }
             }
         }
@@ -225,6 +301,16 @@ fn benchmark_guest_renderers() {
                 );
             } else {
                 reference = Some(pixels);
+            }
+            if record_cpu {
+                eprintln!(
+                    "[RENDER-CPU-SAMPLES] {}",
+                    serde_json::json!({
+                        "case":name, "backend":if gpu {"gpu"} else {"default"},
+                        "clock":thread_cpu_clock_name(),
+                        "samples_us":cpu_samples[index].iter().map(|t|t.as_secs_f64()*1e6).collect::<Vec<_>>(),
+                    })
+                );
             }
             report(
                 name,

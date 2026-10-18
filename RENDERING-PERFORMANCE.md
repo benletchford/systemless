@@ -207,3 +207,26 @@ in elapsed time; reading and logging them is outside timing. These are completed
 renderer requests, not hardware timestamp queries or input-to-display latency.
 Use this evidence to attribute tails before changing dispatch thresholds, and
 keep schema 2 results separate when comparing instrumentation-sensitive timings.
+
+
+## Optional guest CPU attribution
+
+Add `--thread-cpu` to `benchmark-renderers.py` to record current-thread CPU time
+alongside each paired guest redraw. Schema 4 retains wall samples, order, dispatch
+counts and pixel checks and requires CPU samples for both guest backends at every
+sample index. Ordinary runs keep schema 3 and omit CPU instrumentation. Reset,
+warmup, screenshots and logging remain outside the measured redraw.
+
+The CPU accounting window encloses the wall timer, so it includes timer-boundary
+cost. macOS/Linux use `CLOCK_THREAD_CPUTIME_ID`; Windows uses `GetThreadTimes`
+(user plus kernel time). Native accounting granularity varies, particularly on
+Windows; reported microsecond units do not imply microsecond accuracy. Clock
+errors or backwards accounting fail the diagnostic. Zero increments can reflect
+accounting granularity. CPU observations exclude GPU execution and other worker
+threads and are not a direct meter of scheduling delay.
+
+Use the aligned CPU and wall observations with dispatch counts to investigate
+extra CPU work versus sleeps, queue waits or descheduling. CPU time still depends
+on core placement, frequency and shared-resource contention. It does not approve
+wall-time tails, physical display/input responsiveness, power or a default rollout;
+the idle-host and independent-run requirements remain in force.

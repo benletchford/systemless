@@ -4622,6 +4622,7 @@ dependencies = [
  "flate2",
  "hfsplus",
  "image",
+ "libc",
  "libm",
  "m68k",
  "objc2 0.5.2",

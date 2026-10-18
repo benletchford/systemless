@@ -132,6 +132,7 @@ name = "systemless"
 required-features = ["gui"]
 
 [dev-dependencies]
+libc = "0.2"
 hfsplus = { version = "0.2.4", features = ["testutil"] }
 tempfile = "3"
 
