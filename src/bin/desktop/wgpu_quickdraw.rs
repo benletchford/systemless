@@ -1,5 +1,5 @@
 //! Guest-visible QuickDraw rasterization, enabled only by --gpu.
-use super::wgpu_buffers::ScratchBuffers;
+use super::wgpu_buffers::{BindingRole, ScratchBuffers};
 use systemless::quickdraw::gpu::{
     QuickDrawGpuBlit, QuickDrawGpuCommand, QuickDrawGpuPackedCopy, QuickDrawGpuPixel,
     QuickDrawGpuRenderer,
@@ -564,18 +564,13 @@ impl State {
             wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
         );
         buffers.push((4, output));
-        let entries: Vec<_> = buffers
+        let bindings: Vec<_> = buffers
             .iter()
-            .map(|(binding, buffer)| wgpu::BindGroupEntry {
-                binding: *binding,
-                resource: buffer.as_entire_binding(),
-            })
+            .map(|(slot, buffer)| (*slot, buffer))
             .collect();
-        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("QuickDraw bitmap"),
-            layout: &pipeline.get_bind_group_layout(0),
-            entries: &entries,
-        });
+        let group = self
+            .buffers
+            .bind_group(&self.device, BindingRole::Bitmap, pipeline, &bindings);
         let readback = self.buffers.get(
             &self.device,
             "QuickDraw bitmap readback",
@@ -800,40 +795,20 @@ impl State {
             &uniform,
             wgpu::BufferUsages::UNIFORM,
         );
-        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &self.pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: input.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: output.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: clip_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: edge_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: products.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: mask_buffer.as_entire_binding(),
-                },
+        let group = self.buffers.bind_group(
+            &self.device,
+            BindingRole::Raster,
+            &self.pipeline,
+            &[
+                (0, &input),
+                (1, &output),
+                (2, &uniform),
+                (3, &clip_buffer),
+                (4, &edge_buffer),
+                (5, &products),
+                (6, &mask_buffer),
             ],
-        });
+        );
         let readback = self.buffers.get(
             &self.device,
             "QuickDraw readback",
@@ -842,24 +817,12 @@ impl State {
         );
         let mut encoder = self.device.create_command_encoder(&Default::default());
         if !edges.is_empty() {
-            let product_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("QuickDraw polygon products"),
-                layout: &self.polygon_products.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: uniform.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: edge_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: products.as_entire_binding(),
-                    },
-                ],
-            });
+            let product_group = self.buffers.bind_group(
+                &self.device,
+                BindingRole::PolygonProducts,
+                &self.polygon_products,
+                &[(2, &uniform), (4, &edge_buffer), (5, &products)],
+            );
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.polygon_products);
             pass.set_bind_group(0, &product_group, &[]);
