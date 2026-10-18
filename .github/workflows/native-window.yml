@@ -7,6 +7,11 @@ on:
       - '.github/workflows/native-window.yml'
       - '.github/scripts/verify-native-window.py'
   workflow_dispatch:
+    inputs:
+      soak-seconds:
+        description: 'Lifecycle soak seconds per renderer/runtime (0 skips)'
+        required: false
+        default: '0'
 
 permissions:
   contents: read
@@ -22,7 +27,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    # Four renderer/runtime cases can each request a one-hour manual soak.
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v6
       - name: Install virtual desktop
@@ -40,6 +46,16 @@ jobs:
       - name: Run macOS native window checks
         if: runner.os == 'macOS'
         run: python3 .github/scripts/verify-native-window.py
+      - name: Run Linux lifecycle soak
+        if: runner.os == 'Linux' && (github.event_name != 'workflow_dispatch' || inputs.soak-seconds != '0')
+        env:
+          SOAK_SECONDS: ${{ inputs.soak-seconds || '30' }}
+        run: xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox & python3 .github/scripts/verify-native-window.py --soak-only --soak-seconds "$SOAK_SECONDS" --output native-window-results/soak'
+      - name: Run macOS lifecycle soak
+        if: runner.os == 'macOS' && (github.event_name != 'workflow_dispatch' || inputs.soak-seconds != '0')
+        env:
+          SOAK_SECONDS: ${{ inputs.soak-seconds || '30' }}
+        run: python3 .github/scripts/verify-native-window.py --soak-only --soak-seconds "$SOAK_SECONDS" --output native-window-results/soak
       - name: Preserve qualification evidence
         if: always()
         uses: actions/upload-artifact@v7

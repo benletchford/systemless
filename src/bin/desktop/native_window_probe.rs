@@ -29,6 +29,8 @@ struct Probe {
     fault: String,
     injected: u8,
     fault_sequence: u64,
+    soak: Duration,
+    cycles: u32,
 }
 
 pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
@@ -55,6 +57,15 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
         fault: std::env::var("SYSTEMLESS_GPU_FAULT").unwrap_or_default(),
         injected: 0,
         fault_sequence: 0,
+        soak: Duration::from_secs(
+            std::env::var("SYSTEMLESS_NATIVE_SOAK_SECONDS")
+                .unwrap_or_else(|_| "0".into())
+                .parse::<u64>()
+                .ok()
+                .filter(|seconds| *seconds <= 3600)
+                .expect("soak seconds must be 0..3600"),
+        ),
+        cycles: 0,
     };
     event_loop
         .run_app(&mut probe)
@@ -81,6 +92,7 @@ impl Probe {
         let report = serde_json::json!({
             "passed": self.complete, "phase": self.phase, "checks": self.checks,
             "elapsed_seconds": self.started.elapsed().as_secs_f64(),
+            "soak_seconds": self.soak.as_secs(), "lifecycle_cycles": self.cycles,
             "os": std::env::consts::OS,
             "backend": if self.app.owner.is_some() { "thread" } else { "inline-or-stopped" },
             "cursor_scope": if cfg!(target_os = "macos") {
@@ -97,6 +109,11 @@ impl Probe {
             "guest_sequence": self.app.frame.sequence,
             "window": self.app.window.as_ref().map(|w| serde_json::json!({
                 "width": w.inner_size().width, "height": w.inner_size().height,
+                "scale_factor": w.scale_factor(),
+                "monitor": w.current_monitor().map(|m| serde_json::json!({
+                    "name": m.name(), "refresh_millihertz": m.refresh_rate_millihertz(),
+                    "width": m.size().width, "height": m.size().height,
+                })),
                 "fullscreen": w.fullscreen().is_some(), "focused": self.focused,
                 "resized_event": self.resized, "cursor_event": self.moved,
                 "expected_cursor": self.expected_cursor,
@@ -114,7 +131,7 @@ impl Probe {
         self.resized = false;
     }
     fn step(&mut self, event_loop: &ActiveEventLoop) {
-        if self.started.elapsed() > Duration::from_secs(90) {
+        if self.started.elapsed() > self.soak + Duration::from_secs(90) {
             self.write_report();
             panic!("native probe timed out at phase {}", self.phase);
         }
@@ -141,6 +158,13 @@ impl Probe {
                 self.cursor_input_sent = true;
             }
         }
+        // A repeated cycle must request a different size: requesting current
+        // bounds need not generate a native Resized event on any platform.
+        let target_size = if self.cycles % 2 == 0 {
+            winit::dpi::PhysicalSize::new(700, 500)
+        } else {
+            winit::dpi::PhysicalSize::new(720, 520)
+        };
         let settled = self.phase_started.elapsed() > Duration::from_secs(2);
         match self.phase {
             0 if self.app.frame.sequence > 2 && self.app.last_presented_guest_tick.is_some() => {
@@ -197,13 +221,10 @@ impl Probe {
                 self.advance("guest frames reach real window");
             }
             1 if self.focused && settled => {
-                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(700, 500));
+                let _ = window.request_inner_size(target_size);
                 self.advance("initial native focus");
             }
-            2 if self.resized
-                && window.inner_size() == winit::dpi::PhysicalSize::new(700, 500)
-                && settled =>
-            {
+            2 if self.resized && window.inner_size() == target_size && settled => {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
                 self.advance("native resize observed");
             }
@@ -224,10 +245,10 @@ impl Probe {
                 // AppKit may restore its remembered standard (zoom) frame.
                 // Verify windowed bounds, then require an exact resize after exit.
                 eprintln!("[NATIVE-PROBE] restored normal size={size:?}");
-                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(700, 500));
+                let _ = window.request_inner_size(target_size);
                 self.advance("fullscreen exit returns to normal window bounds");
             }
-            5 if window.inner_size() == winit::dpi::PhysicalSize::new(700, 500) && settled => {
+            5 if window.inner_size() == target_size && settled => {
                 let helper = event_loop
                     .create_window(
                         Window::default_attributes()
@@ -278,6 +299,19 @@ impl Probe {
                 && settled =>
             {
                 self.advance("native cursor position and guest input round trip verified");
+                self.cycles += 1;
+                if self.started.elapsed() < self.soak || (!self.soak.is_zero() && self.cycles < 2) {
+                    self.phase = 0;
+                    self.lost_focus = false;
+                    self.returned_focus = false;
+                    self.expected_cursor = None;
+                    self.expected_guest = None;
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.cursor_input_sent = false;
+                    }
+                    return;
+                }
                 self.app
                     .window_event(event_loop, window.id(), WindowEvent::CloseRequested);
             }

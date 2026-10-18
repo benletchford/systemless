@@ -160,6 +160,7 @@ impl WgpuPresenter {
             ..Default::default()
         }))
         .map_err(|e| e.to_string())?;
+        super::renderer_recovery::report_adapter(&adapter.get_info());
         let (device, queue) = request_device(&adapter)?;
         let health = Health::install(&device, wake);
         let mut config = surface

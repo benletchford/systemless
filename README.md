@@ -142,7 +142,9 @@ path for rollback. Wgpu remains opt-in until hardware qualification is complete;
 `--gpu` and `--renderer` cannot be combined. Wgpu failures fall back to platform
 presentation while preserving the guest. `--headless --gpu` enables the same adaptive guest rasterization in play
 scripts and timed runs without creating a window; it does not measure desktop
-presentation. GPU initialization and rendering errors remain visible in logs.
+presentation. GPU initialization and rendering errors remain visible in logs. See
+[renderer qualification](RENDERER-QUALIFICATION.md) for recovery tests, lifecycle
+soaks and the gates before changing the default.
 
 To check the native PowerPC 3D scene, run Toolbox Showcase with
 `--headless --gpu --prefer-powerpc --play-script tests/play/toolbox-showcase-ppc-qd3d.json`
