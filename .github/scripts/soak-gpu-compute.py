@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Exercise sustained real guest GPU writeback; collect resources, never approve rollout."""
+import argparse
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import platform
+import subprocess
+import time
+
+TEST = "renderer_bench::forced_gpu_guest::qualify_gpu_compute_resources"
+
+
+def validate_samples(samples, seconds):
+    if not isinstance(samples, list) or len(samples) < 2:
+        return False
+    if not isinstance(samples[-1], dict):
+        return False
+    previous_time = -1
+    previous_cycle = -1
+    previous_calls = [0] * 4
+    for index, sample in enumerate(samples):
+        if not isinstance(sample, dict) or sample.get("complete") is not (index == len(samples) - 1):
+            return False
+        elapsed, cycle, calls = sample.get("seconds"), sample.get("cycles"), sample.get("gpu_writebacks")
+        if (isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(elapsed)
+                or elapsed < 0 or elapsed < previous_time or type(cycle) is not int or cycle < 0 or cycle < previous_cycle
+                or not isinstance(calls, list) or len(calls) != 4
+                or any(type(v) is not int or v <= 0 or v < old for v, old in zip(calls, previous_calls))):
+            return False
+        for key, role in [("quickdraw", "QuickDraw compute"), ("qd3d", "QD3D compute")]:
+            data = sample.get(key, {})
+            if not isinstance(data, dict):
+                return False
+            scratch = data.get("scratch", {})
+            if not isinstance(scratch, dict):
+                return False
+            capacities = scratch.get("buffers", {})
+            if (data.get("role") != role or data.get("hal_counters_enabled") is not True
+                    or not isinstance(capacities, dict) or not capacities
+                    or any(type(n) is not int or n <= 0 for n in capacities.values())
+                    or type(scratch.get("capacity_bytes")) is not int
+                    or scratch["capacity_bytes"] != sum(capacities.values())):
+                return False
+        previous_time, previous_cycle, previous_calls = elapsed, cycle, calls
+    return (samples[-1]["seconds"] >= seconds and samples[-1]["cycles"] > 0
+            and all(last > first for last, first in zip(samples[-1]["gpu_writebacks"], samples[0]["gpu_writebacks"])))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--seconds", type=int, default=7200)
+    args = parser.parse_args()
+    if not 1 <= args.seconds <= 21600:
+        parser.error("--seconds must be 1..21600")
+    root = Path(__file__).resolve().parents[2]
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    def git(*parts):
+        return subprocess.check_output(["git", *parts], cwd=root, text=True).strip()
+    revision = git("rev-parse", "HEAD")
+    sources = subprocess.check_output(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--",
+         "*.rs", "*.wgsl", "*.metal", "Cargo.toml", "Cargo.lock"], cwd=root, text=True).split("\0")
+    def source_digest():
+        digest = hashlib.sha256()
+        for name in sorted(n for n in sources if n):
+            digest.update(name.encode() + b"\0" + (root / name).read_bytes() + b"\0")
+        return digest.hexdigest()
+    initial_digest = source_digest()
+    report = dict(schema_version=1, revision=revision, dirty=git("status", "--porcelain").splitlines(),
+                  source_sha256=initial_digest, harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                  fixture_sha256=hashlib.sha256((root / "tests/toolbox-showcase/toolbox-showcase.sit").read_bytes()).hexdigest(),
+                  host=platform.platform(), machine=platform.machine(), seconds=args.seconds,
+                  gpu_writeback_categories=["quickdraw_total", "masked_raster", "deep_mask_blit", "qd3d"],
+                  gpu_writeback_scope="masked/deep categories are subsets of the QuickDraw total; do not sum",
+                  status="building", default_eligible=False,
+                  scope="forced guest GPU writeback/resource stress; not adaptive dispatch or performance qualification",
+                  rss_scope="test-process RSS only, not GPU or compiler-service accounting" if os.name == "posix" else None)
+    def save():
+        (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
+    save()
+    children = []
+    def collect():
+        command = ["cargo", "test", "--locked", "--profile", "ci-test", "--bin", "systemless",
+                   "--features", "test-support", "--no-run", "--message-format=json"]
+        report["build_command"] = command
+        with (output / "build.jsonl").open("w") as messages, (output / "build.log").open("w") as log:
+            result = subprocess.run(command, cwd=root, stdout=messages, stderr=log, timeout=1800)
+        if result.returncode:
+            report.update(status="failed", error="build failed")
+            save()
+            return 1
+        executables = set()
+        for line in (output / "build.jsonl").read_text().splitlines():
+            item = json.loads(line)
+            if (item.get("reason") == "compiler-artifact" and item.get("target", {}).get("name") == "systemless"
+                    and item.get("profile", {}).get("test") and item.get("executable")):
+                executables.add(item["executable"])
+        if len(executables) != 1:
+            raise RuntimeError("cannot identify the exact compute qualification executable")
+        executable = Path(executables.pop())
+        listing = subprocess.check_output([str(executable), "--ignored", "--list", "--exact", TEST], text=True)
+        if TEST + ": test" not in listing:
+            raise RuntimeError("compiled executable is missing compute qualification")
+        if source_digest() != initial_digest or revision != git("rev-parse", "HEAD"):
+            raise RuntimeError("source changed during build")
+        report["executable"] = str(executable)
+        report["binary_sha256"] = hashlib.sha256(executable.read_bytes()).hexdigest()
+        command = [str(executable), "--ignored", "--exact", TEST, "--nocapture", "--test-threads=1"]
+        report.update(status="running", command=command)
+        save()
+        env = dict(os.environ, SYSTEMLESS_REQUIRE_GPU="1", SYSTEMLESS_GPU_COMPUTE_SOAK_SECONDS=str(args.seconds),
+                   SYSTEMLESS_GPU_COMPUTE_SOAK_REPORT=str(output / "resources.jsonl"))
+        memory = []
+        started = time.monotonic()
+        with (output / "run.log").open("w") as log:
+            process = subprocess.Popen(command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
+            children.append(process)
+            while process.poll() is None:
+                if time.monotonic() - started > args.seconds + 600:
+                    process.kill()
+                    process.wait()
+                    report["error"] = "compute qualification timed out"
+                    break
+                if os.name == "posix":
+                    sample = subprocess.run(["ps", "-o", "rss=", "-p", str(process.pid)], capture_output=True, text=True)
+                    if sample.returncode == 0 and sample.stdout.strip().isdigit():
+                        memory.append(dict(seconds=time.monotonic() - started, rss_kib=int(sample.stdout.strip())))
+                time.sleep(1)
+        (output / "memory.json").write_text(json.dumps(memory, indent=2) + "\n")
+        samples = [json.loads(line) for line in (output / "resources.jsonl").read_text().splitlines()] if (output / "resources.jsonl").exists() else []
+        passed = (process.returncode == 0 and validate_samples(samples, args.seconds)
+                  and revision == git("rev-parse", "HEAD") and source_digest() == initial_digest
+                  and hashlib.sha256((root / "tests/toolbox-showcase/toolbox-showcase.sit").read_bytes()).hexdigest() == report["fixture_sha256"])
+        report.update(status="passed" if passed else "failed", returncode=process.returncode,
+                      elapsed_seconds=time.monotonic() - started, resource_samples=len(samples))
+        save()
+        print(f"compute resource soak: {report['status']} ({len(samples)} observations)", flush=True)
+        return 0 if passed else 1
+    try:
+        return collect()
+    except (Exception, KeyboardInterrupt) as error:
+        report.update(status="failed", error=f"{type(error).__name__}: {error}")
+        print(f"compute resource soak failed: {error}", flush=True)
+        return 1
+    finally:
+        for process in children:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        save()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

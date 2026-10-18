@@ -36,6 +36,10 @@ fn metal_allocations(_device: &wgpu::Device) -> Option<Value> {
 }
 
 pub(super) fn snapshot(device: &wgpu::Device) -> Value {
+    snapshot_for_role(device, "presenter")
+}
+
+pub(super) fn snapshot_for_role(device: &wgpu::Device, role: &str) -> Value {
     let info = device.adapter_info();
     let counters = device.get_internal_counters().hal;
     let allocator = device.generate_allocator_report().map(|report| {
@@ -46,7 +50,8 @@ pub(super) fn snapshot(device: &wgpu::Device) -> Value {
         })
     });
     json!({
-        "scope": "HAL/allocator counters cover the presenter device; native Metal scope is reported separately; incomplete driver/process residency",
+        "role": role,
+        "scope": "HAL/allocator counters cover this device; native Metal scope is reported separately; incomplete driver/process residency",
         "native_metal": metal_allocations(device),
         "adapter": {"name": info.name, "backend": format!("{:?}", info.backend),
                     "device_type": format!("{:?}", info.device_type),

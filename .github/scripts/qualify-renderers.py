@@ -19,12 +19,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--soak-seconds", type=int, default=300)
+    parser.add_argument("--compute-soak-seconds", type=int, default=0,
+                        help="active guest compute resources; 0 skips, multi-hour runs are opt-in")
     parser.add_argument("--benchmarks", action="store_true")
     parser.add_argument("--skip-windows", action="store_true",
                         help="record window qualification as pending, e.g. a locked desktop")
     args = parser.parse_args()
     if not 0 <= args.soak_seconds <= 3600:
         parser.error("--soak-seconds must be 0..3600")
+    if not 0 <= args.compute_soak_seconds <= 21600:
+        parser.error("--compute-soak-seconds must be 0..21600")
     root = Path(__file__).resolve().parents[2]
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -87,6 +91,13 @@ def main():
             return 1
     else:
         report["pending"].append("production release benchmarks")
+    if args.compute_soak_seconds:
+        if not run("compute-resources", [sys.executable, str(root / ".github/scripts/soak-gpu-compute.py"),
+                                         "--seconds", str(args.compute_soak_seconds),
+                                         "--output", str(output / "compute")], args.compute_soak_seconds + 2700):
+            return 1
+    else:
+        report["pending"].append("multi-hour active guest compute resource stress")
     report["automated_checks_passed"] = True
     adapters = set()
     for log in output.rglob("*.log"):

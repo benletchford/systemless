@@ -90,6 +90,20 @@ pub(super) struct ScratchBuffers {
 }
 
 impl ScratchBuffers {
+    #[cfg(all(test, feature = "test-support"))]
+    pub(super) fn resource_snapshot(&self) -> serde_json::Value {
+        let buffers = self.buffers.borrow();
+        let capacities: std::collections::BTreeMap<_, _> = buffers
+            .iter()
+            .map(|(role, buffer)| (*role, buffer.size()))
+            .collect();
+        serde_json::json!({
+            "buffers": capacities,
+            "capacity_bytes": buffers.values().map(|b| b.size()).sum::<u64>(),
+            "scope": "requested scratch-buffer capacity; not driver residency",
+        })
+    }
+
     /// Each role has one allocation. Callers finish and unmap a submission
     /// before reusing it; queue writes remain ordered before the next dispatch.
     pub fn get(
