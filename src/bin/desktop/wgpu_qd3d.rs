@@ -1,5 +1,5 @@
 //! GPU rasterization with synchronous RGB555 readback for guest memory coherence.
-use super::wgpu_buffers::ScratchBuffers;
+use super::wgpu_buffers::{BindingRole, ScratchBuffers};
 use systemless::loader::ppc::{
     ppc_q3_vector3d_normalized_value, PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3LightKind,
     PpcQ3RasterFrame, PpcQ3RasterPrimitive, PpcQ3RasterVertex, PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
@@ -564,36 +564,19 @@ impl State {
         ];
         let bytes: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
         let geometry = buffer("3d-geometry", &bytes, wgpu::BufferUsages::UNIFORM);
-        let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("QD3D frame"),
-            layout: &self.pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: triangle_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: texture_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: pixels.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: geometry.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: light_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: palette_buffer.as_entire_binding(),
-                },
+        let group = self.buffers.bind_group(
+            &self.device,
+            BindingRole::Qd3d,
+            &self.pipeline,
+            &[
+                (0, &triangle_buffer),
+                (1, &texture_buffer),
+                (2, &pixels),
+                (3, &geometry),
+                (4, &light_buffer),
+                (5, palette_buffer),
             ],
-        });
+        );
         let readback = self.buffers.get(
             &self.device,
             "3d-readback",

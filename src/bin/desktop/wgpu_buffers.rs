@@ -84,9 +84,27 @@ fn wait_with_budget(
     poll(budget.saturating_sub(elapsed()))
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum BindingRole {
+    Raster,
+    PolygonProducts,
+    Bitmap,
+    Qd3d,
+}
+
+struct CachedBindings {
+    pipeline: wgpu::ComputePipeline,
+    buffers: Vec<(u32, wgpu::Buffer)>,
+    group: wgpu::BindGroup,
+}
+
 #[derive(Default)]
 pub(super) struct ScratchBuffers {
     buffers: RefCell<HashMap<&'static str, wgpu::Buffer>>,
+    // One entry per fixed call-site role, never an allocation-history cache.
+    bindings: RefCell<[Option<CachedBindings>; 4]>,
+    #[cfg(all(test, feature = "test-support"))]
+    binding_creations: std::cell::Cell<u64>,
 }
 
 impl ScratchBuffers {
@@ -100,8 +118,56 @@ impl ScratchBuffers {
         serde_json::json!({
             "buffers": capacities,
             "capacity_bytes": buffers.values().map(|b| b.size()).sum::<u64>(),
+            "bind_group_cache_entries": self.bindings.borrow().iter().filter(|entry| entry.is_some()).count(),
+            "bind_group_creations": self.binding_creations.get(),
             "scope": "requested scratch-buffer capacity; not driver residency",
         })
+    }
+
+    pub fn bind_group(
+        &self,
+        device: &wgpu::Device,
+        role: BindingRole,
+        pipeline: &wgpu::ComputePipeline,
+        buffers: &[(u32, &wgpu::Buffer)],
+    ) -> wgpu::BindGroup {
+        let mut bindings = self.bindings.borrow_mut();
+        let cached = &mut bindings[role as usize];
+        if let Some(entry) = cached {
+            if entry.pipeline == *pipeline
+                && entry.buffers.len() == buffers.len()
+                && entry.buffers.iter().zip(buffers).all(
+                    |((slot, buffer), (new_slot, new_buffer))| {
+                        slot == new_slot && buffer == *new_buffer
+                    },
+                )
+            {
+                return entry.group.clone();
+            }
+        }
+        let entries: Vec<_> = buffers
+            .iter()
+            .map(|(binding, buffer)| wgpu::BindGroupEntry {
+                binding: *binding,
+                resource: buffer.as_entire_binding(),
+            })
+            .collect();
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("cached compute scratch bindings"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &entries,
+        });
+        *cached = Some(CachedBindings {
+            pipeline: pipeline.clone(),
+            buffers: buffers
+                .iter()
+                .map(|(slot, buffer)| (*slot, (*buffer).clone()))
+                .collect(),
+            group: group.clone(),
+        });
+        #[cfg(all(test, feature = "test-support"))]
+        self.binding_creations.set(self.binding_creations.get() + 1);
+        group
     }
 
     /// Each role has one allocation. Callers finish and unmap a submission
@@ -133,6 +199,12 @@ impl ScratchBuffers {
         });
         assert_eq!(buffer.usage(), usage, "scratch buffer role changed usage");
         if buffer.size() < size {
+            // No cached group may retain a previous scratch allocation after
+            // growth, including groups from other pipelines sharing that role.
+            self.bindings
+                .borrow_mut()
+                .iter_mut()
+                .for_each(|entry| *entry = None);
             *buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(role),
                 size: capacity,
@@ -166,6 +238,87 @@ impl ScratchBuffers {
 mod tests {
     use super::*;
     use std::{cell::Cell, time::Duration};
+
+    #[test]
+    fn wgpu_cached_bindings_follow_pipeline_and_growing_scratch() {
+        let instance = wgpu::Instance::default();
+        let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
+            Ok(adapter) => adapter,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let pipelines = [1, 2].map(|value| {
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("binding cache oracle"),
+                source: wgpu::ShaderSource::Wgsl(format!(
+                    "@group(0) @binding(0) var<storage, read_write> output: array<u32>; \
+                     @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {{ output[id.x] = {value}u; }}"
+                ).into()),
+            });
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: None, layout: None, module: &shader, entry_point: Some("main"),
+                compilation_options: Default::default(), cache: None,
+            })
+        });
+        let scratch = ScratchBuffers::default();
+        // Reuse, change pipeline, then grow the allocation. Each result must
+        // come from the current pipeline and current output buffer.
+        for (pipeline, count, expected) in [
+            (&pipelines[0], 1, 1),
+            (&pipelines[0], 1, 1),
+            (&pipelines[1], 1, 2),
+            (&pipelines[1], 2, 2),
+        ] {
+            let size = count * 4;
+            let output = scratch.get(
+                &device,
+                "cache oracle output",
+                size,
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            );
+            let group = scratch.bind_group(&device, BindingRole::Raster, pipeline, &[(0, &output)]);
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_compute_pass(&Default::default());
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(count as u32, 1, 1);
+            }
+            encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
+            queue.submit([encoder.finish()]);
+            let (tx, rx) = std::sync::mpsc::channel();
+            readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    tx.send(result).unwrap();
+                });
+            wait_for_readback(&device, readback_budget(&device)).unwrap();
+            rx.recv().unwrap().unwrap();
+            let bytes = readback.slice(..).get_mapped_range().unwrap();
+            assert_eq!(
+                bytes
+                    .chunks_exact(4)
+                    .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                    .collect::<Vec<_>>(),
+                vec![expected; count as usize]
+            );
+            drop(bytes);
+            readback.unmap();
+        }
+    }
 
     #[test]
     fn wgpu_software_readback_has_a_longer_finite_budget() {
