@@ -370,8 +370,20 @@ impl State {
                     * (triangle[1].screen_y - triangle[0].screen_y)
                     - (triangle[2].screen_y - triangle[0].screen_y)
                         * (triangle[1].screen_x - triangle[0].screen_x);
-                if draw.primitive == PpcQ3RasterPrimitive::Triangles && !area.is_finite() {
-                    return Err("non-finite GPU triangle area".into());
+                // The software rasterizer widens before subtracting/multiplying.
+                // Carry that classification to WGSL instead of reclassifying
+                // thin triangles with shader f32/FMA arithmetic.
+                let precise_area = (f64::from(triangle[2].screen_x)
+                    - f64::from(triangle[0].screen_x))
+                    * (f64::from(triangle[1].screen_y) - f64::from(triangle[0].screen_y))
+                    - (f64::from(triangle[2].screen_y) - f64::from(triangle[0].screen_y))
+                        * (f64::from(triangle[1].screen_x) - f64::from(triangle[0].screen_x));
+                let degenerate =
+                    draw.primitive == PpcQ3RasterPrimitive::Triangles && precise_area == 0.;
+                if draw.primitive == PpcQ3RasterPrimitive::Triangles
+                    && (!area.is_finite() || (!degenerate && area == 0.))
+                {
+                    return Err("GPU triangle area precision requires software rendering".into());
                 }
                 let mut bytes = Vec::with_capacity(TRIANGLE_BYTES);
                 for v in triangle {
@@ -422,7 +434,8 @@ impl State {
                     height,
                     wrap | u32::from(draw.write_depth)
                         | (u32::from(!draw.test_depth) << 3)
-                        | ((draw.primitive as u32) << 4),
+                        | ((draw.primitive as u32) << 4)
+                        | (u32::from(degenerate) << 6),
                 ] {
                     bytes.extend_from_slice(&value.to_le_bytes());
                 }
@@ -2401,6 +2414,20 @@ mod tests {
         let mut invalid = frame.clone();
         invalid.draws[0].vertices[0].depth = f32::NAN;
         assert!(state.render(&invalid, &background).is_err());
+        let mut thin = frame.clone();
+        for (vertex, (x, y)) in
+            thin.draws[0]
+                .vertices
+                .iter_mut()
+                .zip([(0., 0.), (10000., 10001.), (10001., 10002.)])
+        {
+            vertex.screen_x = x;
+            vertex.screen_y = y;
+        }
+        assert!(state
+            .render(&thin, &background)
+            .unwrap_err()
+            .contains("area precision"));
         let mut invalid = frame.clone();
         invalid.draws[0].vertices.pop();
         assert!(state.render(&invalid, &background).is_err());

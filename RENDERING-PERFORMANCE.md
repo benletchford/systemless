@@ -82,9 +82,10 @@ QD3D builds conservative 16×16 screen-tile lists after transparency sorting,
 so each pixel visits only its tile’s ordered primitives. The selector compares
 estimated tile work with the CPU's clipped primitive bounds. Tile storage and
 lighting-weighted work remain bounded; excessive overlap still falls back.
-Zero-area triangles shade at the perspective-correct centroid and draw all
-three Bresenham edges, preserving repeated alpha/palette blends and the
-software renderer’s viewport/depth bypass. Other host renderer implementations
+Zero-area triangles use the CPU’s double-precision classification, shade at
+the perspective-correct centroid and draw all three Bresenham edges, preserving repeated alpha/palette blends and the
+software renderer’s viewport/depth bypass. Thin nonzero triangles whose area
+collapses in shader precision still use software. Other host renderer implementations
 keep their existing selection by default.
 
 Synchronous compute submissions reuse a bounded set of geometrically grown

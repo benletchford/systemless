@@ -121,7 +121,7 @@ fn line_covers(point:vec2<u32>, origin:vec2<f32>, destination:vec2<f32>) -> bool
         let triangle = triangles[tiles[offset+entry]];
         let a = triangle.vertices[0]; let b = triangle.vertices[1]; let c = triangle.vertices[2];
         var kind=(triangle.info.w>>4u)&3u;
-        let degenerate=kind==0u && edge(a.position.xy,b.position.xy,c.position.xy)==0.;
+        let degenerate=(triangle.info.w&64u)!=0u;
         var repeats=1u;
         if degenerate {
             repeats=u32(line_covers(xy,a.position.xy,b.position.xy))
