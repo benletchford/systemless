@@ -51,21 +51,23 @@ fn benchmark_presenters() {
     }
 }
 
-fn frames(runner: &mut FixtureRunner, count: usize) {
+fn frames(runner: &mut FixtureRunner, count: usize) -> usize {
+    let mut exhausted = 0;
     for _ in 0..count {
-        headless_time::frame(runner, 0);
+        exhausted += usize::from(headless_time::frame(runner, 0).budget_exhausted);
         assert!(!runner.is_halted());
     }
+    exhausted
 }
 
-fn page(runner: &mut FixtureRunner, number: i16) {
+fn page(runner: &mut FixtureRunner, number: i16) -> usize {
     runner.push_mouse_down(10, 64);
-    frames(runner, 2);
+    let mut exhausted = frames(runner, 2);
     let y = 27 + (number - 1) * 16;
     runner.set_mouse_position(y, 150);
-    frames(runner, 2);
+    exhausted += frames(runner, 2);
     runner.push_mouse_up(y, 150);
-    frames(runner, 20);
+    exhausted + frames(runner, 20)
 }
 
 fn image(runner: &FixtureRunner) -> Vec<u32> {
@@ -159,8 +161,12 @@ fn benchmark_guest_renderers() {
                 let runner = &mut runners[index];
                 page(runner, if target == 1 { 2 } else { 1 });
                 let start = Instant::now();
-                page(runner, target);
+                let exhausted = page(runner, target);
                 let elapsed = start.elapsed();
+                assert_eq!(
+                    exhausted, 0,
+                    "{name} redraw exhausted its guest work budget"
+                );
                 if iteration >= 3 {
                     samples[index].push(elapsed);
                 }
