@@ -183,7 +183,7 @@ impl WgpuPresenter {
             adapter.get_info().backend,
             adapter.get_info().name
         );
-        let compact = super::wgpu_compact::CompactRenderer::new(&device, config.format);
+        let compact = super::wgpu_compact::CompactRenderer::new(&device, &queue, config.format);
         Ok(Self {
             last_compact: None,
             raster_geometry: None,

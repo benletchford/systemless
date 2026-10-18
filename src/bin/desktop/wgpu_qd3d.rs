@@ -1,9 +1,9 @@
 //! GPU rasterization with synchronous RGB555 readback for guest memory coherence.
 use super::wgpu_buffers::ScratchBuffers;
 use systemless::loader::ppc::{
-    ppc_q3_vector3d_normalized_value, PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3LightKind,
-    PpcQ3RasterFrame, PpcQ3RasterPrimitive, PpcQ3RasterVertex, PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
-    PPC_Q3_ILLUMINATION_TYPE_PHONG,
+    PPC_Q3_ILLUMINATION_TYPE_LAMBERT, PPC_Q3_ILLUMINATION_TYPE_PHONG, PpcQ3GpuFrame,
+    PpcQ3GpuRenderer, PpcQ3LightKind, PpcQ3RasterFrame, PpcQ3RasterPrimitive, PpcQ3RasterVertex,
+    ppc_q3_vector3d_normalized_value,
 };
 
 // Three 128-byte vertices and five 16-byte state vectors.
@@ -887,22 +887,31 @@ mod tests {
                 state.render(&frame, &background).unwrap() == expected,
                 "3D benchmark {name} differs from CPU"
             );
-            for backend in ["default", "gpu", "gpu-adaptive"] {
-                let gpu = backend == "gpu"
-                    || (backend == "gpu-adaptive" && Qd3dRenderer::new().prefers_native(&frame));
-                let mut samples = Vec::new();
-                for iteration in 0..33 {
+            let adaptive = Qd3dRenderer::new();
+            let backends = ["default", "gpu", "gpu-adaptive"];
+            let mut samples: [Vec<std::time::Duration>; 3] = std::array::from_fn(|_| Vec::new());
+            // Rotate order within each repetition: CPU samples must not all
+            // precede or follow a long forced-GPU batch. Include selection in
+            // adaptive cost, as the real guest path does.
+            for iteration in 0..33 {
+                for offset in 0..3 {
+                    let index = (iteration + offset) % 3;
+                    let backend = backends[index];
                     let start = std::time::Instant::now();
+                    let gpu = backend == "gpu"
+                        || (backend == "gpu-adaptive" && adaptive.prefers_native(&frame));
                     std::hint::black_box(if gpu {
                         state.render(&frame, &background).unwrap()
                     } else {
                         cpu_render(&frame, &background)
                     });
                     if iteration >= 3 {
-                        samples.push(start.elapsed());
+                        samples[index].push(start.elapsed());
                     }
                 }
-                crate::renderer_bench::report(&name, backend, &mut samples);
+            }
+            for (backend, samples) in backends.into_iter().zip(&mut samples) {
+                crate::renderer_bench::report(&name, backend, samples);
             }
         }
     }
@@ -1465,7 +1474,13 @@ mod tests {
                                 actual.iter().zip(&expected).enumerate()
                             {
                                 for shift in [0, 5, 10] {
-                                    assert!((((actual>>shift)&31) as i32-((expected>>shift)&31) as i32).abs()<=1,"pixel {index}, style={interpolation_style}, control={control}, missing={missing}: {actual:04x} != {expected:04x}");
+                                    assert!(
+                                        (((actual >> shift) & 31) as i32
+                                            - ((expected >> shift) & 31) as i32)
+                                            .abs()
+                                            <= 1,
+                                        "pixel {index}, style={interpolation_style}, control={control}, missing={missing}: {actual:04x} != {expected:04x}"
+                                    );
                                 }
                             }
                         }
@@ -1562,7 +1577,13 @@ mod tests {
                                 actual.iter().zip(&expected).enumerate()
                             {
                                 for shift in [0, 5, 10] {
-                                    assert!((((actual>>shift)&31) as i32-((expected>>shift)&31) as i32).abs()<=1,"pixel={index}, style={interpolation_style}, attenuation={attenuation}, kind={kind}, missing_normal={missing_normal}: {actual:04x} != {expected:04x}");
+                                    assert!(
+                                        (((actual >> shift) & 31) as i32
+                                            - ((expected >> shift) & 31) as i32)
+                                            .abs()
+                                            <= 1,
+                                        "pixel={index}, style={interpolation_style}, attenuation={attenuation}, kind={kind}, missing_normal={missing_normal}: {actual:04x} != {expected:04x}"
+                                    );
                                 }
                             }
                         }
@@ -1784,7 +1805,13 @@ mod tests {
                     let expected = cpu_render(&frame, &background);
                     for (index, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
                         for shift in [0, 5, 10] {
-                            assert!((((actual>>shift)&31) as i32 - ((expected>>shift)&31) as i32).abs() <= 1, "pixel {index}, vertex={ambient_per_vertex}: {actual:04x} != {expected:04x}");
+                            assert!(
+                                (((actual >> shift) & 31) as i32
+                                    - ((expected >> shift) & 31) as i32)
+                                    .abs()
+                                    <= 1,
+                                "pixel {index}, vertex={ambient_per_vertex}: {actual:04x} != {expected:04x}"
+                            );
                         }
                     }
                 }
@@ -1921,7 +1948,10 @@ mod tests {
                     for (i, (&actual, &expected)) in actual.iter().zip(&expected).enumerate() {
                         assert_eq!(actual & 0x8000, expected & 0x8000, "fog coverage at {i}");
                         for shift in [0, 5, 10] {
-                            assert!(((actual>>shift)&31).abs_diff((expected>>shift)&31)<=1,"mode={mode} zero_range={zero_range} alpha_present={alpha_present} pixel={i}: {actual:04x} vs {expected:04x}");
+                            assert!(
+                                ((actual >> shift) & 31).abs_diff((expected >> shift) & 31) <= 1,
+                                "mode={mode} zero_range={zero_range} alpha_present={alpha_present} pixel={i}: {actual:04x} vs {expected:04x}"
+                            );
                         }
                     }
                 }

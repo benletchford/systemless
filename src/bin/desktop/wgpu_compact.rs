@@ -7,6 +7,10 @@ pub(super) struct CompactRenderer {
     shader: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
+    #[cfg(test)]
+    timestamps: Option<(wgpu::QuerySet, u32)>,
+    #[cfg(target_os = "macos")]
+    shared: Option<super::wgpu_shared::Pool>,
     prepared: Option<Prepared>,
     epoch: u64,
     layout: wgpu::BindGroupLayout,
@@ -35,7 +39,7 @@ struct Resources {
 }
 
 impl CompactRenderer {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let entries: Vec<_> = (0..3)
             .map(|binding| wgpu::BindGroupLayoutEntry {
                 binding,
@@ -83,6 +87,10 @@ impl CompactRenderer {
                         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::UNIFORM,
                     )
                 }),
+            #[cfg(test)]
+            timestamps: None,
+            #[cfg(target_os = "macos")]
+            shared: super::wgpu_shared::Pool::new(device, _queue),
             prepared: None,
             epoch: 0,
             resources: None,
@@ -167,10 +175,21 @@ impl CompactRenderer {
             self.previous.as_ref().map(|p| p.cells.as_slice()),
             &image.cells,
         );
-        let detail = changed_words(
-            self.previous.as_ref().map(|p| p.detail.as_slice()),
-            &image.detail,
-        );
+        #[cfg(target_os = "macos")]
+        let shared = self
+            .shared
+            .as_ref()
+            .is_some_and(|pool| pool.supports(image, limits));
+        #[cfg(not(target_os = "macos"))]
+        let shared = false;
+        let detail = if shared {
+            0..image.detail.len()
+        } else {
+            changed_words(
+                self.previous.as_ref().map(|p| p.detail.as_slice()),
+                &image.detail,
+            )
+        };
         // Previously accepted cells remain valid only if their tile size and
         // accessible detail range are unchanged. RGB detail words are data,
         // not further indices, so changing those words needs no index scan.
@@ -282,6 +301,16 @@ impl CompactRenderer {
             &group,
             target,
             viewport,
+            {
+                #[cfg(test)]
+                {
+                    timestamp_writes(&self.timestamps)
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            },
         );
         belt.finish_and_recall_on_submit(&encoder);
         queue.submit([encoder.finish()]);
@@ -316,6 +345,45 @@ impl CompactRenderer {
                     ),
                 ],
             ));
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(pool) = &mut self.shared {
+            let geometry = [
+                image.width,
+                image.height,
+                image.scale,
+                0,
+                crop.0,
+                crop.1,
+                crop.2,
+                crop.3,
+                viewport.0,
+                viewport.1,
+                viewport.2,
+                viewport.3,
+            ];
+            if pool.render(
+                &self.layout,
+                image,
+                &geometry,
+                self.pipelines[index].as_ref().unwrap(),
+                target,
+                viewport,
+                {
+                    #[cfg(test)]
+                    {
+                        timestamp_writes(&self.timestamps)
+                    }
+                    #[cfg(not(test))]
+                    {
+                        None
+                    }
+                },
+            ) {
+                self.previous = Some(image.clone());
+                self.epoch = self.epoch.wrapping_add(1);
+                return;
+            }
         }
         let prepared = self.prepared.as_ref().unwrap();
         let cells_changed = prepared.cells.clone();
@@ -438,12 +506,35 @@ impl CompactRenderer {
             &resources.group,
             target,
             viewport,
+            {
+                #[cfg(test)]
+                {
+                    timestamp_writes(&self.timestamps)
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            },
         );
         self.staging.finish_and_recall_on_submit(&encoder);
         queue.submit([encoder.finish()]);
         self.previous = Some(image.clone());
         self.epoch = self.epoch.wrapping_add(1);
     }
+}
+
+#[cfg(test)]
+fn timestamp_writes(
+    timestamps: &Option<(wgpu::QuerySet, u32)>,
+) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+    timestamps
+        .as_ref()
+        .map(|(query_set, index)| wgpu::RenderPassTimestampWrites {
+            query_set,
+            beginning_of_pass_write_index: Some(*index),
+            end_of_pass_write_index: Some(*index + 1),
+        })
 }
 
 fn valid_changed_cells(
@@ -509,16 +600,18 @@ fn changed_words(previous: Option<&[u32]>, words: &[u32]) -> std::ops::Range<usi
     start..high
 }
 
-fn draw(
+pub(super) fn draw(
     encoder: &mut wgpu::CommandEncoder,
     pipeline: &wgpu::RenderPipeline,
     group: &wgpu::BindGroup,
     target: &wgpu::TextureView,
     viewport: (u32, u32, u32, u32),
+    timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'_>>,
 ) {
     {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("retained coverage"),
+            timestamp_writes,
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 depth_slice: None,
@@ -576,8 +669,34 @@ pub(crate) mod tests {
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         eprintln!("[RENDER-BENCH] adapter={:?}", adapter.get_info());
-        let (device, queue) = super::super::wgpu_present::request_device(&adapter).unwrap();
-        let mut renderer = CompactRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
+        let measure_gpu = std::env::var_os("SYSTEMLESS_BENCH_GPU_TIMESTAMPS").is_some()
+            && adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let shared = matches!(
+            adapter.get_info().device_type,
+            wgpu::DeviceType::IntegratedGpu | wgpu::DeviceType::Cpu
+        );
+        let features = if shared {
+            adapter.features() & wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
+        } else {
+            wgpu::Features::empty()
+        } | if measure_gpu {
+            wgpu::Features::TIMESTAMP_QUERY
+        } else {
+            wgpu::Features::empty()
+        };
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            required_features: features,
+            ..Default::default()
+        }))
+        .unwrap();
+        let query_set = measure_gpu.then(|| {
+            device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: Some("presentation timing"),
+                ty: wgpu::QueryType::Timestamp,
+                count: 840,
+            })
+        });
+        let mut renderer = CompactRenderer::new(&device, &queue, wgpu::TextureFormat::Bgra8Unorm);
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("presentation benchmark"),
             size: wgpu::Extent3d {
@@ -602,7 +721,12 @@ pub(crate) mod tests {
             let images = [image.clone(), Arc::new(alternate)];
             let mut samples = Vec::new();
             let mut submitted = Vec::new();
+            let mut prepared = Vec::new();
+            let mut encoded = Vec::new();
             for iteration in 0..420 {
+                renderer.timestamps = query_set
+                    .as_ref()
+                    .map(|query| (query.clone(), iteration as u32 * 2));
                 let image = &images[iteration % 2];
                 let start = std::time::Instant::now();
                 assert!(renderer.prepare(
@@ -611,6 +735,7 @@ pub(crate) mod tests {
                     (0, 0, 800, 600),
                     &device.limits()
                 ));
+                let prepare_elapsed = start.elapsed();
                 renderer.encode(
                     &device,
                     &queue,
@@ -624,7 +749,51 @@ pub(crate) mod tests {
                 if iteration >= 120 {
                     samples.push(start.elapsed());
                     submitted.push(submit_elapsed);
+                    prepared.push(prepare_elapsed);
+                    encoded.push(submit_elapsed - prepare_elapsed);
                 }
+            }
+            if let Some(query_set) = &query_set {
+                let size = 840 * 8;
+                let resolved = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size,
+                    usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                });
+                let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: None,
+                    size,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let mut encoder = device.create_command_encoder(&Default::default());
+                encoder.resolve_query_set(query_set, 0..840, &resolved, 0);
+                encoder.copy_buffer_to_buffer(&resolved, 0, &readback, 0, size);
+                queue.submit([encoder.finish()]);
+                readback
+                    .slice(..)
+                    .map_async(wgpu::MapMode::Read, |result| result.unwrap());
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let bytes = readback.slice(..).get_mapped_range().unwrap();
+                let mut times = Vec::new();
+                for pair in bytes.chunks_exact(16).skip(120) {
+                    let start = u64::from_le_bytes(pair[..8].try_into().unwrap());
+                    let end = u64::from_le_bytes(pair[8..].try_into().unwrap());
+                    times.push(std::time::Duration::from_secs_f64(
+                        end.saturating_sub(start) as f64 * f64::from(queue.get_timestamp_period())
+                            / 1e9,
+                    ));
+                }
+                crate::renderer_bench::report(
+                    if text {
+                        "present-text-gpu-time"
+                    } else {
+                        "present-ui-gpu-time"
+                    },
+                    "gpu",
+                    &mut times,
+                );
             }
             crate::renderer_bench::report(
                 if text { "present-text" } else { "present-ui" },
@@ -639,6 +808,24 @@ pub(crate) mod tests {
                 },
                 "gpu",
                 &mut submitted,
+            );
+            crate::renderer_bench::report(
+                if text {
+                    "present-text-prepare"
+                } else {
+                    "present-ui-prepare"
+                },
+                "gpu",
+                &mut prepared,
+            );
+            crate::renderer_bench::report(
+                if text {
+                    "present-text-encode"
+                } else {
+                    "present-ui-encode"
+                },
+                "gpu",
+                &mut encoded,
             );
         }
     }
@@ -679,7 +866,7 @@ pub(crate) mod tests {
     }
 
     fn check_retained_coverage(device: wgpu::Device, queue: wgpu::Queue) {
-        let mut renderer = CompactRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut renderer = CompactRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
         for scale in 1..=4 {
             for retained in [false, true] {
                 let mut image = CompactPresentation {
@@ -830,6 +1017,115 @@ pub(crate) mod tests {
         image.detail.fill(0x123456);
         assert!(valid_changed_cells(Some(&previous), &image, 0..0));
         assert!(valid_changed_cells(None, &image, 0..0));
+    }
+
+    fn presentation_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::default();
+        match pollster::block_on(instance.request_adapter(&Default::default())) {
+            Ok(adapter) => Some(super::super::wgpu_present::request_device(&adapter).unwrap()),
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn gpu_queued_retained_packets_preserve_every_frame() {
+        let Some((device, queue)) = presentation_device() else {
+            return;
+        };
+        let mut renderer = CompactRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("queued retained frames"),
+            size: wgpu::Extent3d {
+                width: 16,
+                height: 16,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let mut frames = Vec::new();
+        for frame in 0..24u32 {
+            let color = (frame * 717137) & 0xffffff;
+            let image = Arc::new(CompactPresentation {
+                width: 8,
+                height: 8,
+                scale: 4,
+                cells: (0..64)
+                    .map(|cell| {
+                        if (cell + frame) % 3 == 0 {
+                            color
+                        } else {
+                            0x80000000
+                        }
+                    })
+                    .collect(),
+                detail: (0..16)
+                    .map(|sample| (color + sample * 8137) & 0xffffff)
+                    .collect(),
+            });
+            let mut expected = Vec::new();
+            assert!(image.render_argb_resized((16, 16), &mut expected));
+            renderer.encode(&device, &queue, &image, (0, 0, 8, 8), (0, 0, 16, 16), &view);
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 256 * 16,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.copy_texture_to_buffer(
+                target.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(16),
+                    },
+                },
+                target.size(),
+            );
+            queue.submit([encoder.finish()]);
+            readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, |result| result.unwrap());
+            frames.push((readback, expected));
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        for (frame, (readback, expected)) in frames.iter().enumerate() {
+            let bytes = readback.slice(..).get_mapped_range().unwrap();
+            for y in 0..16 {
+                for x in 0..16 {
+                    let rgba = &bytes[y * 256 + x * 4..y * 256 + x * 4 + 4];
+                    let actual = 0xff000000
+                        | (u32::from(rgba[0]) << 16)
+                        | (u32::from(rgba[1]) << 8)
+                        | u32::from(rgba[2]);
+                    assert_eq!(
+                        actual,
+                        expected[y * 16 + x],
+                        "queued frame={frame} pixel=({x},{y})"
+                    );
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(pool) = &renderer.shared {
+            let (allocated, ready) = pool.status();
+            assert!((1..=3).contains(&allocated));
+            assert_eq!(allocated, ready);
+        }
     }
 
     #[test]
