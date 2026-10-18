@@ -8,6 +8,7 @@ struct Geometry { size: vec4<u32>, viewport: vec4<u32>, clear: vec4<u32> }
 struct Light { direction:vec4<f32>, color:vec4<f32>, location:vec4<f32>, parameters:vec4<f32> }
 @group(0) @binding(4) var<storage,read> lights:array<Light>;
 @group(0) @binding(5) var<storage,read> palette:array<u32>;
+@group(0) @binding(6) var<storage,read> tiles:array<u32>;
 fn unit(v:vec3<f32>) -> vec4<f32> {
     let length_squared=dot(v,v);
     if length_squared > 0. && length_squared <= 3.402823e38 { return vec4(v/sqrt(length_squared),1.); }
@@ -96,8 +97,11 @@ fn unpack555(value: u32) -> vec3<f32> {
     }
     var depth = 3.402823e38;
     let point = vec2<f32>(xy);
-    for(var i=0u; i<geometry.size.z; i++) {
-        let triangle = triangles[i];
+    let tile=(xy.y/16u)*((geometry.size.x+15u)/16u)+xy.x/16u;
+    let offset=tiles[tile*2u];
+    let count=tiles[tile*2u+1u];
+    for(var entry=0u; entry<count; entry++) {
+        let triangle = triangles[tiles[offset+entry]];
         let a = triangle.vertices[0]; let b = triangle.vertices[1]; let c = triangle.vertices[2];
         let kind=(triangle.info.w>>4u)&3u;
         var perspective=vec3(1.,0.,0.);
