@@ -6,6 +6,7 @@ on:
       - 'src/bin/**'
       - '.github/workflows/native-window.yml'
       - '.github/scripts/verify-native-window.py'
+      - '.github/scripts/wait-for-window-manager.py'
   workflow_dispatch:
     inputs:
       soak-seconds:
@@ -35,14 +36,14 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config xvfb openbox libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers
+          sudo apt-get install -y libasound2-dev pkg-config xvfb openbox x11-utils libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build optimized native probe
         run: cargo build --locked --profile ci-test --bin systemless --features test-support
       - name: Run Linux native window checks
         if: runner.os == 'Linux'
-        run: xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox & python3 .github/scripts/verify-native-window.py'
+        run: xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox & python3 .github/scripts/wait-for-window-manager.py && python3 .github/scripts/verify-native-window.py'
       - name: Run macOS native window checks
         if: runner.os == 'macOS'
         run: python3 .github/scripts/verify-native-window.py
@@ -50,7 +51,7 @@ jobs:
         if: runner.os == 'Linux' && (github.event_name != 'workflow_dispatch' || inputs.soak-seconds != '0')
         env:
           SOAK_SECONDS: ${{ inputs.soak-seconds || '30' }}
-        run: xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox & python3 .github/scripts/verify-native-window.py --soak-only --soak-seconds "$SOAK_SECONDS" --output native-window-results/soak'
+        run: xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox & python3 .github/scripts/wait-for-window-manager.py && python3 .github/scripts/verify-native-window.py --soak-only --soak-seconds "$SOAK_SECONDS" --output native-window-results/soak'
       - name: Run macOS lifecycle soak
         if: runner.os == 'macOS' && (github.event_name != 'workflow_dispatch' || inputs.soak-seconds != '0')
         env:
