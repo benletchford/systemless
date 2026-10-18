@@ -40,7 +40,11 @@ and allocator reservation can legitimately outlive a frame. These observations
 exclude guest compute devices and complete driver/process residency; unsupported
 accounting, compute-resource stress and physical memory/power review remain
 pending. Counter instrumentation is absent from ordinary and release benchmark
-builds. Review growth after warm-up across repeated cycles.
+builds. Resource observations are streamed during the run, and repeated check labels are
+retained once, keeping observer storage bounded during steady-state RSS sampling.
+The compatible resource array is materialized only for final/error reporting;
+account for that shutdown serialization spike. Review growth after warm-up across
+repeated cycles.
 Sampling applies to functional windows, not timed offscreen benchmarks.
 
 Use `--skip-windows` on a locked session to collect correctness/benchmark evidence;
@@ -53,7 +57,21 @@ for each run. Full benchmark timing boundaries are in
 
 The native-window workflow runs Linux virtual-desktop and macOS desktop checks,
 including a short repeated lifecycle soak. Dispatch it with `soak-seconds` for
-longer runs (up to 3600 seconds per renderer/runtime). Virtual/software adapters
+longer runs. The default four-case matrix permits up to 3600 seconds per owner.
+For a genuine multi-hour session, select a single runtime and presenter:
+
+```sh
+python3 .github/scripts/verify-native-window.py --soak-only --soak-seconds 7200 \
+  --runtime inline --presenter wgpu --output /tmp/native-two-hour
+```
+
+`--runtime`/`--presenter` only filter soak-only runs; ordinary qualification always
+keeps the complete matrix. Durations above one hour require both selectors.
+Local runs allow up to six hours; hosted jobs allow up to five hours so build and
+matrix checks fit their six-hour job limit. Dispatch the native workflow with
+`runtime` and `presenter` selections for those long cases. The main qualifier
+accepts `--soak-runtime`/`--soak-presenter` too. A dry run lists selected cases
+without opening a desktop (`--dry-run`). Virtual/software adapters
 qualify correctness only. Windows correctness builds run separately; real Windows
 window lifecycle qualification still needs a desktop run of this tool.
 

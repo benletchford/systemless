@@ -20,14 +20,20 @@ parser.add_argument("--output", type=Path)
 parser.add_argument("--soak-seconds", type=int, default=0)
 parser.add_argument("--soak-only", action="store_true",
                     help="repeat baseline platform/wgpu lifecycle checks in both runtime modes")
+parser.add_argument("--runtime", choices=("all", "inline", "thread"), default="all")
+parser.add_argument("--presenter", choices=("all", "platform", "wgpu"), default="all")
+parser.add_argument("--dry-run", action="store_true", help="validate duration and list cases without starting a desktop")
 args = parser.parse_args()
-if not 0 <= args.soak_seconds <= 3600:
-    parser.error("--soak-seconds must be 0..3600")
+if not 0 <= args.soak_seconds <= 21600:
+    parser.error("--soak-seconds must be 0..21600")
 if args.recovery_only and (args.soak_only or args.soak_seconds):
     parser.error("recovery-only cannot qualify lifecycle soak")
+if (args.runtime != "all" or args.presenter != "all") and not args.soak_only:
+    parser.error("case selectors require --soak-only; the normal matrix stays complete")
+if args.soak_seconds > 3600 and (not args.soak_only or args.runtime == "all" or args.presenter == "all"):
+    parser.error("longer-than-one-hour soaks require one explicit runtime and presenter")
 root = Path(__file__).resolve().parents[2]
 output = args.output or root / "native-window-results"
-output.mkdir(parents=True, exist_ok=True)
 failed = []
 cases = [] if args.recovery_only else [(backend, gpu, "", None) for backend in ("inline", "thread") for gpu in (False, True)]
 cases += [] if args.soak_only else [(backend, True, fault, None) for backend in ("inline", "thread")
@@ -35,6 +41,14 @@ cases += [] if args.soak_only else [(backend, True, fault, None) for backend in 
 if not args.recovery_only and not args.soak_only:
     cases += [(backend, False, "", renderer) for backend in ("inline", "thread")
               for renderer in ("auto", "platform", "wgpu")]
+if args.soak_only:
+    cases = [case for case in cases
+             if (args.runtime == "all" or case[0] == args.runtime)
+             and (args.presenter == "all" or case[1] == (args.presenter == "wgpu"))]
+if args.dry_run:
+    print(json.dumps(cases))
+    raise SystemExit(0)
+output.mkdir(parents=True, exist_ok=True)
 for backend, gpu, fault, renderer in cases:
     name = backend + ("-wgpu" if gpu else "")
     if renderer:

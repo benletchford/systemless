@@ -4,8 +4,42 @@
 //! The cursor packet is injected at the owned-snapshot boundary: driver tests
 //! separately prove guest instruction -> retained warp -> matching acknowledgement.
 use super::*;
+use std::io::Write;
 use std::time::{Duration, Instant};
 use winit::window::Window;
+
+// Stream during the run so observer storage does not grow alongside RSS.
+// Reconstruct the compatible report array only when reporting/closing.
+struct ResourceLog {
+    path: PathBuf,
+    writer: std::io::BufWriter<std::fs::File>,
+    count: usize,
+}
+impl ResourceLog {
+    fn new(report: &std::path::Path) -> Self {
+        let path = report.with_extension("gpu-resources.jsonl");
+        let writer = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+        Self {
+            path,
+            writer,
+            count: 0,
+        }
+    }
+    fn append(&mut self, sample: &serde_json::Value) {
+        writeln!(self.writer, "{sample}").unwrap();
+        self.writer.flush().unwrap();
+        self.count += 1;
+    }
+    fn samples(&self) -> Vec<serde_json::Value> {
+        let samples: Vec<_> = std::fs::read_to_string(&self.path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(samples.len(), self.count, "native resource log incomplete");
+        samples
+    }
+}
 
 struct Probe {
     app: App,
@@ -31,13 +65,14 @@ struct Probe {
     fault_sequence: u64,
     soak: Duration,
     cycles: u32,
-    gpu_resources: Vec<serde_json::Value>,
+    gpu_resources: ResourceLog,
 }
 
 pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
     let now = Instant::now();
     let mut probe = Probe {
         app,
+        gpu_resources: ResourceLog::new(&report),
         report,
         started: now,
         phase_started: now,
@@ -63,11 +98,10 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
                 .unwrap_or_else(|_| "0".into())
                 .parse::<u64>()
                 .ok()
-                .filter(|seconds| *seconds <= 3600)
-                .expect("soak seconds must be 0..3600"),
+                .filter(|seconds| *seconds <= 21600)
+                .expect("soak seconds must be 0..21600"),
         ),
         cycles: 0,
-        gpu_resources: Vec::new(),
     };
     event_loop
         .run_app(&mut probe)
@@ -91,7 +125,7 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
 
 impl Probe {
     fn sample_gpu_resources(&mut self) {
-        self.gpu_resources.push(serde_json::json!({
+        self.gpu_resources.append(&serde_json::json!({
             "seconds": self.started.elapsed().as_secs_f64(), "cycle": self.cycles,
             "rebuilds": self.app.wgpu_recovery.rebuilds,
             "renderer": if self.app.use_wgpu { "wgpu" } else { "platform" },
@@ -118,7 +152,7 @@ impl Probe {
             "rebuilds": self.app.wgpu_recovery.rebuilds,
             "fallback": self.app.wgpu_recovery.fallback,
             "guest_sequence": self.app.frame.sequence,
-            "gpu_resources": self.gpu_resources,
+            "gpu_resources": self.gpu_resources.samples(),
             "window": self.app.window.as_ref().map(|w| serde_json::json!({
                 "width": w.inner_size().width, "height": w.inner_size().height,
                 "scale_factor": w.scale_factor(),
@@ -136,7 +170,9 @@ impl Probe {
         std::fs::write(&self.report, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
     fn advance(&mut self, check: &'static str) {
-        self.checks.push(check);
+        if !self.checks.contains(&check) {
+            self.checks.push(check);
+        }
         eprintln!("[NATIVE-PROBE] PASS {check}");
         self.phase += 1;
         self.phase_started = Instant::now();
@@ -180,7 +216,7 @@ impl Probe {
         let settled = self.phase_started.elapsed() > Duration::from_secs(2);
         match self.phase {
             0 if self.app.frame.sequence > 2 && self.app.last_presented_guest_tick.is_some() => {
-                if self.gpu_resources.is_empty() {
+                if self.gpu_resources.count == 0 {
                     self.sample_gpu_resources();
                 }
                 if !self.fault.is_empty() {
@@ -403,5 +439,31 @@ fn macos_cursor_position(window: &Window) -> Option<(f64, f64)> {
         };
         let scale = window.scale_factor();
         Some(((local.x - bounds.origin.x) * scale, y * scale))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_resource_log_preserves_samples_without_retaining_them() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let report = std::env::temp_dir().join(format!(
+            "systemless-native-{}-{unique}.json",
+            std::process::id()
+        ));
+        let mut log = ResourceLog::new(&report);
+        let a = serde_json::json!({"cycle": 0, "resources": null});
+        let b = serde_json::json!({"cycle": 1, "resources": {"buffers": 12}});
+        log.append(&a);
+        log.append(&b);
+        assert_eq!(log.samples(), vec![a, b]);
+        let path = log.path.clone();
+        drop(log);
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
+        std::fs::remove_file(path).unwrap();
     }
 }
