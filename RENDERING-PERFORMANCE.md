@@ -28,8 +28,8 @@ warm-up work is excluded from measured samples (three guest/kernel iterations,
 - **UI/text presentation:** 640×480 retained packets at 4× detail resolved into
   an 800×600 offscreen target. Three hundred samples include validation, upload,
   command encoding and GPU completion, with resources/pipelines already warm.
-  Each sample uses a new packet with one changed cell. Unchanged retained
-  detail may stay resident, as it does during ordinary UI updates. macOS compares
+  Each sample uses a new packet with one changed cell. The backend chooses
+  between incremental resident updates and complete shared-memory copies. macOS compares
   the default
   Metal shader/upload path with production wgpu encoding on the same host
   thread, alternating backend order between runs; this does not measure
@@ -41,7 +41,9 @@ warm-up work is excluded from measured samples (three guest/kernel iterations,
   triangles. GPU times include upload/readback; software times include the
   helper's target/depth setup and output extraction. `gpu` forces the kernel;
   `gpu-adaptive` applies the production work selector and uses software below
-  its crossover. This isolates raster costs, not full application frame rates.
+  its crossover, including selector cost. Backend order rotates within each
+  repetition so CPU samples do not all precede or follow a forced-GPU batch.
+  This isolates raster costs, not full application frame rates.
 
 Neither play-script total duration nor CI software-adapter timings establish
 physical GPU/window performance. Pixel comparisons and strict GPU device tests
@@ -75,6 +77,24 @@ buffers. Readbacks map only the current result and unmap before reuse. Retained
 presentation borrows packed u32 storage directly for uploads. Exact comparisons
 find changed ranges, so stable detail and geometry are not uploaded again.
 Raw ARGB frames upload directly as BGRA on little-endian hosts.
+
+On supported Metal UMA devices, retained presentation uses three reusable
+shared-buffer slots. The CPU writes a slot only after its previous wgpu queue
+completion fence has fired, then unmaps the HAL view before submission. This
+avoids full-detail comparisons, blit encoders and asynchronous remapping for
+ordinary UI updates. wgpu still owns the resources, validates packets/bindings,
+and executes the render pass; shader bounds checks remain enabled. A CPU-cached slot is
+cleared asynchronously through wgpu before the first HAL write, and remains
+unavailable until that initialization fence completes. Exact maximum-reference
+validation uses a vectorizable reduction instead of comparing host snapshots. HAL mappings and pointer
+lifetimes are confined to one upload, following its documented CPU/GPU ordering
+and coherence contract. Slots grow geometrically up to 32 MiB each. Unsupported
+backends, larger packets, or three occupied slots use the existing upload path
+without waiting for a slot. Reusing the same immutable packet during expose or
+resize updates geometry without copying its retained payload again; weak
+identity tracking prevents allocation-address reuse from producing a false hit.
+Without `--gpu`, no pool is created.
+
 Large retained updates can use one aligned shared allocation on supported UMA
 adapters;
 other updates use persistent buffers and a reusable staging belt. Queue ordering
@@ -100,5 +120,9 @@ GPU (0.823/1.753 ms versus 2.178/8.197 ms).
 
 Use the JSON report and individual run logs for current measurements. Reports
 include source and fixture hashes, revision, local changes, sample counts,
-median/p95 costs, and separate presentation submission costs. Presentation
+median/p95 costs, and separate presentation preparation/encoding/submission
+costs. Set `SYSTEMLESS_BENCH_GPU_TIMESTAMPS=1` for supplementary wgpu render-pass
+GPU timestamps when the adapter supports queries. Query resolution/readback runs
+after all timed samples; ordinary runs do not enable timestamp queries.
+Presentation
 completion costs include the host API wait and are not display/input latency.

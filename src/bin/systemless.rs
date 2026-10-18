@@ -26,6 +26,10 @@ mod wgpu_compact;
 #[path = "desktop/wgpu_present.rs"]
 mod wgpu_present;
 
+#[cfg(target_os = "macos")]
+#[path = "desktop/wgpu_shared.rs"]
+mod wgpu_shared;
+
 #[path = "desktop/wgpu_buffers.rs"]
 mod wgpu_buffers;
 
