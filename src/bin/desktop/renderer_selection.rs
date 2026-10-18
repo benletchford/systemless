@@ -5,6 +5,8 @@ pub(super) enum Renderer {
     Auto,
     Wgpu,
     Platform,
+    /// CPU presentation, without enabling GPU compute.
+    Software,
 }
 impl Renderer {
     pub fn uses_wgpu(self, legacy_gpu: bool) -> bool {
@@ -19,6 +21,7 @@ mod tests {
     fn automatic_selection_requires_a_separate_qualification_decision() {
         assert!(!Renderer::default().uses_wgpu(false));
         assert!(!Renderer::Platform.uses_wgpu(false));
+        assert!(!Renderer::Software.uses_wgpu(false));
         assert!(Renderer::Wgpu.uses_wgpu(false));
         assert!(Renderer::Auto.uses_wgpu(true));
     }

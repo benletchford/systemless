@@ -195,12 +195,18 @@ impl App {
         let window = self.window.as_ref().ok_or("window unavailable")?.clone();
         #[cfg(target_os = "macos")]
         {
-            self.surface = Some(metal_present::MetalPresenter::new(window)?);
+            self.surface = Some(super::mac_present::Presenter::new(
+                window,
+                self.use_software,
+            )?);
         }
         #[cfg(not(target_os = "macos"))]
         {
             #[cfg(target_os = "windows")]
-            if std::env::var_os("SYSTEMLESS_D3D11").as_deref() != Some(std::ffi::OsStr::new("0")) {
+            if !self.use_software
+                && std::env::var_os("SYSTEMLESS_D3D11").as_deref()
+                    != Some(std::ffi::OsStr::new("0"))
+            {
                 match d3d_present::D3dPresenter::new(
                     window.clone(),
                     self.gpu_wake

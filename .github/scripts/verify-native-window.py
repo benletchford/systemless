@@ -19,9 +19,9 @@ parser.add_argument("--recovery-only", action="store_true",
 parser.add_argument("--output", type=Path)
 parser.add_argument("--soak-seconds", type=int, default=0)
 parser.add_argument("--soak-only", action="store_true",
-                    help="repeat baseline platform/wgpu lifecycle checks in both runtime modes")
+                    help="repeat platform/wgpu/software lifecycle checks in both runtime modes")
 parser.add_argument("--runtime", choices=("all", "inline", "thread"), default="all")
-parser.add_argument("--presenter", choices=("all", "platform", "wgpu"), default="all")
+parser.add_argument("--presenter", choices=("all", "platform", "wgpu", "software"), default="all")
 parser.add_argument("--dry-run", action="store_true", help="validate duration and list cases without starting a desktop")
 args = parser.parse_args()
 if not 0 <= args.soak_seconds <= 21600:
@@ -40,11 +40,12 @@ cases += [] if args.soak_only else [(backend, True, fault, None) for backend in 
           for fault in ("startup", "loss", "fatal", "recreate", "repeated-loss")]
 if not args.recovery_only and not args.soak_only:
     cases += [(backend, False, "", renderer) for backend in ("inline", "thread")
-              for renderer in ("auto", "platform", "wgpu")]
+              for renderer in ("auto", "platform", "wgpu", "software")]
 if args.soak_only:
+    cases += [(backend, False, "", "software") for backend in ("inline", "thread")]
     cases = [case for case in cases
              if (args.runtime == "all" or case[0] == args.runtime)
-             and (args.presenter == "all" or case[1] == (args.presenter == "wgpu"))]
+             and (args.presenter == "all" or (case[3] or ("wgpu" if case[1] else "platform")) == args.presenter)]
 if args.dry_run:
     print(json.dumps(cases))
     raise SystemExit(0)
@@ -101,9 +102,13 @@ for backend, gpu, fault, renderer in cases:
                         and item["resources"].get("hal_counters_enabled") is True
                         for item in resources if item.get("renderer") == "wgpu")
             )
-            expected_renderer = "wgpu" if (gpu or renderer == "wgpu") and fault in ("", "loss") else "platform"
+            expected_renderer = "software" if renderer == "software" else ("wgpu" if (gpu or renderer == "wgpu") and fault in ("", "loss") else "platform")
+            software_contract = renderer != "software" or (
+                any(item.get("presentation_backend") == "software" for item in resources)
+                and all(item.get("presentation_backend") in ("software", "none") for item in resources)
+            )
             passed = (process.returncode == 0 and state.get("passed") is True
-                      and resource_contract
+                      and resource_contract and software_contract
                       and state.get("renderer") == expected_renderer
                       and (args.recovery_only or state.get("lifecycle_cycles", 0) >= (2 if args.soak_seconds else 1))
                       and state.get("elapsed_seconds", 0) >= args.soak_seconds)

@@ -15,16 +15,16 @@ class Cases(unittest.TestCase):
         return json.loads(result.stdout) if valid else None
 
     def test_normal_matrix_is_complete(self):
-        self.assertEqual(len(self.run_cases()), 20)
+        self.assertEqual(len(self.run_cases()), 22)
 
-    def test_soak_defaults_to_four_cases(self):
-        self.assertEqual(len(self.run_cases("--soak-only", "--soak-seconds", "30")), 4)
+    def test_soak_defaults_to_six_cases(self):
+        self.assertEqual(len(self.run_cases("--soak-only", "--soak-seconds", "30")), 6)
 
     def test_long_session_selects_exact_owner(self):
         for runtime in ["inline", "thread"]:
-            for presenter in ["platform", "wgpu"]:
+            for presenter in ["platform", "wgpu", "software"]:
                 result = self.run_cases("--soak-only", "--soak-seconds", "7200", "--runtime", runtime, "--presenter", presenter)
-                self.assertEqual(result, [[runtime, presenter == "wgpu", "", None]])
+                self.assertEqual(result, [[runtime, presenter == "wgpu", "", "software" if presenter == "software" else None]])
 
     def test_unfiltered_or_partial_long_matrix_is_rejected(self):
         self.run_cases("--soak-only", "--soak-seconds", "7200", valid=False)

@@ -24,7 +24,7 @@ on:
       presenter:
         description: 'Presenter for a long single-session soak'
         type: choice
-        options: [all, platform, wgpu]
+        options: [all, platform, wgpu, software]
         default: all
 
 permissions:
