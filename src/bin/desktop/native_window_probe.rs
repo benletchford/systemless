@@ -158,6 +158,13 @@ impl Probe {
                 self.cursor_input_sent = true;
             }
         }
+        // A repeated cycle must request a different size: requesting current
+        // bounds need not generate a native Resized event on any platform.
+        let target_size = if self.cycles % 2 == 0 {
+            winit::dpi::PhysicalSize::new(700, 500)
+        } else {
+            winit::dpi::PhysicalSize::new(720, 520)
+        };
         let settled = self.phase_started.elapsed() > Duration::from_secs(2);
         match self.phase {
             0 if self.app.frame.sequence > 2 && self.app.last_presented_guest_tick.is_some() => {
@@ -214,13 +221,10 @@ impl Probe {
                 self.advance("guest frames reach real window");
             }
             1 if self.focused && settled => {
-                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(700, 500));
+                let _ = window.request_inner_size(target_size);
                 self.advance("initial native focus");
             }
-            2 if self.resized
-                && window.inner_size() == winit::dpi::PhysicalSize::new(700, 500)
-                && settled =>
-            {
+            2 if self.resized && window.inner_size() == target_size && settled => {
                 window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
                 self.advance("native resize observed");
             }
@@ -241,10 +245,10 @@ impl Probe {
                 // AppKit may restore its remembered standard (zoom) frame.
                 // Verify windowed bounds, then require an exact resize after exit.
                 eprintln!("[NATIVE-PROBE] restored normal size={size:?}");
-                let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(700, 500));
+                let _ = window.request_inner_size(target_size);
                 self.advance("fullscreen exit returns to normal window bounds");
             }
-            5 if window.inner_size() == winit::dpi::PhysicalSize::new(700, 500) && settled => {
+            5 if window.inner_size() == target_size && settled => {
                 let helper = event_loop
                     .create_window(
                         Window::default_attributes()
