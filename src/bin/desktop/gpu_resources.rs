@@ -15,7 +15,8 @@ fn metal_allocations(device: &wgpu::Device) -> Option<Value> {
     // pointer escapes, and no wgpu resource state is changed.
     unsafe {
         let metal = device.as_hal::<wgpu::hal::api::Metal>()?;
-        let object = &*(std::ptr::from_ref(&**metal.raw_device()).cast::<objc2::runtime::AnyObject>());
+        let object =
+            &*(std::ptr::from_ref(&**metal.raw_device()).cast::<objc2::runtime::AnyObject>());
         let supported: bool =
             objc2::msg_send![object, respondsToSelector: objc2::sel!(currentAllocatedSize)];
         if !supported {
