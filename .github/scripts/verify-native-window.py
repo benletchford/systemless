@@ -79,8 +79,17 @@ for backend, gpu, fault, renderer in cases:
                 time.sleep(1)
             (case / "memory.json").write_text(json.dumps(memory, indent=2) + "\n")
             state = json.loads(report.read_text()) if report.exists() else {}
+            resources = state.get("gpu_resources", [])
+            resource_contract = (
+                len(resources) >= state.get("lifecycle_cycles", 0) + 1
+                and resources[-1].get("renderer") == state.get("renderer")
+                and all(isinstance(item.get("resources"), dict)
+                        and item["resources"].get("hal_counters_enabled") is True
+                        for item in resources if item.get("renderer") == "wgpu")
+            )
             expected_renderer = "wgpu" if (gpu or renderer == "wgpu") and fault in ("", "loss") else "platform"
             passed = (process.returncode == 0 and state.get("passed") is True
+                      and resource_contract
                       and state.get("renderer") == expected_renderer
                       and (args.recovery_only or state.get("lifecycle_cycles", 0) >= (2 if args.soak_seconds else 1))
                       and state.get("elapsed_seconds", 0) >= args.soak_seconds)

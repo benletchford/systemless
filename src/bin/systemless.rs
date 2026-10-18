@@ -74,6 +74,9 @@ mod native_menu;
 #[path = "desktop/native_termination.rs"]
 mod native_termination;
 #[cfg(feature = "test-support")]
+#[path = "desktop/gpu_resources.rs"]
+mod gpu_resources;
+#[cfg(feature = "test-support")]
 #[path = "desktop/native_window_probe.rs"]
 mod native_window_probe;
 #[path = "desktop/play.rs"]

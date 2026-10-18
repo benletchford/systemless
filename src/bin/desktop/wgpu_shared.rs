@@ -1,7 +1,7 @@
 //! Fenced Metal UMA uploads. Rendering and ownership still belong to wgpu.
 use std::sync::{
-    Arc, Weak,
     atomic::{AtomicBool, Ordering},
+    Arc, Weak,
 };
 use systemless::memory::CompactPresentation;
 
@@ -118,6 +118,15 @@ impl Pool {
                 .filter(|slot| self.completed(slot))
                 .count(),
         )
+    }
+    #[cfg(feature = "test-support")]
+    pub(super) fn resource_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({
+            "slots": self.slots.len(),
+            "capacity_bytes": self.slots.iter().map(|s| s.buffer.size()).sum::<u64>(),
+            "slot_limit": SLOTS, "capacity_limit_bytes": SLOTS as u64 * MAX_PACKET,
+            "scope": "requested shared buffer capacity; not driver residency",
+        })
     }
     pub fn supports(&self, image: &CompactPresentation, limits: &wgpu::Limits) -> bool {
         Layout::new(image, limits).is_some()

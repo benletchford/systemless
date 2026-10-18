@@ -27,7 +27,18 @@ resets or hardware removal.
 Reports preserve commands, logs, revision, dirty state, fixture hash, adapter
 messages, per-case display size/scale/refresh, recovery/fallback counts and guest
 progress. `memory.json` records one-second process RSS samples on Unix; it is not
-GPU allocation accounting. Review growth after warm-up across repeated cycles.
+GPU allocation accounting. Test-support builds additionally enable wgpu HAL
+counters and record presenter-device resource snapshots after the first frame and
+each lifecycle cycle. Reports include backend-dependent object counts, positive
+buffer/texture byte counters, optional allocator allocated/reserved totals, and
+requested shared-upload pool capacity on Metal. Zero memory counters and missing
+allocator reports are recorded as unknown (`null`), not evidence of zero usage.
+Compare matching renderer/rebuild epochs after warm-up: deferred GPU destruction
+and allocator reservation can legitimately outlive a frame. These observations
+exclude guest compute devices and complete driver/process residency; unsupported
+accounting, compute-resource stress and physical memory/power review remain
+pending. Counter instrumentation is absent from ordinary and release benchmark
+builds. Review growth after warm-up across repeated cycles.
 Sampling applies to functional windows, not timed offscreen benchmarks.
 
 Use `--skip-windows` on a locked session to collect correctness/benchmark evidence;
