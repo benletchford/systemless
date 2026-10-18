@@ -73,6 +73,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Qualify active guest GPU resources
         run: python .github/scripts/soak-gpu-compute.py --seconds "$COMPUTE_SOAK_SECONDS" --profile "$COMPUTE_SOAK_PROFILE" --workload "$COMPUTE_SOAK_WORKLOAD" --output compute-resource-results
+      - name: Verify QD3D GPU pixel oracles
+        if: env.COMPUTE_SOAK_WORKLOAD == 'gpu'
+        env:
+          SYSTEMLESS_REQUIRE_GPU: '1'
+        run: cargo test --locked --profile "$COMPUTE_SOAK_PROFILE" --features test-support --bin systemless wgpu_qd3d::tests::gpu_ -- --test-threads=1
       - name: Preserve compute evidence
         if: always()
         uses: actions/upload-artifact@v7
