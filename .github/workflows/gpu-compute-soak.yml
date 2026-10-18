@@ -15,12 +15,17 @@ on:
         description: 'Active session seconds per OS (1..18000; default two hours)'
         required: false
         default: '7200'
+      os:
+        description: 'Select one OS for a diagnostic rerun; PR checks retain all three'
+        type: choice
+        options: [all, ubuntu-latest, macos-latest, windows-latest]
+        default: all
 
 permissions:
   contents: read
 
 concurrency:
-  group: gpu-compute-soak-${{ github.ref }}
+  group: gpu-compute-soak-${{ github.ref }}-${{ inputs.os || 'all' }}
   cancel-in-progress: true
 
 jobs:
@@ -28,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.os != 'all' && format('["{0}"]', inputs.os) || '["ubuntu-latest","macos-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 360
     defaults:

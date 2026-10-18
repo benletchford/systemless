@@ -503,5 +503,17 @@ mod forced_gpu_guest {
             cycles += 1;
         }
         assert!(cycles > 0);
+        // A complete workload sample does not prove that driver-owned queues
+        // and devices can be destroyed. Keep ordinary destruction synchronous
+        // here so qualification detects a stall rather than hiding it.
+        fn teardown<T>(stage: &str, value: T) {
+            eprintln!("[GPU-SOAK-TEARDOWN] {stage}:begin");
+            drop(value);
+            eprintln!("[GPU-SOAK-TEARDOWN] {stage}:end");
+        }
+        teardown("runners", runners);
+        teardown("qd3d", qd3d);
+        teardown("quickdraw", quickdraw);
+        teardown("report", report);
     }
 }

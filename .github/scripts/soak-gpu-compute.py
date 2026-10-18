@@ -13,6 +13,14 @@ import time
 TEST = "renderer_bench::forced_gpu_guest::qualify_gpu_compute_resources"
 
 
+def teardown_evidence(log):
+    prefix = "[GPU-SOAK-TEARDOWN] "
+    events = [line.split(prefix, 1)[1].strip() for line in log.splitlines() if prefix in line]
+    expected = [f"{stage}:{event}" for stage in ("runners", "qd3d", "quickdraw", "report")
+                for event in ("begin", "end")]
+    return dict(events=events, last_event=events[-1] if events else None, complete=events == expected)
+
+
 def validate_samples(samples, seconds):
     if not isinstance(samples, list) or len(samples) < 2:
         return False
@@ -71,7 +79,7 @@ def main():
             digest.update(name.encode() + b"\0" + (root / name).read_bytes() + b"\0")
         return digest.hexdigest()
     initial_digest = source_digest()
-    report = dict(schema_version=1, revision=revision, dirty=git("status", "--porcelain").splitlines(),
+    report = dict(schema_version=2, revision=revision, dirty=git("status", "--porcelain").splitlines(),
                   source_sha256=initial_digest, harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                   fixture_sha256=hashlib.sha256((root / "tests/toolbox-showcase/toolbox-showcase.sit").read_bytes()).hexdigest(),
                   host=platform.platform(), machine=platform.machine(), seconds=args.seconds,
@@ -133,11 +141,14 @@ def main():
                 time.sleep(1)
         (output / "memory.json").write_text(json.dumps(memory, indent=2) + "\n")
         samples = [json.loads(line) for line in (output / "resources.jsonl").read_text().splitlines()] if (output / "resources.jsonl").exists() else []
-        passed = (process.returncode == 0 and validate_samples(samples, args.seconds)
+        workload_complete = validate_samples(samples, args.seconds)
+        teardown = teardown_evidence((output / "run.log").read_text(errors="replace"))
+        passed = (process.returncode == 0 and workload_complete and teardown["complete"]
                   and revision == git("rev-parse", "HEAD") and source_digest() == initial_digest
                   and hashlib.sha256((root / "tests/toolbox-showcase/toolbox-showcase.sit").read_bytes()).hexdigest() == report["fixture_sha256"])
         report.update(status="passed" if passed else "failed", returncode=process.returncode,
-                      elapsed_seconds=time.monotonic() - started, resource_samples=len(samples))
+                      elapsed_seconds=time.monotonic() - started, resource_samples=len(samples),
+                      workload_complete=workload_complete, teardown=teardown)
         save()
         print(f"compute resource soak: {report['status']} ({len(samples)} observations)", flush=True)
         return 0 if passed else 1
