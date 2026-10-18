@@ -18,6 +18,13 @@ impl Presenter {
         }
     }
 
+    #[cfg(feature = "test-support")]
+    pub(super) fn software_layer_snapshot(&self) -> Option<serde_json::Value> {
+        match self {
+            Self::Software(p) => Some(p.layer_snapshot()),
+            Self::Metal(_) => None,
+        }
+    }
     pub(super) fn new(window: Rc<Window>, software: bool) -> Result<Self, String> {
         if software {
             SoftwarePresenter::new(window).map(Self::Software)

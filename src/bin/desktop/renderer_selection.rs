@@ -14,6 +14,23 @@ impl Renderer {
     }
 }
 
+/// Desktop presentation after a terminal wgpu failure. Qualification keeps
+/// the existing platform fallback unless software is explicitly requested.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(super) enum GpuFallback {
+    #[default]
+    Platform,
+    Software,
+}
+impl GpuFallback {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Platform => "platform",
+            Self::Software => "software",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

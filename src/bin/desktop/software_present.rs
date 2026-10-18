@@ -61,10 +61,56 @@ fn write_rgb(
 }
 
 #[cfg(target_os = "macos")]
+use objc2::{msg_send, msg_send_id, rc::Retained, runtime::NSObject, ClassType};
+#[cfg(target_os = "macos")]
+use objc2_quartz_core::{CALayer, CAMetalLayer};
+
+#[cfg(target_os = "macos")]
+fn appkit_view(window: &winit::window::Window) -> Result<Retained<NSObject>, String> {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let _main = objc2_foundation::MainThreadMarker::new()
+        .ok_or("AppKit presentation requires the main thread")?;
+    let handle = window.window_handle().map_err(|e| e.to_string())?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return Err("software presenter requires an AppKit view".into());
+    };
+    // SAFETY: winit's borrowed handle owns a valid NSView. Retaining it covers
+    // this main-thread operation; callers also keep the Window alive.
+    unsafe { Retained::retain(handle.ns_view.cast::<NSObject>().as_ptr()) }
+        .ok_or_else(|| "AppKit view unavailable".into())
+}
+#[cfg(target_os = "macos")]
+fn view_layer(view: &NSObject) -> Option<Retained<CALayer>> {
+    // SAFETY: appkit_view validated the main-thread NSView handle.
+    unsafe { msg_send_id![view, layer] }
+}
+#[cfg(target_os = "macos")]
+fn child_layers(root: &CALayer) -> Vec<Retained<CALayer>> {
+    // SAFETY: these retained Core Animation layers are inspected on their UI owner.
+    unsafe { root.sublayers() }.map_or_else(Vec::new, |layers| layers.to_vec_retained())
+}
+#[cfg(target_os = "macos")]
+fn is_metal(layer: &CALayer) -> bool {
+    // SAFETY: the receiver is a valid CALayer and this is NSObject's class query.
+    unsafe { msg_send![layer, isKindOfClass: CAMetalLayer::class()] }
+}
+#[cfg(target_os = "macos")]
+fn detach_metal_children(root: &CALayer) {
+    // Snapshot before mutation: the parent owns its sublayers too.
+    for layer in child_layers(root) {
+        if is_metal(&layer) {
+            // SAFETY: only obsolete renderer children of our owned view are removed.
+            layer.removeFromSuperlayer();
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(super) struct SoftwarePresenter {
     surface:
         softbuffer::Surface<std::rc::Rc<winit::window::Window>, std::rc::Rc<winit::window::Window>>,
     size: Option<(u32, u32)>,
+    owned_layers: Vec<Retained<CALayer>>,
     cropped: Vec<u32>,
     scaled: Vec<u32>,
 }
@@ -72,14 +118,56 @@ pub(super) struct SoftwarePresenter {
 #[cfg(target_os = "macos")]
 impl SoftwarePresenter {
     pub(super) fn new(window: std::rc::Rc<winit::window::Window>) -> Result<Self, String> {
+        let view = appkit_view(&window)?;
+        // SAFETY: this is the owned NSView, accessed on the main thread.
+        let _: () = unsafe { msg_send![&*view, setWantsLayer: true] };
+        let root = view_layer(&view).ok_or("AppKit root layer unavailable")?;
+        if is_metal(&root) {
+            return Err("software presentation requires an AppKit-managed root layer".into());
+        }
+        detach_metal_children(&root);
+        let before = child_layers(&root);
         let context = softbuffer::Context::new(window.clone()).map_err(|e| e.to_string())?;
         let surface = softbuffer::Surface::new(&context, window).map_err(|e| e.to_string())?;
+        let owned_layers = child_layers(&root)
+            .into_iter()
+            .filter(|layer| {
+                !before
+                    .iter()
+                    .any(|old| Retained::as_ptr(old) == Retained::as_ptr(layer))
+            })
+            .collect();
         Ok(Self {
             surface,
             size: None,
+            owned_layers,
             cropped: Vec::new(),
             scaled: Vec::new(),
         })
+    }
+    #[cfg(feature = "test-support")]
+    pub(super) fn layer_snapshot(&self) -> serde_json::Value {
+        let root = appkit_view(self.surface.window())
+            .ok()
+            .and_then(|view| view_layer(&view));
+        let Some(root) = root else {
+            return serde_json::json!({"published": false, "error": "root unavailable"});
+        };
+        let children = child_layers(&root);
+        let metal_layers =
+            usize::from(is_metal(&root)) + children.iter().filter(|layer| is_metal(layer)).count();
+        // SAFETY: contents/superlayer are inspected on the same main-thread UI owner.
+        let image_layers = children
+            .iter()
+            .filter(|layer| !is_metal(layer) && unsafe { layer.contents() }.is_some())
+            .count();
+        let published = self.owned_layers.iter().any(|layer| unsafe {
+            layer
+                .superlayer()
+                .is_some_and(|parent| Retained::as_ptr(&parent) == Retained::as_ptr(&root))
+                && layer.contents().is_some()
+        });
+        serde_json::json!({"metal_layers": metal_layers, "image_layers": image_layers, "owned_layers": self.owned_layers.len(), "published": published})
     }
     pub(super) fn present(
         &mut self,
@@ -112,9 +200,38 @@ impl SoftwarePresenter {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl Drop for SoftwarePresenter {
+    fn drop(&mut self) {
+        // softbuffer unregisters observers when its surface drops, but its CPU
+        // layer remains parent-owned. Detach only the layers this instance added.
+        for layer in &self.owned_layers {
+            // Rc<Window> keeps all UI ownership on this main thread.
+            layer.removeFromSuperlayer();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn software_layer_cleanup_keeps_cpu_children_and_detaches_metal() {
+        objc2::rc::autoreleasepool(|_| {
+            // Core Animation objects are independent of AppKit views here.
+            let root = CALayer::new();
+            let cpu = CALayer::new();
+            let gpu = unsafe { CAMetalLayer::new() };
+            root.addSublayer(&cpu);
+            root.addSublayer(&gpu);
+            detach_metal_children(&root);
+            let children = child_layers(&root);
+            assert_eq!(children.len(), 1);
+            assert_eq!(Retained::as_ptr(&children[0]), Retained::as_ptr(&cpu));
+            assert!(unsafe { gpu.superlayer() }.is_none());
+        });
+    }
     #[test]
     fn software_crop_stride_and_rgb_match_the_selected_pixels() {
         let pixels = [
