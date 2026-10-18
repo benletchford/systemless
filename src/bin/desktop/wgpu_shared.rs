@@ -1,6 +1,6 @@
 //! Fenced Metal UMA uploads. Rendering and ownership still belong to wgpu.
 use std::sync::{
-    Arc,
+    Arc, Weak,
     atomic::{AtomicBool, Ordering},
 };
 use systemless::memory::CompactPresentation;
@@ -48,6 +48,7 @@ struct Slot {
     layout: Layout,
     ready: Arc<AtomicBool>,
     last_use: Option<wgpu::SubmissionIndex>,
+    image: Weak<CompactPresentation>,
 }
 pub(super) struct Pool {
     device: wgpu::Device,
@@ -124,7 +125,7 @@ impl Pool {
     pub fn render(
         &mut self,
         binding: &wgpu::BindGroupLayout,
-        image: &CompactPresentation,
+        image: &Arc<CompactPresentation>,
         geometry: &[u32; 12],
         pipeline: &wgpu::RenderPipeline,
         target: &wgpu::TextureView,
@@ -151,7 +152,7 @@ impl Pool {
     fn upload(
         &mut self,
         binding: &wgpu::BindGroupLayout,
-        image: &CompactPresentation,
+        image: &Arc<CompactPresentation>,
         geometry: &[u32; 12],
     ) -> Option<Upload> {
         let device = &self.device;
@@ -192,32 +193,36 @@ impl Pool {
                     .total
                     .next_power_of_two()
                     .min(limits.max_buffer_size.min(MAX_PACKET)),
-                usage: wgpu::BufferUsages::MAP_WRITE
+                // Metal MAP_WRITE chooses write-combined memory. MAP_READ
+                // selects CPU-cached shared memory, matching native presentation.
+                // HAL mapping permits CPU writes with either mappable usage;
+                // no frontend read/write mapping is exposed by this pool.
+                usage: wgpu::BufferUsages::MAP_READ
+                    | wgpu::BufferUsages::COPY_DST
                     | wgpu::BufferUsages::STORAGE
                     | wgpu::BufferUsages::UNIFORM,
-                mapped_at_creation: true,
+                mapped_at_creation: false,
             });
-            // Initialize through wgpu so its initialization tracker knows the
-            // entire allocation is defined before raw HAL writes are used.
-            buffer
-                .slice(..)
-                .get_mapped_range_mut()
-                .ok()?
-                .slice(..)
-                .fill(0);
-            buffer.unmap();
+            // Initialize through wgpu, including its initialization tracker.
+            // Never race the GPU clear with the first HAL write: reserve this
+            // slot behind its initialization fence and fall back for this frame.
+            let mut init = device.create_command_encoder(&Default::default());
+            init.clear_buffer(&buffer, 0, None);
+            let initial_use = self.queue.submit([init.finish()]);
             let slot = Slot {
                 group: group(&buffer),
                 buffer,
                 layout,
-                ready: Arc::new(AtomicBool::new(true)),
-                last_use: None,
+                ready: Arc::new(AtomicBool::new(false)),
+                last_use: Some(initial_use),
+                image: Weak::new(),
             };
             if index == self.slots.len() {
                 self.slots.push(slot);
             } else {
                 self.slots[index] = slot;
             }
+            return None;
         }
         let slot = &mut self.slots[index];
         if slot.layout != layout {
@@ -226,14 +231,21 @@ impl Pool {
         }
         slot.ready.store(false, Ordering::Release);
         slot.last_use = None;
+        // A Weak keeps the control block allocated, preventing pointer reuse
+        // from making a new packet look like an old immutable packet.
+        let same_image = std::ptr::eq(slot.image.as_ptr(), Arc::as_ptr(image));
         if !write(
             device,
             &slot.buffer,
             layout,
             [&image.cells, &image.detail, geometry],
+            same_image,
         ) {
             slot.ready.store(true, Ordering::Release);
             return None;
+        }
+        if !same_image {
+            slot.image = Arc::downgrade(image);
         }
         Some(Upload {
             index,
@@ -243,10 +255,18 @@ impl Pool {
         })
     }
 }
-fn write(device: &wgpu::Device, buffer: &wgpu::Buffer, layout: Layout, words: [&[u32]; 3]) -> bool {
+fn write(
+    device: &wgpu::Device,
+    buffer: &wgpu::Buffer,
+    layout: Layout,
+    words: [&[u32]; 3],
+    same_image: bool,
+) -> bool {
     use wgpu::hal::Device as _;
     let size = buffer.size();
-    // SAFETY: this module only accepts Metal MAP_WRITE buffers created above.
+    // SAFETY: these private Metal buffers have MAP_READ usage. HAL's mapping
+    // contract permits CPU writes to either MAP_READ or MAP_WRITE allocations;
+    // MAP_READ avoids Metal's uncached/write-combined upload allocation.
     // Each slot is unused or its previous submission has completed, confirmed
     // by a successful zero-timeout fence poll. A reserved upload cannot be
     // reused before submit or cancellation. No GPU access overlaps writes. HAL
@@ -264,6 +284,9 @@ fn write(device: &wgpu::Device, buffer: &wgpu::Buffer, layout: Layout, words: [&
             return false;
         };
         for (i, data) in words.into_iter().enumerate() {
+            if same_image && i < 2 {
+                continue;
+            }
             let bytes = super::wgpu_buffers::word_bytes(data);
             debug_assert!(bytes.len() as u64 <= layout.sizes[i]);
             std::ptr::copy_nonoverlapping(
@@ -320,17 +343,24 @@ mod tests {
             label: None,
             entries: &entries,
         });
-        let image = CompactPresentation {
+        let image = Arc::new(CompactPresentation {
             width: 1,
             height: 1,
             scale: 1,
             cells: vec![0x123456],
             detail: Vec::new(),
-        };
+        });
         let geometry = [1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1];
         let mut uploads = Vec::new();
         for _ in 0..3 {
-            uploads.push(pool.upload(&binding, &image, &geometry).unwrap());
+            let upload = match pool.upload(&binding, &image, &geometry) {
+                Some(upload) => upload,
+                None => {
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    pool.upload(&binding, &image, &geometry).unwrap()
+                }
+            };
+            uploads.push(upload);
         }
         assert_eq!(pool.status(), (3, 0));
         assert!(pool.upload(&binding, &image, &geometry).is_none());

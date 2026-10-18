@@ -171,10 +171,6 @@ impl CompactRenderer {
         if !Self::supports_layout(image, crop, viewport, limits) {
             return false;
         }
-        let cells = changed_words(
-            self.previous.as_ref().map(|p| p.cells.as_slice()),
-            &image.cells,
-        );
         #[cfg(target_os = "macos")]
         let shared = self
             .shared
@@ -182,7 +178,23 @@ impl CompactRenderer {
             .is_some_and(|pool| pool.supports(image, limits));
         #[cfg(not(target_os = "macos"))]
         let shared = false;
-        let detail = if shared {
+        let same_image = self
+            .previous
+            .as_ref()
+            .is_some_and(|previous| Arc::ptr_eq(previous, image));
+        let cells = if same_image {
+            0..0
+        } else if shared {
+            0..image.cells.len()
+        } else {
+            changed_words(
+                self.previous.as_ref().map(|p| p.cells.as_slice()),
+                &image.cells,
+            )
+        };
+        let detail = if same_image {
+            0..0
+        } else if shared {
             0..image.detail.len()
         } else {
             changed_words(
@@ -556,10 +568,18 @@ fn valid_changed_cells(
 }
 
 fn valid_cells(image: &CompactPresentation, cells: &[u32]) -> bool {
-    let tile = u64::from(image.scale * image.scale);
-    cells.iter().all(|cell| {
-        cell >> 31 == 0 || u64::from(cell & 0x7fffffff) + tile <= image.detail.len() as u64
-    })
+    let tile = (image.scale * image.scale) as usize; // scale was validated as 1..=4
+    // Uniform colors sort below every flagged detail reference. Therefore a
+    // single vectorizable unsigned maximum checks all exclusive tile ends.
+    // If even one tile cannot fit, only unflagged cells are allowed.
+    let limit = image
+        .detail
+        .len()
+        .checked_sub(tile)
+        .map_or(0x7fffffff, |offset| {
+            0x80000000 | offset.min(0x7fffffff) as u32
+        });
+    cells.iter().copied().max().unwrap_or(0) <= limit
 }
 
 /// Find the smallest upload containing all changed words. Binary slice
@@ -1207,6 +1227,53 @@ pub(crate) mod tests {
                         | (u32::from(rgba[1]) << 8)
                         | u32::from(rgba[2]);
                     assert_eq!(actual, expected[y * 800 + x], "dense pixel=({x},{y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn maximum_reference_validation_matches_scalar_at_boundaries_and_tails() {
+        for scale in 1..=4 {
+            for detail in [0, 1, 15, 16, 63, 64, 65] {
+                for count in 0..80usize {
+                    let tile = scale * scale;
+                    let mut image = CompactPresentation {
+                        width: count as u32,
+                        height: 1,
+                        scale,
+                        cells: (0..count)
+                            .map(|i| {
+                                if detail >= tile && i % 3 == 0 {
+                                    0x80000000 | (detail - tile)
+                                } else {
+                                    0x7fffffff
+                                }
+                            })
+                            .collect(),
+                        detail: vec![0; detail as usize],
+                    };
+                    let check = |image: &CompactPresentation| {
+                        let expected = image.cells.iter().all(|&cell| {
+                            cell >> 31 == 0
+                                || u64::from(cell & 0x7fffffff) + u64::from(tile)
+                                    <= image.detail.len() as u64
+                        });
+                        assert_eq!(
+                            valid_cells(image, &image.cells),
+                            expected,
+                            "scale={scale} detail={detail} count={count}"
+                        );
+                    };
+                    check(&image);
+                    for index in 0..count {
+                        let old = image.cells[index];
+                        for invalid in [0xffffffff, 0x80000000 | detail.saturating_sub(tile) + 1] {
+                            image.cells[index] = invalid;
+                            check(&image);
+                        }
+                        image.cells[index] = old;
+                    }
                 }
             }
         }

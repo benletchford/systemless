@@ -83,12 +83,17 @@ shared-buffer slots. The CPU writes a slot only after its previous wgpu queue
 completion fence has fired, then unmaps the HAL view before submission. This
 avoids full-detail comparisons, blit encoders and asynchronous remapping for
 ordinary UI updates. wgpu still owns the resources, validates packets/bindings,
-and executes the render pass; shader bounds checks remain enabled. A slot is
-initialized through wgpu before the first HAL write. HAL mappings and pointer
+and executes the render pass; shader bounds checks remain enabled. A CPU-cached slot is
+cleared asynchronously through wgpu before the first HAL write, and remains
+unavailable until that initialization fence completes. Exact maximum-reference
+validation uses a vectorizable reduction instead of comparing host snapshots. HAL mappings and pointer
 lifetimes are confined to one upload, following its documented CPU/GPU ordering
 and coherence contract. Slots grow geometrically up to 32 MiB each. Unsupported
 backends, larger packets, or three occupied slots use the existing upload path
-without waiting for a slot. Without `--gpu`, no pool is created.
+without waiting for a slot. Reusing the same immutable packet during expose or
+resize updates geometry without copying its retained payload again; weak
+identity tracking prevents allocation-address reuse from producing a false hit.
+Without `--gpu`, no pool is created.
 
 Large retained updates can use one aligned shared allocation on supported UMA
 adapters;
