@@ -26,6 +26,9 @@ struct Probe {
     sequence: u64,
     checks: Vec<&'static str>,
     complete: bool,
+    fault: String,
+    injected: u8,
+    fault_sequence: u64,
 }
 
 pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
@@ -49,6 +52,9 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
         sequence: 0,
         checks: Vec::new(),
         complete: false,
+        fault: std::env::var("SYSTEMLESS_GPU_FAULT").unwrap_or_default(),
+        injected: 0,
+        fault_sequence: 0,
     };
     event_loop
         .run_app(&mut probe)
@@ -84,6 +90,11 @@ impl Probe {
             },
             "renderer": if self.app.use_wgpu { "wgpu" } else { "platform" },
             "runtime_error": self.app.runtime_error,
+            "fault": self.fault,
+            "injected_failures": self.injected,
+            "rebuilds": self.app.wgpu_recovery.rebuilds,
+            "fallback": self.app.wgpu_recovery.fallback,
+            "guest_sequence": self.app.frame.sequence,
             "window": self.app.window.as_ref().map(|w| serde_json::json!({
                 "width": w.inner_size().width, "height": w.inner_size().height,
                 "fullscreen": w.fullscreen().is_some(), "focused": self.focused,
@@ -133,6 +144,55 @@ impl Probe {
         let settled = self.phase_started.elapsed() > Duration::from_secs(2);
         match self.phase {
             0 if self.app.frame.sequence > 2 && self.app.last_presented_guest_tick.is_some() => {
+                if !self.fault.is_empty() {
+                    let count = if self.fault == "repeated-loss" { 3 } else { 1 };
+                    if self.fault != "startup" && self.injected < count {
+                        if self.app.frame.sequence <= self.fault_sequence + 2 {
+                            return;
+                        }
+                        let gpu = self
+                            .app
+                            .wgpu
+                            .as_ref()
+                            .expect("presenter before injected fault");
+                        let failure = if self.fault == "fatal" {
+                            renderer_recovery::Failure::from(
+                                "qualification: terminal error".to_owned(),
+                            )
+                        } else {
+                            renderer_recovery::Failure::lost("qualification: device lost")
+                        };
+                        gpu.inject_failure(failure);
+                        self.injected += 1;
+                        self.fault_sequence = self.app.frame.sequence;
+                        return;
+                    }
+                    if self.app.frame.sequence <= self.fault_sequence + 2 {
+                        return;
+                    }
+                    let rebuilds = match self.fault.as_str() {
+                        "loss" | "recreate" => 1,
+                        "repeated-loss" => 2,
+                        "fatal" | "startup" => 0,
+                        _ => panic!("unknown GPU fault"),
+                    };
+                    assert_eq!(self.app.wgpu_recovery.rebuilds, rebuilds);
+                    assert_eq!(self.app.use_wgpu, self.fault == "loss");
+                    assert_eq!(
+                        self.app.wgpu_recovery.fallback.is_some(),
+                        self.fault != "loss"
+                    );
+                    self.checks.push(
+                        "guest continues and replacement presenter submits after injected failure",
+                    );
+                }
+                if std::env::var_os("SYSTEMLESS_NATIVE_RECOVERY_ONLY").is_some() {
+                    self.checks.push("guest frames reach real window");
+                    self.phase = 10;
+                    self.app
+                        .window_event(event_loop, window.id(), WindowEvent::CloseRequested);
+                    return;
+                }
                 window.focus_window();
                 self.advance("guest frames reach real window");
             }

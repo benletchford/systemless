@@ -18,6 +18,7 @@ pub(super) struct Qd3dRenderer {
     last_fallback: Option<String>,
 }
 struct State {
+    health: std::sync::Arc<super::renderer_recovery::Health>,
     buffers: ScratchBuffers,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -42,6 +43,14 @@ impl Qd3dRenderer {
         background: &[u16],
         clut: Option<&[[u16; 3]; 256]>,
     ) -> Result<Vec<u16>, String> {
+        if let Some(error) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.health.check().err())
+        {
+            self.initialization_error = Some(error.to_string());
+            self.state = None;
+        }
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
                 Ok(state) => self.state = Some(state),
@@ -71,6 +80,7 @@ impl State {
             .map_err(|e| e.to_string())?;
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
             .map_err(|e| e.to_string())?;
+        let health = super::renderer_recovery::Health::install(&device, None);
         let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -96,7 +106,9 @@ impl State {
             return Err(error);
         }
         eprintln!("[GPU] QD3D rasterization: {}", adapter.get_info().name);
+        health.check().map_err(|e| e.to_string())?;
         Ok(Self {
+            health,
             buffers: Default::default(),
             device,
             queue,
@@ -123,6 +135,9 @@ impl State {
         let mut error = None;
         for scope in [validation, memory, internal] {
             if let Some(captured) = pollster::block_on(scope.pop()) {
+                self.health.record(super::renderer_recovery::Failure::from(
+                    captured.to_string(),
+                ));
                 error = Some(captured.to_string());
             }
         }
@@ -138,6 +153,7 @@ impl State {
         background: &[u16],
         clut: Option<&[[u16; 3]; 256]>,
     ) -> Result<Vec<u16>, String> {
+        self.health.check().map_err(|e| e.to_string())?;
         let count = u64::from(frame.width) * u64::from(frame.height);
         let pixel_bytes = count
             .checked_mul(4)
@@ -574,6 +590,7 @@ impl State {
                 let _ = tx.send(result);
             });
         super::wgpu_buffers::wait_for_readback(&self.device).map_err(|e| e.to_string())?;
+        self.health.check().map_err(|e| e.to_string())?;
         rx.recv()
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
@@ -726,6 +743,42 @@ mod tests {
     use ppc::PpcMemory;
     use systemless::loader::ppc::*;
     use systemless::memory::GuestAddressSpace;
+
+    #[test]
+    fn gpu_failed_compute_device_retires_to_cpu_fallback() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        state
+            .health
+            .record(super::super::renderer_recovery::Failure::lost(
+                "injected compute loss",
+            ));
+        let mut renderer = Qd3dRenderer::new();
+        renderer.state = Some(state);
+        let frame = PpcQ3RasterFrame {
+            width: 1,
+            height: 1,
+            viewport: [0, 0, 0, 0],
+            clear_color: None,
+            textures: vec![],
+            draws: vec![],
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                renderer.render_frame(&frame, &[0], None).unwrap_err(),
+                "injected compute loss"
+            );
+            assert!(renderer.state.is_none());
+        }
+    }
 
     #[test]
     fn gpu_readback_reuses_buffers_without_stale_pixels_after_resizing() {

@@ -45,6 +45,14 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
         &mut self,
         command: &QuickDrawGpuBlit,
     ) -> Result<Vec<QuickDrawGpuPixel>, String> {
+        if let Some(error) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.health.check().err())
+        {
+            self.initialization_error = Some(error.to_string());
+            self.state = None;
+        }
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
                 Ok(state) => self.state = Some(state),
@@ -64,6 +72,14 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
         result
     }
     fn render_packed_blit(&mut self, command: &QuickDrawGpuPackedCopy) -> Result<Vec<u8>, String> {
+        if let Some(error) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.health.check().err())
+        {
+            self.initialization_error = Some(error.to_string());
+            self.state = None;
+        }
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
                 Ok(state) => self.state = Some(state),
@@ -83,6 +99,14 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
         result
     }
     fn render_blit(&mut self, command: &QuickDrawGpuBlit) -> Result<Vec<u32>, String> {
+        if let Some(error) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.health.check().err())
+        {
+            self.initialization_error = Some(error.to_string());
+            self.state = None;
+        }
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
                 Ok(state) => self.state = Some(state),
@@ -106,6 +130,14 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
         command: &QuickDrawGpuCommand,
         background: &[u32],
     ) -> Result<Vec<QuickDrawGpuPixel>, String> {
+        if let Some(error) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.health.check().err())
+        {
+            self.initialization_error = Some(error.to_string());
+            self.state = None;
+        }
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
                 Ok(state) => self.state = Some(state),
@@ -126,6 +158,7 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
     }
 }
 struct State {
+    health: std::sync::Arc<super::renderer_recovery::Health>,
     buffers: ScratchBuffers,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -144,6 +177,7 @@ impl State {
             .map_err(|e| e.to_string())?;
         let (device, queue) = pollster::block_on(adapter.request_device(&Default::default()))
             .map_err(|e| e.to_string())?;
+        let health = super::renderer_recovery::Health::install(&device, None);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("QuickDraw shapes"),
             source: wgpu::ShaderSource::Wgsl(include_str!("wgpu_quickdraw.wgsl").into()),
@@ -165,7 +199,9 @@ impl State {
             cache: None,
         });
         eprintln!("[GPU] QuickDraw rasterization: {}", adapter.get_info().name);
+        health.check().map_err(|e| e.to_string())?;
         Ok(Self {
+            health,
             buffers: Default::default(),
             device,
             queue,
@@ -201,6 +237,8 @@ impl State {
         let mut error = None;
         for scope in [validation, memory, internal] {
             if let Some(e) = pollster::block_on(scope.pop()) {
+                self.health
+                    .record(super::renderer_recovery::Failure::from(e.to_string()));
                 error = Some(e.to_string());
             }
         }
@@ -239,6 +277,7 @@ impl State {
         command: &QuickDrawGpuBlit,
         cells: bool,
     ) -> Result<Vec<u32>, String> {
+        self.health.check().map_err(|e| e.to_string())?;
         if !command.valid() {
             return Err("invalid QuickDraw bitmap blit".into());
         }
@@ -272,6 +311,8 @@ impl State {
         let mut error = None;
         for scope in [validation, memory, internal] {
             if let Some(e) = pollster::block_on(scope.pop()) {
+                self.health
+                    .record(super::renderer_recovery::Failure::from(e.to_string()));
                 error = Some(e.to_string());
             }
         }
@@ -281,6 +322,7 @@ impl State {
         }
     }
     fn render_packed_blit(&self, command: &QuickDrawGpuPackedCopy) -> Result<Vec<u8>, String> {
+        self.health.check().map_err(|e| e.to_string())?;
         if !command.valid() {
             return Err("invalid packed bitmap blit".into());
         }
@@ -334,6 +376,8 @@ impl State {
         let mut error = None;
         for scope in [validation, memory, internal] {
             if let Some(e) = pollster::block_on(scope.pop()) {
+                self.health
+                    .record(super::renderer_recovery::Failure::from(e.to_string()));
                 error = Some(e.to_string());
             }
         }
@@ -348,6 +392,7 @@ impl State {
         pipeline: &wgpu::ComputePipeline,
         cells: bool,
     ) -> Result<Vec<u32>, String> {
+        self.health.check().map_err(|e| e.to_string())?;
         let width = command.columns.len() as u32;
         let height = command.rows.len() as u32;
         let palette: Vec<u32> = command
@@ -541,6 +586,7 @@ impl State {
                 let _ = tx.send(result);
             });
         super::wgpu_buffers::wait_for_readback(&self.device).map_err(|e| e.to_string())?;
+        self.health.check().map_err(|e| e.to_string())?;
         rx.recv()
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
@@ -568,6 +614,8 @@ impl State {
         let mut error = None;
         for scope in [validation, memory, internal] {
             if let Some(e) = pollster::block_on(scope.pop()) {
+                self.health
+                    .record(super::renderer_recovery::Failure::from(e.to_string()));
                 error = Some(e.to_string());
             }
         }
@@ -581,6 +629,7 @@ impl State {
         command: &QuickDrawGpuCommand,
         background: &[u32],
     ) -> Result<Vec<QuickDrawGpuPixel>, String> {
+        self.health.check().map_err(|e| e.to_string())?;
         let count = command.pixel_count().ok_or("invalid QuickDraw area")?;
         let width = (command.area[2] - command.area[0]) as u32;
         let height = (command.area[3] - command.area[1]) as u32;
@@ -821,6 +870,7 @@ impl State {
                 let _ = tx.send(result);
             });
         super::wgpu_buffers::wait_for_readback(&self.device).map_err(|e| e.to_string())?;
+        self.health.check().map_err(|e| e.to_string())?;
         rx.recv()
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
@@ -917,7 +967,11 @@ mod tests {
                                     *byte = (*byte & !(mask << shift)) | (value << shift);
                                 }
                             }
-                            assert_eq!(state.render_packed_blit(&command).unwrap(),expected,"depth={depth},sb={source_bit},db={destination_bit},width={width},mapped={mapped}");
+                            assert_eq!(
+                                state.render_packed_blit(&command).unwrap(),
+                                expected,
+                                "depth={depth},sb={source_bit},db={destination_bit},width={width},mapped={mapped}"
+                            );
                             let mut invalid = command.clone();
                             invalid.source.pop();
                             assert!(state.render_packed_blit(&invalid).is_err());
