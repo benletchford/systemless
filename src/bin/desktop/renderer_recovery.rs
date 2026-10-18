@@ -271,9 +271,13 @@ impl App {
     pub(super) fn fallback_wgpu(&mut self, message: String) {
         self.wgpu = None;
         self.use_wgpu = false;
+        self.use_software = self.gpu_fallback == renderer_selection::GpuFallback::Software;
         self.wgpu_recovery.fallback = Some(message.clone());
         self.force_next_render = true;
-        eprintln!("[GPU] {message}; switching to platform presentation");
+        eprintln!(
+            "[GPU] {message}; switching to {} presentation",
+            self.gpu_fallback.name()
+        );
         if let Err(error) = self.create_platform_presenter() {
             self.stop_renderer(format!(
                 "GPU fallback failed: {error} (original failure: {message})"

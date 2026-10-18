@@ -284,6 +284,10 @@ struct Cli {
     #[arg(long, value_enum, default_value = "auto")]
     renderer: renderer_selection::Renderer,
 
+    /// Desktop presenter after wgpu failure; requires --gpu or --renderer=wgpu
+    #[arg(long, value_enum)]
+    gpu_fallback: Option<renderer_selection::GpuFallback>,
+
     /// Run without opening a window
     #[arg(long)]
     headless: bool,
@@ -962,6 +966,7 @@ struct App {
     gpu_pending: Option<PendingGpuFrame>,
     use_wgpu: bool,
     use_software: bool,
+    gpu_fallback: renderer_selection::GpuFallback,
     wgpu_recovery: renderer_recovery::Recovery,
     wgpu_wake: Option<winit::event_loop::EventLoopProxy<()>>,
     wgpu_display: Option<winit::event_loop::OwnedDisplayHandle>,
@@ -1150,6 +1155,7 @@ impl App {
             gpu_pending: None,
             use_wgpu: false,
             use_software: false,
+            gpu_fallback: Default::default(),
             wgpu_recovery: Default::default(),
             wgpu_wake: None,
             wgpu_display: None,
@@ -3478,6 +3484,7 @@ fn run_gui(
     debug_socket: Option<PathBuf>,
     use_wgpu: bool,
     use_software: bool,
+    gpu_fallback: renderer_selection::GpuFallback,
 ) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     eprintln!(
@@ -3527,6 +3534,7 @@ fn run_gui(
     );
     app.use_wgpu = use_wgpu;
     app.use_software = use_software;
+    app.gpu_fallback = gpu_fallback;
     app.wgpu_wake = Some(event_loop.create_proxy());
     if let Some(driver) = app.driver.as_mut() {
         driver.gpu = use_wgpu;
@@ -3827,8 +3835,22 @@ fn run_headless(
     }
 }
 
+impl Cli {
+    fn validate_renderer(self) -> Result<Self, clap::Error> {
+        if self.gpu_fallback.is_some() && !self.renderer.uses_wgpu(self.gpu) {
+            return Err(<Self as clap::CommandFactory>::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--gpu-fallback requires --gpu or --renderer=wgpu",
+            ));
+        }
+        Ok(self)
+    }
+}
+
 fn main() {
-    let cli = Cli::parse();
+    let cli = Cli::parse()
+        .validate_renderer()
+        .unwrap_or_else(|error| error.exit());
     if !cli.prefer_classic_68k {
         // SAFETY: the runner has not started and no worker threads exist yet.
         unsafe { std::env::set_var("SYSTEMLESS_PREFER_POWERPC", "1") };
@@ -3971,6 +3993,7 @@ fn main() {
             cli.debug_socket,
             use_wgpu,
             cli.renderer == renderer_selection::Renderer::Software,
+            cli.gpu_fallback.unwrap_or_default(),
         );
     }
 }
@@ -4445,6 +4468,44 @@ mod tests {
             Cli::try_parse_from(["systemless", "--gpu", "--headless", "game.sit"])
                 .unwrap()
                 .gpu
+        );
+    }
+
+    #[test]
+    fn software_gpu_fallback_requires_explicit_gpu_selection() {
+        for mode in ["--gpu", "--renderer=wgpu"] {
+            let cli =
+                Cli::try_parse_from(["systemless", "game.sit", mode, "--gpu-fallback=software"])
+                    .unwrap()
+                    .validate_renderer()
+                    .unwrap();
+            assert_eq!(
+                cli.gpu_fallback,
+                Some(renderer_selection::GpuFallback::Software)
+            );
+        }
+        for mode in [
+            "--renderer=auto",
+            "--renderer=platform",
+            "--renderer=software",
+        ] {
+            assert!(Cli::try_parse_from([
+                "systemless",
+                "game.sit",
+                mode,
+                "--gpu-fallback=software"
+            ])
+            .unwrap()
+            .validate_renderer()
+            .is_err());
+        }
+        let cli = Cli::try_parse_from(["systemless", "game.sit"])
+            .unwrap()
+            .validate_renderer()
+            .unwrap();
+        assert_eq!(
+            cli.gpu_fallback.unwrap_or_default(),
+            renderer_selection::GpuFallback::Platform
         );
     }
 

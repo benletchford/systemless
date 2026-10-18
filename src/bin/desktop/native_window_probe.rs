@@ -63,6 +63,7 @@ struct Probe {
     fault: String,
     injected: u8,
     fault_sequence: u64,
+    fault_generation: Option<u64>,
     soak: Duration,
     cycles: u32,
     gpu_resources: ResourceLog,
@@ -93,6 +94,7 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
         fault: std::env::var("SYSTEMLESS_GPU_FAULT").unwrap_or_default(),
         injected: 0,
         fault_sequence: 0,
+        fault_generation: None,
         soak: Duration::from_secs(
             std::env::var("SYSTEMLESS_NATIVE_SOAK_SECONDS")
                 .unwrap_or_else(|_| "0".into())
@@ -148,12 +150,27 @@ impl Probe {
             }
         }
     }
+    fn software_layer(&self) -> Option<serde_json::Value> {
+        #[cfg(target_os = "macos")]
+        {
+            self.app
+                .surface
+                .as_ref()
+                .and_then(|p| p.software_layer_snapshot())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
     fn sample_gpu_resources(&mut self) {
         self.gpu_resources.append(&serde_json::json!({
             "seconds": self.started.elapsed().as_secs_f64(), "cycle": self.cycles,
             "rebuilds": self.app.wgpu_recovery.rebuilds,
             "renderer": if self.app.use_wgpu { "wgpu" } else if self.app.use_software { "software" } else { "platform" },
             "presentation_backend": self.presentation_backend(),
+            "guest_generation": self.app.frame.generation,
+            "software_layer": self.software_layer(),
             "resources": self.app.wgpu.as_ref().map(|gpu| gpu.resource_snapshot()),
         }));
     }
@@ -172,8 +189,12 @@ impl Probe {
             },
             "renderer": if self.app.use_wgpu { "wgpu" } else if self.app.use_software { "software" } else { "platform" },
             "presentation_backend": self.presentation_backend(),
+            "guest_generation": self.app.frame.generation,
+            "software_layer": self.software_layer(),
             "runtime_error": self.app.runtime_error,
             "fault": self.fault,
+            "fault_generation": self.fault_generation,
+            "requested_gpu_fallback": self.app.gpu_fallback.name(),
             "injected_failures": self.injected,
             "rebuilds": self.app.wgpu_recovery.rebuilds,
             "fallback": self.app.wgpu_recovery.fallback,
@@ -245,7 +266,36 @@ impl Probe {
                 if self.gpu_resources.count == 0 {
                     self.sample_gpu_resources();
                 }
-                if !self.fault.is_empty() {
+                let generation = self
+                    .fault_generation
+                    .get_or_insert(self.app.frame.generation);
+                assert_eq!(
+                    self.app.frame.generation, *generation,
+                    "renderer transition restarted the guest"
+                );
+                if self.fault == "software-recreate" {
+                    if self.app.frame.sequence <= self.fault_sequence + 2 {
+                        return;
+                    }
+                    if self.injected < 3 {
+                        self.sample_gpu_resources();
+                        self.app.surface = None;
+                        self.app
+                            .create_platform_presenter()
+                            .expect("recreate software surface");
+                        self.app.last_presented_guest_tick = None;
+                        self.app.force_next_render = true;
+                        #[cfg(target_os = "macos")]
+                        {
+                            self.app.force_gpu_present = true;
+                        }
+                        self.fault_sequence = self.app.frame.sequence;
+                        self.injected += 1;
+                        window.request_redraw();
+                        return;
+                    }
+                    self.checks.push("software surface recreation preserves guest generation and releases old image layers");
+                } else if !self.fault.is_empty() {
                     let count = if self.fault == "repeated-loss" { 3 } else { 1 };
                     if self.fault != "startup" && self.injected < count {
                         if self.app.frame.sequence <= self.fault_sequence + 2 {

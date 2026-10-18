@@ -15,7 +15,7 @@ class Cases(unittest.TestCase):
         return json.loads(result.stdout) if valid else None
 
     def test_normal_matrix_is_complete(self):
-        self.assertEqual(len(self.run_cases()), 22)
+        self.assertEqual(len(self.run_cases()), 34)
 
     def test_soak_defaults_to_six_cases(self):
         self.assertEqual(len(self.run_cases("--soak-only", "--soak-seconds", "30")), 6)
@@ -24,7 +24,12 @@ class Cases(unittest.TestCase):
         for runtime in ["inline", "thread"]:
             for presenter in ["platform", "wgpu", "software"]:
                 result = self.run_cases("--soak-only", "--soak-seconds", "7200", "--runtime", runtime, "--presenter", presenter)
-                self.assertEqual(result, [[runtime, presenter == "wgpu", "", "software" if presenter == "software" else None]])
+                self.assertEqual(result, [[runtime, presenter == "wgpu", "", "software" if presenter == "software" else None, None]])
+
+    def test_both_fallbacks_and_software_recreation_are_exercised(self):
+        recovery = self.run_cases("--recovery-only")
+        self.assertEqual({case[4] for case in recovery}, {None, "software"})
+        self.assertEqual(sum(case[2] == "software-recreate" for case in self.run_cases()), 2)
 
     def test_unfiltered_or_partial_long_matrix_is_rejected(self):
         self.run_cases("--soak-only", "--soak-seconds", "7200", valid=False)
@@ -45,7 +50,7 @@ class Cases(unittest.TestCase):
         self.run_cases("--soak-only", "--soak-seconds", "21601", "--runtime", "inline", "--presenter", "wgpu", valid=False)
         self.run_cases("--soak-seconds", "-1", valid=False)
         self.run_cases("--recovery-only", "--soak-seconds", "1", valid=False)
-        self.assertEqual(len(self.run_cases("--recovery-only")), 10)
+        self.assertEqual(len(self.run_cases("--recovery-only")), 20)
 
 
 if __name__ == "__main__":

@@ -35,14 +35,18 @@ if args.soak_seconds > 3600 and (not args.soak_only or args.runtime == "all" or 
 root = Path(__file__).resolve().parents[2]
 output = args.output or root / "native-window-results"
 failed = []
-cases = [] if args.recovery_only else [(backend, gpu, "", None) for backend in ("inline", "thread") for gpu in (False, True)]
-cases += [] if args.soak_only else [(backend, True, fault, None) for backend in ("inline", "thread")
-          for fault in ("startup", "loss", "fatal", "recreate", "repeated-loss")]
+cases = [] if args.recovery_only else [(backend, gpu, "", None, None) for backend in ("inline", "thread") for gpu in (False, True)]
+if not args.soak_only:
+    cases += [(backend, True, fault, None, fallback)
+              for backend in ("inline", "thread")
+              for fallback in (None, "software")
+              for fault in ("startup", "loss", "fatal", "recreate", "repeated-loss")]
 if not args.recovery_only and not args.soak_only:
-    cases += [(backend, False, "", renderer) for backend in ("inline", "thread")
+    cases += [(backend, False, "", renderer, None) for backend in ("inline", "thread")
               for renderer in ("auto", "platform", "wgpu", "software")]
+    cases += [(backend, False, "software-recreate", "software", None) for backend in ("inline", "thread")]
 if args.soak_only:
-    cases += [(backend, False, "", "software") for backend in ("inline", "thread")]
+    cases += [(backend, False, "", "software", None) for backend in ("inline", "thread")]
     cases = [case for case in cases
              if (args.runtime == "all" or case[0] == args.runtime)
              and (args.presenter == "all" or (case[3] or ("wgpu" if case[1] else "platform")) == args.presenter)]
@@ -50,10 +54,12 @@ if args.dry_run:
     print(json.dumps(cases))
     raise SystemExit(0)
 output.mkdir(parents=True, exist_ok=True)
-for backend, gpu, fault, renderer in cases:
+for backend, gpu, fault, renderer, fallback in cases:
     name = backend + ("-wgpu" if gpu else "")
     if renderer:
         name += "-renderer-" + renderer
+    if fallback:
+        name += "-fallback-" + fallback
     if fault:
         name += "-" + fault
     case = output / name
@@ -75,6 +81,8 @@ for backend, gpu, fault, renderer in cases:
         command.append("--gpu")
     if renderer:
         command.append("--renderer=" + renderer)
+    if fallback:
+        command.append("--gpu-fallback=" + fallback)
     with (case / "run.log").open("w") as log:
         try:
             process = subprocess.Popen(command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -102,11 +110,23 @@ for backend, gpu, fault, renderer in cases:
                         and item["resources"].get("hal_counters_enabled") is True
                         for item in resources if item.get("renderer") == "wgpu")
             )
-            expected_renderer = "software" if renderer == "software" else ("wgpu" if (gpu or renderer == "wgpu") and fault in ("", "loss") else "platform")
-            software_contract = renderer != "software" or (
-                any(item.get("presentation_backend") == "software" for item in resources)
-                and all(item.get("presentation_backend") in ("software", "none") for item in resources)
-            )
+            gpu_requested = gpu or renderer == "wgpu"
+            fell_back = gpu_requested and fault not in ("", "loss")
+            expected_renderer = ("software" if renderer == "software" or (fell_back and fallback == "software")
+                                 else "wgpu" if gpu_requested and not fell_back else "platform")
+            software_rows = [item for item in resources if item.get("presentation_backend") == "software"]
+            software_contract = True
+            if expected_renderer == "software":
+                allowed = ("software", "none") if renderer == "software" else ("wgpu", "software", "none")
+                software_contract = bool(software_rows) and all(item.get("presentation_backend") in allowed for item in resources)
+                if fallback == "software" and fault != "startup":
+                    software_contract = software_contract and any(item.get("presentation_backend") == "wgpu" for item in resources)
+                if state.get("os") == "macos":
+                    layers = [item.get("software_layer") or {} for item in software_rows]
+                    software_contract = (software_contract
+                        and all(layer.get("metal_layers") == 0 and layer.get("image_layers", 2) <= 1
+                                and layer.get("owned_layers") == 1 for layer in layers)
+                        and any(layer.get("published") is True for layer in layers))
             passed = (process.returncode == 0 and state.get("passed") is True
                       and resource_contract and software_contract
                       and state.get("renderer") == expected_renderer
