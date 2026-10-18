@@ -118,14 +118,15 @@ mod tests {
     #[test]
     fn software_crop_stride_and_rgb_match_the_selected_pixels() {
         let pixels = [
-            0xff000001, 0xff000002, 0xff000003, 0xff000004, 0xff000005, 0xff000006,
+            0xff000001, 0xff000002, 0xff000003, 0xff000004, 0xff000005, 0xff000006, 0xff000007,
+            0xff000008, 0xff000009,
         ];
         let mut output = [0; 2];
         write_rgb(
             &pixels,
             RasterLayout {
                 left: 1,
-                top: 0,
+                top: 1,
                 width: 1,
                 height: 2,
                 buffer_width: 3,
@@ -136,7 +137,24 @@ mod tests {
             &mut Vec::new(),
         )
         .unwrap();
-        assert_eq!(output, [2, 5]);
+        assert_eq!(output, [5, 8]);
+        let mut row = [0; 3];
+        write_rgb(
+            &pixels,
+            RasterLayout {
+                left: 0,
+                top: 1,
+                width: 3,
+                height: 1,
+                buffer_width: 3,
+            },
+            (3, 1),
+            &mut row,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(row, [4, 5, 6]);
     }
     #[test]
     fn software_letterbox_and_downsample_preserve_coverage() {
