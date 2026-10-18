@@ -152,3 +152,12 @@ documentation. The hosted Windows parser test samples an actual child process
 with a known allocation before the GPU smoke; it also exercises invalid-PID
 handling. This instrumentation diagnoses the allocation abort recorded in
 #4895; it does not fix that abort or the separate teardown stall in #4890.
+
+The compute runner and manual workflow accept `--profile release` / the
+`profile` input to compare sustained work with production build settings.
+Default and PR runs retain `ci-test`, including debug assertions and native
+validation defaults. The summary records the selected profile and the exact
+build command. Keep profile results separate and compare request counts as
+well as elapsed time; an optimized build can complete more sweeps. A release
+pass does not resolve growth or failures seen with validation enabled, and
+neither profile alone qualifies a physical hardware/default-readiness row.
