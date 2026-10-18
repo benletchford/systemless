@@ -44,6 +44,9 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
         false
     }
     fn prefers_raster(&self, command: &QuickDrawGpuCommand) -> bool {
+        if self.initialization_error.is_some() {
+            return false;
+        }
         // Rectangles, pre-tessellated spans and glyph atlases already have
         // their coverage on the CPU. A GPU round trip cannot amortize that
         // work. Keep GPU evaluation for substantial polygon edge work.
@@ -57,7 +60,7 @@ impl QuickDrawGpuRenderer for QuickDrawRenderer {
     }
 
     fn prefers_blit(&self, destination_pixels: usize, expensive_color: bool) -> bool {
-        expensive_color && destination_pixels >= 16_384
+        self.initialization_error.is_none() && expensive_color && destination_pixels >= 16_384
     }
 
     fn render_blit_cells(
@@ -887,6 +890,47 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    #[test]
+    fn wgpu_retired_quickdraw_bypasses_gpu_packet_preparation() {
+        let mut renderer = QuickDrawRenderer::new();
+        let command = QuickDrawGpuCommand {
+            mask: None,
+            clip_rows: None,
+            polygon_edges: Some(vec![[0., 480., 0., 0.], [0., 480., 640., -1.]]),
+            area: [0, 0, 640, 480],
+            rect: [0, 0, 640, 480],
+            border: None,
+            pattern: [255; 8],
+            transfer: [[0, 0], [0, 0]],
+        };
+        assert!(renderer.prefers_raster(&command));
+        assert!(renderer.prefers_blit(640 * 480, true));
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let error = state
+            .health
+            .finish_readback(Err(wgpu::PollError::Timeout))
+            .unwrap_err();
+        renderer.state = Some(state);
+        // Retirement happens before packet/background validation. Subsequent
+        // preference checks must prevent callers preparing those packets at all.
+        for _ in 0..2 {
+            assert_eq!(renderer.render(&command, &[]).unwrap_err(), error);
+            assert!(renderer.state.is_none());
+            assert!(!renderer.prefers_raster(&command));
+            assert!(!renderer.prefers_blit(640 * 480, true));
+        }
+    }
+
     use super::*;
     #[test]
     fn gpu_packed_bitmap_bytes_match_pixel_oracle_at_each_alignment() {

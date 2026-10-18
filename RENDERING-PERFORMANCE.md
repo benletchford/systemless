@@ -125,6 +125,8 @@ five-second budget on physical GPU adapters; software (`Cpu`) adapters receive a
 finite 60-second budget because their shaders run on shared host CPUs. The
 adapter policy is cached at device creation, outside timed frame work. A timeout retires that compute device to
 CPU fallback for the session, including when the driver reports no device loss.
+Retired compute renderers decline GPU selection on subsequent work, avoiding
+repeated bitmap packet construction and 3D background gathering before CPU fallback.
 Failed compute state is retired immediately on a detached cleanup worker: wgpu
 queue destruction can itself wait for idle. If worker creation fails, that one
 failed state is retained until process exit rather than blocking the guest owner. This allows wgpu to
