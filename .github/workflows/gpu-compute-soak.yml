@@ -15,6 +15,11 @@ on:
         description: 'Active session seconds per OS (1..18000; default two hours)'
         required: false
         default: '7200'
+      workload:
+        description: 'CPU baseline diagnoses allocations; it never qualifies GPU work'
+        type: choice
+        options: [gpu, cpu-baseline]
+        default: gpu
       profile:
         description: 'Build profile; compare separately, PR checks retain runtime validation'
         type: choice
@@ -30,7 +35,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: gpu-compute-soak-${{ github.ref }}-${{ inputs.os || 'all' }}-${{ inputs.profile || 'ci-test' }}
+  group: gpu-compute-soak-${{ github.ref }}-${{ inputs.os || 'all' }}-${{ inputs.profile || 'ci-test' }}-${{ inputs.workload || 'gpu' }}
   cancel-in-progress: true
 
 jobs:
@@ -45,6 +50,7 @@ jobs:
       run:
         shell: bash
     env:
+      COMPUTE_SOAK_WORKLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.workload || 'gpu' }}
       COMPUTE_SOAK_PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'ci-test' }}
       COMPUTE_SOAK_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.seconds || '1' }}
     steps:
@@ -66,7 +72,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Qualify active guest GPU resources
-        run: python .github/scripts/soak-gpu-compute.py --seconds "$COMPUTE_SOAK_SECONDS" --profile "$COMPUTE_SOAK_PROFILE" --output compute-resource-results
+        run: python .github/scripts/soak-gpu-compute.py --seconds "$COMPUTE_SOAK_SECONDS" --profile "$COMPUTE_SOAK_PROFILE" --workload "$COMPUTE_SOAK_WORKLOAD" --output compute-resource-results
       - name: Preserve compute evidence
         if: always()
         uses: actions/upload-artifact@v7

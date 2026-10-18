@@ -161,3 +161,13 @@ build command. Keep profile results separate and compare request counts as
 well as elapsed time; an optimized build can complete more sweeps. A release
 pass does not resolve growth or failures seen with validation enabled, and
 neither profile alone qualifies a physical hardware/default-readiness row.
+
+For allocation diagnosis only, `--workload cpu-baseline` (manual workflow
+`workload: cpu-baseline`) runs the same two guests, page sweeps and pixel
+comparisons without installing compute renderers. It requires zero GPU
+requests and null compute-device observations. Schema 4 labels the workload,
+sets `gpu_qualification: false`, and reports success as `diagnostic_passed`.
+Default/PR runs remain `gpu`; their parser rejects CPU baseline observations.
+Keep CPU baseline results separate from GPU qualification. Compare growth per
+completed sweep as well as time, since removing readback changes throughput.
+All workload, memory, timeout, source and teardown checks remain in place.
