@@ -13,6 +13,61 @@ import time
 TEST = "renderer_bench::forced_gpu_guest::qualify_gpu_compute_resources"
 
 
+def process_memory(pid):
+    """Observe the test PID; Windows private commit is not GPU residency."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            # PROCESS_MEMORY_COUNTERS_EX: DWORDs followed by pointer-sized SIZE_Ts.
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+                (name, ctypes.c_size_t) for name in (
+                    "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                    "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage",
+                    "PagefileUsage", "PeakPagefileUsage", "PrivateUsage")]
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+        psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            counters = Counters()
+            counters.cb = ctypes.sizeof(counters)
+            if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return dict(rss_kib=counters.WorkingSetSize // 1024,
+                        working_set_bytes=counters.WorkingSetSize,
+                        peak_working_set_bytes=counters.PeakWorkingSetSize,
+                        private_commit_bytes=counters.PrivateUsage,
+                        peak_private_commit_bytes=counters.PeakPagefileUsage)
+        finally:
+            if not kernel.CloseHandle(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+    if os.name == "posix":
+        sample = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True)
+        if sample.returncode == 0 and sample.stdout.strip().isdigit():
+            return dict(rss_kib=int(sample.stdout.strip()))
+        raise OSError(f"cannot read process RSS: {sample.stderr.strip()}")
+    raise OSError(f"process memory sampling unsupported on {os.name}")
+
+
+def memory_evidence(samples):
+    valid = [row for row in samples if type(row.get("rss_kib")) is int and row["rss_kib"] >= 0
+             and not row.get("error")]
+    malformed = sum(not row.get("error") for row in samples) - len(valid)
+    active_errors = [row for row in samples if row.get("error") and row.get("process_running")]
+    return dict(samples=len(valid), active_errors=len(active_errors),
+                malformed_samples=malformed, complete=bool(valid) and not active_errors and not malformed)
+
+
 def teardown_evidence(log):
     prefix = "[GPU-SOAK-TEARDOWN] "
     events = [line.split(prefix, 1)[1].strip() for line in log.splitlines() if prefix in line]
@@ -79,7 +134,7 @@ def main():
             digest.update(name.encode() + b"\0" + (root / name).read_bytes() + b"\0")
         return digest.hexdigest()
     initial_digest = source_digest()
-    report = dict(schema_version=2, revision=revision, dirty=git("status", "--porcelain").splitlines(),
+    report = dict(schema_version=3, revision=revision, dirty=git("status", "--porcelain").splitlines(),
                   source_sha256=initial_digest, harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                   fixture_sha256=hashlib.sha256((root / "tests/toolbox-showcase/toolbox-showcase.sit").read_bytes()).hexdigest(),
                   host=platform.platform(), machine=platform.machine(), seconds=args.seconds,
@@ -87,7 +142,8 @@ def main():
                   gpu_writeback_scope="masked/deep categories are subsets of the QuickDraw total; do not sum",
                   status="building", default_eligible=False,
                   scope="forced guest GPU writeback/resource stress; not adaptive dispatch or performance qualification",
-                  rss_scope="test-process RSS only, not GPU or compiler-service accounting" if os.name == "posix" else None)
+                  rss_scope="test-process working set" if os.name == "nt" else "test-process RSS",
+                  memory_scope="actual test PID only; Windows private commit and peaks are process-wide, not GPU residency; do not sum with HAL counters")
     def save():
         (output / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
     save()
@@ -125,7 +181,7 @@ def main():
                    SYSTEMLESS_GPU_COMPUTE_SOAK_REPORT=str(output / "resources.jsonl"))
         memory = []
         started = time.monotonic()
-        with (output / "run.log").open("w") as log:
+        with (output / "run.log").open("w") as log, (output / "memory.jsonl").open("w") as memory_log:
             process = subprocess.Popen(command, cwd=root, env=env, stdout=log, stderr=subprocess.STDOUT)
             children.append(process)
             while process.poll() is None:
@@ -134,21 +190,27 @@ def main():
                     process.wait()
                     report["error"] = "compute qualification timed out"
                     break
-                if os.name == "posix":
-                    sample = subprocess.run(["ps", "-o", "rss=", "-p", str(process.pid)], capture_output=True, text=True)
-                    if sample.returncode == 0 and sample.stdout.strip().isdigit():
-                        memory.append(dict(seconds=time.monotonic() - started, rss_kib=int(sample.stdout.strip())))
+                observation = dict(seconds=time.monotonic() - started, pid=process.pid)
+                try:
+                    observation.update(process_memory(process.pid))
+                except OSError as error:
+                    # Preserve an exit race, but never hide missing live-process evidence.
+                    observation.update(error=str(error), process_running=process.poll() is None)
+                memory.append(observation)
+                memory_log.write(json.dumps(observation) + "\n")
+                memory_log.flush()
                 time.sleep(1)
         (output / "memory.json").write_text(json.dumps(memory, indent=2) + "\n")
         samples = [json.loads(line) for line in (output / "resources.jsonl").read_text().splitlines()] if (output / "resources.jsonl").exists() else []
         workload_complete = validate_samples(samples, args.seconds)
         teardown = teardown_evidence((output / "run.log").read_text(errors="replace"))
-        passed = (process.returncode == 0 and workload_complete and teardown["complete"]
+        memory_report = memory_evidence(memory)
+        passed = (process.returncode == 0 and workload_complete and teardown["complete"] and memory_report["complete"]
                   and revision == git("rev-parse", "HEAD") and source_digest() == initial_digest
                   and hashlib.sha256((root / "tests/toolbox-showcase/toolbox-showcase.sit").read_bytes()).hexdigest() == report["fixture_sha256"])
         report.update(status="passed" if passed else "failed", returncode=process.returncode,
                       elapsed_seconds=time.monotonic() - started, resource_samples=len(samples),
-                      workload_complete=workload_complete, teardown=teardown)
+                      workload_complete=workload_complete, teardown=teardown, memory=memory_report)
         save()
         print(f"compute resource soak: {report['status']} ({len(samples)} observations)", flush=True)
         return 0 if passed else 1

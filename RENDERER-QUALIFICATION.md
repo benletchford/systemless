@@ -90,7 +90,11 @@ adaptive selector intentionally keeps on CPU. Independent guests compare pixels
 throughout; every sweep must make progress in all four GPU request categories.
 Any GPU error/fallback, exhausted guest work budget or pixel mismatch fails.
 It records both compute devices' counters, requested scratch capacities, native
-Metal allocation observations when available, and process RSS on Unix. Shared
+Metal allocation observations when available, and process RSS on Unix. Windows
+collects test-process working set, private commit and their peaks through
+`GetProcessMemoryInfo` (`PROCESS_MEMORY_COUNTERS_EX`); `rss_kib` is working-set
+bytes divided by 1024. Private commit is process-wide commitment, not GPU
+residency. These values must not be added to HAL counters. Shared
 native Metal totals must not be summed across owners. This is resource/correctness
 stress, not a production performance or power benchmark.
 
@@ -130,3 +134,21 @@ row. Do not average away one failing workload or use shared CI timing as physica
 performance evidence. Keep raw captures/logs and identify the exact revision and
 fixture. A manual hardware failure blocks that hardware row even if every
 software-adapter test passes.
+
+Compute report schema 3 requires process-memory observations on both Unix and
+Windows. `memory.jsonl` flushes each one-second observation, including errors,
+so failures retain partial evidence; `memory.json` retains the final array.
+The summary's `memory` field counts valid samples and live-process sampling
+errors. Missing, malformed or failed live-process evidence prevents a pass.
+An error observed after the child exits is retained as an exit race rather
+than a failed live-process sample. No memory value or short smoke approves
+bounded residency or default eligibility automatically.
+
+Windows collection uses a read-only process-query handle, closed after each
+observation. API definitions and accounting scope follow Microsoft's
+[GetProcessMemoryInfo](https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo)
+and [PROCESS_MEMORY_COUNTERS_EX](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex)
+documentation. The hosted Windows parser test samples an actual child process
+with a known allocation before the GPU smoke; it also exercises invalid-PID
+handling. This instrumentation diagnoses the allocation abort recorded in
+#4895; it does not fix that abort or the separate teardown stall in #4890.
