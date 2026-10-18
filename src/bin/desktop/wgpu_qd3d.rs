@@ -1,9 +1,10 @@
 //! GPU rasterization with synchronous RGB555 readback for guest memory coherence.
 use super::wgpu_buffers::{BindingRole, ScratchBuffers};
 use systemless::loader::ppc::{
+    ppc_q3_software_interpolate_projected_point, ppc_q3_software_perspective_weights,
     ppc_q3_vector3d_normalized_value, PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3LightKind,
-    PpcQ3RasterFrame, PpcQ3RasterPrimitive, PpcQ3RasterVertex, PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
-    PPC_Q3_ILLUMINATION_TYPE_PHONG,
+    PpcQ3RasterFrame, PpcQ3RasterPrimitive, PpcQ3RasterVertex, PpcQ3SoftwareProjectedPoint,
+    PPC_Q3_ILLUMINATION_TYPE_LAMBERT, PPC_Q3_ILLUMINATION_TYPE_PHONG,
 };
 
 // Three 128-byte vertices and five 16-byte state vectors.
@@ -370,14 +371,8 @@ impl State {
                     * (triangle[1].screen_y - triangle[0].screen_y)
                     - (triangle[2].screen_y - triangle[0].screen_y)
                         * (triangle[1].screen_x - triangle[0].screen_x);
-                // The software rasterizer widens before subtracting/multiplying.
-                // Carry that classification to WGSL instead of reclassifying
-                // thin triangles with shader f32/FMA arithmetic.
-                let precise_area = (f64::from(triangle[2].screen_x)
-                    - f64::from(triangle[0].screen_x))
-                    * (f64::from(triangle[1].screen_y) - f64::from(triangle[0].screen_y))
-                    - (f64::from(triangle[2].screen_y) - f64::from(triangle[0].screen_y))
-                        * (f64::from(triangle[1].screen_x) - f64::from(triangle[0].screen_x));
+                // Preserve the software rasterizer's double-precision classification.
+                let precise_area = triangle_area(triangle);
                 let degenerate =
                     draw.primitive == PpcQ3RasterPrimitive::Triangles && precise_area == 0.;
                 if draw.primitive == PpcQ3RasterPrimitive::Triangles
@@ -385,107 +380,116 @@ impl State {
                 {
                     return Err("GPU triangle area precision requires software rendering".into());
                 }
-                let mut bytes = Vec::with_capacity(TRIANGLE_BYTES);
-                for v in triangle {
+                let sort_depth = match draw.primitive {
+                    PpcQ3RasterPrimitive::Triangles => {
+                        (triangle[0].depth + triangle[1].depth + triangle[2].depth) / 3.
+                    }
+                    PpcQ3RasterPrimitive::Lines => (triangle[0].depth + triangle[1].depth) * 0.5,
+                    PpcQ3RasterPrimitive::Points => triangle[0].depth,
+                };
+                let vertices: [PpcQ3RasterVertex; 3] = triangle.try_into().unwrap();
+                let edges = degenerate.then(|| degenerate_edges(vertices));
+                let packets = edges
+                    .as_ref()
+                    .map_or(std::slice::from_ref(&vertices), |edges| edges.as_slice());
+                let primitive = if degenerate {
+                    PpcQ3RasterPrimitive::Lines
+                } else {
+                    draw.primitive
+                };
+                for triangle in packets {
+                    let mut bytes = Vec::with_capacity(TRIANGLE_BYTES);
+                    for v in triangle {
+                        for value in [
+                            v.screen_x,
+                            v.screen_y,
+                            v.depth,
+                            v.reciprocal_w,
+                            v.uv[0],
+                            v.uv[1],
+                            v.fog_depth,
+                            v.vertex_alpha.unwrap_or(-1.0),
+                            v.color[0],
+                            v.color[1],
+                            v.color[2],
+                            v.color[3],
+                            v.ambient_coefficient,
+                            if v.shading.highlight { 1. } else { 0. },
+                            0.,
+                            0.,
+                            v.shading.normal.unwrap_or([0.; 3])[0],
+                            v.shading.normal.unwrap_or([0.; 3])[1],
+                            v.shading.normal.unwrap_or([0.; 3])[2],
+                            if v.shading.normal.is_some() { 1. } else { 0. },
+                            v.shading.view_direction.unwrap_or([0.; 3])[0],
+                            v.shading.view_direction.unwrap_or([0.; 3])[1],
+                            v.shading.view_direction.unwrap_or([0.; 3])[2],
+                            if v.shading.view_direction.is_some() {
+                                1.
+                            } else {
+                                0.
+                            },
+                            v.shading.specular_color[0],
+                            v.shading.specular_color[1],
+                            v.shading.specular_color[2],
+                            v.shading.specular_control,
+                            v.shading.world[0],
+                            v.shading.world[1],
+                            v.shading.world[2],
+                            0.,
+                        ] {
+                            bytes.extend_from_slice(&value.to_le_bytes());
+                        }
+                    }
                     for value in [
-                        v.screen_x,
-                        v.screen_y,
-                        v.depth,
-                        v.reciprocal_w,
-                        v.uv[0],
-                        v.uv[1],
-                        v.fog_depth,
-                        v.vertex_alpha.unwrap_or(-1.0),
-                        v.color[0],
-                        v.color[1],
-                        v.color[2],
-                        v.color[3],
-                        v.ambient_coefficient,
-                        if v.shading.highlight { 1. } else { 0. },
-                        0.,
-                        0.,
-                        v.shading.normal.unwrap_or([0.; 3])[0],
-                        v.shading.normal.unwrap_or([0.; 3])[1],
-                        v.shading.normal.unwrap_or([0.; 3])[2],
-                        if v.shading.normal.is_some() { 1. } else { 0. },
-                        v.shading.view_direction.unwrap_or([0.; 3])[0],
-                        v.shading.view_direction.unwrap_or([0.; 3])[1],
-                        v.shading.view_direction.unwrap_or([0.; 3])[2],
-                        if v.shading.view_direction.is_some() {
-                            1.
-                        } else {
-                            0.
-                        },
-                        v.shading.specular_color[0],
-                        v.shading.specular_color[1],
-                        v.shading.specular_color[2],
-                        v.shading.specular_control,
-                        v.shading.world[0],
-                        v.shading.world[1],
-                        v.shading.world[2],
-                        0.,
+                        offset,
+                        width,
+                        height,
+                        wrap | u32::from(draw.write_depth && !degenerate)
+                            | (u32::from(!draw.test_depth || degenerate) << 3)
+                            | ((primitive as u32) << 4),
                     ] {
                         bytes.extend_from_slice(&value.to_le_bytes());
                     }
-                }
-                for value in [
-                    offset,
-                    width,
-                    height,
-                    wrap | u32::from(draw.write_depth)
-                        | (u32::from(!draw.test_depth) << 3)
-                        | ((draw.primitive as u32) << 4)
-                        | (u32::from(degenerate) << 6),
-                ] {
-                    bytes.extend_from_slice(&value.to_le_bytes());
-                }
-                let fog_values = fog
-                    .map(|fog| {
-                        [
-                            fog.color.1,
-                            fog.color.2,
-                            fog.color.3,
-                            (fog.mode + 1) as f32,
-                            fog.fog_start,
-                            fog.fog_end,
-                            fog.density,
-                            0.0,
-                        ]
-                    })
-                    .unwrap_or([0.0; 8]);
-                for value in fog_values {
-                    bytes.extend_from_slice(&value.to_le_bytes());
-                }
-                let ambient = draw
-                    .ambient_light
-                    .map(|light| {
-                        [
-                            light[0],
-                            light[1],
-                            light[2],
-                            if draw.ambient_per_vertex { 1. } else { 2. },
-                        ]
-                    })
-                    .unwrap_or([0.; 4]);
-                for value in ambient {
-                    bytes.extend_from_slice(&value.to_le_bytes());
-                }
-                for value in light_info {
-                    bytes.extend_from_slice(&value.to_le_bytes());
-                }
-                if draw.blend {
-                    let sort_depth = match draw.primitive {
-                        PpcQ3RasterPrimitive::Triangles => {
-                            (triangle[0].depth + triangle[1].depth + triangle[2].depth) / 3.
-                        }
-                        PpcQ3RasterPrimitive::Lines => {
-                            (triangle[0].depth + triangle[1].depth) * 0.5
-                        }
-                        PpcQ3RasterPrimitive::Points => triangle[0].depth,
-                    };
-                    deferred.push((sort_depth, bytes));
-                } else {
-                    triangles.extend(bytes);
+                    let fog_values = fog
+                        .map(|fog| {
+                            [
+                                fog.color.1,
+                                fog.color.2,
+                                fog.color.3,
+                                (fog.mode + 1) as f32,
+                                fog.fog_start,
+                                fog.fog_end,
+                                fog.density,
+                                0.0,
+                            ]
+                        })
+                        .unwrap_or([0.0; 8]);
+                    for value in fog_values {
+                        bytes.extend_from_slice(&value.to_le_bytes());
+                    }
+                    let ambient = draw
+                        .ambient_light
+                        .map(|light| {
+                            [
+                                light[0],
+                                light[1],
+                                light[2],
+                                if draw.ambient_per_vertex { 1. } else { 2. },
+                            ]
+                        })
+                        .unwrap_or([0.; 4]);
+                    for value in ambient {
+                        bytes.extend_from_slice(&value.to_le_bytes());
+                    }
+                    for value in light_info {
+                        bytes.extend_from_slice(&value.to_le_bytes());
+                    }
+                    if draw.blend {
+                        deferred.push((sort_depth, bytes));
+                    } else {
+                        triangles.extend(bytes);
+                    }
                 }
             }
         }
@@ -634,6 +638,78 @@ impl State {
         Ok(result)
     }
 }
+fn triangle_area(vertices: &[PpcQ3RasterVertex]) -> f64 {
+    let [a, b, c] = [vertices[0], vertices[1], vertices[2]];
+    (f64::from(c.screen_x) - f64::from(a.screen_x))
+        * (f64::from(b.screen_y) - f64::from(a.screen_y))
+        - (f64::from(c.screen_y) - f64::from(a.screen_y))
+            * (f64::from(b.screen_x) - f64::from(a.screen_x))
+}
+
+/// Reuse the tested line kernel. Keeping edge expansion on the host avoids
+/// adding divergent coverage/blend loops to every regular triangle invocation.
+fn degenerate_edges(vertices: [PpcQ3RasterVertex; 3]) -> [[PpcQ3RasterVertex; 3]; 3] {
+    let points = vertices.map(|v| PpcQ3SoftwareProjectedPoint {
+        x: v.screen_x.round() as i32,
+        y: v.screen_y.round() as i32,
+        raster_position: Some((v.screen_x, v.screen_y)),
+        z: v.depth,
+        reciprocal_w: v.reciprocal_w,
+        world: (v.shading.world[0], v.shading.world[1], v.shading.world[2]),
+        view_direction: v.shading.view_direction.map(|v| (v[0], v[1], v[2])),
+        fog_depth: v.fog_depth,
+        uv: Some((v.uv[0], v.uv[1])),
+        diffuse: Some((v.color[0], v.color[1], v.color[2])),
+        ambient_coefficient: Some(v.ambient_coefficient),
+        normal: v.shading.normal.map(|v| (v[0], v[1], v[2])),
+        specular_color: Some((
+            v.shading.specular_color[0],
+            v.shading.specular_color[1],
+            v.shading.specular_color[2],
+        )),
+        specular_control: Some(v.shading.specular_control),
+        highlight_state: Some(v.shading.highlight),
+        vertex_alpha: v.vertex_alpha,
+    });
+    let point = ppc_q3_software_interpolate_projected_point(&points, [1. / 3.; 3], 0, 0);
+    let weights = ppc_q3_software_perspective_weights(&points, [1. / 3.; 3]);
+    let mut sample = vertices[0];
+    sample.depth = point.z;
+    sample.reciprocal_w = 1.;
+    let uv = point.uv.unwrap();
+    sample.uv = [uv.0, uv.1];
+    let color = point.diffuse.unwrap();
+    sample.color = [
+        color.0,
+        color.1,
+        color.2,
+        weights[0].mul_add(
+            vertices[0].color[3],
+            weights[1].mul_add(vertices[1].color[3], weights[2] * vertices[2].color[3]),
+        ),
+    ];
+    sample.ambient_coefficient = point.ambient_coefficient.unwrap();
+    sample.fog_depth = point.fog_depth;
+    sample.vertex_alpha = point.vertex_alpha;
+    sample.shading.normal = point.normal.map(|v| [v.0, v.1, v.2]);
+    sample.shading.view_direction = point.view_direction.map(|v| [v.0, v.1, v.2]);
+    sample.shading.world = [point.world.0, point.world.1, point.world.2];
+    let specular = point.specular_color.unwrap();
+    sample.shading.specular_color = [specular.0, specular.1, specular.2];
+    sample.shading.specular_control = point.specular_control.unwrap();
+    sample.shading.highlight = point.highlight_state.unwrap();
+    [(0, 1), (1, 2), (2, 0)].map(|(a, b)| {
+        let mut packet = [sample; 3];
+        packet[0].screen_x = vertices[a].screen_x.round();
+        packet[0].screen_y = vertices[a].screen_y.round();
+        packet[1].screen_x = vertices[b].screen_x.round();
+        packet[1].screen_y = vertices[b].screen_y.round();
+        packet[2].screen_x = packet[0].screen_x;
+        packet[2].screen_y = packet[0].screen_y;
+        packet
+    })
+}
+
 /// Conservative screen bounds; explicit lines use rounded integer coverage.
 fn primitive_bounds(bytes: &[u8], width: u32, height: u32) -> [u32; 4] {
     let coordinate = |vertex: usize, axis: usize| {
@@ -764,6 +840,14 @@ impl PpcQ3GpuRenderer for Qd3dRenderer {
                 .as_ref()
                 .map_or(0, |lighting| lighting.lights.len()) as u64;
             for vertices in draw.vertices.chunks_exact(3) {
+                let degenerate = draw.primitive == PpcQ3RasterPrimitive::Triangles
+                    && triangle_area(vertices) == 0.;
+                let edge_count = if degenerate { 3 } else { 1 };
+                let (x0, y0, x1, y1) = if degenerate {
+                    (0, 0, frame.width, frame.height)
+                } else {
+                    (x0, y0, x1, y1)
+                };
                 let min_x = vertices
                     .iter()
                     .map(|v| v.screen_x)
@@ -793,16 +877,21 @@ impl PpcQ3GpuRenderer for Qd3dRenderer {
                     .div_ceil(TILE_SIZE);
                 gpu_work = gpu_work.saturating_add(
                     u64::from(tile_right.saturating_sub(tile_left))
-                        * u64::from(tile_bottom.saturating_sub(tile_top))
-                        * u64::from(TILE_SIZE * TILE_SIZE)
-                        * cost,
+                        .saturating_mul(u64::from(tile_bottom.saturating_sub(tile_top)))
+                        .saturating_mul(u64::from(TILE_SIZE * TILE_SIZE))
+                        .saturating_mul(cost)
+                        .saturating_mul(edge_count),
                 );
                 let width = (max_x - min_x).max(0.).ceil() as u64;
                 let height = (max_y - min_y).max(0.).ceil() as u64;
-                let samples = match draw.primitive {
-                    PpcQ3RasterPrimitive::Triangles => width.saturating_mul(height),
-                    PpcQ3RasterPrimitive::Lines => width.max(height) + 1,
-                    PpcQ3RasterPrimitive::Points => 1,
+                let samples = if degenerate {
+                    3 * (width.max(height) + 1)
+                } else {
+                    match draw.primitive {
+                        PpcQ3RasterPrimitive::Triangles => width.saturating_mul(height),
+                        PpcQ3RasterPrimitive::Lines => width.max(height) + 1,
+                        PpcQ3RasterPrimitive::Points => 1,
+                    }
                 };
                 work = work.saturating_add(samples.saturating_mul(cost));
             }
@@ -1029,6 +1118,15 @@ mod tests {
         full.vertices[2].screen_x = 0.;
         full.vertices[2].screen_y = 479.;
         frame.draws[0].vertices = full.vertices.repeat(2048);
+        assert!(!renderer.prefers_native(&frame));
+        full.vertices[0].screen_x = 0.;
+        full.vertices[0].screen_y = 0.;
+        full.vertices[1].screen_x = 300.;
+        full.vertices[1].screen_y = 200.;
+        full.vertices[2].screen_x = 600.;
+        full.vertices[2].screen_y = 400.;
+        frame.draws[0].vertices = full.vertices.repeat(64);
+        // Software walks three edges, not the entire triangle bounds.
         assert!(!renderer.prefers_native(&frame));
     }
 
