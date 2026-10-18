@@ -20,11 +20,16 @@ root = Path(__file__).resolve().parents[2]
 output = root / "native-window-results"
 output.mkdir(exist_ok=True)
 failed = []
-cases = [] if args.recovery_only else [(backend, gpu, "") for backend in ("inline", "thread") for gpu in (False, True)]
-cases += [(backend, True, fault) for backend in ("inline", "thread")
+cases = [] if args.recovery_only else [(backend, gpu, "", None) for backend in ("inline", "thread") for gpu in (False, True)]
+cases += [(backend, True, fault, None) for backend in ("inline", "thread")
           for fault in ("startup", "loss", "fatal", "recreate", "repeated-loss")]
-for backend, gpu, fault in cases:
+if not args.recovery_only:
+    cases += [(backend, False, "", renderer) for backend in ("inline", "thread")
+              for renderer in ("auto", "platform", "wgpu")]
+for backend, gpu, fault, renderer in cases:
     name = backend + ("-wgpu" if gpu else "")
+    if renderer:
+        name += "-renderer-" + renderer
     if fault:
         name += "-" + fault
     case = output / name
@@ -43,6 +48,8 @@ for backend, gpu, fault in cases:
     command = [str(root / "target/ci-test/systemless"), str(archive)]
     if gpu:
         command.append("--gpu")
+    if renderer:
+        command.append("--renderer=" + renderer)
     with (case / "run.log").open("w") as log:
         try:
             result = subprocess.run(
@@ -51,7 +58,7 @@ for backend, gpu, fault in cases:
                 timeout=120,
             )
             state = json.loads(report.read_text()) if report.exists() else {}
-            expected_renderer = "wgpu" if gpu and fault in ("", "loss") else "platform"
+            expected_renderer = "wgpu" if (gpu or renderer == "wgpu") and fault in ("", "loss") else "platform"
             passed = (result.returncode == 0 and state.get("passed") is True
                       and state.get("renderer") == expected_renderer)
         except subprocess.TimeoutExpired:

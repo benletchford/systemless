@@ -30,6 +30,9 @@ mod wgpu_present;
 #[path = "desktop/wgpu_shared.rs"]
 mod wgpu_shared;
 
+#[path = "desktop/renderer_selection.rs"]
+mod renderer_selection;
+
 #[path = "desktop/renderer_recovery.rs"]
 mod renderer_recovery;
 
@@ -261,8 +264,12 @@ struct Cli {
     game: PathBuf,
 
     /// Use wgpu for desktop presentation, drawing, text, and supported 3D rendering
-    #[arg(long)]
+    #[arg(long, conflicts_with = "renderer")]
     gpu: bool,
+
+    /// Select renderer; auto currently uses the qualified platform default
+    #[arg(long, value_enum, default_value = "auto")]
+    renderer: renderer_selection::Renderer,
 
     /// Run without opening a window
     #[arg(long)]
@@ -3815,6 +3822,12 @@ fn main() {
         unsafe { std::env::set_var("SYSTEMLESS_PREFER_POWERPC", "0") };
         eprintln!("[SYSTEMLESS] Classic 68K slice preferred when available");
     }
+    let use_wgpu = cli.renderer.uses_wgpu(cli.gpu);
+    eprintln!(
+        "[SYSTEMLESS] Renderer requested={:?}, selected={}",
+        cli.renderer,
+        if use_wgpu { "wgpu" } else { "platform" }
+    );
     let game_path = cli.game;
     let native_integrations = !cli.no_native_integrations;
     let arrows_as_numpad = if cli.literal_arrows {
@@ -3839,7 +3852,7 @@ fn main() {
             cli.addressing_24_bit,
             cli.screen_depth,
             cli.ui_theme,
-            cli.gpu,
+            use_wgpu,
         ) {
             eprintln!("[PLAY] {error}");
             std::process::exit(1);
@@ -3904,7 +3917,7 @@ fn main() {
                 &script,
                 cli.ui_theme,
                 cli.debug_socket,
-                cli.gpu,
+                use_wgpu,
             );
         } else {
             run_headless(
@@ -3915,7 +3928,7 @@ fn main() {
                 &script,
                 cli.ui_theme,
                 cli.debug_socket,
-                cli.gpu,
+                use_wgpu,
             );
         }
     } else {
@@ -3933,7 +3946,7 @@ fn main() {
             cli.ui_theme,
             cli.fullscreen,
             cli.debug_socket,
-            cli.gpu,
+            use_wgpu,
         );
     }
 }
@@ -4409,6 +4422,25 @@ mod tests {
                 .unwrap()
                 .gpu
         );
+    }
+
+    #[test]
+    fn renderer_cli_preserves_opt_in_and_rejects_conflicting_choices() {
+        for (args, expected) in [
+            (vec!["systemless", "game.sit"], false),
+            (vec!["systemless", "game.sit", "--gpu"], true),
+            (vec!["systemless", "game.sit", "--renderer=auto"], false),
+            (vec!["systemless", "game.sit", "--renderer=platform"], false),
+            (vec!["systemless", "game.sit", "--renderer=wgpu"], true),
+            (vec!["systemless", "game.sit", "--headless", "--renderer=wgpu"], true),
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(cli.renderer.uses_wgpu(cli.gpu), expected);
+        }
+        for choice in ["auto", "platform", "wgpu", "unknown"] {
+            assert!(Cli::try_parse_from(["systemless", "game.sit", "--gpu", "--renderer", choice]).is_err());
+        }
+        assert!(Cli::try_parse_from(["systemless", "game.sit", "--renderer=unknown"]).is_err());
     }
 
     #[test]
