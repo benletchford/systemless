@@ -85,7 +85,7 @@ gui = [
 jit = ["m68k/jit"]
 # Exposes `scripted_traces`, deterministic trap-replay test scaffolding.
 # Off by default so it stays out of the published public API and docs.
-test-support = []
+test-support = ["wgpu?/counters"]
 # Opt-in debugger and inspection API. Off by default so ordinary builds do
 # not compile the control/inspection foundation or carry its runtime state.
 debug = []

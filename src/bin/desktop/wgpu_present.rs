@@ -213,6 +213,13 @@ impl WgpuPresenter {
         self.health.record(failure);
     }
 
+    #[cfg(feature = "test-support")]
+    pub(super) fn resource_snapshot(&self) -> serde_json::Value {
+        let mut report = super::gpu_resources::snapshot(&self.device);
+        report["shared_pool"] = self.compact.shared_resource_snapshot().into();
+        report
+    }
+
     pub fn check_health(&self) -> Result<(), Failure> {
         let now = std::time::Instant::now();
         if now >= self.next_health_poll.get() {

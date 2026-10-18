@@ -66,6 +66,10 @@ def main():
     if args.skip_windows:
         report["pending"].append("native window lifecycle and recovery")
     else:
+        if not run("resource-tests", ["cargo", "test", "--locked", "--profile", "ci-test", "--bin",
+                                      "systemless", "--features", "test-support", "gpu_resources::tests",
+                                      "--", "--test-threads=1"], 1800):
+            return 1
         if not run("probe-build", ["cargo", "build", "--locked", "--profile", "ci-test", "--bin",
                                    "systemless", "--features", "test-support"], 1800):
             return 1

@@ -39,6 +39,18 @@ struct Resources {
 }
 
 impl CompactRenderer {
+    #[cfg(feature = "test-support")]
+    pub(super) fn shared_resource_snapshot(&self) -> Option<serde_json::Value> {
+        #[cfg(target_os = "macos")]
+        {
+            self.shared.as_ref().map(|pool| pool.resource_snapshot())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+
     pub fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let entries: Vec<_> = (0..3)
             .map(|binding| wgpu::BindGroupLayoutEntry {

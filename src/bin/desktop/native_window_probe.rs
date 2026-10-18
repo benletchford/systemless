@@ -31,6 +31,7 @@ struct Probe {
     fault_sequence: u64,
     soak: Duration,
     cycles: u32,
+    gpu_resources: Vec<serde_json::Value>,
 }
 
 pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
@@ -66,6 +67,7 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
                 .expect("soak seconds must be 0..3600"),
         ),
         cycles: 0,
+        gpu_resources: Vec::new(),
     };
     event_loop
         .run_app(&mut probe)
@@ -88,6 +90,15 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
 }
 
 impl Probe {
+    fn sample_gpu_resources(&mut self) {
+        self.gpu_resources.push(serde_json::json!({
+            "seconds": self.started.elapsed().as_secs_f64(), "cycle": self.cycles,
+            "rebuilds": self.app.wgpu_recovery.rebuilds,
+            "renderer": if self.app.use_wgpu { "wgpu" } else { "platform" },
+            "resources": self.app.wgpu.as_ref().map(|gpu| gpu.resource_snapshot()),
+        }));
+    }
+
     fn write_report(&self) {
         let report = serde_json::json!({
             "passed": self.complete, "phase": self.phase, "checks": self.checks,
@@ -107,6 +118,7 @@ impl Probe {
             "rebuilds": self.app.wgpu_recovery.rebuilds,
             "fallback": self.app.wgpu_recovery.fallback,
             "guest_sequence": self.app.frame.sequence,
+            "gpu_resources": self.gpu_resources,
             "window": self.app.window.as_ref().map(|w| serde_json::json!({
                 "width": w.inner_size().width, "height": w.inner_size().height,
                 "scale_factor": w.scale_factor(),
@@ -168,6 +180,9 @@ impl Probe {
         let settled = self.phase_started.elapsed() > Duration::from_secs(2);
         match self.phase {
             0 if self.app.frame.sequence > 2 && self.app.last_presented_guest_tick.is_some() => {
+                if self.gpu_resources.is_empty() {
+                    self.sample_gpu_resources();
+                }
                 if !self.fault.is_empty() {
                     let count = if self.fault == "repeated-loss" { 3 } else { 1 };
                     if self.fault != "startup" && self.injected < count {
@@ -212,6 +227,7 @@ impl Probe {
                 }
                 if std::env::var_os("SYSTEMLESS_NATIVE_RECOVERY_ONLY").is_some() {
                     self.checks.push("guest frames reach real window");
+                    self.sample_gpu_resources();
                     self.phase = 10;
                     self.app
                         .window_event(event_loop, window.id(), WindowEvent::CloseRequested);
@@ -300,6 +316,7 @@ impl Probe {
             {
                 self.advance("native cursor position and guest input round trip verified");
                 self.cycles += 1;
+                self.sample_gpu_resources();
                 if self.started.elapsed() < self.soak || (!self.soak.is_zero() && self.cycles < 2) {
                     self.phase = 0;
                     self.lost_focus = false;
