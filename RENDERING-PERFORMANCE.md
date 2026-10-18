@@ -142,3 +142,9 @@ GPU timestamps when the adapter supports queries. Query resolution/readback runs
 after all timed samples; ordinary runs do not enable timestamp queries.
 Presentation
 completion costs include the host API wait and are not display/input latency.
+
+To isolate a guest workload, add `--guest-case ui`, `drawing`, `text`, `3d` or
+`sprites`. This keeps the same samples and pixel oracle, and still measures
+presentation and 3D kernels. `--reverse-first` reverses the first presentation
+backend order when collecting independent batches. Reports record both options;
+without `--guest-case`, every guest workload is measured as before.
