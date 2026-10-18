@@ -40,7 +40,9 @@ warm-up work is excluded from measured samples (three guest/kernel iterations,
 - **3D kernels:** the actual software rasterizer and synchronous wgpu renderer
   rasterize the same flat opaque triangle at 64×48, 320×240 and 640×480, with
   thirty samples, plus a sparse 64-triangle mesh and eight large overlapping
-  triangles. GPU times include upload/readback; software times include the
+  triangles. A separate 1,792-triangle tiled mesh records 100 paired default and
+  adaptive-GPU observations with an exact RGB555 oracle; it exceeds the previous
+  full-frame scan budget. This synthetic mesh is not the Nanosaur logo. GPU times include upload/readback; software times include the
   helper's target/depth setup and output extraction. `gpu` forces the kernel;
   `gpu-adaptive` applies the production work selector and uses software below
   its crossover, including selector cost. Backend order rotates within each
@@ -76,10 +78,16 @@ because guest readback has a cost even when a primitive covers few pixels.
 The minimum 3D work avoids the measured small-frame p95 readback regression:
 a faster GPU median alone does not justify worse synchronous guest latency.
 These are conservative dispatch heuristics, not universal hardware guarantees.
-The selector also compares the compute kernel's full-frame primitive scan with
-the CPU's clipped primitive bounds. Sparse meshes and frames beyond the GPU
-work limit stay on the CPU before GPU staging. Other host renderer
-implementations keep their existing selection by default.
+QD3D builds conservative 16×16 screen-tile lists after transparency sorting,
+so each pixel visits only its tile’s ordered primitives. The selector compares
+estimated tile work with the CPU's clipped primitive bounds. Tile storage and
+lighting-weighted work remain bounded; excessive overlap still falls back.
+Zero-area triangles use the CPU’s double-precision classification, shade at
+the perspective-correct centroid and expand to three ordered line packets
+for the existing GPU line shader, preserving repeated alpha/palette blends and the
+software renderer’s viewport/depth bypass. Thin nonzero triangles whose area
+collapses in shader precision still use software. Other host renderer implementations
+keep their existing selection by default.
 
 Synchronous compute submissions reuse a bounded set of geometrically grown
 buffers. Readbacks map only the current result and unmap before reuse. Retained
