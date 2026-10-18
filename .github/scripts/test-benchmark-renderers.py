@@ -22,6 +22,7 @@ def observations(samples=100):
 def log_for(items):
     count = len(items.get(("text", "default"), []))
     lines = ["[RENDER-ORDER] " + json.dumps(dict(case="text", pairs=count, first_measured_backend="gpu"))]
+    lines.append("[RENDER-DISPATCH] " + json.dumps(dict(case="text", requests=[[0, 0, 0, 0] for _ in range(count)])))
     for (case, backend), values in items.items():
         ordered = sorted(values)
         lines.append("[RENDER-SAMPLES] " + json.dumps(dict(case=case, backend=backend, samples_us=values)))
@@ -79,6 +80,33 @@ class EvidenceTests(unittest.TestCase):
         log = log_for(observations())
         with self.assertRaisesRegex(ValueError, "missing guest pair order"):
             self.parse("\n".join(line for line in log.splitlines() if not line.startswith("[RENDER-ORDER]")))
+
+    def test_dispatch_samples_preserve_timing_alignment_and_zero_work(self):
+        log = log_for(observations())
+        rows = [[0, 0, 0, 0] for _ in range(100)]
+        rows[99] = [7, 2, 1, 3]
+        log = "\n".join(line for line in log.splitlines() if not line.startswith("[RENDER-DISPATCH]"))
+        log += "\n[RENDER-DISPATCH] " + json.dumps(dict(case="text", requests=rows))
+        records = self.parse(log)
+        gpu = next(r for r in records if r["case"] == "text" and r["backend"] == "gpu")
+        self.assertEqual(gpu["gpu_requests_per_sample"], rows)
+        self.assertEqual(gpu["samples_us"][99], 99)
+        self.assertTrue(all(r["gpu_requests_per_sample"] is None for r in records if r is not gpu))
+
+    def test_missing_duplicate_and_invalid_dispatch_are_rejected(self):
+        log = log_for(observations())
+        lines = log.splitlines()
+        telemetry = next(line for line in lines if line.startswith("[RENDER-DISPATCH]"))
+        without = "\n".join(line for line in lines if line != telemetry)
+        with self.assertRaisesRegex(ValueError, "missing guest dispatch"):
+            self.parse(without)
+        with self.assertRaisesRegex(ValueError, "duplicate guest dispatch"):
+            self.parse(log + "\n" + telemetry)
+        for rows in ([], [[0]*4]*99, [[0]*3]*100, [[True, 0, 0, 0]]*100,
+                     [[-1, 0, 0, 0]]*100, [[0, 1, 0, 0]]*100,
+                     [[1, 0, 2, 0]]*100, [[1.5, 0, 0, 0]]*100):
+            with self.subTest(rows=rows[:1]), self.assertRaisesRegex(ValueError, "invalid guest dispatch"):
+                self.parse(without + "\n[RENDER-DISPATCH] " + json.dumps(dict(case="text", requests=rows)))
 
     def test_macos_requires_the_platform_comparison(self):
         with self.assertRaisesRegex(ValueError, "default-metal"):

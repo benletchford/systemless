@@ -182,3 +182,20 @@ only for records with at least 100 observations, and remains null below that
 count. A displayed p99 is not confidence that a hardware row is qualified; use
 longer runs and inspect distributions/outliers and backend-order effects.
 No machine-dependent timing threshold approves the default automatically.
+
+Schema 3 additionally requires chronological `gpu_requests_per_sample` for
+GPU guest records. Each four-element row counts successful QuickDraw requests,
+glyph-mask requests, deep-mask requests and 3D requests during the corresponding
+timed redraw. Mask requests are subsets of QuickDraw, not additional submissions.
+Reset and warmup requests are excluded. All-zero rows mean adaptive selection
+submitted no GPU request; they remain valid CPU-execution timing observations.
+Other records use null. `gpu_request_columns` names the four columns. Missing,
+misaligned or malformed dispatch evidence fails parsing; a GPU request error
+fails the benchmark instead of silently qualifying CPU fallback.
+
+The benchmark wrappers delegate all production dispatch preferences and add
+single-threaded counters after successful calls. Counter updates are included
+in elapsed time; reading and logging them is outside timing. These are completed
+renderer requests, not hardware timestamp queries or input-to-display latency.
+Use this evidence to attribute tails before changing dispatch thresholds, and
+keep schema 2 results separate when comparing instrumentation-sensitive timings.

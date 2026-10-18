@@ -128,13 +128,12 @@ fn benchmark_guest_renderers() {
         if selected.as_deref().is_some_and(|selected| selected != name) {
             continue;
         }
+        let mut dispatch = None;
         let mut runners = [false, true].map(|gpu| {
             let mut runner = game::new_runner_with_configuration(true, 8);
             runner.set_prefer_powerpc_executables(true);
             if gpu {
-                runner
-                    .set_quickdraw_gpu_renderer(Box::new(wgpu_quickdraw::QuickDrawRenderer::new()));
-                runner.set_q3_gpu_renderer(Box::new(wgpu_qd3d::Qd3dRenderer::new()));
+                dispatch = Some(forced_gpu_guest::install_adaptive(&mut runner));
             }
             runner.set_app_start_time(0);
             let app = game::load_game_from_path(&mut runner, &fixture).unwrap();
@@ -147,6 +146,8 @@ fn benchmark_guest_renderers() {
             frames(&mut runner, 40);
             runner
         });
+        let dispatch = dispatch.unwrap();
+        let mut dispatch_samples = Vec::new();
         let reverse = usize::from(std::env::var_os("SYSTEMLESS_BENCH_REVERSE").is_some());
         let mut samples: [Vec<Duration>; 2] = std::array::from_fn(|_| Vec::new());
         for iteration in 0..count + 3 {
@@ -160,9 +161,16 @@ fn benchmark_guest_renderers() {
             for index in order {
                 let runner = &mut runners[index];
                 page(runner, if target == 1 { 2 } else { 1 });
+                let before: [usize; 4] = std::array::from_fn(|i| dispatch[i].get());
                 let start = Instant::now();
                 let exhausted = page(runner, target);
                 let elapsed = start.elapsed();
+                // Read counters after the timer; exclude reset and warmup calls.
+                if iteration >= 3 && index == 1 {
+                    dispatch_samples.push(std::array::from_fn::<_, 4, _>(|i| {
+                        dispatch[i].get() - before[i]
+                    }));
+                }
                 assert_eq!(
                     exhausted, 0,
                     "{name} redraw exhausted its guest work budget"
@@ -178,6 +186,10 @@ fn benchmark_guest_renderers() {
                 "case": name, "pairs": count,
                 "first_measured_backend": if (3 + reverse) % 2 == 0 { "default" } else { "gpu" },
             })
+        );
+        eprintln!(
+            "[RENDER-DISPATCH] {}",
+            serde_json::json!({ "case": name, "requests": dispatch_samples })
         );
         let mut reference: Option<Vec<u32>> = None;
         for (index, runner) in runners.iter().enumerate() {
@@ -234,11 +246,28 @@ mod forced_gpu_guest {
     use systemless::loader::ppc::{PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3RasterFrame};
     use systemless::quickdraw::gpu::*;
 
-    type Counts = Rc<[Cell<usize>; 4]>;
+    pub(super) type Counts = Rc<[Cell<usize>; 4]>;
+
+    // Benchmark instrumentation preserves production advisory selection. Forced
+    // writeback tests below keep their historical selection for small fixtures.
+    pub(super) fn install_adaptive(runner: &mut FixtureRunner) -> Counts {
+        let calls: Counts = Rc::new(std::array::from_fn(|_| Cell::new(0)));
+        runner.set_quickdraw_gpu_renderer(Box::new(QuickDraw {
+            renderer: Rc::new(RefCell::new(wgpu_quickdraw::QuickDrawRenderer::new())),
+            calls: calls.clone(),
+            adaptive: true,
+        }));
+        runner.set_q3_gpu_renderer(Box::new(Qd3d {
+            renderer: Rc::new(RefCell::new(wgpu_qd3d::Qd3dRenderer::new())),
+            calls: calls.clone(),
+            adaptive: true,
+        }));
+        calls
+    }
     fn checked<T>(result: Result<T, String>, calls: &Cell<usize>) -> Result<T, String> {
         assert!(
             result.is_ok(),
-            "forced guest GPU request failed: {:?}",
+            "guest GPU request failed: {:?}",
             result.as_ref().err()
         );
         calls.set(calls.get() + 1);
@@ -247,8 +276,18 @@ mod forced_gpu_guest {
     struct QuickDraw {
         renderer: Rc<RefCell<wgpu_quickdraw::QuickDrawRenderer>>,
         calls: Counts,
+        adaptive: bool,
     }
     impl QuickDrawGpuRenderer for QuickDraw {
+        fn prefers_precomputed_raster(&self) -> bool {
+            !self.adaptive || self.renderer.borrow().prefers_precomputed_raster()
+        }
+        fn prefers_raster(&self, command: &QuickDrawGpuCommand) -> bool {
+            !self.adaptive || self.renderer.borrow().prefers_raster(command)
+        }
+        fn prefers_blit(&self, pixels: usize, expensive_color: bool) -> bool {
+            !self.adaptive || self.renderer.borrow().prefers_blit(pixels, expensive_color)
+        }
         fn render(
             &mut self,
             command: &QuickDrawGpuCommand,
@@ -295,8 +334,12 @@ mod forced_gpu_guest {
     struct Qd3d {
         renderer: Rc<RefCell<wgpu_qd3d::Qd3dRenderer>>,
         calls: Counts,
+        adaptive: bool,
     }
     impl PpcQ3GpuRenderer for Qd3d {
+        fn prefers_native(&self, frame: &PpcQ3RasterFrame) -> bool {
+            !self.adaptive || self.renderer.borrow().prefers_native(frame)
+        }
         fn render(
             &mut self,
             frame: &PpcQ3GpuFrame,
@@ -363,10 +406,12 @@ mod forced_gpu_guest {
                 runner.set_quickdraw_gpu_renderer(Box::new(QuickDraw {
                     renderer: Rc::new(RefCell::new(wgpu_quickdraw::QuickDrawRenderer::new())),
                     calls: calls.clone(),
+                    adaptive: false,
                 }));
                 runner.set_q3_gpu_renderer(Box::new(Qd3d {
                     renderer: Rc::new(RefCell::new(wgpu_qd3d::Qd3dRenderer::new())),
                     calls: calls.clone(),
+                    adaptive: false,
                 }));
             }
             runner.set_app_start_time(0);
@@ -429,10 +474,12 @@ mod forced_gpu_guest {
                 runner.set_quickdraw_gpu_renderer(Box::new(QuickDraw {
                     renderer: quickdraw.clone(),
                     calls: calls.clone(),
+                    adaptive: false,
                 }));
                 runner.set_q3_gpu_renderer(Box::new(Qd3d {
                     renderer: qd3d.clone(),
                     calls: calls.clone(),
+                    adaptive: false,
                 }));
             }
             runner.set_app_start_time(0);
