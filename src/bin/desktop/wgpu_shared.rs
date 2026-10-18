@@ -157,9 +157,8 @@ impl Pool {
         let device = &self.device;
         let limits = device.limits();
         let layout = Layout::new(image, &limits)?;
-        // Process completed work, then check individual submission fences with
-        // a zero timeout. No completion callback or wait is needed for a slot.
-        device.poll(wgpu::PollType::Poll).ok()?;
+        // Checking individual submission fences also reclaims completed work;
+        // a separate device poll would duplicate that work on every frame.
         let index = self
             .slots
             .iter()

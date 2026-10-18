@@ -1062,21 +1062,28 @@ pub(crate) mod tests {
                 height: 8,
                 scale: 4,
                 cells: (0..64)
-                    .map(|cell| {
-                        if (cell + frame) % 3 == 0 {
-                            color
-                        } else {
-                            0x80000000
-                        }
-                    })
+                    .map(|cell| if cell == 63 { color } else { 0x80000000 })
                     .collect(),
                 detail: (0..16)
-                    .map(|sample| (color + sample * 8137) & 0xffffff)
+                    .map(|sample| ((frame / 2) * 717137 + sample * 8137) & 0xffffff)
                     .collect(),
             });
             let mut expected = Vec::new();
             assert!(image.render_argb_resized((16, 16), &mut expected));
+            // Detail matches the last presented packet in each pair, but
+            // differs from the previous portable upload. Keep the resident
+            // buffer's history separate from the shared presentation history.
+            #[cfg(target_os = "macos")]
+            let pool = if frame % 2 == 1 {
+                renderer.shared.take()
+            } else {
+                None
+            };
             renderer.encode(&device, &queue, &image, (0, 0, 8, 8), (0, 0, 16, 16), &view);
+            #[cfg(target_os = "macos")]
+            if pool.is_some() {
+                renderer.shared = pool;
+            }
             let readback = device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
                 size: 256 * 16,
@@ -1125,6 +1132,83 @@ pub(crate) mod tests {
             let (allocated, ready) = pool.status();
             assert!((1..=3).contains(&allocated));
             assert_eq!(allocated, ready);
+        }
+    }
+
+    #[test]
+    fn gpu_dense_retained_packet_matches_cpu_at_presentation_size() {
+        let Some((device, queue)) = presentation_device() else {
+            return;
+        };
+        let mut renderer = CompactRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("dense retained oracle"),
+            size: wgpu::Extent3d {
+                width: 800,
+                height: 600,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let image = Arc::new(crate::renderer_bench::presentation_fixture(true));
+        let mut changed = (*image).clone();
+        changed.cells[0] ^= 0x010101;
+        changed.detail[17] ^= 0x234567;
+        *changed.detail.last_mut().unwrap() ^= 0xabcdef;
+        for image in [image, Arc::new(changed)] {
+            let mut expected = Vec::new();
+            assert!(image.render_argb_resized((800, 600), &mut expected));
+            renderer.encode(
+                &device,
+                &queue,
+                &image,
+                (0, 0, 640, 480),
+                (0, 0, 800, 600),
+                &view,
+            );
+            let row_bytes = 3200u32.div_ceil(256) * 256;
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: u64::from(row_bytes) * 600,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.copy_texture_to_buffer(
+                target.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(row_bytes),
+                        rows_per_image: Some(600),
+                    },
+                },
+                target.size(),
+            );
+            queue.submit([encoder.finish()]);
+            readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, |result| result.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let bytes = readback.slice(..).get_mapped_range().unwrap();
+            for y in 0..600usize {
+                for x in 0..800usize {
+                    let offset = y * row_bytes as usize + x * 4;
+                    let rgba = &bytes[offset..offset + 4];
+                    let actual = 0xff000000
+                        | (u32::from(rgba[0]) << 16)
+                        | (u32::from(rgba[1]) << 8)
+                        | u32::from(rgba[2]);
+                    assert_eq!(actual, expected[y * 800 + x], "dense pixel=({x},{y})");
+                }
+            }
         }
     }
 
