@@ -21,14 +21,18 @@ def main():
     parser.add_argument("--soak-seconds", type=int, default=300)
     parser.add_argument("--compute-soak-seconds", type=int, default=0,
                         help="active guest compute resources; 0 skips, multi-hour runs are opt-in")
+    parser.add_argument("--soak-runtime", choices=("all", "inline", "thread"), default="all")
+    parser.add_argument("--soak-presenter", choices=("all", "platform", "wgpu"), default="all")
     parser.add_argument("--benchmarks", action="store_true")
     parser.add_argument("--skip-windows", action="store_true",
                         help="record window qualification as pending, e.g. a locked desktop")
     args = parser.parse_args()
-    if not 0 <= args.soak_seconds <= 3600:
-        parser.error("--soak-seconds must be 0..3600")
     if not 0 <= args.compute_soak_seconds <= 21600:
         parser.error("--compute-soak-seconds must be 0..21600")
+    if not 0 <= args.soak_seconds <= 21600:
+        parser.error("--soak-seconds must be 0..21600")
+    if args.soak_seconds > 3600 and (args.soak_runtime == "all" or args.soak_presenter == "all"):
+        parser.error("longer-than-one-hour soaks require --soak-runtime and --soak-presenter")
     root = Path(__file__).resolve().parents[2]
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -83,6 +87,7 @@ def main():
         if args.soak_seconds:
             if not run("lifecycle-soak", [sys.executable, str(root / ".github/scripts/verify-native-window.py"),
                                           "--soak-only", "--soak-seconds", str(args.soak_seconds),
+                                          "--runtime", args.soak_runtime, "--presenter", args.soak_presenter,
                                           "--output", str(output / "soak")], 4 * (args.soak_seconds + 120) + 60):
                 return 1
     if args.benchmarks:

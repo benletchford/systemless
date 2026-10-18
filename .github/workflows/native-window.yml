@@ -9,18 +9,29 @@ on:
       - '.github/workflows/native-window.yml'
       - '.github/scripts/verify-native-window.py'
       - '.github/scripts/wait-for-window-manager.py'
+      - '.github/scripts/test-native-window-cases.py'
   workflow_dispatch:
     inputs:
       soak-seconds:
         description: 'Lifecycle soak seconds per renderer/runtime (0 skips)'
         required: false
         default: '0'
+      runtime:
+        description: 'Runtime for a long single-session soak'
+        type: choice
+        options: [all, inline, thread]
+        default: all
+      presenter:
+        description: 'Presenter for a long single-session soak'
+        type: choice
+        options: [all, platform, wgpu]
+        default: all
 
 permissions:
   contents: read
 
 concurrency:
-  group: native-window-${{ github.ref }}
+  group: native-window-${{ github.ref }}-${{ inputs.runtime || 'all' }}-${{ inputs.presenter || 'all' }}
   cancel-in-progress: true
 
 jobs:
@@ -30,7 +41,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    # Four renderer/runtime cases can each request a one-hour manual soak.
+    env:
+      SOAK_RUNTIME: ${{ inputs.runtime || 'all' }}
+      SOAK_PRESENTER: ${{ inputs.presenter || 'all' }}
+    # Unfiltered cases allow one hour each; a selected owner can run up to five.
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v6
@@ -41,6 +55,15 @@ jobs:
           sudo apt-get install -y libasound2-dev pkg-config xvfb openbox x11-utils libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Validate lifecycle case selection
+        env:
+          SOAK_SECONDS: ${{ inputs.soak-seconds || '30' }}
+        run: |
+          python3 -c 'import os; n=int(os.environ["SOAK_SECONDS"]); assert 0 <= n <= 18000, "hosted soak seconds must be 0..18000"'
+          python3 .github/scripts/test-native-window-cases.py
+          python3 .github/scripts/verify-native-window.py --soak-only --soak-seconds "$SOAK_SECONDS" --runtime "$SOAK_RUNTIME" --presenter "$SOAK_PRESENTER" --dry-run
+      - name: Verify streamed native diagnostics
+        run: cargo test --locked --profile ci-test --bin systemless --features test-support native_window_probe::tests -- --test-threads=1
       - name: Verify GPU resource observations
         env:
           SYSTEMLESS_REQUIRE_GPU: "1"
@@ -57,12 +80,12 @@ jobs:
         if: runner.os == 'Linux' && (github.event_name != 'workflow_dispatch' || inputs.soak-seconds != '0')
         env:
           SOAK_SECONDS: ${{ inputs.soak-seconds || '30' }}
-        run: xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox & python3 .github/scripts/wait-for-window-manager.py && python3 .github/scripts/verify-native-window.py --soak-only --soak-seconds "$SOAK_SECONDS" --output native-window-results/soak'
+        run: xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox & python3 .github/scripts/wait-for-window-manager.py && python3 .github/scripts/verify-native-window.py --soak-only --soak-seconds "$SOAK_SECONDS" --runtime "$SOAK_RUNTIME" --presenter "$SOAK_PRESENTER" --output native-window-results/soak'
       - name: Run macOS lifecycle soak
         if: runner.os == 'macOS' && (github.event_name != 'workflow_dispatch' || inputs.soak-seconds != '0')
         env:
           SOAK_SECONDS: ${{ inputs.soak-seconds || '30' }}
-        run: python3 .github/scripts/verify-native-window.py --soak-only --soak-seconds "$SOAK_SECONDS" --output native-window-results/soak
+        run: python3 .github/scripts/verify-native-window.py --soak-only --soak-seconds "$SOAK_SECONDS" --runtime "$SOAK_RUNTIME" --presenter "$SOAK_PRESENTER" --output native-window-results/soak
       - name: Preserve qualification evidence
         if: always()
         uses: actions/upload-artifact@v7
