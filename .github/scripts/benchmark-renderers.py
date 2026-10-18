@@ -33,7 +33,20 @@ def parse_batch(log, run, samples, guest_case=None, system=None):
         summaries[key] = (int(count), float(p50), float(p95))
     raw = {}
     orders = {}
+    dispatch = {}
     for line in log.splitlines():
+        if "[RENDER-DISPATCH] " in line:
+            item = json.loads(line.split("[RENDER-DISPATCH] ", 1)[1])
+            case = item["case"]
+            if case in dispatch:
+                raise ValueError("duplicate guest dispatch evidence")
+            requests = item["requests"]
+            if (not isinstance(requests, list) or len(requests) != samples
+                    or any(not isinstance(row, list) or len(row) != 4
+                           or any(type(value) is not int or value < 0 for value in row)
+                           or row[1] > row[0] or row[2] > row[0] for row in requests)):
+                raise ValueError("invalid guest dispatch evidence")
+            dispatch[case] = requests
         if "[RENDER-ORDER] " in line:
             order = json.loads(line.split("[RENDER-ORDER] ", 1)[1])
             if order["case"] in orders:
@@ -67,6 +80,8 @@ def parse_batch(log, run, samples, guest_case=None, system=None):
     for key, count in expected.items():
         if key not in raw or len(raw[key]) != count:
             raise ValueError(f"missing or incomplete observations: {key}; expected {count}")
+    if set(dispatch) != set(guest_cases):
+        raise ValueError("missing guest dispatch evidence")
     records = []
     for (case, backend), values in raw.items():
         count, logged_p50, logged_p95 = summaries[(case, backend)]
@@ -81,7 +96,8 @@ def parse_batch(log, run, samples, guest_case=None, system=None):
                             first_measured_backend=orders.get(case),
                             p50_us=p50, p95_us=p95,
                             p99_us=ordered[(count * 99 + 99) // 100 - 1] if count >= 100 else None,
-                            samples_us=values))
+                            samples_us=values,
+                            gpu_requests_per_sample=dispatch[case] if case in dispatch and backend == "gpu" else None))
     return records
 
 
@@ -136,7 +152,9 @@ def main():
     sources = [name for name in sources if name]
     for name in sorted(sources + ["Cargo.toml", "Cargo.lock"]):
         source_digest.update(name.encode() + b"\0" + (repo / name).read_bytes() + b"\0")
-    report = dict(schema_version=2, guest_sample_order="alternating-per-iteration",
+    report = dict(schema_version=3,
+                  gpu_request_columns=["quickdraw", "glyph_masks", "deep_masks", "3d"],
+                  guest_sample_order="alternating-per-iteration",
                   harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                   p99_minimum_samples=100, profile=args.profile, guest_case=args.guest_case, reverse_first=args.reverse_first, source_sha256=source_digest.hexdigest(), host=platform.platform(), machine=platform.machine(),
                   revision=subprocess.check_output(["git", "rev-parse", "HEAD"],
