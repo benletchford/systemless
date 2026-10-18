@@ -10,6 +10,7 @@ use systemless::loader::ppc::{
 const TRIANGLE_BYTES: usize = 464;
 const LIGHT_BYTES: usize = 64;
 const MAX_RASTER_WORK: u64 = 512_000_000;
+const TILE_SIZE: u32 = 16;
 const MIN_NATIVE_WORK: u64 = 200_000;
 
 pub(super) struct Qd3dRenderer {
@@ -216,7 +217,6 @@ impl State {
             texture_bytes.extend_from_slice(&texture.rgba);
         }
         let mut light_bytes = Vec::new();
-        let mut lighting_work = 1u64;
         let mut triangles = Vec::new();
         let mut deferred = Vec::new();
         for draw in &frame.draws {
@@ -260,7 +260,6 @@ impl State {
                 light_info[2] = lighting.interpolation_style;
                 light_info[3] =
                     u32::from(lighting.illumination_type == PPC_Q3_ILLUMINATION_TYPE_PHONG);
-                lighting_work = lighting_work.max(1 + lighting.lights.len() as u64);
                 for light in &lighting.lights {
                     let (direction, location, kind, parameters) = match light.kind {
                         PpcQ3LightKind::Directional { direction, .. } => {
@@ -484,14 +483,17 @@ impl State {
             triangles.extend(bytes);
         }
         let triangle_count = triangles.len() / TRIANGLE_BYTES;
-        if triangles.len() as u64 > limits.max_storage_buffer_binding_size.into()
-            || count
-                .saturating_mul(triangle_count as u64)
-                .saturating_mul(lighting_work)
-                > MAX_RASTER_WORK
-        {
-            return Err("QD3D GPU frame exceeds raster work limits".into());
+        if triangles.len() as u64 > limits.max_storage_buffer_binding_size.into() {
+            return Err("QD3D GPU primitive storage exceeds limits".into());
         }
+        // Build lists after transparency sorting: each tile retains the exact
+        // primitive order, including repeated alpha blends at shared edges.
+        let tiles = raster_tiles(
+            frame.width,
+            frame.height,
+            &triangles,
+            limits.max_storage_buffer_binding_size as usize,
+        )?;
         if light_bytes.len() as u64 > limits.max_storage_buffer_binding_size.into() {
             return Err("GPU light storage exceeds limits".into());
         }
@@ -510,6 +512,7 @@ impl State {
         };
         let triangle_buffer = buffer("3d-triangles", &triangles, wgpu::BufferUsages::STORAGE);
         let texture_buffer = buffer("3d-textures", &texture_bytes, wgpu::BufferUsages::STORAGE);
+        let tile_buffer = buffer("3d-tiles", &tiles, wgpu::BufferUsages::STORAGE);
         let light_buffer = buffer("3d-lights", &light_bytes, wgpu::BufferUsages::STORAGE);
         // Live guest palettes can change between frames. Cache by all components,
         // avoiding 32K nearest-color searches on each indexed animation frame.
@@ -579,6 +582,7 @@ impl State {
                 (3, &geometry),
                 (4, &light_buffer),
                 (5, palette_buffer),
+                (6, &tile_buffer),
             ],
         );
         let readback = self.buffers.get(
@@ -619,6 +623,78 @@ impl State {
         Ok(result)
     }
 }
+/// Conservative screen bounds; explicit lines use rounded integer coverage.
+fn primitive_bounds(bytes: &[u8], width: u32, height: u32) -> [u32; 4] {
+    let coordinate = |vertex: usize, axis: usize| {
+        f32::from_le_bytes(
+            bytes[vertex * 128 + axis * 4..vertex * 128 + axis * 4 + 4]
+                .try_into()
+                .unwrap(),
+        )
+    };
+    let mut bounds = [0; 4];
+    for axis in 0..2 {
+        let limit = if axis == 0 { width } else { height };
+        let low = (0..3)
+            .map(|v| coordinate(v, axis))
+            .fold(f32::INFINITY, f32::min);
+        let high = (0..3)
+            .map(|v| coordinate(v, axis))
+            .fold(f32::NEG_INFINITY, f32::max);
+        bounds[axis] = low.floor().max(0.).min(limit as f32) as u32;
+        bounds[axis + 2] = (high.ceil() + 1.).max(0.).min(limit as f32) as u32;
+    }
+    bounds
+}
+
+fn raster_tiles(
+    width: u32,
+    height: u32,
+    primitives: &[u8],
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    let columns = width.div_ceil(TILE_SIZE);
+    let rows = height.div_ceil(TILE_SIZE);
+    let count = u64::from(columns) * u64::from(rows);
+    if count.saturating_mul(8) > limit as u64 {
+        return Err("QD3D GPU tile storage exceeds limits".into());
+    }
+    let mut lists = vec![Vec::<u32>::new(); count as usize];
+    let mut entries = 0usize;
+    let mut work = 0u64;
+    for (index, primitive) in primitives.chunks_exact(TRIANGLE_BYTES).enumerate() {
+        let lighting = 1 + u64::from(u32::from_le_bytes(primitive[452..456].try_into().unwrap()));
+        let [left, top, right, bottom] = primitive_bounds(primitive, width, height);
+        if left >= right || top >= bottom {
+            continue;
+        }
+        for y in top / TILE_SIZE..bottom.div_ceil(TILE_SIZE) {
+            for x in left / TILE_SIZE..right.div_ceil(TILE_SIZE) {
+                entries += 1;
+                if (count as usize * 2 + entries).saturating_mul(4) > limit {
+                    return Err("QD3D GPU tile storage exceeds limits".into());
+                }
+                work = work.saturating_add(
+                    u64::from((width - x * TILE_SIZE).min(TILE_SIZE))
+                        * u64::from((height - y * TILE_SIZE).min(TILE_SIZE))
+                        * lighting,
+                );
+                if work > MAX_RASTER_WORK {
+                    return Err("QD3D GPU frame exceeds raster work limits".into());
+                }
+                lists[(y * columns + x) as usize].push(index as u32);
+            }
+        }
+    }
+    let mut words = vec![0u32; count as usize * 2];
+    for (tile, list) in lists.into_iter().enumerate() {
+        words[tile * 2] = words.len() as u32;
+        words[tile * 2 + 1] = list.len() as u32;
+        words.extend(list);
+    }
+    Ok(words.into_iter().flat_map(u32::to_le_bytes).collect())
+}
+
 fn vertex_valid(v: &PpcQ3RasterVertex) -> bool {
     [
         v.ambient_coefficient,
@@ -656,24 +732,7 @@ impl PpcQ3GpuRenderer for Qd3dRenderer {
         // Estimate CPU raster work, rather than using framebuffer size: a tiny
         // triangle in a large window still loses to GPU submission/readback.
         let threshold = (u64::from(frame.width) * u64::from(frame.height) / 4).max(MIN_NATIVE_WORK);
-        let primitives: u64 = frame
-            .draws
-            .iter()
-            .map(|draw| (draw.vertices.len() / 3) as u64)
-            .sum();
-        let lighting = frame
-            .draws
-            .iter()
-            .map(|draw| 1 + draw.lighting.as_ref().map_or(0, |light| light.lights.len()) as u64)
-            .max()
-            .unwrap_or(1);
-        let gpu_work = u64::from(frame.width)
-            .saturating_mul(u64::from(frame.height))
-            .saturating_mul(primitives.max(1))
-            .saturating_mul(lighting);
-        if gpu_work > MAX_RASTER_WORK {
-            return false;
-        }
+        let mut gpu_work = 0u64;
         let left = (frame.viewport[0].max(0) as u32).min(frame.width);
         let top = (frame.viewport[1].max(0) as u32).min(frame.height);
         let right = (frame.viewport[2].saturating_add(1).max(0) as u32).min(frame.width);
@@ -714,6 +773,19 @@ impl PpcQ3GpuRenderer for Qd3dRenderer {
                     .map(|v| v.screen_y)
                     .fold(f32::NEG_INFINITY, f32::max)
                     .min(y1 as f32);
+                // Match conservative tile coverage, including inclusive edges.
+                let tile_left = min_x.floor().max(0.) as u32 / TILE_SIZE;
+                let tile_top = min_y.floor().max(0.) as u32 / TILE_SIZE;
+                let tile_right = ((max_x.ceil() + 1.).max(0.).min(frame.width as f32) as u32)
+                    .div_ceil(TILE_SIZE);
+                let tile_bottom = ((max_y.ceil() + 1.).max(0.).min(frame.height as f32) as u32)
+                    .div_ceil(TILE_SIZE);
+                gpu_work = gpu_work.saturating_add(
+                    u64::from(tile_right.saturating_sub(tile_left))
+                        * u64::from(tile_bottom.saturating_sub(tile_top))
+                        * u64::from(TILE_SIZE * TILE_SIZE)
+                        * cost,
+                );
                 let width = (max_x - min_x).max(0.).ceil() as u64;
                 let height = (max_y - min_y).max(0.).ceil() as u64;
                 let samples = match draw.primitive {
@@ -724,10 +796,7 @@ impl PpcQ3GpuRenderer for Qd3dRenderer {
                 work = work.saturating_add(samples.saturating_mul(cost));
             }
         }
-        // The compute kernel visits every primitive at every framebuffer cell.
-        // Sparse meshes instead benefit from the CPU's primitive bounds; do
-        // not send them to a quadratic GPU scan merely because they are large.
-        work >= threshold && gpu_work <= work.saturating_mul(4)
+        work >= threshold && gpu_work <= MAX_RASTER_WORK && gpu_work <= work.saturating_mul(4)
     }
 
     fn render_indexed(
@@ -937,13 +1006,68 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_dispatch_keeps_sparse_and_excessive_meshes_on_cpu() {
+    fn adaptive_dispatch_accepts_tiled_meshes_but_bounds_excessive_overlap() {
         let renderer = Qd3dRenderer::new();
         let mut frame = sparse_mesh();
+        assert!(renderer.prefers_native(&frame));
+        let mut full = triangle(0.5, [1., 0., 0., 1.]);
+        full.vertices[0].screen_x = 0.;
+        full.vertices[0].screen_y = 0.;
+        full.vertices[1].screen_x = 639.;
+        full.vertices[1].screen_y = 0.;
+        full.vertices[2].screen_x = 0.;
+        full.vertices[2].screen_y = 479.;
+        frame.draws[0].vertices = full.vertices.repeat(2048);
         assert!(!renderer.prefers_native(&frame));
-        let point = frame.draws[0].vertices[0];
-        frame.draws[0].vertices.resize(3 * 2048, point);
-        assert!(!renderer.prefers_native(&frame));
+    }
+
+    #[test]
+    fn tile_lists_preserve_order_and_bound_storage() {
+        let mut primitive = vec![0u8; TRIANGLE_BYTES];
+        for (v, (x, y)) in [(0., 0.), (31., 0.), (0., 31.)].into_iter().enumerate() {
+            primitive[v * 128..v * 128 + 4].copy_from_slice(&f32::to_le_bytes(x));
+            primitive[v * 128 + 4..v * 128 + 8].copy_from_slice(&f32::to_le_bytes(y));
+        }
+        let primitives = primitive.repeat(3);
+        let bytes = raster_tiles(32, 32, &primitives, 1024).unwrap();
+        let words: Vec<_> = bytes
+            .chunks_exact(4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .collect();
+        for header in words[..8].chunks_exact(2) {
+            assert_eq!(header[1], 3);
+            assert_eq!(
+                &words[header[0] as usize..header[0] as usize + 3],
+                &[0, 1, 2]
+            );
+        }
+        assert!(raster_tiles(32, 32, &primitives, bytes.len() - 1).is_err());
+    }
+
+    #[test]
+    fn gpu_tiles_accept_large_local_meshes_and_preserve_order() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let mut frame = sparse_mesh();
+        // 1,792 primitives: the previous 640*480*N scan exceeded 512M.
+        let original = frame.draws[0].vertices.clone();
+        for _ in 0..27 {
+            frame.draws[0].vertices.extend_from_slice(&original);
+        }
+        assert!(Qd3dRenderer::new().prefers_native(&frame));
+        let background = vec![0x4210; (frame.width * frame.height) as usize];
+        assert_eq!(
+            state.render(&frame, &background).unwrap(),
+            cpu_render(&frame, &background)
+        );
     }
 
     #[test]
