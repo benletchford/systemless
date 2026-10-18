@@ -92,6 +92,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Verify renderer benchmark evidence
+        run: python .github/scripts/test-benchmark-renderers.py
+
       - name: Test GPU application rendering
         run: python .github/scripts/verify-gpu-play.py
 

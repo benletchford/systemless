@@ -82,6 +82,15 @@ fn image(runner: &FixtureRunner) -> Vec<u32> {
 }
 
 pub(super) fn report(name: &str, backend: &str, samples: &mut [Duration]) {
+    // Keep chronological observations before sorting for the legacy log line.
+    // Guest observations at the same index are paired across backend orders.
+    eprintln!(
+        "[RENDER-SAMPLES] {}",
+        serde_json::json!({
+            "case": name, "backend": backend,
+            "samples_us": samples.iter().map(|sample| sample.as_secs_f64() * 1e6).collect::<Vec<_>>(),
+        })
+    );
     samples.sort_unstable();
     eprintln!(
         "[RENDER-BENCH] case={name} backend={backend} n={} p50_us={:.1} p95_us={:.1}",
@@ -117,8 +126,7 @@ fn benchmark_guest_renderers() {
         if selected.as_deref().is_some_and(|selected| selected != name) {
             continue;
         }
-        let mut reference: Option<Vec<u32>> = None;
-        for gpu in [false, true] {
+        let mut runners = [false, true].map(|gpu| {
             let mut runner = game::new_runner_with_configuration(true, 8);
             runner.set_prefer_powerpc_executables(true);
             if gpu {
@@ -135,19 +143,40 @@ fn benchmark_guest_renderers() {
             );
             configure_realtime_execution_rate(&mut runner);
             frames(&mut runner, 40);
-            let mut samples = Vec::new();
-            for iteration in 0..count + 3 {
-                // A different page invalidates the whole window. Exclude this
-                // reset from timing; measure the requested page's redraw.
-                page(&mut runner, if target == 1 { 2 } else { 1 });
+            runner
+        });
+        let reverse = usize::from(std::env::var_os("SYSTEMLESS_BENCH_REVERSE").is_some());
+        let mut samples: [Vec<Duration>; 2] = std::array::from_fn(|_| Vec::new());
+        for iteration in 0..count + 3 {
+            // Pair the same redraw in independent guests, alternating which
+            // backend runs first. Reset and screenshot work stay outside timing.
+            let order = if (iteration + reverse) % 2 == 0 {
+                [0, 1]
+            } else {
+                [1, 0]
+            };
+            for index in order {
+                let runner = &mut runners[index];
+                page(runner, if target == 1 { 2 } else { 1 });
                 let start = Instant::now();
-                page(&mut runner, target);
+                page(runner, target);
                 let elapsed = start.elapsed();
                 if iteration >= 3 {
-                    samples.push(elapsed);
+                    samples[index].push(elapsed);
                 }
             }
-            let pixels = image(&runner);
+        }
+        eprintln!(
+            "[RENDER-ORDER] {}",
+            serde_json::json!({
+                "case": name, "pairs": count,
+                "first_measured_backend": if (3 + reverse) % 2 == 0 { "default" } else { "gpu" },
+            })
+        );
+        let mut reference: Option<Vec<u32>> = None;
+        for (index, runner) in runners.iter().enumerate() {
+            let gpu = index == 1;
+            let pixels = image(runner);
             if let Some(root) = std::env::var_os("SYSTEMLESS_BENCH_OUTPUT") {
                 let root = PathBuf::from(root);
                 std::fs::create_dir_all(&root).unwrap();
@@ -179,7 +208,11 @@ fn benchmark_guest_renderers() {
             } else {
                 reference = Some(pixels);
             }
-            report(name, if gpu { "gpu" } else { "default" }, &mut samples);
+            report(
+                name,
+                if gpu { "gpu" } else { "default" },
+                &mut samples[index],
+            );
         }
     }
 }

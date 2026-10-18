@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Ensure incomplete or corrupt timing evidence cannot qualify a renderer."""
+import importlib.util
+import json
+from pathlib import Path
+import unittest
+
+spec = importlib.util.spec_from_file_location("benchmark_renderers", Path(__file__).with_name("benchmark-renderers.py"))
+benchmark = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(benchmark)
+
+
+def observations(samples=100):
+    result = {(case, backend): list(range(samples)) for case in ("text",)
+              for backend in ("default", "gpu")}
+    result.update({(case, backend): list(range(30)) for case in benchmark.KERNEL_CASES
+                   for backend in ("default", "gpu", "gpu-adaptive")})
+    result.update({(case, "gpu"): list(range(300)) for case in ("present-ui", "present-text")})
+    return result
+
+
+def log_for(items):
+    count = len(items.get(("text", "default"), []))
+    lines = ["[RENDER-ORDER] " + json.dumps(dict(case="text", pairs=count, first_measured_backend="gpu"))]
+    for (case, backend), values in items.items():
+        ordered = sorted(values)
+        lines.append("[RENDER-SAMPLES] " + json.dumps(dict(case=case, backend=backend, samples_us=values)))
+        lines.append(f"[RENDER-BENCH] case={case} backend={backend} n={len(values)} "
+                     f"p50_us={ordered[len(values)//2]:.1f} "
+                     f"p95_us={ordered[(len(values)*95+99)//100-1]:.1f}")
+    return "\n".join(lines)
+
+
+class EvidenceTests(unittest.TestCase):
+    def parse(self, log, samples=100, system="Linux"):
+        return benchmark.parse_batch(log, 2, samples, "text", system)
+
+    def test_preserves_pair_observations_and_reports_p99_only_with_enough_samples(self):
+        items = observations()
+        items[("text", "gpu")] = [1000] + list(range(99))
+        records = self.parse(log_for(items))
+        gpu = next(r for r in records if r["case"] == "text" and r["backend"] == "gpu")
+        self.assertEqual(gpu["samples_us"][0], 1000)
+        self.assertEqual(gpu["p99_us"], 98)
+        small = self.parse(log_for(observations(99)), 99)
+        self.assertIsNone(next(r for r in small if r["case"] == "text")["p99_us"])
+
+    def test_missing_backend_is_not_complete_evidence(self):
+        items = observations()
+        del items[("text", "gpu")]
+        with self.assertRaisesRegex(ValueError, "missing or incomplete"):
+            self.parse(log_for(items))
+
+    def test_truncated_observations_are_rejected_even_when_summary_agrees(self):
+        items = observations()
+        items[("text", "gpu")].pop()
+        with self.assertRaisesRegex(ValueError, "missing or incomplete"):
+            self.parse(log_for(items))
+
+    def test_raw_data_is_required_and_duplicate_records_are_rejected(self):
+        log = log_for(observations())
+        with self.assertRaisesRegex(ValueError, "raw observations"):
+            self.parse("\n".join(line for line in log.splitlines() if not line.startswith("[RENDER-SAMPLES]")))
+        with self.assertRaisesRegex(ValueError, "duplicate summary"):
+            self.parse(log + "\n" + log)
+
+    def test_nonfinite_negative_and_boolean_observations_are_rejected(self):
+        log = log_for(observations())
+        for invalid in (float("nan"), float("inf"), -1, True):
+            altered = log.replace('"samples_us": [0,', '"samples_us": [' + json.dumps(invalid) + ',', 1)
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "invalid observations"):
+                self.parse(altered)
+
+    def test_logged_quantiles_must_match_raw_evidence(self):
+        with self.assertRaisesRegex(ValueError, "summary does not match"):
+            self.parse(log_for(observations()).replace("p50_us=50.0", "p50_us=500.0", 1))
+
+    def test_missing_pair_order_is_rejected(self):
+        log = log_for(observations())
+        with self.assertRaisesRegex(ValueError, "missing guest pair order"):
+            self.parse("\n".join(line for line in log.splitlines() if not line.startswith("[RENDER-ORDER]")))
+
+    def test_macos_requires_the_platform_comparison(self):
+        with self.assertRaisesRegex(ValueError, "default-metal"):
+            self.parse(log_for(observations()), system="Darwin")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -155,3 +155,21 @@ To isolate a guest workload, add `--guest-case ui`, `drawing`, `text`, `3d` or
 presentation and 3D kernels. `--reverse-first` reverses the first presentation
 backend order when collecting independent batches. Reports record both options;
 without `--guest-case`, every guest workload is measured as before.
+
+## Tail evidence
+
+Guest samples now run in independent default/GPU guests, paired by redraw
+iteration with alternating backend order. `--reverse-first` also reverses the
+first guest order; earlier reports only reversed offscreen presentation.
+Reset-page work and screenshots remain outside timing. Both final captures
+must still match the pixel oracle. Compare new paired guest measurements with
+other paired runs rather than pooling them with the older sequential batches.
+
+Schema 2 reports preserve chronological `samples_us` for every record. Values
+at the same index in the two guest records are paired observations. Backend
+completeness, expected counts, finite nonnegative durations and agreement with
+logged quantiles are required; missing evidence fails the run. p99 is reported
+only for records with at least 100 observations, and remains null below that
+count. A displayed p99 is not confidence that a hardware row is qualified; use
+longer runs and inspect distributions/outliers and backend-order effects.
+No machine-dependent timing threshold approves the default automatically.
