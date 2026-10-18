@@ -1,8 +1,8 @@
 //! Device health and bounded desktop recovery; guest state stays with its owner.
 use super::*;
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
 };
 
 /// Preserve hardware/driver identity alongside qualification logs, even if
@@ -17,6 +17,37 @@ pub(super) fn report_adapter(info: &wgpu::AdapterInfo) {
             "driver": info.driver, "driver_info": info.driver_info,
         })
     );
+}
+
+/// Dropping a wgpu queue waits for idle. Known-failed compute state must not
+/// perform that potentially unbounded driver operation on the guest owner.
+pub(super) fn retire_compute<T: Send + 'static>(state: T) {
+    retire_with(state, |cleanup| {
+        std::thread::Builder::new()
+            .name("gpu-cleanup".into())
+            .spawn(cleanup)
+            .map(|_| ())
+    });
+}
+
+fn retire_with<T: Send + 'static>(
+    state: T,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+) {
+    let retired = Arc::new(Mutex::new(Some(state)));
+    let worker = retired.clone();
+    if let Err(error) = spawn(Box::new(move || {
+        let state = worker.lock().unwrap_or_else(|e| e.into_inner()).take();
+        drop(state);
+    })) {
+        // Failure to create a worker must not run the same blocking destructor
+        // here. One quarantined state per failed renderer remains until exit;
+        // its sticky CPU fallback prevents further GPU initialization attempts.
+        std::mem::forget(retired);
+        eprintln!(
+            "[GPU] Cannot start cleanup worker; retaining failed compute state until exit: {error}"
+        );
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +120,22 @@ impl Health {
             let _ = wake.send_event(());
         }
     }
+    pub fn wait_readback(&self, device: &wgpu::Device) -> Result<(), String> {
+        self.finish_readback(super::wgpu_buffers::wait_for_readback(device))
+    }
+
+    pub(super) fn finish_readback(
+        &self,
+        result: Result<wgpu::PollStatus, wgpu::PollError>,
+    ) -> Result<(), String> {
+        if let Err(error) = result {
+            // A timeout need not produce a device-lost callback. Quarantine
+            // this compute state rather than retrying a stalled queue per frame.
+            self.record(Failure::from(format!("GPU readback failed: {error}")));
+        }
+        self.check().map_err(|error| error.to_string())
+    }
+
     pub fn check(&self) -> Result<(), Failure> {
         if !self.failed.load(Ordering::Acquire) {
             return Ok(());
@@ -235,6 +282,62 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_compute_cleanup_does_not_block_the_owner() {
+        let (release, waiting) = std::sync::mpsc::channel();
+        let (entered, started) = std::sync::mpsc::channel();
+        let (finished, done) = std::sync::mpsc::channel();
+        struct BlockingDrop {
+            waiting: std::sync::mpsc::Receiver<()>,
+            entered: std::sync::mpsc::Sender<()>,
+            finished: std::sync::mpsc::Sender<()>,
+        }
+        impl Drop for BlockingDrop {
+            fn drop(&mut self) {
+                let _ = self.entered.send(());
+                let _ = self.waiting.recv();
+                let _ = self.finished.send(());
+            }
+        }
+        let (returned, owner_returned) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            retire_compute(BlockingDrop {
+                waiting,
+                entered,
+                finished,
+            });
+            returned.send(()).unwrap();
+        });
+        let timeout = std::time::Duration::from_secs(5);
+        owner_returned
+            .recv_timeout(timeout)
+            .expect("owner must return while cleanup is blocked");
+        started
+            .recv_timeout(timeout)
+            .expect("cleanup worker entered destructor");
+        release.send(()).unwrap();
+        done.recv_timeout(timeout)
+            .expect("cleanup completes when driver makes progress");
+        owner.join().unwrap();
+    }
+
+    #[test]
+    fn cleanup_worker_creation_failure_does_not_drop_on_the_owner() {
+        struct DropFlag(Arc<AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        retire_with(DropFlag(dropped.clone()), |_| {
+            Err(std::io::Error::other("injected worker failure"))
+        });
+        assert!(!dropped.load(Ordering::Acquire));
+        // This intentionally retains a tiny guard, exactly as the production
+        // failure path must retain a driver resource whose destructor can hang.
+    }
+
     #[test]
     fn gpu_uncaptured_validation_error_is_reported_without_panicking() {
         let instance = wgpu::Instance::default();

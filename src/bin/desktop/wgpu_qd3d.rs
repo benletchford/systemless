@@ -1,9 +1,9 @@
 //! GPU rasterization with synchronous RGB555 readback for guest memory coherence.
 use super::wgpu_buffers::ScratchBuffers;
 use systemless::loader::ppc::{
-    PPC_Q3_ILLUMINATION_TYPE_LAMBERT, PPC_Q3_ILLUMINATION_TYPE_PHONG, PpcQ3GpuFrame,
-    PpcQ3GpuRenderer, PpcQ3LightKind, PpcQ3RasterFrame, PpcQ3RasterPrimitive, PpcQ3RasterVertex,
-    ppc_q3_vector3d_normalized_value,
+    ppc_q3_vector3d_normalized_value, PpcQ3GpuFrame, PpcQ3GpuRenderer, PpcQ3LightKind,
+    PpcQ3RasterFrame, PpcQ3RasterPrimitive, PpcQ3RasterVertex, PPC_Q3_ILLUMINATION_TYPE_LAMBERT,
+    PPC_Q3_ILLUMINATION_TYPE_PHONG,
 };
 
 // Three 128-byte vertices and five 16-byte state vectors.
@@ -26,7 +26,26 @@ struct State {
     palette: std::cell::RefCell<Option<([[u16; 3]; 256], wgpu::Buffer)>>,
 }
 
+impl Drop for Qd3dRenderer {
+    fn drop(&mut self) {
+        self.retire_failed_state();
+    }
+}
+
 impl Qd3dRenderer {
+    fn retire_failed_state(&mut self) {
+        if let Some(error) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.health.check().err())
+        {
+            self.initialization_error = Some(error.to_string());
+            if let Some(state) = self.state.take() {
+                super::renderer_recovery::retire_compute(state);
+            }
+        }
+    }
+
     /// Adapter/device creation is deferred until a supported 3D frame arrives.
     pub fn new() -> Self {
         eprintln!("[GPU] QD3D adaptive dispatch enabled");
@@ -43,14 +62,7 @@ impl Qd3dRenderer {
         background: &[u16],
         clut: Option<&[[u16; 3]; 256]>,
     ) -> Result<Vec<u16>, String> {
-        if let Some(error) = self
-            .state
-            .as_ref()
-            .and_then(|state| state.health.check().err())
-        {
-            self.initialization_error = Some(error.to_string());
-            self.state = None;
-        }
+        self.retire_failed_state();
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
                 Ok(state) => self.state = Some(state),
@@ -61,6 +73,7 @@ impl Qd3dRenderer {
             Some(state) => state.render_with_palette(frame, background, clut),
             None => Err(self.initialization_error.as_ref().unwrap().clone()),
         };
+        self.retire_failed_state();
         if let Err(error) = &result {
             if self.last_fallback.as_ref() != Some(error) {
                 eprintln!("[GPU] QD3D software fallback: {error}");
@@ -590,8 +603,7 @@ impl State {
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = tx.send(result);
             });
-        super::wgpu_buffers::wait_for_readback(&self.device).map_err(|e| e.to_string())?;
-        self.health.check().map_err(|e| e.to_string())?;
+        self.health.wait_readback(&self.device)?;
         rx.recv()
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
@@ -776,6 +788,43 @@ mod tests {
             assert_eq!(
                 renderer.render_frame(&frame, &[0], None).unwrap_err(),
                 "injected compute loss"
+            );
+            assert!(renderer.state.is_none());
+        }
+    }
+
+    #[test]
+    fn gpu_readback_timeout_retires_compute_without_a_device_loss_callback() {
+        let state = match State::new() {
+            Ok(state) => state,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("SYSTEMLESS_REQUIRE_GPU").is_none(),
+                    "GPU required: {error}"
+                );
+                return;
+            }
+        };
+        let error = state
+            .health
+            .finish_readback(Err(wgpu::PollError::Timeout))
+            .unwrap_err();
+        assert!(error.contains("timed out"));
+        assert!(!state.health.check().unwrap_err().recoverable);
+        let mut renderer = Qd3dRenderer::new();
+        renderer.state = Some(state);
+        let frame = PpcQ3RasterFrame {
+            width: 1,
+            height: 1,
+            viewport: [0, 0, 0, 0],
+            clear_color: None,
+            textures: vec![],
+            draws: vec![],
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                renderer.render_frame(&frame, &[0], None).unwrap_err(),
+                error
             );
             assert!(renderer.state.is_none());
         }
