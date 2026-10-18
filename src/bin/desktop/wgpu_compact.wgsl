@@ -8,6 +8,7 @@ struct Geometry {
     source: vec4<u32>, // width, height, sample scale, padding
     crop: vec4<u32>,
     viewport: vec4<u32>,
+    ratio: vec4<u32>, // source/destination dimensions reduced independently by gcd
 }
 @group(0) @binding(0) var<storage, read> cells: array<u32>;
 @group(0) @binding(1) var<storage, read> detail: array<u32>;
@@ -24,12 +25,12 @@ fn sample_rgb(x: u32, y: u32) -> vec3<u32> {
 }
 @fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let point = vec2<u32>(p.xy) - geometry.viewport.xy;
-    let size = geometry.crop.zw * sample_scale;
-    let destination = geometry.viewport.zw;
+    let size = geometry.ratio.xy;
+    let destination = geometry.ratio.zw;
     let shrink = size > destination;
     let lower = point * size;
     let upper = (point + vec2(1u)) * size;
-    let nearest = min((2u * point + vec2(1u)) * size / (2u * destination), size - vec2(1u));
+    let nearest = min((2u * point + vec2(1u)) * size / (2u * destination), geometry.crop.zw * sample_scale - vec2(1u));
     let first = select(nearest, lower / destination, shrink);
     let last = select(nearest + vec2(1u), (upper + destination - vec2(1u)) / destination, shrink);
     // Flat UI areas need one color, even when their footprint crosses cells.
@@ -56,5 +57,9 @@ fn sample_rgb(x: u32, y: u32) -> vec3<u32> {
     }
     let weights = select(vec2(1u), size, shrink);
     let total = weights.x * weights.y;
-    return vec4(vec3<f32>((sum + vec3(total / 2u)) / total) / 255., 1.);
+    let rounded = sum + vec3(total / 2u);
+    if (total & (total - 1u)) == 0u {
+        return vec4(vec3<f32>(rounded >> vec3(firstTrailingBit(total))) / 255., 1.);
+    }
+    return vec4(vec3<f32>(rounded / total) / 255., 1.);
 }

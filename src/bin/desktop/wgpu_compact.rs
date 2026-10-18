@@ -18,7 +18,7 @@ pub(super) struct CompactRenderer {
     resources: Option<Resources>,
     source: Option<Arc<CompactPresentation>>,
     previous: Option<Arc<CompactPresentation>>,
-    geometry_words: Option<[u32; 12]>,
+    geometry_words: Option<[u32; 16]>,
     staging: wgpu::util::StagingBelt,
     primary: Option<wgpu::util::StagingBelt>,
 }
@@ -72,7 +72,7 @@ impl CompactRenderer {
         Self {
             geometry: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("retained geometry"),
-                size: 48,
+                size: 64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -239,7 +239,7 @@ impl CompactRenderer {
         let detail_size = wgpu::BufferSize::new(image.detail.len().max(1) as u64 * 4).unwrap();
         let detail_offset = align(cells_size.get());
         let geometry_offset = align(detail_offset + detail_size.get());
-        let total = geometry_offset + 48;
+        let total = geometry_offset + 64;
         if total > limits.max_buffer_size {
             return false;
         }
@@ -271,21 +271,8 @@ impl CompactRenderer {
         let detail = upload(detail_offset, detail_size, &image.detail);
         let geometry = upload(
             geometry_offset,
-            wgpu::BufferSize::new(48).unwrap(),
-            &[
-                image.width,
-                image.height,
-                image.scale,
-                0,
-                crop.0,
-                crop.1,
-                crop.2,
-                crop.3,
-                viewport.0,
-                viewport.1,
-                viewport.2,
-                viewport.3,
-            ],
+            wgpu::BufferSize::new(64).unwrap(),
+            &geometry_words(image, crop, viewport),
         );
         let entries: Vec<_> = [&cells, &detail, &geometry]
             .into_iter()
@@ -360,20 +347,7 @@ impl CompactRenderer {
         }
         #[cfg(target_os = "macos")]
         if let Some(pool) = &mut self.shared {
-            let geometry = [
-                image.width,
-                image.height,
-                image.scale,
-                0,
-                crop.0,
-                crop.1,
-                crop.2,
-                crop.3,
-                viewport.0,
-                viewport.1,
-                viewport.2,
-                viewport.3,
-            ];
+            let geometry = geometry_words(image, crop, viewport);
             if pool.render(
                 &self.layout,
                 image,
@@ -491,20 +465,7 @@ impl CompactRenderer {
             upload(&resources.detail, &image.detail, detail);
             self.source = Some(image.clone());
         }
-        let geometry = [
-            image.width,
-            image.height,
-            image.scale,
-            0,
-            crop.0,
-            crop.1,
-            crop.2,
-            crop.3,
-            viewport.0,
-            viewport.1,
-            viewport.2,
-            viewport.3,
-        ];
+        let geometry = geometry_words(image, crop, viewport);
         if self.geometry_words != Some(geometry) {
             upload(&self.geometry, &geometry, 0..geometry.len());
             self.geometry_words = Some(geometry);
@@ -534,6 +495,44 @@ impl CompactRenderer {
         self.previous = Some(image.clone());
         self.epoch = self.epoch.wrapping_add(1);
     }
+}
+
+// Each axis has an independent rational coverage unit. Cancelling its gcd
+// preserves source coordinates and relative weights, including integer
+// round-to-nearest, while making common display ratios cheap to normalize.
+fn geometry_words(
+    image: &CompactPresentation,
+    crop: (u32, u32, u32, u32),
+    viewport: (u32, u32, u32, u32),
+) -> [u32; 16] {
+    fn gcd(mut a: u32, mut b: u32) -> u32 {
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        a
+    }
+    let sw = crop.2 * image.scale;
+    let sh = crop.3 * image.scale;
+    let gx = gcd(sw, viewport.2);
+    let gy = gcd(sh, viewport.3);
+    [
+        image.width,
+        image.height,
+        image.scale,
+        0,
+        crop.0,
+        crop.1,
+        crop.2,
+        crop.3,
+        viewport.0,
+        viewport.1,
+        viewport.2,
+        viewport.3,
+        sw / gx,
+        sh / gy,
+        viewport.2 / gx,
+        viewport.3 / gy,
+    ]
 }
 
 #[cfg(test)]
@@ -765,7 +764,7 @@ pub(crate) mod tests {
                     &view,
                 );
                 let submit_elapsed = start.elapsed();
-                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                super::super::wgpu_buffers::wait_for_readback(&device).unwrap();
                 if iteration >= 120 {
                     samples.push(start.elapsed());
                     submitted.push(submit_elapsed);
@@ -915,7 +914,17 @@ pub(crate) mod tests {
                 }
                 for image in [image, Arc::new(changed)] {
                     for crop in [(0, 0, 7, 5), (1, 1, 5, 3)] {
-                        for size in [(1, 1), (3, 2), (13, 9), (28, 21), (3, 17), (19, 2)] {
+                        for size in [
+                            (1, 1),
+                            (3, 2),
+                            (13, 9),
+                            (28, 21),
+                            (3, 17),
+                            (19, 2),
+                            (14, 10),
+                            (14, 5),
+                            (7, 10),
+                        ] {
                             let viewport = (2, 3, size.0, size.1);
                             assert!(CompactRenderer::supports(
                                 &image,

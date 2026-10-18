@@ -21,6 +21,33 @@ pub(super) fn little_endian_word_bytes(words: &[u32]) -> std::borrow::Cow<'_, [u
     }
 }
 
+/// Complete synchronous guest readback without depending solely on Metal's
+/// separately scheduled completion-handler notification. A short timed wait
+/// lets wgpu inspect the command buffer's completed status after each timeout.
+/// This sleeps in the backend, never spins, and falls back to the ordinary
+/// blocking wait after a bounded interval. Mapping callbacks still run through
+/// wgpu's normal poll/maintenance path.
+pub(super) fn wait_for_readback(
+    device: &wgpu::Device,
+) -> Result<wgpu::PollStatus, wgpu::PollError> {
+    #[cfg(target_os = "macos")]
+    // SAFETY: only inspect the backend type. No HAL resource is accessed or
+    // retained, and the temporary guard is dropped before polling the device.
+    if unsafe { device.as_hal::<wgpu::hal::api::Metal>() }.is_some() {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(4) {
+            match device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_micros(50)),
+            }) {
+                Err(wgpu::PollError::Timeout) => {}
+                result => return result,
+            }
+        }
+    }
+    device.poll(wgpu::PollType::wait_indefinitely())
+}
+
 #[derive(Default)]
 pub(super) struct ScratchBuffers {
     buffers: RefCell<HashMap<&'static str, wgpu::Buffer>>,

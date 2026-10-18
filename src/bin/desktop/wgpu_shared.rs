@@ -24,7 +24,7 @@ impl Layout {
         let sizes = [
             image.cells.len().max(1) as u64 * 4,
             image.detail.len().max(1) as u64 * 4,
-            48,
+            64,
         ];
         if sizes[..2]
             .iter()
@@ -126,7 +126,7 @@ impl Pool {
         &mut self,
         binding: &wgpu::BindGroupLayout,
         image: &Arc<CompactPresentation>,
-        geometry: &[u32; 12],
+        geometry: &[u32; 16],
         pipeline: &wgpu::RenderPipeline,
         target: &wgpu::TextureView,
         viewport: (u32, u32, u32, u32),
@@ -153,7 +153,7 @@ impl Pool {
         &mut self,
         binding: &wgpu::BindGroupLayout,
         image: &Arc<CompactPresentation>,
-        geometry: &[u32; 12],
+        geometry: &[u32; 16],
     ) -> Option<Upload> {
         let device = &self.device;
         let limits = device.limits();
@@ -350,7 +350,7 @@ mod tests {
             cells: vec![0x123456],
             detail: Vec::new(),
         });
-        let geometry = [1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1];
+        let geometry = [1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1];
         let mut uploads = Vec::new();
         for _ in 0..3 {
             let upload = match pool.upload(&binding, &image, &geometry) {

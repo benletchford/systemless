@@ -2108,7 +2108,13 @@ pub(crate) mod tests {
                     false,
                 )
             };
-            desc.setStorageMode(MTLStorageMode::Shared);
+            // Match production drawables and wgpu's offscreen render target.
+            // Pixel-oracle calls still need CPU-readable storage for getBytes.
+            desc.setStorageMode(if measure.is_some() {
+                MTLStorageMode::Private
+            } else {
+                MTLStorageMode::Shared
+            });
             desc.setUsage(MTLTextureUsage::RenderTarget);
             let output = device.newTextureWithDescriptor(&desc).unwrap();
             let mut buffers = CompactBuffers::default();
@@ -2195,6 +2201,7 @@ pub(crate) mod tests {
                     "default-metal",
                     &mut gpu_time,
                 );
+                return Vec::new();
             }
             let mut result = vec![0u32; (drawable.0 * drawable.1) as usize];
             unsafe {
@@ -2220,13 +2227,12 @@ pub(crate) mod tests {
         {
             let frame = crate::renderer_bench::presentation_fixture(text);
             let name = if text { "present-text" } else { "present-ui" };
-            let result = render_compact(
+            render_compact(
                 &frame,
                 (0, 0, frame.width, frame.height),
                 (800, 600),
                 Some(name),
             );
-            assert_eq!(result.len(), 800 * 600);
         }
     }
     #[test]

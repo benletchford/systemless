@@ -26,7 +26,9 @@ warm-up work is excluded from measured samples (three guest/kernel iterations,
   redraw transactions, not individual display-frame times. CPU/GPU captures
   must match exactly, allowing eight RGB levels for 3D float quantization.
 - **UI/text presentation:** 640×480 retained packets at 4× detail resolved into
-  an 800×600 offscreen target. Three hundred samples include validation, upload,
+  an 800×600 GPU-private offscreen target on both Metal paths, matching
+  production drawable storage. Pixel-oracle calls use a separate CPU-readable
+  target; measured calls omit readback. Three hundred samples include validation, upload,
   command encoding and GPU completion, with resources/pipelines already warm.
   Each sample uses a new packet with one changed cell. The backend chooses
   between incremental resident updates and complete shared-memory copies. macOS compares
@@ -104,6 +106,20 @@ Resolve pipelines specialize the four supported sample scales and a flat-area
 shortcut. The shortcut returns a color only when every guest cell in the
 footprint has that same uniform color. Detailed samples preserve the original
 integer weighting and rounding, with shader runtime bounds checks enabled.
+Coverage ratios cancel each axis's greatest common divisor on the CPU. The
+shader uses the smaller equivalent integer weights, and an exact shift when
+the final divisor is a power of two; other divisors retain integer division.
+Cropped source addressing and nearest-sample clamping use the original source
+extent. Pixel checks include odd divisors and independent up/downscaling axes.
+
+On Metal, synchronous guest readback uses sleeping completion waits with a
+50 µs timeout for up to 4 ms before reverting to the ordinary blocking wait. This allows wgpu to
+observe completed command-buffer status even when the driver's separately
+scheduled completion notification is delayed. Mapping callbacks and coherence
+still run through wgpu's normal maintenance path. Other backends retain their
+blocking wait. The offscreen completion benchmark uses this same policy;
+window presentation remains asynchronous.
+
 Pipelines compile lazily. Unchanged immutable desktop packets skip presentation
 until host expose/resize, geometry changes or raster overlays invalidate the
 cached frame. Without `--gpu`, existing platform rendering is unchanged.
@@ -126,3 +142,9 @@ GPU timestamps when the adapter supports queries. Query resolution/readback runs
 after all timed samples; ordinary runs do not enable timestamp queries.
 Presentation
 completion costs include the host API wait and are not display/input latency.
+
+To isolate a guest workload, add `--guest-case ui`, `drawing`, `text`, `3d` or
+`sprites`. This keeps the same samples and pixel oracle, and still measures
+presentation and 3D kernels. `--reverse-first` reverses the first presentation
+backend order when collecting independent batches. Reports record both options;
+without `--guest-case`, every guest workload is measured as before.

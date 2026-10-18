@@ -100,6 +100,13 @@ fn benchmark_guest_renderers() {
         .map(|value| value.parse::<usize>().unwrap())
         .unwrap_or(15);
     assert!(count >= 3);
+    let selected = std::env::var("SYSTEMLESS_BENCH_GUEST_CASE").ok();
+    assert!(
+        selected
+            .as_deref()
+            .is_none_or(|name| { matches!(name, "ui" | "drawing" | "text" | "3d" | "sprites") }),
+        "unknown guest benchmark case"
+    );
     for (name, target) in [
         ("ui", 2),
         ("drawing", 1),
@@ -107,6 +114,9 @@ fn benchmark_guest_renderers() {
         ("3d", 4),
         ("sprites", 14),
     ] {
+        if selected.as_deref().is_some_and(|selected| selected != name) {
+            continue;
+        }
         let mut reference: Option<Vec<u32>> = None;
         for gpu in [false, true] {
             let mut runner = game::new_runner_with_configuration(true, 8);
