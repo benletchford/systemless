@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Fail-closed compute resource evidence validation, without a GPU dependency."""
 import importlib.util
+import os
+import subprocess
+import sys
 from pathlib import Path
 import unittest
 spec = importlib.util.spec_from_file_location("compute_soak", Path(__file__).with_name("soak-gpu-compute.py"))
@@ -20,6 +23,39 @@ def evidence():
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_memory_evidence_rejects_absent_or_failed_live_sampling(self):
+        self.assertFalse(module.memory_evidence([])["complete"])
+        good = dict(seconds=0, pid=os.getpid(), rss_kib=1)
+        self.assertTrue(module.memory_evidence([good])["complete"])
+        for bad in [None, True, -1, float("nan")]:
+            self.assertFalse(module.memory_evidence([dict(rss_kib=bad)])["complete"])
+        failure = dict(seconds=1, error="access denied", process_running=True)
+        self.assertFalse(module.memory_evidence([good, failure])["complete"])
+        failure["process_running"] = False
+        self.assertTrue(module.memory_evidence([good, failure])["complete"])
+
+    def test_real_child_process_memory_is_observed(self):
+        # On Windows this validates the actual ABI, PID and permissions, rather
+        # than pretending a mocked counter proves the collector works.
+        child = subprocess.Popen([sys.executable, "-c", "import sys; x=bytearray(16*1024*1024); print('ready',flush=True); sys.stdin.read()"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "ready")
+            row = module.process_memory(child.pid)
+            self.assertGreater(row["rss_kib"], 0)
+            if os.name == "nt":
+                self.assertGreaterEqual(row["private_commit_bytes"], 16*1024*1024)
+                self.assertGreaterEqual(row["peak_private_commit_bytes"], row["private_commit_bytes"])
+                self.assertGreaterEqual(row["peak_working_set_bytes"], row["working_set_bytes"])
+                self.assertEqual(row["rss_kib"], row["working_set_bytes"] // 1024)
+        finally:
+            child.communicate(timeout=10)
+
+    @unittest.skipUnless(os.name == "nt", "Windows API failure path")
+    def test_windows_invalid_pid_is_an_error(self):
+        with self.assertRaises(OSError):
+            module.process_memory(0)
+
     def test_complete_teardown_requires_all_owners_in_order(self):
         events = [f"{stage}:{event}" for stage in ("runners", "qd3d", "quickdraw", "report")
                   for event in ("begin", "end")]
