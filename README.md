@@ -110,7 +110,7 @@ Windows uses D3D11 presentation by default, with automatic software fallback if
 GPU initialization or presentation fails. Set `SYSTEMLESS_D3D11=0` before launching
 to force software presentation.
 
-Pass `--gpu` to opt into cross-platform wgpu desktop presentation (Metal,
+Pass `--gpu` (or `--renderer=wgpu`) to opt into cross-platform wgpu desktop presentation (Metal,
 Vulkan, or DX12, depending on the host). This renders the complete Macintosh
 desktop, including system windows and text, through wgpu. Retained outline text
 and drawing coverage use exact integer area sampling, including cropped and
@@ -136,8 +136,11 @@ CopyBits, exact indexed colors and guest write observers. Unsupported requests,
 degenerate triangles and work beyond device limits retain software rendering.
 Strict device tests exercise the kernels independently of adaptive selection.
 
-Without `--gpu`, existing platform presentation and CPU dispatch remain the
-default. `--headless --gpu` enables the same adaptive guest rasterization in play
+`--renderer=auto` is the default and currently selects existing platform
+presentation and CPU dispatch. `--renderer=platform` explicitly selects that
+path for rollback. Wgpu remains opt-in until hardware qualification is complete;
+`--gpu` and `--renderer` cannot be combined. Wgpu failures fall back to platform
+presentation while preserving the guest. `--headless --gpu` enables the same adaptive guest rasterization in play
 scripts and timed runs without creating a window; it does not measure desktop
 presentation. GPU initialization and rendering errors remain visible in logs.
 
