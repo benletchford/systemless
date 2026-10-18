@@ -52,7 +52,7 @@ fn benchmark_presenters() {
 }
 
 // Diagnostic CPU accounting encloses the wall timer. These calls stay
-// outside wall timing and do not measure GPU work or other worker threads.
+// outside wall timing; accounting excludes hardware GPU time and other threads.
 fn thread_cpu_time() -> Duration {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {

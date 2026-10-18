@@ -222,8 +222,8 @@ cost. macOS/Linux use `CLOCK_THREAD_CPUTIME_ID`; Windows uses `GetThreadTimes`
 (user plus kernel time). Native accounting granularity varies, particularly on
 Windows; reported microsecond units do not imply microsecond accuracy. Clock
 errors or backwards accounting fail the diagnostic. Zero increments can reflect
-accounting granularity. CPU observations exclude GPU execution and other worker
-threads and are not a direct meter of scheduling delay.
+accounting granularity. CPU observations include driver work on the calling thread and exclude hardware
+GPU execution and other worker threads. They are not a direct meter of scheduling delay.
 
 Use the aligned CPU and wall observations with dispatch counts to investigate
 extra CPU work versus sleeps, queue waits or descheduling. CPU time still depends

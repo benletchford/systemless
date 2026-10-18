@@ -43,11 +43,12 @@ class EvidenceTests(unittest.TestCase):
             for backend in ("default", "gpu"))
 
     def test_cpu_diagnostics_preserve_alignment_without_replacing_wall_times(self):
-        values = [1000] + list(range(99))
+        values = [10000] + [value * 10 for value in range(99)]
         records = benchmark.parse_batch(self.cpu_log(values), 0, 100, "text", "Linux", thread_cpu=True)
         gpu = next(r for r in records if r['case']=='text' and r['backend']=='gpu')
         self.assertEqual(gpu['thread_cpu_samples_us'], values)
-        self.assertEqual(gpu['thread_cpu_p99_us'], 98)
+        self.assertEqual(gpu['thread_cpu_p99_us'], 980)
+        self.assertEqual(gpu['thread_cpu_p50_us'], 500)
         self.assertEqual(gpu['samples_us'], list(range(100)))
         self.assertEqual(gpu['p99_us'], 98)
         self.assertTrue(all(r['thread_cpu_samples_us'] is None for r in records if r['case']!='text'))

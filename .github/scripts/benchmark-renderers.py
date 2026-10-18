@@ -183,7 +183,7 @@ def main():
         source_digest.update(name.encode() + b"\0" + (repo / name).read_bytes() + b"\0")
     report = dict(schema_version=4 if args.thread_cpu else 3,
                   thread_cpu_enabled=args.thread_cpu,
-                  thread_cpu_scope="calling guest thread user+kernel CPU; encloses wall timer with boundary overhead; excludes GPU work and other worker threads; clock accounting granularity varies" if args.thread_cpu else None,
+                  thread_cpu_scope="calling guest thread user+kernel CPU including driver work on that thread; encloses wall timer with boundary overhead; excludes hardware GPU time and other worker threads; clock accounting granularity varies" if args.thread_cpu else None,
                   gpu_request_columns=["quickdraw", "glyph_masks", "deep_masks", "3d"],
                   guest_sample_order="alternating-per-iteration",
                   harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
