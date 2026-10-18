@@ -2414,7 +2414,7 @@ impl App {
                         buf_w,
                         buf_h,
                     )
-                    .expect("Failed to present Metal framebuffer");
+                    .expect("Failed to present framebuffer");
             } else {
                 frame_argb = surface
                     .present_owned(
@@ -2423,7 +2423,7 @@ impl App {
                         buf_w,
                         buf_h,
                     )
-                    .expect("Failed to present Metal framebuffer");
+                    .expect("Failed to present framebuffer");
             }
         }
 
