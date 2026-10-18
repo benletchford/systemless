@@ -4,6 +4,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 import unittest
 spec = importlib.util.spec_from_file_location("compute_soak", Path(__file__).with_name("soak-gpu-compute.py"))
@@ -23,6 +24,15 @@ def evidence():
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_invalid_profile_fails_before_creating_output_or_building(self):
+        with tempfile.TemporaryDirectory() as root:
+            output = Path(root) / "unused"
+            result = subprocess.run([sys.executable, str(Path(module.__file__)), "--profile", "debug",
+                                     "--seconds", "1", "--output", str(output)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("invalid choice", result.stderr)
+            self.assertFalse(output.exists())
+
     def test_memory_evidence_rejects_absent_or_failed_live_sampling(self):
         self.assertFalse(module.memory_evidence([])["complete"])
         good = dict(seconds=0, pid=os.getpid(), rss_kib=1)

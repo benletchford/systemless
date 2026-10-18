@@ -116,6 +116,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seconds", type=int, default=7200)
+    parser.add_argument("--profile", choices=("ci-test", "release"), default="ci-test")
     args = parser.parse_args()
     if not 1 <= args.seconds <= 21600:
         parser.error("--seconds must be 1..21600")
@@ -137,7 +138,7 @@ def main():
     report = dict(schema_version=3, revision=revision, dirty=git("status", "--porcelain").splitlines(),
                   source_sha256=initial_digest, harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                   fixture_sha256=hashlib.sha256((root / "tests/toolbox-showcase/toolbox-showcase.sit").read_bytes()).hexdigest(),
-                  host=platform.platform(), machine=platform.machine(), seconds=args.seconds,
+                  host=platform.platform(), machine=platform.machine(), seconds=args.seconds, profile=args.profile,
                   gpu_writeback_categories=["quickdraw_total", "masked_raster", "deep_mask_blit", "qd3d"],
                   gpu_writeback_scope="masked/deep categories are subsets of the QuickDraw total; do not sum",
                   status="building", default_eligible=False,
@@ -149,7 +150,7 @@ def main():
     save()
     children = []
     def collect():
-        command = ["cargo", "test", "--locked", "--profile", "ci-test", "--bin", "systemless",
+        command = ["cargo", "test", "--locked", "--profile", args.profile, "--bin", "systemless",
                    "--features", "test-support", "--no-run", "--message-format=json"]
         report["build_command"] = command
         with (output / "build.jsonl").open("w") as messages, (output / "build.log").open("w") as log:
