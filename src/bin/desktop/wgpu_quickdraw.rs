@@ -540,9 +540,7 @@ impl State {
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = tx.send(result);
             });
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| e.to_string())?;
+        super::wgpu_buffers::wait_for_readback(&self.device).map_err(|e| e.to_string())?;
         rx.recv()
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
@@ -822,9 +820,7 @@ impl State {
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = tx.send(result);
             });
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| e.to_string())?;
+        super::wgpu_buffers::wait_for_readback(&self.device).map_err(|e| e.to_string())?;
         rx.recv()
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
