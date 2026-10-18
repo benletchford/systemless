@@ -20,6 +20,20 @@ def evidence():
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_complete_teardown_requires_all_owners_in_order(self):
+        events = [f"{stage}:{event}" for stage in ("runners", "qd3d", "quickdraw", "report")
+                  for event in ("begin", "end")]
+        log = "\n".join("[GPU-SOAK-TEARDOWN] " + event for event in events)
+        self.assertTrue(module.teardown_evidence(log)["complete"])
+        for invalid in [events[:-1], events + events[-1:], list(reversed(events)), []]:
+            text = "\n".join("[GPU-SOAK-TEARDOWN] " + event for event in invalid)
+            self.assertFalse(module.teardown_evidence(text)["complete"])
+
+    def test_stalled_teardown_preserves_last_entered_owner(self):
+        result = module.teardown_evidence("unrelated log\n[GPU-SOAK-TEARDOWN] runners:begin\n")
+        self.assertEqual(result["last_event"], "runners:begin")
+        self.assertFalse(result["complete"])
+
     def test_complete_evidence_with_unknown_backend_memory_is_valid(self):
         self.assertTrue(module.validate_samples(evidence(), 1))
 

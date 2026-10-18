@@ -97,6 +97,12 @@ stress, not a production performance or power benchmark.
 The runner resolves the exact test executable from Cargo JSON, verifies the
 ignored test exists, and preserves binary/source/harness/fixture hashes and logs.
 Changed source/revision or incomplete device/progress evidence cannot pass.
+Schema 2 also records explicit destruction stages for the guest runners, QD3D,
+QuickDraw and report writer. A final resource sample marks workload completion;
+qualification still requires every destruction stage and successful process exit.
+Timeout reports retain the last entered stage, so a teardown stall cannot be
+mistaken for a completed session. The compute workflow's optional OS selector
+supports targeted diagnostic reruns; PR smoke checks retain all three OSes.
 Ordinary tests skip the explicit-duration soak; release benchmarks exclude the
 instrumentation. `--seconds 1` is a smoke check, not long-run qualification.
 The compute workflow smoke-tests all three OSes and can be dispatched for up to
