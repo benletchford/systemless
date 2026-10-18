@@ -24,6 +24,19 @@ def evidence():
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_cpu_baseline_is_explicit_and_cannot_qualify_gpu_work(self):
+        data = evidence()
+        for row in data:
+            row.update(workload="cpu-baseline", gpu_writebacks=[0]*4, quickdraw=None, qd3d=None)
+        self.assertTrue(module.validate_samples(data, 1, "cpu-baseline"))
+        self.assertFalse(module.validate_samples(data, 1))
+        self.assertFalse(module.validate_samples(evidence(), 1, "cpu-baseline"))
+        data[-1]["gpu_writebacks"][0] = 1
+        self.assertFalse(module.validate_samples(data, 1, "cpu-baseline"))
+        data[-1]["gpu_writebacks"][0] = 0
+        data[-1]["quickdraw"] = {}
+        self.assertFalse(module.validate_samples(data, 1, "cpu-baseline"))
+
     def test_invalid_profile_fails_before_creating_output_or_building(self):
         with tempfile.TemporaryDirectory() as root:
             output = Path(root) / "unused"

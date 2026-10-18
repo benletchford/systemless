@@ -452,6 +452,11 @@ mod forced_gpu_guest {
     #[ignore = "explicit-duration active GPU qualification; run through soak-gpu-compute.py"]
     fn qualify_gpu_compute_resources() {
         use std::io::Write;
+        let cpu_only = match std::env::var("SYSTEMLESS_GPU_COMPUTE_SOAK_CPU_ONLY").as_deref() {
+            Ok("1") => true,
+            Err(std::env::VarError::NotPresent) => false,
+            _ => panic!("invalid CPU baseline selector"),
+        };
         let seconds: u64 = std::env::var("SYSTEMLESS_GPU_COMPUTE_SOAK_SECONDS")
             .expect("set an explicit compute soak duration")
             .parse()
@@ -468,7 +473,7 @@ mod forced_gpu_guest {
         let mut runners = [false, true].map(|gpu| {
             let mut runner = game::new_runner_with_configuration(true, 8);
             runner.set_prefer_powerpc_executables(true);
-            if gpu {
+            if gpu && !cpu_only {
                 // These wrappers deliberately force real GPU writeback for
                 // small fixture work that production adaptive selection skips.
                 runner.set_quickdraw_gpu_renderer(Box::new(QuickDraw {
@@ -515,7 +520,11 @@ mod forced_gpu_guest {
         };
         sweep(&mut runners);
         assert!(
-            calls.iter().all(|count| count.get() > 0),
+            calls.iter().all(|count| if cpu_only {
+                count.get() == 0
+            } else {
+                count.get() > 0
+            }),
             "missing GPU workload coverage"
         );
         let started = Instant::now();
@@ -524,11 +533,23 @@ mod forced_gpu_guest {
         loop {
             let finished = cycles > 0 && started.elapsed() >= Duration::from_secs(seconds);
             if cycles == 0 || finished || sampled.elapsed() >= Duration::from_secs(30) {
+                let quickdraw_resources = (!cpu_only).then(|| {
+                    quickdraw
+                        .borrow()
+                        .qualification_snapshot()
+                        .expect("healthy QuickDraw GPU")
+                });
+                let qd3d_resources = (!cpu_only).then(|| {
+                    qd3d.borrow()
+                        .qualification_snapshot()
+                        .expect("healthy QD3D GPU")
+                });
                 let sample = serde_json::json!({
+                    "workload": if cpu_only { "cpu-baseline" } else { "gpu" },
                     "seconds": started.elapsed().as_secs_f64(), "cycles": cycles,
                     "gpu_writebacks": calls.iter().map(Cell::get).collect::<Vec<_>>(),
-                    "quickdraw": quickdraw.borrow().qualification_snapshot().expect("healthy QuickDraw GPU"),
-                    "qd3d": qd3d.borrow().qualification_snapshot().expect("healthy QD3D GPU"),
+                    "quickdraw": quickdraw_resources,
+                    "qd3d": qd3d_resources,
                     "complete": finished,
                 });
                 writeln!(report, "{sample}").unwrap();
@@ -541,10 +562,11 @@ mod forced_gpu_guest {
             let before = std::array::from_fn::<_, 4, _>(|i| calls[i].get());
             sweep(&mut runners);
             assert!(
-                calls
-                    .iter()
-                    .zip(before)
-                    .all(|(count, old)| count.get() > old),
+                calls.iter().zip(before).all(|(count, old)| if cpu_only {
+                    count.get() == 0 && old == 0
+                } else {
+                    count.get() > old
+                }),
                 "a compute workload stopped reaching the GPU"
             );
             cycles += 1;
