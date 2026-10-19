@@ -27627,3 +27627,147 @@ fn q3_reference_gpu_texture_from_software(
         wrap_v: v_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
     })
 }
+
+#[test]
+fn q3_clip_does_not_turn_boundary_contacts_into_degenerate_lines() {
+    let camera = PpcQ3CameraRecord {
+        camera: PPC_Q3_OBJECT_BASE, camera_type: PPC_Q3_CAMERA_TYPE_VIEW_ANGLE_ASPECT,
+        placement: PpcQ3CameraPlacement {
+            camera_location: (0., 0., 0.), point_of_interest: (0., 0., -1.),
+            up_vector: (0., 1., 0.),
+        },
+        range_hither: 1., range_yon: 100.,
+        viewport_origin: (-1., 1.), viewport_width: 2., viewport_height: 2.,
+        projection: PpcQ3CameraProjection::ViewAngleAspect { fov: 1., aspect_ratio_x_to_y: 1. },
+    };
+    let front = PpcFrontBuffer { base_addr: 0, row_bytes: 1280, width: 640, height: 480, depth: 16 };
+    let pane = PpcQ3ViewportRect { left: 118, top: 9, right: 628, bottom: 371 };
+    for plane in [PpcQ3SoftwareClipPlane::Left, PpcQ3SoftwareClipPlane::Right,
+        PpcQ3SoftwareClipPlane::Bottom, PpcQ3SoftwareClipPlane::Top,
+        PpcQ3SoftwareClipPlane::Near, PpcQ3SoftwareClipPlane::Far] {
+        let vertex = |axis: f32, u: f32| {
+            let clip = match plane {
+                PpcQ3SoftwareClipPlane::Left => (axis, u, 0., 1.),
+                PpcQ3SoftwareClipPlane::Right => (-axis, u, 0., 1.),
+                PpcQ3SoftwareClipPlane::Bottom => (u, axis, 0., 1.),
+                PpcQ3SoftwareClipPlane::Top => (u, -axis, 0., 1.),
+                PpcQ3SoftwareClipPlane::Near => (u, 0., axis, 1.),
+                PpcQ3SoftwareClipPlane::Far => (u, 0., -axis, 1.),
+            };
+            let projected = ppc_q3_software_clip_to_projected(clip).unwrap();
+            let (x, y) = ppc_q3_software_projected_to_screen(projected, Some(camera), front, pane);
+            PpcQ3SoftwareProjectedVertex {
+                x, y, z: projected.2, clip: Some(clip), world: (0., 0., 0.),
+                view_direction: None, fog_depth: 0., uv: None, diffuse: None,
+                ambient_coefficient: None, normal: None, specular_color: None,
+                specular_control: None, highlight_state: None, vertex_alpha: None,
+            }
+        };
+        let outside = vertex(-2., -0.5);
+        let mut boundary_a = vertex(-1., -0.5);
+        boundary_a.uv = Some((0.25, 0.75));
+        boundary_a.diffuse = Some((0.25, 0.5, 0.75));
+        boundary_a.vertex_alpha = Some(0.5);
+        let boundary_b = vertex(-1., 0.5);
+        let inside = vertex(0., 0.5);
+        for reverse in [false, true] {
+            for (mut input, expected_len) in [
+                ([outside, boundary_a, boundary_b], 0),
+                ([outside, vertex(-2., 0.5), boundary_a], 0),
+                ([outside, boundary_a, inside], 3),
+                // Intentional degenerate input wholly inside remains intact.
+                ([inside, inside, vertex(0., -0.5)], 3),
+                ([vertex(0., -0.5), vertex(0., 0.), inside], 3),
+            ] {
+                if reverse { input.reverse(); }
+                let clipped = ppc_q3_software_clip_projected_triangle(Some(camera), front, pane, input);
+                assert_eq!(clipped.len(), expected_len, "{plane:?}, reverse={reverse}, input={input:?}");
+                if expected_len == 3 && input.iter().any(|p| p.clip == outside.clip) {
+                    assert!(clipped[0].clip != clipped[1].clip && clipped[1].clip != clipped[2].clip
+                        && clipped[2].clip != clipped[0].clip, "crossing must not duplicate endpoints");
+                    let retained = clipped.iter().find(|p| p.clip == boundary_a.clip).unwrap();
+                    assert_eq!(retained.uv, boundary_a.uv);
+                    assert_eq!(retained.diffuse, boundary_a.diffuse);
+                    assert_eq!(retained.vertex_alpha, boundary_a.vertex_alpha);
+                }
+            }
+        }
+        // Exact endpoint removal must not collapse nearby positions or change
+        // the existing tolerance for vertices just outside a clipping plane.
+        let near_boundary = vertex(-1. - PPC_Q3_SOFTWARE_CLIP_EPSILON * 0.5, -0.5);
+        let outside_tolerance = vertex(-1. - PPC_Q3_SOFTWARE_CLIP_EPSILON * 2., -0.5);
+        let input = [near_boundary, boundary_b, inside];
+        let clipped = ppc_q3_software_clip_projected_triangle(Some(camera), front, pane, input);
+        assert_eq!(clipped.iter().map(|v| v.clip).collect::<Vec<_>>(),
+            input.iter().map(|v| v.clip).collect::<Vec<_>>(), "{plane:?}: within tolerance");
+        let clipped = ppc_q3_software_clip_projected_triangle(Some(camera), front, pane,
+            [outside_tolerance, boundary_b, inside]);
+        assert_eq!(clipped.len(), 3, "{plane:?}: crossing retains its visible area");
+        assert!(clipped.iter().any(|v| v.clip == boundary_b.clip));
+        assert!(clipped.iter().any(|v| v.clip == inside.clip));
+        assert!(!clipped.iter().any(|v| v.clip == outside_tolerance.clip),
+            "{plane:?}: outside tolerance must be clipped");
+    }
+}
+
+#[test]
+fn q3_clip_covers_viewport_edges_when_triangles_cross_behind_the_eye() {
+    let camera = PpcQ3CameraRecord {
+        camera: PPC_Q3_OBJECT_BASE, camera_type: PPC_Q3_CAMERA_TYPE_VIEW_ANGLE_ASPECT,
+        placement: PpcQ3CameraPlacement {
+            camera_location: (0., 0., 0.), point_of_interest: (0., 0., -1.),
+            up_vector: (0., 1., 0.),
+        },
+        range_hither: 10., range_yon: 2800.,
+        viewport_origin: (-1., 1.), viewport_width: 2., viewport_height: 2.,
+        projection: PpcQ3CameraProjection::ViewAngleAspect { fov: 1., aspect_ratio_x_to_y: 1. },
+    };
+    let front = PpcFrontBuffer { base_addr: 0, row_bytes: 1280, width: 640, height: 480, depth: 16 };
+    let pane = PpcQ3ViewportRect { left: 118, top: 9, right: 628, bottom: 370 };
+    // Reduced from a terrain triangle with two vertices behind the eye.
+    // Side-first clipping created x=118.000015 instead of x=118 at the
+    // bottom-left corner, leaving pixels y=213..369 uncovered.
+    let clip_vertices = [
+        (137.34401, 142.03258, 572.04706, 587.90436),
+        (-772.2361, -247.64622, -101.691505, -81.03889),
+        (137.34401, -247.64622, -101.691505, -81.03889),
+    ];
+    for (edge, (pixel_x, pixel_y)) in [(0, (118, 300)), (1, (627, 300)),
+        (2, (216, 369)), (3, (216, 9))] {
+        let vertices = clip_vertices.map(|(x, y, z, w)| {
+            let clip = match edge {
+                0 => (x, y, z, w),
+                1 => (-x, y, z, w),
+                2 => (y, x, z, w),
+                _ => (y, -x, z, w),
+            };
+            let projected = ppc_q3_software_clip_to_projected(clip).unwrap();
+            let (x, y) = ppc_q3_software_projected_to_screen(projected, Some(camera), front, pane);
+            PpcQ3SoftwareProjectedVertex {
+                x, y, z: projected.2, clip: Some(clip), world: (0., 0., 0.),
+                view_direction: None, fog_depth: 0., uv: None, diffuse: None,
+                ambient_coefficient: None, normal: None, specular_color: None,
+                specular_control: None, highlight_state: None, vertex_alpha: None,
+            }
+        });
+        for reverse in [false, true] {
+            let mut input = vertices;
+            if reverse { input.reverse(); }
+            let clipped = ppc_q3_software_clip_projected_triangle(Some(camera), front, pane, input);
+            assert!(clipped.len() >= 3, "edge={edge}, reverse={reverse}");
+            for vertex in &clipped {
+                let clip = vertex.clip.unwrap();
+                assert!(clip.3 > 0. && ppc_q3_software_clip_inside_frustum(clip));
+            }
+            let points = clipped.into_iter().map(ppc_q3_software_projected_vertex_to_point)
+                .collect::<Vec<_>>();
+            let covered = (1..points.len() - 1).any(|i| {
+                let triangle = [points[0], points[i], points[i + 1]];
+                let area = ppc_q3_software_edge_value(triangle[0], triangle[1], triangle[2]);
+                let edges = ppc_q3_software_triangle_edge_walker(triangle, pixel_x, pixel_y).0;
+                area != 0. && edges.iter().all(|edge| *edge * area >= 0.)
+            });
+            assert!(covered, "edge={edge}, reverse={reverse}: viewport pixel must be covered");
+        }
+    }
+}
