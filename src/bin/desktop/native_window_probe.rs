@@ -297,7 +297,9 @@ impl Probe {
                     self.checks.push("software surface recreation preserves guest generation and releases old image layers");
                 } else if !self.fault.is_empty() {
                     let count = if self.fault == "repeated-loss" { 3 } else { 1 };
-                    if self.fault != "startup" && self.injected < count {
+                    if !matches!(self.fault.as_str(), "startup" | "platform-startup")
+                        && self.injected < count
+                    {
                         if self.app.frame.sequence <= self.fault_sequence + 2 {
                             return;
                         }
@@ -306,7 +308,7 @@ impl Probe {
                             .wgpu
                             .as_ref()
                             .expect("presenter before injected fault");
-                        let failure = if self.fault == "fatal" {
+                        let failure = if matches!(self.fault.as_str(), "fatal" | "platform-fatal") {
                             renderer_recovery::Failure::from(
                                 "qualification: terminal error".to_owned(),
                             )
@@ -324,7 +326,7 @@ impl Probe {
                     let rebuilds = match self.fault.as_str() {
                         "loss" | "recreate" => 1,
                         "repeated-loss" => 2,
-                        "fatal" | "startup" => 0,
+                        "fatal" | "startup" | "platform-startup" | "platform-fatal" => 0,
                         _ => panic!("unknown GPU fault"),
                     };
                     assert_eq!(self.app.wgpu_recovery.rebuilds, rebuilds);
@@ -333,6 +335,19 @@ impl Probe {
                         self.app.wgpu_recovery.fallback.is_some(),
                         self.fault != "loss"
                     );
+                    if self.fault.starts_with("platform-") {
+                        assert!(self.app.use_software);
+                        assert!(self
+                            .app
+                            .wgpu_recovery
+                            .fallback
+                            .as_deref()
+                            .unwrap()
+                            .contains("injected platform creation failure"));
+                        self.checks.push(
+                            "failed platform fallback reaches software and preserves diagnostic",
+                        );
+                    }
                     self.checks.push(
                         "guest continues and replacement presenter submits after injected failure",
                     );

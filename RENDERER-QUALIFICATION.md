@@ -171,3 +171,12 @@ Default/PR runs remain `gpu`; their parser rejects CPU baseline observations.
 Keep CPU baseline results separate from GPU qualification. Compare growth per
 completed sweep as well as time, since removing readback changes throughput.
 All workload, memory, timeout, source and teardown checks remain in place.
+
+Opt-in wgpu recovery tries software presentation if the configured platform
+fallback cannot initialize. An explicit software fallback is attempted once;
+if all attempts fail, the terminal diagnostic retains the original wgpu,
+platform and software errors. Ordinary auto/platform startup remains unchanged.
+The native matrix injects platform initialization failure after macOS Metal
+layer attachment, both at wgpu startup failure and after a fatal runtime error,
+and verifies software publication, guest continuity and layer cleanup in both
+runtime modes. These synthetic cases do not qualify real driver-reset recovery.

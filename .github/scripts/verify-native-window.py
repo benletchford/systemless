@@ -41,6 +41,10 @@ if not args.soak_only:
               for backend in ("inline", "thread")
               for fallback in (None, "software")
               for fault in ("startup", "loss", "fatal", "recreate", "repeated-loss")]
+if not args.soak_only:
+    cases += [(backend, True, fault, None, None)
+              for backend in ("inline", "thread")
+              for fault in ("platform-startup", "platform-fatal")]
 if not args.recovery_only and not args.soak_only:
     cases += [(backend, False, "", renderer, None) for backend in ("inline", "thread")
               for renderer in ("auto", "platform", "wgpu", "software")]
@@ -112,7 +116,7 @@ for backend, gpu, fault, renderer, fallback in cases:
             )
             gpu_requested = gpu or renderer == "wgpu"
             fell_back = gpu_requested and fault not in ("", "loss")
-            expected_renderer = ("software" if renderer == "software" or (fell_back and fallback == "software")
+            expected_renderer = ("software" if renderer == "software" or (fell_back and (fallback == "software" or fault.startswith("platform-")))
                                  else "wgpu" if gpu_requested and not fell_back else "platform")
             software_rows = [item for item in resources if item.get("presentation_backend") == "software"]
             software_contract = True
