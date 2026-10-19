@@ -2200,6 +2200,20 @@ pub fn ppc_q3_gpu_texture_from_software(
     let pixel_count = usize::try_from(texture.width.checked_mul(texture.height)?).ok()?;
     let mut rgba = Vec::with_capacity(pixel_count.checked_mul(4)?);
     for y in 0..texture.height {
+        if let Some(row) = ppc_q3_gpu_texture_row(memory, texture, y) {
+            // Borrow only this conversion's visible row. Guest writes between
+            // frames remain observable; no texture cache or extra scratch copy.
+            for bytes in row.chunks_exact(texture.pixel_bytes as usize) {
+                let mut pixel = [0; 4];
+                pixel[..bytes.len()].copy_from_slice(bytes);
+                rgba.extend(ppc_q3_gpu_texture_rgba8(
+                    texture.pixel_type, texture.byte_order, &pixel,
+                )?);
+            }
+            continue;
+        }
+        // Shared memory, rows crossing a mapping or overlay boundary and
+        // malformed spans retain the existing routed reads and failure behavior.
         for x in 0..texture.width {
             let sample = ppc_q3_software_texture_pixel_at(memory, texture, x, y)?;
             rgba.extend([
@@ -2238,6 +2252,65 @@ pub fn ppc_q3_gpu_texture_from_software(
         wrap_u: u_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
         wrap_v: v_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
     })
+}
+
+fn ppc_q3_gpu_texture_row(
+    memory: &mut PpcSectionMem,
+    texture: PpcQ3SoftwareTexture,
+    y: u32,
+) -> Option<&[u8]> {
+    if !(1..=4).contains(&texture.pixel_bytes) {
+        return None;
+    }
+    let start = texture.image_offset.checked_add(y.checked_mul(texture.row_bytes)?)?;
+    let len = texture.width.checked_mul(texture.pixel_bytes)?;
+    if start.checked_add(len)? > texture.valid_size {
+        return None;
+    }
+    memory.readable_bytes(texture.image_base.checked_add(start)?, usize::try_from(len).ok()?)
+}
+
+/// Exact RGBA8 equivalent of the software decoder followed by the existing
+/// clamp/multiply/round conversion. Packed 5/6-bit channels use nearest integer
+/// expansion; bit replication would differ for some channel values.
+fn ppc_q3_gpu_texture_rgba8(
+    pixel_type: u32,
+    byte_order: u32,
+    pixel: &[u8; 4],
+) -> Option<[u8; 4]> {
+    let little = byte_order == PPC_Q3_ENDIAN_LITTLE;
+    let rgba = match pixel_type {
+        PPC_Q3_PIXEL_TYPE_RGB24 => if little {
+            [pixel[2], pixel[1], pixel[0], 255]
+        } else {
+            [pixel[0], pixel[1], pixel[2], 255]
+        },
+        PPC_Q3_PIXEL_TYPE_RGB32 => if little {
+            [pixel[2], pixel[1], pixel[0], 255]
+        } else {
+            [pixel[1], pixel[2], pixel[3], 255]
+        },
+        PPC_Q3_PIXEL_TYPE_ARGB32 => if little {
+            [pixel[2], pixel[1], pixel[0], pixel[3]]
+        } else {
+            [pixel[1], pixel[2], pixel[3], pixel[0]]
+        },
+        PPC_Q3_PIXEL_TYPE_RGB16 | PPC_Q3_PIXEL_TYPE_ARGB16 | PPC_Q3_PIXEL_TYPE_RGB16_565 => {
+            let value = ppc_q3_software_texture_u16(byte_order, pixel)?;
+            let expand5 = |channel: u16| ((channel * 255 + 15) / 31) as u8;
+            if pixel_type == PPC_Q3_PIXEL_TYPE_RGB16_565 {
+                [expand5((value >> 11) & 31),
+                 ((((value >> 5) & 63) * 255 + 31) / 63) as u8,
+                 expand5(value & 31), 255]
+            } else {
+                [expand5((value >> 10) & 31), expand5((value >> 5) & 31),
+                 expand5(value & 31),
+                 if pixel_type == PPC_Q3_PIXEL_TYPE_ARGB16 && value & 0x8000 == 0 { 0 } else { 255 }]
+            }
+        }
+        _ => return None,
+    };
+    Some(rgba)
 }
 
 pub fn ppc_q3_read_u32_from_slice(data: &[u8], offset: u32) -> Option<u32> {
