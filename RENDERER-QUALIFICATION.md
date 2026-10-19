@@ -180,3 +180,10 @@ The native matrix injects platform initialization failure after macOS Metal
 layer attachment, both at wgpu startup failure and after a fatal runtime error,
 and verifies software publication, guest continuity and layer cleanup in both
 runtime modes. These synthetic cases do not qualify real driver-reset recovery.
+
+The normal native-window matrix and lifecycle soaks minimize and restore each
+window through the native window API. A cycle requires observed minimization,
+observed restoration, newer guest frames and a newer presentation tick without
+changing the guest generation. Recovery-only cases skip these transitions.
+These functional checks do not measure physical display latency or replace
+sleep/wake, hot-plug, mixed-DPI migration and power qualification.

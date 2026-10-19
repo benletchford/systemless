@@ -131,7 +131,12 @@ for backend, gpu, fault, renderer, fallback in cases:
                         and all(layer.get("metal_layers") == 0 and layer.get("image_layers", 2) <= 1
                                 and layer.get("owned_layers") == 1 for layer in layers)
                         and any(layer.get("published") is True for layer in layers))
+            lifecycle_contract = args.recovery_only or all(check in state.get("checks", []) for check in (
+                "native minimization observed",
+                "new guest frames submit after native restoration",
+            ))
             passed = (process.returncode == 0 and state.get("passed") is True
+                      and lifecycle_contract
                       and resource_contract and software_contract
                       and state.get("renderer") == expected_renderer
                       and (args.recovery_only or state.get("lifecycle_cycles", 0) >= (2 if args.soak_seconds else 1))
