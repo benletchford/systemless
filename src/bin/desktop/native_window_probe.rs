@@ -41,6 +41,8 @@ impl ResourceLog {
     }
 }
 
+const COMPLETE_PHASE: usize = 12;
+
 struct Probe {
     app: App,
     report: PathBuf,
@@ -58,6 +60,7 @@ struct Probe {
     #[cfg(target_os = "macos")]
     cursor_input_sent: bool,
     sequence: u64,
+    presented_before_restore: Option<u64>,
     checks: Vec<&'static str>,
     complete: bool,
     fault: String,
@@ -89,6 +92,7 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
         #[cfg(target_os = "macos")]
         cursor_input_sent: false,
         sequence: 0,
+        presented_before_restore: None,
         checks: Vec::new(),
         complete: false,
         fault: std::env::var("SYSTEMLESS_GPU_FAULT").unwrap_or_default(),
@@ -108,7 +112,7 @@ pub(super) fn run(event_loop: EventLoop<()>, app: App, report: PathBuf) {
     event_loop
         .run_app(&mut probe)
         .expect("native probe event loop");
-    probe.complete = probe.phase == 10 && probe.app.runtime_error.is_none();
+    probe.complete = probe.phase == COMPLETE_PHASE && probe.app.runtime_error.is_none();
     if let Some(owner) = probe.app.owner.as_mut() {
         probe.complete &= owner.join_finished().expect("owner teardown");
     }
@@ -355,7 +359,7 @@ impl Probe {
                 if std::env::var_os("SYSTEMLESS_NATIVE_RECOVERY_ONLY").is_some() {
                     self.checks.push("guest frames reach real window");
                     self.sample_gpu_resources();
-                    self.phase = 10;
+                    self.phase = COMPLETE_PHASE;
                     self.app
                         .window_event(event_loop, window.id(), WindowEvent::CloseRequested);
                     return;
@@ -441,7 +445,30 @@ impl Probe {
                 && Some(self.app.frame.mouse_position) == self.expected_guest
                 && settled =>
             {
+                window.set_minimized(true);
                 self.advance("native cursor position and guest input round trip verified");
+            }
+            10 if window.is_minimized() == Some(true) && settled => {
+                self.sequence = self.app.frame.sequence;
+                self.presented_before_restore = self.app.last_presented_guest_tick;
+                window.set_minimized(false);
+                self.advance("native minimization observed");
+            }
+            11 if window.is_minimized() == Some(false)
+                && self.app.frame.sequence > self.sequence + 2
+                && self
+                    .app
+                    .last_presented_guest_tick
+                    .zip(self.presented_before_restore)
+                    .is_some_and(|(after, before)| after > before)
+                && settled =>
+            {
+                assert_eq!(
+                    Some(self.app.frame.generation),
+                    self.fault_generation,
+                    "minimize/restore restarted the guest"
+                );
+                self.advance("new guest frames submit after native restoration");
                 self.cycles += 1;
                 self.sample_gpu_resources();
                 if self.started.elapsed() < self.soak || (!self.soak.is_zero() && self.cycles < 2) {
