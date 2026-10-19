@@ -4357,7 +4357,7 @@ pub(crate) fn ppc_menu_definition_handle(
                 res_type: mdef_type,
                 res_id: 0,
                 name: Vec::new(),
-                data: STANDARD_MENU_DEFINITION_SHIM.to_vec(),
+                data: STANDARD_MENU_DEFINITION_SHIM.to_vec().into(),
                 raw_data: None,
                 raw_attrs: None,
                 attrs: 0,

@@ -46,8 +46,8 @@ pub(crate) fn ppc_serialized_resource_fork(
         .filter(|resource| resource.path.eq_ignore_ascii_case(&file.path))
         .map(|resource| {
             let (data, attrs) = match (&resource.raw_data, resource.raw_attrs) {
-                (Some(raw_data), Some(raw_attrs)) => (raw_data.clone(), raw_attrs),
-                _ => (resource.data.clone(), resource.attrs),
+                (Some(raw_data), Some(raw_attrs)) => (raw_data.to_vec(), raw_attrs),
+                _ => (resource.data.to_vec(), resource.attrs),
             };
             ResourceForkEntry {
                 res_type: resource.res_type.to_be_bytes(),
@@ -144,7 +144,7 @@ pub(crate) fn ppc_get_resource(
                     res_type,
                     res_id,
                     name: Vec::new(),
-                    data,
+                    data: data.into(),
                     raw_data: None,
                     raw_attrs: None,
                     attrs: 0,
@@ -722,7 +722,7 @@ pub(crate) fn ppc_update_res_file(
     {
         if (record.attrs & PPC_RES_CHANGED_ATTR) != 0 {
             if let Some(data) = ppc_handle_bytes(memory, handles, record.handle) {
-                record.data = data;
+                record.data = data.into();
             }
             ppc_drop_raw_resource_data(record);
         }
@@ -837,7 +837,7 @@ pub(crate) fn ppc_add_resource(
         res_type,
         res_id,
         name,
-        data,
+        data: data.into(),
         raw_data: None,
         raw_attrs: None,
         attrs: PPC_RES_CHANGED_ATTR,
@@ -898,7 +898,7 @@ pub(crate) fn ppc_write_resource(
         *last_resource_error = PPC_RES_NOT_FOUND_ERR;
         return;
     };
-    vfs_resources[index].data = data;
+    vfs_resources[index].data = data.into();
     vfs_resources[index].attrs &= !PPC_RES_CHANGED_ATTR;
     vfs_resources[index].raw_data = None;
     vfs_resources[index].raw_attrs = None;

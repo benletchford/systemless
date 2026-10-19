@@ -147,7 +147,7 @@ use super::*;
             res_type: u32::from_be_bytes(*b"pltt"),
             res_id: 700,
             name: Vec::new(),
-            data: palette_resource,
+            data: palette_resource.into(),
             raw_data: None,
             raw_attrs: None,
             attrs: 0,

@@ -36,10 +36,11 @@ struct ProcessMemoryRegion {
 
 /// A process-owned file fork whose attached views share bytes immediately.
 ///
-/// Ordinary clones are detached snapshots. `shared_handle` is reserved for
+/// Ordinary clones are detached snapshots that share backing until a write.
+/// `shared_handle` is reserved for
 /// installing another index over the same process fork, such as the native
 /// File Manager record and the classic VFS path map.
-pub struct ProcessForkBytes(Rc<UnsafeCell<Vec<u8>>>);
+pub struct ProcessForkBytes(Rc<UnsafeCell<Rc<Vec<u8>>>>);
 
 impl Default for ProcessForkBytes {
     fn default() -> Self {
@@ -49,7 +50,11 @@ impl Default for ProcessForkBytes {
 
 impl Clone for ProcessForkBytes {
     fn clone(&self) -> Self {
-        Self::from((**self).clone())
+        // A new view cell keeps snapshots detached from live file indexes.
+        // with_mut copies the backing bytes only if either snapshot is edited.
+        // SAFETY: access is serialized by the runner, as for resource_snapshot.
+        let backing = unsafe { Rc::clone(&*self.0.get()) };
+        Self(Rc::new(UnsafeCell::new(backing)))
     }
 }
 
@@ -90,7 +95,7 @@ impl Eq for ProcessForkBytes {}
 
 impl From<Vec<u8>> for ProcessForkBytes {
     fn from(bytes: Vec<u8>) -> Self {
-        Self(Rc::new(UnsafeCell::new(bytes)))
+        Self(Rc::new(UnsafeCell::new(Rc::new(bytes))))
     }
 }
 
@@ -115,12 +120,21 @@ impl ProcessForkBytes {
         Self(Rc::clone(&self.0))
     }
 
+    /// Retain immutable bytes for resource records. A subsequent file write
+    /// detaches the backing buffer while all attached file views stay linked.
+    pub(crate) fn resource_snapshot(&self) -> crate::managers::resource::ResourceBytes {
+        // SAFETY: the runner serializes access, as for Deref and with_mut.
+        // Resource snapshots never mutate the shared backing buffer.
+        let backing = unsafe { Rc::clone(&*self.0.get()) };
+        crate::managers::resource::ResourceBytes::from_shared(backing)
+    }
+
     /// Mutate this process-owned fork for one serialized operation without
     /// allowing the mutable byte reference to escape.
     pub fn with_mut<R>(&mut self, operation: impl FnOnce(&mut Vec<u8>) -> R) -> R {
         // SAFETY: the process runner serializes attached adapter access. The
         // closure keeps the mutable reference scoped to this operation.
-        unsafe { operation(&mut *self.0.get()) }
+        unsafe { operation(Rc::make_mut(&mut *self.0.get())) }
     }
 
     #[cfg(test)]
@@ -749,6 +763,13 @@ impl ProcessVfsResourceFileRecords {
             .unwrap_or_else(|| path.to_string());
         if self
             .resource_forks
+            .get(&key)
+            .is_some_and(|current| current.as_slice() == bytes)
+        {
+            return;
+        }
+        if self
+            .resource_forks
             .with_entry_mut(&key, |target| {
                 target.clear();
                 target.extend_from_slice(bytes);
@@ -795,8 +816,8 @@ pub struct ProcessVfsResourceRecord {
     pub res_type: u32,
     pub res_id: i16,
     pub name: Vec<u8>,
-    pub data: Vec<u8>,
-    pub raw_data: Option<Vec<u8>>,
+    pub data: crate::managers::resource::ResourceBytes,
+    pub raw_data: Option<crate::managers::resource::ResourceBytes>,
     pub raw_attrs: Option<u16>,
     pub attrs: u16,
     pub handle: u32,
@@ -10757,6 +10778,49 @@ impl ProcessContext {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resource_snapshots_survive_attached_file_writes_and_detached_clones() {
+        let mut fork = super::ProcessForkBytes::from(b"abcdef".to_vec());
+        let mut attached = fork.shared_handle();
+        let mut detached = fork.clone();
+        assert!(!fork.ptr_eq(&detached));
+        assert_eq!(fork.as_ptr(), detached.as_ptr());
+        let snapshot = fork.resource_snapshot();
+        let resource = snapshot.slice(1..5).slice(1..3);
+        assert_eq!(resource, b"cd");
+        assert_eq!(resource.as_ptr(), fork[2..].as_ptr());
+        attached.with_mut(|bytes| { bytes[2] = b'X'; bytes.extend_from_slice(b"ghi"); });
+        assert_eq!(fork, b"abXdefghi");
+        assert_eq!(attached, b"abXdefghi");
+        assert_eq!(detached, b"abcdef");
+        assert_eq!(snapshot, b"abcdef");
+        assert_eq!(resource, b"cd");
+        detached.with_mut(|bytes| bytes.clear());
+        fork.with_mut(|bytes| bytes.truncate(1));
+        assert_eq!(attached, b"a");
+        assert_eq!(resource, b"cd");
+        drop(fork);
+        drop(attached);
+        drop(snapshot);
+        assert_eq!(resource, b"cd");
+    }
+
+    #[test]
+    fn publishing_identical_resource_fork_keeps_shared_resource_backing() {
+        let raw = super::ProcessForkBytes::from(b"original".to_vec());
+        let snapshot = raw.resource_snapshot();
+        let mut files = super::ProcessVfsResourceFileRecords::from(vec![super::ProcessVfsResourceFileRecord {
+            path: "App".into(), creator: 0, file_type: 0, finder_flags: 0,
+            resource_len: 8, raw_data: Some(raw), map_attrs: 0, dirty: false,
+        }]);
+        files.update_fork("APP", b"original");
+        assert_eq!(files.fork("App").unwrap().as_ptr(), snapshot.as_ptr());
+        files.update_fork("APP", b"modified");
+        assert_eq!(files.fork("App").unwrap(), b"modified");
+        assert_eq!(files[0].raw_data.as_ref().unwrap(), &b"modified".to_vec());
+        assert_eq!(snapshot, b"original");
+    }
+
     use super::*;
     use crate::event_queue::QueuedEvent;
     use crate::guest_call::GuestCallTarget;
@@ -13586,7 +13650,7 @@ mod tests {
             res_type: u32::from_be_bytes(*b"TEST"),
             res_id: 128,
             name: b"Target".to_vec(),
-            data: b"target".to_vec(),
+            data: b"target".to_vec().into(),
             raw_data: None,
             raw_attrs: None,
             attrs: 0,
@@ -13616,7 +13680,7 @@ mod tests {
                 res_type: u32::from_be_bytes(*b"TEST"),
                 res_id,
                 name: Vec::new(),
-                data: data.to_vec(),
+                data: data.to_vec().into(),
                 raw_data: None,
                 raw_attrs: None,
                 attrs: 0,
@@ -13745,7 +13809,7 @@ mod tests {
             res_type: u32::from_be_bytes(*b"TEST"),
             res_id: 128,
             name: b"Shared".to_vec(),
-            data: b"native".to_vec(),
+            data: b"native".to_vec().into(),
             raw_data: None,
             raw_attrs: None,
             attrs: 0,

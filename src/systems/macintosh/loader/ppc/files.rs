@@ -1248,8 +1248,8 @@ pub(super) fn ppc_resource_fork_len_for_path(
         .filter(|resource| resource.path.eq_ignore_ascii_case(path))
         .map(|resource| {
             let (data, attrs) = match (&resource.raw_data, resource.raw_attrs) {
-                (Some(raw_data), Some(raw_attrs)) => (raw_data.clone(), raw_attrs),
-                _ => (resource.data.clone(), resource.attrs),
+                (Some(raw_data), Some(raw_attrs)) => (raw_data.to_vec(), raw_attrs),
+                _ => (resource.data.to_vec(), resource.attrs),
             };
             ResourceForkEntry {
                 res_type: resource.res_type.to_be_bytes(),
@@ -2333,7 +2333,7 @@ pub(super) fn ppc_materialize_resource_records_for_path(
     else {
         return;
     };
-    let Some(fork) = ResourceFork::parse(raw_data) else {
+    let Some(fork) = ResourceFork::parse_shared(&raw_data.resource_snapshot()) else {
         return;
     };
     let mut sorted_resources = fork.resources().values().collect::<Vec<_>>();
@@ -2406,7 +2406,7 @@ pub(super) fn ppc_materialize_unique_named_resource_file(
         let Some(raw_data) = file.raw_data.as_ref() else {
             continue;
         };
-        let Some(fork) = ResourceFork::parse(raw_data) else {
+        let Some(fork) = ResourceFork::parse_shared(&raw_data.resource_snapshot()) else {
             continue;
         };
         for resource in fork.resources().values() {
@@ -2524,7 +2524,7 @@ pub(super) fn ppc_synthesize_quilt_img_resource_if_missing(
         res_type: img_type,
         res_id: 1000,
         name: ppc_vfs_basename(path).as_bytes().to_vec(),
-        data,
+        data: data.into(),
         raw_data: None,
         raw_attrs: None,
         attrs: 0,
@@ -2547,7 +2547,7 @@ pub(super) fn ppc_quilt_named_resource_records(
         let Some(raw_data) = resource_file.raw_data.as_ref() else {
             continue;
         };
-        let Some(fork) = ResourceFork::parse(raw_data) else {
+        let Some(fork) = ResourceFork::parse_shared(&raw_data.resource_snapshot()) else {
             continue;
         };
         let Some(data_file) = vfs_files
@@ -2604,7 +2604,7 @@ pub(super) fn ppc_quilt_named_resource_records(
                         res_id: u32::from_be_bytes([record[4], record[5], record[6], record[7]])
                             as u16 as i16,
                         name: name_bytes.to_vec(),
-                        data: data.to_vec(),
+                        data: data.to_vec().into(),
                         raw_data: None,
                         raw_attrs: None,
                         attrs: 0,
@@ -2686,7 +2686,7 @@ pub(super) fn ppc_add_quilt_anam_picture_resources(
     let Some(raw_data) = source_file.raw_data.as_ref() else {
         return;
     };
-    let Some(fork) = ResourceFork::parse(raw_data) else {
+    let Some(fork) = ResourceFork::parse_shared(&raw_data.resource_snapshot()) else {
         return;
     };
     let Some(data_file) = vfs_files
@@ -2739,7 +2739,7 @@ pub(super) fn ppc_add_quilt_anam_picture_resources(
                 res_type,
                 res_id,
                 name: name_bytes.to_vec(),
-                data: data.to_vec(),
+                data: data.to_vec().into(),
                 raw_data: None,
                 raw_attrs: None,
                 attrs: 0,
@@ -2835,13 +2835,13 @@ pub(super) fn ppc_expand_compact_quilt_frames(resources: &mut Vec<PpcVfsResource
         let pict_offset = frame_index * frame_pict_len;
         let mut frame_resource = frms.clone();
         frame_resource.res_id = res_id;
-        frame_resource.data = frms.data[frame_offset..frame_offset + 8].to_vec();
+        frame_resource.data = frms.data.slice(frame_offset..frame_offset + 8);
         frame_resource.handle = 0;
         expanded.push(frame_resource);
 
         let mut pict_resource = pict.clone();
         pict_resource.res_id = res_id;
-        pict_resource.data = pict.data[pict_offset..pict_offset + frame_pict_len].to_vec();
+        pict_resource.data = pict.data.slice(pict_offset..pict_offset + frame_pict_len);
         pict_resource.handle = 0;
         expanded.push(pict_resource);
     }
@@ -2884,7 +2884,7 @@ pub(super) fn ppc_wrap_quilt_raw_pict_frames(resources: &mut [PpcVfsResourceReco
         wrapped.extend_from_slice(rect);
         wrapped.extend_from_slice(&[0; 14]);
         wrapped.extend_from_slice(&resource.data);
-        resource.data = wrapped;
+        resource.data = wrapped.into();
         resource.handle = 0;
     }
 }
@@ -3817,7 +3817,7 @@ pub(super) fn ppc_fsp_open_res_file(
         if vfs_resource_files[index]
             .raw_data
             .as_ref()
-            .is_some_and(|bytes| ResourceFork::parse(bytes).is_none())
+            .is_some_and(|bytes| ResourceFork::parse_shared(&bytes.resource_snapshot()).is_none())
         {
             *last_resource_error = PPC_MAP_READ_ERR;
             return -1;
@@ -3863,7 +3863,7 @@ pub(super) fn ppc_fsp_open_res_file(
                 resource.res_id,
                 resource.data.len(),
                 resource.attrs,
-                resource.raw_data.as_ref().map_or(0, Vec::len)
+                resource.raw_data.as_ref().map_or(0, |bytes| bytes.len())
             );
         }
     }
@@ -4002,7 +4002,7 @@ pub(super) fn ppc_open_rf_perm(
         if vfs_resource_files[index]
             .raw_data
             .as_ref()
-            .is_some_and(|bytes| ResourceFork::parse(bytes).is_none())
+            .is_some_and(|bytes| ResourceFork::parse_shared(&bytes.resource_snapshot()).is_none())
         {
             *last_resource_error = PPC_MAP_READ_ERR;
             return -1;

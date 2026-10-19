@@ -59,7 +59,7 @@ fn ppc_launch_size_resource_enables_open_application_apple_event() {
             res_type: u32::from_be_bytes(*b"SIZE"),
             res_id: -1,
             name: Vec::new(),
-            data: size,
+            data: size.into(),
             raw_data: None,
             raw_attrs: None,
             attrs: 0,
