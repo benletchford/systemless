@@ -13,6 +13,7 @@ const LIGHT_BYTES: usize = 64;
 const MAX_RASTER_WORK: u64 = 512_000_000;
 const TILE_SIZE: u32 = 16;
 const MIN_NATIVE_WORK: u64 = 200_000;
+const MAX_TILED_TO_CPU_WORK_RATIO: u64 = 4;
 
 #[cfg(feature = "test-support")]
 #[path = "wgpu_qd3d/routing_trace.rs"]
@@ -918,7 +919,9 @@ impl Qd3dRenderer {
         if let Some(trace) = &self.routing_trace {
             trace.work_estimate(work, gpu_work, threshold);
         }
-        work >= threshold && gpu_work <= MAX_RASTER_WORK && gpu_work <= work.saturating_mul(4)
+        work >= threshold
+            && gpu_work <= MAX_RASTER_WORK
+            && gpu_work <= work.saturating_mul(MAX_TILED_TO_CPU_WORK_RATIO)
     }
 }
 
