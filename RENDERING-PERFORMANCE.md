@@ -230,3 +230,33 @@ extra CPU work versus sleeps, queue waits or descheduling. CPU time still depend
 on core placement, frequency and shared-resource contention. It does not approve
 wall-time tails, physical display/input responsiveness, power or a default rollout;
 the idle-host and independent-run requirements remain in force.
+
+## QD3D routing diagnostics for real applications
+
+A `test-support` build accepts `SYSTEMLESS_QD3D_ROUTING_TRACE=/new/path.jsonl`
+when the wgpu QD3D renderer is installed with `--gpu`. Ordinary builds contain
+no trace writer or trace timing instrumentation. For example, build with
+`cargo build --locked --profile ci-test --features test-support --bin systemless`,
+then set that environment variable for one headless play-script replay.
+Keep application media and captures outside tracked source.
+
+The trace streams each adaptive selection with framebuffer dimensions, primitive
+and degenerate-triangle counts, and the old full-frame work estimate. That estimate
+is historical diagnostic evidence, not the current tiled work calculation.
+Work-estimate events preserve the actual production selector's CPU/tiled estimates
+and limits for the next selection ordinal, identifying small-work, tiled-budget
+and relative-work decisions without recomputing or relaxing the predicate.
+Each synchronous render result records its selection ordinal, success/error,
+returned pixel count, indexed mode and elapsed request time. An error or missing
+result must not be counted as GPU acceptance. Selection ordinals start at one;
+a direct render call without prior selection uses zero. No guest-tick or
+input-to-display timestamp is implied. Cross-check captures and scenario progress;
+render success alone does not prove guest-memory commit or visible correctness.
+
+Use a fresh file for each renderer owner: existing files are never overwritten,
+and open/write failures fail the diagnostic. Streaming keeps observer memory
+bounded; file size grows with the explicitly bounded scenario. Request time
+includes first-use device initialization, CPU preparation, submission and readback.
+It excludes CPU fallback execution, subsequent guest-memory commit and trace I/O.
+Tracing still perturbs scheduling and caches, so these observations do not qualify
+production performance, hardware GPU time, physical pacing or the default rollout.

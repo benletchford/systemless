@@ -13,11 +13,18 @@ const LIGHT_BYTES: usize = 64;
 const MAX_RASTER_WORK: u64 = 512_000_000;
 const TILE_SIZE: u32 = 16;
 const MIN_NATIVE_WORK: u64 = 200_000;
+const MAX_TILED_TO_CPU_WORK_RATIO: u64 = 4;
+
+#[cfg(feature = "test-support")]
+#[path = "wgpu_qd3d/routing_trace.rs"]
+mod routing_trace;
 
 pub(super) struct Qd3dRenderer {
     state: Option<State>,
     initialization_error: Option<String>,
     last_fallback: Option<String>,
+    #[cfg(feature = "test-support")]
+    routing_trace: Option<routing_trace::RoutingTrace>,
 }
 struct State {
     health: std::sync::Arc<super::renderer_recovery::Health>,
@@ -67,6 +74,8 @@ impl Qd3dRenderer {
             state: None,
             initialization_error: None,
             last_fallback: None,
+            #[cfg(feature = "test-support")]
+            routing_trace: routing_trace::RoutingTrace::from_environment(),
         }
     }
 
@@ -76,6 +85,11 @@ impl Qd3dRenderer {
         background: &[u16],
         clut: Option<&[[u16; 3]; 256]>,
     ) -> Result<Vec<u16>, String> {
+        #[cfg(feature = "test-support")]
+        let trace_started = self
+            .routing_trace
+            .as_ref()
+            .map(|_| std::time::Instant::now());
         self.retire_failed_state();
         if self.state.is_none() && self.initialization_error.is_none() {
             match State::new() {
@@ -95,6 +109,11 @@ impl Qd3dRenderer {
             }
         } else {
             self.last_fallback = None;
+        }
+        #[cfg(feature = "test-support")]
+        if let (Some(trace), Some(started)) = (&self.routing_trace, trace_started) {
+            let elapsed = started.elapsed();
+            trace.render_result(&result, elapsed, clut.is_some());
         }
         result
     }
@@ -811,8 +830,8 @@ fn vertex_valid(v: &PpcQ3RasterVertex) -> bool {
         && v.screen_x.abs() <= 32768.
         && v.screen_y.abs() <= 32768.
 }
-impl PpcQ3GpuRenderer for Qd3dRenderer {
-    fn prefers_native(&self, frame: &PpcQ3RasterFrame) -> bool {
+impl Qd3dRenderer {
+    fn prefers_native_frame(&self, frame: &PpcQ3RasterFrame) -> bool {
         if self.initialization_error.is_some() {
             return false;
         }
@@ -896,7 +915,24 @@ impl PpcQ3GpuRenderer for Qd3dRenderer {
                 work = work.saturating_add(samples.saturating_mul(cost));
             }
         }
-        work >= threshold && gpu_work <= MAX_RASTER_WORK && gpu_work <= work.saturating_mul(4)
+        #[cfg(feature = "test-support")]
+        if let Some(trace) = &self.routing_trace {
+            trace.work_estimate(work, gpu_work, threshold);
+        }
+        work >= threshold
+            && gpu_work <= MAX_RASTER_WORK
+            && gpu_work <= work.saturating_mul(MAX_TILED_TO_CPU_WORK_RATIO)
+    }
+}
+
+impl PpcQ3GpuRenderer for Qd3dRenderer {
+    fn prefers_native(&self, frame: &PpcQ3RasterFrame) -> bool {
+        let selected = self.prefers_native_frame(frame);
+        #[cfg(feature = "test-support")]
+        if let Some(trace) = &self.routing_trace {
+            trace.selection(frame, selected);
+        }
+        selected
     }
 
     fn render_indexed(
