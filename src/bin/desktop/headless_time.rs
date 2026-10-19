@@ -151,7 +151,7 @@ pub(super) fn run(
     for file in saves.load_saved_files() {
         runner.import_vfs_file(&file);
     }
-    game::init_game(&mut runner, &app);
+    game::init_game_owned(&mut runner, app);
     runner.prepare_text_presentation();
     let instructions_per_tick = configure_realtime_execution_rate(&mut runner);
     let mut debug_server = super::bind_headless_debug_server(debug_socket, &mut runner);

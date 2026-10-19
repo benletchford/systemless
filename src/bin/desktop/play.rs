@@ -411,7 +411,7 @@ pub(super) fn run(
         runner.set_app_start_time(start_time);
         let app = game::load_game_from_path(&mut runner, archive)
             .map_err(|e| format!("load {}: {e}", archive.display()))?;
-        game::init_game(&mut runner, &app);
+        game::init_game_owned(&mut runner, app);
         runner.prepare_text_presentation();
         configure_realtime_execution_rate(&mut runner);
         runner.composite_frame();

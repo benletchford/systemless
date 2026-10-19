@@ -4047,6 +4047,20 @@ impl FixtureRunner {
     /// Think C runtimes, e.g. Koji / Munchies) sees `CurStackBase` =
     /// 0 and spins forever in the globals-decompression loop.
     pub fn init_app(&mut self, app: &LoadedApp) {
+        self.assert_app_launch_ready(app);
+        self.init_app_with_native_image(app, app.ppc.clone());
+    }
+
+    /// Initialize a one-shot launch by transferring the native image instead
+    /// of cloning its guest RAM and CPU caches. Use `init_app` when retaining
+    /// a pristine template for another launch is required.
+    pub fn init_app_owned(&mut self, mut app: LoadedApp) {
+        self.assert_app_launch_ready(&app);
+        let native = app.ppc.take();
+        self.init_app_with_native_image(&app, native);
+    }
+
+    fn assert_app_launch_ready(&self, app: &LoadedApp) {
         assert!(
             self.m68k.can_relaunch() && self.native.can_relaunch(),
             "cannot relaunch with parked execution contexts"
@@ -4055,14 +4069,17 @@ impl FixtureRunner {
             app.ppc.as_ref().is_none_or(|native| native.cfm.is_some()),
             "native relaunch requires an uninstalled CFM seed"
         );
-        let native_launch = app.ppc.clone().map(|native| {
+    }
+
+    fn init_app_with_native_image(&mut self, app: &LoadedApp, native: Option<PpcLoadedApp>) {
+        let native_launch = native.map(|native| {
             let launch_ticks = self.launch_ticks_override.unwrap_or(0);
             let migrated_services = native
                 .preflight_migrated_services(&self.process_context, launch_ticks)
                 .expect("native application services conflict with the process registry");
             (native, migrated_services)
         });
-        assert!(self.native.reset_for_launch(app.ppc.is_some()));
+        assert!(self.native.reset_for_launch(native_launch.is_some()));
         self.debug_advance_generation();
         self.process_context.reset_cfm_for_launch();
         if let Some((ppc_app, migrated_services)) = native_launch {

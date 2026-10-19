@@ -2,6 +2,57 @@ use super::*;
 use crate::memory::globals::addr;
 
 #[test]
+fn owned_native_launch_transfers_heap_without_changing_launch_state() {
+    for owned in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_launch_state(4321, 0x7654_3210, 0x1234_5678);
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let native = app.ppc.as_mut().unwrap();
+        native.memory.add_region(PPC_HEAP_BASE, vec![0x5a; 65536]);
+        native.cpu.gpr[31] = 0xfeed_beef;
+        let original_heap = native.memory.readable_bytes(PPC_HEAP_BASE, 65536).unwrap().as_ptr();
+        if owned {
+            runner.init_app_owned(app);
+        } else {
+            runner.init_app(&app);
+        }
+        assert_eq!(runner.guest_tick(), 4321);
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x7654_3210);
+        let native = runner.native.application_mut().unwrap();
+        let heap = native.memory.readable_bytes(PPC_HEAP_BASE, 65536).unwrap();
+        assert_eq!(heap.as_ptr() == original_heap, owned,
+            "only the consuming launch may retain the loader's allocation");
+        assert!(heap.iter().all(|byte| *byte == 0x5a));
+        assert_eq!(native.cpu.gpr[31], 0xfeed_beef);
+        assert_eq!(native.cpu.pc, PPC_CODE_BASE);
+        assert_eq!(native.memory.read_u32_be(addr::TICKS), Some(4321));
+        assert!(native.cfm.is_none(), "CFM ownership moves into the process");
+        native.memory.write_u32_be(addr::TICKS, 4322).unwrap();
+        assert_eq!(runner.bus.read_long(addr::TICKS), 4322,
+            "the native adapter and runner must retain shared low memory");
+    }
+}
+
+#[test]
+fn owned_classic_launch_preserves_entry_stack_and_pinned_state() {
+    let code0 = minimal_code0(0, 0x2000, 0, 0);
+    let bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0)]);
+    let fork = ResourceFork::parse(&bytes).unwrap();
+    let mut states = Vec::new();
+    for owned in [false, true] {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_launch_state(1234, 0x89ab_cdef, 0);
+        let app = runner.load_app(&fork).unwrap();
+        if owned { runner.init_app_owned(app); } else { runner.init_app(&app); }
+        states.push((runner.m68k.cpu.read_reg(Register::PC), runner.m68k.cpu.read_reg(Register::A7),
+            runner.m68k.cpu.read_reg(Register::A5), runner.bus.read_long(addr::TICKS),
+            runner.bus.read_long(addr::RND_SEED)));
+    }
+    assert_eq!(states[0], states[1]);
+    assert_eq!((states[1].3, states[1].4), (1234, 0x89ab_cdef));
+}
+
+#[test]
 fn control_panel_init_runs_before_application_entry() {
     let code0 = minimal_code0(0, 0x2000, 0, 0);
     let app_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0)]);

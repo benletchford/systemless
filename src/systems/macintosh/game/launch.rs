@@ -357,6 +357,12 @@ pub fn init_game(runner: &mut FixtureRunner, app: &LoadedApp) {
     runner.clear_startup_framebuffer();
 }
 
+/// Initialize a one-shot launch without retaining or copying its native image.
+pub fn init_game_owned(runner: &mut FixtureRunner, app: LoadedApp) {
+    runner.init_app_owned(app);
+    runner.clear_startup_framebuffer();
+}
+
 /// Decompress the forks of every file entry, in archive order.
 ///
 /// Fork decompression dominates a desktop launch -- EV Override's 10.8 MB

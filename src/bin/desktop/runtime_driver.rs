@@ -162,7 +162,9 @@ impl GuiDriver {
                 restored_saves.len()
             );
         }
-        game::init_game(&mut runner, &app);
+        let a5_base = app.a5_base;
+        let entry_point = app.entry_point(a5_base);
+        game::init_game_owned(&mut runner, app);
         runner.prepare_text_presentation();
         runner.set_arrows_as_numpad(self.arrows_as_numpad);
 
@@ -179,8 +181,8 @@ impl GuiDriver {
         eprintln!("[SYSTEMLESS] Game loaded: {}", self.game_path.display());
         eprintln!(
             "[SYSTEMLESS] A5=${:08X}, Entry=${:08X}",
-            app.a5_base,
-            app.entry_point(app.a5_base)
+            a5_base,
+            entry_point
         );
 
         self.runner = Some(runner);
