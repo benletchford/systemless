@@ -2406,7 +2406,7 @@ pub(super) fn ppc_materialize_unique_named_resource_file(
         let Some(raw_data) = file.raw_data.as_ref() else {
             continue;
         };
-        let Some(fork) = ResourceFork::parse(raw_data) else {
+        let Some(fork) = ResourceFork::parse_shared(&raw_data.resource_snapshot()) else {
             continue;
         };
         for resource in fork.resources().values() {
@@ -2458,8 +2458,8 @@ pub(super) fn ppc_materialize_unique_named_resource_file(
                     res_type: u32::from_be_bytes(resource.res_type),
                     res_id: resource.id,
                     name: resource.name_bytes.unwrap_or_default(),
-                    data: resource.data.into(),
-                    raw_data: resource.raw_data.map(Into::into),
+                    data: resource.data,
+                    raw_data: resource.raw_data,
                     raw_attrs: resource.raw_attrs.map(u16::from),
                     attrs: u16::from(resource.attrs),
                     handle: 0,
@@ -2547,7 +2547,7 @@ pub(super) fn ppc_quilt_named_resource_records(
         let Some(raw_data) = resource_file.raw_data.as_ref() else {
             continue;
         };
-        let Some(fork) = ResourceFork::parse(raw_data) else {
+        let Some(fork) = ResourceFork::parse_shared(&raw_data.resource_snapshot()) else {
             continue;
         };
         let Some(data_file) = vfs_files
@@ -2686,7 +2686,7 @@ pub(super) fn ppc_add_quilt_anam_picture_resources(
     let Some(raw_data) = source_file.raw_data.as_ref() else {
         return;
     };
-    let Some(fork) = ResourceFork::parse(raw_data) else {
+    let Some(fork) = ResourceFork::parse_shared(&raw_data.resource_snapshot()) else {
         return;
     };
     let Some(data_file) = vfs_files
@@ -3817,7 +3817,7 @@ pub(super) fn ppc_fsp_open_res_file(
         if vfs_resource_files[index]
             .raw_data
             .as_ref()
-            .is_some_and(|bytes| ResourceFork::parse(bytes).is_none())
+            .is_some_and(|bytes| ResourceFork::parse_shared(&bytes.resource_snapshot()).is_none())
         {
             *last_resource_error = PPC_MAP_READ_ERR;
             return -1;
@@ -4002,7 +4002,7 @@ pub(super) fn ppc_open_rf_perm(
         if vfs_resource_files[index]
             .raw_data
             .as_ref()
-            .is_some_and(|bytes| ResourceFork::parse(bytes).is_none())
+            .is_some_and(|bytes| ResourceFork::parse_shared(&bytes.resource_snapshot()).is_none())
         {
             *last_resource_error = PPC_MAP_READ_ERR;
             return -1;

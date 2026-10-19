@@ -3843,7 +3843,7 @@ fn ppc_diagnostic_vfs(
         let metadata = dispatcher.vfs_metadata.get(path);
         let creator = metadata.map_or(0, |value| value.creator);
         let file_type = metadata.map_or(0, |value| value.file_type);
-        let raw_data = crate::process_context::ProcessForkBytes::from(rsrc_data.to_vec());
+        let raw_data = rsrc_data.clone();
         let parsed_fork = ResourceFork::parse_shared(&raw_data.resource_snapshot());
         resource_files.push(PpcVfsResourceFileRecord {
             path: path.clone(),

@@ -36,7 +36,8 @@ struct ProcessMemoryRegion {
 
 /// A process-owned file fork whose attached views share bytes immediately.
 ///
-/// Ordinary clones are detached snapshots. `shared_handle` is reserved for
+/// Ordinary clones are detached snapshots that share backing until a write.
+/// `shared_handle` is reserved for
 /// installing another index over the same process fork, such as the native
 /// File Manager record and the classic VFS path map.
 pub struct ProcessForkBytes(Rc<UnsafeCell<Rc<Vec<u8>>>>);
@@ -49,7 +50,11 @@ impl Default for ProcessForkBytes {
 
 impl Clone for ProcessForkBytes {
     fn clone(&self) -> Self {
-        Self::from((**self).clone())
+        // A new view cell keeps snapshots detached from live file indexes.
+        // with_mut copies the backing bytes only if either snapshot is edited.
+        // SAFETY: access is serialized by the runner, as for resource_snapshot.
+        let backing = unsafe { Rc::clone(&*self.0.get()) };
+        Self(Rc::new(UnsafeCell::new(backing)))
     }
 }
 
@@ -10778,6 +10783,8 @@ mod tests {
         let mut fork = super::ProcessForkBytes::from(b"abcdef".to_vec());
         let mut attached = fork.shared_handle();
         let mut detached = fork.clone();
+        assert!(!fork.ptr_eq(&detached));
+        assert_eq!(fork.as_ptr(), detached.as_ptr());
         let snapshot = fork.resource_snapshot();
         let resource = snapshot.slice(1..5).slice(1..3);
         assert_eq!(resource, b"cd");

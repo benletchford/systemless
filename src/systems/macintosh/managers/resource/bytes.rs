@@ -1,4 +1,4 @@
-//! Immutable resource payloads backed by a retained file fork or decoded bytes.
+//! Resource snapshots backed by a retained file fork or decoded bytes.
 
 use std::ops::{Deref, DerefMut, Range};
 use std::rc::Rc;

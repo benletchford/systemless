@@ -160,8 +160,8 @@ impl PpcLoadedApp {
                     let has_parseable_fork = vfs_resource_files
                         .iter()
                         .find(|file| file.path.eq_ignore_ascii_case(&path))
-                        .and_then(|file| file.raw_data.as_deref())
-                        .and_then(|bytes| ResourceFork::parse(bytes))
+                        .and_then(|file| file.raw_data.as_ref())
+                        .and_then(|bytes| ResourceFork::parse_shared(&bytes.resource_snapshot()))
                         .is_some();
                     let mut path_resource_count = 0usize;
                     for resource in vfs_resources
