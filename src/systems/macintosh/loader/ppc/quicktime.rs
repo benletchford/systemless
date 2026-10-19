@@ -3621,7 +3621,7 @@ pub(crate) fn ppc_qt_append_movie_resource(
                 .filter(|resource| resource.res_type == *b"moov")
                 .filter(|resource| requested_res_id.map_or(true, |id| id == 0 || resource.id == id))
                 .min_by_key(|resource| resource.id)
-                .map(|resource| (resource.id, resource.data.clone()))
+                .map(|resource| (resource.id, resource.data.clone().into()))
         });
     let Some((res_id, resource_data)) = resource else {
         return None;

@@ -765,7 +765,7 @@ pub(super) fn dispatch_dialog_import(
                         false,
                     );
                     if let Some(ditl_index) = ditl_index {
-                        let mut appended_bytes = vfs_resources[ditl_index].data.clone();
+                        let mut appended_bytes = vfs_resources[ditl_index].data.to_vec();
                         if let Some(appended_items) = ppc_parse_dialog_items(&appended_bytes) {
                             let live_items = ppc_dialog_live_items(memory, handles, params.dialog_ptr());
                             if let Some((handle, _ptr, current_bytes, current_items)) = live_items {
@@ -3023,7 +3023,7 @@ fn ppc_new_alert_dialog(
             *last_resource_error = PPC_RES_NOT_FOUND_ERR;
             return 0;
         };
-        let ditl_bytes = vfs_resources[ditl_index].data.clone();
+        let ditl_bytes = vfs_resources[ditl_index].data.to_vec();
         (
             template.bounds,
             ditl_bytes,
@@ -3182,7 +3182,7 @@ fn ppc_get_new_dialog(
         *last_resource_error = PPC_RES_NOT_FOUND_ERR;
         return 0;
     };
-    let ditl_bytes = vfs_resources[ditl_index].data.clone();
+    let ditl_bytes = vfs_resources[ditl_index].data.to_vec();
     if ppc_parse_dialog_items(&ditl_bytes).is_none() {
         *last_resource_error = PPC_PARAM_ERR;
         return 0;

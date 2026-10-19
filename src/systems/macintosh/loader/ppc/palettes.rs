@@ -2064,7 +2064,7 @@ pub(crate) fn ppc_get_ctable(
             false,
         )?;
         let data = vfs_resources[index].data.clone();
-        (data.len() >= 8).then_some(data)
+        (data.len() >= 8).then(|| data.to_vec())
     });
     let Some(data) = data else {
         return 0;

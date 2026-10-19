@@ -2833,7 +2833,7 @@ fn hle_import_runner_get_picture_prefers_loaded_pict_resource() {
         res_type: u32::from_be_bytes(*b"PICT"),
         res_id: 128,
         name: b"Title".to_vec(),
-        data: pict.clone(),
+        data: pict.clone().into(),
         raw_data: None,
         raw_attrs: None,
         attrs: 0,
@@ -2875,7 +2875,7 @@ fn hle_import_runner_get_pix_pat_returns_fresh_resource_copies() {
         res_type: u32::from_be_bytes(*b"ppat"),
         res_id: 129,
         name: b"Dialog Pattern".to_vec(),
-        data: pattern.clone(),
+        data: pattern.clone().into(),
         raw_data: None,
         raw_attrs: None,
         attrs: 0,
@@ -3255,7 +3255,7 @@ fn quilt_img_compositing_mode_controls_whether_zero_is_opaque() {
             res_type: u32::from_be_bytes(*b"PICT"),
             res_id: 1000,
             name: Vec::new(),
-            data: Vec::new(),
+            data: Vec::new().into(),
             raw_data: None,
             raw_attrs: None,
             attrs: 0,
@@ -3267,7 +3267,7 @@ fn quilt_img_compositing_mode_controls_whether_zero_is_opaque() {
             res_type: u32::from_be_bytes(*b"#Img"),
             res_id: 1000,
             name: Vec::new(),
-            data: img,
+            data: img.into(),
             raw_data: None,
             raw_attrs: None,
             attrs: 0,
@@ -4211,7 +4211,7 @@ fn hle_import_runner_handles_color_cursor_resources() {
         res_type: u32::from_be_bytes(*b"crsr"),
         res_id: 128,
         name: b"Gridz Cursor".to_vec(),
-        data: (0..96).map(|value| value as u8).collect(),
+        data: (0..96).map(|value| value as u8).collect::<Vec<_>>().into(),
         raw_data: None,
         raw_attrs: None,
         attrs: 0,
@@ -4260,7 +4260,7 @@ fn hle_import_runner_handles_cursor_resources_and_system_fallbacks() {
         res_type: u32::from_be_bytes(*b"CURS"),
         res_id: 128,
         name: b"Gridz Cursor".to_vec(),
-        data: (0..68).map(|value| value as u8).collect(),
+        data: (0..68).map(|value| value as u8).collect::<Vec<_>>().into(),
         raw_data: None,
         raw_attrs: None,
         attrs: 0,
@@ -4321,7 +4321,7 @@ fn hle_import_runner_gets_plots_and_disposes_color_icons() {
         res_type: u32::from_be_bytes(*b"cicn"),
         res_id: 128,
         name: b"Pilot".to_vec(),
-        data: test_one_bit_cicon(),
+        data: test_one_bit_cicon().into(),
         raw_data: None,
         raw_attrs: None,
         attrs: 0,
@@ -6297,7 +6297,7 @@ fn hle_plot_cicon_handle_preserves_mask_and_applies_options() {
             res_type: u32::from_be_bytes(*b"cicn"),
             res_id: 128,
             name: b"Pilot".to_vec(),
-            data: test_one_bit_cicon(),
+            data: test_one_bit_cicon().into(),
             raw_data: None,
             raw_attrs: None,
             attrs: 0,
@@ -6435,7 +6435,7 @@ fn hle_plot_icon_id_uses_current_resource_mask_and_returns_errors() {
                     res_type: u32::from_be_bytes(kind),
                     res_id: 128,
                     name: vec![],
-                    data,
+                    data: data.into(),
                     raw_data: None,
                     raw_attrs: None,
                     attrs: 0,
@@ -6502,7 +6502,7 @@ fn hle_plot_icon_id_monochrome_families_obey_port_clip_and_reject_short_masks() 
                 res_type: u32::from_be_bytes(kind),
                 res_id: 128,
                 name: vec![],
-                data,
+                data: data.into(),
                 raw_data: None,
                 raw_attrs: None,
                 attrs: 0,
@@ -6546,7 +6546,10 @@ fn hle_plot_icon_id_monochrome_families_obey_port_clip_and_reject_short_masks() 
         );
         loaded
             .process_file_system
-            .with_resource_manager_mut(|state| state.vfs_resources[0].data.truncate(plane));
+            .with_resource_manager_mut(|state| {
+                let data = &mut state.vfs_resources[0].data;
+                *data = data.slice(0..data.len().min(plane));
+            });
         loaded.cpu.gpr[3] = rect;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::PlotIconID);
         assert_eq!(loaded.cpu.gpr[3] as i32, i32::from(PPC_PARAM_ERR));

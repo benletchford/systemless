@@ -68,7 +68,7 @@ fn carbon_icon_ref_from_file_plots_custom_icon_and_releases_owners() {
             res_type: u32::from_be_bytes(*b"ICN#"),
             res_id: -16455,
             name: Vec::new(),
-            data: icon_data,
+            data: icon_data.into(),
             raw_data: None,
             raw_attrs: None,
             attrs: 0,

@@ -205,7 +205,7 @@ fn resource_disposal_is_immediately_process_owned() {
         res_type: u32::from_be_bytes(*b"TEST"),
         res_id: 128,
         name: b"owned".to_vec(),
-        data: vec![0; 24],
+        data: vec![0; 24].into(),
         raw_data: None,
         raw_attrs: None,
         attrs: 0,
@@ -2385,7 +2385,7 @@ fn resource_fork_materialization_preserves_live_edits_and_other_paths() {
         res_type: u32::from_be_bytes(*b"TEST"),
         res_id: 1,
         name: b"edited name".to_vec(),
-        data: b"edited".to_vec(),
+        data: b"edited".to_vec().into(),
         raw_data: None,
         raw_attrs: None,
         attrs: 2,
@@ -2443,7 +2443,7 @@ fn ppc_resource_materialization_mutates_process_manager_immediately() {
                 res_type: u32::from_be_bytes(*b"pref"),
                 res_id: 42,
                 name: b"Prefs".to_vec(),
-                data: b"process resource".to_vec(),
+                data: b"process resource".to_vec().into(),
                 raw_data: None,
                 raw_attrs: None,
                 attrs: 0,
@@ -2511,7 +2511,7 @@ fn ppc_resource_materialization_mutates_process_manager_immediately() {
                 res_type: u32::from_be_bytes(*b"STR "),
                 res_id: 128,
                 name: b"External".to_vec(),
-                data: b"PEF master pointer".to_vec(),
+                data: b"PEF master pointer".to_vec().into(),
                 raw_data: None,
                 raw_attrs: None,
                 attrs: 0,
@@ -3298,7 +3298,7 @@ fn hle_import_runner_dispose_handle_invalidates_tracked_handle() {
         res_type: u32::from_be_bytes(*b"PICT"),
         res_id: 128,
         name: b"Title".to_vec(),
-        data: b"data".to_vec(),
+        data: b"data".to_vec().into(),
         raw_data: None,
         raw_attrs: None,
         attrs: 0,
@@ -5255,4 +5255,39 @@ fn hle_import_runner_lm_get_mem_err_reads_signed_error_without_clearing_it() {
         assert_eq!(loaded.cpu.gpr[3], error as i32 as u32);
         assert_eq!(loaded.last_mem_error(), error);
     }
+}
+
+
+#[test]
+fn resource_materialization_shares_fork_and_detaches_edited_payload() {
+    let original = serialize_resource_fork(&[
+        ResourceForkEntry { res_type: *b"TEST", id: 1, name: vec![], data: b"first".to_vec(), attrs: 0 },
+        ResourceForkEntry { res_type: *b"TEST", id: 2, name: vec![], data: b"second".to_vec(), attrs: 0 },
+    ]).unwrap();
+    let mut files = vec![PpcVfsResourceFileRecord {
+        path: "App".into(), creator: 0, file_type: 0, finder_flags: 0,
+        resource_len: original.len() as u32, raw_data: Some(original.clone().into()),
+        map_attrs: 0, dirty: false,
+    }];
+    let mut resources = Vec::new();
+    ppc_materialize_resource_records_for_path(&files, &mut resources, "app");
+    let raw = files[0].raw_data.as_ref().unwrap();
+    let offset = u32::from_be_bytes(raw[0..4].try_into().unwrap()) as usize + 4;
+    assert_eq!(resources[0].data.as_ptr(), raw[offset..].as_ptr());
+    let snapshot = resources.clone();
+    resources[0].data = b"edited and longer".to_vec().into();
+    ppc_materialize_resource_records_for_path(&files, &mut resources, "APP");
+    assert_eq!(resources.len(), 2);
+    assert_eq!(resources[0].data, b"edited and longer");
+    assert_eq!(resources[1].data.as_ptr(), snapshot[1].data.as_ptr());
+    assert_eq!(snapshot[0].data, b"first");
+    assert_eq!(files[0].raw_data.as_ref().unwrap(), &original);
+    files[0].raw_data = None;
+    let serialized = ppc_serialized_resource_fork(&files[0], &resources).unwrap();
+    let parsed = ResourceFork::parse(&serialized).unwrap();
+    assert_eq!(parsed.get(*b"TEST", 1).unwrap().data, b"edited and longer");
+    assert_eq!(parsed.get(*b"TEST", 2).unwrap().data, b"second");
+    drop(files);
+    drop(snapshot);
+    assert_eq!(resources[1].data, b"second");
 }

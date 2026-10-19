@@ -408,7 +408,7 @@ pub(super) fn swap_font(
                     .unwrap_or("System Font")
                     .as_bytes()
                     .to_vec(),
-                data: font_bytes.to_vec(),
+                data: font_bytes.to_vec().into(),
                 raw_data: None,
                 raw_attrs: None,
                 attrs: 0,

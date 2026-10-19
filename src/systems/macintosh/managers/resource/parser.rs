@@ -19,7 +19,7 @@ pub const CODE_TYPE: ResourceType = *b"CODE";
 
 /// A single resource
 #[derive(Debug, Clone)]
-pub struct Resource {
+pub struct Resource<Data = Vec<u8>> {
     /// Resource type (e.g., 'CODE', 'DLOG', 'ICON')
     pub res_type: ResourceType,
     /// Resource ID
@@ -32,9 +32,9 @@ pub struct Resource {
     /// Original resource-name bytes before host string conversion.
     pub name_bytes: Option<Vec<u8>>,
     /// Resource data
-    pub data: Vec<u8>,
+    pub data: Data,
     /// Original compressed on-disk payload when decoding changed the data.
-    pub raw_data: Option<Vec<u8>>,
+    pub raw_data: Option<Data>,
     /// Original attributes paired with `raw_data`.
     pub raw_attrs: Option<u8>,
     /// Resource attributes
@@ -43,16 +43,16 @@ pub struct Resource {
 
 /// Parsed resource fork
 #[derive(Debug, Default, Clone)]
-pub struct ResourceFork {
+pub struct ResourceFork<Data = Vec<u8>> {
     /// All resources indexed by (type, id)
-    resources: HashMap<(ResourceType, i16), Resource>,
+    resources: HashMap<(ResourceType, i16), Resource<Data>>,
     pub map_attrs: u16,
     /// Serialized resource-map bytes retained for guest code that walks
     /// `TopMapHndl` directly instead of using Resource Manager traps.
     map: Vec<u8>,
     /// Complete serialized fork retained for native Resource Manager code
     /// that reads the already-open application resource fork through PBRead.
-    serialized: Vec<u8>,
+    serialized: Data,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,9 +64,9 @@ pub struct ResourceForkEntry {
     pub attrs: u8,
 }
 
-impl ResourceFork {
+impl<Data: AsRef<[u8]>> ResourceFork<Data> {
     /// Get all resources map
-    pub fn resources(&self) -> &HashMap<(ResourceType, i16), Resource> {
+    pub fn resources(&self) -> &HashMap<(ResourceType, i16), Resource<Data>> {
         &self.resources
     }
 
@@ -79,9 +79,11 @@ impl ResourceFork {
     }
 
     pub(crate) fn serialized(&self) -> &[u8] {
-        &self.serialized
+        self.serialized.as_ref()
     }
+}
 
+impl ResourceFork {
     #[cfg(test)]
     pub(crate) fn from_test_resources(resources: Vec<(ResourceType, i16, Vec<u8>)>) -> Self {
         Self {
@@ -207,6 +209,24 @@ impl ResourceFork {
 
     /// Parse a resource fork from raw data
     pub fn parse(data: &[u8]) -> Option<Self> {
+        Self::parse_with_data(data, |range| data[range].to_vec())
+    }
+
+    /// Parse resource payloads as immutable slices of an existing fork.
+    /// Compressed resources own their decoded bytes and retain a slice of the
+    /// original representation for lossless serialization.
+    pub(crate) fn parse_shared(
+        data: &super::ResourceBytes,
+    ) -> Option<ResourceFork<super::ResourceBytes>> {
+        ResourceFork::parse_with_data(data, |range| data.slice(range))
+    }
+}
+
+impl<Data: AsRef<[u8]> + From<Vec<u8>>> ResourceFork<Data> {
+    fn parse_with_data(
+        data: &[u8],
+        payload: impl Fn(std::ops::Range<usize>) -> Data,
+    ) -> Option<Self> {
         let ResourceForkLayout {
             data_offset,
             map_offset,
@@ -252,7 +272,7 @@ impl ResourceFork {
             map_attrs: u16::from_be_bytes([map[22], map[23]]),
             resources: HashMap::new(),
             map: map.to_vec(),
-            serialized: data.to_vec(),
+            serialized: payload(0..data.len()),
         };
 
         // Parse type list
@@ -346,13 +366,14 @@ impl ResourceFork {
                     continue;
                 }
 
-                let raw_res_data = &data[res_data_start..res_data_start + res_len];
+                let data_range = res_data_start..res_data_start + res_len;
+                let raw_res_data = &data[data_range.clone()];
                 let mut stored_attrs = attrs;
                 let mut stored_raw_data = None;
                 let mut stored_raw_attrs = None;
                 let res_data = match super::compressed::decompress_if_needed(attrs, raw_res_data) {
                     Ok(Some(decompressed)) => {
-                        stored_raw_data = Some(raw_res_data.to_vec());
+                        stored_raw_data = Some(payload(data_range.clone()));
                         stored_raw_attrs = Some(attrs);
                         stored_attrs &= !super::compressed::COMPRESSED_RESOURCE_ATTR;
                         tracing::debug!(
@@ -363,11 +384,11 @@ impl ResourceFork {
                             attrs,
                             stored_attrs
                         );
-                        decompressed
+                        decompressed.into()
                     }
-                    Ok(None) => raw_res_data.to_vec(),
+                    Ok(None) => payload(data_range.clone()),
                     Err(err) => {
-                        stored_raw_data = Some(raw_res_data.to_vec());
+                        stored_raw_data = Some(payload(data_range.clone()));
                         stored_raw_attrs = Some(attrs);
                         tracing::warn!(
                                 "    ID {}: failed to decompress compressed resource ({} bytes, attrs=0x{:02X}): {:?}",
@@ -376,27 +397,27 @@ impl ResourceFork {
                                 attrs,
                                 err
                             );
-                        raw_res_data.to_vec()
+                        payload(data_range.clone())
                     }
                 };
-                let res_data = match super::ajcp::decompress_if_needed(&res_data) {
+                let res_data = match super::ajcp::decompress_if_needed(res_data.as_ref()) {
                     Ok(Some(decompressed)) => {
-                        stored_raw_data.get_or_insert_with(|| raw_res_data.to_vec());
+                        stored_raw_data.get_or_insert_with(|| payload(data_range.clone()));
                         stored_raw_attrs.get_or_insert(attrs);
                         tracing::debug!(
                             "    ID {}: ajcp decompressed {} -> {} bytes",
                             id,
-                            res_data.len(),
+                            res_data.as_ref().len(),
                             decompressed.len()
                         );
-                        decompressed
+                        decompressed.into()
                     }
                     Ok(None) => res_data,
                     Err(err) => {
                         tracing::warn!(
                             "    ID {}: failed to decompress ajcp resource ({} bytes): {:?}",
                             id,
-                            res_data.len(),
+                            res_data.as_ref().len(),
                             err
                         );
                         res_data
@@ -429,13 +450,16 @@ impl ResourceFork {
         Some(fork)
     }
 
+}
+
+impl<Data: AsRef<[u8]>> ResourceFork<Data> {
     /// Get a resource by type and ID
-    pub fn get(&self, res_type: ResourceType, id: i16) -> Option<&Resource> {
+    pub fn get(&self, res_type: ResourceType, id: i16) -> Option<&Resource<Data>> {
         self.resources.get(&(res_type, id))
     }
 
     /// Get all resources of a given type
-    pub fn get_all(&self, res_type: ResourceType) -> Vec<&Resource> {
+    pub fn get_all(&self, res_type: ResourceType) -> Vec<&Resource<Data>> {
         self.resources
             .values()
             .filter(|r| r.res_type == res_type)
@@ -443,17 +467,17 @@ impl ResourceFork {
     }
 
     /// Get CODE resource by ID
-    pub fn get_code(&self, id: i16) -> Option<&Resource> {
+    pub fn get_code(&self, id: i16) -> Option<&Resource<Data>> {
         self.get(CODE_TYPE, id)
     }
 
     /// Get all CODE resources
-    pub fn get_all_code(&self) -> Vec<&Resource> {
+    pub fn get_all_code(&self) -> Vec<&Resource<Data>> {
         self.get_all(CODE_TYPE)
     }
 
     /// Get a resource by type and name (case-insensitive)
-    pub fn get_named(&self, res_type: ResourceType, name: &str) -> Option<&Resource> {
+    pub fn get_named(&self, res_type: ResourceType, name: &str) -> Option<&Resource<Data>> {
         for res in self.resources.values() {
             if res.res_type == res_type {
                 if let Some(ref res_name) = res.name {
@@ -785,4 +809,80 @@ mod tests {
         assert_eq!(parsed.resources().len(), 1);
         assert_eq!(parsed.get(*b"ZERO", 0).unwrap().data, [1, 2, 3, 4]);
     }
+
+    #[test]
+    fn shared_resource_parser_retains_payload_slices_and_matches_owned_parser() {
+        let mut compressed = b"\xA8\x9Fer\x00\x12\x08\x01\x00\x00\x00\x04\x80\x03\x00\x00\x00\x00".to_vec();
+        compressed.extend_from_slice(&[0x02, b'A', b'B', b'C', b'D', 0xff]);
+        // AJCP: one-symbol block, constant Huffman tables, literal 'A'.
+        let bits = concat!("0000000000000001", "00000", "00000", "000000000", "001000001", "0000", "0000");
+        let mut ajcp = b"ajcp\x00\x00\x00\x01".to_vec();
+        for chunk in bits.as_bytes().chunks(8) {
+            let mut byte = 0u8;
+            for bit in chunk { byte = (byte << 1) | (bit - b'0'); }
+            ajcp.push(byte << (8 - chunk.len()));
+        }
+        let cases = [
+            (vec![0x5a; 4096], 0, vec![0x5a; 4096]),
+            (compressed, 1, b"ABCD".to_vec()),
+            (ajcp, 0, b"A".to_vec()),
+            (b"\xA8\x9Fer".to_vec(), 1, b"\xA8\x9Fer".to_vec()),
+            (b"ajcp".to_vec(), 0, b"ajcp".to_vec()),
+            (Vec::new(), 0, Vec::new()),
+        ];
+        for (payload, attrs, expected) in cases {
+            let bytes = serialize_resource_fork_with_attrs(&[ResourceForkEntry {
+                res_type: *b"TEST", id: -3, name: vec![0x80, b'A'], data: payload.clone(), attrs,
+            }], 0x40).unwrap();
+            let owned = ResourceFork::parse(&bytes).unwrap();
+            let backing = super::super::ResourceBytes::from(bytes);
+            let shared = ResourceFork::parse_shared(&backing).unwrap();
+            assert_eq!(shared.serialized().as_ptr(), backing.as_ptr());
+            assert_eq!(shared.map(), owned.map());
+            assert_eq!(shared.map_attrs(), owned.map_attrs());
+            let a = shared.get(*b"TEST", -3).unwrap();
+            let b = owned.get(*b"TEST", -3).unwrap();
+            assert_eq!(a.data, expected);
+            assert_eq!(a.data, b.data);
+            assert_eq!(a.raw_data.as_deref(), b.raw_data.as_deref());
+            assert_eq!(a.raw_attrs, b.raw_attrs);
+            assert_eq!(a.attrs, b.attrs);
+            assert_eq!(a.name_bytes, b.name_bytes);
+            assert_eq!(a.reference_offset, b.reference_offset);
+            let raw = a.raw_data.as_ref().unwrap_or(&a.data);
+            // Serialization puts the first payload immediately after its length.
+            let offset = u32::from_be_bytes(backing[0..4].try_into().unwrap()) as usize + 4;
+            assert_eq!(raw.as_ptr(), backing[offset..].as_ptr());
+            let retained = a.data.clone();
+            let address = retained.as_ptr();
+            drop(shared);
+            drop(backing);
+            assert_eq!(retained, expected);
+            assert_eq!(retained.as_ptr(), address);
+        }
+    }
+
+    #[test]
+    fn shared_resource_parser_matches_owned_on_truncation_and_duplicate_ids() {
+        let bytes = serialize_resource_fork(&[
+            ResourceForkEntry { res_type: *b"TEST", id: 7, name: vec![], data: vec![1, 2], attrs: 0 },
+            ResourceForkEntry { res_type: *b"TEST", id: 7, name: vec![], data: vec![9], attrs: 0 },
+        ]).unwrap();
+        for len in 0..=bytes.len() {
+            let backing = super::super::ResourceBytes::from(bytes[..len].to_vec());
+            let owned = ResourceFork::parse(&backing);
+            let shared = ResourceFork::parse_shared(&backing);
+            assert_eq!(owned.is_some(), shared.is_some(), "length {len}");
+            if let (Some(owned), Some(shared)) = (owned, shared) {
+                assert_eq!(owned.resources().len(), shared.resources().len());
+                for (key, resource) in owned.resources() {
+                    assert_eq!(shared.resources()[key].data, resource.data);
+                }
+            }
+        }
+        let backing = super::super::ResourceBytes::from(bytes);
+        let parsed = ResourceFork::parse_shared(&backing).unwrap();
+        assert_eq!(parsed.get(*b"TEST", 7).unwrap().data, [1, 2]);
+    }
+
 }

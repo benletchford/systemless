@@ -866,7 +866,7 @@ fn ppc_get_cursor(
                 res_type,
                 res_id: cursor_id,
                 name: Vec::new(),
-                data: cursor,
+                data: cursor.into(),
                 raw_data: None,
                 raw_attrs: None,
                 attrs: 0,

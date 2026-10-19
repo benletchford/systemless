@@ -1721,7 +1721,7 @@ fn input_sprocket_setl_tset_defaults_assign_keycodes_in_need_order() {
         res_type: u32::from_be_bytes(res_type),
         res_id,
         name: Vec::new(),
-        data,
+        data: data.into(),
         raw_data: None,
         raw_attrs: None,
         attrs: 0,

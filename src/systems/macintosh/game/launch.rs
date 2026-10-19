@@ -3843,14 +3843,15 @@ fn ppc_diagnostic_vfs(
         let metadata = dispatcher.vfs_metadata.get(path);
         let creator = metadata.map_or(0, |value| value.creator);
         let file_type = metadata.map_or(0, |value| value.file_type);
-        let parsed_fork = ResourceFork::parse(rsrc_data);
+        let raw_data = crate::process_context::ProcessForkBytes::from(rsrc_data.to_vec());
+        let parsed_fork = ResourceFork::parse_shared(&raw_data.resource_snapshot());
         resource_files.push(PpcVfsResourceFileRecord {
             path: path.clone(),
             creator,
             file_type,
             finder_flags: metadata.map_or(0, |value| value.finder_flags),
             resource_len: u32::try_from(rsrc_data.len()).unwrap_or(u32::MAX),
-            raw_data: Some(rsrc_data.to_vec().into()),
+            raw_data: Some(raw_data),
             map_attrs: parsed_fork.as_ref().map_or(0, ResourceFork::map_attrs),
             dirty: false,
         });

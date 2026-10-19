@@ -228,7 +228,7 @@ fn ppc_loaded_app_runs_through_fixture_runner() {
                     res_type: u32::from_be_bytes(*b"pref"),
                     res_id: 200,
                     name: b"Scores".to_vec(),
-                    data: b"score".to_vec(),
+                    data: b"score".to_vec().into(),
                     raw_data: None,
                     raw_attrs: None,
                     attrs: 0,
