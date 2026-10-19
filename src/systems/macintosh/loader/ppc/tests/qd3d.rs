@@ -17475,6 +17475,128 @@ fn q3_gpu_mixed_mesh_preserves_per_primitive_opacity_and_depth() {
     }
 }
 
+#[test]
+fn q3_gpu_missing_uvs_preserve_software_first_texel_fallback() {
+    for shape in 0..4 {
+        let mut fixture = ImmediateTriMeshFixture::new();
+        fixture.write_triangle(
+            if shape == 3 { [(-4., 0., 0.), (0., 0., 0.), (4., 0., 0.)] }
+            else { ImmediateTriMeshFixture::LEFT },
+            (1., 1., 1.),
+        );
+        fixture.submit();
+        let image_ptr = PPC_DATA_BASE + 0x1400;
+        let storage = PPC_Q3_OBJECT_BASE + 10 * PPC_Q3_OBJECT_STRIDE;
+        let texture = storage + PPC_Q3_OBJECT_STRIDE;
+        let shader = texture + PPC_Q3_OBJECT_STRIDE;
+        // A half-opaque red top-left pixel, with green/blue/white elsewhere.
+        // Substituting UV (0,0) would incorrectly select the blue bottom row.
+        fixture.loaded.memory.add_region(image_ptr, vec![
+            128, 255, 0, 0, 255, 0, 255, 0,
+            255, 0, 0, 255, 255, 255, 255, 255,
+        ]);
+        fixture.loaded.q3_memory_storages.push(PpcQ3MemoryStorageRecord {
+            storage, buffer_ptr: image_ptr, valid_size: 16, buffer_size: 16,
+            owns_buffer: false,
+        });
+        let mut mipmap = vec![0; PPC_Q3_MIPMAP_COPY_SIZE as usize];
+        for (offset, value) in [
+            (PPC_Q3_MIPMAP_IMAGE_OFFSET, storage),
+            (PPC_Q3_MIPMAP_PIXEL_TYPE_OFFSET, PPC_Q3_PIXEL_TYPE_ARGB32),
+            (PPC_Q3_MIPMAP_BYTE_ORDER_OFFSET, PPC_Q3_ENDIAN_BIG),
+            (PPC_Q3_MIPMAP_BASE_WIDTH_OFFSET, 2),
+            (PPC_Q3_MIPMAP_BASE_HEIGHT_OFFSET, 2),
+            (PPC_Q3_MIPMAP_BASE_ROW_BYTES_OFFSET, 8),
+        ] {
+            mipmap[offset as usize..][..4].copy_from_slice(&value.to_be_bytes());
+        }
+        let mut commands = fixture.loaded.q3_scene_commands();
+        let PpcQ3SceneCommand::TriMesh(command) = &mut commands[0] else { panic!() };
+        command.material.texture_shader = Some(PpcQ3TextureShaderRecord { shader, texture });
+        command.material.mipmap_texture = Some(PpcQ3MipmapTextureRecord { texture, mipmap });
+        command.material.styles = vec![PpcQ3StyleRecord {
+            style: 0, kind: PpcQ3StyleKind::Fill,
+            value: match shape {
+                1 => PPC_Q3_FILL_STYLE_EDGES,
+                2 => PPC_Q3_FILL_STYLE_POINTS,
+                _ => PPC_Q3_FILL_STYLE_FILLED,
+            },
+        }];
+        // Neither these deliberately unsupported boundaries nor an invalid
+        // transform is consulted by software when the UV array is missing.
+        command.material.shader_boundary = Some(PpcQ3ShaderBoundaryRecord {
+            shader, u_boundary: u32::MAX, v_boundary: u32::MAX,
+        });
+        for unreadable_uvs in [false, true] {
+            for transform_value in [0.75, f32::NAN] {
+                for unreadable_pixel in [false, true] {
+                    let mut commands = commands.clone();
+                    let PpcQ3SceneCommand::TriMesh(command) = &mut commands[0] else { panic!() };
+                    if unreadable_uvs {
+                        for (offset, value) in [
+                            (PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET, 1u32),
+                            (PPC_Q3_TRIMESH_VERTEX_ATTRIBUTE_TYPES_OFFSET, 0xffff_fff0),
+                        ] {
+                            command.geometry.data[offset as usize..][..4]
+                                .copy_from_slice(&value.to_be_bytes());
+                        }
+                    }
+                    command.material.shader_uv_transform = Some(PpcQ3ShaderUvTransformRecord {
+                        shader,
+                        matrix: [[1., 0., 0.], [0., 1., 0.], [transform_value, 0., 1.]],
+                    });
+                    fixture.loaded.q3_memory_storages.last_mut().unwrap().buffer_ptr =
+                        if unreadable_pixel { 0xffff_ffe0 } else { image_ptr };
+                    let packet = fixture.loaded.prepare_q3_gpu_frame(commands.clone(), true)
+                        .expect("native GPU must accept the software first-pixel fallback");
+                    assert!(fixture.loaded.prepare_q3_gpu_frame(commands.clone(), false).is_none(),
+                        "keep the browser transport's existing fallback");
+                    if unreadable_pixel {
+                        assert!(packet.textures.is_empty());
+                    } else {
+                        assert_eq!(packet.textures.len(), 1);
+                        let texture = &packet.textures[0];
+                        assert_eq!((texture.width, texture.height), (1, 1));
+                        assert_eq!(texture.rgba, [255, 0, 0, 128]);
+                        assert!(!texture.wrap_u && !texture.wrap_v);
+                    }
+                    assert!(!packet.draws.is_empty());
+                    for draw in &packet.draws {
+                        assert!(draw.blend && !draw.write_depth,
+                            "the original ARGB texture still determines transparency ordering");
+                        assert!(draw.vertices.iter().all(|v| v.uv == [0., 0.]));
+                        if shape == 3 {
+                            // The native renderer expands zero-area triangles
+                            // into edges shaded at the centroid; any UV selects
+                            // the single texel of the 1x1 texture.
+                            assert_eq!(draw.primitive, PpcQ3RasterPrimitive::Triangles);
+                            assert!(draw.vertices.chunks_exact(3).all(|v| {
+                                (v[2].screen_x - v[0].screen_x) * (v[1].screen_y - v[0].screen_y)
+                                    == (v[2].screen_y - v[0].screen_y) * (v[1].screen_x - v[0].screen_x)
+                            }));
+                        }
+                        assert_eq!(draw.texture, (!unreadable_pixel).then_some(0));
+                    }
+                    for offset in (0..16 * 16 * 2).step_by(2) {
+                        fixture.loaded.memory.write_u16_be(fixture.front_base + offset, 0).unwrap();
+                    }
+                    let stats = fixture.loaded.replay_q3_scene_commands_to_front_buffer(commands);
+                    assert!(stats.pixels > 0);
+                    let pixels = (0..16 * 16 * 2).step_by(2).map(|offset| {
+                        fixture.loaded.memory.read_u16_be(fixture.front_base + offset).unwrap()
+                    }).filter(|pixel| *pixel != 0).collect::<Vec<_>>();
+                    assert!(!pixels.is_empty());
+                    assert!(pixels.iter().all(|pixel| if unreadable_pixel {
+                        *pixel == 0x7fff
+                    } else {
+                        *pixel & 0x03ff == 0 && *pixel & 0x7c00 != 0
+                    }), "software must also produce only red (or unmodulated white)");
+                }
+            }
+        }
+    }
+}
+
 /// One-triangle immediate trimesh fixture for the submit-time copy tests: a
 /// 16x16 direct-color front buffer and a camera on +z looking at the origin.
 struct ImmediateTriMeshFixture {

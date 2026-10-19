@@ -494,10 +494,21 @@ impl PpcLoadedApp {
                 continue;
             }
             let vertex_uvs = if material.texture.is_some() {
-                self.q3_software_trimesh_vertex_uvs(&command, points.len())?
+                self.q3_software_trimesh_vertex_uvs(&command, points.len())
             } else {
-                vec![(0.0, 0.0); points.len()]
+                Some(vec![(0.0, 0.0); points.len()])
             };
+            if !extended && vertex_uvs.is_none() {
+                return None;
+            }
+            // Software samples raw pixel (0, 0) when UVs are absent or unreadable.
+            // This is not UV (0, 0), which selects the bottom row, and bypasses
+            // the shader transform/boundaries. Every draw, including expanded
+            // degenerate edges, samples a 1x1 texture holding that pixel.
+            let mut gpu_material = material;
+            if vertex_uvs.is_none() {
+                gpu_material.uv_transform = None;
+            }
             let vertex_diffuse =
                 self.q3_software_trimesh_vertex_diffuse_colors(&command, points.len());
             let vertex_ambient =
@@ -544,7 +555,7 @@ impl PpcLoadedApp {
                 projected.highlight_state = vertex_highlights
                     .as_ref()
                     .and_then(|values| values.get(index).copied());
-                projected.uv = vertex_uvs.get(index).copied();
+                projected.uv = vertex_uvs.as_ref().and_then(|values| values.get(index).copied());
                 projected.diffuse = vertex_diffuse
                     .as_ref()
                     .and_then(|colors| colors.get(index).copied());
@@ -554,6 +565,28 @@ impl PpcLoadedApp {
             }
 
             let texture_index = match material.texture {
+                Some(texture) if vertex_uvs.is_none() => {
+                    // If even the first texel is unreadable, software leaves
+                    // the material unmodulated. Retain the original material
+                    // for transparency classification.
+                    ppc_q3_software_texture_pixel_at(&mut self.memory, texture, 0, 0)
+                        .map(|sample| {
+                            let index = textures.len();
+                            textures.push(PpcQ3GpuTexture {
+                                width: 1,
+                                height: 1,
+                                rgba: vec![
+                                    (sample.color.0.clamp(0., 1.) * 255.).round() as u8,
+                                    (sample.color.1.clamp(0., 1.) * 255.).round() as u8,
+                                    (sample.color.2.clamp(0., 1.) * 255.).round() as u8,
+                                    (sample.opacity.clamp(0., 1.) * 255.).round() as u8,
+                                ],
+                                wrap_u: false,
+                                wrap_v: false,
+                            });
+                            index
+                        })
+                }
                 Some(texture) => {
                     let texture = ppc_q3_gpu_texture_from_software(
                         &mut self.memory,
@@ -599,7 +632,7 @@ impl PpcLoadedApp {
                     draws.push(q3_gpu_nonfilled_draw(
                         PpcQ3RasterPrimitive::Points,
                         [point; 3],
-                        &material,
+                        &gpu_material,
                         texture_index,
                         ambient_light,
                         native_lighting.as_ref(),
@@ -756,7 +789,7 @@ impl PpcLoadedApp {
                         draws.push(q3_gpu_nonfilled_draw(
                             PpcQ3RasterPrimitive::Points,
                             [point; 3],
-                            &material,
+                            &gpu_material,
                             texture_index,
                             ambient_light,
                             native_lighting.as_ref(),
@@ -788,7 +821,7 @@ impl PpcLoadedApp {
                         draws.push(q3_gpu_nonfilled_draw(
                             PpcQ3RasterPrimitive::Lines,
                             [start, end, midpoint],
-                            &material,
+                            &gpu_material,
                             texture_index,
                             ambient_light,
                             native_lighting.as_ref(),
@@ -840,7 +873,7 @@ impl PpcLoadedApp {
                             };
                         let uv = ppc_q3_software_transform_uv(
                             point.uv.unwrap_or((0.0, 0.0)),
-                            material.uv_transform,
+                            gpu_material.uv_transform,
                         )?;
                         let (screen_x, screen_y) = ppc_q3_software_raster_position(point);
                         let shading_point = flat_sample.unwrap_or(point);
