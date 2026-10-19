@@ -85,6 +85,9 @@ jobs:
           SYSTEMLESS_BENCH_GUEST_CASE: text
           SYSTEMLESS_BENCH_SAMPLES: '3'
         run: cargo test --locked --profile "$COMPUTE_SOAK_PROFILE" --features test-support --bin systemless renderer_bench::benchmark_guest_renderers -- --exact --ignored --nocapture --test-threads=1 2>&1 | tee compute-resource-results/thread-cpu-smoke.log
+      - name: Verify QD3D routing trace evidence
+        if: env.COMPUTE_SOAK_WORKLOAD == 'gpu'
+        run: cargo test --locked --profile "$COMPUTE_SOAK_PROFILE" --features test-support --bin systemless wgpu_qd3d::routing_trace::tests -- --test-threads=1
       - name: Preserve compute evidence
         if: always()
         uses: actions/upload-artifact@v7
