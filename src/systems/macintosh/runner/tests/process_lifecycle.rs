@@ -257,6 +257,12 @@ fn staged_native_companion_conflict_preserves_owner_and_retries_same_adapter() {
 
 #[test]
 fn native_application_relaunch_refuses_two_live_execution_owners_before_publication() {
+    for owned in [false, true] {
+        check_native_application_relaunch_refuses_two_live_execution_owners_before_publication(owned);
+    }
+}
+
+fn check_native_application_relaunch_refuses_two_live_execution_owners_before_publication(owned: bool) {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     let menu = start_real_classic_menu_definition(&mut runner);
     let handles = runner.process_context.migrated_handles();
@@ -285,7 +291,7 @@ fn native_application_relaunch_refuses_two_live_execution_owners_before_publicat
     ));
 
     let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runner.init_app(&app);
+        if owned { runner.init_app_owned(app); } else { runner.init_app(&app); }
     }));
 
     assert!(refused.is_err());
@@ -314,6 +320,12 @@ fn native_application_relaunch_refuses_two_live_execution_owners_before_publicat
 
 #[test]
 fn native_application_relaunch_preflight_preserves_nonlive_process_state() {
+    for owned in [false, true] {
+        check_native_application_relaunch_preflight_preserves_nonlive_process_state(owned);
+    }
+}
+
+fn check_native_application_relaunch_preflight_preserves_nonlive_process_state(owned: bool) {
     let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
     let handles = runner.process_context.migrated_handles();
     assert!(handles.execution.begin_m68k(
@@ -355,7 +367,7 @@ fn native_application_relaunch_preflight_preserves_nonlive_process_state() {
         crate::menu_manager::test_process_menu_tracking(0x5678),
     ));
     let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runner.init_app(&app);
+        if owned { runner.init_app_owned(app); } else { runner.init_app(&app); }
     }));
 
     assert!(refused.is_err());
