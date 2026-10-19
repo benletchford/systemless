@@ -818,6 +818,21 @@ impl MetalPresenter {
         layer.setContentsScale(root_layer.contentsScale());
         root_layer.addSublayer(&layer);
 
+        // Exercise cleanup of a partially initialized hardware presenter too.
+        #[cfg(feature = "test-support")]
+        if std::env::var_os("SYSTEMLESS_NATIVE_WINDOW_PROBE").is_some()
+            && matches!(
+                std::env::var("SYSTEMLESS_GPU_FAULT")
+                    .unwrap_or_default()
+                    .as_str(),
+                "platform-startup" | "platform-fatal"
+            )
+        {
+            return Err(
+                "qualification: injected platform creation failure after layer attachment".into(),
+            );
+        }
+
         let library = device
             .newLibraryWithSource_options_error(
                 ns_string!(include_str!("metal_present.metal")),

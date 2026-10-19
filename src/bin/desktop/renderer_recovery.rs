@@ -178,7 +178,9 @@ impl App {
         #[cfg(feature = "test-support")]
         if std::env::var_os("SYSTEMLESS_NATIVE_WINDOW_PROBE").is_some() {
             let fault = std::env::var("SYSTEMLESS_GPU_FAULT").unwrap_or_default();
-            if fault == "startup" || (fault == "recreate" && self.wgpu_recovery.rebuilds > 0) {
+            if matches!(fault.as_str(), "startup" | "platform-startup")
+                || (fault == "recreate" && self.wgpu_recovery.rebuilds > 0)
+            {
                 return Err("qualification: injected presenter creation failure".to_owned());
             }
         }
@@ -193,6 +195,18 @@ impl App {
     }
     pub(super) fn create_platform_presenter(&mut self) -> Result<(), String> {
         let window = self.window.as_ref().ok_or("window unavailable")?.clone();
+        #[cfg(all(feature = "test-support", not(target_os = "macos")))]
+        if !self.use_software
+            && std::env::var_os("SYSTEMLESS_NATIVE_WINDOW_PROBE").is_some()
+            && matches!(
+                std::env::var("SYSTEMLESS_GPU_FAULT")
+                    .unwrap_or_default()
+                    .as_str(),
+                "platform-startup" | "platform-fatal"
+            )
+        {
+            return Err("qualification: injected platform creation failure".into());
+        }
         #[cfg(target_os = "macos")]
         {
             self.surface = Some(super::mac_present::Presenter::new(
@@ -278,10 +292,20 @@ impl App {
             "[GPU] {message}; switching to {} presentation",
             self.gpu_fallback.name()
         );
-        if let Err(error) = self.create_platform_presenter() {
-            self.stop_renderer(format!(
+        let result = create_fallback_presenter(self.use_software, |software| {
+            self.use_software = software;
+            self.create_platform_presenter()
+        });
+        match result {
+            Ok(Some(platform_error)) => {
+                self.wgpu_recovery.fallback = Some(format!(
+                    "{message}; platform fallback failed: {platform_error}"
+                ));
+            }
+            Ok(None) => {}
+            Err(error) => self.stop_renderer(format!(
                 "GPU fallback failed: {error} (original failure: {message})"
-            ));
+            )),
         }
     }
     pub(super) fn check_wgpu_health(&mut self) -> bool {
@@ -294,9 +318,86 @@ impl App {
     }
 }
 
+/// Keep software as the final recovery option when a platform GPU is unusable.
+/// Explicit software selection makes only one attempt.
+fn create_fallback_presenter(
+    software: bool,
+    mut create: impl FnMut(bool) -> Result<(), String>,
+) -> Result<Option<String>, String> {
+    match create(software) {
+        Ok(()) => Ok(None),
+        Err(error) if software => Err(error),
+        Err(platform_error) => {
+            eprintln!(
+                "[GPU] platform fallback failed: {platform_error}; trying software presentation"
+            );
+            create(true)
+                .map(|()| Some(platform_error.clone()))
+                .map_err(|software_error| {
+                    format!("platform: {platform_error}; software: {software_error}")
+                })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn platform_fallback_failure_tries_software_and_preserves_diagnostic() {
+        let mut attempts = Vec::new();
+        let result = create_fallback_presenter(false, |software| {
+            attempts.push(software);
+            if software {
+                Ok(())
+            } else {
+                Err("Metal unavailable".into())
+            }
+        });
+        assert_eq!(attempts, [false, true]);
+        assert_eq!(result, Ok(Some("Metal unavailable".into())));
+    }
+    #[test]
+    fn fallback_exhaustion_preserves_both_errors_without_retrying() {
+        let mut attempts = Vec::new();
+        let result = create_fallback_presenter(false, |software| {
+            attempts.push(software);
+            Err(if software {
+                "software unavailable"
+            } else {
+                "Metal unavailable"
+            }
+            .into())
+        });
+        assert_eq!(attempts, [false, true]);
+        assert_eq!(
+            result,
+            Err("platform: Metal unavailable; software: software unavailable".into())
+        );
+    }
+    #[test]
+    fn healthy_platform_and_explicit_software_each_make_one_attempt() {
+        for software in [false, true] {
+            let mut attempts = Vec::new();
+            assert_eq!(
+                create_fallback_presenter(software, |selected| {
+                    attempts.push(selected);
+                    Ok(())
+                }),
+                Ok(None)
+            );
+            assert_eq!(attempts, [software]);
+        }
+        let mut attempts = 0;
+        assert_eq!(
+            create_fallback_presenter(true, |_| {
+                attempts += 1;
+                Err("software unavailable".into())
+            }),
+            Err("software unavailable".into())
+        );
+        assert_eq!(attempts, 1);
+    }
     #[test]
     fn wgpu_failed_compute_cleanup_does_not_block_the_owner() {
         let (release, waiting) = std::sync::mpsc::channel();
