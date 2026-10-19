@@ -27459,3 +27459,171 @@ fn q3_clip_intersections_land_exactly_on_each_frustum_plane() {
         }
     }
 }
+
+#[test]
+fn q3_gpu_texture_rows_match_scalar_conversion_for_all_packed_colors() {
+    const BASE: u32 = 0x1200;
+    for pixel_type in [PPC_Q3_PIXEL_TYPE_RGB16, PPC_Q3_PIXEL_TYPE_ARGB16,
+        PPC_Q3_PIXEL_TYPE_RGB16_565, PPC_Q3_PIXEL_TYPE_RGB24,
+        PPC_Q3_PIXEL_TYPE_RGB32, PPC_Q3_PIXEL_TYPE_ARGB32] {
+        for byte_order in [PPC_Q3_ENDIAN_BIG, PPC_Q3_ENDIAN_LITTLE, 2] {
+            let pixel_bytes = ppc_q3_software_texture_pixel_bytes(pixel_type).unwrap();
+            let width = if pixel_bytes == 2 { 65536 } else { 256 };
+            let mut data = Vec::new();
+            for value in 0..width {
+                if pixel_bytes == 2 {
+                    let bytes = if byte_order == PPC_Q3_ENDIAN_LITTLE {
+                        (value as u16).to_le_bytes()
+                    } else {
+                        (value as u16).to_be_bytes()
+                    };
+                    data.extend(bytes);
+                } else {
+                    let value = value as u8;
+                    let pixel = [value, value.rotate_left(1), !value, value.wrapping_add(73)];
+                    data.extend_from_slice(&pixel[..pixel_bytes as usize]);
+                }
+            }
+            let texture = PpcQ3SoftwareTexture {
+                image_base: BASE, valid_size: data.len() as u32, image_offset: 0,
+                width, height: 1, row_bytes: width * pixel_bytes,
+                pixel_type, byte_order, pixel_bytes,
+            };
+            let mut memory = PpcSectionMem::new();
+            memory.add_region(BASE, data);
+            let expected = q3_reference_gpu_texture_from_software(&mut memory, texture, None);
+            let actual = ppc_q3_gpu_texture_from_software(&mut memory, texture, None);
+            assert_eq!(actual, expected, "format={pixel_type}, byte_order={byte_order}");
+        }
+    }
+}
+
+#[test]
+fn q3_gpu_texture_rows_preserve_layout_routing_and_guest_writes() {
+    use crate::memory::bus::SharedRamRegion;
+    const BASE: u32 = 0x1200;
+    let pixels: Vec<u8> = (0..64).map(|n| (n * 13 + 5) as u8).collect();
+    let texture = PpcQ3SoftwareTexture {
+        image_base: BASE, valid_size: pixels.len() as u32, image_offset: 3,
+        width: 3, height: 2, row_bytes: 11, pixel_type: PPC_Q3_PIXEL_TYPE_ARGB16,
+        byte_order: PPC_Q3_ENDIAN_BIG, pixel_bytes: 2,
+    };
+    for layout in 0..6 {
+        let mut memory = PpcSectionMem::new();
+        match layout {
+            0 => memory.add_region(BASE, pixels.clone()),
+            1 => {
+                // Split through a pixel, forcing the routed fallback.
+                memory.add_region(BASE, pixels[..6].to_vec());
+                memory.add_region(BASE + 6, pixels[6..].to_vec());
+            }
+            2 => {
+                memory.add_region(BASE, pixels.clone());
+                memory.add_readonly_region(BASE + 6, vec![0x8a, 0xba, 0xcd]);
+            }
+            3 => {
+                memory.add_region(BASE, pixels.clone());
+                // SAFETY: this test owns the backing allocation, accesses the
+                // address space serially and holds no borrowed row at mutation.
+                unsafe {
+                    memory.add_shared_region(BASE + 6,
+                        SharedRamRegion::from_owned_bytes(vec![0x8a, 0xba, 0xcd]));
+                }
+            }
+            4 => {
+                memory.add_region(BASE, pixels[..6].to_vec());
+                memory.add_region(BASE + 7, pixels[7..].to_vec());
+            }
+            5 => memory.add_readonly_region(BASE, pixels.clone()),
+            _ => unreachable!(),
+        }
+        for u_boundary in [PPC_Q3_SHADER_UV_BOUNDARY_CLAMP, PPC_Q3_SHADER_UV_BOUNDARY_WRAP, 99] {
+            for v_boundary in [PPC_Q3_SHADER_UV_BOUNDARY_CLAMP, PPC_Q3_SHADER_UV_BOUNDARY_WRAP, 99] {
+                let boundary = Some(PpcQ3ShaderBoundaryRecord { shader: 0, u_boundary, v_boundary });
+                assert_eq!(ppc_q3_gpu_texture_from_software(&mut memory, texture, boundary),
+                    q3_reference_gpu_texture_from_software(&mut memory, texture, boundary),
+                    "layout={layout}, boundaries={u_boundary}/{v_boundary}");
+            }
+        }
+        let clamp = Some(PpcQ3ShaderBoundaryRecord {
+            shader: 0, u_boundary: PPC_Q3_SHADER_UV_BOUNDARY_CLAMP,
+            v_boundary: PPC_Q3_SHADER_UV_BOUNDARY_CLAMP,
+        });
+        if layout == 0 {
+            let before = ppc_q3_gpu_texture_from_software(&mut memory, texture, clamp).unwrap();
+            memory.write_u8(BASE + texture.image_offset, 0xff).unwrap();
+            let after = ppc_q3_gpu_texture_from_software(&mut memory, texture, clamp).unwrap();
+            assert_ne!(before, after, "no persistent conversion cache may hide guest writes");
+            assert_eq!(Some(after), q3_reference_gpu_texture_from_software(&mut memory, texture, clamp));
+        }
+        let mut variants = Vec::new();
+        for pixel_bytes in [0, 1, 3, 4, 5] {
+            variants.push(PpcQ3SoftwareTexture { pixel_bytes, ..texture });
+        }
+        variants.extend([
+            PpcQ3SoftwareTexture { valid_size: 8, ..texture },
+            PpcQ3SoftwareTexture { row_bytes: 1, ..texture },
+            PpcQ3SoftwareTexture { row_bytes: u32::MAX, ..texture },
+            PpcQ3SoftwareTexture { image_offset: u32::MAX, ..texture },
+            PpcQ3SoftwareTexture { image_base: u32::MAX - 2, ..texture },
+            PpcQ3SoftwareTexture { width: 0, ..texture },
+            PpcQ3SoftwareTexture { height: 0, ..texture },
+            PpcQ3SoftwareTexture { pixel_type: u32::MAX, ..texture },
+        ]);
+        for variant in variants {
+            assert_eq!(ppc_q3_gpu_texture_from_software(&mut memory, variant, clamp),
+                q3_reference_gpu_texture_from_software(&mut memory, variant, clamp),
+                "layout={layout}, texture={variant:?}");
+        }
+    }
+}
+
+// Frozen pre-optimization conversion: an oracle for exact output, including
+// routed guest reads, malformed texture metadata and boundary rejection.
+fn q3_reference_gpu_texture_from_software(
+    memory: &mut PpcSectionMem,
+    texture: PpcQ3SoftwareTexture,
+    shader_boundary: Option<PpcQ3ShaderBoundaryRecord>,
+) -> Option<PpcQ3GpuTexture> {
+    let pixel_count = usize::try_from(texture.width.checked_mul(texture.height)?).ok()?;
+    let mut rgba = Vec::with_capacity(pixel_count.checked_mul(4)?);
+    for y in 0..texture.height {
+        for x in 0..texture.width {
+            let sample = ppc_q3_software_texture_pixel_at(memory, texture, x, y)?;
+            rgba.extend([
+                (sample.color.0.clamp(0.0, 1.0) * 255.0).round() as u8,
+                (sample.color.1.clamp(0.0, 1.0) * 255.0).round() as u8,
+                (sample.color.2.clamp(0.0, 1.0) * 255.0).round() as u8,
+                (sample.opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
+            ]);
+        }
+    }
+    let u_boundary = shader_boundary
+        .map(|record| record.u_boundary)
+        .unwrap_or(PPC_Q3_SHADER_UV_BOUNDARY_WRAP);
+    let v_boundary = shader_boundary
+        .map(|record| record.v_boundary)
+        .unwrap_or(PPC_Q3_SHADER_UV_BOUNDARY_WRAP);
+    if !matches!(
+        u_boundary,
+        PPC_Q3_SHADER_UV_BOUNDARY_WRAP | PPC_Q3_SHADER_UV_BOUNDARY_CLAMP
+    ) || !matches!(
+        v_boundary,
+        PPC_Q3_SHADER_UV_BOUNDARY_WRAP | PPC_Q3_SHADER_UV_BOUNDARY_CLAMP
+    ) {
+        return None;
+    }
+    if (u_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP && !texture.width.is_power_of_two())
+        || (v_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP && !texture.height.is_power_of_two())
+    {
+        // WebGL 1 only permits REPEAT on power-of-two texture dimensions.
+        return None;
+    }
+    Some(PpcQ3GpuTexture {
+        width: texture.width,
+        height: texture.height,
+        rgba,
+        wrap_u: u_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
+        wrap_v: v_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
+    })
+}
