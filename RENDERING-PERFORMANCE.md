@@ -243,6 +243,9 @@ Keep application media and captures outside tracked source.
 The trace streams each adaptive selection with framebuffer dimensions, primitive
 and degenerate-triangle counts, and the old full-frame work estimate. That estimate
 is historical diagnostic evidence, not the current tiled work calculation.
+Work-estimate events preserve the actual production selector's CPU/tiled estimates
+and limits for the next selection ordinal, identifying small-work, tiled-budget
+and relative-work decisions without recomputing or relaxing the predicate.
 Each synchronous render result records its selection ordinal, success/error,
 returned pixel count, indexed mode and elapsed request time. An error or missing
 result must not be counted as GPU acceptance. Selection ordinals start at one;

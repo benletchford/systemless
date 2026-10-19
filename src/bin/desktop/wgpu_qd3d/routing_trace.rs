@@ -35,6 +35,16 @@ impl RoutingTrace {
         writeln!(self.file.borrow_mut(), "{value}").expect("write QD3D routing trace");
     }
 
+    pub(super) fn work_estimate(&self, cpu_work: u64, tiled_work: u64, minimum_cpu_work: u64) {
+        self.write(serde_json::json!({
+            "event":"work_estimate",
+            "selection_index":self.selection_index.get().checked_add(1).expect("QD3D trace sequence overflow"),
+            "cpu_work":cpu_work, "tiled_work":tiled_work, "minimum_cpu_work":minimum_cpu_work,
+            "maximum_tiled_work":super::MAX_RASTER_WORK, "maximum_tiled_to_cpu_ratio":4,
+            "scope":"production adaptive work estimates, not measured CPU or GPU time"
+        }));
+    }
+
     pub(super) fn selection(&self, frame: &PpcQ3RasterFrame, selected: bool) {
         let index = self
             .selection_index
@@ -88,6 +98,22 @@ impl RoutingTrace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn work_estimates_refer_to_the_next_selection_without_advancing_it() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("work.jsonl");
+        let trace = RoutingTrace::create(&path).unwrap();
+        trace.work_estimate(123, 456, 200_000);
+        assert_eq!(trace.selection_index.get(), 0);
+        let text = std::fs::read_to_string(path).unwrap();
+        let row: serde_json::Value = serde_json::from_str(text.lines().nth(1).unwrap()).unwrap();
+        assert_eq!(row["selection_index"], 1);
+        assert_eq!(row["cpu_work"], 123);
+        assert_eq!(row["tiled_work"], 456);
+        assert_eq!(row["minimum_cpu_work"], 200_000);
+        assert_eq!(row["maximum_tiled_work"], 512_000_000);
+    }
 
     #[test]
     fn records_real_packet_work_and_degenerate_counts() {

@@ -914,6 +914,10 @@ impl Qd3dRenderer {
                 work = work.saturating_add(samples.saturating_mul(cost));
             }
         }
+        #[cfg(feature = "test-support")]
+        if let Some(trace) = &self.routing_trace {
+            trace.work_estimate(work, gpu_work, threshold);
+        }
         work >= threshold && gpu_work <= MAX_RASTER_WORK && gpu_work <= work.saturating_mul(4)
     }
 }
