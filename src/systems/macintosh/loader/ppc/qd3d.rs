@@ -3211,12 +3211,16 @@ pub fn ppc_q3_software_clip_projected_triangle(
     }
 
     let mut clipped = vertices.to_vec();
+    // Clip the near plane before the sides. With a perspective camera, an
+    // edge crossing behind the eye can otherwise intersect both side planes
+    // at w=0. Rounding that intersection and snapping it to the second side
+    // loses the first side's boundary, exposing a column of clear pixels.
     for plane in [
+        PpcQ3SoftwareClipPlane::Near,
         PpcQ3SoftwareClipPlane::Left,
         PpcQ3SoftwareClipPlane::Right,
         PpcQ3SoftwareClipPlane::Bottom,
         PpcQ3SoftwareClipPlane::Top,
-        PpcQ3SoftwareClipPlane::Near,
         PpcQ3SoftwareClipPlane::Far,
     ] {
         clipped = ppc_q3_software_clip_projected_polygon_clip(
@@ -3309,7 +3313,15 @@ pub fn ppc_q3_software_clip_projected_polygon_clip(
                 front_buffer,
                 viewport,
             ) {
-                clipped.push(intersection);
+                // A crossing that lands on an existing endpoint must not add
+                // that endpoint twice. Otherwise an outside triangle touching
+                // the frustum can become a degenerate fan triangle, which the
+                // software renderer draws as a line without depth testing.
+                // Do not deduplicate the original input vertices: intentional
+                // degenerate triangles wholly inside the frustum still draw.
+                if intersection.clip != previous.clip && intersection.clip != current.clip {
+                    clipped.push(intersection);
+                }
             }
         }
         if current_inside {
