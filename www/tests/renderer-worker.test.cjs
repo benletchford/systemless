@@ -22,6 +22,7 @@ function renderer(options = {}) {
       paints.push([...image.data]);
     } }, addEventListener: (name, callback) => { listeners[name] = callback; } };
   const context = vm.createContext({ Uint8Array, Uint8ClampedArray, Uint32Array, ArrayBuffer, URL,
+    loadWgpu: async () => options.wgpuBindings,
     loadGpu: async url => {
       imports.push(url);
       if (options.loadGpu) return options.loadGpu();
@@ -34,6 +35,7 @@ function renderer(options = {}) {
     ImageData: class { constructor(data, width, height) { this.data = data; this.width = width; this.height = height; } },
     setTimeout: callback => { timers.set(++next, callback); return next; },
     clearTimeout: id => timers.delete(id),
+    setInterval: () => 1, clearInterval: () => {},
     self: { location: { href: "https://example.test/renderer-worker.js?runtime=version" }, postMessage: (message, transfer = []) => {
       if(message.type==='bitmap') {
         if(options.bitmapPostError)throw new Error('bitmap transfer failed');
@@ -41,9 +43,9 @@ function renderer(options = {}) {
       } else messages.push(structuredClone(message, { transfer }));
     }, close: () => { closed = true; } },
   });
-  vm.runInContext(read('renderer-worker.js').replace('await import(moduleUrl.href)', 'await loadGpu(moduleUrl.href)'), context);
+  vm.runInContext(read('renderer-worker.js').replace('await import(moduleUrl.href)', 'await loadGpu(moduleUrl.href)').replace('await import(data.moduleUrl)', 'await loadWgpu()'), context);
   const send = data => context.self.onmessage({ data });
-  const initialized = send({ ...identity, type: 'init', canvas, bitmap:options.bitmap===true, backend: options.gpu ? 'webgl' : 'canvas2d' });
+  const initialized = send({ ...identity, type: 'init', canvas, bitmap:options.bitmap===true, moduleUrl: '/runtime.js', wasmUrl: '/runtime.wasm', backend: options.wgpuBindings ? 'wgpu' : options.gpu ? 'webgl' : 'canvas2d' });
   return { send, messages, paints, bitmaps, timers, listeners, canvas, initialized, imports, disposed: () => disposed, closed: () => closed,
     flush: () => { const jobs = [...timers.values()]; timers.clear(); jobs.forEach(job => job()); } };
 }
@@ -288,4 +290,73 @@ test('stop during outstanding bitmap prevents late acknowledgement from returnin
   await w.send({...identity,type:'stop'});const count=w.messages.length;
   await w.send({...identity,type:'bitmapSubmitted',sequence:1,displayGeneration:1});
   assert.equal(w.messages.length,count);assert.equal(w.disposed(),true);assert.equal(w.closed(),true);
+});
+
+
+test('wgpu retains frame credit until completion, coalesces pending frames and survives stop during completion', async () => {
+  const completions = [];
+  const painted = [];
+  let disposed = 0, freed = 0;
+  const w = renderer({ wgpuBindings: {
+    default: async () => {},
+    WebGpuPresenter: { create: async () => ({
+      paint: (width, height, pixels) => painted.push(pixels[0]),
+      completed: () => new Promise(resolve => completions.push(resolve)),
+      check_health() {}, dispose() { disposed++; }, free() { freed++; }
+    }) }
+  } });
+  await w.initialized;
+  assert.equal(w.messages[0].backend, 'offscreen-wgpu');
+  assert.deepEqual(w.messages[0].kinds, ['rgba']);
+  await w.send(frame(1)); w.flush();
+  await w.send(frame(2)); await w.send(frame(3));
+  assert.deepEqual(painted, [1]);
+  assert.equal(w.messages.filter(m => m.type === 'submitted').length, 0);
+  assert.equal(w.messages.filter(m => m.type === 'dropped').length, 1);
+  completions.shift()(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(w.messages.filter(m => m.type === 'submitted').length, 1);
+  w.flush(); assert.deepEqual(painted, [1, 3]);
+  await w.send({ ...identity, type: 'stop' });
+  completions.shift()(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(w.messages.filter(m => m.type === 'submitted').length, 1);
+  assert.equal(disposed, 1); assert.equal(freed, 1);
+});
+
+test('wgpu initialization rejection uses the existing renderer failure protocol', async () => {
+  const w = renderer({ wgpuBindings: { default: async () => {}, WebGpuPresenter: {
+    create: async () => { throw new Error('WebGPU unavailable'); }
+  } } });
+  await w.initialized;
+  assert.equal(w.messages.length, 1);
+  assert.equal(w.messages[0].type, 'error');
+  assert.match(w.messages[0].message, /WebGPU unavailable/);
+});
+
+test('stop during asynchronous wgpu creation disposes a late device without sending ready', async () => {
+  let resolveCreate, disposed = 0, freed = 0;
+  const creation = new Promise(resolve => { resolveCreate = resolve; });
+  const w = renderer({ wgpuBindings: { default: async () => {}, WebGpuPresenter: { create: () => creation } } });
+  await new Promise(resolve => setImmediate(resolve));
+  await w.send({ ...identity, type: 'stop' });
+  resolveCreate({ dispose() { disposed++; }, free() { freed++; } });
+  await w.initialized;
+  assert.equal(w.messages.filter(m => m.type === 'ready').length, 0);
+  assert.equal(w.messages.filter(m => m.type === 'stopped').length, 1);
+  assert.equal(disposed, 1); assert.equal(freed, 1);
+});
+
+test('stalled wgpu completion fails once and never returns successful frame credit', async () => {
+  let disposed = 0;
+  const w = renderer({ wgpuBindings: { default: async () => {}, WebGpuPresenter: { create: async () => ({
+    paint() {}, completed: () => new Promise(() => {}), check_health() {}, dispose() { disposed++; }, free() {}
+  }) } } });
+  await w.initialized;
+  await w.send(frame(1)); w.flush();
+  w.flush(); // Fire the bounded completion deadline.
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(w.messages.filter(m => m.type === 'submitted').length, 0);
+  const errors = w.messages.filter(m => m.type === 'error');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /completion timed out/);
+  assert.equal(disposed, 1);
 });

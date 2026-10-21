@@ -26,6 +26,8 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = [
     "Window",
+    "console",
+    "OffscreenCanvas",
     "AbortController",
     "AbortSignal",
     "AddEventListenerOptions",
@@ -97,3 +99,9 @@ web-sys = { version = "0.3", features = [
 
 [build-dependencies]
 systemless-catalogue-tools = { path = "tools/catalogue" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Browser compute workers run the same kernels as the desktop renderer.
+systemless = { path = "..", default-features = false, features = ["wgpu-compute"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "webgpu", "wgsl"] }
+futures-channel = "0.3"

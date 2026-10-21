@@ -62,14 +62,21 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 # Pure-Rust math library for cross-platform deterministic transcendentals
 libm = "0.2"
-wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "metal", "dx12", "vulkan", "gles", "wgsl"], optional = true }
+# Native backends are selected by `gui`; browsers add WebGPU in their crate.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"], optional = true }
+futures-channel = { version = "0.3", optional = true }
 pollster = { version = "0.4", optional = true }
 
 [features]
 default = ["gui", "jit"]
 gui = [
     "winit",
-    "dep:wgpu",
+    "wgpu-compute",
+    "wgpu/parking_lot",
+    "wgpu/metal",
+    "wgpu/dx12",
+    "wgpu/vulkan",
+    "wgpu/gles",
     "dep:pollster",
     "softbuffer",
     "cpal",
@@ -80,6 +87,9 @@ gui = [
     "dep:objc2-quartz-core",
     "dep:windows",
 ]
+# Shared wgpu QuickDraw/QD3D compute kernels without a native backend. The
+# desktop runner and browser compute worker each choose their device backend.
+wgpu-compute = ["dep:wgpu", "dep:futures-channel"]
 # Compile hot 68K traces to native code. Embeddings constrained by executable-
 # memory policy can omit this feature and use m68k's portable trace executor.
 jit = ["m68k/jit"]

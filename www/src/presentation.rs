@@ -23,10 +23,26 @@ impl CanvasFrame {
         generation: u32,
         owner: &web_sys::Worker,
     ) -> Option<Self> {
+        Self::new_renderer(canvas, width, height, generation, owner.as_ref())
+    }
+
+    fn new_renderer(
+        canvas: &HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        generation: u32,
+        owner: &JsValue,
+    ) -> Option<Self> {
         let user_agent = web_sys::window()
             .and_then(|window| window.navigator().user_agent().ok())
             .unwrap_or_default();
-        if !requires_canvas_2d_presenter(&user_agent) {
+        let wants_wgpu =
+            web_sys::window().is_some_and(|window| {
+                window.location().search().ok().is_some_and(|search| {
+                    search.split(['&', '?']).any(|part| part == "renderer=wgpu")
+                })
+            });
+        if wants_wgpu || !requires_canvas_2d_presenter(&user_agent) {
             if let Ok(handle) = crate::renderer_bridge::create_renderer(canvas, generation, owner) {
                 if !handle.is_null() {
                     return Some(Self::Offscreen(OffscreenFrame {
@@ -41,7 +57,7 @@ impl CanvasFrame {
                 }
             }
         }
-        Self::new(canvas, width, height)
+        Self::new_legacy(canvas, width, height)
     }
 
     pub(crate) fn poll_recovery(&mut self) -> Result<(), String> {
@@ -73,6 +89,10 @@ impl CanvasFrame {
     }
 
     pub(crate) fn new(canvas: &HtmlCanvasElement, width: u32, height: u32) -> Option<Self> {
+        Self::new_renderer(canvas, width, height, 0, &JsValue::NULL)
+    }
+
+    fn new_legacy(canvas: &HtmlCanvasElement, width: u32, height: u32) -> Option<Self> {
         let user_agent = web_sys::window()
             .and_then(|window| window.navigator().user_agent().ok())
             .unwrap_or_default();
@@ -184,6 +204,7 @@ impl CanvasFrame {
                     .as_deref()
                 {
                     Some("bitmap-webgl") => "bitmap-webgl",
+                    Some("offscreen-wgpu") => "offscreen-wgpu",
                     Some("offscreen-webgl") => "offscreen-webgl",
                     _ => "offscreen-canvas2d",
                 }

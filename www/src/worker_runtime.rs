@@ -75,6 +75,7 @@ pub struct WorkerMachine {
     machine: Machine,
     painted_once: bool,
     gpu_renderer_enabled: bool,
+    gpu_compute: Option<crate::gpu_proxy::GpuProxy>,
 }
 
 #[wasm_bindgen]
@@ -149,6 +150,7 @@ impl WorkerMachine {
             machine,
             painted_once: false,
             gpu_renderer_enabled: false,
+            gpu_compute: None,
         })
     }
 
@@ -298,6 +300,13 @@ impl WorkerMachine {
                 frame.as_ref(),
             );
         }
+        if let Some(proxy) = &self.gpu_compute {
+            let _ = Reflect::set(
+                result.as_ref(),
+                &JsValue::from_str("gpuCompute"),
+                gpu_compute_object(&proxy.stats()).as_ref(),
+            );
+        }
         if let Some(frame) = gpu_frame {
             self.painted_once = true;
             let packet = q3_gpu_frame_object(frame);
@@ -308,6 +317,32 @@ impl WorkerMachine {
             );
         }
         result
+    }
+
+    /// Enable guest-visible GPU compute through the emulation worker's
+    /// `systemlessGpuCompute` bridge: "adaptive", "force" or "off". Returns
+    /// false for an unknown mode or a host without the blocking bridge.
+    #[wasm_bindgen(js_name = setGpuCompute)]
+    pub fn set_gpu_compute(&mut self, mode: &str) -> bool {
+        let Some(dispatch) = crate::gpu_proxy::Dispatch::parse(mode) else {
+            return false;
+        };
+        if let Some(proxy) = &self.gpu_compute {
+            proxy.set_dispatch(dispatch);
+            return true;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let proxy = crate::gpu_proxy::GpuProxy::new(
+                Box::new(crate::gpu_proxy::WorkerTransport),
+                dispatch,
+            );
+            self.machine.install_gpu_proxy(&proxy);
+            self.gpu_compute = Some(proxy);
+            true
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        false
     }
 
     #[wasm_bindgen(js_name = setGpuRendererEnabled)]
@@ -390,6 +425,30 @@ impl WorkerMachine {
         }
         files
     }
+}
+
+/// Per-kind `[completed, failed]` counts, so verification can prove guest
+/// pixels came from the GPU rather than a silent CPU fallback.
+fn gpu_compute_object(stats: &crate::gpu_proxy::ProxyStats) -> Object {
+    let object = Object::new();
+    for (name, kind) in [
+        ("raster", stats.raster),
+        ("blit", stats.blit),
+        ("qd3d", stats.qd3d),
+    ] {
+        let pair = Array::of2(
+            &JsValue::from_f64(kind.completed as f64),
+            &JsValue::from_f64(kind.failed as f64),
+        );
+        let _ = Reflect::set(&object, &JsValue::from_str(name), pair.as_ref());
+    }
+    if let Some(reason) = &stats.disabled {
+        set_string(&object, "disabled", reason);
+    }
+    if let Some(error) = &stats.last_error {
+        set_string(&object, "lastError", error);
+    }
+    object
 }
 
 fn q3_gpu_frame_object(frame: systemless::loader::ppc::PpcQ3GpuFrame) -> Object {

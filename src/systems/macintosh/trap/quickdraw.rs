@@ -18,6 +18,8 @@ use crate::trap::pict;
 use crate::Result;
 use std::sync::OnceLock;
 
+mod deep_mask_transfer;
+mod gpu_deep_mask;
 mod icon_suite;
 
 #[derive(Clone, Copy)]
@@ -14400,7 +14402,7 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ========== Stubs — Mask Operations ==========
+            // ========== Mask Operations ==========
 
             // CopyMask ($A817)
             // PROCEDURE CopyMask(srcBits, maskBits, dstBits: BitMap;
@@ -14413,7 +14415,7 @@ impl super::TrapDispatcher {
             // source image to fit the destination.
             // Stack: SP+0: dstRect(4), SP+4: maskRect(4), SP+8: srcRect(4),
             //        SP+12: dstBits(4), SP+16: maskBits(4), SP+20: srcBits(4). Pop 24.
-            // CopyMask ($A817): Mask-gated scaled blit srcBits → dstBits via maskBits (1 = copy, 0 = preserve dst); supports 1bpp + 8bpp dst per Imaging With QuickDraw 3-119..3-120
+            // Deep masks and direct-color transfers share CopyDeepMask semantics.
             (true, 0x017) => {
                 let sp = cpu.read_reg(Register::A7);
                 let dst_rect_ptr = bus.read_long(sp);
@@ -14427,6 +14429,16 @@ impl super::TrapDispatcher {
                 let src_info = self.resolve_copy_bitmap(bus, src_bits_ptr);
                 let mask_info = self.resolve_copy_bitmap(bus, mask_bits_ptr);
                 let dst_info = self.resolve_copy_bitmap(bus, dst_bits_ptr);
+
+                if mask_info.pixel_size != 1
+                    || !matches!(src_info.pixel_size, 1 | 2 | 4 | 8)
+                    || !matches!(dst_info.pixel_size, 1 | 8)
+                {
+                    return Some(self.copy_deep_mask_transfer(
+                        bus, src_bits_ptr, mask_bits_ptr, dst_bits_ptr,
+                        src_rect_ptr, mask_rect_ptr, dst_rect_ptr, 0, 0,
+                    ));
+                }
 
                 let src_top = bus.read_word(src_rect_ptr) as i16;
                 let src_left = bus.read_word(src_rect_ptr + 2) as i16;
@@ -14789,247 +14801,10 @@ impl super::TrapDispatcher {
                 let src_bits_ptr = bus.read_long(sp + 26);
                 cpu.write_reg(Register::A7, sp + 30);
 
-                let src_info = self.resolve_copy_bitmap(bus, src_bits_ptr);
-                let mask_info = self.resolve_copy_bitmap(bus, mask_bits_ptr);
-                let dst_info = self.resolve_copy_bitmap(bus, dst_bits_ptr);
-
-                let src_top = bus.read_word(src_rect_ptr) as i16;
-                let src_left = bus.read_word(src_rect_ptr + 2) as i16;
-                let src_bottom = bus.read_word(src_rect_ptr + 4) as i16;
-                let src_right = bus.read_word(src_rect_ptr + 6) as i16;
-                let mask_top = bus.read_word(mask_rect_ptr) as i16;
-                let mask_left = bus.read_word(mask_rect_ptr + 2) as i16;
-                let mask_bottom = bus.read_word(mask_rect_ptr + 4) as i16;
-                let mask_right = bus.read_word(mask_rect_ptr + 6) as i16;
-                let dst_top = bus.read_word(dst_rect_ptr) as i16;
-                let dst_left = bus.read_word(dst_rect_ptr + 2) as i16;
-                let dst_bottom = bus.read_word(dst_rect_ptr + 4) as i16;
-                let dst_right = bus.read_word(dst_rect_ptr + 6) as i16;
-                let mode_base = (mode & 0x3F) as u16;
-
-                // CopyDeepMask follows CopyBits' color model for every
-                // PixMap depth: indexed pixels are interpreted through their
-                // logical ColorTable, while 16/32-bit pixels are blended in
-                // RGB space. The destination table is the current GDevice's
-                // table for a screen target and the destination PixMap table
-                // for an offscreen target (Imaging With QuickDraw,
-                // pp. 3-117, 3-120--3-122, 4-31).
-                let dst_ctab_handle =
-                    self.copy_bits_destination_ctab_handle(bus, *self.current_port, &dst_info);
-                let screen_destination = dst_info.base == self.screen_mode.0
-                    && dst_info.row_bytes == self.screen_mode.1
-                    && dst_info.pixel_size == u32::from(self.screen_mode.4);
-                let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
-                    .then(|| self.read_port_clut(bus, src_info.ctab_handle));
-                let mask_clut = matches!(mask_info.pixel_size, 2 | 4 | 8)
-                    .then(|| self.read_port_clut(bus, mask_info.ctab_handle));
-                let dst_clut = self.read_indexed_destination_clut(
-                    bus,
-                    dst_ctab_handle,
-                    dst_info.pixel_size,
-                    screen_destination,
-                );
-
-                if src_bottom <= src_top
-                    || src_right <= src_left
-                    || mask_bottom <= mask_top
-                    || mask_right <= mask_left
-                    || dst_bottom <= dst_top
-                    || dst_right <= dst_left
-                {
-                    return Some(Ok(()));
-                }
-
-                let mut clip_t = dst_top.max(dst_info.bounds_top);
-                let mut clip_l = dst_left.max(dst_info.bounds_left);
-                let mut clip_b = dst_bottom.min(dst_info.bounds_bottom);
-                let mut clip_r = dst_right.min(dst_info.bounds_right);
-
-                if !Self::clip_rect_to_region_bbox(
-                    bus,
-                    mask_rgn,
-                    &mut clip_t,
-                    &mut clip_l,
-                    &mut clip_b,
-                    &mut clip_r,
-                ) {
-                    return Some(Ok(()));
-                }
-
-                if clip_b <= clip_t || clip_r <= clip_l {
-                    return Some(Ok(()));
-                }
-
-                let mask_membership =
-                    Self::build_region_membership_cache(bus, mask_rgn, clip_t, clip_b);
-
-                let src_w = i32::from(src_right) - i32::from(src_left);
-                let src_h = i32::from(src_bottom) - i32::from(src_top);
-                let mask_w = i32::from(mask_right) - i32::from(mask_left);
-                let mask_h = i32::from(mask_bottom) - i32::from(mask_top);
-                let dst_w = i32::from(dst_right) - i32::from(dst_left);
-                let dst_h = i32::from(dst_bottom) - i32::from(dst_top);
-                let no_src_scaling = src_w == dst_w && src_h == dst_h && src_w > 0 && src_h > 0;
-                let no_mask_scaling =
-                    mask_w == dst_w && mask_h == dst_h && mask_w > 0 && mask_h > 0;
-
-                for dy in clip_t..clip_b {
-                    let sy = if no_src_scaling {
-                        i32::from(src_top) + (i32::from(dy) - i32::from(dst_top))
-                    } else {
-                        let Some(sy) =
-                            Self::scale_coord(src_top, src_bottom, dst_top, dst_bottom, dy)
-                        else {
-                            continue;
-                        };
-                        sy
-                    } as i16;
-                    let my = if no_mask_scaling {
-                        i32::from(mask_top) + (i32::from(dy) - i32::from(dst_top))
-                    } else {
-                        let Some(my) =
-                            Self::scale_coord(mask_top, mask_bottom, dst_top, dst_bottom, dy)
-                        else {
-                            continue;
-                        };
-                        my
-                    } as i16;
-                    for dx in clip_l..clip_r {
-                        if !Self::region_contains_point_cached(
-                            bus,
-                            mask_rgn,
-                            mask_membership.as_ref(),
-                            dy,
-                            dx,
-                        ) {
-                            continue;
-                        }
-                        let sx = if no_src_scaling {
-                            i32::from(src_left) + (i32::from(dx) - i32::from(dst_left))
-                        } else {
-                            let Some(sx) =
-                                Self::scale_coord(src_left, src_right, dst_left, dst_right, dx)
-                            else {
-                                continue;
-                            };
-                            sx
-                        } as i16;
-                        let mx = if no_mask_scaling {
-                            i32::from(mask_left) + (i32::from(dx) - i32::from(dst_left))
-                        } else {
-                            let Some(mx) =
-                                Self::scale_coord(mask_left, mask_right, dst_left, dst_right, dx)
-                            else {
-                                continue;
-                            };
-                            mx
-                        } as i16;
-                        let Some(mask_pixel) =
-                            Self::read_bitmap_raw_pixel(bus, &mask_info, my, mx)
-                        else {
-                            continue;
-                        };
-                        let deep_mask = mask_info.pixel_size != 1;
-                        let mask_rgb = if deep_mask {
-                            let Some(mask_rgb) = Self::bitmap_pixel_rgb(
-                                bus,
-                                &mask_info,
-                                mask_pixel,
-                                mask_clut.as_ref(),
-                            ) else {
-                                continue;
-                            };
-                            Some(mask_rgb)
-                        } else {
-                            // A one-bit mask follows the classic BitMap
-                            // convention: black (set) selects the source;
-                            // white (clear) preserves the destination.
-                            if mask_pixel == 0 {
-                                continue;
-                            }
-                            None
-                        };
-                        let Some(src_pixel) =
-                            Self::read_bitmap_raw_pixel(bus, &src_info, sy, sx)
-                        else {
-                            continue;
-                        };
-                        let Some(source_rgb) =
-                            Self::bitmap_pixel_rgb(bus, &src_info, src_pixel, src_clut.as_ref())
-                        else {
-                            continue;
-                        };
-                        let Some(destination_pixel) =
-                            Self::read_bitmap_raw_pixel(bus, &dst_info, dy, dx)
-                        else {
-                            continue;
-                        };
-                        let Some(destination_rgb) = Self::bitmap_pixel_rgb(
-                            bus,
-                            &dst_info,
-                            destination_pixel,
-                            dst_clut.as_ref(),
-                        ) else {
-                            continue;
-                        };
-
-                        // Convert the source into the destination pixel space
-                        // before applying boolean modes. This preserves
-                        // palette translation for indexed blits and gives
-                        // direct-color destinations their documented packed
-                        // representation. Arithmetic modes are represented by
-                        // the RGB source and destination values below; the
-                        // deep-mask weighting itself is always component-wise.
-                        let Some(source_for_destination) =
-                            Self::bitmap_rgb_to_pixel(&dst_info, source_rgb, dst_clut.as_ref())
-                        else {
-                            continue;
-                        };
-                        let source_for_blend = if mode_base <= 7 && mode_base != 0 {
-                            let mode_pixel = Self::deep_mask_boolean_pixel(
-                                source_for_destination,
-                                destination_pixel,
-                                dst_info.pixel_size,
-                                mode_base,
-                            );
-                            let Some(mode_rgb) = Self::bitmap_pixel_rgb(
-                                bus,
-                                &dst_info,
-                                mode_pixel,
-                                dst_clut.as_ref(),
-                            ) else {
-                                continue;
-                            };
-                            mode_rgb
-                        } else {
-                            source_rgb
-                        };
-                        let output_pixel = if let Some(mask_rgb) = mask_rgb {
-                            let blended = Self::blend_deep_mask_rgb(
-                                source_for_blend,
-                                destination_rgb,
-                                mask_rgb,
-                            );
-                            let Some(output) =
-                                Self::bitmap_rgb_to_pixel(&dst_info, blended, dst_clut.as_ref())
-                            else {
-                                continue;
-                            };
-                            output
-                        } else if mode_base <= 7 {
-                            Self::deep_mask_boolean_pixel(
-                                source_for_destination,
-                                destination_pixel,
-                                dst_info.pixel_size,
-                                mode_base,
-                            )
-                        } else {
-                            source_for_destination
-                        };
-                        let _ = Self::write_bitmap_raw_pixel(bus, &dst_info, dy, dx, output_pixel);
-                    }
-                }
-                Ok(())
+                self.copy_deep_mask_transfer(
+                    bus, src_bits_ptr, mask_bits_ptr, dst_bits_ptr,
+                    src_rect_ptr, mask_rect_ptr, dst_rect_ptr, mode, mask_rgn,
+                )
             }
 
             // ========== Text / Font ==========
@@ -23719,7 +23494,10 @@ impl super::TrapDispatcher {
         if rel < 0 || rel >= dst_span {
             return None;
         }
-        Some(i32::from(src_start) + (rel * src_span) / dst_span)
+        // Valid signed QuickDraw bounds can span 65,535 cells. Their product
+        // exceeds i32 even when the final mapped coordinate is representable.
+        let offset = i64::from(rel) * i64::from(src_span) / i64::from(dst_span);
+        i32::try_from(i64::from(src_start) + offset).ok()
     }
 
     pub(crate) fn nearest_palette_index(clut: &[[u16; 3]; 256], rgb: [u16; 3]) -> u8 {

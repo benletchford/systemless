@@ -7,6 +7,84 @@ let failed = false;
 let stopping = false;
 let saveFilesVersion = null;
 let rendererLink = null;
+let gpuCompute = null;
+
+// Guest-visible QuickDraw/QD3D compute runs in a dedicated WebGPU worker. The
+// wasm proxy calls this global and blocks until the reply is published.
+self.systemlessGpuCompute = (request, capacity) => {
+  if (!gpuCompute?.link) throw new Error("GPU compute is not connected");
+  return gpuCompute.link.call(request, capacity);
+};
+
+function stopGpuCompute() {
+  const state = gpuCompute;
+  gpuCompute = null;
+  if (!state) return;
+  state.cancelled = true;
+  state.worker?.terminate();
+  state.link?.fail("GPU compute stopped");
+}
+
+// Enable dispatch only once both the machine and the device are ready.
+function applyGpuCompute() {
+  const state = gpuCompute;
+  if (!state?.link?.ready || !machine || state.applied) return;
+  state.applied = true;
+  if (typeof machine.setGpuCompute !== "function" || !machine.setGpuCompute(state.mode)) {
+    state.link.fail("Runtime does not support GPU compute");
+    return;
+  }
+  reply({ type: "gpuCompute", state: "ready", mode: state.mode, adapter: state.adapter });
+}
+
+async function startGpuCompute(message) {
+  const options = message.gpuCompute;
+  if (!options || options.mode === "off") return;
+  const state = gpuCompute = { mode: options.mode, cancelled: false, applied: false, worker: null, link: null, adapter: null };
+  const unavailable = reason => {
+    if (gpuCompute !== state) return;
+    reply({ type: "gpuCompute", state: "unavailable", mode: state.mode, message: String(reason) });
+    stopGpuCompute();
+  };
+  try {
+    const search = new URL(self.location.href).search;
+    const bridgeUrl = new URL("./gpu-compute-bridge.js", self.location.href);
+    bridgeUrl.search = search;
+    const bridge = await import(bridgeUrl.href);
+    if (state.cancelled) return;
+    const reason = bridge.availability(self);
+    if (reason) { unavailable(reason); return; }
+    const workerUrl = new URL("./gpu-compute-worker.js", self.location.href);
+    workerUrl.search = search;
+    const channel = new MessageChannel();
+    const control = new SharedArrayBuffer(bridge.CONTROL_BYTES);
+    state.link = new bridge.GpuComputeLink({
+      port: channel.port1, control, timeoutMs: options.timeoutMs,
+      onFailure: failure => {
+        if (gpuCompute !== state) return;
+        state.worker?.terminate();
+        state.worker = null;
+        reply({ type: "gpuCompute", state: "failed", mode: state.mode, message: failure });
+      },
+    });
+    channel.port1.onmessage = ({ data }) => {
+      if (data?.type === "ready") {
+        state.adapter = data.adapter;
+        state.link.ready = true;
+        applyGpuCompute();
+      } else if (data?.type === "unavailable") {
+        unavailable(data.message);
+      }
+    };
+    state.worker = new Worker(workerUrl.href);
+    state.worker.onerror = event => { event.preventDefault?.(); unavailable(event.message || "GPU compute worker failed"); };
+    state.worker.postMessage({ type: "init", protocol: bridge.GPU_COMPUTE_PROTOCOL, port: channel.port2, control,
+      bridgeUrl: bridgeUrl.href, moduleUrl: message.moduleUrl, wasmUrl: message.wasmUrl,
+      injectFailureAfterMs: options.injectFailureAfterMs }, [channel.port2]);
+  } catch (error) {
+    unavailable(error?.message || error);
+  }
+}
 
 function disconnectRenderer() {
   const link = rendererLink;
@@ -92,6 +170,7 @@ self.onmessage = async (event) => {
         throw new Error("Runtime worker assets use an incompatible protocol");
       }
       booting = true;
+      startGpuCompute(message);
       reply({ type: "progress", progress: JSON.stringify("LoadingExecutable") });
       const bindings = await import(message.moduleUrl);
       await bindings.default(message.wasmUrl);
@@ -106,6 +185,7 @@ self.onmessage = async (event) => {
         (progress) => reply({ type: "progress", progress }),
       );
       booting = false;
+      applyGpuCompute();
       publishSaveFiles("ready");
       return;
     }
@@ -117,6 +197,7 @@ self.onmessage = async (event) => {
     }
     if (message.type === "shutdown") {
       disconnectRenderer();
+      stopGpuCompute();
       stopping = true;
       await machine.flushSaves();
       machine.free();
@@ -155,6 +236,7 @@ self.onmessage = async (event) => {
         for (const texture of result.gpuFrame.textures) transfer.push(texture.rgba.buffer);
         for (const draw of result.gpuFrame.draws) transfer.push(draw.vertices.buffer);
       }
+      if (gpuCompute?.link) result.gpuComputeTiming = gpuCompute.link.timing();
       publishSaveFiles();
       reply({ type: "frame", ...result, sequence: ++frameSequence }, transfer);
       return;
@@ -175,7 +257,7 @@ self.onmessage = async (event) => {
   } catch (error) {
     const fatal = !["importSave", "deleteSave"].includes(message.type);
     failed ||= fatal;
-    if (fatal) disconnectRenderer();
+    if (fatal) { disconnectRenderer(); stopGpuCompute(); }
     reply({
       type: "error",
       fatal,

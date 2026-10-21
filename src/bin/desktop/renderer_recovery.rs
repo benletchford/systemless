@@ -77,6 +77,18 @@ impl std::fmt::Display for Failure {
     }
 }
 
+impl systemless::gpu_compute::ComputeHealth for Health {
+    fn check(&self) -> Result<(), String> {
+        Health::check(self).map_err(|error| error.to_string())
+    }
+    fn record(&self, error: String) {
+        Health::record(self, Failure::from(error));
+    }
+    fn wait_readback(&self, device: &wgpu::Device) -> Result<(), String> {
+        Health::wait_readback(self, device)
+    }
+}
+
 pub(super) struct Health {
     readback_budget: std::time::Duration,
     failed: AtomicBool,

@@ -531,6 +531,15 @@ impl Machine {
         self.runner.set_arrows_as_numpad(enabled);
     }
 
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    /// Route guest-visible QuickDraw and QD3D work through `proxy`. Results are
+    /// committed to guest memory before execution resumes, as on the CPU.
+    pub fn install_gpu_proxy(&mut self, proxy: &crate::gpu_proxy::GpuProxy) {
+        self.runner
+            .set_quickdraw_gpu_renderer(Box::new(proxy.clone()));
+        self.runner.set_q3_gpu_renderer(Box::new(proxy.clone()));
+    }
+
     pub fn screen_size(&self) -> (u32, u32) {
         let (_, _, w, h, _) = self.runner.dispatcher().screen_mode;
         (w as u32, h as u32)

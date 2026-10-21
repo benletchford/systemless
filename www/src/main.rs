@@ -1,3 +1,9 @@
+#[cfg(target_arch = "wasm32")]
+mod gpu_compute_worker;
+mod gpu_proxy;
+mod gpu_wire;
+#[cfg(target_arch = "wasm32")]
+mod wgpu_presenter;
 mod adaptive_clock;
 mod app;
 mod bench;

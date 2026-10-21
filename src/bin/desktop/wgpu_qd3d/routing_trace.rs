@@ -40,8 +40,8 @@ impl RoutingTrace {
             "event":"work_estimate",
             "selection_index":self.selection_index.get().checked_add(1).expect("QD3D trace sequence overflow"),
             "cpu_work":cpu_work, "tiled_work":tiled_work, "minimum_cpu_work":minimum_cpu_work,
-            "maximum_tiled_work":super::MAX_RASTER_WORK,
-            "maximum_tiled_to_cpu_ratio":super::MAX_TILED_TO_CPU_WORK_RATIO,
+            "maximum_tiled_work":super::Qd3dWorkEstimate::MAX_GPU_WORK,
+            "maximum_tiled_to_cpu_ratio":super::Qd3dWorkEstimate::MAX_GPU_TO_CPU_RATIO,
             "scope":"production adaptive work estimates, not measured CPU or GPU time"
         }));
     }

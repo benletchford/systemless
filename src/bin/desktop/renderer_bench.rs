@@ -3,6 +3,43 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GuestArchitecture {
+    Classic,
+    PowerPc,
+}
+impl GuestArchitecture {
+    fn selected(variable: &str) -> Self {
+        match std::env::var(variable).as_deref() {
+            Ok("68k") => Self::Classic,
+            Ok("ppc") | Err(std::env::VarError::NotPresent) => Self::PowerPc,
+            _ => panic!("{variable} must be 68k or ppc"),
+        }
+    }
+    fn name(self) -> &'static str {
+        if self == Self::PowerPc {
+            "ppc"
+        } else {
+            "68k"
+        }
+    }
+    fn powerpc(self) -> bool {
+        self == Self::PowerPc
+    }
+    #[cfg(feature = "test-support")]
+    fn targets(self) -> &'static [i16] {
+        if self.powerpc() {
+            &[2, 1, 11, 14, 4]
+        } else {
+            &[2, 1, 11, 14]
+        }
+    }
+    #[cfg(feature = "test-support")]
+    fn requires(self, category: usize) -> bool {
+        category < 3 || self.powerpc()
+    }
+}
+
 pub(super) fn presentation_fixture(text: bool) -> systemless::memory::CompactPresentation {
     let mut frame = systemless::memory::CompactPresentation {
         width: 640,
@@ -169,6 +206,7 @@ pub(super) fn report(name: &str, backend: &str, samples: &mut [Duration]) {
 fn benchmark_guest_renderers() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/toolbox-showcase/toolbox-showcase.sit");
+    let architecture = GuestArchitecture::selected("SYSTEMLESS_BENCH_ARCHITECTURE");
     let count = std::env::var("SYSTEMLESS_BENCH_SAMPLES")
         .map(|value| value.parse::<usize>().unwrap())
         .unwrap_or(15);
@@ -180,6 +218,11 @@ fn benchmark_guest_renderers() {
             .is_none_or(|name| { matches!(name, "ui" | "drawing" | "text" | "3d" | "sprites") }),
         "unknown guest benchmark case"
     );
+    assert!(
+        architecture.powerpc() || selected.as_deref() != Some("3d"),
+        "QD3D benchmark requires PPC"
+    );
+    eprintln!("[RENDER-ARCHITECTURE] {}", architecture.name());
     let record_cpu = std::env::var_os("SYSTEMLESS_BENCH_THREAD_CPU").is_some();
     if record_cpu {
         let _ = thread_cpu_time();
@@ -191,22 +234,26 @@ fn benchmark_guest_renderers() {
         ("3d", 4),
         ("sprites", 14),
     ] {
+        if target == 4 && !architecture.powerpc() {
+            continue;
+        }
         if selected.as_deref().is_some_and(|selected| selected != name) {
             continue;
         }
         let mut dispatch = None;
         let mut runners = [false, true].map(|gpu| {
             let mut runner = game::new_runner_with_configuration(true, 8);
-            runner.set_prefer_powerpc_executables(true);
+            runner.set_prefer_powerpc_executables(architecture.powerpc());
             if gpu {
                 dispatch = Some(forced_gpu_guest::install_adaptive(&mut runner));
             }
             runner.set_app_start_time(0);
             let app = game::load_game_from_path(&mut runner, &fixture).unwrap();
             game::init_game(&mut runner, &app);
-            assert!(
+            assert_eq!(
                 runner.is_powerpc_app(),
-                "benchmark requires the native fixture"
+                architecture.powerpc(),
+                "wrong benchmark architecture"
             );
             configure_realtime_execution_rate(&mut runner);
             frames(&mut runner, 40);
@@ -463,6 +510,15 @@ mod forced_gpu_guest {
 
     #[test]
     fn wgpu_guest_raster_writeback_matches_default() {
+        guest_raster_writeback_matches_default(true);
+    }
+
+    #[test]
+    fn wgpu_classic_guest_raster_writeback_matches_default() {
+        guest_raster_writeback_matches_default(false);
+    }
+
+    fn guest_raster_writeback_matches_default(powerpc: bool) {
         let instance = wgpu::Instance::default();
         let adapter = match pollster::block_on(instance.request_adapter(&Default::default())) {
             Ok(adapter) => adapter,
@@ -487,7 +543,7 @@ mod forced_gpu_guest {
         let mut reference = Vec::new();
         for gpu in [false, true] {
             let mut runner = game::new_runner_with_configuration(true, 8);
-            runner.set_prefer_powerpc_executables(true);
+            runner.set_prefer_powerpc_executables(powerpc);
             if gpu {
                 runner.set_quickdraw_gpu_renderer(Box::new(QuickDraw {
                     renderer: Rc::new(RefCell::new(wgpu_quickdraw::QuickDrawRenderer::new())),
@@ -503,10 +559,15 @@ mod forced_gpu_guest {
             runner.set_app_start_time(0);
             let app = game::load_game_from_path(&mut runner, &fixture).unwrap();
             game::init_game(&mut runner, &app);
-            assert!(runner.is_powerpc_app());
+            assert_eq!(runner.is_powerpc_app(), powerpc);
             configure_realtime_execution_rate(&mut runner);
             frames(&mut runner, 40);
-            for (index, target) in [2, 1, 11, 14, 4].into_iter().enumerate() {
+            let targets: &[i16] = if powerpc {
+                &[2, 1, 11, 14, 4]
+            } else {
+                &[2, 1, 11, 14]
+            };
+            for (index, &target) in targets.iter().enumerate() {
                 page(&mut runner, target);
                 let pixels = image(&runner);
                 if gpu {
@@ -530,7 +591,11 @@ mod forced_gpu_guest {
             .into_iter()
             .enumerate()
         {
-            assert!(calls[index].get() > 0, "no successful {kind} GPU writeback");
+            if index == 3 && !powerpc {
+                assert_eq!(calls[index].get(), 0, "classic guest submitted native QD3D");
+            } else {
+                assert!(calls[index].get() > 0, "no successful {kind} GPU writeback");
+            }
         }
     }
     #[cfg(feature = "test-support")]
@@ -538,6 +603,7 @@ mod forced_gpu_guest {
     #[ignore = "explicit-duration active GPU qualification; run through soak-gpu-compute.py"]
     fn qualify_gpu_compute_resources() {
         use std::io::Write;
+        let architecture = GuestArchitecture::selected("SYSTEMLESS_GPU_COMPUTE_ARCHITECTURE");
         let cpu_only = match std::env::var("SYSTEMLESS_GPU_COMPUTE_SOAK_CPU_ONLY").as_deref() {
             Ok("1") => true,
             Err(std::env::VarError::NotPresent) => false,
@@ -558,7 +624,7 @@ mod forced_gpu_guest {
         let qd3d = Rc::new(RefCell::new(wgpu_qd3d::Qd3dRenderer::new()));
         let mut runners = [false, true].map(|gpu| {
             let mut runner = game::new_runner_with_configuration(true, 8);
-            runner.set_prefer_powerpc_executables(true);
+            runner.set_prefer_powerpc_executables(architecture.powerpc());
             if gpu && !cpu_only {
                 // These wrappers deliberately force real GPU writeback for
                 // small fixture work that production adaptive selection skips.
@@ -576,13 +642,13 @@ mod forced_gpu_guest {
             runner.set_app_start_time(0);
             let app = game::load_game_from_path(&mut runner, &fixture).unwrap();
             game::init_game(&mut runner, &app);
-            assert!(runner.is_powerpc_app());
+            assert_eq!(runner.is_powerpc_app(), architecture.powerpc());
             configure_realtime_execution_rate(&mut runner);
             frames(&mut runner, 40);
             runner
         });
         let sweep = |runners: &mut [FixtureRunner; 2]| {
-            for target in [2, 1, 11, 14, 4] {
+            for &target in architecture.targets() {
                 for runner in runners.iter_mut() {
                     assert_eq!(
                         page(runner, target),
@@ -606,11 +672,14 @@ mod forced_gpu_guest {
         };
         sweep(&mut runners);
         assert!(
-            calls.iter().all(|count| if cpu_only {
-                count.get() == 0
-            } else {
-                count.get() > 0
-            }),
+            calls
+                .iter()
+                .enumerate()
+                .all(|(i, count)| if cpu_only || !architecture.requires(i) {
+                    count.get() == 0
+                } else {
+                    count.get() > 0
+                }),
             "missing GPU workload coverage"
         );
         let started = Instant::now();
@@ -625,12 +694,13 @@ mod forced_gpu_guest {
                         .qualification_snapshot()
                         .expect("healthy QuickDraw GPU")
                 });
-                let qd3d_resources = (!cpu_only).then(|| {
+                let qd3d_resources = (!cpu_only && architecture.powerpc()).then(|| {
                     qd3d.borrow()
                         .qualification_snapshot()
                         .expect("healthy QD3D GPU")
                 });
                 let sample = serde_json::json!({
+                    "architecture": architecture.name(),
                     "workload": if cpu_only { "cpu-baseline" } else { "gpu" },
                     "seconds": started.elapsed().as_secs_f64(), "cycles": cycles,
                     "gpu_writebacks": calls.iter().map(Cell::get).collect::<Vec<_>>(),
@@ -648,11 +718,17 @@ mod forced_gpu_guest {
             let before = std::array::from_fn::<_, 4, _>(|i| calls[i].get());
             sweep(&mut runners);
             assert!(
-                calls.iter().zip(before).all(|(count, old)| if cpu_only {
-                    count.get() == 0 && old == 0
-                } else {
-                    count.get() > old
-                }),
+                calls
+                    .iter()
+                    .zip(before)
+                    .enumerate()
+                    .all(
+                        |(i, (count, old))| if cpu_only || !architecture.requires(i) {
+                            count.get() == 0 && old == 0
+                        } else {
+                            count.get() > old
+                        }
+                    ),
                 "a compute workload stopped reaching the GPU"
             );
             cycles += 1;

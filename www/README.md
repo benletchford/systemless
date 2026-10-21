@@ -21,6 +21,87 @@ Plugin and artifact IDs remain unique within the resolved entry. Plugin
 artifacts currently stay with their original HTTPS provider; the catalogue
 asset-promotion pipeline does not copy them into managed storage.
 
+## WebGPU presentation
+
+Append `?renderer=wgpu` to a game URL (or `&renderer=wgpu` when it already has
+query parameters) to select the Rust/WASM wgpu presenter. It works with both
+68k and PowerPC and with worker or compatibility execution. Use HTTPS or
+localhost and a browser exposing WebGPU and OffscreenCanvas. The existing
+WebGL/Canvas2D selection remains the default.
+
+The presenter uploads complete RGBA guest frames to a reusable wgpu texture
+and renders them without filtering or an extra sRGB conversion. It holds frame
+credit until asynchronous GPU completion, retaining at most the current frame
+and one newest pending frame. Unsupported WebGPU, startup failure, device loss,
+and failed submissions use the existing Canvas2D recovery path without restarting
+the guest. The input canvas stays on the host, preserving focus and input handlers.
+Inspect its `data-render-backend` attribute for `offscreen-wgpu`; recovery records
+its reason in `data-render-fallback`.
+
+## WebGPU compute
+
+`?renderer=wgpu` also runs guest-visible QuickDraw and QuickDraw 3D work on the
+GPU with the same wgpu kernels as the desktop `--gpu` path, for both 68k and
+PowerPC guests. Select the dispatch explicitly with
+`gpu_compute=adaptive|force|off`; `adaptive` uses the desktop heuristics and
+keeps small operations on the CPU, while `force` sends every supported
+operation to the GPU for equivalence checks. Compute works only in worker
+execution mode.
+
+Guest memory stays authoritative. QuickDraw and QD3D results must be committed
+before the guest resumes, but WebGPU completes readback only on the event loop
+of the thread that owns the device. A dedicated compute worker
+(`gpu-compute-worker.js`) therefore owns the device. The emulation worker posts
+a complete snapshot of the operation's input, blocks in `Atomics.wait`, and
+reads the reply from a `SharedArrayBuffer` before committing pixels. Requests
+run one at a time on the shared scratch buffers.
+
+`SharedArrayBuffer` requires a cross-origin isolated page. `public/_headers`
+sets `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: credentialless` for Cloudflare Pages. A local
+`trunk serve` does not send them, so compute reports itself unavailable there;
+serve `dist` with those headers instead. Browsers without `credentialless`
+support (Safari), without WebGPU, or without isolation keep CPU rendering.
+
+Failures never alter guest pixels: a declined operation falls back to the CPU,
+and a device loss, worker failure or reply timeout (5 s by default,
+`gpu_compute_timeout_ms` to adjust) leaves all later work on the CPU for the
+session. The main thread records the compute worker's state in
+`window.__systemlessGpuComputeStatus` and per-kind `[completed, failed]`
+request counts in `window.__systemlessGpuCompute`.
+
+Each GPU operation blocks the guest for one round trip; in Chrome on an Apple
+M1 this measured about 0.6 ms on average, including transfer and readback.
+That is why `adaptive` keeps small drawing on the CPU. Enabling compute also
+loads a second copy of the WASM bundle in the compute worker.
+
+Validate the browser integration after building:
+
+```sh
+cd www
+trunk build
+cd ..
+node --test www/tests/*.test.cjs
+node www/scripts/verify-renderer-wgpu-cdp.mjs www/dist
+node www/scripts/verify-gpu-compute-cdp.mjs www/dist
+```
+
+The browser probe requires Chrome/Chromium with WebGPU (set `CHROME_BIN` if
+needed). It fails if wgpu is unavailable, compares exact pixels across resizes
+and both architecture slices of the committed Toolbox showcase, and injects
+GPU device loss. It serves only a local temporary test site and cleans up its
+browser profile. This is integration evidence on the tested browser/host,
+not a claim of universal browser support or a performance improvement.
+
+The compute probe serves pages with `public/_headers` and drives the production
+emulation worker through the desktop play scenarios
+(`tests/play/toolbox-showcase*.json`): 68k UI, PowerPC deep-mask sprites and
+PowerPC QD3D. Each runs on the CPU and with every supported operation forced
+through the compute worker; captures must match (QD3D within eight levels per
+component, as on the desktop) and request counters must prove GPU execution. It
+also runs adaptive dispatch and injects device loss mid-scenario, requiring the
+guest to finish on the CPU with identical output.
+
 ## Contribute a catalogue entry
 
 Create `catalogue/<stable-id>.md` by following the structure of an existing
