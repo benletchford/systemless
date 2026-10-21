@@ -122,8 +122,7 @@ CPU execution: submitting each one to the GPU and synchronously reading it back
 can cost much more than drawing it directly. Substantial polygon edge work,
 large color conversions/blends/masks, reductions, and suitable 3D frames can use
 the compute kernels. Selection happens before staging guest-memory snapshots
-and coverage atlases where possible. See [GPU performance](RENDERING-PERFORMANCE.md)
-for the repeatable benchmark, measurements, and dispatch boundaries.
+and coverage atlases where possible.
 
 The QuickDraw kernels support patterns, Boolean transfers, complex clips,
 glyph coverage, packed pixels, scaling, indexed/direct color conversion,
@@ -142,9 +141,7 @@ path for rollback. Wgpu remains opt-in until hardware qualification is complete;
 `--gpu` and `--renderer` cannot be combined. Wgpu failures fall back to platform
 presentation while preserving the guest. `--headless --gpu` enables the same adaptive guest rasterization in play
 scripts and timed runs without creating a window; it does not measure desktop
-presentation. GPU initialization and rendering errors remain visible in logs. See
-[renderer qualification](RENDERER-QUALIFICATION.md) for recovery tests, lifecycle
-soaks and the gates before changing the default.
+presentation. GPU initialization and rendering errors remain visible in logs.
 
 To check the native PowerPC 3D scene, run Toolbox Showcase with
 `--headless --gpu --prefer-powerpc --play-script tests/play/toolbox-showcase-ppc-qd3d.json`

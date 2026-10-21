@@ -3,7 +3,7 @@
 
 Run on an otherwise idle host. This intentionally has no timing pass/fail
 threshold: software adapters and shared CI machines do not establish physical
-GPU performance. See RENDERING-PERFORMANCE.md for workload boundaries.
+GPU performance.
 """
 import argparse
 import hashlib
