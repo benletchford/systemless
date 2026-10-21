@@ -2533,7 +2533,11 @@ async fn boot_catalogue_worker(
             set_js_property(&compute, "timeoutMs", &JsValue::from_f64(ms.into()));
         }
         if let Some(ms) = options.inject_failure_after_ms {
-            set_js_property(&compute, "injectFailureAfterMs", &JsValue::from_f64(ms.into()));
+            set_js_property(
+                &compute,
+                "injectFailureAfterMs",
+                &JsValue::from_f64(ms.into()),
+            );
         }
         set_js_property(&message, "gpuCompute", compute.as_ref());
     }
